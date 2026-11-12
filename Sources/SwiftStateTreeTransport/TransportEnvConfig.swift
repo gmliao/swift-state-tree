@@ -9,22 +9,20 @@
 // |-----|------|---------|-------|
 // | ENABLE_DIRTY_TRACKING | Bool | init param | truthy: 1/true/yes/y/on; falsy: 0/false/no/n/off; unset uses init default |
 // | USE_SNAPSHOT_FOR_SYNC | Bool | true | disabled when "false"/"0"/"no"/"off"; otherwise enabled |
-// | USE_SYNC_TABLES | Bool | false | experimental: the broadcast diff on the typed sync tables (delta strategy only); enabled only when "true"/"1"/"yes"/"y"/"on" |
-// | TYPED_LEAF_VALUES | Bool | false | experimental: a changed leaf of a known type is converted by its typed form on the typed sync tables (only where they are in effect); enabled only when "true"/"1"/"yes"/"y"/"on" |
+// | USE_SYNC_TABLES | Bool | true | the broadcast diff on the typed sync tables (delta strategy only); "false"/"0"/"no"/"n"/"off" opts out to the snapshot diff, a fallback to be removed. Row addressing turns the tables on regardless |
+// | TYPED_LEAF_VALUES | Bool | true | a changed leaf of a known type is converted by its typed form on the typed sync tables (only where they are in effect); "false"/"0"/"no"/"n"/"off" opts out |
 // | SYNC_STRATEGY | String | init param | "delta" or "full-snapshot" (case-insensitive); unknown values use init default |
-// | ENABLE_CHANGE_OBJECT_METRICS | Bool | false | enabled only when "true"/"1"/"yes"/"y"/"on" |
-// | CHANGE_OBJECT_METRICS_LOG_EVERY | Int | 10 | min 1 |
-// | CHANGE_OBJECT_METRICS_EMA_ALPHA | Double | 0.2 | clamp 0.01–1.0 |
-// | AUTO_DIRTY_TRACKING | Bool | true | enabled when "true"/"1"/"yes"/"y"/"on" |
-// | AUTO_DIRTY_OFF_THRESHOLD | Double | 0.55 | clamp 0–1, resolved with hysteresis |
-// | AUTO_DIRTY_ON_THRESHOLD | Double | 0.30 | clamp 0–1, resolved with hysteresis |
-// | AUTO_DIRTY_REQUIRED_SAMPLES | Int | 30 | min 1; counted in syncs, see AUTO_DIRTY_SAMPLE_EVERY |
-// | AUTO_DIRTY_SAMPLE_EVERY | Int | 1 | clamp 1–1024; change metrics are collected on one sync in N |
 // | TRANSPORT_PROFILE_JSONL_PATH | String | (required) | Output path for profiling JSONL; unset = disabled |
 // | TRANSPORT_PROFILE_INTERVAL_MS | Int | 1000 | Write interval in ms, min 100 |
 // | TRANSPORT_PROFILE_SAMPLE_RATE | Double | 0.01 | Latency sample rate 0.001–1.0 |
 // | TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL | Int | 500 | Max latency samples per interval, clamp 10–10000 |
 // | OUTBOUND_WRITER_MAX_BYTES | Int | 67108864 (64 MiB) | Per-land ceiling for frames queued in the outbound writer, min 1024 |
+//
+// Removed (the auto dirty switch and its change-object metric): ENABLE_CHANGE_OBJECT_METRICS,
+// CHANGE_OBJECT_METRICS_LOG_EVERY, CHANGE_OBJECT_METRICS_EMA_ALPHA, AUTO_DIRTY_TRACKING,
+// AUTO_DIRTY_OFF_THRESHOLD, AUTO_DIRTY_ON_THRESHOLD, AUTO_DIRTY_REQUIRED_SAMPLES and
+// AUTO_DIRTY_SAMPLE_EVERY. They are ignored; the first adapter in a process logs a warning
+// naming any that is set (`TransportRemovedEnvKeys`).
 
 import Foundation
 import SwiftStateTree
@@ -39,35 +37,18 @@ public struct TransportEnvConfig: Sendable {
     public let enableDirtyTracking: Bool
     public let useSnapshotForSync: Bool
     public let syncStrategy: SyncStrategy
-    public let enableChangeObjectMetrics: Bool
-    public let changeObjectMetricsLogEvery: Int
-    public let changeObjectMetricsEmaAlpha: Double
-    public let enableAutoDirtyTracking: Bool
-    public let autoDirtyOffThreshold: Double
-    public let autoDirtyOnThreshold: Double
-    public let autoDirtyRequiredConsecutiveSamples: Int
-    /// Change-object metrics (and so the auto dirty-tracking decision) are collected on one sync
-    /// in this many (#391), clamped to 1...1024. The EMA weight and the required samples are
-    /// scaled so a switch takes about as many syncs as when every sync is measured. 1 (the
-    /// default) measures every sync. Above 1, the sampled syncs are at a fixed phase, so a
-    /// workload whose busy syncs repeat with a period dividing N is always seen at the same point.
-    public let autoDirtySampleEvery: Int
     public let profilingConfig: TransportProfilingConfig?
     /// Ceiling for the bytes queued in one adapter's `OutboundWriter`; frames over it are
     /// dropped and logged.
     public let outboundWriterMaxBytes: Int
     /// The broadcast diff runs on the typed sync tables instead of snapshots (`USE_SYNC_TABLES`,
-    /// off by default, delta strategy only). The frames are the same bytes either way.
+    /// on by default, delta strategy only). The frames are the same bytes either way. Off is the
+    /// snapshot diff, kept as a fallback to be removed later. Row addressing turns the tables on
+    /// whatever this says, so with it in effect off is not an opt-out.
     ///
     /// Every config takes the environment's value, one built with `init` included, so a whole
     /// test run can be switched from outside; set the property to pin one side.
     package var useSyncTables = TransportEnvConfig.useSyncTablesFromEnvironment
-
-    /// On the typed sync tables, the change-object metric takes each root dictionary of nodes from
-    /// its entry count instead of converting it (`SyncTableBroadcastDiff.metricNodeMapEntries`).
-    /// The metric's numbers are the same either way. Off is the full-snapshot computation, kept
-    /// as the tests' oracle; no environment variable sets it.
-    package var changeMetricsFromRows = true
 
     /// `useSyncTables`, for diagnostics and equivalence tests outside this package (a test that
     /// runs one script on both sides in one process). `USE_SYNC_TABLES` is the supported switch.
@@ -80,7 +61,7 @@ public struct TransportEnvConfig: Sendable {
 
     /// On the typed sync tables, a changed leaf field registered with the standard conversion
     /// is converted by its typed form (`SyncLeafWritable`) instead of `SnapshotValue.make(from:)`
-    /// (`TYPED_LEAF_VALUES`, off by default). The frames are the same bytes either way. It takes
+    /// (`TYPED_LEAF_VALUES`, on by default). The frames are the same bytes either way. It takes
     /// effect wherever the tables are in effect: `USE_SYNC_TABLES`, or row addressing, which
     /// turns them on; elsewhere it is ignored.
     ///
@@ -97,28 +78,16 @@ public struct TransportEnvConfig: Sendable {
     /// `TYPED_LEAF_VALUES`, read once per process.
     private static let typedLeafValuesFromEnvironment = EnvHelpers.getEnvBool(
         key: TransportEnvKeys.typedLeafValues,
-        defaultValue: false,
+        defaultValue: true,
         environment: ProcessInfo.processInfo.environment
     )
 
     /// `USE_SYNC_TABLES`, read once per process.
     private static let useSyncTablesFromEnvironment = EnvHelpers.getEnvBool(
         key: TransportEnvKeys.useSyncTables,
-        defaultValue: false,
+        defaultValue: true,
         environment: ProcessInfo.processInfo.environment
     )
-
-    /// Default for `autoDirtySampleEvery`: every sync is measured.
-    static let defaultAutoDirtySampleEvery = 1
-
-    /// The range `autoDirtySampleEvery` is clamped to.
-    static let autoDirtySampleEveryRange = 1...1024
-
-    /// `value` clamped to `autoDirtySampleEveryRange`. The effective value is in the adapter's
-    /// startup configuration log (`autoDirtySampleEvery`).
-    static func clampedAutoDirtySampleEvery(_ value: Int) -> Int {
-        min(max(value, autoDirtySampleEveryRange.lowerBound), autoDirtySampleEveryRange.upperBound)
-    }
 
     /// Default for `outboundWriterMaxBytes` (64 MiB).
     public static let defaultOutboundWriterMaxBytes = 64 * 1024 * 1024
@@ -127,30 +96,14 @@ public struct TransportEnvConfig: Sendable {
         enableDirtyTracking: Bool,
         useSnapshotForSync: Bool,
         syncStrategy: SyncStrategy,
-        enableChangeObjectMetrics: Bool,
-        changeObjectMetricsLogEvery: Int,
-        changeObjectMetricsEmaAlpha: Double,
-        enableAutoDirtyTracking: Bool,
-        autoDirtyOffThreshold: Double,
-        autoDirtyOnThreshold: Double,
-        autoDirtyRequiredConsecutiveSamples: Int,
         profilingConfig: TransportProfilingConfig?,
-        outboundWriterMaxBytes: Int = TransportEnvConfig.defaultOutboundWriterMaxBytes,
-        autoDirtySampleEvery: Int = 1
+        outboundWriterMaxBytes: Int = TransportEnvConfig.defaultOutboundWriterMaxBytes
     ) {
         self.enableDirtyTracking = enableDirtyTracking
         self.useSnapshotForSync = useSnapshotForSync
         self.syncStrategy = syncStrategy
-        self.enableChangeObjectMetrics = enableChangeObjectMetrics
-        self.changeObjectMetricsLogEvery = changeObjectMetricsLogEvery
-        self.changeObjectMetricsEmaAlpha = changeObjectMetricsEmaAlpha
-        self.enableAutoDirtyTracking = enableAutoDirtyTracking
-        self.autoDirtyOffThreshold = autoDirtyOffThreshold
-        self.autoDirtyOnThreshold = autoDirtyOnThreshold
-        self.autoDirtyRequiredConsecutiveSamples = autoDirtyRequiredConsecutiveSamples
         self.profilingConfig = profilingConfig
         self.outboundWriterMaxBytes = outboundWriterMaxBytes
-        self.autoDirtySampleEvery = TransportEnvConfig.clampedAutoDirtySampleEvery(autoDirtySampleEvery)
     }
 
     /// Create config from environment. Init params `enableDirtyTrackingDefault` and
@@ -171,53 +124,6 @@ public struct TransportEnvConfig: Sendable {
 
         let syncStrategy = SyncStrategy.parse(env[TransportEnvKeys.syncStrategy], default: syncStrategyDefault)
 
-        let enableChangeObjectMetrics = EnvHelpers.getEnvBool(
-            key: TransportEnvKeys.enableChangeObjectMetrics,
-            defaultValue: false,
-            environment: env
-        )
-
-        let changeObjectMetricsLogEvery = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.changeObjectMetricsLogEvery, defaultValue: 10, environment: env))
-
-        let changeObjectMetricsAlpha = EnvHelpers.getEnvDouble(
-            key: TransportEnvKeys.changeObjectMetricsEmaAlpha,
-            defaultValue: 0.2,
-            min: 0.01,
-            max: 1.0,
-            environment: env
-        )
-
-        let enableAutoDirtyTracking = EnvHelpers.getEnvBool(
-            key: TransportEnvKeys.autoDirtyTracking,
-            defaultValue: true,
-            environment: env
-        )
-
-        let parsedOffThreshold = EnvHelpers.getEnvDouble(
-            key: TransportEnvKeys.autoDirtyOffThreshold,
-            defaultValue: 0.55,
-            min: 0,
-            max: 1,
-            environment: env
-        )
-        let parsedOnThreshold = EnvHelpers.getEnvDouble(
-            key: TransportEnvKeys.autoDirtyOnThreshold,
-            defaultValue: 0.30,
-            min: 0,
-            max: 1,
-            environment: env
-        )
-        let resolvedOffThreshold = max(parsedOffThreshold, parsedOnThreshold + 0.01)
-        let resolvedOnThreshold = min(parsedOnThreshold, resolvedOffThreshold - 0.01)
-
-        let autoDirtyRequiredSamples = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.autoDirtyRequiredSamples, defaultValue: 30, environment: env))
-
-        let autoDirtySampleEvery = clampedAutoDirtySampleEvery(EnvHelpers.getEnvInt(
-            key: TransportEnvKeys.autoDirtySampleEvery,
-            defaultValue: TransportEnvConfig.defaultAutoDirtySampleEvery,
-            environment: env
-        ))
-
         let profilingConfig = TransportProfilingConfig.fromEnvironment()
 
         let outboundWriterMaxBytes = max(1024, EnvHelpers.getEnvInt(
@@ -230,16 +136,44 @@ public struct TransportEnvConfig: Sendable {
             enableDirtyTracking: enableDirtyTracking,
             useSnapshotForSync: useSnapshotForSync,
             syncStrategy: syncStrategy,
-            enableChangeObjectMetrics: enableChangeObjectMetrics,
-            changeObjectMetricsLogEvery: changeObjectMetricsLogEvery,
-            changeObjectMetricsEmaAlpha: changeObjectMetricsAlpha,
-            enableAutoDirtyTracking: enableAutoDirtyTracking,
-            autoDirtyOffThreshold: resolvedOffThreshold,
-            autoDirtyOnThreshold: resolvedOnThreshold,
-            autoDirtyRequiredConsecutiveSamples: autoDirtyRequiredSamples,
             profilingConfig: profilingConfig,
-            outboundWriterMaxBytes: outboundWriterMaxBytes,
-            autoDirtySampleEvery: autoDirtySampleEvery
+            outboundWriterMaxBytes: outboundWriterMaxBytes
         )
+    }
+}
+
+/// The environment keys of the removed auto dirty switch and its change-object metric. A set
+/// one is ignored; the first adapter in a process logs a warning naming every one that is set
+/// (`shared`), so a deployment that still sets one isn't changed silently.
+package final class TransportRemovedEnvKeys: @unchecked Sendable {
+    package static let all = [
+        "ENABLE_CHANGE_OBJECT_METRICS",
+        "CHANGE_OBJECT_METRICS_LOG_EVERY",
+        "CHANGE_OBJECT_METRICS_EMA_ALPHA",
+        "AUTO_DIRTY_TRACKING",
+        "AUTO_DIRTY_OFF_THRESHOLD",
+        "AUTO_DIRTY_ON_THRESHOLD",
+        "AUTO_DIRTY_REQUIRED_SAMPLES",
+        "AUTO_DIRTY_SAMPLE_EVERY",
+    ]
+
+    /// This process's check, which the adapters share.
+    static let shared = TransportRemovedEnvKeys(environment: ProcessInfo.processInfo.environment)
+
+    private let lock = NSLock()
+    private var pending: [String]?
+
+    /// A check of `environment`.
+    package init(environment: [String: String]) {
+        pending = Self.all.filter { environment[$0] != nil }
+    }
+
+    /// The removed keys set in the environment, in `all`'s order, on the first call; empty
+    /// after that, so the caller logs them once.
+    package func takeFirst() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { pending = nil }
+        return pending ?? []
     }
 }

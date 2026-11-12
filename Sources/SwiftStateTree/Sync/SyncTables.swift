@@ -238,6 +238,12 @@ package struct SyncTableFallbackField: Sendable, Equatable {
     package let reason: String
 }
 
+/// `syncTableFallbackFields(of:)` as `Type.field: reason` lines, for a land's own tests outside
+/// this package: pinning the list makes a field that starts taking the fallback show up in review.
+@_spi(Diagnostics) public func syncTableFallbackFieldDescriptions<State: StateNodeProtocol>(of type: State.Type) -> [String] {
+    syncTableFallbackFields(of: type).map { "\($0.field): \($0.reason)" }
+}
+
 /// Every field that takes the fallback in a land of `State` on the typed tables, with its reason:
 /// the broadcast root fields, and the synced fields of every node type the typed diff walks from
 /// them. Each type is listed once, in the order it is reached, its fields by name. A type held
@@ -1086,14 +1092,6 @@ class SyncRootSlot<State> {
     /// A root node map with a path cursor: its rows are slot-addressed with row entries.
     var isSlotAddressed: Bool { false }
 
-    /// A root dictionary of nodes, whose change-object metric depends only on its entry count
-    /// (`SyncTableBroadcastDiff.metricNodeMapEntries`).
-    var isNodeMap: Bool { false }
-
-    /// For a root dictionary of nodes, the number of entries of the field's view in `state`,
-    /// without converting it; nil for any other field, and when the field has no value.
-    func metricEntryCount(_ state: State) -> Int? { nil }
-
     /// A slot-addressed field's part of a full view: the map's object, then a create per row in
     /// slot order, from the table `staged` stages (`useStaged`) or from last-sent. Nil for any
     /// other field, and for one with nothing to view (unseeded, and not seeded by this plan).
@@ -1195,16 +1193,6 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
 
     override var lastSentSnapshot: SnapshotValue? {
         seeded ? try? differ.convert(last.dictionary) : nil
-    }
-
-    override var isNodeMap: Bool { true }
-
-    override func metricEntryCount(_ state: State) -> Int? {
-        guard let value = read(state) else { return nil }
-        // `keyString` gives distinct keys distinct components (`syncTableKeyString`), so the
-        // converted map has one entry per key.
-        assert(Set(value.keys.map(differ.keyString)).count == value.count, "two keys of \(name) share a path component")
-        return value.count
     }
 
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
@@ -1634,31 +1622,6 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     /// What clients were last sent for the root field `name`, or nil when it is unseeded.
     package func lastSentSnapshot(of name: String) -> SnapshotValue? {
         slots.first { $0.name == name }?.lastSentSnapshot
-    }
-
-    /// The root dictionaries of nodes as the change-object metric's broadcast snapshot would hold
-    /// them, without converting them: by field name, the field's entry count, or nil when that
-    /// snapshot leaves the field out. Every root dictionary of nodes has an entry.
-    ///
-    /// The snapshot is the extraction of `fields` (nil: every field) with last-sent standing in
-    /// for a field that throws. A field in `dropped` (its diff threw in this plan) is taken from
-    /// last-sent, and is left out when last-sent is unseeded or doesn't convert. That assumes a
-    /// field's conversion is a function of its value: the diff converts only the rows that
-    /// changed, the extraction every row.
-    package func metricNodeMapEntries(_ state: State, fields: Set<String>?, dropped: Set<String>) -> [String: Int?] {
-        var result: [String: Int?] = [:]
-        for slot in slots where slot.isNodeMap {
-            let count: Int?
-            if !(fields?.contains(slot.name) ?? true) {
-                count = nil
-            } else if dropped.contains(slot.name) {
-                if case .object(let entries)? = slot.lastSentSnapshot { count = entries.count } else { count = nil }
-            } else {
-                count = slot.metricEntryCount(state)
-            }
-            result.updateValue(count, forKey: slot.name)
-        }
-        return result
     }
 
     /// Last-sent as a snapshot of the seeded broadcast fields, or nil before the first seed.
