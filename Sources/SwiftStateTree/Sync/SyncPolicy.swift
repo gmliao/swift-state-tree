@@ -123,6 +123,17 @@ public struct Sync<Value: Sendable>: Sendable {
             _wrappedValue = newValue
             _isDirty = true
         }
+        // In place: `state.items[k] = v`, `state.list.append(x)`, `f(&state.items)` and a nested
+        // node's field write mutate the stored value. Without this accessor a mutation is a get
+        // into a temporary and a set, and while the temporary exists the stored value still
+        // holds the collection's buffer, so every write copies the whole collection.
+        // Marked dirty before the yield: an access ended by a throw (`try f(&_x.wrappedValue)`)
+        // doesn't run the code after the yield, and a write made before the throw is kept (#87),
+        // so it must be synced.
+        _modify {
+            _isDirty = true
+            yield &_wrappedValue
+        }
     }
 
     public init(wrappedValue: Value, _ policy: SyncPolicy<Value>) {
