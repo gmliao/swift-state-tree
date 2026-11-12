@@ -19,6 +19,7 @@ tags:
 related:
   - "#483"
   - "#488"
+  - "#513"
 ---
 
 **Problem.** After a branch added a byte report test, `WebSocketTransportSessionIDTests.closeSessionAfterQueuedFrames` failed in 4 of 5 CI runs on that branch and never on its base. It never failed on the Mac. The test ran 10.5 s, and neither the drain's close nor the transport's own 5 s close timeout ran in that time.
@@ -31,3 +32,5 @@ related:
 - A test that does more than about a second of CPU work, especially a parameterized one, gets `.serialized` and yields inside its loop, or does less work in CI.
 - When a timing test fails only on a branch, and only on small runners, look for new CPU-bound tests on that branch before blaming the timing test.
 - Print what the failing test saw. Here, entries `[one, error]` with no close is what showed that nothing in the transport ran.
+
+**Second instance (2026-11-12, #513).** A branch doubled two parameterized random-mutation tests in `SyncTableDiffTests` from 2 to 4 cases each, and `closeSessionAfterQueuedFrames` failed in both build jobs with the same `[one, error]`. The same fix applied: the differential runner yields every 64 steps, and both tests are `.serialized`. Adding cases to a parameterized CPU-bound test counts as adding a CPU-bound test.

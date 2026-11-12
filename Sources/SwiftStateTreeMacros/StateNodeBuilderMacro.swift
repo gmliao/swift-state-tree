@@ -376,6 +376,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("fields.append(SyncTableField<Self>.make(")
             codeLines.append("    name: \"\(name)\",")
             codeLines.append("    policy: .\(policy),")
+            codeLines.append("    conversion: .standard,")
             codeLines.append("    read: { $0._\(name).policy.filteredValue($0._\(name).wrappedValue, for: nil) },")
             codeLines.append("    convert: { value in \(needsTry ? "try " : "")\(conversion) }")
             codeLines.append("))")

@@ -98,7 +98,10 @@ public enum HeroDefense {
 
                     // Update all monsters (sorted keys for deterministic iteration order)
                     var monstersToRemove: [Int] = []
+                    let monsterActiveEvery = max(1, config.monsterActiveEvery)
                     for monsterID in state.monsters.keys.sorted() {
+                        // An idle monster is skipped before it is read, so none of its fields is written.
+                        if monsterActiveEvery > 1, (monsterID &+ Int(tickId)) % monsterActiveEvery != 0 { continue }
                         guard var monster = state.monsters[monsterID] else { continue }
                         // Update movement
                         MovementSystem.updateMonsterMovement(

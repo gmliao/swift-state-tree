@@ -29,11 +29,17 @@ public protocol GameConfigProvider: Sendable {
     var turretPlacementCost: Int { get }
     /// Maximum number of live monsters allowed in a room. 0 means unlimited (default behavior).
     var monsterMaxCount: Int { get }
+    /// A monster is updated, and so written, only in the ticks where `(id + tick) % monsterActiveEvery == 0`;
+    /// an idle monster's fields aren't touched in the other ticks. 1 (the default) updates every
+    /// monster every tick. Benchmarks use it for a workload where most monsters stay idle.
+    var monsterActiveEvery: Int { get }
 }
 
 extension GameConfigProvider {
     /// Default: no cap, preserving the original spawn behavior.
     public var monsterMaxCount: Int { 0 }
+    /// Default: every monster is updated every tick.
+    public var monsterActiveEvery: Int { 1 }
 }
 
 public struct GameConfigProviderService: Sendable {

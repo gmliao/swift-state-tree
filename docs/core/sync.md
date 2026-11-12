@@ -95,7 +95,7 @@ SyncEngine maintains:
 
 ### Rules for Synced Value Types
 
-The typed sync diff (`USE_SYNC_TABLES`, experimental and off by default) keeps the last value it sent for each broadcast field as a native Swift value, and compares the live value against it with `==` before it builds any patch. It relies on these rules. Types that follow them work the same on today's path.
+The typed sync diff (`USE_SYNC_TABLES`, experimental and off by default) keeps the last value it sent for each broadcast field as a native Swift value, and compares the live value against it with `==` before it builds any patch. It relies on these rules. Types that follow them work the same on today's path. With `TYPED_LEAF_VALUES` (also experimental), a changed field of a built-in leaf type is converted by its typed form instead of the general conversion; the patches and bytes are the same, and a user's own types keep the general conversion.
 
 - **A plain value gets the typed comparison only if it is `Equatable`.** A synced struct, enum or collection that isn't `Equatable` is converted and diffed the way it is today. The frames are the same bytes either way; only the cost differs.
 - **`==` must not hide a change.** If `a == b`, the two values must convert to the same snapshot. A custom `==` that ignores a synced property breaks this: the change is never sent. Debug builds report it when they see it.

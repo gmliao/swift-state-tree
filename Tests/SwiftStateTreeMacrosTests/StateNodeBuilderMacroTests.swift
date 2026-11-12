@@ -148,6 +148,7 @@ final class StateNodeBuilderMacroTests {
                     fields.append(SyncTableField<Self>.make(
                         name: "players",
                         policy: .broadcast,
+                        conversion: .standard,
                         read: {
                                 $0._players.policy.filteredValue($0._players.wrappedValue, for: nil)
                             },
@@ -158,6 +159,7 @@ final class StateNodeBuilderMacroTests {
                     fields.append(SyncTableField<Self>.make(
                         name: "hiddenData",
                         policy: .serverOnly,
+                        conversion: .standard,
                         read: {
                                 $0._hiddenData.policy.filteredValue($0._hiddenData.wrappedValue, for: nil)
                             },
@@ -311,6 +313,7 @@ final class StateNodeBuilderMacroTests {
                     fields.append(SyncTableField<Self>.make(
                         name: "secret",
                         policy: .custom,
+                        conversion: .standard,
                         read: {
                                 $0._secret.policy.filteredValue($0._secret.wrappedValue, for: nil)
                             },
