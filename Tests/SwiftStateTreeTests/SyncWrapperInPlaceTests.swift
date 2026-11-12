@@ -71,6 +71,14 @@ private func storageAddress(_ list: [InPlaceProbe]) -> UnsafeRawPointer? {
     list.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
 }
 
+/// The identity of a dictionary's storage. A `Dictionary` is one reference to its storage
+/// (`unsafeBitCast` traps if the sizes differ), so a write that copies the dictionary changes it
+/// and a write in place keeps it. Used where a copy is freed by the time the write returns, so a
+/// box probe would be unique again.
+private func storageIdentity(_ items: [Int: InPlaceProbe]) -> UnsafeRawPointer {
+    unsafeBitCast(items, to: UnsafeRawPointer.self)
+}
+
 /// A write through a `@Sync` field mutates the stored value in place: a uniquely held collection
 /// or node isn't copied, and the field is marked dirty as an assignment marks it.
 ///
@@ -136,6 +144,63 @@ struct SyncWrapperInPlaceTests {
         #expect(addresses[0] == addresses[1])
         #expect(state.list.map(\.count) == [1, 1])
         #expect(state.getDirtyFields() == ["list"])
+    }
+
+    // The macro's container helpers write through `_x.wrappedValue` and then mark the field.
+    // A helper that copied (`var v = _items.wrappedValue; v[key] = value; _items.wrappedValue = v`)
+    // frees the old storage before it returns, so these compare the storage, not a box.
+
+    @Test("The dictionary helpers write in place")
+    func dictionaryHelpers() {
+        var state = makeState()
+        let before = storageIdentity(state.items)
+        state.updateItems(InPlaceProbe(count: 3), forKey: 0)
+        let afterUpdate = storageIdentity(state.items)
+        state.removeItems(forKey: 1)
+        let afterRemove = storageIdentity(state.items)
+        #expect(afterUpdate == before)
+        #expect(afterRemove == before)
+        #expect(state.items[0]?.count == 3)
+        #expect(state.items[1] == nil)
+        #expect(state.getDirtyFields() == ["items"])
+    }
+
+    @Test("The array helpers write in place")
+    func arrayHelpers() {
+        var state = makeState()
+        state.list.reserveCapacity(8)
+        state.clearDirty()
+        let before = storageAddress(state.list)
+        state.appendList(InPlaceProbe(count: 1))
+        let afterAppend = storageAddress(state.list)
+        state.insertList(InPlaceProbe(count: 2), at: 0)
+        let afterInsert = storageAddress(state.list)
+        state.removeList(at: 1)
+        let afterRemove = storageAddress(state.list)
+        #expect(afterAppend == before)
+        #expect(afterInsert == before)
+        #expect(afterRemove == before)
+        #expect(state.list.map(\.count) == [2, 0, 1])
+        #expect(state.getDirtyFields() == ["list"])
+    }
+
+    @Test("After a copy of the state, the first write copies the field once and later writes don't")
+    func retainedCopy() {
+        var state = makeState()
+        let before = storageIdentity(state.items)
+        // Like the keeper's sync snapshot and its debug copy before a handler.
+        let copy = state
+        state.items[0]!.count = 5
+        let afterFirst = storageIdentity(state.items)
+        state.items[1]!.count = 6
+        let afterSecond = storageIdentity(state.items)
+        #expect(afterFirst != before)
+        #expect(afterSecond == afterFirst)
+        #expect(storageIdentity(copy.items) == before)
+        #expect(copy.items[0]?.count == 0)
+        #expect(copy.items[1]?.count == 0)
+        #expect(state.items[0]?.count == 5)
+        #expect(state.items[1]?.count == 6)
     }
 
     @Test("A write before a throw is kept and marks the field dirty")
