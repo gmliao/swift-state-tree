@@ -23,6 +23,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     /// keyed (`TransportEncodingConfig.atomicValues == .keyed`).
     public let atomicLayout: AtomicLayoutTable?
 
+    /// `atomicLayout`'s position of each of the hasher's patterns, so a value's position comes
+    /// from its split instead of a walk of its path; nil without a hasher or a layout.
+    let atomicPatterns: AtomicPatternIndex?
+
     /// With a path hasher: send a pattern's path index (its rank among the land's sorted schema
     /// path hashes, `PathHasher.sortedHashes`) instead of its 32-bit hash. A path outside the
     /// schema then fails the frame (`StateUpdateEncodingError.pathNotInSchema`).
@@ -76,9 +80,31 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         unmappedPaths: UnmappedPathCounter? = nil,
         fieldMerge: FieldMergeTable? = nil
     ) {
+        self.init(
+            pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout,
+            pathIndex: pathIndex, unmappedPaths: unmappedPaths, fieldMerge: fieldMerge, atomicPatternIndex: true
+        )
+    }
+
+    /// `atomicPatternIndex: false` finds each atomic value's position by walking its path, as
+    /// an encoder without a hasher does (tests compare the two).
+    package init(
+        pathHasher: PathHasher?,
+        dynamicKeyCompression: Bool,
+        atomicLayout: AtomicLayoutTable?,
+        pathIndex: Bool,
+        unmappedPaths: UnmappedPathCounter?,
+        fieldMerge: FieldMergeTable?,
+        atomicPatternIndex: Bool
+    ) {
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicLayout = atomicLayout
+        if atomicPatternIndex, let pathHasher, let atomicLayout {
+            self.atomicPatterns = AtomicPatternIndex(table: atomicLayout, hasher: pathHasher)
+        } else {
+            self.atomicPatterns = nil
+        }
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
         self.fieldMerge = fieldMerge
@@ -229,7 +255,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                         let patch = ordered[member.index]
                         switch patch.operation {
                         case .set(let value), .add(let value):
-                            entry.append(try wireValue(value, path: patch.path))
+                            entry.append(try wireValue(value, path: patch.path, split: splits[member.index]))
                         case .delete:
                             preconditionFailure("a delete is never merged")
                         }
@@ -282,6 +308,21 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         return encodeSnapshotValueToMessagePack(try atomicLayout.positional(value, atPath: path))
     }
 
+    /// `wireValue(_:path:)` for a path with this split (by `pathHasher`): the position comes
+    /// from `atomicPatterns` when it has one.
+    @inline(__always)
+    private func wireValue(_ value: SnapshotValue, path: String, pathHash: UInt32, inSchema: Bool) throws -> MessagePackValue {
+        guard let atomicPatterns else { return try wireValue(value, path: path) }
+        return encodeSnapshotValueToMessagePack(
+            try atomicPatterns.positional(value, pathHash: pathHash, inSchema: inSchema, path: path)
+        )
+    }
+
+    @inline(__always)
+    private func wireValue(_ value: SnapshotValue, path: String, split: FieldMergeSplit) throws -> MessagePackValue {
+        try wireValue(value, path: path, pathHash: split.pathHash, inSchema: split.inSchema)
+    }
+
     /// Direct encoding of patch without AnyCodable - returns MessagePackValue array
     private func encodePatchLegacyDirect(_ patch: StatePatch) throws -> [MessagePackValue] {
         switch patch.operation {
@@ -322,7 +363,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                 pathID,
                 encodedKey,
                 .int(Int64(StatePatchOpcode.set.rawValue)),
-                try wireValue(value, path: patch.path)
+                try wireValue(value, path: patch.path, split: split)
             ]
         case .delete:
             return [
@@ -335,7 +376,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                 pathID,
                 encodedKey,
                 .int(Int64(StatePatchOpcode.add.rawValue)),
-                try wireValue(value, path: patch.path)
+                try wireValue(value, path: patch.path, split: split)
             ]
         }
     }
@@ -346,7 +387,9 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
             guard case .set(let value) = patches[index].operation else {
                 preconditionFailure("a create or a column set is a set")
             }
-            return try wireValue(value, path: patches[index].path)
+            // A row patch carries its split (`RowEntryPlan` takes no other).
+            guard let split = patches[index].split else { return try wireValue(value, path: patches[index].path) }
+            return try wireValue(value, path: patches[index].path, pathHash: split.pathHash, inSchema: true)
         }
         switch row {
         case .create(let table, let slot, let generation, let key, let index):

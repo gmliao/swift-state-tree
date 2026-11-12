@@ -25,6 +25,10 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
     /// keyed (`TransportEncodingConfig.atomicValues == .keyed`).
     public let atomicLayout: AtomicLayoutTable?
 
+    /// `atomicLayout`'s position of each of the hasher's patterns, so a value's position comes
+    /// from its split instead of a walk of its path; nil without a hasher or a layout.
+    let atomicPatterns: AtomicPatternIndex?
+
     /// With a path hasher: send a pattern's path index (its rank among the land's sorted schema
     /// path hashes, `PathHasher.sortedHashes`) instead of its 32-bit hash. A path outside the
     /// schema then fails the frame (`StateUpdateEncodingError.pathNotInSchema`).
@@ -74,6 +78,23 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         unmappedPaths: UnmappedPathCounter? = nil,
         fieldMerge: FieldMergeTable? = nil
     ) {
+        self.init(
+            pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout,
+            pathIndex: pathIndex, unmappedPaths: unmappedPaths, fieldMerge: fieldMerge, atomicPatternIndex: true
+        )
+    }
+
+    /// `atomicPatternIndex: false` finds each atomic value's position by walking its path, as
+    /// an encoder without a hasher does (tests compare the two).
+    package init(
+        pathHasher: PathHasher?,
+        dynamicKeyCompression: Bool,
+        atomicLayout: AtomicLayoutTable?,
+        pathIndex: Bool,
+        unmappedPaths: UnmappedPathCounter?,
+        fieldMerge: FieldMergeTable?,
+        atomicPatternIndex: Bool
+    ) {
         let encoder = JSONEncoder()
         // Object keys in UTF-8 byte order, not hash order, so a frame's bytes don't depend on
         // the process (pinned by `CanonicalEmitOrderTests`).
@@ -82,6 +103,11 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicLayout = atomicLayout
+        if atomicPatternIndex, let pathHasher, let atomicLayout {
+            self.atomicPatterns = AtomicPatternIndex(table: atomicLayout, hasher: pathHasher)
+        } else {
+            self.atomicPatterns = nil
+        }
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
         self.fieldMerge = fieldMerge
@@ -184,7 +210,8 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
             keyTableScope: keyScope,
             forceDefinition: forceDefinition,
             dynamicKeyCompression: dynamicKeyCompression,
-            atomicLayout: atomicLayout
+            atomicLayout: atomicLayout,
+            atomicPatterns: atomicPatterns
         )
         payload.pathIndex = pathIndex
         payload.unmappedPaths = unmappedPaths
@@ -210,6 +237,8 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         let forceDefinition: Bool
         let dynamicKeyCompression: Bool
         let atomicLayout: AtomicLayoutTable?
+        /// See `OpcodeJSONStateUpdateEncoder.atomicPatterns`.
+        let atomicPatterns: AtomicPatternIndex?
         /// See `OpcodeJSONStateUpdateEncoder.pathIndex`.
         var pathIndex = false
         var unmappedPaths: UnmappedPathCounter?
@@ -227,6 +256,19 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         private func wireValue(_ value: SnapshotValue, path: String) throws -> SnapshotValue {
             guard let atomicLayout else { return value }
             return try atomicLayout.positional(value, atPath: path)
+        }
+
+        /// `wireValue(_:path:)` for a path with this split (by `pathHasher`): the position
+        /// comes from `atomicPatterns` when it has one.
+        @inline(__always)
+        private func wireValue(_ value: SnapshotValue, path: String, pathHash: UInt32, inSchema: Bool) throws -> SnapshotValue {
+            guard let atomicPatterns else { return try wireValue(value, path: path) }
+            return try atomicPatterns.positional(value, pathHash: pathHash, inSchema: inSchema, path: path)
+        }
+
+        @inline(__always)
+        private func wireValue(_ value: SnapshotValue, path: String, split: FieldMergeSplit) throws -> SnapshotValue {
+            try wireValue(value, path: path, pathHash: split.pathHash, inSchema: split.inSchema)
         }
         
         func encode(to encoder: Encoder) throws {
@@ -275,7 +317,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                             let patch = ordered[member.index]
                             switch patch.operation {
                             case .set(let value), .add(let value):
-                                try patchContainer.encode(wireValue(value, path: patch.path))
+                                try patchContainer.encode(wireValue(value, path: patch.path, split: splits[member.index]))
                             case .delete:
                                 preconditionFailure("a delete is never merged")
                             }
@@ -322,7 +364,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         ) throws {
             try encodePathID(split.pathHash, inSchema: split.inSchema, path: patch.path, hasher: hasher, into: &container)
             try encodeDynamicKeys(split.dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable, into: &container)
-            try encodeOperation(patch, into: &container)
+            try encodeOperation(patch, split: split, into: &container)
         }
 
         /// A row entry (`RowPatchOpcode`). The slot stands where a path entry has its dynamic
@@ -332,7 +374,9 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                 guard case .set(let value) = patches[index].operation else {
                     preconditionFailure("a create or a column set is a set")
                 }
-                return try wireValue(value, path: patches[index].path)
+                // A row patch carries its split (`RowEntryPlan` takes no other).
+                guard let split = patches[index].split else { return try wireValue(value, path: patches[index].path) }
+                return try wireValue(value, path: patches[index].path, pathHash: split.pathHash, inSchema: true)
             }
             switch row {
             case .create(let table, let slot, let generation, let key, let index):
@@ -430,16 +474,18 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         }
 
         /// The patch's opcode and, for set and add, its value.
-        private func encodeOperation(_ patch: StatePatch, into container: inout UnkeyedEncodingContainer) throws {
+        private func encodeOperation(
+            _ patch: StatePatch, split: FieldMergeSplit, into container: inout UnkeyedEncodingContainer
+        ) throws {
             switch patch.operation {
             case .set(let value):
                 try container.encode(StatePatchOpcode.set.rawValue)
-                try container.encode(wireValue(value, path: patch.path))
+                try container.encode(wireValue(value, path: patch.path, split: split))
             case .delete:
                 try container.encode(StatePatchOpcode.remove.rawValue)
             case .add(let value):
                 try container.encode(StatePatchOpcode.add.rawValue)
-                try container.encode(wireValue(value, path: patch.path))
+                try container.encode(wireValue(value, path: patch.path, split: split))
             }
         }
         
@@ -451,7 +497,8 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
             keyTableScope: DynamicKeyScope,
             forceDefinition: Bool,
             dynamicKeyCompression: Bool,
-            atomicLayout: AtomicLayoutTable?
+            atomicLayout: AtomicLayoutTable?,
+            atomicPatterns: AtomicPatternIndex?
         ) {
             self.opcode = opcode
             self.patches = patches
@@ -461,6 +508,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
             self.forceDefinition = forceDefinition
             self.dynamicKeyCompression = dynamicKeyCompression
             self.atomicLayout = atomicLayout
+            self.atomicPatterns = atomicPatterns
         }
         
         init(from decoder: Decoder) throws {
