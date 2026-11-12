@@ -528,8 +528,8 @@ struct ChangeMetricsFromRowsTests {
 extension ChangeMetricsFromRowsTests {
     /// A recipient whose firstSync failed gets its whole view inside the next sync, and that view
     /// is one of the metric's updates. With dirty tracking on, the sync's mode holds only the
-    /// changed `score`, so `units` is out of the mode (its view patches key as `/units`); with it
-    /// off, `units` is in it with two rows (one key per row).
+    /// changed `score`, so `units` is out of the mode; with it off, `units` is in it with two
+    /// rows.
     @Test("An unsynced recipient's view reaches the metric, its node map in and out of the mode", arguments: [true, false])
     func unsyncedRecipientView(dirtyTracking: Bool) async throws {
         var lines: [[String]] = []
@@ -561,13 +561,13 @@ extension ChangeMetricsFromRowsTests {
         }
         #expect(lines[0] == lines[1], "rows \(lines[0]), oracle \(lines[1])")
         #expect(lines[0][0].hasSuffix("dirty \(dirtyTracking)"), "\(lines[0])")
-        // The control (bob synced) counts the broadcast `score` patch alone. The view adds
-        // `/units` with `units` out of the mode, or a key per row with it in the mode, besides
-        // the view's other fields.
-        #expect(changed[2] == 1, "control \(changed)")
-        #expect(changed[0] > changed[2], "\(changed)")
-        let unitKeys = dirtyTracking ? 1 : 2
-        #expect(changed[0] - changed[2] >= unitKeys, "\(changed)")
+        // The control (bob synced) counts the broadcast `score` patch alone. The view sets each
+        // root field whole, so it adds `/units` and `/byInt` (one key each, whatever the rows),
+        // in and out of the mode. The mode shows in the total: out of it (dirty on) the maps add
+        // nothing to the estimate, so the total is the changed count; in it (dirty off) `units`
+        // adds its 2 rows and the empty `byInt` 1, beside `score`.
+        #expect(changed == [3, 3, 1], "\(changed)")
+        #expect(lines[0][0].hasPrefix(dirtyTracking ? "3/3 " : "3/4 "), "\(lines[0])")
     }
 }
 
