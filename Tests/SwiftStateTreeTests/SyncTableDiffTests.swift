@@ -389,12 +389,16 @@ private let differentialSteps: Int = {
 /// Runs `differentialSteps` random steps of `mutate` on both diffs: one plan in ten fails
 /// (neither side commits, the dirty fields are carried), and every step's patches and drops must
 /// be equal.
+///
+/// It yields every 64 steps: a run is seconds of synchronous work, and its parameterized cases
+/// would otherwise hold every cooperative pool thread on a small CI runner, starving the timing
+/// tests beside it (`Notes/solutions/2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md`).
 private func runDifferential<State: StateNodeProtocol>(
     _ initial: State,
     allFields: Bool,
     mutate: (inout State, inout SeededGenerator) -> Void,
     sourceLocation: SourceLocation = #_sourceLocation
-) {
+) async {
     let seed = ProcessInfo.processInfo.environment["SYNC_TABLE_SEED"].flatMap { UInt64($0) } ?? UInt64.random(in: 0...UInt64.max)
     var g = SeededGenerator(state: seed)
     var state = initial
@@ -404,6 +408,7 @@ private func runDifferential<State: StateNodeProtocol>(
     state.clearDirty()
     var carried: Set<String> = []
     for index in 0..<differentialSteps {
+        if index % 64 == 0 { await Task.yield() }
         for _ in 0..<Int.random(in: 1...4, using: &g) { mutate(&state, &g) }
         let dirty = state.getDirtyFields().union(carried)
         state.clearDirty()
@@ -528,21 +533,22 @@ struct SyncTableDiffTests {
         expectRefused(pair.step(state, fields: ["parents"], commit: true), field: "parents")
     }
 
-    @Test("Random mutations: the typed diff equals today's, dirty tracking on and off, typed leaves on and off", arguments: [false, true], [false, true])
-    func differential(allFields: Bool, typedLeafValues: Bool) {
+    // `.serialized`: its four cases take one pool thread, not four (see `runDifferential`).
+    @Test("Random mutations: the typed diff equals today's, dirty tracking on and off, typed leaves on and off", .serialized, arguments: [false, true], [false, true])
+    func differential(allFields: Bool, typedLeafValues: Bool) async {
         var g = SeededGenerator(state: 0)
         var state = TableRoot()
         state.rows[1] = randomRow(&g)
         state.named["a"] = randomRow(&g)
-        SyncTableLeafTesting.$typedLeafValues.withValue(typedLeafValues) {
-            runDifferential(state, allFields: allFields, mutate: mutate)
+        await SyncTableLeafTesting.$typedLeafValues.withValue(typedLeafValues) {
+            await runDifferential(state, allFields: allFields, mutate: mutate)
         }
     }
 
-    @Test("Random mutations of the shape matrix: the typed diff equals today's, typed leaves on and off", arguments: [false, true], [false, true])
-    func shapeMatrixDifferential(allFields: Bool, typedLeafValues: Bool) {
-        SyncTableLeafTesting.$typedLeafValues.withValue(typedLeafValues) {
-            runDifferential(ShapeMatrixState(), allFields: allFields, mutate: mutateShapes)
+    @Test("Random mutations of the shape matrix: the typed diff equals today's, typed leaves on and off", .serialized, arguments: [false, true], [false, true])
+    func shapeMatrixDifferential(allFields: Bool, typedLeafValues: Bool) async {
+        await SyncTableLeafTesting.$typedLeafValues.withValue(typedLeafValues) {
+            await runDifferential(ShapeMatrixState(), allFields: allFields, mutate: mutateShapes)
         }
     }
 
