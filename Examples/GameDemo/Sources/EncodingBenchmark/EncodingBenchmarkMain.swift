@@ -10,7 +10,7 @@ import LoadTestPacing
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeMessagePack
-import SwiftStateTreeTransport
+@_spi(Diagnostics) import SwiftStateTreeTransport
 
 /// The benchmark rooms of `runMultiRoomBenchmarkLand`.
 struct LandRoomContext<State: StateNodeProtocol>: Sendable {
@@ -1034,6 +1034,8 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         DirtyTrackingMode.enableKey,
         DirtyTrackingMode.autoKey,
         DirtyTrackingMode.modeKey,
+        "USE_SYNC_TABLES",
+        "TYPED_LEAF_VALUES",
         "WSL_DISTRO_NAME",
         "WSL_INTEROP"
     ]
@@ -1218,6 +1220,12 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
     json["memory"] = ProcessMemory.report()
     json["finalMonsterCount"] = result.finalMonsterCount
     if let config {
+        // The process's sync switches, as every adapter reads them.
+        let env = TransportEnvConfig.fromEnvironment()
+        // Row addressing as it ran (the router path reports it; it also needs in-turn sync), never
+        // as asked.
+        let rowsInEffect = (result.routerJoin?["rowAddressingInEffect"] as? Bool) ?? false
+        let tablesInEffect = (env.syncTablesEnabled || rowsInEffect) && config.syncStrategy == .delta
         json["config"] = [
             "ticksPerSync": config.ticksPerSync,
             "gameType": config.gameType.rawValue,
@@ -1227,6 +1235,14 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             // `--join-through-router` / `--row-addressing` (false without them).
             "joinThroughRouter": config.joinThroughRouter,
             "rowAddressing": config.rowAddressing,
+            // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (false unset), so a same-binary A/B shows
+            // its side.
+            "useSyncTables": env.syncTablesEnabled,
+            "typedLeafValues": env.typedLeafValuesEnabled,
+            // What ran, by the adapter's rule: the tables with either switch under delta sync, typed
+            // leaves only where the tables are.
+            "syncTablesInEffect": tablesInEffect,
+            "typedLeafValuesInEffect": tablesInEffect && env.typedLeafValuesEnabled,
         ] as [String: Any]
     }
     

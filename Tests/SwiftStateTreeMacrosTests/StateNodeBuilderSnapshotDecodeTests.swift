@@ -168,6 +168,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     fields.append(SyncTableField<Self>.make(
                         name: "score",
                         policy: .broadcast,
+                        conversion: .standard,
                         read: {
                                 $0._score.policy.filteredValue($0._score.wrappedValue, for: nil)
                             },
@@ -178,6 +179,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     fields.append(SyncTableField<Self>.make(
                         name: "name",
                         policy: .broadcast,
+                        conversion: .standard,
                         read: {
                                 $0._name.policy.filteredValue($0._name.wrappedValue, for: nil)
                             },
@@ -188,6 +190,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     fields.append(SyncTableField<Self>.make(
                         name: "internal_counter",
                         policy: .serverOnly,
+                        conversion: .standard,
                         read: {
                                 $0._internal_counter.policy.filteredValue($0._internal_counter.wrappedValue, for: nil)
                             },

@@ -78,7 +78,8 @@ jobs:
 
   # The broadcast diff on the typed sync tables (USE_SYNC_TABLES, off by default): the transport
   # and NIO test targets again with the switch on, so that side stays covered until the default
-  # flips. Those targets hold the adapter's tests; the one adapter built in SwiftStateTreeTests
+  # flips. A second run adds TYPED_LEAF_VALUES (leaf fields converted by their typed form, which
+  # applies only on the tables). Those targets hold the adapter's tests; the one adapter built in SwiftStateTreeTests
   # (the debug projection's wire shape) isn't run here. In-turn sync is at its default: the
   # legacy path with the tables on is left to the local full runs.
   sync-tables:
@@ -104,6 +105,19 @@ jobs:
         swift test --filter 'SwiftStateTreeTransportTests|SwiftStateTreeNIOTests' 2>&1 | tee sync-tables.log
         if ! grep -q '✔ Test "A config built with init takes USE_SYNC_TABLES' sync-tables.log; then
           echo "::error::the test that pins USE_SYNC_TABLES did not run"
+          exit 1
+        fi
+      timeout-minutes: 30
+
+    - name: Run the transport and NIO tests on the tables with typed leaves
+      shell: bash
+      env:
+        TYPED_LEAF_VALUES: "true"
+      run: |
+        set -o pipefail
+        swift test --filter 'SwiftStateTreeTransportTests|SwiftStateTreeNIOTests' 2>&1 | tee typed-leaves.log
+        if ! grep -q '✔ Test "A config built with init takes TYPED_LEAF_VALUES' typed-leaves.log; then
+          echo "::error::the test that pins TYPED_LEAF_VALUES did not run"
           exit 1
         fi
       timeout-minutes: 30
