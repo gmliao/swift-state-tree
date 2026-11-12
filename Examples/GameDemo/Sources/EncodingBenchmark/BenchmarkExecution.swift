@@ -222,8 +222,8 @@ struct BenchmarkResult {
     ).rawValue
     /// `--dirty-tracking` mode, set in the environment the same way before any adapter exists.
     let dirtyTracking: String = DirtyTrackingMode.current
-    /// Dirty tracking the adapters actually had when the measurement ended. Under `auto` an
-    /// adapter can switch during the run, so this can differ from `dirtyTracking`.
+    /// Dirty tracking the adapters actually had when the measurement ended: the fixed mode
+    /// (`dirtyTracking`), checked rather than assumed.
     var dirtyTrackingEffective = EffectiveDirtyTracking()
     /// Measured sync cycles the adapters skipped (back-pressure or a cycle in flight); the run
     /// exits unless it is 0 (#160).
@@ -1233,8 +1233,7 @@ struct EffectiveDirtyTracking {
         }
     }
 
-    /// For result JSON. At the end of the measurement: under `auto` it can differ from the
-    /// requested `dirtyTracking` mode.
+    /// For result JSON, at the end of the measurement.
     var json: [String: Any] {
         ["atEnd": summary, "adaptersOn": on, "adaptersOff": off]
     }

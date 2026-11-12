@@ -428,22 +428,30 @@ main() {
     fi
     echo ""
 
-    # #80: messagepack with AUTO_DIRTY_TRACKING=false (change-object metrics off), where #67
-    # hid. Same CLI scenarios (broadcast field, broadcast event, assertConverged); no replay.
-    local variant="messagepack (AUTO_DIRTY_TRACKING=false)"
+    # The opt-out leg: messagepack with the typed sync tables and typed leaf values off, the
+    # snapshot-diff fallback. Same CLI scenarios (broadcast field, broadcast event,
+    # assertConverged); no replay. The server's config log line must show the tables off, so
+    # the leg can't pass on the default path (row addressing would turn them back on).
+    local variant="messagepack (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false)"
     echo "=========================================="
     echo "  Testing encoding: $variant"
     echo "=========================================="
     echo ""
-    export AUTO_DIRTY_TRACKING=false
+    export USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false
     if start_server "messagepack" && wait_for_server "$SERVER_NAME" "messagepack"; then
         print_step "Running ${SERVER_NAME} E2E scenarios ($variant)..."
-        if (cd "$project_root/Tools/CLI" && run_cli_scenarios "messagepack"); then
-            print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
-        else
+        local variant_log
+        variant_log="$(get_e2e_tmp_dir)/gameserver-messagepack.log"
+        if ! (cd "$project_root/Tools/CLI" && run_cli_scenarios "messagepack"); then
             print_error "${SERVER_NAME} E2E scenarios ($variant) failed"
             show_logs "$SERVER_NAME" "messagepack"
             failed_encodings+=("$variant")
+        elif ! sed $'s/\x1b\\[[0-9;]*m//g' "$variant_log" | grep -q "syncTables=off" \
+            || sed $'s/\x1b\\[[0-9;]*m//g' "$variant_log" | grep -q "syncTables=on"; then
+            print_error "${SERVER_NAME} ($variant): the server's lands did not all log syncTables=off"
+            failed_encodings+=("$variant")
+        else
+            print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
         fi
     else
         print_error "Server failed to start for $variant"
@@ -451,7 +459,7 @@ main() {
         failed_encodings+=("$variant")
     fi
     stop_server "$SERVER_NAME" "messagepack"
-    unset AUTO_DIRTY_TRACKING
+    unset USE_SYNC_TABLES TYPED_LEAF_VALUES
     echo ""
     
     # Summary

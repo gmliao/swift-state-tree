@@ -38,13 +38,6 @@ private func frameIdentityConfig(tables: Bool, dirtyTracking: Bool) -> Transport
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: false,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
     config.syncTablesEnabled = tables

@@ -58,6 +58,14 @@ let package = Package(
                 .product(name: "SwiftStateTree", package: "SwiftStateTree")
             ],
             path: "Sources/ReevaluationRunner"
+        ),
+        .testTarget(
+            name: "DemoContentTests",
+            dependencies: [
+                "DemoContent",
+                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+            ],
+            path: "Tests/DemoContentTests"
         )
     ]
 )

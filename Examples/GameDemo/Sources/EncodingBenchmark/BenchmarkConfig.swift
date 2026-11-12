@@ -64,39 +64,33 @@ enum EncodingFormat: String, CaseIterable {
 
 /// `--dirty-tracking`: whether every `TransportAdapter` diffs only dirty fields.
 ///
-/// `on` and `off` fix the setting for the whole run (auto dirty tracking is turned off with
-/// them, so the adapter never switches); `auto` keeps the adapter's default, dirty tracking on
-/// with automatic switching, which is what the benchmark measured before this option.
-/// Dirty tracking should not change the bytes on the wire, only how much state is scanned.
+/// `on` (the default, as the adapter's) and `off` fix the setting for the whole run. The
+/// adapter no longer switches it (the auto switch was removed), so the former `auto` mode is
+/// gone and an error. Dirty tracking should not change the bytes on the wire, only how much
+/// state is scanned.
 enum DirtyTrackingMode: String, CaseIterable {
-    case auto
     case on
     case off
 
-    /// The transport environment keys this mode sets, read by every `TransportAdapter` the
-    /// benchmark constructs. They mirror `TransportEnvKeys`, which is internal to the transport
-    /// module. The environment, not the `enableDirtyTracking:` argument, because the adapter's
-    /// auto switch would otherwise turn dirty tracking back on mid-run.
+    /// The transport environment key this mode sets, read by every `TransportAdapter` the
+    /// benchmark constructs. It mirrors `TransportEnvKeys`, which is internal to the transport
+    /// module.
     static let enableKey = "ENABLE_DIRTY_TRACKING"
+    /// The removed auto switch's key. The benchmark never sets it; the recorded environment
+    /// keeps it, so a run where the shell set it shows that (the adapter warns and ignores it).
     static let autoKey = "AUTO_DIRTY_TRACKING"
     /// Set by `EncodingBenchmark.main()` so results can report the mode.
     static let modeKey = "ENCODING_BENCHMARK_DIRTY_TRACKING"
 
     /// Applies the mode to this process's environment, before any adapter exists.
     func apply() {
-        switch self {
-        case .auto:
-            break
-        case .on, .off:
-            setenv(Self.enableKey, self == .on ? "true" : "false", 1)
-            setenv(Self.autoKey, "false", 1)
-        }
+        setenv(Self.enableKey, self == .on ? "true" : "false", 1)
         setenv(Self.modeKey, rawValue, 1)
     }
 
     /// The mode `apply()` set, for result metadata.
     static var current: String {
-        EnvHelpers.getEnvString(key: modeKey, defaultValue: DirtyTrackingMode.auto.rawValue)
+        EnvHelpers.getEnvString(key: modeKey, defaultValue: DirtyTrackingMode.on.rawValue)
     }
 }
 
@@ -193,7 +187,7 @@ enum GameType: String, CaseIterable {
 struct BenchmarkConfig {
     var format: EncodingFormat = .messagepackPathHash
     var syncStrategy: SyncStrategy = .delta
-    var dirtyTracking: DirtyTrackingMode = .auto
+    var dirtyTracking: DirtyTrackingMode = .on
     /// nil without `--dynamic-key-compression`: the environment's setting applies.
     var dynamicKeyCompression: DynamicKeyCompressionMode?
     /// nil without `--path-index`: the environment's setting applies.
@@ -336,7 +330,11 @@ enum ArgumentParser {
         case "--dirty-tracking":
             guard i + 1 < args.count, let mode = DirtyTrackingMode(rawValue: args[i + 1]) else {
                 let value = i + 1 < args.count ? args[i + 1] : "nothing"
-                print("Invalid --dirty-tracking value: \(value) (expected on, off or auto)")
+                if value == "auto" {
+                    print("Invalid --dirty-tracking value: auto (the auto switch was removed; use on or off)")
+                } else {
+                    print("Invalid --dirty-tracking value: \(value) (expected on or off)")
+                }
                 exit(1)
             }
             config.dirtyTracking = mode
@@ -609,9 +607,8 @@ enum ArgumentParser {
                               measured ticks from --iterations, after --hash-warmup <n> ticks
                               (default 200). Release builds only.
       --sync-strategy <s>     Sync strategy: delta (default) or full-snapshot (send full view every sync)
-      --dirty-tracking <m>    on, off or auto (default: auto). on/off fix dirty tracking for the run
-                              (auto switching off); auto keeps the adapter default (on, switching
-                              automatically). Bytes should match across modes; compare times only
+      --dirty-tracking <m>    on or off (default: on, as the adapter's): dirty tracking for the
+                              whole run. Bytes should match across modes; compare times only
                               from -c release builds.
       --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
                               sends dynamic keys as full strings instead of table slots; only
