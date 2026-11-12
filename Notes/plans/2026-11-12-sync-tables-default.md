@@ -178,7 +178,7 @@ Each item below needs its evidence in the PR:
    - **Recording on:** its cost is reported.
    - **Drain:** the non-sleeping drain on both sides.
    - **Attribution pair, reported, not gating.** Base against head on default settings mixes three changes: the tables and leaf flip, the per-sync metric going away, and the dirty mode (base's Hero Defense switches off at about sync 35; head stays on). One extra pair on cap100 through the router isolates the flip: base with `AUTO_DIRTY_TRACKING=false ENABLE_DIRTY_TRACKING=true` (dirty on, no metric) against head with its defaults.
-   - **Dirty on against off, on head, reported:** cap100 and cap500-idle, `--dirty-tracking on` against `off`. That is the evidence that a fixed "on" costs nothing on a high-change land, and it is what section 5's FAQ wording follows.
+   - **Dirty on against off, on head, reported:** cap100 and cap500-idle, `--dirty-tracking on` against `off`. It tests whether a fixed "on" costs anything on a high-change land, and section 5's FAQ wording follows it. If "off" is cheaper beyond noise on cap100, the default stays "on" (the maintainer's decision), the FAQ says when "off" is cheaper, and Main takes the number to the maintainer.
 2. **Received streams equal.**
    - Per-session digests from `Examples/GameDemo/scripts/capture-digest.py` (#515) must be equal between base and head for every land type the benchmark can capture: hero-defense and visibility-test.
    - The other land types (card-game, cookie, counter, the reevaluation monitor) get in-process per-recipient frame-identity cells with the tables on and off, in all three encodings, as `SyncTablesFrameIdentityTests` does for the two above.
