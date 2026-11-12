@@ -190,7 +190,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ENABLE_DIRTY_TRACKING` | Bool | init param | Enable dirty-field tracking for smaller diffs; disable for high-update-ratio scenarios |
+| `ENABLE_DIRTY_TRACKING` | Bool | init param | Enable dirty-field tracking for smaller diffs; on by default (`fromEnvironment`). Whether off is faster depends on the land (see the [FAQ](../FAQ.md)) |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | Use one-pass snapshot extraction; set to `false` for legacy separate broadcast + per-player path |
 | `USE_SYNC_TABLES` | Bool | true | Diff broadcast fields on the typed sync tables instead of snapshots (delta strategy only), the default path. The frames are the same bytes either way. `false` opts out to the snapshot diff, a fallback to be removed; row addressing turns the tables on regardless. See [Sync](../core/sync.md#rules-for-synced-value-types) for the rules a synced value type must follow |
 | `TYPED_LEAF_VALUES` | Bool | true | On the typed sync tables, a changed field of a built-in leaf type (numbers, `Bool`, `String`, the ID types, the DeterministicMath atomic types and their optionals) is converted by its typed form instead of the general conversion. It applies wherever the tables are in effect (`USE_SYNC_TABLES`, or row addressing, which turns them on), and is ignored elsewhere. The frames are the same bytes either way. `false` opts out |
