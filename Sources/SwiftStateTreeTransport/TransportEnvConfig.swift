@@ -63,6 +63,12 @@ public struct TransportEnvConfig: Sendable {
     /// test run can be switched from outside; set the property to pin one side.
     package var useSyncTables = TransportEnvConfig.useSyncTablesFromEnvironment
 
+    /// On the typed sync tables, the change-object metric takes each root dictionary of nodes from
+    /// its entry count instead of converting it (`SyncTableBroadcastDiff.metricNodeMapEntries`).
+    /// The metric's numbers are the same either way. Off is the full-snapshot computation, kept
+    /// as the tests' oracle; no environment variable sets it.
+    package var changeMetricsFromRows = true
+
     /// `useSyncTables`, for diagnostics and equivalence tests outside this package (a test that
     /// runs one script on both sides in one process). `USE_SYNC_TABLES` is the supported switch.
     /// An adapter reads its config once, when it is built: set this on the config before passing
