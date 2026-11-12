@@ -18,7 +18,7 @@
 
 - **LandKeeperProtocol**: 抽象 `LandKeeper` 的操作
 - **LandManagerProtocol**: 抽象 `LandManager` 的操作
-- **DistributedActorSystemProtocol**: 抽象 distributed actor system
+- **DistributedActorSystemProtocol**: 抽象 distributed actor system（已移除：未被使用的預留 public API）
 
 ### 2. Sendable 和 Codable 要求
 
@@ -206,7 +206,7 @@ func badMethod(closure: () -> Void)  // Closure 不是 Sendable
 - ✅ **MatchmakingServiceProtocol**: 定義了統一的介面
 - ✅ **LandID**: 結構化的 ID 類型
 - ✅ **Sendable/Codable 要求**: 所有通訊介面都符合要求
-- ✅ **DistributedActorSystemProtocol**: 預留的協議定義
+- ~~**DistributedActorSystemProtocol**: 預留的協議定義~~（已移除：框架範圍是單一 server 行程，跨 server 走容器／IPC）
 
 ### 待實作（未來）
 
