@@ -135,7 +135,9 @@ A profile at f9afa924 (Mac, release, with `TYPED_LEAF_VALUES=true`, which isn't 
 - **Regression bar**: on any cell, B's mean syncMs above A's by more than max(2 %, that cell's base-vs-base spread) stops the PR.
 - **Correctness by frame digests**:
   - One capture pass per side per cell, outside the timed runs: the same command with `--iterations 300 --capture-views <dir> --capture-rooms 1`.
-  - The digest is `tail -n +2 <dir>/<run>/room-0.ndjson | shasum -a 256`. The header line is skipped because it records the commit; the rest holds every frame (base64) and every projection per sync.
+  - The digest covers `<dir>/<run>/room-0.ndjson` without its header line, which records the commit. The rest holds every frame (base64) and every projection, per sync.
+  - Within one sync, frames to different sessions are written in the order they were sent, and that order varies from run to run. So the digest takes each sync's frames grouped by target, sorted by target, each target's frames in their own order, plus the projections. It is a SHA-256 of that JSON, written with sorted keys.
+  - A whole-file hash isn't deterministic: on the Mac, two runs of the same binary differed only in that order, with every frame's bytes equal.
   - A-vs-A first, to show the capture is deterministic, then A vs B. Each cell's digests must be equal.
   - Bytes per sync aren't the check: they are integer-divided, so equal counts don't mean equal bytes.
 
