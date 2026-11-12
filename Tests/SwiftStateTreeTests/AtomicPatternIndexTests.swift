@@ -264,6 +264,13 @@ private struct PatternIndexScript {
             }
         }
         precondition(drops.count == 0)
+        // Adds, built by hand (the diff sends sets): an atomic value added on its own, and one
+        // added with a scalar of the same parent, which field merge sends as one merged add.
+        frames.append(("adds at atomic paths, plain and merged with a scalar", .diff([
+            StatePatch(path: "/target", operation: .add(try p(3, 4).toSnapshotValue())),
+            StatePatch(path: "/units/position/hp", operation: .add(.int(5))),
+            StatePatch(path: "/units/position/position", operation: .add(try p(6, 7).toSnapshotValue())),
+        ])))
         self.frames = frames
     }
 
@@ -327,7 +334,7 @@ struct AtomicPatternIndexFrameTests {
         for positional in [true, false] {
             let with = script.encoder(json: frameCase.json, positional: positional, rows: frameCase.rows, index: true)
             let without = script.encoder(json: frameCase.json, positional: positional, rows: frameCase.rows, index: false)
-            var mergedEntries = 0
+            var mergedEntries = 0, mergedAdds = 0
             for frame in script.frames {
                 let update = frameCase.carried ? frame.update : withoutSplits(frame.update)
                 // Two recipients in a row: the second takes the first's splits (the frame cache).
@@ -335,12 +342,17 @@ struct AtomicPatternIndexFrameTests {
                     let expected = try without.encode(update: update, landID: "pattern-index", playerID: player)
                     let actual = Result { try with.encode(update: update, landID: "pattern-index", playerID: player) }
                     #expect((try? actual.get()) == expected, "\(frameCase.testDescription), positional \(positional): \(frame.name), \(player)")
-                    if frameCase.json { mergedEntries += try jsonOps(expected).filter { $0 == MergedPatchOpcode.set.rawValue }.count }
+                    if frameCase.json {
+                        let ops = try jsonOps(expected)
+                        mergedEntries += ops.filter { $0 == MergedPatchOpcode.set.rawValue }.count
+                        mergedAdds += ops.filter { $0 == MergedPatchOpcode.add.rawValue }.count
+                    }
                 }
             }
             if frameCase.json && !frameCase.rows {
                 // The script merges an atomic field with a scalar of one parent.
                 #expect(mergedEntries > 0, "no merged entry in \(frameCase.testDescription)")
+                #expect(mergedAdds > 0, "no merged add in \(frameCase.testDescription)")
             }
         }
     }
