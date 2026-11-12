@@ -46,7 +46,7 @@ A shortcut that skips the split is out of scope. The split is the per-patch cost
 
 **Making the trigger and `n` exact without converting:**
 - **The trigger.** The extraction throws for `F` exactly when some entry of `read(state)` fails to convert. The table's diff converts only the rows it visits, so "the diff dropped `F`" is not the same trigger. Converting every entry to test it would be the very cost this PR removes, so the trigger comes from elsewhere:
-  - **(a)** Use the diff's own `ExtractionDrops` entry for `F`, valid only when conversion is a pure function of the value. A row the diff didn't visit converted when it was last diffed, and an unchanged value converts the same way again. The tables already rest on this assumption: last-sent is the diff's baseline, and a row isn't converted again until it changes. Under it, a pure conversion can't throw on a row the diff doesn't revisit. Only an impure one can, for example one that throws from sync k on an unchanged value. There (a) and today really differ: today takes last-sent or absent, and (a) takes the live `n`. One test documents that divergence: it asserts the known difference and names the assumption. It is not an equality case.
+  - **(a)** Use the diff's own `ExtractionDrops` entry for `F`, valid only when conversion is a pure function of the value. A row the diff didn't visit converted when it was last diffed, and an unchanged value converts the same way again. The tables already rest on this assumption: last-sent is the diff's baseline, and a row isn't converted again until it changes. Under it, a pure conversion can't throw on a row the diff doesn't revisit. Only an impure one can, for example one that throws from sync k on an unchanged value. There (a) and today really differ: today takes last-sent or absent, and (a) takes the live `n`. No test builds that case, since it needs an impure conversion; this paragraph states the assumption instead.
   - **(b)** If that assumption is rejected in review, the fallback is to convert `F` whole on a sampled sync only. That keeps today's cost for `F` on those syncs.
 
   Chosen: (a).
@@ -85,7 +85,10 @@ Hero Defense's other broadcast fields are `base` (a node) and `score` (an `Int`)
 - the new one, from section 2 for the node map fields and section 3 for the rest.
 
 They must be equal on every sync. Coverage:
-- **States:** the step-2 differential's states: `HeroDefenseState`, `ShapeMatrixState`, `VisibilityTestState`, and the `NestedNodePolicyTests` and `FullStateHashTests` states.
+- **States:**
+  - the land-cell harness's nested-policy state: node maps by `String`, `PlayerID` and `Int`, and two levels deep, beside a node, an optional node and a fallback field;
+  - a metric state for the explicit cases below.
+  - Hero Defense is outside the test targets. Its flip syncs are compared in the host A/B, and debug builds check one metric sync in 16 against the full snapshot.
 - **Modes:** dirty tracking on and off.
 - **Row cases:** removing every row of a map (`n` goes to 0), a row removed and another created in one sync, and keys in two Unicode spellings (as the step-2 differential does).
 - **Drop cases:** a field whose conversion throws, and a row repair (`droppingRows`), which removes patches before the metric.
@@ -99,7 +102,6 @@ They must be equal on every sync. Coverage:
 - **Throws:**
   - before `F`'s first seed (absent, +0);
   - after it (present from last-sent);
-  - the documented divergence (section 2, (a)): an impure conversion that throws from sync k on an unchanged row. The test asserts the known difference, not equality.
 - **First-sync and resync views:** a view with two rows, with `F` in the mode and out of it.
 - **Dirty mode transitions** (#416): on, off and on again within a sequence.
 
