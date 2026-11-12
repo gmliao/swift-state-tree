@@ -1,6 +1,6 @@
 # Sync tables by default, and the auto dirty switch removed (step 2, PR 4)
 
-Status: open (rev 1, for review). PR 4 of [Flat storage step 2](2026-11-10-flat-storage-step2.md) (§7). Two choices wait on the maintainer and are marked **provisional** where they apply: what flips with the tables (section 2), and what happens to the auto switch's public API (section 4).
+Status: open (rev 1, for review). PR 4 of [Flat storage step 2](2026-11-10-flat-storage-step2.md) (§7). What flips with the tables (section 2) was decided by the maintainer on 2026-11-12. What happens to the auto switch's public API (section 4) waits on the maintainer and is marked **provisional**.
 
 ## 0. Scope
 
@@ -8,7 +8,10 @@ Status: open (rev 1, for review). PR 4 of [Flat storage step 2](2026-11-10-flat-
 - The auto dirty-tracking switch and the change-object metric that feeds it are removed.
 - Today's snapshot diff stays reachable as an explicit opt-out (`USE_SYNC_TABLES=false`). It is documented as a fallback to be removed later, with no date.
 - **Not in this plan:**
-  - Row addressing's default (its plan's PR F). It changes the wire and requires clients to declare the feature. It is not promised here.
+  - Row addressing's default (its plan's PR F). It changes the wire and requires clients to declare the feature. F follows as a separate PR right after this one:
+    - the server default on;
+    - ws-loadtest declaring the feature by default, with an opt-out flag for comparability;
+    - its gate is this PR's plus decoded client state equal to the old format's.
   - Per-player fields on the tables (#514).
   - Any later flattening step. Flattening ends with this PR and #514.
 - **Lessons consulted:**
@@ -44,14 +47,14 @@ The reasons come from `SyncTables.swift:68-73` and `:186-200`. A state with no t
 
 **Per-player fields** (`.perPlayer`, `.perPlayerSlice`, `.custom`) aren't in the broadcast tables. They take today's per-player snapshot diff against `lastPerPlayerSnapshots`, with or without the tables. That stays so until #514.
 
-## 2. What flips (provisional: maintainer)
+## 2. What flips (decided)
 
-**Provisional choice (a):** `USE_SYNC_TABLES` and `TYPED_LEAF_VALUES` (#513) both flip to on, and each keeps its opt-out (`=false`).
+**Decided (the maintainer, 2026-11-12, choice (a)):** `USE_SYNC_TABLES` and `TYPED_LEAF_VALUES` (#513) both flip to on, and each keeps its opt-out (`=false`).
 - Both are byte-identical to today's path, and neither changes what a client receives.
 - Their gains are already attributed by their own A/Bs (#465/#509 for the tables, #513 for leaf values).
 - **Rejected:**
   - (b) flipping `TYPED_LEAF_VALUES` later in its own PR: one more A/B for a gain already measured;
-  - (c) folding in row addressing's flip F, which changes the wire.
+  - (c) folding in row addressing's flip F, which changes the wire. F is its own PR, after this one.
 
 **After the flip,** for an adapter on `.delta`:
 - **Broadcast fields:**
@@ -145,7 +148,7 @@ Both languages in the same PR:
 Each item below needs its evidence in the PR:
 
 1. **Host A/B, base (main before this PR) against head, default settings on both sides.** This uses #392's flip gate as decided on 2026-11-11 (no 50 % bar).
-   - **Cells:** cap100 through the router, cap100 without it, the visibility land's cells, and cap500-idle. EncodingBenchmark has no idle-monster knob today (#513 skipped that cell). The knob comes first, as a separate Examples change, or the cell is reported as skipped; Main decides which.
+   - **Cells:** cap100 through the router, cap100 without it, the visibility land's cells, and cap500-idle. EncodingBenchmark gains the idle-monster knob first, as a separate Examples change on `main` (#513 had to skip that cell without it).
    - **No regression:** #373's bounds on sync time.
    - **Outside the sync:** a delta beyond the code-layout band of #517 (±3–4 %) needs an instructions check (`perf stat`, user mode only) before it counts as a regression or is cleared.
    - **Tick time** is reported next to sync time.
