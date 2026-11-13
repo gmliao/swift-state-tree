@@ -1,8 +1,21 @@
 # A sync failure ends the unit it corrupted (#535)
 
-**Status:** rev 1, plan only. No code before this plan is reviewed.
-- Read at `main` 9755a625. TA = `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, SE = `Sources/SwiftStateTree/Sync/SyncEngine.swift`, ST = `Sources/SwiftStateTree/Sync/SyncTables.swift`, LK = `Sources/SwiftStateTree/Runtime/LandKeeper.swift`.
-- The sweep on #535 was read at 9bf7df61. Since then only TA moved: about +11 lines after TA 1420. SE, ST and LK are unchanged. Line numbers below are at 9755a625.
+**Status:** rev 2, plan only. No code before this plan is reviewed.
+- Read at `main` 9755a625. TA = `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, SE = `Sources/SwiftStateTree/Sync/SyncEngine.swift`, ST = `Sources/SwiftStateTree/Sync/SyncTables.swift`, LK = `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, LM = `Sources/SwiftStateTreeTransport/LandManager.swift`.
+- The sweep on #535 was read at 9bf7df61; since then only TA moved (about +11 lines after TA 1420).
+- Rev 1 (28adb8e9) got a no-GO: 10 must-fix and 8 should. Rev 2 answers them:
+  - M1: §1 and D2c. `allRecipients` is now a policy for the maintainer, not detection. It counts unique players and names whether joiners count. A structured type cause is the land before any per-recipient test.
+  - M2: Appendix A.2. Precedence across all of a frame's failures (the broadcast scope wins), and a whole-frame fallback that doesn't call an encoder-wide defect per-recipient.
+  - M3: Appendix A.3. Per-player decisions are staged in the plan and applied at commit, after the land verdict.
+  - M4: §3.4. The teardown is keeper-owned and doesn't depend on the transport.
+  - M5: §3.2 and §3.3. Every waiter is listed with how it is settled, and so is every resume-side check.
+  - M6: §3.2 and §3.4. The cause is set once, in the failing turn, through the drain flag. No `LandMode` case is added. OnLeave is under D4.
+  - M7: §3.4. The epoch check and the detach happen in one manager segment. The close code follows the keeper's cause.
+  - M8: §3.7 and D5. The contract is "mutable access", with its coverage and gaps listed. The batch stops and the tick handler is skipped.
+  - M9: §4. `SchemaExtractor` calls the shared function; the empty-collection claim is corrected; colliding keys are detected in the live conversion (D8); the cache is specified.
+  - M10: §3.2 and D9. The record holds a terminal position (sequence, pass and stage), and replay stops there.
+  - Shoulds: rows 15, 17 and 18 in §2; #536's per-player staged entry in Appendix A.3; PR 1's interim in §5; D7's rationale; §6; the holds in §8.
+- **The main change from rev 1 (§1, D2a):** in the code at 9755a625, no failure is shown to depend on the recipient in a way that a rejoin repairs. This plan therefore recommends that every sync conversion or encode failure ends the land. The per-session path (4015 and its bound) moves to Appendix A as the alternative, fully specified, for the maintainer to choose.
 
 **Inputs:**
 - #535's body: a sync conversion or encode failure is no longer absorbed.
@@ -16,7 +29,11 @@
 | A broadcast encode fails, or the whole frame encoder fails | every recipient | close the land |
 | A handler throws after partial state writes (#87) | the land's state | close the land |
 
-Two notes come with the decision. Closing a session must not loop: a repeat after rejoining escalates to the land. A malformed client input is rejected as today, and nothing else ends.
+The decision adds two notes. Closing a session must not loop: a repeat after rejoining escalates to the land. A malformed client input is rejected as today, and nothing else ends.
+
+**Settled since rev 1 (maintainer, relayed 2026-11-13):**
+- #521 D9 = (b): an event encode failure always ends the land.
+- The per-session row keeps only failures shown to depend on the recipient. If none is left after that test, the 4015 path can shrink to nothing.
 
 **Related:**
 - #532: total per-player frame failure.
@@ -24,88 +41,79 @@ Two notes come with the decision. Closing a session must not loop: a repeat afte
 - #531: a second session of one player.
 - #102, #511, #512: the land stop and its OnLeave.
 - #387: server-originated turn inputs.
-- #521: typed events and actions. Its plan, `2026-11-13-typed-events-actions.md` on its branch, uses this plan's stop and session-close mechanism for EV4, EV5 and EV7 (§3.6).
+- #536: per-player sync tables.
+- #521: typed events and actions. Its plan uses this plan's stop for EV4 and EV7 (§3.6) and owns the replay loading skips (its A5).
 
 ## 0. Summary
 
-- **What a failure ends.** Every failure is classified by where its input is computed (§1):
-  - Once for all recipients: the land ends.
-  - Per recipient: that player's sessions close with a new code, 4015 `viewFailed`.
-  - The bound: a player's second close in the same land instance ends the land. So does a plan in which every recipient fails. No success resets it.
-- **How the land ends (§3).** In the turn where the failure is seen, the keeper marks the land failed. From then on it applies no input and sends nothing, and that change is made only in a turn. The teardown runs outside the turn on the existing stop path (#102), with a new code, 4016 `landFailed`.
-  - On the legacy (not in-turn) sync path, the adapter stops sending at once. It submits the failure as a turn input with a ticket, as #387 does.
-- **Registration (§4).** The type checks run at every entry point. `LandKeeper.ensureInitialized` is the backstop for keepers built directly.
-- **The sweep (§2).** It gives a verdict on each of the 19 rows and the two replay loading skips, with the PR that changes each.
-- **Delivery.** Five PRs (§7). The interim rule (§5) applies until each lands.
+- **Every sync failure ends the land (§1, D2a recommended).** That covers a conversion, a diff, a frame encode, an event encode, a sync plan past its bound, and a handler write before a throw. The land closes with a new code, 4016 `landFailed`. Types knowable at registration are refused there (§4).
+- **The failing turn (§3.2).** The keeper marks the land failed through the existing drain flag, with cause `.failed`, in the turn where the failure is seen. That one segment closes intake for every existing `isDraining` check and settles every waiter. The rest of the batch and the tick handler don't run.
+- **The adapter (§3.3).** It stops sending in the segment where it sees the failure. After every await it checks a ticket before acting. On the legacy sync path, it hands the failure to the keeper as a turn input with a ticket (#387).
+- **The teardown (§3.4).** It is keeper-owned: it works with no transport, a custom one, or an adapter without a host. With a host, the stop path (#102) runs with an epoch-conditioned detach.
+- **The sweep (§2).** The 19 rows, each with a verdict and the PR that changes it. The replay loading skips belong to #521's A5.
+- **Delivery.** Four PRs (§7), with an interim rule (§5) until each lands.
 
-## 1. What makes a failure per-recipient
+## 1. Is any failure genuinely per-recipient?
 
-#521's finding applies to every row. An event value is encoded once, before fan-out, so its failure is a fact about the value, and that is land-wide. A failure is **per-recipient** only if the input that failed was computed for that recipient. At 9755a625 these inputs are per-recipient:
+#521's finding applies to every row. An event value is encoded once, before fan-out, so its failure is a fact about the value, and that is land-wide. The maintainer's direction: the per-session path keeps only failures shown to depend on the recipient. Each candidate at 9755a625:
 
-- **(P1) A per-player field's value in that player's view**: the output of the field's filter or policy for that player (`extractPerPlayerSnapshot`, SE 1456; `.perPlayer(playerID)` scope). A value-caused throw can be specific to one player's slice. Examples: a non-finite number under `JSONEncoder` in an entity only that player sees, or a user `toSnapshotValue` that throws on a value.
-- **(P2) The recipient's frame encode state**: its player slot, its `.perPlayer` key scope, its resync flag and its sync sequence. None of these throws in today's encoders. The only explicit encoder throw is `pathNotInSchema`, plus the serializer's value errors. Today only `syncEncodeFaultForTesting` produces #532's total failure. The decision table still names #532 a session failure, and a future encoder or header field could reach it, so P2 is per-recipient.
+**(P1) A per-player field's value in one player's view.** This is the output of the field's filter or policy for that player (`extractPerPlayerSnapshot`, SE 1456). The input does differ per recipient: which entities a player sees, or a value the policy derives for that player. But the view is a deterministic function of the land's state and the player. A rejoin recomputes the same view from the same state and fails again, unless the state changed in between.
+- So the failure is per-recipient in *who* hits it.
+- But it isn't repaired by what the session close offers. The failing value is in the land's state, or is derived from it, and the next player to see it fails too.
+- A session close only delays the land's end by one rejoin, and meanwhile the land keeps running with a state some views can't carry.
 
-Everything else is **computed once**, and its failure ends the land:
-- **Broadcast fields**: their conversion, table diff, seed and encode. `SyncTableBroadcastDiff` is broadcast-only (ST 1485), so every ST row is here.
-- The merged opcode 107 broadcast frame.
-- Every event: encoded once, before fan-out (#521 §1.1).
-- A broadcast-only update: the same update for every recipient, and only P2 differs.
-- A patch path outside the schema (`pathNotInSchema`): the schema is shared.
-- A sync plan that throws as a whole.
+**(P2) The recipient's frame encode state**: its player slot, `.perPlayer` key scope, resync flag and sync sequence.
+- None of these throws in the shipped encoders. The only explicit encoder throw is `pathNotInSchema` (OpcodeMessagePack…:435, OpcodeJSON…:423), and that is shared schema. The serializer's value errors are P1 or broadcast.
+- Today only `syncEncodeFaultForTesting` produces #532's total per-player failure.
+- A custom encoder (public, TA 1168, 1208) could fail per recipient. Nothing in the library shows one does, and the plan can't distinguish a per-recipient custom-encoder defect from an encoder-wide one by a single throw.
 
-**Two refinements:**
+**Structured type causes** are type facts whatever the scope:
+- `classRefusal`;
+- `SyncError.unsupportedValue` "Unsupported type";
+- `SyncError.unsupportedKey`;
+- the #179 player-dependent node refusal;
+- colliding keys (§4).
 
-- **A frame that mixes scopes.** Combined frames (json, opcodeJsonArray), late-join views, first views and resync views mix both scopes. A failing patch in them is classified by its root field's policy:
-  - a broadcast root fails the same way for every recipient, so it ends the land;
-  - a per-player root is P1.
-  The adapter knows each root's policy (`slotFields` and the schema's sync policy).
+**Conclusion.** No failure in the shipped code is shown to depend on the recipient in a way a rejoin repairs. The plan recommends **D2a (a): no per-session path.** Every sync conversion or encode failure ends the land. The 4015 code, the rejoin bound, the `allRecipients` policy, the scope precedence and the staged closes aren't needed. Appendix A specifies them in full, in case the maintainer keeps the per-session row (D2a (b)). If a per-recipient source appears later (a custom encoder with per-session state, or per-player tables that encode per recipient), Appendix A is the design to add.
 
-- **A type-caused P1 throw.** A P1 failure caused by the field's type recurs for every player, because the type is shared. A single throw can't tell a type cause from a value cause. Two rules catch the type case without guessing (§3.4):
-  - in one plan, every recipient fails, with at least two recipients;
-  - the rejoin bound.
-
-  A type error knowable from the type alone is refused at registration (§4) and never reaches run time.
+**What stays recoverable.** These paths restore fully correct state and are kept:
+- a sync plan that throws as a whole, within its bound: it sent and committed nothing (row 15);
+- the fallbacks that produce the same output by another route (rows 2, 5, 7);
+- diagnostics (rows 6's oracle path, 18).
 
 ## 2. The sweep, row by row
 
-Each row has a verdict, and the PR that changes it (§7). Verdicts:
+Verdicts:
 - **land**: ends the land;
-- **session**: closes the player's sessions, under the bound;
-- **by scope**: classified per §1;
-- **stays**: the path restores fully correct state, and it is kept.
+- **stays**: the path restores fully correct state, and is kept.
+
+Under D2a (b), the rows marked † are classified by Appendix A instead.
 
 | # | Site at 9755a625 | Today | Verdict | PR |
 |---|---|---|---|---|
-| 1 | SE 1405-1431 `extractDroppingThrowingFields` | a field whose conversion throws is dropped, and its cached value is kept | by scope: `.broadcast` → land; `.perPlayer(p)` → session (P1) | 2 |
-| 2 | SE 1484-1500 `extractWithSnapshotForSync` | `try? snapshotForSync`, falling back to per-field extraction | stays (a route; its drops are row 1) | none |
-| 3 | SE 1508-1534 `lateJoinSnapshot` (dropping); TA 4640-4660 | a full view without the fields that don't convert, filled from caches | by scope of each dropped field. The fill from caches goes: a view is sent whole or not at all | 2 |
+| 1 | SE 1405-1431 `extractDroppingThrowingFields` | a field whose conversion throws is dropped, and its cached value is kept | land† | 2 |
+| 2 | SE 1484-1500 `extractWithSnapshotForSync` | `try? snapshotForSync`, falling back to per-field extraction | stays: a route, and its drops are row 1. The fallback must surface the per-field error to row 1, not swallow it | none |
+| 3 | SE 1508-1534 `lateJoinSnapshot` (dropping); TA 4640-4660 | a full view without the fields that don't convert, filled from caches | land†. The cache fill goes | 2 |
 | 4 | ST 1639-1662 `diff`, ST 1521-1535 `stageSeed` | a broadcast slot whose diff or seed throws is dropped | land | 2 |
 | 5 | ST 559-590 `SyncEquatableDiffer.diff` | a `.standard` leaf whose convert throws falls back to the snapshot diff, with a release log | stays: the same output as the snapshot diff, whose own throw is row 4 | none |
-| 6 | ST 1142-1144, 1194-1196 `lastSentSnapshot` | a last-sent value that no longer converts reads nil | view path (TA 4655): land. A value that converted when sent and doesn't now means conversion isn't deterministic, and the view would miss a field. Oracle path (ST 1555): stays, as diagnostics | 2 |
+| 6 | ST 1142-1144, 1194-1196 `lastSentSnapshot` | a last-sent value that no longer converts reads nil | view path (TA 4655): land; the view would miss a field. Oracle path (ST 1555): stays, as diagnostics | 2 |
 | 7 | ST 1612-1620 `viewPatches` | `try?`: a field whose rows don't convert keeps today's patches | stays: today's patches carry the same field, and their own conversion is rows 1 and 3 | none |
-| 8 | TA 4453-4463, 4603-4612 (row drop and remake) | rows whose patches don't encode are dropped from the tables, and the plan is remade with key scopes reset | land, for a broadcast row. The **leak** goes too (below). The remake, `planFailedRows`, `rowRetryFields` and the repair result go with it | 2 |
-| 9 | TA 4745-4813 `planMergedBroadcastFrame` | re-encode dropping; a total failure unstages the broadcast tables, sets `leavesKeyTablesAhead`, and sends the events as 103 frames | land (drop or total) | 1 |
-| 10 | TA 4897-4958 `planPerPlayerFrames` | re-encode dropping; on nil, the player's staged cache is dropped and nothing is sent (#532) | 107 per-player frame: session, dropped patch (P1) or total (P2). Combined frame: by scope of the failing patch's root; total → session (P2) | 1 (total), 2 (patches) |
-| 11 | TA 4929-4938, 3574-3586, 3633-3635, 3686-3721 (resync and first-view retry, 4012) | not sent, retried, closed 4012 after `snapshotEncodeFailureLimit` (3) | by scope. A per-player failure is a session failure at once, under the bound, merged with row 10's rule (D3) | 2 |
-| 12 | TA 5473-5535 broadcast-only frames | re-encode dropping per player; on nil, skip | land: the same update for all, and only P2 differs. A total failure for one recipient only is P2 → session | 1 |
-| 13 | TA 5764-5830 `planFirstSync` | re-encode dropping; even empty fails → `unencodableFirstViews` | by scope, as row 3. With row addressing on, the standalone first sync is refused anyway (TA 5767-5771) | 2 |
-| 14 | TA 5652-5689 `encodeDroppingUnencodablePatches` | each patch tried alone; `pathNotInSchema` is counted, others dropped (or the row) | replaced by a classifier: it finds the first failing patch and returns its scope and error, and drops nothing. `pathNotInSchema` → land (D6) | 1 (helper), 2 (callers) |
-| 15 | TA 3287-3331, 3200-3205; in-turn TA 2896-2917 → LK 4423-4436 | a plan that throws commits nothing; follow-ups bounded at 3 without periodic sync, **unbounded** with it | stays while bounded: a plan that threw sent nothing, so a later success is fully correct. New bound for both: `syncFailedPlanFollowUpLimit` (3) consecutive failed plans → land | 1 |
-| 16 | TA 5706-5761 `_syncStateForNewPlayer` | logged; follow-up. Row addressing in effect: closes 1011 | the joiner's view is classified as row 13. A plan throw stays row 15. 1011 is unchanged (an invariant, not a sync failure) | 2 |
-| 17 | TA 3127-3138 `appendEventFrames` (`try? pack`), TA 2792-2795 (body nil at enqueue) | the event is skipped | land (encoded once, §1). The same rule as #521 EV4 | 1 |
-| 18 | TA 3989-3993 `canonicalEvent` | nil makes the digest's events scope unverifiable | stays: diagnostics, not client state. Row 17 ends the land first for any event that doesn't encode | none |
-| 19 | TA 202-209 `leavesKeyTablesAhead`, set at 4780, 4950, 5482, 5524 | the key scopes are reset in the next plan | removed: every path that sets it now ends the session or the land | 1, 2 |
-| R1 | LK 4126-4139 in `runTick` (replay) | an action whose handler isn't found, or isn't `ActionPayload`, gets a warning and `continue` | the tick fails into `recordedPassMismatches` and the run stops failed. LK 4188-4196 and 4217-4224 already do this | 5 |
-| R2 | LK 4251-4256 in `runTick` (replay) | a source read that throws is logged, and the tick runs without its inputs | as R1 | 5 |
+| 8 | TA 4453-4463, 4603-4612 (row drop and remake) | rows whose patches don't encode are dropped from the tables, and the plan is remade with key scopes reset | land. The leak (below) goes, and so do the remake, `planFailedRows`, `rowRetryFields` and the repair result | 2 |
+| 9 | TA 4745-4813 `planMergedBroadcastFrame` | re-encode dropping; a total failure unstages the broadcast tables and sends the events as 103 frames | land (drop or total) | 1 |
+| 10 | TA 4897-4958 `planPerPlayerFrames` | re-encode dropping; on nil the player's staged cache is dropped and nothing is sent (#532) | land† (dropped patch or total) | 1 (total), 2 (patches) |
+| 11 | TA 4929-4938, 3574-3586, 3633-3635, 3686-3721 (resync and first-view retry, 4012) | not sent, retried, closed with 4012 after `snapshotEncodeFailureLimit` (3) | land† (D3). 4012 stays reserved and is no longer sent | 2 |
+| 12 | TA 5473-5535 broadcast-only frames | re-encode dropping per player; on nil, skip | land | 1 |
+| 13 | TA 5764-5830 `planFirstSync` | re-encode dropping; even empty fails → `unencodableFirstViews` | land†. With row addressing on, the standalone first sync is refused anyway (TA 5767-5771) | 2 |
+| 14 | TA 5652-5689 `encodeDroppingUnencodablePatches` | each patch tried alone; `pathNotInSchema` counted, others dropped (or the row) | removed. An encode that throws is a failure; nothing is retried to drop patches. The error goes into the log and `LandFailure.detail`. A diagnostic pass may find the first failing patch for the log only (D6 for `pathNotInSchema`) | 1 (callers in 1), 2 (the rest) |
+| 15 | TA 3287-3331, 3200-3205; in-turn TA 2896-2917 → LK 4423-4436 | a plan that throws commits nothing; ordinary follow-ups are bounded at `syncFailedPlanFollowUpLimit` (3) without periodic sync; past the limit, join-sync turns keep being scheduled with a doubling delay (LK 4427-4434); with periodic sync every tick retries | stays within one bound for both kinds of land. A count of consecutive failed plans, **join-sync attempts included**, ends the land at 3. A committed plan resets it: a plan that threw sent nothing, so a later success is fully correct. The doubling join-sync retry goes away | 1 |
+| 16 | TA 5706-5761 `_syncStateForNewPlayer` | logged, then a follow-up. With row addressing in effect: closed with 1011 | a conversion or encode failure in the joiner's view: as row 13. A plan throw: row 15. 1011 is unchanged (an invariant, not a sync failure) | 2 |
+| 17 | TA 3127-3138 `appendEventFrames` (`try? pack`); TA 2792-2806 (merged body at enqueue) | a frame that fails `pack` is skipped. At enqueue, a nil merged body falls back to a standalone frame (`.sentAlone`) or is `.lost` | land on `pack` failure and on `.lost`. **A nil merged body that is sent alone isn't a loss** and doesn't end the land (#521 D10 removes that attempt). The same rule as #521 EV4 | 1 |
+| 18 | TA 3989-3993 `canonicalEvent` | a payload that doesn't convert makes the digest's events scope unverifiable | stays: diagnostics, not client state. The canonical snapshot conversion and the wire encode are different operations, so neither implies the other | none |
+| 19 | TA 202-209 `leavesKeyTablesAhead`, set at 4780, 4950, 5482, 5524 | the key scopes are reset in the next plan | removed in PR 1. Its four setters are rows 9, 10 (total) and 12, which PR 1 converts | 1 |
 
-**Row 8's leak.** `encodeDroppingUnencodablePatches` adds a row to `planFailedRows` whatever frame it is encoding (TA 5678). A joiner's or unsynced recipient's full view carries broadcast row patches (TA 4689). So a per-recipient encode failure, for example `syncEncodeFaultForTesting(p)`, drops broadcast rows for every recipient. Under this plan a per-recipient failure never touches broadcast state: it closes that player's sessions (§3.4). A broadcast row that fails ends the land.
+**Row 8's leak.** The path is TA 4689 → 5678 → 4603 → 4453, for patches that carry row metadata. `encodeDroppingUnencodablePatches` adds a row to `planFailedRows` whatever frame it encodes. A joiner's or unsynced recipient's full view carries broadcast row patches, so a per-recipient encode failure drops broadcast rows for every recipient. Under this plan the failure ends the land, so no broadcast state is changed on its behalf.
 
-**What else goes.** With rows 8, 9, 10, 12 and 19, these leave the plan and commit paths:
-- the drop counters' "data loss" paths: `droppedUpdates`, `logDroppedUpdatesIfDue`, `ExtractionDrops` as a carry-forward;
-- `encodeDropScopes`;
-- the repair turn.
-
-`ExtractionDrops` stays only as the classifier's report: the first drop, with its scope and field.
+**Replay loading.** LK 4126-4139 and 4251-4256 go to #521's A5 staged batch, per Main. This plan has no PR for them.
 
 ## 3. The mechanism
 
@@ -113,318 +121,432 @@ Each row has a verdict, and the PR that changes it (§7). Verdicts:
 
 ```swift
 /// Why a land was ended by a failure (#535).
-public struct LandFailure: Sendable, Equatable, CustomStringConvertible {
+public struct LandFailure: Error, Sendable, Equatable, CustomStringConvertible {
     public enum Kind: String, Sendable, Codable {
-        case syncConversion   // a broadcast field (or every recipient's per-player field) didn't convert
-        case syncEncode       // a frame computed once didn't encode (107 broadcast, broadcast-only, path outside the schema)
+        case syncConversion   // a synced value didn't convert
+        case syncEncode       // a state frame didn't encode
         case syncPlan         // the sync plan kept throwing past its bound (row 15)
         case eventEncode      // an event didn't encode (row 17; #521 EV4, EV7)
-        case viewRepeat       // a player's view failed again after a viewFailed close (§3.4)
-        case allRecipients    // every recipient (two or more) failed in one plan (§1)
-        case handlerWrite     // a handler threw after writing synced state (#87, §3.7)
+        case handlerWrite     // a handler threw after mutable access to synced state (#87, §3.7)
     }
     public let kind: Kind
-    public let field: String?        // the root field, when known
-    public let playerID: PlayerID?   // viewRepeat
-    public let detail: String        // the error's text
+    public let field: String?     // the root field, when known
+    public let detail: String     // the error's text
+    public let position: LandFailurePosition   // where the land stopped (D9)
+}
+
+/// Where in the land's input stream a failure stopped it (D9).
+public struct LandFailurePosition: Sendable, Equatable, Codable {
+    public enum Stage: String, Sendable, Codable {
+        case input          // while applying the input `sequence`; later inputs weren't applied
+        case tickHandler    // in the tick handler (not used by this plan; reserved for #87 (A))
+        case syncPhase      // after the turn's inputs and tick handler, in its sync phase
+        case eventFlush     // in the legacy event flush after the turn
+    }
+    public let tickId: Int64?
+    public let pass: Int?        // tickless: the pass
+    public let sequence: Int64?  // the input applied when the failure happened, for .input
+    public let stage: Stage
 }
 ```
 
-**`LandDestructionCause` gains `.failed`** (LK 5334). This adds a public enum case: a caller's exhaustive `switch` gets a "switch must be exhaustive" error, and the PR body states that.
+- **`LandDestructionCause` gains `failed`** (LK 5334). This is a public enum case: an exhaustive `switch` breaks, and the PR body says so. The `LandFailure` itself is readable on the keeper as `nonisolated var failure: LandFailure?`, set in the same segment as the cause.
+- **No `LandMode` case** (Review M6). The failure is the drain flag's cause plus a private stored `LandFailure`.
 
-### 3.2 The land fails in a turn
+### 3.2 The failing turn
 
-`LandKeeper.failLand(_ failure: LandFailure)` is private and synchronous, and is called only inside a turn. In one segment it:
-1. Sets `failure` (the first one wins; later ones are logged at debug) and `mode = .failed`.
-2. From then on, input submission is refused:
-   - actions and events get a new `failed` refusal;
-   - `submitServerInput` returns `.refused(.notLive)`;
-   - joins get `JoinError.landShuttingDown`.
-3. The tick schedule is cancelled. Pending inputs are left unapplied: the land's state no longer goes anywhere.
-4. Records the end: the recorder writes the failure into the record's metadata. It isn't an input; replay runs the inputs up to that tick and reports the run as ended by a live failure (D9).
-5. Starts the teardown **outside** the turn: a `Task` that calls `transport.landDidFail(failure)` (§3.3) and holds no keeper state across its awaits.
+`LandKeeper.failLand(_ failure: LandFailure)` is private and synchronous, and is called only inside a turn. It follows `completeShutdownTurn` (LK 4852-4861), which already does this for a shutdown input. In one segment it:
+1. **Stores `failure`**: the first one wins, and later ones are logged at debug.
+2. **Closes intake:** `drainFlag.set(cause: .failed)`. The first cause stays (`DrainFlag.set`, LK 5326), so a later `forceShutdown` can't overwrite it.
+   - From here every existing `isDraining` check refuses. In LK: 1426, 1474, 1649 and 1703 (joins resumed after their awaits), 1805-1870 (the join and leave resolvers), 2439, 2515-2529 (`forceShutdown`), 2980 (`submitServerInput`), 3392, 4060, 4785, 4823 and 5193-5195.
+   - In LM, 373, 427, 475 and 483 count a draining keeper as absent, so a join to the land ID waits for this instance to be dropped, then builds a new one.
+   - The PR lists each site with the test that reaches it.
+3. **Settles every waiter:** `dropPendingInputs(reason: "landFailed")`, `releaseHeldInputsForDrain()` and `resumeShutdownTurnWaiters()`, as the shutdown turn does. `dropPendingInputs` already fails:
+   - `inputTurnWaiters` (LK 628);
+   - legacy pass callers;
+   - tickless action job slots, with `LandInputRejection.landClosed`.
 
-Callers:
-- **In-turn sync**: `applyInTurnSyncResult` on a new `InTurnSyncResult.landFailed(LandFailure)`. The adapter returns it from the synchronous sync phase: it committed nothing and sent no state frame. Events enqueued before the plan in that turn are already in the writer. This adds a public enum case on a public protocol's result; the switch break is named in the PR.
-- **Input application**: `applyPendingItems` on a #87 handler write (§3.7).
-- **Server failures arriving as turn inputs** (§3.3, the legacy path): the turn applies them.
+   Inputs already applied in this turn get their outcome from the turn as today. Three more waiters are added to the settle:
+   - **Action jobs in their resolvers** (abandoned resolver groups, #364): they resume after their awaits and check `isDraining` (LK 1805-1870) before mutating, and their callers get `landClosed`.
+   - **Server inputs in flight:** counted down by the drop.
+   - **The input that failed** (for `.handlerWrite`): its caller gets the handler's error, as today.
+4. **Stops the batch and the tick** (§3.7). The input loop (`applyPendingItems`, LK 3849-3874) breaks after the failing item. `runTick` checks the failure before `handler(&state, ctx)` (LK 4472) and doesn't run it, and it runs no sync phase. Later ticks don't start: the tick loop checks `isDraining`.
+5. **Records the end:** the recorder writes `failure` (with its position) as the record's terminal entry (D9). It isn't an input.
+6. **Starts the teardown outside the turn** (§3.4).
 
-### 3.3 Paths outside a turn
+**Callers:**
+- **In-turn sync.** `applyInTurnSyncResult` is called on a new `InTurnSyncResult.landFailed(LandFailure)`, which the adapter returns from the synchronous sync phase. The sync phase committed nothing and sent no state frame. Events enqueued before it in that turn are already in the writer; they are correct events, sent before the land ended.
+- **Input application**, on `.handlerWrite` (§3.7).
+- **The turn that applies a `landFailure` item** from the legacy path (§3.3).
 
-**The adapter stops at once, in its own state.** In the segment where the adapter sees the failure, it sets its own `landFailure`. From then on:
-- every send path (sync, broadcast-only, events, first sync) returns without sending;
-- every plan returns `.landFailed`.
+### 3.3 The adapter
 
-That is adapter state, so the keeper's rule doesn't bind it, and it closes the window before the keeper's turn.
+**It stops at once, in its own state.**
+- In the segment where it sees a failure, the adapter sets its private `landFailure` and bumps a `GenerationTable` generation for the land's output.
+- From then on, every send path (state, broadcast-only, events, first sync) returns without sending.
+- Every plan returns `.landFailed`.
 
-**The legacy sync path.** `withSyncState` and the legacy event flush run outside the keeper's turns, and they await. A failure there is submitted as a turn input:
+This state belongs to the adapter, not the keeper, so the keeper rule doesn't bind it. It closes the window before the keeper's turn.
+
+**Resume-side checks.** Every adapter path that awaits between reading state and sending captures the output generation before the await. After the await, it acts only through `ifCurrent`:
+- the legacy `withSyncState`, from its state read (TA 3301) to its commit and sends (TA 3318);
+- the first-sync suspensions (TA 5722-5740);
+- the legacy event flush, per event;
+- the broadcast-only sync.
+
+The PR lists every `await` in these paths, and a test holds at each (§8).
+
+**The legacy path's failure becomes a turn input.**
 
 ```swift
 extension LandKeeper {
-    /// The transport reports a failure that ends the land. Applied in a turn of its own, as a
-    /// server input (#387); `ticket` is the keeper's lifecycle generation captured when the work
-    /// that failed began. A stale ticket (the land restarted meanwhile) is ignored.
+    /// The transport reports a failure that ends the land. Applied in a turn of its own, as
+    /// server inputs are (#387); `ticket` is the keeper's lifecycle generation captured when the
+    /// failing work began. A stale ticket (the land restarted meanwhile) is ignored.
     package func submitLandFailure(_ failure: LandFailure, ticket: LandLifecycleTicket) async
 }
 ```
 
-- The item is internal (a `PendingItem.landFailure`), not a user `HandleServerInput`, and it isn't recorded as an input.
-- The turn that applies it re-reads `mode` and validates the ticket, then calls `failLand`.
-- A tickless idle land schedules that turn the way `submitServerInput` does.
+- The item is internal (`PendingItem.landFailure`), not a user `HandleServerInput`, and it isn't recorded as an input.
+- The turn that applies it re-reads the drain flag and validates the ticket, then calls `failLand`.
+- A tickless idle land schedules that turn as `submitServerInput` does.
 
-**The teardown: `LandKeeperTransport.landDidFail(_:)`.**
-- It is a new protocol requirement with a default implementation, so it is additive. The default is the keeper's own `shutdownIfIdle(cause: .failed)`, for keepers used without a host.
-- `TransportAdapter` forwards it to an `onLandFailure` closure. `LandManager` installs that closure at creation, and it calls the server's stop:
-  - `NIOLandServer.stopLand` gains a package overload `stopLand(landID:epoch:close:)`;
-  - the epoch is the land's `LandRouter` epoch captured when the land was created: a stop for an epoch that is no longer current is ignored (`GenerationTable.ifCurrent`);
-  - `close` is `.landFailed` (4016) instead of `.landStopped`.
-- The stop path is #102/#511's: `detachForStop`, then the sessions closed with the code, then `forceShutdown` (destroy handlers, save), then `endClosing`. OnLeave runs as #512 settles it for any stop. Destroy handlers see `.failed` (D4).
-- `SingleFlight` makes an admin `DELETE` racing a failure stop run once.
+### 3.4 The teardown (keeper-owned)
 
-### 3.4 A session closes, with a bound
+After `failLand`, the keeper starts one `Task` that holds no keeper state across its awaits and runs:
 
-**`SessionClose.Code.viewFailed = 4015`.** It means: this player's view failed to encode; the land is fine; a rejoin gets a full view. Unlike 4010–4012, the client may rejoin.
+1. **`await transport.landDidFail(failure)`**, a new `LandKeeperTransport` requirement whose default does nothing. A custom transport therefore compiles, and the keeper still tears the land down. `TransportAdapter` implements it:
+   - **With a host hook** (`onLandFailure`, which `LandManager` installs at creation with the instance's epoch): the server's stop, with the epoch.
+     - `LandManager.detachForStop(landID:epoch:)` detaches only if the stored instance has that epoch, in one synchronous segment (Review M7). The epoch check and the detach can't be split by an await. Epochs are the manager's (LM 125-126).
+     - The stop then closes the bound sessions. **The code is read from the keeper's cause in the close's segment:** `.failed` → 4016 `landFailed`, otherwise 4014.
+     - An admin `DELETE` that detached first has already chosen its code. A failure after its sessions were closed has nobody left to tell, and the destroy still sees `.failed` (step 2), because the failing turn set the cause first if it ran first. `SingleFlight` keeps the stop's work to one run. The close code follows the cause, not the order of the calls.
+   - **Without a hook** (an adapter built directly): the adapter closes every session it holds with 4016 through `endAndCloseSession`.
+2. **The keeper's own destroy:** a private `destroyFailedLand()`.
+   - It clears `players` without OnLeave (D4).
+   - It runs the destruction that `shutdownIfIdle` runs after its guard: the destroy handlers, the save and `transport.onLandDestroyed()`. The emptiness guard is skipped because the players were just cleared, and the cause is already `.failed`.
+   - Whoever reaches the drain first runs it, the host's `forceShutdown` or this task. The other waits on `drainTask`. `runForceShutdown`'s non-live branch (LK 2515-2518) sees `isDraining`, clears the players and waits. Its `.forceShutdown` cause is ignored, because the first cause stays.
 
-When a plan meets a per-recipient failure (P1 or P2) for player `p`, in the same synchronous segment the adapter:
-1. Leaves `p` out of the commit: its staged per-player snapshot, its first-sync mark and its resync are dropped. Nothing is sent to it this plan.
-2. Closes **every** session of `p` with 4015 through `endAndCloseSession`. That is synchronous marking plus the close `Task`, as 4012 does today (TA 3730-3751). Every session, because a player's sessions share the per-player value (#531).
-3. Checks and updates the bound: `viewFailedPlayers: Set<PlayerID>` on the adapter, kept for the land instance.
-   - `p` not in it: insert `p`.
-   - `p` already in it: the plan returns `.landFailed(kind: .viewRepeat, playerID: p)` instead.
-   - The set has **no reset**: no later success of `p`, of another player or of another value removes `p`. A healthy encode of other values can't show that the failing value is gone (#521's finding). It is removed only with the land.
-4. **All recipients failed:** every recipient of the plan failed, and there are at least two. That is the type case (§1), so the plan returns `.landFailed(kind: .allRecipients)` and closes nothing first.
-
-The rest of the plan commits for the other recipients. The keeper learns of the leave through the normal disconnect path. The adapter mutates nothing in the keeper.
-
-**Memory.** The set holds one `PlayerID` per player that ever failed in this land instance. Sessions are tens of minutes (the target session length), so it stays small.
-
-**4012 `unencodableView`.** Its sources move under this rule (D3):
-- a resync or first view that fails on a per-player field closes with 4015 at once, under the same bound;
-- on a broadcast field, it ends the land.
-
-4012 stays reserved and is no longer sent.
+**So:**
+- with no transport, a custom one, or an adapter without the hook, the land ends and its destroy handlers run with `.failed`;
+- with a host, the sessions close with 4016 and the land detaches.
 
 ### 3.5 Counters and logs
 
-**Counters** go on the adapter's profiler counters and the land's stats:
-- `landFailures` by `Kind`;
-- `viewFailedCloses`.
-
-**Logs.** One `error` log per failure. Its fields: land type and ID, kind, field, player (for a session), error text, sync sequence and target. A session close is logged at `warning`. A malformed client input is unchanged: rejected, and counted as today.
+- **Counter:** `landFailures`, by `Kind`, on the adapter's profiler counters and the land's stats.
+- **Log:** one `error` log per failure. Its fields:
+  - land type and ID;
+  - kind and field;
+  - error text;
+  - position;
+  - sync sequence and target.
+- **A malformed client input** is unchanged: rejected, and counted as today.
 
 ### 3.6 Names for #521 (coordinated through Main)
 
-#521's EV4, EV5 and EV7 use:
+#521's EV4 and EV7 use:
 - `LandFailure.Kind.eventEncode`;
-- in a turn, the adapter's `.landFailed` result;
-- on the legacy flush, `submitLandFailure(_:ticket:)` with the ticket captured when the flush began.
+- in a turn, the adapter's `.landFailed`;
+- on the legacy flush, `submitLandFailure(_:ticket:)`, with the ticket captured when the flush began.
 
-Under #521 D9 (b), the recommended option, EV5 doesn't exist. Under D9 (a), a targeted event's failure would use §3.4's close and bound, keyed by player. This plan recommends (b): the event is encoded once, which §1 classifies as land-wide.
+EV5 doesn't exist (#521 D9 = (b)).
 
-**Registration.** #521's `validatePayloads(context:)` runs at the same entry points as §4's checks. Both are called from one function, `LandDefinition.validateForRegistration(context:)`:
-- PR 3 of this plan adds it with the sync-type checks;
-- #521 adds its payload checks into it.
+Registration goes through one function, `LandDefinition.validateForRegistration(context:)` (§4). This plan's PR 3 adds it with the sync-type checks, and #521 adds its payload checks into it. Whichever merges first adds the function.
 
-Whichever PR merges first adds the function.
+### 3.7 #87: a handler that throws after mutable access
 
-### 3.7 #87: a handler that throws after writing
-
-**Today.** A throwing input fails alone, and its writes before the throw are kept. The debug builds warn by comparing `fullStateSnapshot` (LK 3141-3191). The maintainer's 2026-11-10 decision on #87 was (B) for now and (A), an undo log, with flat storage step 3.
+**Today.** A throwing input fails alone, and its writes before the throw are kept. Debug builds warn by comparing `fullStateSnapshot` (LK 3141-3191). The maintainer's 2026-11-10 decision on #87 was (B) for now, and (A), an undo log, with flat storage step 3.
 
 **Under #535's table.**
-- A handler that throws **after writing synced state** ends the land (`.handlerWrite`).
-- A handler that throws **before any write** is a rejected input, as today: an error to the client, removed from the queue, recorded with its failure, and nothing else ends.
-- When #87's (A) undo log exists, a rollback restores fully correct state, so the throw goes back to rejecting the input alone, and the land no longer ends.
+- A handler that throws after writing synced state ends the land (`.handlerWrite`, stage `.input`, its sequence). The batch stops and the tick handler is skipped (§3.2 step 4). Today the loop continues past a throw (LK 3849-3874) and `runTick` then runs the tick handler (LK 4462-4472), so both are asserted.
+- A handler that throws with no write is a rejected input, as today.
+- When #87's (A) exists, a rollback restores state, and the throw goes back to rejecting the input alone.
 
-The release build needs a cheap "did it write" test (D5).
+**The detector (D5).** The recommended contract is **mutable access**, not actual change.
+- `@Sync`'s `_modify` already sets `_isDirty` before its yield, "so a write made before the throw is kept" (SyncPolicy.swift 140-156). The detector uses that same point: the macro's root-field setter and `_modify` bump a per-state access count at entry.
+  - So `try validateThenMutate(&state.x)` counts as a write even when the validation throws first.
+  - The documented rule is: validate before taking `inout` access. This is the rule #87's (B) already states.
+- **Coverage:**
+  - Root fields' setters and `_modify` count.
+  - Containers and nested nodes are reached through their root field's `_modify`, so they count.
+  - A nested node's own fields count through the root's access.
+- **Gaps:**
+  - **Whole-state replacement** (`state = other`) bypasses every accessor. `withMutableStateSync` detects it by comparing the count *and* a per-instance identity token that the macro stores in the state. A new value carries a different token.
+  - **Hand-written `StateNodeProtocol` conformances** have no macro accessors. They get a defaulted requirement that returns "unknown". For an unknown, a throw is treated as a write in debug builds, which run the existing snapshot compare, and as no write in release builds, which keeps today's behavior. Registration logs a warning once per such type. D5 (b) and (c) are the alternatives.
 
 ## 4. Registration refusals
 
 **Knowable from the type**, checked by walking the schema and the type:
-- a class type declared in a synced field (`classRefusal`). `SyncValueSemantics.validate` already checks declared class types and classes in a default instance;
-- an unsupported key type (`SyncError.unsupportedKey`, SnapshotValue.swift:476). This is new in the validation;
-- a player-dependent node under a broadcast field (#179). `SyncPolicyNesting.validate` covers it except where the walk can't see the type.
+- **A class type in a synced field** (`classRefusal`). `SyncValueSemantics.validate` already walks declared element and value types, including empty collections (SyncValueSemantics 72-80). A class is unknowable only behind an existential (`Any`, `any P`).
+- **An unsupported key type** (`SyncError.unsupportedKey`, SnapshotValue.swift:476). This check is new.
+- **A player-dependent node under a broadcast field** (#179). `SyncPolicyNesting.validate` covers it except behind an existential.
 
-**Not knowable from the type**, so the land ends at the first throw (rows 1, 3, 4):
-- an `Any` or `any P` field's value;
+**Not knowable from the type**, so the land ends at the first throw:
+- an existential field's value;
 - an enum case not taken by the default instance;
-- a class inside an empty-by-default collection;
-- colliding keys (they throw only in `makeFull`; the sync `make` path overwrites silently at SnapshotValue.swift:427);
 - a user `toSnapshotValue` that throws;
 - a non-finite number under JSON.
 
-Existential fields stay allowed (D8).
+**Colliding keys** (D8). Today they throw only in `makeFull`, the replay-hash path. The sync `make` path overwrites silently (SnapshotValue.swift:427), so "close the land at the first throw" would never fire for a type error the maintainer listed. The recommended answer is to detect them in the live conversion:
+- `make` checks the insert's previous value (`updateValue` returns non-nil) and throws `SyncError.collidingKeys`;
+- it is a structured type cause, so the land ends;
+- the cost is a nil check per dictionary entry, which the off-path A/B checks.
 
 **Entry points:**
 
 | Entry point | Today | Under this plan |
 |---|---|---|
-| `NIOLandHost.register` (NIOLandHost.swift:354) | throws; validates at :363-364 | adds the new checks |
-| `LandTypeRegistry.init` (LandTypeRegistry.swift:33-39) | throws; validates | adds the new checks |
-| `SchemaExtractor.extract` (:20) | validates | unchanged (it uses the same validation) |
-| `LandManager.getOrCreateLand` (LandManager.swift:367) | no validation | none needed: a manager from a host or registry is validated there. A manager built directly is covered by the keeper's backstop |
+| `NIOLandHost.register` (NIOLandHost.swift:354) | throws; validates at :363-364 | calls `validateForRegistration` |
+| `LandTypeRegistry.init` (LandTypeRegistry.swift:33-39) | throws; validates | calls `validateForRegistration` |
+| `SchemaExtractor.extract` (:20-21) | calls the two validators directly | calls `validateForRegistration` explicitly |
 | `ReevaluationEngine.run` (ReevaluationEngine.swift:192) | throws, no validation | validates before the keeper is built; the run fails with the error |
+| `LandManager.getOrCreateLand` (LM 367) | no validation | none needed: a manager from a host or registry is validated there, and a manager built directly is covered by the backstop |
 | `LandKeeper.init` (LK 807) | doesn't throw | unchanged |
-| `LandKeeper.ensureInitialized` (LK 893) | async throws; a failure tears the land down (`tearDownAfterFailedInitialization`, LK 927-932) | **the backstop**: runs the validation, cached once per `(State type, definition id)`, so every keeper, including tests' and benchmarks', is checked once. A refusal fails initialization, as an OnInitialize throw does today |
+| `LandKeeper.ensureInitialized` (LK 893) | async throws; a failure tears the land down (LK 927-932) | **the backstop**: runs `validateForRegistration`. A refusal fails initialization, as an OnInitialize throw does today |
 
-All failures are reported in one error (`SyncRegistrationError`, one case per row, with the field path and reason). It sits next to #521's `PayloadRegistrationError` under `validateForRegistration`.
+**The backstop's cache.**
+- The sync-type checks depend only on the `State` type. Their result, **failures included**, is cached process-wide by `ObjectIdentifier(State.self)`, in a `Mutex`-guarded dictionary.
+- Definition-dependent checks aren't cached; tests reuse definition IDs. They run per keeper, and they are cheap: #521's checks look up the registered types.
+
+All failures are reported in one error, `SyncRegistrationError`, with one case per row, the field path and the reason. It sits beside #521's `PayloadRegistrationError` under `validateForRegistration`.
 
 ## 5. The interim rule
 
-Until each row's PR lands:
-- **A known absorb path keeps today's behavior.** Its tests pin today's output and cite #535, as #514's plan does.
-- **New code adds no absorb path.** Before PR 1, a new failure path logs at `error`, counts and pins the gap with a test that cites #535. It must not drop silently.
-- **After PR 1, new code uses the mechanism**: `LandFailure` and `.landFailed`, the 4015 close with its bound, or `submitLandFailure`.
-- **#514 (per-player tables).** Its interim outputs (M7, T1, T2) are replaced by rows 1, 3 and 10 under PR 2. Its byte-identity contract's failure half holds once PR 2 is in: after it, no failed land keeps running.
+- **Until each row's PR lands, a known absorb path keeps today's behavior.** Its tests pin today's output and cite #535, as #514's plan does.
+- **New code adds no absorb path.** Before PR 1, a new failure path logs at `error`, counts, and pins the gap with a test that cites #535.
+- **After PR 1, new code uses the mechanism.**
+- **Between PR 1 and PR 2:**
+  - PR 1 converts only the total-failure paths (rows 9, 10 total, 12, 15 and 17), and it removes `leavesKeyTablesAhead`, whose four setters are those paths.
+  - The patch-drop paths (rows 1, 3, 4, 6, 8, 10 patches, 11, 13 and 14's helper) keep their recovery until PR 2, including the row repair (`planFailedRows` and `committedWithRepairPending`).
+  - These don't interact: a dropped patch never sets the key-reset flag, and a total failure never reaches the row repair.
+  - The pinned interim tests name which PR replaces them.
+- **#514 and #536 (per-player tables).** Their interim outputs for a throwing conversion and a failed encode are replaced in PR 2. The failure half of #514's byte-identity contract holds once PR 2 is in: after it, no failed land keeps running.
 
 ## 6. Public API
 
 | Change | Kind |
 |---|---|
-| `LandFailure`, `LandFailure.Kind` | new types |
+| `LandFailure`, `LandFailure.Kind`, `LandFailurePosition` | new types |
+| `LandKeeper.failure` (nonisolated) | new property |
 | `LandDestructionCause.failed` | new enum case (an exhaustive switch breaks; named in the PR) |
 | `InTurnSyncResult.landFailed(LandFailure)` | new enum case on a public protocol's result (the same note) |
-| `InTurnSyncResult.committedWithRepairPending` | no longer returned. Deprecated, not removed (D7) |
-| `LandKeeperTransport.landDidFail(_:)` | new requirement with a default implementation |
-| `SessionClose.Code.viewFailed` (4015), `.landFailed` (4016); `SessionClose.landFailed` | new constants (the preset is package, as `.landStopped` is) |
-| `SyncRegistrationError` | new type, thrown by entry points that already throw |
-| action and event refusal `failed` | new enum case on the input refusal (named in the PR) |
-| `TransportAdapter.unmappedPathPatches` | kept; it counts the failure that ends the land |
-| TS SDK: `VIEW_FAILED_CLOSE_CODE`, `LAND_FAILED_CLOSE_CODE` in `protocol.ts` | new exports; docs say 4015 may rejoin, 4016 doesn't retry the instance |
+| `InTurnSyncResult.committedWithRepairPending` | no longer returned after PR 2; deprecated (D7) |
+| `LandKeeperTransport.landDidFail(_:)` | new requirement with a do-nothing default |
+| `SessionClose.Code.landFailed` (4016); `SessionClose.landFailed` (package, as `.landStopped`) | new constant |
+| `SyncError.collidingKeys` | new enum case (D8; the same switch note) |
+| `SyncRegistrationError`; `LandDefinition.validateForRegistration(context:)` | new; thrown by entry points that already throw |
+| `StateNodeProtocol`: a defaulted access-count requirement (D5) | new requirement with a default ("unknown"); the macro implements it |
+| `TransportAdapter.unmappedPathPatches` | kept; it counts `pathNotInSchema` failures (D6) |
+| TS SDK: `LAND_FAILED_CLOSE_CODE` (4016) in `protocol.ts` | new export; the docs say the instance is gone |
 
-Behavior changes named in each PR body and in `docs/` (bilingual):
-- a land with a sync failure ends;
-- a player whose view fails is closed with 4015;
-- 4012 is no longer sent;
-- a handler that throws after writing ends the land.
-
-`package` members (`submitLandFailure`, `stopLand(landID:epoch:close:)`, `failLand`) aren't public.
+- **No `LandMode` case.** No new keeper access for the transport: the teardown is the keeper's own (§3.4).
+- **`package`-only members:** `submitLandFailure`, `detachForStop(landID:epoch:)`, the adapter's `onLandFailure` hook.
+- **Behavior changes,** named in each PR body and in `docs/` (bilingual):
+  - a land with a sync failure ends with 4016;
+  - 4012 is no longer sent;
+  - a handler that throws after mutable access ends the land;
+  - colliding keys end the land.
 
 ## 7. PRs
 
 1. **PR 1, the mechanism and the total failures.**
-   - The mechanism: §3.1–3.5, `submitLandFailure`, `landDidFail`, the host hook, the codes and the bound.
-   - Rows 9, 10 (total), 12, 15, 17 and 19 (partly), and the row 14 classifier.
-   - The SDK constants and docs.
-2. **PR 2, the conversion and per-patch paths.** Rows 1, 3, 4, 6, 8 (with the leak), 10 (patches), 11 (4012 merged), 13, 14's callers, 16 and the rest of 19. The removals in §2.
-3. **PR 3, registration.** §4, `validateForRegistration`. Independent of PRs 1 and 2, so it may go first.
-4. **PR 4, #87.** §3.7, after D5. It closes #87's (B) and leaves (A) open.
-5. **PR 5, replay loading.** R1, R2. Small, and independent. If #521's PR 1 lands first, its A5 does this, and PR 5 is dropped (coordinated through Main).
+   - §3.1–3.5, `submitLandFailure`, `landDidFail`, the epoch-conditioned detach, 4016.
+   - Rows 9, 10 (total), 12, 15, 17 and 19.
+   - The SDK constant and the docs.
+2. **PR 2, the conversion and per-patch paths.**
+   - Rows 1, 3, 4, 6, 8 (with the leak), 10 (patches), 11, 13, the rest of 14, and 16.
+   - Colliding keys in the live conversion (D8).
+   - The repair's removal (D7).
+3. **PR 3, registration.** §4, `validateForRegistration` and the backstop. It is independent of PRs 1 and 2, so it may go first.
+4. **PR 4, #87.** §3.7, after D5. It settles #87's (B) and leaves (A) open.
 
-PRs 1 and 2 touch the sync phase. Each gets the in-turn on/off and sync tables off CI builds, and an off-path A/B on the healthy path (no failure), run by the off-path instruction gate (#517). The healthy path should change only by a branch per failure check.
+**Gates.** PRs 1 and 2 touch the sync phase. Each gets:
+- the in-turn on/off and sync-tables-off CI builds;
+- an off-path A/B on the healthy path, judged by the instruction gate (#517).
+
+PR 4 gets the same A/B, for the access count on every write. PR 2 gets it for the collision check.
 
 ## 8. Tests
 
 Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints`, `TestGate`), never with timing.
 
-**Faults.**
-- Existing hooks:
-  - `syncEncodeFaultForTesting(PlayerID)`: P2, per-player and combined frames;
-  - `syncPlanFaultForTesting`: row 15;
+**Faults:**
+- **Existing hooks:**
+  - `syncEncodeFaultForTesting(PlayerID)`;
+  - `syncPlanFaultForTesting`;
   - `firstSyncPlanFaultForTesting`;
-  - `eventEncodingFaultForTesting`: row 17;
-  - throwing test types for conversions (`TransportAdapterSyncPhaseTests`, `RowAddressingAdapterTests`, `SyncTableDiffTests`);
-  - NaN under JSON.
-- Two new hooks (package): a broadcast-only encode fault and a merged-107 encode fault. Today `syncEncodeFaultForTesting` doesn't reach the merged frame.
+  - `eventEncodingFaultForTesting`.
+- **Throwing test types** (`TransportAdapterSyncPhaseTests`, `RowAddressingAdapterTests`, `SyncTableDiffTests`), and NaN under JSON.
+- **New package hooks:**
+  - a merged-107 encode fault (today `syncEncodeFaultForTesting` doesn't reach it);
+  - a broadcast-only encode fault.
 
 **Cases.** Each runs on all three encodings, with in-turn sync on and off where both paths exist.
 
-- **Land rows (4, 9, 12, 17, broadcast 1/3/6/8, `pathNotInSchema`):**
-  - the land ends;
+- **Each land row (§2):**
+  - the land ends with `.failed` and the right `Kind`;
   - every session closes with 4016;
-  - nothing from the failing plan is sent after the failure;
+  - no state frame of the failing plan, and nothing after it, is sent;
   - another land on the same host keeps syncing;
-  - a join to the same land ID afterwards gets a new instance.
-- **Session rows (10 P1 and P2, 11, 13, per-player 1/3):**
-  - only `p`'s sessions close with 4015, and every session of `p` (a second session admitted through the diagnostics path);
-  - the others get this plan's frames;
-  - `p`'s rejoin gets a full view.
-- **The bound:**
-  - a second failure of `p` after a rejoin ends the land (`.viewRepeat`);
-  - successes in between, of `p` with other values and of other players, don't reset it;
-  - two failures of `p` in one plan close once;
-  - every recipient failing, with two or more, ends the land at once (`.allRecipients`);
-  - one recipient alone failing closes the session.
-- **Row 15:** three consecutive throwing plans end the land, with and without periodic sync. A success in between resets the count, because a plan that threw sent nothing.
+  - a join to the same land ID afterwards gets a new instance;
+  - with #536's per-player tables on, the same.
+- **Row 15:**
+  - three consecutive throwing plans end the land, with and without periodic sync;
+  - join-sync attempts count toward the three;
+  - a committed plan in between resets the count.
+- **Row 17:**
+  - a `pack` failure and a `.lost` event end the land;
+  - a nil merged body sent alone doesn't.
+- **The failing turn:**
+  - after `failLand`, actions, events, server inputs and joins are refused;
+  - every waiter of §3.2 step 3 is settled with `landClosed`: an input queued behind the failure, a legacy pass caller, a tickless action job, a server input in flight, and an action job resumed from its resolver;
+  - a join held at each of LK 1426, 1474, 1649 and 1703 is refused on resume.
+- **The adapter's resume checks:**
+  - holds right after the legacy state read (TA 3301), at each first-sync suspension (TA 5722-5740), and in the legacy flush between events;
+  - a failure during the hold means nothing is sent after it.
 - **The legacy path:**
-  - a failure on the legacy sync and on the legacy event flush stops sending at once;
-  - it reaches the keeper as a turn input;
+  - a failure on the legacy sync and on the legacy event flush reaches the keeper as a turn input;
   - a stale ticket (the land restarted under a hold at the flush's await) is ignored.
-- **Teardown:**
-  - with a host, the stop runs once when an admin `DELETE` races it (hold);
-  - without a host, `landDidFail`'s default destroys the land with `.failed`;
-  - destroy handlers see `.failed`.
-- **Inputs after failure:** actions, events, server inputs and joins are refused, and pending inputs aren't applied.
-- **Registration (PR 3):** each type-knowable error at each entry point of §4; all failures in one error; the keeper backstop for a directly built keeper.
+- **The teardown:**
+  - with a host, a hold right before the manager's detach, with an admin `DELETE` racing it. The stop runs once, and the close code follows the cause: 4016 if the failure set it first, 4014 if the stop closed first.
+  - A failure for an old epoch (the land ID has a new instance) detaches nothing.
+  - Without a host, and with a custom transport using the default, the land is destroyed with `.failed` while players were still in it.
+  - Destroy handlers see `.failed`; OnLeave runs or doesn't, per D4.
+- **Registration (PR 3):**
+  - each type-knowable error at each entry point of §4, including `SchemaExtractor` and the backstop for a directly built keeper;
+  - all failures in one error;
+  - a cached failure refuses the second keeper too.
+- **Colliding keys (PR 2):** two keys that collide in conversion end the land.
 - **#87 (PR 4):**
-  - a handler that throws after a write ends the land;
-  - one that throws before any write is rejected alone, and is applied once;
-  - the earlier inputs of the batch are applied once.
-- **Replay (PR 5):** R1 and R2 each fail the tick with its reason, and the run stops failed.
+  - a handler that throws after a root write, after an in-place container write, after a nested node write, and after a whole-state replacement ends the land, with stage `.input` and its sequence;
+  - the tick handler doesn't run, and the later inputs of the batch aren't applied;
+  - a handler that throws before any access is rejected alone, and the batch and tick continue;
+  - a manual conformance keeps today's behavior in release builds.
+- **Record (D9):** a failed run's record ends with the failure and its position. Replay stops there, without applying the rest, and reports "ended by a live failure".
 
 **Mutants.** Each is run once and caught by a named test:
-- a dropped patch still sent (row 1, 3, 10);
-- a broadcast failure that closes only sessions;
-- a per-player failure that ends the land;
-- the bound reset by a success, by a leave, or by another player's success;
-- the bound counting failures within one plan;
-- `allRecipients` firing with one recipient;
-- the adapter still sending between the failure and the keeper's turn;
-- `failLand` called after an await (the in-turn rule; the stale-ticket test catches it);
+- a dropped patch still sent (rows 1, 3, 10);
+- the batch continuing after a `.handlerWrite`;
+- the tick handler run after it;
+- the adapter sending between the failure and the keeper's turn;
+- each resume check removed, caught by its hold test;
+- `failLand` called from a task instead of in the turn (the cause test with the racing stop catches it);
 - the legacy failure applied without its ticket check;
-- 4014 sent instead of 4016;
-- the row 8 leak restored (a per-recipient failure that drops a broadcast row);
+- the detach not epoch-conditioned (the old-epoch test);
+- 4014 sent for a failed land;
+- the teardown waiting for an empty land (the hostless test);
+- a waiter left unsettled (each waiter's test);
+- the row 8 leak restored;
 - the validation skipped in `ensureInitialized`;
-- #87 throw-before-write ending the land.
+- a cached failure not cached;
+- the row 15 count not including join-sync attempts.
 
 ## 9. Decisions for the maintainer
 
-Each has a recommendation.
+Each has options and a recommendation.
 
-- **D1, the close codes.**
-  - (a) Two new codes: 4015 `viewFailed` (may rejoin) and 4016 `landFailed` (this instance is gone).
-  - (b) Reuse 4014 `landStopped` for a failed land.
-  - **Recommend (a).** An operator and a client can tell a failure from an admin stop, and 4014's docs say "stopped", which a failure isn't.
-- **D2, the rejoin bound.**
-  - (a) Per `(land instance, player)`, no reset, plus the every-recipient rule.
-  - (b) Per `(player, root field)`: a later failure on another field closes the session again.
-  - (c) Reset after a quiet period.
-  - **Recommend (a).** (c) resets on healthy success, which the scope decision rules out. (b) gives a value that fails on several fields several closes. Sessions are tens of minutes, so a second unrelated failure in one instance is rare. When one happens, ending the land is the conservative reading of "fails again after rejoining".
+- **D1, the close code.**
+  - (a) A new code, 4016 `landFailed`.
+  - (b) Reuse 4014 `landStopped`.
+  - **Recommend (a).** An operator and a client can tell a failure from an admin stop, and 4014's docs say "stopped". Under D2a (b), 4015 `viewFailed` is added too (Appendix A).
+- **D2, split three ways (Review M1).**
+  - **D2a, a per-session path at all.**
+    - (a) None: every sync failure ends the land (§1).
+    - (b) Keep the per-session row for P1 and P2, as Appendix A specifies.
+    - **Recommend (a).** No failure in the shipped code is shown to depend on the recipient in a way a rejoin repairs (§1). (b) adds staging, precedence, a bound and a policy, for a path that today only a test hook reaches.
+  - **D2b, the rejoin bound (only under D2a (b)).**
+    - (a) Per `(land instance, player)`, no reset.
+    - (b) Per `(player, root field)`.
+    - (c) Reset after a quiet period.
+    - **Recommend (a).** (c) resets on healthy success, which the scope decision rules out.
+  - **D2c, the `allRecipients` escalation policy (only under D2a (b)).** This is a conservative policy, not detection. Two players with independent bad values both fail, and a runtime type error hits each new player once.
+    - (a) End the land when every unique player who received a frame in the plan failed, with at least two. Joiners in the plan count.
+    - (b) No policy: only the bound escalates.
+    - **Recommend (a) under D2a (b).** It ends a type-caused failure one rejoin round sooner. Its false positive, every player at once with independent bad values, also ends the land under the bound one round later.
 - **D3, 4012's retry.**
-  - (a) Merge it: a resync or first view that fails on a per-player field closes with 4015 at once, under the bound. On a broadcast field it ends the land. 4012 is reserved and no longer sent.
-  - (b) Keep the 3-plan retry and 4012 for resync views only.
-  - **Recommend (a).** A resyncing client is already behind. Waiting three plans leaves it wrong longer, and a rejoin gives it the same full view. (b) keeps a second rule for the same failure.
-- **D4, destroy handlers on a failed land.**
-  - (a) Run them, and the save, as on a stop, with `.failed` visible, so a land can skip saving.
-  - (b) The framework skips the save for `.handlerWrite` only.
-  - (c) Skip every destroy handler.
-  - **Recommend (a).** A sync failure leaves the state itself correct, and only #87's leaves it wrong. The land knows what its save means. The cause is passed, not decided for it.
-- **D5, detecting a write before a throw in release builds (#87).**
-  - (a) A write generation counter on the state, bumped by the macro's setters, and compared around each handler. The cost is one increment per write; the off-path A/B checks it.
-  - (b) Release builds use the debug build's snapshot compare. That costs a copy-on-write retain per input and a container copy on each input's first write. #87's decision rejected that cost.
+  - (a) Merge it: a resync or first view that fails ends the land (or, under D2a (b), Appendix A applies). 4012 is reserved and no longer sent.
+  - (b) Keep the three-plan retry and 4012 for resync views.
+  - **Recommend (a).** A resyncing client is already behind, and the retry recomputes the same view from the same state (§1 P1).
+- **D4, OnLeave and the destroy handlers on a failed land.**
+  - (a) No OnLeave, because a failed land applies no inputs; the destroy handlers and the save run with `.failed` visible, so a land can skip saving.
+  - (b) OnLeave and the destroy handlers run as on a stop (#512), except after `.handlerWrite`.
+  - (c) Skip every handler.
+  - **Recommend (a).** OnLeave is an input, and intake is closed. The land knows what its save means, and the cause is passed, not decided for it.
+- **D5, the #87 write detector.**
+  - (a) Mutable access: the macro's setters and `_modify` bump a per-state count at entry, and an identity token covers whole-state replacement. Manual conformances report "unknown" and keep today's behavior in release builds (§3.7). Cost: one increment per write, checked by the A/B.
+  - (b) Actual change: the debug build's snapshot compare also in release builds. That costs a copy-on-write retain per input and a container copy on each input's first write, which #87's decision rejected.
   - (c) No PR 4 until #87's (A) undo log, which restores instead of ending.
-  - **Recommend (a).** (c) would leave the partial-write row open until flat storage step 3.
+  - **Recommend (a).** It reuses the point `_modify` already marks dirty, and its rule ("validate before inout access") is #87's (B) rule. (c) leaves the partial-write row open until flat storage step 3.
 - **D6, `pathNotInSchema`.**
-  - (a) End the land: the schema is shared, so every recipient fails.
-  - (b) Keep dropping and counting it.
-  - **Recommend (a).** No production trigger is known. One would mean the state produced a path its own schema lacks, a land-wide fault, and (b) is an absorb path under the rule.
+  - (a) End the land: the schema is shared.
+  - (b) Keep dropping and counting.
+  - **Recommend (a).** (b) is an absorb path.
 - **D7, `InTurnSyncResult.committedWithRepairPending`.**
-  - (a) Deprecate it, never return it, and remove it in a later major change.
-  - (b) Remove it now.
-  - **Recommend (a).** Removal breaks a custom transport's switch, and removals go to the maintainer.
-- **D8, existential and unknowable-type fields.**
-  - (a) Allowed. A failure ends the land at the first throw.
-  - (b) Refused at registration.
-  - **Recommend (a).** (b) breaks lands that use them today, and (a) already ends the land on the first wrong value.
+  - (a) Deprecate it, and never return it after PR 2.
+  - (b) Remove it.
+  - **Recommend (a).** The exhaustive-switch break comes anyway with `.landFailed`. Deprecating keeps a custom transport that *returns* the case compiling, and removing a case is a removal, which goes to the maintainer.
+- **D8, unknowable-type fields and colliding keys.**
+  - (a) Existential fields stay allowed and end the land at the first throw. Colliding keys are detected in the live conversion and end the land (§4).
+  - (b) Existential fields are refused at registration; colliding keys as (a).
+  - (c) As (a), and colliding keys are left open (they keep overwriting silently), named as a known gap.
+  - **Recommend (a).** (b) breaks lands that use existentials today, and (c) leaves a type error the maintainer listed with no effect.
 - **D9, the record of a failed land.**
-  - (a) The record's metadata holds the failure and its tick. Reevaluation replays the inputs up to that tick and reports "ended by a live failure", not a mismatch.
+  - (a) The record ends with the failure's terminal position (§3.1): tick or pass, the input sequence and the stage. Replay applies exactly what live applied:
+    - for `.input`, the inputs before the sequence, then the failing input, which must throw again (a mismatch otherwise), then nothing: no later input and no tick handler;
+    - for `.syncPhase` and `.eventFlush`, the whole turn.
+
+    The run reports "ended by a live failure", not a mismatch.
   - (b) Nothing is recorded, and the record just ends.
-  - **Recommend (a).** Without it, a replay can't tell a failed run from a truncated one.
+  - **Recommend (a).** Without it, a replay can't tell a failed run from a truncated one, and for `.input` it would run work the live land skipped.
 
 ## 10. Out of scope
 
 - Row 18's digest scope: diagnostics only.
+- The replay loading skips: #521's A5.
 - The `1011` close for a join that didn't complete in a turn: an invariant, unchanged.
-- #531: a second session of one player. It is its own bug. §3.4 closes every session of the player, which is correct whether or not #531 is fixed.
+- #531: a second session of one player.
 - #87's (A) undo log: flat storage step 3.
-- A client SDK auto-rejoin on 4015: the SDK exports the code; rejoining stays the application's.
+
+## Appendix A. The per-session path (only under D2a (b))
+
+### A.1 What is per-recipient
+
+- P1 and P2 of §1, and only after the structured type causes of §1, which end the land first.
+- The new close code is `SessionClose.Code.viewFailed = 4015`: the land is fine, and a rejoin gets a full view.
+
+### A.2 Precedence and the whole-frame fallback (Review M2)
+
+For a frame that fails, the plan collects **every** failure, not the first. It tries each patch alone, then the patches that encoded, then an empty frame, as the helper does today (TA 5670-5688). Then:
+
+1. Any structured type cause → land.
+2. Any failing patch whose root field is broadcast → land. The broadcast scope wins over every P1 failure in the same frame.
+3. The patches each encode alone, but not together, or the empty frame fails:
+   - for the merged broadcast frame, a broadcast-only update, or every unique player of the plan → land (an encoder-wide defect);
+   - for some recipients only → P2 for those recipients.
+
+   A custom encoder's error is treated the same way, because nothing about its internals is assumed.
+4. Otherwise, the failing patches are per-player roots → P1 for that player.
+
+### A.3 Staging and commit (Review M3)
+
+- The plan stages per-player decisions in a set deduplicated by player, and closes nothing while planning.
+- After the last recipient, still in the plan, it decides land escalation:
+  - the bound (D2b);
+  - the policy (D2c).
+- If the land escalates, the plan returns `.landFailed`, and no 4015 is sent.
+- Otherwise, the commit:
+  - leaves each staged player out: its per-player snapshot, first-sync mark, resync, and #536's `SyncTablePerPlayerStaged` entry are discarded;
+  - commits the rest;
+  - only then closes each staged player's sessions **that were recipients of this plan** with 4015;
+  - inserts the player into the bound set.
+- A plan that throws after staging closes nothing, so "a thrown plan committed nothing" still holds.
+- A join or reconnect for that player in flight isn't a recipient of this plan, so it isn't closed. If its first view fails, the bound ends the land.
+
+### A.4 The bound and the policy
+
+- `viewFailedPlayers: Set<PlayerID>` is kept per land instance, with no reset (D2b (a)).
+- `allRecipients` counts unique players who received a frame in the plan, joiners included (D2c (a)).
+- Two kinds are added: `LandFailure.Kind.viewRepeat` and `.allRecipients`.
+- Tests and mutants follow rev 1 §8's session cases, plus:
+  - the precedence (a P1 failure listed before a broadcast failure → land);
+  - the staging (a plan that escalates or throws sends no 4015);
+  - the denominator (two sessions of one player are one recipient).
