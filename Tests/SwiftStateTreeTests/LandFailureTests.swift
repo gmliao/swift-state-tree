@@ -27,6 +27,26 @@ struct LandFailureAck: ResponsePayload {
     let ok: Bool
 }
 
+@Payload
+struct LandFailureResolvedAction: ActionPayload {
+    typealias Response = LandFailureAck
+    let amount: Int
+}
+
+struct LandFailureResolverOutput: ResolverOutput {
+    let value: Int
+}
+
+/// A resolver that returns at once: the action is a tickless action job (#535: its own turn's
+/// failure must not cancel it).
+struct LandFailureResolver: ContextResolver {
+    typealias Output = LandFailureResolverOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> LandFailureResolverOutput {
+        LandFailureResolverOutput(value: (ctx.actionPayload as? LandFailureResolvedAction)?.amount ?? 0)
+    }
+}
+
 /// The cause each destroy handler saw, in order.
 private final class SeenCauses: @unchecked Sendable {
     private let lock = NSLock()
@@ -45,9 +65,17 @@ private func makeFailureDefinition(_ finalized: SeenCauses) -> LandDefinition<La
                 state.log.append("leave")
             }
             HandleAction(LandFailureAddAction.self) {
-                (state: inout LandFailureTestState, action: LandFailureAddAction, _: LandContext) in
+                (state: inout LandFailureTestState, action: LandFailureAddAction, ctx: LandContext) in
                 state.total += action.amount
                 state.log.append("action")
+                ctx.requestSyncNow()
+                return LandFailureAck(ok: true)
+            }
+            HandleAction(LandFailureResolvedAction.self, resolvers: LandFailureResolver.self) {
+                (state: inout LandFailureTestState, action: LandFailureResolvedAction, ctx: LandContext) in
+                state.total += action.amount
+                state.log.append("resolved")
+                ctx.requestSyncNow()
                 return LandFailureAck(ok: true)
             }
         }
@@ -135,7 +163,7 @@ struct LandFailureKeeperTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
         _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
-        #expect(keeper.isDraining)
+        try #require(keeper.isDraining, "the action's sync phase failed the land")
         await #expect(throws: (any Error).self) {
             _ = try await keeper.handleActionEnvelope(addAction(2), playerID: p1, clientID: c1, sessionID: s1)
         }
@@ -153,6 +181,8 @@ struct LandFailureKeeperTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
         _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        // Without a failure the teardown never reaches the hold: stop here rather than wait.
+        try #require(keeper.failure != nil, "the action's sync phase failed the land")
         await gate.waitUntilArrived()
         #expect(await keeper.playerCount() == 0, "players cleared in the failing segment")
         let shutdown = Task { await keeper.forceShutdown() }
@@ -161,6 +191,20 @@ struct LandFailureKeeperTests {
         await shutdown.value
         #expect(finalized.all.count == 1, "one destroy: \(finalized.all)")
         #expect(keeper.destructionCause == .failed, "the first cause stays")
+    }
+
+    @Test("an action job whose own turn fails the land gets its handler's response, not landClosed")
+    func actionJobInTheFailingTurnKeepsItsOutcome() async throws {
+        let (keeper, transport, finalized) = await make()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        transport.failing = true
+        let envelope = ActionEnvelope(typeIdentifier: String(describing: LandFailureResolvedAction.self),
+                                      payload: AnyCodable(LandFailureResolvedAction(amount: 3)))
+        let response = try await keeper.handleActionEnvelope(envelope, playerID: p1, clientID: c1, sessionID: s1)
+        #expect((response.base as? LandFailureAck)?.ok == true, "the consumed input keeps its outcome")
+        #expect(keeper.failure?.kind == .syncPlan)
+        await keeper.waitUntilDrained()
+        #expect(finalized.all == ["finalize:join,resolved"])
     }
 
     @Test("a further failure after the first keeps the first")
