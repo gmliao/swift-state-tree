@@ -51,6 +51,7 @@ scan() {
 # function, in the files on stdin (NUL-separated).
 scan_ticket_after_await() {
   local root=$1
+  # shellcheck disable=SC2016 # awk program, not shell
   { xargs -0 awk -v root="$root/" '
     FNR == 1 { awaited = 0 }
     {
