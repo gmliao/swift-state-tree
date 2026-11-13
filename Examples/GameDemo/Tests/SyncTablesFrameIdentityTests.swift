@@ -33,7 +33,7 @@ private actor FrameRecordingTransport: Transport {
     }
 }
 
-private func frameIdentityConfig(tables: Bool, dirtyTracking: Bool) -> TransportEnvConfig {
+private func frameIdentityConfig(tables: Bool, perPlayerTables: Bool, dirtyTracking: Bool) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
@@ -41,6 +41,7 @@ private func frameIdentityConfig(tables: Bool, dirtyTracking: Bool) -> Transport
         profilingConfig: nil
     )
     config.syncTablesEnabled = tables
+    config.perPlayerSyncTablesEnabled = perPlayerTables
     return config
 }
 
@@ -55,6 +56,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
         landID: String,
         services: LandServices,
         tables: Bool,
+        perPlayerTables: Bool = false,
         dirtyTracking: Bool,
         encoding: TransportEncodingConfig,
         pathHashes: [String: UInt32]?
@@ -68,7 +70,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
             keeper: keeper,
             transport: transport,
             landID: landID,
-            transportEnvConfig: frameIdentityConfig(tables: tables, dirtyTracking: dirtyTracking),
+            transportEnvConfig: frameIdentityConfig(tables: tables, perPlayerTables: perPlayerTables, dirtyTracking: dirtyTracking),
             encodingConfig: encoding,
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true
@@ -238,21 +240,25 @@ struct SyncTablesFrameIdentityTests {
             let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(definition())])
             pathHashes = try #require(schema.lands[landType]?.pathHashes)
         }
+        // Both tables on, the broadcast tables alone (per-player fields on today's path, #514),
+        // and neither: each against neither.
         var frames: [[(target: String, data: Data)]] = []
-        for tables in [true, false] {
+        for (tables, perPlayerTables) in [(true, true), (true, false), (false, false)] {
             let run = await FrameIdentityRun<State>(
                 definition: definition(), landID: landID, services: services(), tables: tables,
-                dirtyTracking: dirtyTracking, encoding: encoding, pathHashes: pathHashes
+                perPlayerTables: perPlayerTables, dirtyTracking: dirtyTracking, encoding: encoding, pathHashes: pathHashes
             )
             // Which broadcast fields the typed diff walks: a field on the fallback is the
             // snapshot diff on both sides, so the cell says nothing about the tables for it.
             #expect(await run.adapter.syncTableFieldKinds() == (tables ? kinds : nil), "\(cell): kinds")
+            #expect(await run.adapter.perPlayerSyncTablesInEffect() == perPlayerTables, "\(cell): per-player tables in effect")
             try await script(run)
             frames.append(await run.transport.sent)
             #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
         }
         #expect(frames[0].count > 20, "\(cell): the script sends frames")
-        expectSameFrames(frames[0], frames[1], cell)
+        expectSameFrames(frames[0], frames[2], cell + " (both tables)")
+        expectSameFrames(frames[1], frames[2], cell + " (broadcast tables)")
     }
 
     @Test("Hero Defense", arguments: frameIdentityCells)
