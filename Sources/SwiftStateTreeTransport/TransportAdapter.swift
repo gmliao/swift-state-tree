@@ -1403,6 +1403,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "dirtyTracking": .string(envConfig.enableDirtyTracking ? "on" : "off"),
             "snapshotForSync": .string(envConfig.useSnapshotForSync ? "on" : "off"),
             "syncTables": .string(usesSyncTables ? "on" : "off"),
+            "rowAddressing": .string(rowAddressing ? "on" : "off"),
             "typedLeafValues": .string(usesSyncTables && envConfig.typedLeafValues ? "on" : "off"),
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ","))
@@ -1416,14 +1417,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
         // Row addressing needs the tables, so it keeps them on with `USE_SYNC_TABLES=false`:
-        // say so, and how to reach the snapshot-diff path (the flag is a temporary fallback).
+        // say so, once per land, and how to reach the snapshot-diff path (the flag is a temporary
+        // fallback).
         if rowAddressing && !envConfig.useSyncTables {
             self.logger.warning("USE_SYNC_TABLES=false is ignored: row addressing is in effect and needs the sync tables. Set ROW_ADDRESSING=false too for the snapshot-diff (legacy) path.", metadata: [
                 "landID": .string(landID),
             ])
         }
+        // Info, not a warning: the request is the default, so a land that can't have rows by
+        // design (a replay keeper, an `IN_TURN_SYNC=false` server, `fullSnapshot`) logs this too.
         if rowAddressingRequested && !rowAddressing {
-            self.logger.warning("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
+            self.logger.info("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
                 "landID": .string(landID),
                 "inTurnSync": .string(inTurnSyncEnabled ? "on" : "off"),
                 "joinsThroughRouter": .string(joinsThroughRouter ? "yes" : "no"),

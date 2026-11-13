@@ -304,8 +304,9 @@ public struct TransportEncodingConfig: Sendable {
             unmappedPaths: unmappedPaths,
             fieldMerge: fieldMerge
         )
-        // Row entries need path indices and a path table: only an effective config asks for them.
-        guard rowAddressing, pathIndex, pathHashes != nil else { return encoder }
+        // Row entries need path indices, the sync sequence and a path table, as `effective` requires;
+        // a preset (row addressing on, the sync sequence off) gets today's encoder.
+        guard rowAddressing, pathIndex, syncSequence, pathHashes != nil else { return encoder }
         switch encoder {
         case let encoder as OpcodeMessagePackStateUpdateEncoder: return encoder.withRowAddressing()
         case let encoder as OpcodeJSONStateUpdateEncoder: return encoder.withRowAddressing()

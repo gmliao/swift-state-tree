@@ -247,7 +247,8 @@ struct EffectiveStateUpdateFeaturesTests {
 
 @Suite("Benchmark diagnostics: a land manager with a sync-lag policy")
 struct LandManagerSyncLagTests {
-    /// A router over the diagnostics manager, path hashes on, loops off: as a benchmark builds it.
+    /// A router over the diagnostics manager, path hashes on, loops off: as a benchmark builds it,
+    /// but without row addressing (the benchmark's router default has it on).
     static func router(syncLag: SyncLagPolicy?) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {
         let encoding = PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true)
         let transport = WebSocketTransport()

@@ -228,6 +228,31 @@ private struct RowAddressingRun {
         clients[name] = RowAddressingClient(session: session, hasher: hasher)
     }
 
+    /// Saves the record (with the adapter's sync config, as `LandManager` writes it) and replays
+    /// it on a land whose ticks apply `steps`, the steps the live run ticked, in order.
+    func replay(steps: [(inout RowAddressingState) -> Void], initial: RowAddressingState) async throws -> ReevaluationEngine.RunResult {
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let replayScript = RowAddressingScript()
+        for step in steps { replayScript.queue(step) }
+        let definition = rowAddressingLand(replayScript)
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "row-addressing",
+            landType: "row-addressing",
+            createdAt: Date(timeIntervalSince1970: 0),
+            metadata: [:],
+            landDefinitionID: definition.id,
+            version: ReevaluationRecordVersion.current,
+            recordsSyncStream: true,
+            syncConfig: adapter.syncConfigForRecord
+        ))
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("row-addressing-\(UUID().uuidString).json").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.saveCopyForTesting(to: path)
+        return try await ReevaluationEngine.run(definition: definition, initialState: initial, recordFilePath: path)
+    }
+
     /// Steps one tick that applies `step`.
     func tick(_ step: @escaping (inout RowAddressingState) -> Void) async {
         script.queue(step)
@@ -371,6 +396,13 @@ struct RowAddressingAdapterTests {
         #expect(TransportEncodingConfig.opcode.rowAddressing && TransportEncodingConfig.jsonOpcode.rowAddressing)
         #expect(TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack).rowAddressing, "the init's default")
         #expect(!TransportEncodingConfig.json.effective(pathHashes: hashes).rowAddressing, "object state updates never carry it")
+        // An encoder made straight from a preset (rows on, the sync sequence off) has no rows, as
+        // `effective` says; with the sync sequence it does.
+        func encoderRows(_ config: TransportEncodingConfig) -> Bool? {
+            (config.makeStateUpdateEncoder(pathHashes: hashes) as? OpcodeMessagePackStateUpdateEncoder)?.rowAddressing
+        }
+        #expect(encoderRows(.messagepack) == false)
+        #expect(encoderRows(.messagepack.withSyncSequence(true)) == true)
         #expect(StateUpdateFeature.supported.contains(StateUpdateFeature.rowAddressing))
         #expect(TransportEncodingConfig.rowAddressingFromEnvironment(environment: ["ROW_ADDRESSING": "true"]))
         #expect(TransportEncodingConfig.rowAddressingFromEnvironment(environment: [:]), "on by default")
@@ -399,17 +431,39 @@ struct RowAddressingAdapterTests {
 
     @Test("USE_SYNC_TABLES=false with row addressing in effect: the tables stay on, with one warning that names ROW_ADDRESSING=false")
     func tablesOffIgnoredWarning() async throws {
-        func warnings(rowAddressing: Bool, tables: Bool) async throws -> [String] {
+        func warnings(rowAddressing: Bool, tables: Bool, joinsThroughRouter: Bool = true) async throws -> (warnings: [String], tables: Bool) {
             let records = RowAddressingLogRecords()
             let logger = Logger(label: "row-addressing-test") { _ in RowAddressingRecordingLogHandler(records: records) }
-            _ = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: rowAddressing, tables: tables, logger: logger)
-            return records.warnings.filter { $0.contains("USE_SYNC_TABLES=false is ignored") }
+            let run = try await RowAddressingRun.make(
+                encoding: .messagepack, rowAddressing: rowAddressing, joinsThroughRouter: joinsThroughRouter, tables: tables, logger: logger
+            )
+            return (records.warnings.filter { $0.contains("USE_SYNC_TABLES=false is ignored") }, await run.adapter.usesSyncTablesForTesting())
         }
         let ignored = try await warnings(rowAddressing: true, tables: false)
-        #expect(ignored.count == 1)
-        #expect(ignored.first?.contains("Set ROW_ADDRESSING=false too") == true)
-        #expect(try await warnings(rowAddressing: false, tables: false).isEmpty, "both off: the tables are off, nothing ignored")
-        #expect(try await warnings(rowAddressing: true, tables: true).isEmpty, "the tables on: nothing ignored")
+        #expect(ignored.warnings.count == 1)
+        #expect(ignored.warnings.first?.contains("Set ROW_ADDRESSING=false too") == true)
+        #expect(ignored.tables)
+        #expect(try await warnings(rowAddressing: false, tables: false).warnings.isEmpty, "both off: the tables are off, nothing ignored")
+        #expect(try await warnings(rowAddressing: true, tables: true).warnings.isEmpty, "the tables on: nothing ignored")
+        // Requested but not in effect (a direct join): the tables really are off, so nothing is ignored.
+        let direct = try await warnings(rowAddressing: true, tables: false, joinsThroughRouter: false)
+        #expect(direct.warnings.isEmpty)
+        #expect(!direct.tables)
+    }
+
+    @Test("Row addressing requested by default but not in effect (a replay keeper's in-turn sync off, a direct join) logs at info, not as a warning")
+    func notInEffectIsInfo() async throws {
+        for (inTurnSync, joinsThroughRouter) in [(false, true), (true, false)] {
+            let records = RowAddressingLogRecords()
+            let logger = Logger(label: "row-addressing-test") { _ in RowAddressingRecordingLogHandler(records: records) }
+            let run = try await RowAddressingRun.make(
+                encoding: .messagepack, rowAddressing: true, joinsThroughRouter: joinsThroughRouter, inTurnSync: inTurnSync, logger: logger
+            )
+            #expect(!run.adapter.rowAddressing)
+            let notInEffect = records.all.filter { $0.message.contains("Row addressing requested but not in effect") }
+            #expect(notInEffect.map(\.level) == [.info], "inTurnSync \(inTurnSync), router \(joinsThroughRouter)")
+            #expect(records.warnings.isEmpty, "inTurnSync \(inTurnSync), router \(joinsThroughRouter): \(records.warnings)")
+        }
     }
 
     @Test("The oracle: each sync decodes to the feature-off run's patches, every client reaches the live state, slots match the server's", arguments: RowAddressingEncoding.allCases)
@@ -483,12 +537,14 @@ struct RowAddressingAdapterTests {
         let steps: [(inout RowAddressingState) -> Void] = [
             { $0.units["a"]?.hp = 10; $0.units["c"] = RowAddressingUnit(hp: 3) },
             { $0.units["b"] = nil; $0.units["c"]?.bag["k"] = 1 },
+            // Only `round`: with dirty tracking on, the plan skips the slot table's diff.
+            { $0.round = 1 },
             { $0.units["d"] = RowAddressingUnit(hp: 4); $0.units["a"]?.note = "x" },
             { $0.units["a"]?.note = nil; $0.round = 2 },
         ]
         for index in runs.indices { try await runs[index].join("p1") }
         for (n, step) in steps.enumerated() {
-            if n == 2 { for index in runs.indices { try await runs[index].join("p2") } }
+            if n == 3 { for index in runs.indices { try await runs[index].join("p2") } }
             for run in runs { await run.tick(step) }
         }
         for player in ["p1", "p2"] {
@@ -497,8 +553,10 @@ struct RowAddressingAdapterTests {
             #expect(on.count > 2, "\(player) got frames")
             #expect(on == off, "\(player): the frames differ with dirty tracking off")
         }
-        // Row entries were sent: this is the row path, not the path-entry one.
-        #expect(try await !runs[0].rowEntryOps().isEmpty)
+        // Row entries were sent, in every frame the same: this is the row path, not the path-entry one.
+        let rowOps = try await runs[0].rowEntryOps()
+        #expect(!rowOps.isEmpty)
+        #expect(try await runs[1].rowEntryOps() == rowOps)
         for index in runs.indices {
             #expect(await runs[index].adapter.dirtyTrackingEnabledForTesting() == (index == 0), "dirty tracking at the end")
         }
@@ -609,28 +667,40 @@ struct RowAddressingAdapterTests {
         await expect(fixed, .committed(clearDirtyFlags: true), "after syncNow")
     }
 
-    @Test("The sync stream is the same with the feature off and on: row entries are made after the plan", arguments: RowAddressingEncoding.allCases)
+    @Test("The sync stream is the same with the feature off and on, and each arm's record replays to the same summary: row entries are made after the plan", arguments: RowAddressingEncoding.allCases)
     func recordStaysLogical(encoding: RowAddressingEncoding) async throws {
         let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "b": RowAddressingUnit(hp: 2)])
-        var streams: [Data] = []
+        let steps: [(inout RowAddressingState) -> Void] = [
+            // Only `round` dirty when the first player joins: the plan's broadcast diff seeds
+            // `round` alone.
+            { $0.round = 1 },
+            { $0.units["a"]?.hp = 10; $0.units["c"] = RowAddressingUnit(hp: 3) },
+            { $0.units["b"] = nil; $0.units["c"]?.bag["k"] = 1 },
+            { $0.units["d"] = RowAddressingUnit(hp: 4) },
+        ]
+        var streams: [Data] = [], summaries: [String] = []
         for on in [false, true] {
             var run = try await RowAddressingRun.make(encoding: encoding, rowAddressing: on, recording: true, initial: initial)
             #expect(run.adapter.rowAddressing == on)
-            // Only `round` dirty when the first player joins: the plan's broadcast diff seeds
-            // `round` alone.
-            await run.tick { $0.round = 1 }
+            await run.tick(steps[0])
             try await run.join("p1")
-            await run.tick { $0.units["a"]?.hp = 10; $0.units["c"] = RowAddressingUnit(hp: 3) }
+            await run.tick(steps[1])
             try await run.join("p2")
-            await run.tick { $0.units["b"] = nil; $0.units["c"]?.bag["k"] = 1 }
-            await run.tick { $0.units["d"] = RowAddressingUnit(hp: 4) }
+            await run.tick(steps[2])
+            await run.tick(steps[3])
+            // Each arm sent what it says: row entries with the feature, none without.
+            #expect(try await run.rowEntryOps().isEmpty == !on, "row entries sent: \(on)")
             await run.keeper.waitForRecorderSubmissionsForTesting()
             let recorder = try #require(await run.keeper.getReevaluationRecorder())
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             streams.append(try encoder.encode(await recorder.getAllFrames()))
+            let result = try await run.replay(steps: steps, initial: initial)
+            #expect(result.syncOutput.verdict == .passed, "rows \(on): \(result.syncOutput.summary)")
+            summaries.append(result.syncOutput.summary)
         }
         #expect(streams[0] == streams[1])
+        #expect(summaries[0] == summaries[1])
     }
 
     @Test("A map whose seed failed is diffed from nothing once it converts: the record is the same with the feature off and on", arguments: RowAddressingEncoding.allCases)
@@ -774,24 +844,29 @@ private enum RowAddressingRefProbe {
     }
 }
 
-/// Warning messages, in order (`RowAddressingRecordingLogHandler`).
+/// Log records, in order (`RowAddressingRecordingLogHandler`).
 private final class RowAddressingLogRecords: @unchecked Sendable {
     private let lock = NSLock()
-    private var messages: [String] = []
+    private var records: [(level: Logger.Level, message: String)] = []
 
-    func append(_ message: String) {
-        lock.withLock { messages.append(message) }
+    func append(_ level: Logger.Level, _ message: String) {
+        lock.withLock { records.append((level, message)) }
     }
 
+    var all: [(level: Logger.Level, message: String)] {
+        lock.withLock { records }
+    }
+
+    /// Warnings and above.
     var warnings: [String] {
-        lock.withLock { messages }
+        all.filter { $0.level >= .warning }.map(\.message)
     }
 }
 
-/// Records warnings and above.
+/// Records info and above.
 private struct RowAddressingRecordingLogHandler: LogHandler {
     let records: RowAddressingLogRecords
-    var logLevel: Logger.Level = .warning
+    var logLevel: Logger.Level = .info
     var metadata: Logger.Metadata = [:]
 
     subscript(metadataKey key: String) -> Logger.Metadata.Value? {
@@ -808,6 +883,6 @@ private struct RowAddressingRecordingLogHandler: LogHandler {
         function: String,
         line: UInt
     ) {
-        if level >= .warning { records.append(message.description) }
+        if level >= .info { records.append(level, message.description) }
     }
 }

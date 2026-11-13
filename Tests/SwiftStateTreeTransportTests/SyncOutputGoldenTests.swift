@@ -267,9 +267,11 @@ struct SyncOutputGoldenTests {
     /// identical but for the feature, record the same frames and sync stream and replay to the
     /// same summary. They are compared with each other, not with the committed goldens: a router
     /// join is scheduled differently from the direct join the goldens were recorded with.
-    /// The verifier land has no broadcast node map, so no row entries are sent here; with them,
-    /// RowAddressingAdapterTests' `recordStaysLogical` checks the same.
-    @Test("With row addressing in effect, a golden scenario through the router records what it records with it off", arguments: SyncOutputGolden.allCases)
+    /// The verifier land has no root node map, so no row entries are sent here: what this covers
+    /// is the scheduling rows in effect turn on (the forced full plan, resync-first ordering).
+    /// With row entries sent, RowAddressingAdapterTests' `recordStaysLogical` checks the record
+    /// and its replay.
+    @Test("With row addressing in effect (no row entries: no root node map), a golden scenario through the router records what it records with it off", arguments: SyncOutputGolden.allCases)
     func rowAddressingKeepsTheRecord(golden: SyncOutputGolden) async throws {
         guard !Self.regenerating, InTurnSync.isEnabled() else { return }
         let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
@@ -278,7 +280,7 @@ struct SyncOutputGoldenTests {
             let f = await VerifierFixture.makeThroughRouter(encoding: encoding, rowAddressing: on)
             // Each arm runs what it says.
             #expect(f.adapter.rowAddressing == on, "\(golden): rows \(on ? "in effect" : "off")")
-            #expect(await f.adapter.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing) == on)
+            #expect(f.adapter.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing) == on)
             try await golden.play(f)
             streams.append(try await f.stream())
             let recorder = try #require(await f.keeper.getReevaluationRecorder())
