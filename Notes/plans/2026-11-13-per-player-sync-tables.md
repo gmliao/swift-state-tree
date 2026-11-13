@@ -1,8 +1,17 @@
 # Per-player fields on typed per-player sync tables (#514)
 
-**Status:** draft, for review. Step 2's PR 3 (`2026-11-10-flat-storage-step2.md` §5 and §7), which never started. Read at `main` 9bf7df61. No code before this plan is reviewed.
+**Status:** draft, rev 2 (2026-11-13), for review.
+- This is step 2's PR 3 (`2026-11-10-flat-storage-step2.md` §5 and §7), which never started. Read at `main` 9bf7df61.
+- Rev 1 (65cb9b53) got a no-GO: 4 must-fix, 6 should, 1 nit. Rev 2 addresses them: M1 in §3, M2 in §1 and §3, M3 in §3, M4 in §2, S1 in §3, S2 in §5 and §7, S3 in §4, S4 in §5 and §6, S5 in §2, S6 in §4, N1 in §3.
+- No code before this plan is reviewed.
 
 **Depends on:** row addressing's default flip (PR F of `2026-11-10-row-addressing.md` §9), which lands first. Section 7 lists the overlap.
+
+**Decided (2026-11-13):**
+- D1: per-player fields honor the dirty marks, under the purity contract, with §2's retry and rollback rules.
+- D2: one PR, on by default, with an opt-out. This follows #523's pattern and stays within the approved flattening plan.
+- D3: the env key is `PER_PLAYER_SYNC_TABLES`, classified in `deep-research/serverenv.py`.
+- D4: a player's second session getting no per-player changes is a bug, #531. This PR keeps today's bytes, and its pin is marked as a known bug citing #531.
 
 ## 0. Before starting: the share
 
@@ -11,17 +20,16 @@
 **What is known:**
 - The visibility land's sync dominates its iteration. In #527's measurement (10 rooms, 5 players each, tables on), `syncMs` was 3702 ms and `tickMs` 902 ms over 2000 iterations.
 - Its only per-player field is `entities`, a `[String: VisibleEntity]` filtered per player (`VisibilityTestLand.swift:203-206`). Every entity moves every tick, so the field is dirty on every sync.
-- The broadcast fields (`viewers`, `motion`, `viewEntries`, `viewExits`, `tickCount`) are small, and they are already on the tables.
 
 **The measurement:** a sampled profile of `EncodingBenchmark --game-type visibility-test --rooms 10 --players-per-room 5 --parallel false`, release, on the Mac, to get the direction. It buckets sync time into:
-- (a) the filter closure itself;
-- (b) per-player conversion: `extractPerPlayerSnapshot` → `SnapshotValue` for each entity the player sees;
+- (a) the filter closure;
+- (b) per-player conversion: `extractPerPlayerSnapshot` → `SnapshotValue` for each entity a player sees;
 - (c) the per-player tree diff (`computePerPlayerDiffFromSnapshot` → `compareSnapshots`) and staging;
-- (d) encoding and everything else.
+- (d) encoding and the rest.
 
-This plan removes (b) and (c), except the conversion of changed leaves. (a) stays, because the closure is the land's own code.
+This plan removes (b) and (c), except the conversion of changed leaves. (a) is the land's own code.
 
-**Stop rule:** if (b) + (c) is under 15 % of vis sync time, report it and keep #514 deferred. The result goes on #514 either way.
+**Stop rule:** if (b) + (c) is under 15 % of vis sync time, report it on #514 and keep #514 deferred. Everything below applies only if the share clears 15 %.
 
 ## 1. Scope
 
@@ -29,221 +37,299 @@ This plan removes (b) and (c), except the conversion of changed leaves. (a) stay
 
 | Policy | Today | Under this plan |
 |---|---|---|
-| `.perPlayer(f)` | filter per player on the native value, convert the whole output, tree diff | filter per player on the native value (unchanged), typed diff of the output against that player's last-sent |
-| `.perPlayerSlice()` | the same (a `.perPlayer` closure reading `value[playerID]`) | the same as `.perPlayer` |
-| `.custom(f)` (deprecated, #198) | the same, arguments swapped | the same as `.perPlayer`, until #198 removes it |
-| `.masked(f)` at the root | in the per-player part: `filteredValue(for: playerID)` gives `mask(value)` for every player | the same as `.perPlayer`: one last-sent per player. Sharing one masked value across players is a possible later optimization. Root `.masked` is used only in tests. |
-| an unrecognized policy (`.unknown`) | per-player part | a per-player fallback field (below) |
+| `.perPlayer(f)` | filter per player on the native value, convert the whole output for that player, tree diff | filter per player (unchanged); typed diff of the output against that player's box |
+| `.perPlayerSlice()` | the same; the closure returns nil when the player has no entry (`SyncPolicy.swift:89-97`) | the same as `.perPlayer`; nil is "absent" (§3) |
+| `.custom(f)` (deprecated, #198) | the same, with the arguments swapped | the same as `.perPlayer`, until #198 removes it |
+| `.masked(f)` at the root | in the per-player part: `filteredValue(for: playerID)` gives `mask(value)` | the same as `.perPlayer`, with one box per player. Used only in tests |
+| unrecognized (`.unknown`) | per-player part | per-player fallback (below) |
 
-**Field kinds** are resolved exactly as for broadcast fields, through `SyncTableField.make`'s overloads (`SyncTables.swift:73-142`): node map, node, optional node, value, or fallback. The filter's output has the field's type, so the same kind applies.
+**Per-player descriptors (M2).** Today's typed descriptors have no player:
+- `_syncTableFields()` emits `SyncTableField.make(…, read: { filteredValue($0._x.wrappedValue, for: nil) }, convert: …)` (`StateNodeBuilderMacro.swift:429-435`), and its conversion has no player context.
+- The per-player part of `snapshotForSync` passes `playerID` into the conversion (`generateConversionCode(…, playerID: "playerID")`, 660-666). So a nested node with player-dependent fields is filtered for that player.
 
-**Fallback per player:** today's path, kept for that one field and that one player. The field's output is converted to `SnapshotValue` and diffed against the player's cached `SnapshotValue` of that field. This covers:
-- unknown policies;
-- a field whose node type has player-dependent nested fields (`N.hasPlayerDependentSyncFields`, `SyncTables.swift:218`);
-- the shapes the broadcast side sends to the fallback.
+The macro therefore emits a second list, `_syncTablePerPlayerFields()`, one descriptor per player-dependent root field:
+- `read: (Self, PlayerID) -> Value?`, which is `Self._syncPolicy_<x>.filteredValue(self._x.wrappedValue, for: playerID)`. This is the call today's per-player part makes.
+- **A player-aware converter.** A changed value, and a fallback field's whole output, is converted with today's per-player conversion for that player (`generateConversionCode(…, playerID:)`). A nested player-dependent node, such as a `.perPlayer` or `.custom` field inside a node under a per-player root, is then filtered for the same player.
+- **The kind:** resolved by the same `SyncTableField.make` overloads (`SyncTables.swift:73-142`). A node type with player-dependent nested fields (`N.hasPlayerDependentSyncFields`, 218) takes the fallback, as on the broadcast side.
 
-**Not in scope:**
-- Nested player-dependent policies below a broadcast root field. They stay as the broadcast side handles them: the node takes the fallback.
-- Row addressing for per-player rows (section 7).
-- Row-level visibility (step 2 §6).
+**A typed row is player-independent below its root.** Its synced fields are `.broadcast`, `.serverOnly` or `.masked`, and none depends on the player. A node with any player-dependent field is a fallback. So a typed row's compare and leaf conversion need no player. Only the root read, and the fallback's conversion, take the player.
+
+**Fallback per player:** today's path for that one field and that one player. The output is converted with the player-aware converter and diffed against the player's cached `SnapshotValue` of that field. This covers unknown policies, nodes with player-dependent nested fields, and the shapes the broadcast side sends to the fallback.
+
+**Not in scope:** nested player-dependent policies below a broadcast root, which keep the broadcast side's fallback; per-player row addressing (§7); row-level visibility (step 2 §6).
 
 ## 2. What changes in the diff path
 
-**Today, per sync** (`TransportAdapter.extractSyncSnapshots`, 5012-5083, with the tables on):
+**Today, per sync,** with the tables on (`TransportAdapter.extractSyncSnapshots`, 5012-5083):
 1. Deduplicate the recipients by player (`seenPlayers`).
-2. Per player, run `extractPerPlayerSnapshot(for:from:mode: .include(perPlayerFields))`. For each per-player field it calls `filteredValue(native, for: playerID)` and converts the whole output to `SnapshotValue`. It covers **every per-player field of every player**, dirty or not.
-3. If any field throws, the separate per-field extraction takes over and drops only that field (the one-pass rule, `Notes/solutions/2026-11-10-a-rewritten-extraction-must-keep-the-empty-result-rule.md`).
-4. Per recipient (session), `generatePerPlayerUpdateFromSnapshot` (or `generateUpdateFromBroadcastDiff` for the combined JSON frame) diffs that snapshot against `staged.perPlayer[player] ?? lastPerPlayerSnapshots[player]` with `compareSnapshots`, then stages the new snapshot.
+2. Take one of two branches:
+   - **(B1) One-pass**, when `useSnapshotForSync` and the broadcast diff dropped nothing (5040-5056). If the state has no per-player fields, there is **no entry** at all. Otherwise, per player, `extractPerPlayerSnapshot(mode: .include(perPlayerFields))` converts every per-player field. If any of them throws, it falls to B2.
+   - **(B2) Separate extraction** (5063-): one entry **per player, whatever the state has**, empty when it has no per-player fields. A throwing field is dropped for that player alone, and counted.
+3. Per recipient, in recipient order: `generatePerPlayerUpdateFromSnapshot` (or `generateUpdateFromBroadcastDiff` for the combined JSON frame) diffs the entry against `staged.perPlayer[p] ?? lastPerPlayerSnapshots[p]` and stages the new snapshot. Then:
+   - `.noChange` is skipped;
+   - under a key reset (`typesFirstSync`), the update becomes `keyScopeResetUpdate`, so an empty entry is a `.firstSync([])` frame (5146-5150).
 
 **Under this plan, per sync:**
 1. Deduplicate by player, as today.
-2. Per player, per per-player root field: `out = filteredValue(native, for: playerID)`. The call and its input are unchanged.
-3. Diff `out` against that player's last-sent box for the field, with the broadcast tables' differs (`SyncNodeMapDiffer.diffRows`, `SyncNodeDiffer`, `SyncValueDiffer`, `SyncEquatableDiffer`). A changed leaf is converted to `SnapshotValue`. Nothing else is converted.
-4. Stage the writes per (player, field) in the plan's `SyncTableStaged`, beside the broadcast staging.
-5. Per recipient: the per-player patches of its player become its update, as `generatePerPlayerUpdateFromSnapshot` builds it today. That is `.noChange` when there are no patches, and the combined JSON frame merges broadcast and per-player patches with `mergePatches`.
+2. **The same two branches, with the same predicate.** An entry exists exactly when today's branch would make one. B1 makes none for a state without per-player fields. B2 makes an empty one per player, which under a key reset still becomes `.firstSync([])` (M4). B1's all-or-nothing fallback to B2 is kept, and so are B2's drop counts, because the branch decides which entries exist.
+3. **Per player that has an entry,** per per-player root field selected by D1 below, call `read(state, playerID)` and diff the output against the player's box (§3). The broadcast tables' differs do the work, and only a changed leaf is converted.
+4. **Stage per (player, field)** in the plan's per-player staging (§3, separate from the broadcast staging).
+5. **Hand the per-player patches to the recipients in recipient order** (§3, S1).
 
-**What the visibility land saves per player per sync:** the `SnapshotValue` build of every visible entity, the tree diff of the whole map, and the snapshot copy staged per player. What it still pays:
-- the filter (the land's closure);
-- a typed compare of each visible entity's synced fields (`id`, `position`);
-- the conversion of the `position` values that changed.
+**Kept as today:**
+- **Throwing conversions.** No patches for that field and that player, its box isn't advanced, and the drop is counted as B2 counts it.
+- **Patch order.** Every state-update encoder sorts each frame's patches by the land's canonical order (`CanonicalFrameOrder`, set at registration, TA 1262 and 1291). The typed diff's emit order therefore can't change bytes. The frame identity tests check this.
+- **Key reset.** Unchanged.
 
-**Kept exactly as today**, since the gate is byte identity:
-- **The empty-result rule.** A state with no per-player fields produces no per-player entry at all, so no update is planned. This rule is the reason for the 11-10 solutions entry.
-- **Throwing conversions.** A field whose conversion throws for a player gets no patches for that player, and its last-sent for that player isn't advanced. The drop is counted in `ExtractionDrops` as the separate extraction counts it. The one-pass all-or-nothing fallback has nothing left to fall back from: the typed path is already per field. The differential test pins equality with today's output, counts included.
-- **Patch order.** Every state-update encoder sorts each frame's patches by the land's canonical order before planning or encoding them (`CanonicalFrameOrder`, set at registration, TA 1262 and 1291), so the typed diff's emit order can't change bytes. The frame identity tests check it rather than assume it.
-- **Key reset.** `typesFirstSync` → `keyScopeResetUpdate`, unchanged.
+**What the visibility land saves per player per sync:** the `SnapshotValue` build of every visible entity, the whole-map tree diff, and the per-player snapshot staged. It still pays the filter, a typed compare of each visible entity's `id` and `position`, and the conversion of changed positions.
 
-**Decision D1, for review: honor the dirty marks for per-player fields.** Today every per-player field of every player is extracted and diffed on every sync. Under the documented contract the filter is a pure function of (value, player). So a clean field's output equals last-sent, and diffing it emits nothing. The tables could therefore skip clean per-player fields, as they skip clean broadcast fields. The gain:
-- the card game and the cookie demo (`.perPlayerSlice` maps that change rarely);
-- the per-player fields of any land, whenever only broadcast fields changed.
+**D1: per-player fields honor the dirty marks (S5).** Today every per-player field of every player is extracted on every sync. Under the purity contract (the filter is a pure function of value and player: the `SyncPolicy` DocC, and #199), a clean field's output equals what its box holds. A field `f` is diffed for player `p` when any of these holds:
+- `f` is in the plan's dirty field set: `planDirtyFields`, which already includes the fields a failed plan carried (`carriedDirtyFields`, TA 982);
+- `(p, f)` is in the per-player retry set;
+- `p` is seeded by this plan;
+- dirty tracking is off.
 
-The visibility land's `entities` is dirty on every sync, so it gains nothing. A skipped field is still diffed:
-- when its player is new or resynced (seeding, section 3);
-- when it is in the retry set after a drop;
-- whenever dirty tracking is off.
+The per-player retry set holds `(player, field)` pairs:
+- **Insert:** when `f`'s conversion threw for `p`, in a diff or in a seed. Its box isn't advanced, and today a later sync retries it because every field is extracted every sync.
+- **Clear:** when a committed plan diffed `(p, f)` with no drop.
+- **Staged:** inserts and clears are staged with the plan's per-player writes, and a failed plan leaves the set as it was.
+- **Disconnect, supersede and full-view seed:**
+  - a disconnect or supersede clear (§3) removes `p`'s pairs;
+  - a full-view seed of `p` replaces `p`'s pairs with the seed's own drops.
 
-**Recommended: yes.** The risk is an impure filter (one that reads state outside its arguments), which would then stop updating until its field changes. #199 is the place for such filters, and it already notes this dependency. Bytes stay identical under the contract, and the identity tests run with dirty tracking on and off.
+**When the dirty marks are cleared:** as today. `LandKeeper.beginSync(clearDirtyFlags:)` clears them in the turn that takes the plan's state (TA 3252-3256), and a failed plan's fields come back as carried fields. So a per-player field dirtied in a failed plan's turn is diffed again by the next plan.
 
-## 3. Storage, seeding and the lifecycle
+**Every write to a per-player field marks it dirty.** A per-player field is a root `@Sync` field, and each mutation route goes through its wrapper:
+- the setter, which sets `_isDirty` (`SyncPolicy.swift`, `wrappedValue.set`);
+- the in-place `_modify` from #519, which marks before the yield, so a throw after a write still counts;
+- a nested node write and a map subscript write, which go through the root's `_modify`.
 
-**Last-sent per player:** a new `SyncTablePerPlayerDiff<State>`, held by the adapter next to `broadcastTables`. For each player that has been synced, it keeps one typed box per per-player root field (`[K: N]`, `N`, `N?`, `V`, or a fallback `SnapshotValue`). These are the same box types as the broadcast `SyncRootSlot`s (`SyncTables.swift:1065-1346`), keyed by `PlayerID`.
-- **Not slot-addressed.** The boxes are built without a path cursor, so the slotted `diffRows` never tags a row (`isSlotAddressed { cursor != nil }`, 1172). No per-player patch carries a row split. Section 7 explains why this matters once F is in.
-- **No splits on per-player patches.** Today they carry none, and the opcode encoders split their paths themselves. A cursor that gives splits without row tags would be a third mode of the differ. It is left for later, if the numbers show path splitting matters.
+Until now a missing mark couldn't show, because per-player fields were extracted regardless. The PR therefore pins each route on a per-player field: the setter, `state.entities[k] = v`, `state.entities[k]?.position = …`, a nested node field write, and `f(&state.entities)`.
 
-**Staging and commit:**
-- `SyncTableStaged` gains the per-player writes, `[PlayerID: per-field staged writes]`, and a set of per-player seeds.
-- `commitSyncPhase` applies them with the broadcast part (`broadcastTables?.apply(plan.stagedTables)`, `TransportAdapter.swift:4229-4230`).
-- A failed plan discards them with the rest of `stagedTables`.
+**Tests for D1** (dirty tracking on):
+- a clean field that was dropped for one player last plan, while another field changes;
+- the B2 fallback triggered by a broadcast drop;
+- a failed retry plan, followed by a committed one;
+- the identity tests below, all run with dirty tracking on and off.
 
-**Where today's per-player cache is read and written, and what replaces each.** SE = `SyncEngine.swift`, TA = `TransportAdapter.swift`. This is the per-player half of step 2 §4's table:
+## 3. Storage, transitions, staging and the lifecycle
+
+**Boxes.** A new `SyncTablePerPlayerDiff<State>` sits next to `broadcastTables` in the adapter. For each synced player it holds one box per per-player root field. A box is typed (`[K: N]`, `N`, `N?`, `V`) or, for the fallback, a `SnapshotValue`. It uses the same box types as the broadcast `SyncRootSlot`s (`SyncTables.swift:1065-1346`), plus a presence state (M1).
+
+**Not slot-addressed, no splits.** Boxes are built without a path cursor, so the slotted `diffRows` never tags a row (`isSlotAddressed { cursor != nil }`, 1172). Per-player patches carry no split, as today, and the opcode encoders split their paths themselves. §7 explains why.
+
+**Presence transitions (M1).** The broadcast root slots return early when the reader gives nil: `guard let value = read(state) else { return nil }` (`SyncTables.swift:1146, 1198, 1364`). On the broadcast side nil never follows a sent value. Per player it does: `.perPlayerSlice()` returns nil when the player's entry goes, and any filter can hide a field it showed. Today that is a root delete of the field, with the field dropped from the cache (`SyncEngine.swift:333-343`; `mergeDirtyFields`, 440-446). So the per-player box keeps a presence state, seeded or unseeded, and if seeded, present (with last-sent) or absent:
+
+| Box | `read` gives | Emits | Stages |
+|---|---|---|---|
+| unseeded | anything | nothing (the full view's seed sets it; §3, full views) | — |
+| present(old) | a value | the typed diff of old → new | the new value |
+| present(old) | nil | a delete of the field's root path, as today's diff does | absent |
+| absent | a value | a set of the whole field, as today's diff of a field that appears | present(new) |
+| absent | nil | nothing | — |
+
+- With dirty tracking on, the delete is emitted only for a dirty field, as today's `dirtyFields` rule (333-343). Under D1 only selected fields are read, so the two agree.
+- **A full-view seed replaces presence** from the view: present when the view has the field, absent otherwise.
+- Typed and fallback boxes follow the same table.
+
+**Staging (M3).** Per-player writes are staged in their own namespace on the plan, `plan.stagedPerPlayerTables`, not inside the broadcast `SyncTableStaged`. A broadcast-only failure resets the broadcast staging (`plan.stagedTables = SyncTableStaged()`, TA 4766-4769 and 5470) while the per-player frames still go out. With one struct, the per-player boxes would fall behind the clients. The rule is to mirror today's `plan.staged.perPlayer[p]` exactly. Every place that sets, keeps or removes `plan.staged.perPlayer[p]` does the same to `p`'s staged per-player writes, seed and retry changes:
+- **Broadcast encode failure** (4766-4769, 5470): today `staged.perPlayer` is kept, so the per-player staging is kept.
+- **Per-player encode failure** for `p` (4934-4940): today `staged.perPlayer[p]` and the firstSync mark are removed, so `p`'s per-player staging is discarded.
+- **Failed plan:** all of it is discarded, as today.
+- **Commit:** `commitSyncPhase` applies the per-player staging with `syncEngine.applyStaged` and `broadcastTables?.apply` (4229-4230).
+
+**Players with several sessions (S1, D4, #531).** The diff runs once per player. Today's per-session output is kept exactly, by consuming the patches in recipient order:
+- **The player's first recipient in recipient order** gets the update built from the player's patches, as `generatePerPlayerUpdateFromSnapshot` builds it.
+- **Each later recipient of the same player** gets the update built from no per-player patches. That is what today's diff against the first recipient's staged snapshot yields:
+  - `.noChange`, which is skipped;
+  - under a key reset, `keyScopeResetUpdate` of it, a `.firstSync([])`;
+  - in the combined JSON frame, the broadcast patches alone (`generateUpdateFromBroadcastDiff` with an empty per-player part).
+- **Today the second session never receives per-player changes in a normal sync.** That is #531. The frame identity case that pins it is marked as a known bug citing #531, so the later fix changes the pin deliberately.
+
+**Today's per-player cache, read and write by read and write.** SE = `SyncEngine.swift`, TA = `TransportAdapter.swift`.
 
 | Today | Under the per-player tables |
 |---|---|
-| Per-player diffs read `staged.perPlayer[p] ?? lastPerPlayerSnapshots[p]` (SE 778-830) and write it through `applyStaged` (SE 94-103) | The player's staged boxes, or else its committed boxes. They are staged and applied with the broadcast tables |
-| A full view (late join, resync) re-stages `staged.perPlayer[id] = extractPerPlayerSnapshot(.all)` (TA 4669) | Stage a seed of that player's boxes from the same state copy. The broadcast tables are untouched |
-| The late-join view fills a dropped field from the caches (SE 1508-1534) | That field of the player's box, converted to `SnapshotValue`. This is what the client was last sent, as today |
-| A per-player encode failure drops `plan.staged.perPlayer[p]` and the firstSync mark (TA 4934-4940) | Also drops that player's staged per-player writes and seed |
-| `clearCacheForDisconnectedPlayer` (SE 1186-1189), from the last session's leave (TA 1593, outside a turn, in the same segment as the `sessionIDs(for:)` check) and from supersede (TA 1973) | Also clears the player's boxes, at the same two call sites and in the same segment. The clear is by player and is guarded by the same "no other session" check, so it can't clear a re-joined player's boxes (`Notes/solutions/2026-11-05-callback-outlives-its-instance-clears-by-key.md`) |
+| Diffs read `staged.perPlayer[p] ?? lastPerPlayerSnapshots[p]` (SE 778-830); `applyStaged` writes it (SE 94-103) | `p`'s staged writes, else its committed boxes. Applied at commit |
+| A full view (late join, resync) re-stages `staged.perPlayer[id] = extractPerPlayerSnapshot(.all)` (TA 4669) | Stage a seed of `p`'s boxes and presence from the same state copy, with the player-aware read. The broadcast tables are untouched |
+| The late-join view fills a dropped field from the caches (SE 1508-1534) | That field of `p`'s box, converted to `SnapshotValue` (nothing when absent) |
+| Per-player encode failure (TA 4934-4940) | Discards `p`'s per-player staging (above) |
 | `cachedPerPlayerSnapshot` (SE 116), read by `SyncOutputShadow` | Unchanged: the shadow runs its own engine |
-| `cachedPerPlayerSnapshotForTesting` | With the per-player tables on, returns the player's boxes converted to a `StateSnapshot` |
+| `cachedPerPlayerSnapshotForTesting` | With the per-player tables in effect, `p`'s boxes as a `StateSnapshot` |
 
-**A debug assertion** pins that nothing on the sync path reads `lastPerPlayerSnapshots` while the per-player tables are on, as `broadcastCacheRetired` does for the broadcast cache (SE 49-55).
+**Two clears, two invariants (N1).** The boxes and retry pairs are cleared beside `clearCacheForDisconnectedPlayer`, at its exact placement in each path:
+- **Disconnect** (TA ~1593, outside a turn): only when the player has no other session (`membershipCoordinator.sessionIDs(for:)` is empty), checked after the `keeper.leave` await in the same synchronous segment as the clear. A re-joined player's boxes are never cleared (`Notes/solutions/2026-11-05-callback-outlives-its-instance-clears-by-key.md`).
+- **Supersede** (TA ~1973, at admission): unconditionally. The new session starts from empty, like a first join.
 
-**Players with several sessions.** The diff runs once per player. Today's output is kept exactly: the update loop runs per recipient (TA 5122-5200), and a later session of the same player diffs against what the first session just staged. In a normal sync that later session therefore gets `.noChange`. Newest-wins (#92) normally leaves one session per player, so this rarely arises.
-- This PR keeps that output, and a frame identity case pins it.
-- **Decision D4, for review:** whether that is a bug, which would be a separate issue. It isn't changed here, because this PR's gate is byte identity.
+**A debug assertion** pins that nothing on the sync path reads `lastPerPlayerSnapshots` while the per-player tables are in effect, as `broadcastCacheRetired` does (SE 49-55).
 
-## 4. The opt-out switch
+## 4. The switch (D2, D3, S3, S6)
 
-**Decision D2, for review: one PR, on by default, with an opt-out.** The alternative is step 2's pattern of a switch defaulting off and a separate flip PR. A single PR fits because:
-- the runtime it uses (the differs, boxes and staging) is the broadcast tables', which are already the default;
-- the gate is byte identity against today's path in the same run;
-- the host A/B can then measure base against head on defaults, as #523's and #527's did.
+**One effective rule:** `perPlayerTablesInEffect = usesSyncTables && PER_PLAYER_SYNC_TABLES`.
+- `usesSyncTables` is the adapter's effective broadcast-tables flag, `(useSyncTables || rowAddressing) && syncStrategy == .delta` (TA 1252).
+- So the per-player tables follow the broadcast tables, however those were turned on.
 
-**The switch:**
-- A package env key `PER_PLAYER_SYNC_TABLES`, default on, read through `getEnvBool` as `USE_SYNC_TABLES` is (`TransportEnvConfig.swift:12, 86-90`).
-- A config property, plus the `@_spi(Diagnostics)` accessor for equivalence tests in other packages.
-- **Decision D3:** the key's name. It is an additive env key, as before.
-- **Its effect** depends on the broadcast tables:
-  - with `USE_SYNC_TABLES=false`, the per-player tables are off too;
-  - row addressing forces the broadcast tables on (TA 1252), but not the per-player tables;
-  - with `PER_PLAYER_SYNC_TABLES=false`, per-player fields take today's path. That is exactly today's code, so the switch is a rollback, not a second implementation.
-- **CI:** the existing `build (sync tables off)` job covers off/off. A new matrix entry runs the Transport and NIO test targets with `PER_PLAYER_SYNC_TABLES=false`, the tables-on, per-player-off combination. The frame identity tests toggle all three combinations in process anyway.
+| `USE_SYNC_TABLES` | row addressing configured | `syncStrategy` | `PER_PLAYER_SYNC_TABLES` | broadcast tables | per-player tables |
+|---|---|---|---|---|---|
+| on (default) | any | `.delta` | on (default) | on | **on** |
+| on | any | `.delta` | off | on | off: today's path |
+| off | off | `.delta` | any | off | off |
+| off | on | `.delta` | on | on (forced by rows) | **on** |
+| off | on | `.delta` | off | on (forced by rows) | off |
+| any | any | `.fullSnapshot` | any | off | off |
+
+- **The env key:** `PER_PLAYER_SYNC_TABLES`, default on, read with `getEnvBool` as `USE_SYNC_TABLES` is (`TransportEnvConfig.swift:12, 86-90`).
+- **Its settings:** a package config property, and an `@_spi(Diagnostics)` accessor for the effective value, for tests in other packages.
+- **With the switch off,** per-player fields take today's code unchanged, so the switch is a rollback, not a second implementation.
+- **Tests assert the effective state,** through the Diagnostics accessor, for every row of the table.
+- **CI:** `build (sync tables off)` covers off/off. A new matrix entry runs the Transport and NIO targets with `PER_PLAYER_SYNC_TABLES=false`. The identity tests toggle the three configurations in process.
+- **`deep-research/serverenv.py` (S6):** the key goes into `SERVER_ENV` beside `USE_SYNC_TABLES`, and `test_serverenv.py` runs locally in the same PR.
 - **Docs:** the env table in `docs/transport` and its zh-TW companion.
 
 ## 5. Tests
 
 **Red first:**
-- the differential test and the frame identity cases below, with the per-player tables on;
-- the "nothing reads `lastPerPlayerSnapshots`" assertion;
-- a pin that a state with per-player fields doesn't take the snapshot path for them (a counting hook on `extractPerPlayerSnapshot`, test-only).
+- the differential test and the identity cases, with the per-player tables on;
+- the `lastPerPlayerSnapshots` assertion;
+- a pin, through a test-only counting hook, that a state with per-player fields doesn't call `extractPerPlayerSnapshot` for them in a normal sync.
 
-**Differential (engine level):** random mutation sequences, at least 10 000 steps per state type, with the seed printed on failure. It compares the per-player typed diff against `computePerPlayerDiffFromSnapshot`, per player, as logical patch lists in canonical order. The states:
-- `VisibilityTestState` (radius and all filters);
-- the `NestedNodePolicyTests` roots (`.perPlayer`, `.perPlayerSlice` and `.masked` root maps, nested `.serverOnly`);
+**Differential (engine level):** random mutation sequences, at least 10 000 steps per state type, with the seed printed on failure. It compares per player, as logical patch lists in canonical order, against `computePerPlayerDiffFromSnapshot`. The states:
+- `VisibilityTestState` (radius and all);
+- the `NestedNodePolicyTests` roots (`.perPlayer`, `.perPlayerSlice` and `.masked` root maps, nested `.serverOnly`), plus a new root holding a node with nested `.perPlayer` and `.custom` fields under a per-player root, which is M2's fallback with the player-aware converter;
 - `DirtyIdentityState` (`.perPlayerSlice`);
-- a state with an unknown policy (the fallback per player).
+- a state with an unknown policy.
 
-Cases:
-- a player's output gaining and losing keys (entities entering and leaving view): sets and deletes;
-- an output going empty and coming back;
+The cases:
+- outputs gaining and losing keys;
+- **visible → hidden → visible** for the whole field (M1), typed and fallback, `.perPlayerSlice()` included: a player's entry removed and added again;
+- an output going empty and back;
 - nil ↔ value for an optional node output;
-- NaN / −0.0 in an output value;
-- a field whose conversion throws for one player only: that player's patches, its last-sent and the drop count match today's, and the other players are unaffected;
-- a failed plan, after which the next plan's patches equal today's;
+- NaN / −0.0;
+- a conversion that throws for one player only: that player's patches, box and drop count as today's, the other players unaffected;
+- a failed plan, after which the next plan equals today's;
 - NFC and NFD forms of one key;
-- players added and removed between steps (seeding, clearing).
+- players added and removed between steps.
 
-**Frame identity (adapter level, every encoding, per recipient, exact bytes, frame counts first):** extend the existing tables-on/off identity tests with a third configuration (broadcast tables on, per-player tables on) against today's path:
-- `Examples/GameDemo/Tests/SyncTablesFrameIdentityTests.swift`: visibility radius and all; the broadcast twin, which has no per-player fields and so checks the empty-result rule; the card game (`hands`, `.perPlayerSlice`); Hero Defense, which has no per-player fields.
-- `Examples/Demo/Tests/DemoContentTests/SyncTablesFrameIdentityTests.swift`: the cookie game (`privateStates`).
-- `Tests/SwiftStateTreeTests/SyncTablesLandCellTests.swift`: the shape matrix (no per-player fields) and the nested-policy land.
-- `Tests/SwiftStateTreeTransportTests/SyncTablesByteIdentityTests.swift`: across encoding × dirty × onePass × schema.
+**Frame identity (adapter level):** every encoding, per recipient, exact bytes, frame counts compared first. Three configurations run against each other in process:
+- broadcast tables off;
+- broadcast tables on with per-player tables off;
+- both on.
 
-Each run includes (step 2 §8's list):
+They extend:
+- `Examples/GameDemo/Tests/SyncTablesFrameIdentityTests.swift`: visibility radius and all; the broadcast twin (no per-player fields); the card game (`hands`); Hero Defense;
+- `Examples/Demo/Tests/DemoContentTests/SyncTablesFrameIdentityTests.swift`: the cookie game;
+- `Tests/SwiftStateTreeTests/SyncTablesLandCellTests.swift`: the shape matrix (no per-player fields) and the nested-policy land;
+- `Tests/SwiftStateTreeTransportTests/SyncTablesByteIdentityTests.swift`: encoding × dirty × onePass × schema.
+
+Each run includes:
 - joins mid-run;
 - a forced resync;
 - a forced key reset (`syncPlanFaultForTesting`, and an encode drop);
 - a throwing per-player conversion with a late join right after;
 - a disconnect and reconnect;
 - a supersede;
-- a player with two sessions, pinning today's output (section 3).
+- the D1 cases (§2).
+
+**The failure paths, explicitly (M3, M4):**
+- A broadcast encode failure while the per-player frames go out (TA 4766-4769, and 5470 on the broadcast-only path). Then the next plan's frames and the committed boxes must equal today's.
+- A per-player encode failure for one player.
+- **No per-player fields, B2:** a state without per-player fields, with one-pass off, then a key reset. The `.firstSync([])` frames must match today's count. The same with a broadcast extraction failure instead of one-pass off.
+- **No per-player fields, B1:** the same state with one-pass on and a key reset, where no per-player frame is expected.
+
+**Two sessions of one player** (direct `registerSession`, the only way two coexist; see #531): the first session gets the per-player patches; the second gets `.noChange`, `.firstSync([])` under a key reset, and the broadcast part alone in the combined JSON frame. Marked as a known bug citing #531.
+
+**With row addressing in effect (S2, S4).**
+- **Why a router-backed case:** the frame identity harnesses and the benchmark build direct adapters, whose initializer sets `joinsThroughRouter: false` (TA 1186). Row addressing never takes effect there.
+- **The case:** a router-backed identity case for the visibility land (and the card game) that first asserts that `rowAddressing` is in the adapter's effective feature list.
+- **What it asserts:** no patch rooted at a per-player policy field carries a row tag, and the full view's broadcast row bindings stay as F checks them.
+- **What it doesn't assert:** that per-player frames hold no row entry. A full view goes through the per-player encode path, and with rows in effect `planFullViewUpdate` replaces the broadcast map patches with tagged table-view patches (TA 4677-4681), so join and resync frames carry ops 6–9 legitimately.
 
 **Unchanged outputs:**
 - verify-views;
 - the sync-output goldens;
 - the replay state hash;
-- a recorded run with the per-player tables on verifies against `SyncOutputShadow` with 0 mismatches (the visibility record, as #523's E2E leg does).
+- a recorded visibility run with the per-player tables on verifies against `SyncOutputShadow` with 0 mismatches.
 
-**With row addressing in effect** (after F): per-player frames hold no row entry (no ops 6–9), and bytes are equal with the per-player tables on and off.
-
-**Mutants**, each killed by a named test:
-- skip the seed on resync;
-- share one last-sent box across players;
-- give per-player patches a row tag;
-- advance last-sent for a dropped field;
+**Mutants,** each killed by a named test:
+- skip the resync seed;
+- share one box across players;
+- tag per-player patches with a row;
+- advance a dropped field's box;
 - skip the disconnect clear;
-- diff a clean per-player field's output against an empty box (an over-eager D1);
-- drop the empty-result rule.
+- keep presence on nil (M1);
+- read a nested per-player field without the player (M2);
+- stage per-player writes in the broadcast namespace (M3);
+- suppress B2's empty entries (M4);
+- send the patches to every session of the player (S1);
+- skip the retry set (D1).
 
 ## 6. Measurement (host A/B under the off-path instruction gate)
 
-`2026-11-13-off-path-instruction-gate.md` applies: off-path work is judged by windowed `instructions:u`, and sync, which is this change's path, by time. The host brief is drafted from this section once the PR has a head.
+`2026-11-13-off-path-instruction-gate.md` applies: off-path work is judged by windowed `instructions:u`, and sync, this change's own path, by time. The host brief is drafted from this section once the PR has a head.
 
 **Base:** `main` at run time, with F merged. **Head:** the PR merged with that main. Both run on defaults.
 
-| Cell | Command (common flags as #527's: messagepack-pathhash, 2000 iterations, `--parallel false`, `--dirty-tracking on`, `--row-addressing` pinned to the default) | Sync time (`syncMs`) | Off-path instructions |
-|---|---|---|---|
-| `vis-tick` | `--game-type visibility-test --rooms 10 --players-per-room 5` | judged: the main beneficiary. #514's gate is "no more than 5 % above today's"; a gain is expected | judged (`ticks` window) |
-| `vis-p16` | `--game-type visibility-test --rooms 2 --players-per-room 16` (the land's `maxPlayers`) | judged: per-player cost grows with the player count | judged (`ticks` window) |
-| `vis-broadcast` | `vis-tick` with `VISIBILITY_TEST_FILTER=broadcast` (no per-player fields) | judged, control: within the bar | judged |
-| `cap100-local` | `--game-type hero-defense --rooms 1 --monster-cap 100` (no per-player fields) | judged, control: within the bar | judged (`nonsync` window) |
+**Common flags,** as #527's: messagepack-pathhash, 2000 iterations, `--parallel false`, `--dirty-tracking on`, `--row-addressing` pinned.
+
+| Cell | Command | Row addressing | Sync time (`syncMs`) | Off-path instructions |
+|---|---|---|---|---|
+| `vis-tick` | `--game-type visibility-test --rooms 10 --players-per-room 5` | **not in effect** (direct adapters) | judged: the main beneficiary. #514's gate is ≤ +5 %, and a gain is expected | judged (`ticks` window) |
+| `vis-p16` | `--game-type visibility-test --rooms 2 --players-per-room 16` (the land's `maxPlayers`) | **not in effect** | judged: per-player cost grows with players | judged (`ticks` window) |
+| `vis-broadcast` | `vis-tick` with `VISIBILITY_TEST_FILTER=broadcast` (no per-player fields) | **not in effect** | judged, control: within the bar | judged |
+| `cap100-local` | `--game-type hero-defense --rooms 1 --monster-cap 100` (no per-player fields) | not in effect | judged, control: within the bar | judged (`nonsync` window) |
 
 - **Sync bar:** head's mean above base's by more than max(2 %, base's spread) is a SYNC REGRESSION. A gain is head's mean below base's min.
-- **Off-path bar:** the gate plan's rule, max(0.5 %, 3 × base's spread) on instructions. Time is reported beside it, with "layout move (#517)" where time moves and instructions don't. No tick code changes, so the expectation is within the bar everywhere.
-- **Bytes and digests:** identical in every cell, base = base again = head, as in #527's capture pass.
-- **The opt-out, in the capture pass:** head with `PER_PLAYER_SYNC_TABLES=false` must give base's bytes and digests too.
-- **Repeats:** ABBA, one warm-up pair and 5 pairs per cell, for both the timed set and the perf set. The perf set runs with `SWIFT_DETERMINISTIC_HASHING=1` and the FIFO window (`--tmpfs /perfctl`), in the standing container scope.
-- **The summary script** needs the gate plan's script changes (its open item). The A/B script for this PR includes them, with the gate plan's synthetic cases plus this PR's (a capture with the opt-out side).
-- **Before the host:** a Mac direction number on `vis-tick` (ABAB, switch on against off). If sync time doesn't fall, stop and report before the host set.
+- **Off-path bar:** the gate plan's max(0.5 %, 3 × base's spread) on instructions. Time is reported beside it, and "layout move (#517)" is printed where time moves but instructions don't.
+- **Bytes and digests:** identical in every cell, base = base again = head. The capture pass adds head with `PER_PLAYER_SYNC_TABLES=false`, which must give base's bytes and digests.
+- **Repeats:** ABBA, a warm-up pair and 5 pairs per cell, for both the timed set and the perf set. The perf set runs with `SWIFT_DETERMINISTIC_HASHING=1` and the FIFO window, in the standing container scope.
+- **The summary script** includes the gate plan's script changes and its synthetic cases, plus this PR's (the opt-out capture).
+- **Before the host:** a Mac direction number on `vis-tick` (ABAB, switch on against off). If sync time doesn't fall, stop and report.
 
 ## 7. Overlap with row addressing's default flip (F)
 
-F flips `rowAddressing` on by default, and it lands first. Where it meets this plan:
-- **Row entries are encoded for any tagged patch, whatever its key scope.** `RowEntryPlan.plan` takes a patch that has `split.row` and one dynamic key (`RowEntryPlan.swift:44-110`), and both opcode encoders apply it whatever the scope (`OpcodeJSONStateUpdateEncoder.swift:289-291`, `OpcodeMessagePackStateUpdateEncoder.swift:227-228`). A per-player patch with a row tag would therefore be written as a row entry in the broadcast table's slot space. Every client would apply it to the wrong table.
-  - So the per-player boxes are not slot-addressed and carry no splits (section 3).
-  - A test runs with row addressing in effect (section 5), and a mutant adds the tag.
-- **Per-player slot spaces** (`2026-11-10-row-addressing.md` §5: a slot space per (player, table), told apart by `tableId`) are a follow-up, not part of #514. Per-player node maps keep today's entries.
-- **Shared files:**
-  - `TransportAdapter.swift`: `planSyncPhase`, the full-view paths (`planFullViewUpdate`, `lateJoinSnapshot`), and the encode-failure and row-drop handling;
-  - `SyncTables.swift`: `SyncTableStaged`;
-  - the frame identity tests, whose defaults F changes;
-  - EncodingBenchmark's `--row-addressing` default.
+F flips `rowAddressing` on by default, and it lands first.
 
-  This PR branches from `main` after F merges, and pins `--row-addressing` in the brief.
-- **F's full-view rule** (row addressing §4: a full view takes the staged or the committed table by recipient) concerns the broadcast tables. A per-player full view seeds the player's own boxes from the same state copy, so the two don't interact. The frame identity cases with a join and a resync run with row addressing in effect.
+**A tagged per-player patch would become a row entry in the broadcast slot space.** `RowEntryPlan.plan` takes any patch with `split.row` and one dynamic key (`RowEntryPlan.swift:44-110`). Both opcode encoders apply it whatever the key scope (`OpcodeJSONStateUpdateEncoder.swift:289-291`, `OpcodeMessagePackStateUpdateEncoder.swift:227-228`). That is why the boxes have no cursor (§3), why §5 has the router-backed check (S2, S4), and why one mutant adds the tag.
+
+**Per-player slot spaces** (row addressing §5: one per (player, table), told apart by `tableId`) are a follow-up, not #514.
+
+**Shared files:**
+- `TransportAdapter.swift`: `planSyncPhase`, `planFullViewUpdate`, `lateJoinSnapshot`, and the encode-failure and row-drop handling;
+- `SyncTables.swift`: the root slots, extended for presence;
+- the macro, for `_syncTablePerPlayerFields`;
+- the frame identity tests, whose defaults F changes;
+- EncodingBenchmark's `--row-addressing` default.
+
+This PR branches after F merges and pins `--row-addressing` in the brief.
+
+**F's full-view rule** (a full view takes the staged or the committed broadcast table by recipient) concerns the broadcast tables. A per-player seed reads the same state copy. The router-backed case runs a join and a resync with rows in effect.
 
 ## 8. Related issues
 
-- **#198** (remove `.custom`): handled like `.perPlayer` until then. Removing it touches the policy table in section 1 only.
-- **#192** (one frame per sync for per-player lands): unaffected. Frame count and frame kinds are unchanged.
-- **#130** (an independent per-player view oracle): the differential test here compares against today's engine, not an independent oracle, so #130 stays open.
-- **#199** (policies that read the root state): D1 depends on the filter's purity. A root-state policy would need its field marked dirty by the fields it reads, as #199's constraints already say.
-- **#314** (hash-seed-independent patch order): the frames are canonically ordered (#435). The typed differ's order is canonical by construction.
-- **#524** (`PlayerHandle`): the boxes are keyed by `PlayerID`. A handle would key them by slot later.
+- **#531** (a player's second session gets no per-player changes): pinned, not fixed (§3).
+- **#198** (remove `.custom`): handled like `.perPlayer` until then.
+- **#192** (one frame per sync for per-player lands): unaffected; frame count and kinds are unchanged.
+- **#130** (an independent per-player oracle): still open. The differential test compares against today's engine.
+- **#199** (policies that read the root state): D1 relies on filter purity. A root-state policy needs its field dirtied by what it reads, as #199 notes.
+- **#314** (hash-seed-independent patch order): frames are canonically ordered (#435).
+- **#524** (`PlayerHandle`): the boxes are keyed by `PlayerID`; a handle could key them by slot later.
 
 ## 9. Public API
 
-None. `SyncTablePerPlayerDiff` and the config property are package-level, and the Diagnostics accessor is SPI. The env key `PER_PLAYER_SYNC_TABLES` is new and documented (D3).
+None.
+- `SyncTablePerPlayerDiff`, `_syncTablePerPlayerFields` and the config property are package-level or underscored macro members, as `_syncTableFields` is.
+- The Diagnostics accessor is SPI.
+- The env key `PER_PLAYER_SYNC_TABLES` is new and documented.
 
 ## 10. Commit plan
 
 One PR against `main`, after F, in this order:
-1. the share measurement result on #514 (section 0), and its go/no-go;
-2. red tests (section 5);
-3. `SyncTablePerPlayerDiff`, staging and the commit;
-4. the adapter: extraction, the update loop, full views, failures, disconnect;
-5. the switch and docs;
-6. the Mac direction number in the PR body, then the host A/B before merge.
+1. the share measurement on #514 (§0), and its go/no-go;
+2. red tests (§5);
+3. the macro's `_syncTablePerPlayerFields` (player-aware read and converter) and its expansion tests;
+4. `SyncTablePerPlayerDiff`, presence, the per-player staging namespace, the retry set and the commit;
+5. the adapter: the two branches, recipient-order consumption, full views, the failure paths, the two clears;
+6. the switch, `serverenv.py`, and the docs;
+7. the Mac direction number in the PR body, then the host A/B before merge.
 
 A solutions entry follows if the work finds a reusable trap.
