@@ -494,10 +494,16 @@ struct InboundBacklogPendingJoinTests {
             transport: transport,
             allowAutoCreateOnJoin: true
         )
+        // No join budget: the pending join must end by the adapter's bound alone. With the
+        // default 12 s budget (JOIN_TIMEOUT_MS), a full-suite run slowed by CPU-heavy tests
+        // denied the join before 256 frames were read (#447's class): the router's budget and
+        // the adapter's flip wait, which falls back to the same budget, are both lifted.
+        await router.setJoinTimeoutForTesting(.zero)
         await transport.setDelegate(router)
         let landID = LandID(landType: "inbound-backlog", instanceId: "one")
         let container = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: InboundBacklogLandState(), metadata: [:])
         await container.transportAdapter.setSyncPlanFaultForTesting { throw FlipBlocked() }
+        await container.transportAdapter.setJoinFlipLimitsForTesting(timeout: .seconds(3600), budget: nil)
 
         let reads = ReadCounter()
         let channel = await NIOAsyncTestingChannel()
