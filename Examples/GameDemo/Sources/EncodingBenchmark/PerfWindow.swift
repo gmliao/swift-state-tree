@@ -62,9 +62,15 @@ final class PerfWindow {
     let mode: PerfWindowMode
     private let control: PerfControl
 
+    /// The span `beginEither()` / `endEither()` mark: the window's own mode for `nonsync` and
+    /// `ticks` (both name the generic runner's tick loop), and a span that never matches for
+    /// `iteration`, which brackets the whole iteration instead.
+    private let tickLoopSpan: PerfWindowMode
+
     init(mode: PerfWindowMode, control: PerfControl) {
         self.mode = mode
         self.control = control
+        tickLoopSpan = mode == .iteration ? .ticks : mode
     }
 
     func begin(_ span: PerfWindowMode) {
@@ -77,10 +83,12 @@ final class PerfWindow {
         do { try control.disable() } catch { fatalError("\(error)") }
     }
 
-    /// Either mode: in the generic runner both name the tick loop.
-    func beginEither() { begin(mode) }
 
-    func endEither() { end(mode) }
+    /// The generic runner's tick loop without injected inputs: the span `nonsync` and `ticks`
+    /// both name there. A no-op in `iteration` mode.
+    func beginEither() { begin(tickLoopSpan) }
+
+    func endEither() { end(tickLoopSpan) }
 
     /// `perfWindow` in the result JSON, after checking the window ran and closed.
     func report() -> [String: Any] {

@@ -367,7 +367,9 @@ public enum VisibilityTest {
                     updateVisibility(&state, settings: settings)
                 }
 
-                HandleAction(SetMotionAction.self) { (state: inout State, action: SetMotionAction, _: LandContext) in
+                HandleAction(SetMotionAction.self) { (state: inout State, action: SetMotionAction, ctx: LandContext) in
+                    // EncodingBenchmark's input count; no probe is registered elsewhere.
+                    ctx.services.get(InputProbe.self)?.noteApplied()
                     state.motion = action.enabled
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }

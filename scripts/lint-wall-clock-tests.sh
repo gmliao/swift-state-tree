@@ -20,6 +20,10 @@
 #               call above the declaration, or in a file sorted before it, counts. `pollUntil`
 #               keeps its own rule. Direct calls only: a function that calls a helper isn't a
 #               helper itself. A helper whose loop is marked isn't collected.
+#               A test-support helper in the library's `Sources/` counts in every test file: a
+#               name in SOURCE_TEST_HELPERS, collected from `Sources/` like a test helper. A
+#               listed name that no longer polls there fails, so the list can't go stale. Other
+#               polling functions in `Sources/` (a product API's own deadline) aren't counted.
 #
 # A `for … in` loop counts as a loop: a poll spelled `for _ in 0..<N { if done { break }; sleep }`
 # is the same wait with its deadline as an iteration count. Loops are tracked by brace depth.
@@ -42,6 +46,9 @@ set -euo pipefail
 
 BASELINE_REL='scripts/wall-clock-baseline.txt'
 
+# Test-support polling helpers defined in the library's `Sources/` (see `helper-poll`).
+SOURCE_TEST_HELPERS='waitForOutboundDrain'
+
 # Prints `file:line: [rule] text` for every unmarked hit in the files named on stdin, one per
 # line, relative to the current directory. With mode `collect`, prints `file<TAB>name<TAB>scope`
 # instead for every function whose body has an unmarked `sleep-poll` hit (scope `file` for a
@@ -54,7 +61,8 @@ scan_files() {
       if (helpers_file != "") {
         while ((getline pair < helpers_file) > 0) {
           split(pair, kv, "\t")
-          if (kv[3] == "target") targetHelpers[target_of(kv[1])] = targetHelpers[target_of(kv[1])] " " kv[2]
+          if (kv[3] == "global") globalHelpers = globalHelpers " " kv[2]
+          else if (kv[3] == "target") targetHelpers[target_of(kv[1])] = targetHelpers[target_of(kv[1])] " " kv[2]
           else helpers[kv[1]] = helpers[kv[1]] " " kv[2]
         }
       }
@@ -68,8 +76,8 @@ scan_files() {
     # Whether `code` calls one of the file`s polling helpers (not its declaration).
     function calls_helper(code,    names, n, i, name, t) {
       t = target_of(FILENAME)
-      if (!(FILENAME in helpers) && !(t in targetHelpers)) return 0
-      n = split(helpers[FILENAME] " " targetHelpers[t], names, " ")
+      if (!(FILENAME in helpers) && !(t in targetHelpers) && globalHelpers == "") return 0
+      n = split(helpers[FILENAME] " " targetHelpers[t] " " globalHelpers, names, " ")
       for (i = 1; i <= n; i++) {
         name = names[i]
         if (code ~ ("(^|[^A-Za-z0-9_])" name "[ \t]*[({]") && code !~ ("func[ \t]+" name "([^A-Za-z0-9_]|$)")) return 1
@@ -142,6 +150,28 @@ scan_files() {
     }'
 }
 
+# Prints `file<TAB>name<TAB>global` for each SOURCE_TEST_HELPERS name that polls in `Sources/`,
+# from the current directory.
+source_test_helpers() {
+  [[ -d Sources ]] || return 0
+  find Sources -name '*.swift' -not -path '*/.build/*' | LC_ALL=C sort | { grep . || true; } |
+    scan_files collect |
+    awk -F'\t' -v keep=" $SOURCE_TEST_HELPERS " 'index(keep, " " $2 " ") { print $1 "\t" $2 "\tglobal" }'
+}
+
+# Fails for a SOURCE_TEST_HELPERS name that no longer polls in `Sources/` under $1.
+check_source_test_helpers() {
+  local found name status=0
+  found=$(cd "$1" && source_test_helpers | cut -f2)
+  for name in $SOURCE_TEST_HELPERS; do
+    if ! grep -qx "$name" <<< "$found"; then
+      echo "::error file=scripts/lint-wall-clock-tests.sh::SOURCE_TEST_HELPERS lists $name, which no longer polls in Sources/: remove it from the list"
+      status=1
+    fi
+  done
+  return $status
+}
+
 # Prints the hits under the repository root $1, sorted.
 scan() {
   local tmp
@@ -154,6 +184,7 @@ scan() {
     } | LC_ALL=C sort | { grep . || true; } > "$tmp/files"
     if [[ -s "$tmp/files" ]]; then
       scan_files collect < "$tmp/files" > "$tmp/helpers"
+      source_test_helpers >> "$tmp/helpers"
       scan_files scan "$tmp/helpers" < "$tmp/files"
     fi
   ) | LC_ALL=C sort -t: -k1,1 -k2,2n
@@ -175,6 +206,7 @@ baseline_entries() {
 lint() {
   local root=$1 base_baseline=$2 hits current baseline status=0
   hits=$(scan "$root")
+  check_source_test_helpers "$root" || status=1
   current=$(printf '%s\n' "$hits" | { grep . || true; } | counts)
   baseline=$(baseline_entries "$root/$BASELINE_REL")
 
@@ -317,11 +349,25 @@ SWIFT
   printf '%s\n' 'func far() async { await settle() }' > "$tmp/t/Examples/G/Tests/D/Far.swift"
   printf '%s\n' 'while clock.now < deadline { await Task.yield() }' > "$tmp/t/Examples/G/Tests/B/E.swift"
   printf '%s\n' 'while ContinuousClock.now < deadline { }' > "$tmp/t/Examples/G/Sources/NotATest.swift"
+  # A listed test-support helper in the library's Sources/ counts in every test file; a product
+  # API's own deadline there doesn't.
+  mkdir -p "$tmp/t/Sources/M"
+  cat > "$tmp/t/Sources/M/Drain.swift" <<'SWIFT'
+public func waitForOutboundDrain() async -> Bool {
+    while backlog > 0 { try? await safeTaskSleep(for: .milliseconds(1)) }
+    return true
+}
+public func debugFreeze() async {
+    while busy { try? await safeTaskSleep(for: .milliseconds(1)) }
+}
+SWIFT
+  printf '%s\n' 'func drains() async { _ = await adapter.waitForOutboundDrain() }' 'func freezes() async { await keeper.debugFreeze() }' > "$tmp/t/Examples/G/Tests/D/Drains.swift"
   local expected
   expected=$(cat <<'OUT'
 Examples/G/Tests/B/E.swift:1: [clock-poll] while clock.now < deadline { await Task.yield() }
 Examples/G/Tests/B/Settle.swift:1: [sleep-poll] func settle() async { while busy { try? await Task.sleep(for: .seconds(1)) } }
 Examples/G/Tests/B/Settle.swift:2: [helper-poll] func near() async { await settle() }
+Examples/G/Tests/D/Drains.swift:1: [helper-poll] func drains() async { _ = await adapter.waitForOutboundDrain() }
 Tests/A/Helpers.swift:2: [helper-poll] await waitFor(3)
 Tests/A/Helpers.swift:6: [sleep-poll] try? await Task.sleep(for: .milliseconds(5))
 Tests/A/Helpers.swift:14: [helper-poll] await waitFor(1)
@@ -351,7 +397,7 @@ OUT
   # The baseline as written passes.
   write_baseline "$tmp/t" > /dev/null
   set +e; out=$(lint "$tmp/t" ""); status=$?; set -e
-  if [[ $status -ne 0 || "$out" != "lint-wall-clock-tests: 21 hit(s), 21 in the baseline" ]]; then
+  if [[ $status -ne 0 || "$out" != "lint-wall-clock-tests: 22 hit(s), 22 in the baseline" ]]; then
     echo "lint-wall-clock-tests self-test FAILED: at the baseline (exit $status)"; echo "$out"
     return 1
   fi
@@ -372,6 +418,16 @@ OUT
   set +e; out=$(lint "$tmp/under" ""); status=$?; set -e
   if [[ $status -eq 0 ]] || ! grep -q '^::error file=Examples/G/Tests/B/E.swift::Examples/G/Tests/B/E.swift: 0 clock-poll hit(s), baseline 1: lower' <<< "$out"; then
     echo "lint-wall-clock-tests self-test FAILED: a removed poll (exit $status)"; echo "$out"
+    return 1
+  fi
+
+  # A listed Sources/ helper that no longer polls fails, so the list can't go stale.
+  cp -R "$tmp/t" "$tmp/stale"
+  printf '%s\n' 'public func waitForOutboundDrain() async -> Bool { await writer.waitForIdle(); return true }' > "$tmp/stale/Sources/M/Drain.swift"
+  write_baseline "$tmp/stale" > /dev/null
+  set +e; out=$(lint "$tmp/stale" ""); status=$?; set -e
+  if [[ $status -eq 0 ]] || ! grep -q '^::error file=scripts/lint-wall-clock-tests.sh::SOURCE_TEST_HELPERS lists waitForOutboundDrain, which no longer polls' <<< "$out"; then
+    echo "lint-wall-clock-tests self-test FAILED: a stale Sources/ helper (exit $status)"; echo "$out"
     return 1
   fi
 

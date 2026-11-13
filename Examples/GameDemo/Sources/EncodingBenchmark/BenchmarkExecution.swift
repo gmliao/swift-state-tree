@@ -214,6 +214,9 @@ struct BenchmarkResult {
     /// ENCODING_BENCHMARK_PERF_CONTROL: the perf window's `mode` and `toggles` (`PerfWindow.report`).
     /// nil without it.
     var perfWindow: [String: Any]? = nil
+    /// `--inputs-from-wire`: submitted, accepted, rejected, applied and expected (`InputCounts`).
+    /// nil without it.
+    var inputs: [String: Any]? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any
