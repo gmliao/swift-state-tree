@@ -1,14 +1,15 @@
 # Per-player fields on typed per-player sync tables (#514)
 
-**Status:** draft, rev 2 (2026-11-13), for review.
+**Status:** draft, rev 3 (2026-11-13), for review.
 - This is step 2's PR 3 (`2026-11-10-flat-storage-step2.md` §5 and §7), which never started. Read at `main` 9bf7df61.
-- Rev 1 (65cb9b53) got a no-GO: 4 must-fix, 6 should, 1 nit. Rev 2 addresses them: M1 in §3, M2 in §1 and §3, M3 in §3, M4 in §2, S1 in §3, S2 in §5 and §7, S3 in §4, S4 in §5 and §6, S5 in §2, S6 in §4, N1 in §3.
+- Rev 1 (65cb9b53) got a no-GO: 4 must-fix, 6 should, 1 nit. Rev 2 (38e59fed) addressed them: M1 in §3, M2 in §1 and §3, M3 in §3, M4 in §2, S1 in §3, S2 in §5 and §7, S3 in §4, S4 in §5 and §6, S5 in §2, S6 in §4, N1 in §3.
+- Rev 2 got 2 must-fix, 3 should and 1 nit. Rev 3 addresses them: M5 and M6 in §2 (the selection is today's per-player mode, so the retry set is gone), S7 and N2 in §3, S8 and S9 in §4.
 - No code before this plan is reviewed.
 
 **Depends on:** row addressing's default flip (PR F of `2026-11-10-row-addressing.md` §9), which lands first. Section 7 lists the overlap.
 
 **Decided (2026-11-13):**
-- D1: per-player fields honor the dirty marks, under the purity contract, with §2's retry and rollback rules.
+- D1: per-player fields are diffed only where today's per-player mode compares them (§2, option (a) of the rev 2 review), under the purity contract. No retry set: a dropped or lagging field is re-diffed exactly when today re-diffs it.
 - D2: one PR, on by default, with an opt-out. This follows #523's pattern and stays within the approved flattening plan.
 - D3: the env key is `PER_PLAYER_SYNC_TABLES`, classified in `deep-research/serverenv.py`.
 - D4: a player's second session getting no per-player changes is a bug, #531. This PR keeps today's bytes, and its pin is marked as a known bug citing #531.
@@ -72,7 +73,7 @@ The macro therefore emits a second list, `_syncTablePerPlayerFields()`, one desc
 **Under this plan, per sync:**
 1. Deduplicate by player, as today.
 2. **The same two branches, with the same predicate.** An entry exists exactly when today's branch would make one. B1 makes none for a state without per-player fields. B2 makes an empty one per player, which under a key reset still becomes `.firstSync([])` (M4). B1's all-or-nothing fallback to B2 is kept, and so are B2's drop counts, because the branch decides which entries exist.
-3. **Per player that has an entry,** per per-player root field selected by D1 below, call `read(state, playerID)` and diff the output against the player's box (§3). The broadcast tables' differs do the work, and only a changed leaf is converted.
+3. **Per player that has an entry,** per per-player root field that today's mode compares (D1 below), call `read(state, playerID)` and diff the output against the player's box (§3). The broadcast tables' differs do the work, and only a changed leaf is converted.
 4. **Stage per (player, field)** in the plan's per-player staging (§3, separate from the broadcast staging).
 5. **Hand the per-player patches to the recipients in recipient order** (§3, S1).
 
@@ -83,34 +84,38 @@ The macro therefore emits a second list, `_syncTablePerPlayerFields()`, one desc
 
 **What the visibility land saves per player per sync:** the `SnapshotValue` build of every visible entity, the whole-map tree diff, and the per-player snapshot staged. It still pays the filter, a typed compare of each visible entity's `id` and `position`, and the conversion of changed positions.
 
-**D1: per-player fields honor the dirty marks (S5).** Today every per-player field of every player is extracted on every sync. Under the purity contract (the filter is a pure function of value and player: the `SyncPolicy` DocC, and #199), a clean field's output equals what its box holds. A field `f` is diffed for player `p` when any of these holds:
-- `f` is in the plan's dirty field set: `planDirtyFields`, which already includes the fields a failed plan carried (`carriedDirtyFields`, TA 982);
-- `(p, f)` is in the per-player retry set;
-- `p` is seeded by this plan;
-- dirty tracking is off.
+**D1: the selection is today's per-player mode (M5, M6).** Today every per-player field is *extracted* every sync, but only the mode's fields are *compared* and merged into the cache: `compareSnapshots(…, dirtyFields: mode.fields)`, then `mergeDirtyFields` for a `.dirtyTracking` mode or a whole replace for `.all` (SE 800-830). The mode comes from the branch:
+- **B1 (one-pass):** `modesBesideTables` (TA ~5003-5009) gives `.dirtyTracking(planDirtyFields)` whenever dirty tracking is on and the plan is dirty, with broadcast names included, and `.all` otherwise. The same mode is used when B1 falls to B2.
+- **B2 with one-pass off:** `computeSyncModes` (TA ~4972-4994) gives `.dirtyTracking(the dirty per-player fields)` when any per-player field is dirty, and `.all` otherwise.
+- **extractAll, or dirty tracking off:** `.all`.
 
-The per-player retry set holds `(player, field)` pairs:
-- **Insert:** when `f`'s conversion threw for `p`, in a diff or in a seed. Its box isn't advanced, and today a later sync retries it because every field is extracted every sync.
-- **Clear:** when a committed plan diffed `(p, f)` with no drop.
-- **Staged:** inserts and clears are staged with the plan's per-player writes, and a failed plan leaves the set as it was.
-- **Disconnect, supersede and full-view seed:**
-  - a disconnect or supersede clear (§3) removes `p`'s pairs;
-  - a full-view seed of `p` replaces `p`'s pairs with the seed's own drops.
+The per-player tables compute the mode with the same functions and diff exactly the per-player fields it names:
+- **`.all`:** every per-player field of the player. The box is replaced, so a field the output hides becomes absent, with a delete as today's `.all` compare emits. A dropped field keeps its box value, as an extraction drop keeps its cached value.
+- **`.dirtyTracking(S)`:** the per-player fields in S. The others aren't read, their boxes are untouched, and no delete is emitted for them, as with today's `dirtyFields` rule (SE 333-343).
+- **An empty `.dirtyTracking` on a player with a box:** nothing, as SE 800-803.
 
-**When the dirty marks are cleared:** as today. `LandKeeper.beginSync(clearDirtyFlags:)` clears them in the turn that takes the plan's state (TA 3252-3256), and a failed plan's fields come back as carried fields. So a per-player field dirtied in a failed plan's turn is diffed again by the next plan.
+The saving against today is the extraction of fields the mode doesn't compare. Its patches equal today's by construction.
+
+**Throws.** Only a read field can throw. Today a B1 failure falls to B2 with the same mode, and B2 extracts only the mode's fields, so it counts drops only among them. A field outside the mode that would throw is never counted in either version. The drop counts are therefore equal.
+
+**Lag, as today (M6).** A total per-player encode failure for p removes `p`'s staging (§3), as today removes `staged.perPlayer[p]` (TA 4929-4939). `beginSync` has already cleared the dirty marks (TA 3252-3256), so p's client lags its committed boxes until a later mode compares those fields:
+- with one-pass off and only broadcast fields dirty next cycle, the mode is `.all` and the lag is re-diffed;
+- with one-pass on, the mode is `.dirtyTracking(planDirtyFields)`, and p stays behind on a clean per-player field until it is written again.
+
+The PR keeps that behavior byte for byte and pins it in both settings. Whether today's one-pass lag after a per-player encode failure is a bug is a separate question for its own issue, not changed here (§8).
 
 **Every write to a per-player field marks it dirty.** A per-player field is a root `@Sync` field, and each mutation route goes through its wrapper:
-- the setter, which sets `_isDirty` (`SyncPolicy.swift`, `wrappedValue.set`);
-- the in-place `_modify` from #519, which marks before the yield, so a throw after a write still counts;
+- the setter, which sets `_isDirty`;
+- the in-place `_modify` from #519, which marks before the yield;
 - a nested node write and a map subscript write, which go through the root's `_modify`.
 
-Until now a missing mark couldn't show, because per-player fields were extracted regardless. The PR therefore pins each route on a per-player field: the setter, `state.entities[k] = v`, `state.entities[k]?.position = …`, a nested node field write, and `f(&state.entities)`.
+Today the `.dirtyTracking` modes already depend on these marks for the compare, so no new dependency is added. The PR still pins each route on a per-player field: the setter, `state.entities[k] = v`, `state.entities[k]?.position = …`, a nested node field write, and `f(&state.entities)`.
 
-**Tests for D1** (dirty tracking on):
-- a clean field that was dropped for one player last plan, while another field changes;
+**Tests for D1,** each against today's output, with dirty tracking on and off:
+- a dropped, clean per-player field while another per-player field is dirty, with one-pass on and with one-pass off (M5);
+- a transient per-player encoder failure for p, then a broadcast-only mutation, with one-pass on and with one-pass off (M6);
 - the B2 fallback triggered by a broadcast drop;
-- a failed retry plan, followed by a committed one;
-- the identity tests below, all run with dirty tracking on and off.
+- a failed plan, then a committed one.
 
 ## 3. Storage, transitions, staging and the lifecycle
 
@@ -122,19 +127,22 @@ Until now a missing mark couldn't show, because per-player fields were extracted
 
 | Box | `read` gives | Emits | Stages |
 |---|---|---|---|
-| unseeded | anything | nothing (the full view's seed sets it; §3, full views) | — |
+| no box for the player | anything | nothing: today's first diff seeds the cache from the extraction and returns no patches (SE 805-808) | the read fields (B1: every per-player field, as its extraction; B2: the mode's fields) |
 | present(old) | a value | the typed diff of old → new | the new value |
 | present(old) | nil | a delete of the field's root path, as today's diff does | absent |
 | absent | a value | a set of the whole field, as today's diff of a field that appears | present(new) |
 | absent | nil | nothing | — |
 
-- With dirty tracking on, the delete is emitted only for a dirty field, as today's `dirtyFields` rule (333-343). Under D1 only selected fields are read, so the two agree.
+- **The rows apply only to the fields the mode compares** (D1). A field outside a `.dirtyTracking` mode isn't read, and its box and presence are untouched. That is today's `dirtyFields` rule, under which a delete is emitted only for a field in the dirty set (SE 333-343). Under `.all` every per-player field is read, and a field the output lacks is deleted, as today's `.all` compare does.
+- **A field never seeded in a player's existing box** is absent: today's compare sees it as new and sets it.
 - **A full-view seed replaces presence** from the view: present when the view has the field, absent otherwise.
 - Typed and fallback boxes follow the same table.
 
-**Staging (M3).** Per-player writes are staged in their own namespace on the plan, `plan.stagedPerPlayerTables`, not inside the broadcast `SyncTableStaged`. A broadcast-only failure resets the broadcast staging (`plan.stagedTables = SyncTableStaged()`, TA 4766-4769 and 5470) while the per-player frames still go out. With one struct, the per-player boxes would fall behind the clients. The rule is to mirror today's `plan.staged.perPlayer[p]` exactly. Every place that sets, keeps or removes `plan.staged.perPlayer[p]` does the same to `p`'s staged per-player writes, seed and retry changes:
-- **Broadcast encode failure** (4766-4769, 5470): today `staged.perPlayer` is kept, so the per-player staging is kept.
-- **Per-player encode failure** for `p` (4934-4940): today `staged.perPlayer[p]` and the firstSync mark are removed, so `p`'s per-player staging is discarded.
+**Staging (M3).** Per-player writes are staged in their own namespace on the plan, `plan.stagedPerPlayerTables`, not inside the broadcast `SyncTableStaged`. A broadcast-only failure resets the broadcast staging (`plan.stagedTables = SyncTableStaged()`, TA 4766-4769 and 5470) while the per-player frames still go out. With one struct, the per-player boxes would fall behind the clients. The rule is to mirror today's `plan.staged.perPlayer[p]` exactly. Every place that sets, keeps or removes `plan.staged.perPlayer[p]` does the same to `p`'s staged per-player writes and seed. The cases depend on the branch (S7):
+- **Opcode 107 merged frame** (`useStateUpdateWithEvents`, TA 4471-4494). When the merged broadcast frame can't encode, the broadcast staging is reset (TA 4766-4769) and `staged.perPlayer` is kept, while the per-player frames still go out. So the per-player staging is kept.
+- **Combined frame** (json and opcodeJsonArray, `collectCombinedPendingUpdates`): each player's frame encodes both scopes. A failure there is a total per-player failure for that player (below), not a broadcast-only one.
+- **Total per-player failure** for p (`data == nil`, TA 4929-4939, in either branch): `staged.perPlayer[p]` and the firstSync mark are removed, so `p`'s per-player staging is discarded. A re-encode that succeeds after dropping, such as the row-drop remake (TA 4586-4598), isn't a total failure and keeps the staging as today does. Only `data == nil` removes it.
+- **The broadcast-only sync** (`planBroadcastOnlySyncPhase`) diffs no per-player fields, so there is nothing per-player to keep or discard (N2).
 - **Failed plan:** all of it is discarded, as today.
 - **Commit:** `commitSyncPhase` applies the per-player staging with `syncEngine.applyStaged` and `broadcastTables?.apply` (4229-4230).
 
@@ -157,7 +165,7 @@ Until now a missing mark couldn't show, because per-player fields were extracted
 | `cachedPerPlayerSnapshot` (SE 116), read by `SyncOutputShadow` | Unchanged: the shadow runs its own engine |
 | `cachedPerPlayerSnapshotForTesting` | With the per-player tables in effect, `p`'s boxes as a `StateSnapshot` |
 
-**Two clears, two invariants (N1).** The boxes and retry pairs are cleared beside `clearCacheForDisconnectedPlayer`, at its exact placement in each path:
+**Two clears, two invariants (N1).** The boxes are cleared beside `clearCacheForDisconnectedPlayer`, at its exact placement in each path:
 - **Disconnect** (TA ~1593, outside a turn): only when the player has no other session (`membershipCoordinator.sessionIDs(for:)` is empty), checked after the `keeper.leave` await in the same synchronous segment as the clear. A re-joined player's boxes are never cleared (`Notes/solutions/2026-11-05-callback-outlives-its-instance-clears-by-key.md`).
 - **Supersede** (TA ~1973, at admission): unconditionally. The new session starts from empty, like a first join.
 
@@ -166,24 +174,25 @@ Until now a missing mark couldn't show, because per-player fields were extracted
 ## 4. The switch (D2, D3, S3, S6)
 
 **One effective rule:** `perPlayerTablesInEffect = usesSyncTables && PER_PLAYER_SYNC_TABLES`.
-- `usesSyncTables` is the adapter's effective broadcast-tables flag, `(useSyncTables || rowAddressing) && syncStrategy == .delta` (TA 1252).
-- So the per-player tables follow the broadcast tables, however those were turned on.
+- `usesSyncTables` is the adapter's effective broadcast-tables flag, `(useSyncTables || rowAddressing) && syncStrategy == .delta`. Here `rowAddressing` is row addressing **in effect**: requested, in-turn sync on, joins through the router, and the delta strategy (TA 1249-1252).
+- So the per-player tables follow the broadcast tables, however those were turned on (S8).
 
-| `USE_SYNC_TABLES` | row addressing configured | `syncStrategy` | `PER_PLAYER_SYNC_TABLES` | broadcast tables | per-player tables |
+| `USE_SYNC_TABLES` | row addressing | `syncStrategy` | `PER_PLAYER_SYNC_TABLES` | broadcast tables | per-player tables |
 |---|---|---|---|---|---|
 | on (default) | any | `.delta` | on (default) | on | **on** |
 | on | any | `.delta` | off | on | off: today's path |
-| off | off | `.delta` | any | off | off |
-| off | on | `.delta` | on | on (forced by rows) | **on** |
-| off | on | `.delta` | off | on (forced by rows) | off |
+| off | not requested | `.delta` | any | off | off |
+| off | requested, **in effect** (in-turn sync, router joins) | `.delta` | on | on (forced by rows) | **on** |
+| off | requested, in effect | `.delta` | off | on (forced by rows) | off |
+| off | requested, **not in effect** (a direct adapter, or in-turn sync off) | `.delta` | on | off | off |
 | any | any | `.fullSnapshot` | any | off | off |
 
 - **The env key:** `PER_PLAYER_SYNC_TABLES`, default on, read with `getEnvBool` as `USE_SYNC_TABLES` is (`TransportEnvConfig.swift:12, 86-90`).
 - **Its settings:** a package config property, and an `@_spi(Diagnostics)` accessor for the effective value, for tests in other packages.
 - **With the switch off,** per-player fields take today's code unchanged, so the switch is a rollback, not a second implementation.
-- **Tests assert the effective state,** through the Diagnostics accessor, for every row of the table.
+- **Tests assert the effective state,** through the Diagnostics accessor, for every row of the table, the requested-but-not-in-effect row included.
 - **CI:** `build (sync tables off)` covers off/off. A new matrix entry runs the Transport and NIO targets with `PER_PLAYER_SYNC_TABLES=false`. The identity tests toggle the three configurations in process.
-- **`deep-research/serverenv.py` (S6):** the key goes into `SERVER_ENV` beside `USE_SYNC_TABLES`, and `test_serverenv.py` runs locally in the same PR.
+- **`deep-research/serverenv.py` (S6, S9):** the key goes into `SERVER_ENV` beside `USE_SYNC_TABLES`, and into `ADDED_LATER`, with its date and PR in the comment. Without that, `failure()` rejects every older record that lacks it (serverenv.py:79-85). `test_serverenv.py` gains a case with an older record without the key, and runs locally in the same PR.
 - **Docs:** the env table in `docs/transport` and its zh-TW companion.
 
 ## 5. Tests
@@ -228,11 +237,13 @@ Each run includes:
 - a throwing per-player conversion with a late join right after;
 - a disconnect and reconnect;
 - a supersede;
-- the D1 cases (§2).
+- the D1 cases (§2: M5's dropped clean field and M6's transient encoder failure, each with one-pass on and off).
 
 **The failure paths, explicitly (M3, M4):**
-- A broadcast encode failure while the per-player frames go out (TA 4766-4769, and 5470 on the broadcast-only path). Then the next plan's frames and the committed boxes must equal today's.
-- A per-player encode failure for one player.
+- **Opcode 107:** the merged broadcast frame fails to encode while the per-player frames go out (TA 4766-4769). Then the next plan's frames and the committed boxes must equal today's.
+- **Combined frame** (json, opcodeJsonArray): one player's frame fails, which is a total per-player failure for that player.
+- **A total per-player failure** in each branch, against a re-encode that succeeds after a row drop, which keeps the staging.
+- **The broadcast-only sync:** per-player boxes unchanged.
 - **No per-player fields, B2:** a state without per-player fields, with one-pass off, then a key reset. The `.firstSync([])` frames must match today's count. The same with a broadcast extraction failure instead of one-pass off.
 - **No per-player fields, B1:** the same state with one-pass on and a key reset, where no per-player frame is expected.
 
@@ -261,7 +272,8 @@ Each run includes:
 - stage per-player writes in the broadcast namespace (M3);
 - suppress B2's empty entries (M4);
 - send the patches to every session of the player (S1);
-- skip the retry set (D1).
+- select per-player fields other than today's mode names, in either direction (D1);
+- discard the per-player staging on a successful dropping re-encode (S7).
 
 ## 6. Measurement (host A/B under the off-path instruction gate)
 
@@ -310,7 +322,8 @@ This PR branches after F merges and pins `--row-addressing` in the brief.
 - **#198** (remove `.custom`): handled like `.perPlayer` until then.
 - **#192** (one frame per sync for per-player lands): unaffected; frame count and kinds are unchanged.
 - **#130** (an independent per-player oracle): still open. The differential test compares against today's engine.
-- **#199** (policies that read the root state): D1 relies on filter purity. A root-state policy needs its field dirtied by what it reads, as #199 notes.
+- **#199** (policies that read the root state): D1 relies on filter purity, as today's `.dirtyTracking` modes already do. A root-state policy needs its field dirtied by what it reads, as #199 notes.
+- **The lag after a per-player encode failure with one-pass on** (§2, M6): today's behavior, kept and pinned. Whether it gets its own issue is decided outside this PR.
 - **#314** (hash-seed-independent patch order): frames are canonically ordered (#435).
 - **#524** (`PlayerHandle`): the boxes are keyed by `PlayerID`; a handle could key them by slot later.
 
@@ -327,7 +340,7 @@ One PR against `main`, after F, in this order:
 1. the share measurement on #514 (§0), and its go/no-go;
 2. red tests (§5);
 3. the macro's `_syncTablePerPlayerFields` (player-aware read and converter) and its expansion tests;
-4. `SyncTablePerPlayerDiff`, presence, the per-player staging namespace, the retry set and the commit;
+4. `SyncTablePerPlayerDiff`, presence, the per-player staging namespace and the commit;
 5. the adapter: the two branches, recipient-order consumption, full views, the failure paths, the two clears;
 6. the switch, `serverenv.py`, and the docs;
 7. the Mac direction number in the PR body, then the host A/B before merge.
