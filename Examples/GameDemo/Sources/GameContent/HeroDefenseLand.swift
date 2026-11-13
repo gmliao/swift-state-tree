@@ -261,6 +261,8 @@ public enum HeroDefense {
                 }
 
                 HandleEvent(MoveToEvent.self) { (state: inout HeroDefenseState, event: MoveToEvent, ctx: LandContext) in
+                    // EncodingBenchmark's input count; no probe is registered elsewhere.
+                    ctx.services.get(InputProbe.self)?.noteApplied()
                     let playerID = ctx.playerID
 
                     // Update player's target position (clamp to world bounds)

@@ -101,6 +101,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     // Create rooms manually
     var rooms: [LandRoomContext<State>] = []
     rooms.reserveCapacity(roomCount)
+    // `--actions-per-player`: each room's count of the actions its land applied.
+    var inputProbes: [InputProbe] = []
 
     for roomIndex in 0 ..< roomCount {
         let landID = LandID(landType: landType, instanceId: "benchmark-\(roomIndex)")
@@ -110,7 +112,13 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         // on the flag.
         let records = ViewCapture.config.map { roomIndex < $0.rooms && $0.recordDirectory != nil } ?? false
         
-        let services = LandServices()
+        var services = LandServices()
+        // `--actions-per-player`: count the actions the land applied.
+        if InputRun.actionsPerPlayer > 0 {
+            let probe = InputProbe()
+            services.register(probe, as: InputProbe.self)
+            inputProbes.append(probe)
+        }
         
         let keeper = LandKeeper<State>(
             definition: makeLand(),
@@ -202,6 +210,13 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     for room in rooms {
         await room.transport.resetCounts()
     }
+    // `--actions-per-player` (with `--inputs-from-wire`): the actions go in as client frames
+    // (InputInjection.swift), counted from here.
+    let wire = InputRun.actionsPerPlayer > 0
+        ? WireInputs(roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding, actionsPerPlayer: InputRun.actionsPerPlayer)
+        : nil
+    var inputCounts = wire.map { InputCounts(expected: roomCount * $0.inputsPerRoomIteration * iterations) }
+    let appliedBefore = inputProbes.reduce(0) { $0 + $1.applied }
     let capture: ViewCaptureWriter<State>?
     do {
         let strategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta"
@@ -231,7 +246,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     // Serial runs time the ticks and the syncs apart as well (each span inside `duration`).
     var tickDuration = Duration.zero
     var syncDuration = Duration.zero
-    // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the tick loop only (serial runs; refused otherwise).
+    // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the span outside syncNow() (`nonsync`), the
+    // tick loop (`ticks`) or the whole iteration (`iteration`) only (serial runs; refused otherwise).
     let perfWindow = PerfWindowRun.current
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
@@ -260,9 +276,32 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            // `--actions-per-player`: this iteration's frames, built before the timed span.
+            let actionFrames = wire.map { wire in
+                (0 ..< rooms.count).map { wire.actionFrames(roomIndex: $0, iteration: iterationIndex) }
+            }
             let iterationStart = ContinuousClock.now
-            for room in rooms {
-                if ticksPerSync > 0 {
+            perfWindow?.begin(.iteration)
+            for (roomIndex, room) in rooms.enumerated() {
+                // Chosen before any window opens: without actions, the room's spans are today's.
+                if let actionFrames {
+                    // `nonsync`: the actions and the ticks; `ticks`: the tick loop alone.
+                    perfWindow?.begin(.nonsync)
+                    for input in actionFrames[roomIndex] {
+                        await room.adapter.onMessage(input.frame, from: input.session)
+                    }
+                    inputCounts?.submitted += actionFrames[roomIndex].count
+                    if ticksPerSync > 0 {
+                        let tickStart = ContinuousClock.now
+                        perfWindow?.begin(.ticks)
+                        for _ in 0 ..< ticksPerSync {
+                            await room.keeper.stepTickOnce()
+                        }
+                        perfWindow?.end(.ticks)
+                        tickDuration += tickStart.duration(to: ContinuousClock.now)
+                    }
+                    perfWindow?.end(.nonsync)
+                } else if ticksPerSync > 0 {
                     let tickStart = ContinuousClock.now
                     perfWindow?.beginEither()
                     for _ in 0 ..< ticksPerSync {
@@ -275,6 +314,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                 await room.adapter.syncNow()
                 syncDuration += syncStart.duration(to: ContinuousClock.now)
             }
+            perfWindow?.end(.iteration)
             duration += iterationStart.duration(to: ContinuousClock.now)
             await MeasuredSync.drain(rooms.map(\.adapter))
             do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
@@ -284,6 +324,12 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    if inputCounts != nil {
+        var rejected = 0
+        for room in rooms { rejected += await room.transport.errorFrameCount() }
+        inputCounts?.rejected = rejected
+        inputCounts?.applied = inputProbes.reduce(0) { $0 + $1.applied } - appliedBefore
+    }
     do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
     if let recordDirectory = ViewCapture.config?.recordDirectory {
         let strategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta"
@@ -340,6 +386,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         result.tickMs = ms(tickDuration)
     }
     result.perfWindow = perfWindow?.report()
+    result.inputs = inputCounts?.json
+    inputCounts?.requireComplete(label: "\(format.displayName)")
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
@@ -389,14 +437,22 @@ func runMultiRoomBenchmark(
         rooms = joined
     }
 
+    // `--inputs-from-wire`: each room's count of the moves its land applied.
+    var inputProbes: [InputProbe] = []
     for roomIndex in 0 ..< (routerRooms == nil ? roomCount : 0) {
         let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
         let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
+        var services = heroDefenseServices(monsterCap: monsterCap)
+        if InputRun.fromWire {
+            let probe = InputProbe()
+            services.register(probe, as: InputProbe.self)
+            inputProbes.append(probe)
+        }
         
         let keeper = LandKeeper<HeroDefenseState>(
             definition: HeroDefense.makeLand(maxPlayers: max(10, playersPerRoom)),
             initialState: HeroDefenseState(),
-            services: heroDefenseServices(monsterCap: monsterCap),
+            services: services,
             autoStartLoops: false,
             transport: nil,
             logger: benchmarkLogger
@@ -475,6 +531,12 @@ func runMultiRoomBenchmark(
     for room in rooms {
         await room.transport.resetCounts()
     }
+    // `--inputs-from-wire`: the moves go in as client frames (InputInjection.swift), counted from here.
+    let wire = InputRun.fromWire && activePlayers
+        ? WireInputs(roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding, actionsPerPlayer: 0)
+        : nil
+    var inputCounts = wire.map { InputCounts(expected: roomCount * $0.inputsPerRoomIteration * iterations) }
+    let appliedBefore = inputProbes.reduce(0) { $0 + $1.applied }
     // `--baseline entity-delta`: the baseline encodes the same projections (EntityDeltaBaseline.swift).
     let entityDelta = EntityDeltaRun.enabled ? EntityDeltaCell(roomCount: roomCount, playersPerRoom: playersPerRoom) : nil
     let captureRooms = ViewCapture.config?.rooms ?? 0
@@ -520,8 +582,8 @@ func runMultiRoomBenchmark(
     var cpuAvailable = true
     // Untimed: the first room's live monster count after each iteration.
     var peakMonsterCount = 0
-    // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the span outside syncNow() (`nonsync`) or the
-    // tick loop (`ticks`) only (serial runs; refused otherwise).
+    // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the span outside syncNow() (`nonsync`), the
+    // tick loop (`ticks`) or the whole iteration (`iteration`) only (serial runs; refused otherwise).
     let perfWindow = PerfWindowRun.current
     func cpuMark() -> Double? {
         let value = ProcessUsage.cpuSeconds()
@@ -574,9 +636,34 @@ func runMultiRoomBenchmark(
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            // `--inputs-from-wire`: this iteration's frames, built before the timed span.
+            let moveFrames = wire?.moveFrames(iteration: iterationIndex)
             let cpuStart = cpuMark()
             let iterationStart = ContinuousClock.now
+            perfWindow?.begin(.iteration)
             for (roomIndex, room) in rooms.enumerated() {
+                // `--inputs-from-wire`: chosen before any window opens, so without it the room's
+                // spans are today's, code for code.
+                if let wire, let moveFrames {
+                    perfWindow?.begin(.nonsync)
+                    let sessions = wire.sessions[roomIndex]
+                    for (playerIndex, frame) in moveFrames.enumerated() {
+                        await room.adapter.onMessage(frame, from: sessions[playerIndex])
+                    }
+                    inputCounts?.submitted += moveFrames.count
+                    if ticksPerSync > 0 {
+                        perfWindow?.begin(.ticks)
+                        for _ in 0 ..< ticksPerSync {
+                            await room.keeper.stepTickOnce()
+                        }
+                        perfWindow?.end(.ticks)
+                    }
+                    perfWindow?.end(.nonsync)
+                    let syncStart = ContinuousClock.now
+                    await room.adapter.syncNow()
+                    syncDuration += syncStart.duration(to: ContinuousClock.now)
+                    continue
+                }
                 perfWindow?.begin(.nonsync)
                 if activePlayers {
                     if let routerClientIDs {
@@ -601,6 +688,7 @@ func runMultiRoomBenchmark(
                 await room.adapter.syncNow()
                 syncDuration += syncStart.duration(to: ContinuousClock.now)
             }
+            perfWindow?.end(.iteration)
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             // Outside SST's timed spans: the baseline times its own.
@@ -617,6 +705,12 @@ func runMultiRoomBenchmark(
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    if inputCounts != nil {
+        var rejected = 0
+        for room in rooms { rejected += await room.transport.errorFrameCount() }
+        inputCounts?.rejected = rejected
+        inputCounts?.applied = inputProbes.reduce(0) { $0 + $1.applied } - appliedBefore
+    }
     let fieldMergeCounts = FieldMergeStatistics.take()
     do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
     let timeMs = Double(duration.components.seconds) * 1000.0 +
@@ -677,6 +771,8 @@ func runMultiRoomBenchmark(
     }
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    result.inputs = inputCounts?.json
+    inputCounts?.requireComplete(label: "\(format.displayName)")
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     if let routerRooms, let routerConfig = RouterJoin.config {
         result.routerJoin = await routerRooms.metadata(rowAddressingRequested: routerConfig.rowAddressing, syncLag: routerConfig.syncLag)
@@ -1184,6 +1280,10 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     if let routerJoin = result.routerJoin { fields["routerJoin"] = routerJoin }
     // ENCODING_BENCHMARK_PERF_CONTROL: the span perf counted and the commands sent.
     if let perfWindow = result.perfWindow { fields["perfWindow"] = perfWindow }
+    // The message encoding the adapters ran with (the format's, or `--message-encoding`'s).
+    fields["messageEncoding"] = MessageEncodingOverride.name(result.format.messageEncoding)
+    // `--inputs-from-wire`: the run's input counts (InputCounts).
+    if let inputs = result.inputs { fields["inputs"] = inputs }
     if let counts = result.fieldMergeCounts {
         fields["fieldMerge"] = [
             "patches": counts.patches,
@@ -1284,6 +1384,9 @@ struct EncodingBenchmark {
         let config = ArgumentParser.parseArguments()
         ViewCapture.config = config.captureViews
         MonsterActivity.every = config.monsterActiveEvery
+        MessageEncodingOverride.current = config.messageEncoding
+        InputRun.fromWire = config.inputsFromWire
+        InputRun.actionsPerPlayer = config.actionsPerPlayer
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)

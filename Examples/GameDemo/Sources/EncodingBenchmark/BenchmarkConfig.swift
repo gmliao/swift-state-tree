@@ -38,18 +38,29 @@ enum EncodingFormat: String, CaseIterable {
             .withRowAddressing(false)
     }
 
-    private var baseTransportEncodingConfig: TransportEncodingConfig {
+    /// The format's message encoding, or `--message-encoding`'s.
+    var messageEncoding: TransportEncoding {
+        MessageEncodingOverride.current ?? defaultMessageEncoding
+    }
+
+    /// The message encoding the format names on its own.
+    var defaultMessageEncoding: TransportEncoding {
         switch self {
-        case .jsonObject:
-            return TransportEncodingConfig(message: .json, stateUpdate: .jsonObject)
-        case .opcodeJson:
-            return TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArrayLegacy)
-        case .opcodeJsonPathHash:
-            return TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray)
-        case .messagepack:
-            return TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack)
-        case .messagepackPathHash:
-            return TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack)
+        case .jsonObject, .opcodeJson, .opcodeJsonPathHash: return .json
+        case .messagepack, .messagepackPathHash: return .messagepack
+        }
+    }
+
+    private var baseTransportEncodingConfig: TransportEncodingConfig {
+        TransportEncodingConfig(message: messageEncoding, stateUpdate: stateUpdateEncoding)
+    }
+
+    private var stateUpdateEncoding: StateUpdateEncoding {
+        switch self {
+        case .jsonObject: return .jsonObject
+        case .opcodeJson: return .opcodeJsonArrayLegacy
+        case .opcodeJsonPathHash: return .opcodeJsonArray
+        case .messagepack, .messagepackPathHash: return .opcodeMessagePack
         }
     }
 
@@ -252,6 +263,13 @@ struct BenchmarkConfig {
     /// `--no-server-events`: the hero-defense land emits no server events (state unchanged), for
     /// comparing state bytes with a baseline that carries none.
     var noServerEvents: Bool = false
+    /// `--inputs-from-wire`: inputs go to the adapter as client frames in the run's message
+    /// encoding, through the transport's decode (InputInjection.swift).
+    var inputsFromWire: Bool = false
+    /// `--actions-per-player <n>`: visibility test, `SetMotionAction`s per player per iteration.
+    var actionsPerPlayer: Int = 0
+    /// `--message-encoding <e>`: the run's message encoding in place of the format's; nil keeps it.
+    var messageEncoding: TransportEncoding? = nil
     /// `--merge-stats`: count field merge with and without its order rule (hero-defense multi-room runs).
     var mergeStats: Bool = false
     /// `--join-through-router on`: the hero-defense rooms are lands behind a `LandRouter` and a
@@ -525,6 +543,24 @@ enum ArgumentParser {
         case "--no-server-events":
             config.noServerEvents = true
             config.heroDefenseOptionsGiven = true
+        case "--inputs-from-wire":
+            config.inputsFromWire = true
+            config.heroDefenseOptionsGiven = true
+        case "--actions-per-player":
+            guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
+                try? FileHandle.standardError.write(contentsOf: Data("--actions-per-player needs a positive integer\n".utf8))
+                exit(2)
+            }
+            config.actionsPerPlayer = value
+            i += 1
+        case "--message-encoding":
+            guard i + 1 < args.count, let value = MessageEncodingOverride.byName[args[i + 1]] else {
+                let names = MessageEncodingOverride.byName.keys.sorted().joined(separator: "|")
+                try? FileHandle.standardError.write(contentsOf: Data("--message-encoding needs one of \(names)\n".utf8))
+                exit(2)
+            }
+            config.messageEncoding = value
+            i += 1
         case "--merge-stats":
             config.mergeStats = true
         case "--hash-cost":
@@ -543,6 +579,10 @@ enum ArgumentParser {
         i += 1
     }
 
+        if let refusal = InputRun.refusal(config) {
+            try? FileHandle.standardError.write(contentsOf: Data("\(refusal)\n".utf8))
+            exit(2)
+        }
         if config.entityDeltaBaseline {
             // Only the serial hero-defense multi-room runner encodes the baseline.
             let unsupported = [
@@ -679,6 +719,22 @@ enum ArgumentParser {
                               With --monster-cap: update each monster in one tick in <int>, so
                               the rest stay idle (unwritten); 1 = every tick (default)
       --active-players        Hero-defense: inject a deterministic move target per player per iteration
+      --inputs-from-wire      Send the inputs (--active-players moves, --actions-per-player
+                              actions) to the adapter as client frames in the run's message
+                              encoding, as the TypeScript SDK sends them, so they go through the
+                              transport's decode; without it, moves call the keeper directly.
+                              Serial runs only (--parallel false). The result's inputs record
+                              submitted, accepted, rejected and applied; the run fails unless
+                              all equal rooms x players x iterations (x N for actions).
+      --actions-per-player <n>
+                              Visibility-test with --inputs-from-wire: n SetMotionAction(enabled:
+                              true) per player per iteration, before the ticks. Motion is on
+                              from the start, so the state is unchanged.
+      --message-encoding <e>  json, opcode-json-array or messagepack: the run's message encoding
+                              (events, action responses, client frames) in place of the
+                              format's. Default: json for json-object and the opcode-json
+                              formats, messagepack for the messagepack formats. Recorded as
+                              messageEncoding in each result.
       --all                   Run benchmark for all formats
       --compare-parallel      Compare serial vs parallel execution for each format
       --scalability           Run scalability test (different room counts)
@@ -700,11 +756,12 @@ enum ArgumentParser {
                               The FIFOs given to perf stat/record --delay=-1 --control
                               fifo:<ctl>,<ack>. The run enables the counters around one span per
                               room and iteration and waits for each ack.
-      ENCODING_BENCHMARK_PERF_WINDOW=nonsync|ticks
+      ENCODING_BENCHMARK_PERF_WINDOW=nonsync|ticks|iteration
                               nonsync (default): the timed iteration except syncNow(), the span
                               timeMs - syncMs measures. ticks: the stepTickOnce() loop only (the
-                              same span in the generic runner). The result JSON records
-                              perfWindow {mode, toggles}.
+                              same span in the generic runner without --actions-per-player).
+                              iteration: the whole timed iteration, syncNow() included, the span
+                              timeMs measures. The result JSON records perfWindow {mode, toggles}.
 
     Examples:
       swift run EncodingBenchmark --format messagepack-pathhash --players 10
