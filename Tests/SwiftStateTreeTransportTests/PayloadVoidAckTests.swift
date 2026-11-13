@@ -9,7 +9,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeMessagePack
-@_spi(Diagnostics) @testable import SwiftStateTreeTransport
+@testable import SwiftStateTreeTransport
 
 @StateNodeBuilder
 struct VoidAckTestState: StateNodeProtocol {
@@ -118,7 +118,7 @@ struct PayloadVoidAckTests {
             )
             await adapter.onMessage(try client1.encode(.action(requestID: requestID, action: envelope)), from: session)
         }
-        _ = await adapter.waitForOutboundDrain()
+        await adapter.waitForOutboundIdleForTesting()
 
         let responses = await transport.frames.compactMap { frame -> String? in
             guard case .session(let s) = frame.target, s == session else { return nil }
