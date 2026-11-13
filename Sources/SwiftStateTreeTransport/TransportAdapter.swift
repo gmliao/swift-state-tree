@@ -1415,6 +1415,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "keys": .string(removedKeys.joined(separator: ","))
             ])
         }
+        // Row addressing needs the tables, so it keeps them on with `USE_SYNC_TABLES=false`:
+        // say so, and how to reach the snapshot-diff path (the flag is a temporary fallback).
+        if rowAddressing && !envConfig.useSyncTables {
+            self.logger.warning("USE_SYNC_TABLES=false is ignored: row addressing is in effect and needs the sync tables. Set ROW_ADDRESSING=false too for the snapshot-diff (legacy) path.", metadata: [
+                "landID": .string(landID),
+            ])
+        }
         if rowAddressingRequested && !rowAddressing {
             self.logger.warning("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
                 "landID": .string(landID),

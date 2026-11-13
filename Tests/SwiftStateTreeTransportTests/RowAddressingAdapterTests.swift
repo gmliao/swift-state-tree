@@ -9,6 +9,7 @@
 // views are compared as states.
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
@@ -175,6 +176,7 @@ private struct RowAddressingRun {
         tables: Bool = true,
         dirtyTracking: Bool = true,
         recording: Bool = false,
+        logger: Logger? = nil,
         initial: RowAddressingState = RowAddressingState()
     ) async throws -> RowAddressingRun {
         let script = RowAddressingScript()
@@ -193,6 +195,7 @@ private struct RowAddressingRun {
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true,
             inTurnSync: inTurnSync,
+            logger: logger,
             joinsThroughRouter: joinsThroughRouter
         )
         await frames.setDelegate(adapter)
@@ -392,6 +395,21 @@ struct RowAddressingAdapterTests {
         #expect(await auto.adapter.usesSyncTablesForTesting())
         let plain = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: false, tables: false)
         #expect(!(await plain.adapter.usesSyncTablesForTesting()))
+    }
+
+    @Test("USE_SYNC_TABLES=false with row addressing in effect: the tables stay on, with one warning that names ROW_ADDRESSING=false")
+    func tablesOffIgnoredWarning() async throws {
+        func warnings(rowAddressing: Bool, tables: Bool) async throws -> [String] {
+            let records = RowAddressingLogRecords()
+            let logger = Logger(label: "row-addressing-test") { _ in RowAddressingRecordingLogHandler(records: records) }
+            _ = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: rowAddressing, tables: tables, logger: logger)
+            return records.warnings.filter { $0.contains("USE_SYNC_TABLES=false is ignored") }
+        }
+        let ignored = try await warnings(rowAddressing: true, tables: false)
+        #expect(ignored.count == 1)
+        #expect(ignored.first?.contains("Set ROW_ADDRESSING=false too") == true)
+        #expect(try await warnings(rowAddressing: false, tables: false).isEmpty, "both off: the tables are off, nothing ignored")
+        #expect(try await warnings(rowAddressing: true, tables: true).isEmpty, "the tables on: nothing ignored")
     }
 
     @Test("The oracle: each sync decodes to the feature-off run's patches, every client reaches the live state, slots match the server's", arguments: RowAddressingEncoding.allCases)
@@ -753,5 +771,43 @@ private enum RowAddressingRefProbe {
             if index == 1 { cursor = cursor.asRow(slot) }
         }
         return SyncRowRef(StatePatch(path: path, operation: .set(.int(1)), split: cursor.split))!
+    }
+}
+
+/// Warning messages, in order (`RowAddressingRecordingLogHandler`).
+private final class RowAddressingLogRecords: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [String] = []
+
+    func append(_ message: String) {
+        lock.withLock { messages.append(message) }
+    }
+
+    var warnings: [String] {
+        lock.withLock { messages }
+    }
+}
+
+/// Records warnings and above.
+private struct RowAddressingRecordingLogHandler: LogHandler {
+    let records: RowAddressingLogRecords
+    var logLevel: Logger.Level = .warning
+    var metadata: Logger.Metadata = [:]
+
+    subscript(metadataKey key: String) -> Logger.Metadata.Value? {
+        get { metadata[key] }
+        set { metadata[key] = newValue }
+    }
+
+    func log(
+        level: Logger.Level,
+        message: Logger.Message,
+        metadata: Logger.Metadata?,
+        source: String,
+        file: String,
+        function: String,
+        line: UInt
+    ) {
+        if level >= .warning { records.append(message.description) }
     }
 }
