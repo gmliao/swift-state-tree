@@ -34,6 +34,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
         definition: LandDefinition<State>,
         landID: String,
         tables: Bool,
+        perPlayerTables: Bool,
         dirtyTracking: Bool,
         encoding: TransportEncodingConfig,
         pathHashes: [String: UInt32]
@@ -49,6 +50,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
             profilingConfig: nil
         )
         config.syncTablesEnabled = tables
+        config.perPlayerSyncTablesEnabled = perPlayerTables
         adapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,
@@ -156,12 +158,15 @@ struct SyncTablesFrameIdentityTests {
         let encoding = try #require(frameIdentityEncodings.first { $0.0 == parts[0] }?.1)
         let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(definition())])
         let pathHashes = try #require(schema.lands[landType]?.pathHashes)
+        // Both tables on, the broadcast tables alone (per-player fields on today's path, #514),
+        // and neither: each against neither.
         var frames: [[(target: String, data: Data)]] = []
-        for tables in [true, false] {
+        for (tables, perPlayerTables) in [(true, true), (true, false), (false, false)] {
             let run = await FrameIdentityRun<State>(
                 definition: definition(), landID: "\(landType):frame-identity", tables: tables,
-                dirtyTracking: parts[1] == "true", encoding: encoding, pathHashes: pathHashes
+                perPlayerTables: perPlayerTables, dirtyTracking: parts[1] == "true", encoding: encoding, pathHashes: pathHashes
             )
+            #expect(await run.adapter.perPlayerSyncTablesInEffect() == perPlayerTables, "\(cell): per-player tables in effect")
             // A field on the fallback is the snapshot diff on both sides: pin which are typed.
             #expect(await run.adapter.syncTableFieldKinds() == (tables ? kinds : nil), "\(cell): kinds")
             try await script(run)
@@ -169,7 +174,8 @@ struct SyncTablesFrameIdentityTests {
             #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
         }
         #expect(frames[0].count > 20, "\(cell): the script sends frames")
-        expectSameFrames(frames[0], frames[1], cell)
+        expectSameFrames(frames[0], frames[2], cell + " (both tables)")
+        expectSameFrames(frames[1], frames[2], cell + " (broadcast tables)")
     }
 
     @Test("The cookie game", arguments: frameIdentityCells)
