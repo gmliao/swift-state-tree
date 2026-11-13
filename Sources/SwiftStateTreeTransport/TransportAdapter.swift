@@ -561,6 +561,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         broadcastTables != nil
     }
 
+    /// Sync plans that extracted per-player snapshots (tests): none with the per-player tables,
+    /// which read the fields they diff themselves (#514).
+    private(set) var perPlayerExtractionsForTesting = 0
+
     /// Per-player fields are diffed on the per-player tables (#514).
     func usesPerPlayerTablesForTesting() -> Bool {
         perPlayerTables != nil
@@ -615,6 +619,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Installs `syncEncodeFaultForTesting` (tests only).
     func setSyncEncodeFaultForTesting(_ fault: (@Sendable (PlayerID) -> Bool)?) {
         syncEncodeFaultForTesting = fault
+    }
+
+    /// Installs `mergedBroadcastFrameFaultForTesting` (tests only).
+    func setMergedBroadcastFrameFaultForTesting(_ fault: (@Sendable () -> Bool)?) {
+        mergedBroadcastFrameFaultForTesting = fault
     }
 
     /// How long teardown waits for queued frames to reach the transport.
@@ -1068,6 +1077,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: per-player state updates of a player for which this returns `true` fail to
     /// encode (any update type, any encoding).
     private var syncEncodeFaultForTesting: (@Sendable (PlayerID) -> Bool)?
+    /// Tests only: while this returns `true`, the opcode 107 merged broadcast frame fails to
+    /// encode, its re-encode included.
+    private var mergedBroadcastFrameFaultForTesting: (@Sendable () -> Bool)?
     /// The phase times of the last committed full plan; nil while profiling is off.
     private(set) var lastSyncPhaseTimesForTesting: SyncPhaseTimes?
 
@@ -4890,6 +4902,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerID: PlayerID,
         eventBodies: [MessagePackValue]
     ) throws -> Data {
+        if let fault = mergedBroadcastFrameFaultForTesting, fault() {
+            throw SyncPhaseInjectedEncodeFault()
+        }
         if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
             let updateArray = try mpEncoder.encodeToMessagePackArray(
                 update: update,
@@ -5123,6 +5138,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     perPlayerMode: perPlayer
                 )
             }
+            perPlayerExtractionsForTesting += 1
             var perPlayerByPlayer: [PlayerID: StateSnapshot] = [:]
             // The one-pass extraction, per-player part: every per-player field of every player,
             // and no entry at all for a state without per-player fields. It fails as a whole
@@ -5169,6 +5185,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
         }
 
+        perPlayerExtractionsForTesting += 1
         if useSnapshotForSync {
             let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
                 ? .dirtyTracking(planDirtyFields(of: state))

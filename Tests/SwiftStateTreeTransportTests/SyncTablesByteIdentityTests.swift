@@ -132,6 +132,9 @@ struct SyncTablesByteIdentityTests {
             #expect(tables == cached, "\(cell): \(player) per-player last-sent")
             #expect(await on.adapter.syncEngineForTesting().cachedPerPlayerSnapshotForTesting(player) == nil)
         }
+        // The per-player tables extract no per-player snapshot in a sync plan; today's path does.
+        #expect(await on.adapter.perPlayerExtractionsForTesting == 0, "\(cell): no per-player extraction")
+        #expect(await broadcastOnly.adapter.perPlayerExtractionsForTesting > 0)
         // A player that left has no per-player boxes.
         #expect(await on.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID("p2")) == nil)
     }
@@ -225,9 +228,28 @@ struct SyncTablesByteIdentityTests {
             profilingConfig: nil
         )
         config.useSyncTables = true
+        config.perPlayerSyncTables = true
         let run = await DirtyIdentityRun(envConfig: config, encoding: .messagepack)
+        #expect(await !run.adapter.perPlayerSyncTablesInEffect(), "the per-player tables follow the broadcast tables")
         try await run.runScript()
         #expect(await run.adapter.syncEngineForTesting().cachedBroadcastSnapshotForTesting != nil)
+        #expect(await run.adapter.syncEngineForTesting().cachedPerPlayerSnapshotForTesting(PlayerID("p1")) != nil)
+    }
+
+    @Test("A config built with init takes PER_PLAYER_SYNC_TABLES (on by default), which applies only where the broadcast tables do")
+    func perPlayerSyncTablesFromEnvironment() async {
+        // CI runs a whole matrix entry with PER_PLAYER_SYNC_TABLES=false: the default follows it.
+        let expected = ProcessInfo.processInfo.environment[TransportEnvKeys.perPlayerSyncTables].map {
+            EnvHelpers.getEnvBool(key: TransportEnvKeys.perPlayerSyncTables, defaultValue: true, environment: [TransportEnvKeys.perPlayerSyncTables: $0])
+        } ?? true
+        let config = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta, profilingConfig: nil)
+        #expect(config.perPlayerSyncTables == expected)
+        #expect(config.perPlayerSyncTablesEnabled == expected)
+        var off = config
+        off.useSyncTables = false
+        off.perPlayerSyncTables = true
+        let run = await DirtyIdentityRun(envConfig: off, encoding: .messagepack)
+        #expect(await !run.adapter.perPlayerSyncTablesInEffect(), "without the broadcast tables it is ignored")
     }
 }
 

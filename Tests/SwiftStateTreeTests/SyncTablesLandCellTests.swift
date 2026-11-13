@@ -43,7 +43,7 @@ private actor LandCellTransport: Transport {
     }
 }
 
-private func landCellConfig(tables: Bool, dirtyTracking: Bool) -> TransportEnvConfig {
+private func landCellConfig(tables: Bool, perPlayerTables: Bool, dirtyTracking: Bool) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
@@ -51,6 +51,7 @@ private func landCellConfig(tables: Bool, dirtyTracking: Bool) -> TransportEnvCo
         profilingConfig: nil
     )
     config.useSyncTables = tables
+    config.perPlayerSyncTables = perPlayerTables
     return config
 }
 
@@ -64,6 +65,7 @@ private struct LandCellRun<State: StateNodeProtocol> {
         definition: LandDefinition<State>,
         landID: String,
         tables: Bool,
+        perPlayerTables: Bool,
         dirtyTracking: Bool,
         encoding: TransportEncodingConfig,
         pathHashes: [String: UInt32]?
@@ -75,7 +77,7 @@ private struct LandCellRun<State: StateNodeProtocol> {
             keeper: keeper,
             transport: transport,
             landID: landID,
-            transportEnvConfig: landCellConfig(tables: tables, dirtyTracking: dirtyTracking),
+            transportEnvConfig: landCellConfig(tables: tables, perPlayerTables: perPlayerTables, dirtyTracking: dirtyTracking),
             encodingConfig: encoding,
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true
@@ -301,10 +303,12 @@ struct SyncTablesLandCellTests {
         let ops = scriptedOps(opCount: opCount, count: opCount * 6)
         var frames: [[(target: String, data: Data)]] = []
         var lastSent: [StateSnapshot?] = []
-        for tables in [true, false] {
+        // Both tables on, the broadcast tables alone (per-player fields on today's path, #514),
+        // and neither: each against neither.
+        for (tables, perPlayerTables) in [(true, true), (true, false), (false, false)] {
             let run = await LandCellRun<State>(
-                definition: definition(), landID: landID, tables: tables, dirtyTracking: dirtyTracking,
-                encoding: encoding, pathHashes: pathHashes
+                definition: definition(), landID: landID, tables: tables, perPlayerTables: perPlayerTables,
+                dirtyTracking: dirtyTracking, encoding: encoding, pathHashes: pathHashes
             )
             try await run.runScript(ops: ops)
             frames.append(await run.transport.sent)
@@ -312,9 +316,10 @@ struct SyncTablesLandCellTests {
             #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
         }
         #expect(frames[0].count > 40, "\(cell): the script sends frames")
-        expectSameLandFrames(frames[0], frames[1], cell)
+        expectSameLandFrames(frames[0], frames[2], cell + " (both tables)")
+        expectSameLandFrames(frames[1], frames[2], cell + " (broadcast tables)")
         #expect(lastSent[0] != nil, "\(cell): the tables are seeded")
-        #expect(lastSent[0] == lastSent[1], "\(cell): last-sent")
+        #expect(lastSent[0] == lastSent[2] && lastSent[1] == lastSent[2], "\(cell): last-sent")
     }
 
     /// The cells compare the tables with the snapshot path only where a field is typed: a field

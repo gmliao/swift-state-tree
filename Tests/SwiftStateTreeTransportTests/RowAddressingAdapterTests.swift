@@ -123,7 +123,7 @@ private func rowAddressingPathHashes() throws -> [String: UInt32] {
     return try #require(schema.lands["row-addressing"]?.pathHashes)
 }
 
-private func rowAddressingEnv(tables: Bool, dirtyTracking: Bool = true) -> TransportEnvConfig {
+private func rowAddressingEnv(tables: Bool, dirtyTracking: Bool = true, perPlayerTables: Bool = true) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: false,
@@ -131,6 +131,7 @@ private func rowAddressingEnv(tables: Bool, dirtyTracking: Bool = true) -> Trans
         profilingConfig: nil
     )
     config.useSyncTables = tables
+    config.perPlayerSyncTables = perPlayerTables
     return config
 }
 
@@ -174,6 +175,7 @@ private struct RowAddressingRun {
         joinsThroughRouter: Bool = true,
         inTurnSync: Bool = true,
         tables: Bool = true,
+        perPlayerTables: Bool = true,
         dirtyTracking: Bool = true,
         recording: Bool = false,
         logger: Logger? = nil,
@@ -190,7 +192,7 @@ private struct RowAddressingRun {
             keeper: keeper,
             transport: frames,
             landID: "row-addressing",
-            transportEnvConfig: rowAddressingEnv(tables: tables, dirtyTracking: dirtyTracking),
+            transportEnvConfig: rowAddressingEnv(tables: tables, dirtyTracking: dirtyTracking, perPlayerTables: perPlayerTables),
             encodingConfig: encoding.config.withSyncSequence(true).withRowAddressing(rowAddressing),
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true,
@@ -427,6 +429,28 @@ struct RowAddressingAdapterTests {
         #expect(await auto.adapter.usesSyncTablesForTesting())
         let plain = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: false, tables: false)
         #expect(!(await plain.adapter.usesSyncTablesForTesting()))
+    }
+
+    /// `perPlayerTablesInEffect = usesSyncTables && PER_PLAYER_SYNC_TABLES` (#514): the per-player
+    /// tables follow the broadcast tables however those were turned on.
+    @Test("The per-player tables are in effect where the broadcast tables are, unless PER_PLAYER_SYNC_TABLES is off (#514)")
+    func perPlayerTablesFollowTheBroadcastTables() async throws {
+        let rows: [(tables: Bool, rowAddressing: Bool, router: Bool, perPlayer: Bool, inEffect: Bool, label: String)] = [
+            (true, false, true, true, true, "both switches on"),
+            (true, false, true, false, false, "PER_PLAYER_SYNC_TABLES off"),
+            (false, false, true, true, false, "the broadcast tables off"),
+            (false, true, true, true, true, "the broadcast tables forced on by row addressing"),
+            (false, true, true, false, false, "forced on by row addressing, PER_PLAYER_SYNC_TABLES off"),
+            (false, true, false, true, false, "row addressing requested, not in effect (a direct join)"),
+        ]
+        for row in rows {
+            let run = try await RowAddressingRun.make(
+                encoding: .messagepack, rowAddressing: row.rowAddressing, joinsThroughRouter: row.router,
+                tables: row.tables, perPlayerTables: row.perPlayer
+            )
+            #expect(await run.adapter.perPlayerSyncTablesInEffect() == row.inEffect, "\(row.label)")
+            #expect(await run.adapter.syncEngineForTesting().perPlayerCacheRetired == row.inEffect, "\(row.label): the cache is retired")
+        }
     }
 
     @Test("USE_SYNC_TABLES=false with row addressing in effect: the tables stay on, with one warning that names ROW_ADDRESSING=false")
