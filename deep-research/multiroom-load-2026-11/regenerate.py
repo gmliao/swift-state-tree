@@ -60,7 +60,7 @@ SUITES = (1, 2, 3)
 
 
 def load_gz(path):
-    with gzip.open(path, "rt") as f:
+    with gzip.open(path, "rt", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -259,7 +259,7 @@ def overhead_flag(on, off):
 
 
 def build():
-    host = json.loads((HERE / "data" / "host-cpu.json").read_text())
+    host = json.loads((HERE / "data" / "host-cpu.json").read_text(encoding="utf-8"))
     runs = {}
     for d in sorted((HERE / "data" / "rerun").iterdir()):
         runs[d.name] = steady_row(load_gz(d / "report.json.gz"), host.get(d.name))
@@ -267,10 +267,10 @@ def build():
     for d in sorted((HERE / "data" / "b0").iterdir()):
         b0[d.name] = steady_row(load_gz(d / "report.json.gz"))
     feb = {}
-    summary = json.loads((FEB / "summary.json").read_text())
+    summary = json.loads((FEB / "summary.json").read_text(encoding="utf-8"))
     for run in summary["runs"]:
         report_path = next((FEB / f"run-{run['runIndex']}").glob("ws-loadtest-*.json"))
-        feb[run["rooms"]] = steady_row(json.loads(report_path.read_text()))
+        feb[run["rooms"]] = steady_row(json.loads(report_path.read_text(encoding="utf-8")))
 
     parts = run_tables(runs, lambda s, r: f"rerun-suite-{s}-{r}")
     # Comparison.
@@ -573,7 +573,7 @@ def sweep_provenance(sweep):
 def checked_sweep(directory):
     """A collected sweep that passes every gate: (sweep.json, its provenance line, its steady rows);
     exits naming every failure otherwise."""
-    sweep = json.loads((directory / "sweep.json").read_text())
+    sweep = json.loads((directory / "sweep.json").read_text(encoding="utf-8"))
     reports = {n: load_gz(directory / n / "report.json.gz") for n, r in (sweep.get("runs") or {}).items()
                if r.get("report") and (directory / n / "report.json.gz").exists()}
     failures = sweep_failures(sweep, reports)
@@ -687,7 +687,7 @@ def sweep_section(results):
     if not dirs:
         return (f"{ARMS_CAPTION}\n\n_Not run yet: the measurement host's run.sh sweeps (MOVE_TO_PER_S 0, 2 and 5, "
                 "then CONTROL=1), collected into results/, fill this section._\n")
-    records = {d: json.loads((d / "sweep.json").read_text()) for d in dirs}
+    records = {d: json.loads((d / "sweep.json").read_text(encoding="utf-8")) for d in dirs}
     legacy = [d.name for d, r in records.items() if r.get("moveToPerS") is None and not r.get("control")]
     if legacy:
         sys.exit(f"results not usable: {', '.join(legacy)} records no MoveTo arm (moveToPerS): a sweep from before "
@@ -736,7 +736,7 @@ def sweep_section(results):
 
 def check_record():
     """The 2026-11-06 set must resolve to both knobs off: its server commit predates them."""
-    commit = RECORD_COMMIT.read_text().strip()
+    commit = RECORD_COMMIT.read_text(encoding="utf-8").strip()
     try:
         form = wireform.resolve(commit, "messagepack")
     except wireform.MissingWireForm as missing:
@@ -773,7 +773,7 @@ def main():
             sys.exit("--sweep needs a directory: results/<RUN_ID>")
         print(build_sweep(Path(args[0])), end="")
         return
-    text = README.read_text()
+    text = README.read_text(encoding="utf-8")
     head, rest = text.split(START, 1)
     _, tail = rest.split(END, 1)
     new = f"{head}{START}\n\n{results_markdown(RESULTS)}\n{END}{tail}"
@@ -783,7 +783,7 @@ def main():
             sys.exit(1)
         print("README.md Results are current.")
         return
-    README.write_text(new)
+    README.write_text(new, encoding="utf-8")
 
 
 if __name__ == "__main__":

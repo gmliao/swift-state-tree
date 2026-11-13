@@ -102,7 +102,7 @@ def contains(commit: str, knob_commit: str, repo: pathlib.Path = REPO) -> bool |
     unknown commit, or no repository)."""
     try:
         done = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", knob_commit, commit],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8")
     except OSError:
         return None
     return {0: True, 1: False}.get(done.returncode)

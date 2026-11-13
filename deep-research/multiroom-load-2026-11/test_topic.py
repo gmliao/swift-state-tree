@@ -24,7 +24,7 @@ def dry_run(**env):
                 "TOP_ROOMS", "SUITE_ROOMS", "WORKLOAD", "STEADY_WARMUP_S"):
         if key not in env:
             full.pop(key, None)
-    return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True)
+    return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, encoding="utf-8")
 
 
 def runs(out):
@@ -193,7 +193,7 @@ class Plan(unittest.TestCase):
                     {"WORKLOAD": "ramped"}, {"WORKLOAD": "refreeze", "STEADY_WARMUP_S": "30"}):
             with self.subTest(env):
                 done = subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", "RUN_ID": "dry", **env},
-                                      capture_output=True, text=True)
+                                      capture_output=True, text=True, encoding="utf-8")
                 self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
 
     def test_an_existing_sweep_is_refused(self):
@@ -201,9 +201,9 @@ class Plan(unittest.TestCase):
         out = TOPIC / "raw" / run_id
         out.mkdir(parents=True)
         try:
-            (out / "run.json").write_text(json.dumps({"runId": run_id}))
+            (out / "run.json").write_text(json.dumps({"runId": run_id}), encoding="utf-8")
             done = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(os.environ, DRY_RUN="1", RUN_ID=run_id),
-                                  capture_output=True, text=True)
+                                  capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(done.returncode, 1)
             self.assertIn("already ran", done.stderr)
         finally:
@@ -330,7 +330,7 @@ class Refreeze(unittest.TestCase):
 
     def test_a_record_that_isnt_both_knobs_off_is_refused(self):
         sha = self.tmp / "SHA.txt"
-        sha.write_text(KNOBS_COMMIT + "\n")  # a commit with both knobs, and the reports record no form
+        sha.write_text(KNOBS_COMMIT + "\n", encoding="utf-8")  # a commit with both knobs, and the reports record no form
         with mock.patch.object(regenerate, "RECORD_COMMIT", sha):
             with self.assertRaisesRegex(SystemExit, "pre-refreeze record not usable"):
                 regenerate.results_markdown(self.results)
@@ -348,12 +348,12 @@ class Driver(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
-        (bin_dir / "swift").write_text(f'#!/bin/sh\n[ "$1" = --version ] && printf "%s\\n" "{regenerate.PINNED_SWIFT}" "Target: x"\nexit 0\n')
-        (bin_dir / "ss").write_text("#!/bin/sh\necho 'State Recv-Q Send-Q'\n")
+        (bin_dir / "swift").write_text(f'#!/bin/sh\n[ "$1" = --version ] && printf "%s\\n" "{regenerate.PINNED_SWIFT}" "Target: x"\nexit 0\n', encoding="utf-8")
+        (bin_dir / "ss").write_text("#!/bin/sh\necho 'State Recv-Q Send-Q'\n", encoding="utf-8")
         for f in bin_dir.iterdir():
             f.chmod(0o755)
         self.fake = self.tmp / "fake-scalability.sh"
-        self.fake.write_text(FAKE_SCALABILITY)
+        self.fake.write_text(FAKE_SCALABILITY, encoding="utf-8")
         self.run_id = f"test-driver-{os.getpid()}-{id(self)}"
         self.out = TOPIC / "raw" / self.run_id
         self.addCleanup(shutil.rmtree, self.out, True)
@@ -368,36 +368,36 @@ class Driver(unittest.TestCase):
             self.env.pop(key, None)
 
     def sweep(self, runs, plan=None):
-        (self.tmp / "plan.json").write_text(json.dumps(plan or {}))
+        (self.tmp / "plan.json").write_text(json.dumps(plan or {}), encoding="utf-8")
         # A leaked affinity watcher (it polls for 120 s) would hold the pipes open past the timeout.
-        done = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(self.env, RUNS=runs), capture_output=True, text=True, timeout=60)
+        done = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(self.env, RUNS=runs), capture_output=True, text=True, timeout=60, encoding="utf-8")
         calls_file = self.tmp / "calls"
-        calls = calls_file.read_text().split() if calls_file.exists() else []
-        record = json.loads((self.out / "run.json").read_text())
+        calls = calls_file.read_text(encoding="utf-8").split() if calls_file.exists() else []
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         return done, calls, {c["tag"]: c["status"] for c in record["cells"]}
 
     def header(self, name):
-        return (self.out / f"{name}.run-header.txt").read_text()
+        return (self.out / f"{name}.run-header.txt").read_text(encoding="utf-8")
 
     def test_runs_pass_and_each_keeps_its_own_server_log(self):
         done, calls, status = self.sweep("preflight suite-1-100 overhead-unprofiled")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["wire"], {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None})
         self.assertEqual(record["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
         # run.sh walks its matrix in order, whatever order RUNS names them: the pair right after the preflight.
         self.assertEqual(calls, ["preflight", "overhead-unprofiled", "suite-1-100"])
         # Steady holds 30 s at 5 players before its 60 s measured window (#425), and each run's
         # server writes its own land stats.
-        scenario = json.loads((self.out / "scenario.json").read_text())
+        scenario = json.loads((self.out / "scenario.json").read_text(encoding="utf-8"))
         steady = scenario["phases"]["steady"]
         self.assertEqual((steady["warmupSeconds"], steady["durationSeconds"], steady["playersPerRoom"]), (30, 90, 5))
         self.assertEqual(record["steadyWarmupS"], 30)
-        given = dict(l.split(" ", 1) for l in (self.tmp / "calls.stats").read_text().splitlines())
+        given = dict(l.split(" ", 1) for l in (self.tmp / "calls.stats").read_text(encoding="utf-8").splitlines())
         self.assertEqual(given, {n: str(self.out / n / "land-stats.jsonl") for n in calls})
         self.assertEqual(set(status.values()), {"passed"})
         for name in calls:
-            self.assertTrue((self.out / name / "gameserver.log").read_text().startswith(f"server log of {name}\n"))
+            self.assertTrue((self.out / name / "gameserver.log").read_text(encoding="utf-8").startswith(f"server log of {name}\n"))
             self.assertIn(f"server log: {name}/gameserver.log", self.header(name))
             self.assertIn("server spawnRampTicks: 0", self.header(name))
         # The ramp asked for, and per run the one each server reported.
@@ -408,9 +408,9 @@ class Driver(unittest.TestCase):
         self.env["MOVE_TO_PER_S"] = "2"
         done, calls, status = self.sweep("preflight suite-1-100")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((record["moveToPerS"], record["control"]), (2, False))
-        args = (self.tmp / "calls.args").read_text().splitlines()
+        args = (self.tmp / "calls.args").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(args), 2)
         self.assertTrue(all(" --move-to-rate 2" in line for line in args), args)
         self.assertIn("client load: within the bounds", self.header("suite-1-100"))
@@ -418,9 +418,9 @@ class Driver(unittest.TestCase):
     def test_arm_zero_passes_no_flag_and_records_zero(self):
         done, calls, status = self.sweep("suite-1-100")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((record["moveToPerS"], record["control"]), (0, False))
-        self.assertNotIn("--move-to-rate", (self.tmp / "calls.args").read_text())
+        self.assertNotIn("--move-to-rate", (self.tmp / "calls.args").read_text(encoding="utf-8"))
 
     def test_a_busy_load_client_stops_the_sweep(self):
         done, calls, status = self.sweep("preflight suite-1-100 suite-1-300", {"suite-1-100": "client-busy"})
@@ -463,10 +463,10 @@ class Driver(unittest.TestCase):
         self.env["WORKLOAD"] = "refreeze"
         done, calls, status = self.sweep("preflight suite-1-100")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((record["workload"], record["spawnRampTicks"], record["steadyWarmupS"]), ("refreeze", 3000, None))
         self.assertEqual(record["spawnRampTicksEffective"], {"preflight": 3000, "suite-1-100": 3000})
-        steady = json.loads((self.out / "scenario.json").read_text())["phases"]["steady"]
+        steady = json.loads((self.out / "scenario.json").read_text(encoding="utf-8"))["phases"]["steady"]
         self.assertNotIn("warmupSeconds", steady)
         self.assertEqual(steady["durationSeconds"], 60)
         self.assertIn("spawn ramp env: HERO_DEFENSE_SPAWN_RAMP_TICKS=[unset]", self.header("suite-1-100"))
@@ -483,29 +483,29 @@ class Driver(unittest.TestCase):
         self.env.update(IN_TURN_SYNC="false", USE_SYNC_TABLES="true", SYNC_STRATEGY="full-snapshot", OUTBOUND_WRITER_MAX_BYTES="1024")
         done, calls, status = self.sweep("suite-1-100")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["syncPathEnv"], {"USE_SNAPSHOT_FOR_SYNC": None, "IN_TURN_SYNC": "false", "USE_SYNC_TABLES": "true",
                                                  "ROW_ADDRESSING": None, "SYNC_STRATEGY": "full-snapshot",
                                                  "OUTBOUND_WRITER_MAX_BYTES": "1024", "JOIN_FLIP_BUDGET": None})
-        self.assertEqual((self.tmp / "calls.syncenv").read_text().split(), ["suite-1-100"] + ["unset"] * 7)
+        self.assertEqual((self.tmp / "calls.syncenv").read_text(encoding="utf-8").split(), ["suite-1-100"] + ["unset"] * 7)
         self.assertIn("sync-path env: unset for the server; the shell had USE_SNAPSHOT_FOR_SYNC=[unset] IN_TURN_SYNC=[false] "
                       "USE_SYNC_TABLES=[true] ROW_ADDRESSING=[unset] SYNC_STRATEGY=[full-snapshot] OUTBOUND_WRITER_MAX_BYTES=[1024] "
                       "JOIN_FLIP_BUDGET=[unset]", self.header("suite-1-100"))
 
     def test_the_control_is_recorded(self):
         self.env["CONTROL"] = "1"
-        (self.tmp / "plan.json").write_text("{}")
-        done = subprocess.run(["bash", str(TOPIC / "run.sh")], env=self.env, capture_output=True, text=True, timeout=60)
+        (self.tmp / "plan.json").write_text("{}", encoding="utf-8")
+        done = subprocess.run(["bash", str(TOPIC / "run.sh")], env=self.env, capture_output=True, text=True, timeout=60, encoding="utf-8")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((record["moveToPerS"], record["control"]), (0, True))
-        self.assertEqual((self.tmp / "calls").read_text().split(), ["control-300"])
+        self.assertEqual((self.tmp / "calls").read_text(encoding="utf-8").split(), ["control-300"])
 
     def test_a_missing_server_log_is_recorded_not_the_previous_one(self):
-        (self.tmp / "server.log").write_text("stale log of an earlier run\n")
+        (self.tmp / "server.log").write_text("stale log of an earlier run\n", encoding="utf-8")
         done, calls, status = self.sweep("suite-1-100 suite-1-300", {"suite-1-300": "no-log"})
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertTrue((self.out / "suite-1-100" / "gameserver.log").read_text().startswith("server log of suite-1-100\n"))
+        self.assertTrue((self.out / "suite-1-100" / "gameserver.log").read_text(encoding="utf-8").startswith("server log of suite-1-100\n"))
         self.assertFalse((self.out / "suite-1-300" / "gameserver.log").exists())
         self.assertIn("server log: none", self.header("suite-1-300"))
 
@@ -546,7 +546,7 @@ class Driver(unittest.TestCase):
         self.env.update(PATH_INDEX="false", FIELD_MERGE="false", WS_SEND_BACKLOG_MAX_BYTES="1048576")
         done, calls, status = self.sweep("suite-1-100")
         self.assertEqual(done.returncode, 0, done.stderr)
-        record = json.loads((self.out / "run.json").read_text())
+        record = json.loads((self.out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["wire"], {"PATH_INDEX": "false", "FIELD_MERGE": "false", "TRANSPORT_ENCODING": None})
         self.assertEqual(record["sendBacklogEnv"]["WS_SEND_BACKLOG_MAX_BYTES"], "1048576")
         self.assertIn("WS_SEND_BACKLOG_* env: [1048576] [unset]", self.header("suite-1-100"))
@@ -557,7 +557,7 @@ class Driver(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertEqual(calls, ["suite-1-100", "suite-1-300"])
         self.assertEqual(status, {"suite-1-100": "failed-run", "suite-1-300": "passed"})
-        self.assertIsNotNone(json.loads((self.out / "run.json").read_text())["endedAt"])
+        self.assertIsNotNone(json.loads((self.out / "run.json").read_text(encoding="utf-8"))["endedAt"])
 
 
 SWIFT = regenerate.PINNED_SWIFT
@@ -595,17 +595,17 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
             phase.setdefault("phaseTotals", {})["stateUpdateFeatures"] = {features: phase["connections"]}
         suite = out / name / "scalability-2026-11-08T00-00-00"
         (suite / "run-1").mkdir(parents=True)
-        (suite / "run-1" / "ws-loadtest-1.json").write_text(json.dumps(report))
-        (suite / "summary.json").write_text(json.dumps({"config": {"roomCounts": [rooms]}, "runs": [{"rooms": rooms, "success": True}]}))
+        (suite / "run-1" / "ws-loadtest-1.json").write_text(json.dumps(report), encoding="utf-8")
+        (suite / "summary.json").write_text(json.dumps({"config": {"roomCounts": [rooms]}, "runs": [{"rooms": rooms, "success": True}]}), encoding="utf-8")
         (suite / "run-1" / "toolchain.txt").write_text(
             f"{SWIFT}\nTarget: x86_64-unknown-linux-gnu\nnode {NODE}\n"
-            f"GAMESERVER_BIN=/workspace/checkout/Examples/GameDemo/.build/release/GameServer\nGAMESERVER_SOURCE_SHA={SHA}\n")
+            f"GAMESERVER_BIN=/workspace/checkout/Examples/GameDemo/.build/release/GameServer\nGAMESERVER_SOURCE_SHA={SHA}\n", encoding="utf-8")
         args = f"--room-counts {rooms} --scenario scenarios/hero-defense/default.json --output-dir ../../../x/{name}" + (" --profile" if profiled else "")
         (out / f"{name}.run-header.txt").write_text(
             f"sha={SHA}\nstart=2026-11-08T00:00:00Z\ncmd: PATH=/x/shim:$PATH bash scripts/run-scalability-test.sh {args}\n"
             f"shim stdbuf: exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"\nshim node: exec taskset -c 8-11 /usr/bin/node \"$@\"\n"
             "WS_SEND_BACKLOG_* env: [unset] [unset]\n"
-            f"{SWIFT}\n{NODE}\nexit=0 end=2026-11-08T00:01:00Z\nserver Cpus_allowed_list: 0-7\n")
+            f"{SWIFT}\n{NODE}\nexit=0 end=2026-11-08T00:01:00Z\nserver Cpus_allowed_list: 0-7\n", encoding="utf-8")
         cells.append({"tag": name, "status": "passed", "finishedAt": "2026-11-08T00:01:00Z"})
     (out / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": 1, "order": "fixed", "capture": True, "pinCpus": "server:0-7 client:8-11",
@@ -613,20 +613,20 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
         "nodeVersion": NODE, "startedAt": "2026-11-08T00:00:00Z", "endedAt": "2026-11-08T01:00:00Z", "superseded": None,
         "cells": cells, "buildConfig": "release", "overrides": {}, "timeWait": {"max": 200, "timeoutS": 300},
         "wire": wire or {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None},
-        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}))
+        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}), encoding="utf-8")
     return out
 
 
 def edit_json(path, change):
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     change(data)
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def edit_text(path, old, new):
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert old in text, (path, old)
-    path.write_text(text.replace(old, new))
+    path.write_text(text.replace(old, new), encoding="utf-8")
 
 
 def report_path(out, name):
@@ -727,13 +727,13 @@ def write_hold_sweep(raw, monsters=lambda t: 30, hold=30, effective=0, without_s
     out = write_sweep(raw, run_id, matrix=matrix)
     for name in matrix:
         path = one_report(out / name)
-        report = json.loads(path.read_text())
+        report = json.loads(path.read_text(encoding="utf-8"))
         for phase in report["meta"]["runConfig"]["phases"]:
             if phase["name"] == "steady":
                 phase.update(durationSeconds=60 + hold, warmupMs=hold * 1000)
         steady = next(p for p in report["phases"] if p["name"] == "steady")
         steady["measurement"].update(warmupMs=hold * 1000, measuredMs=60_000)
-        path.write_text(json.dumps(report))
+        path.write_text(json.dumps(report), encoding="utf-8")
         if name in without_stats:
             continue
         origin = steady["measurement"]["originAt"]
@@ -741,7 +741,7 @@ def write_hold_sweep(raw, monsters=lambda t: 30, hold=30, effective=0, without_s
                  "lands": {f"l{i}": {"tick": t * 20, "monsters": monsters(t), "baseHealth": 0, "players": 5,
                                      "spawned": 7 * t, "killed": 5 * t, "reachedBase": 2 * t} for i in range(3)}}
                 for t in range(0, 60 + hold + 5)]
-        (out / name / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (out / name / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     edit_json(out / "run.json", lambda r: r.update(steadyWarmupS=hold, spawnRampTicks=0,
                                                    spawnRampTicksEffective={n: effective for n in matrix}))
     return out
@@ -763,7 +763,7 @@ def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieve
     rate = arm if sent is None else sent
     for name in (matrix or regenerate.MATRIX):
         path = one_report(out / name)
-        report = json.loads(path.read_text())
+        report = json.loads(path.read_text(encoding="utf-8"))
         report["meta"]["runConfig"]["events"] = [{"name": "MoveTo", "ratePerSecond": rate, "payloadGenerator": "moveTo"}] if rate else []
         for phase in report["phases"]:
             m = phase["measurement"]
@@ -773,7 +773,7 @@ def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieve
                 m["events"] = {"MoveTo": {"ratePerPlayerPerSecond": rate, "targetPerSecond": target,
                                           "sentInWindow": int(target * achieved * 50), "achievedPerSecond": target * achieved,
                                           "perPlayerPerSecond": rate * achieved}}
-        path.write_text(json.dumps(report))
+        path.write_text(json.dumps(report), encoding="utf-8")
     edit_json(out / "run.json", lambda r: r.update(moveToPerS=arm, control=control))
     if top:
         edit_json(out / "run.json", lambda r: r.update(topRooms=top, suiteRooms=list(rooms)))
@@ -864,7 +864,7 @@ class Arms(unittest.TestCase):
         # collect.py writes moveToPerS: null for it; that's no arm, not arm None.
         write_hold_sweep(self.raw)
         collect.collect(self.raw, self.results)
-        self.assertIsNone(json.loads((self.results / "sweep" / "sweep.json").read_text())["moveToPerS"])
+        self.assertIsNone(json.loads((self.results / "sweep" / "sweep.json").read_text(encoding="utf-8"))["moveToPerS"])
         self.assertIn("Sweep `sweep`", regenerate.build_sweep(self.results / "sweep"))
         with self.assertRaisesRegex(SystemExit, "sweep records no MoveTo arm"):
             regenerate.sweep_section(self.results)
@@ -913,7 +913,7 @@ class Arms(unittest.TestCase):
         write_arm_sweep(self.raw, "control", 0, control=True, workload="refreeze")
         text = self.section()
         # collect.py carries the workload into sweep.json: without it a refreeze sweep would read as no workload.
-        self.assertEqual(json.loads((self.results / "arm-0" / "sweep.json").read_text())["workload"], "refreeze")
+        self.assertEqual(json.loads((self.results / "arm-0" / "sweep.json").read_text(encoding="utf-8"))["workload"], "refreeze")
         self.assertTrue(text.startswith("### MoveTo arms (#430)\n\nWorkload: the refreeze sweep's rules"), text[:200])
         self.assertIn("#### Sensitivity to the players' input rate", text)
         self.assertIn(": within it. It isn't tabled.", text)
@@ -1008,7 +1008,7 @@ class ClientLoad(unittest.TestCase):
 
     def test_a_check_that_cant_read_its_inputs_exits_2(self):
         done = subprocess.run([sys.executable, str(TOPIC / "clientload.py"), "check", "/nonexistent/summary.json", "/", "8-11"],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
         self.assertIn("client load check failed: FileNotFoundError", done.stdout)
 
@@ -1016,10 +1016,10 @@ class ClientLoad(unittest.TestCase):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         for name, report, code in (("ok", self.report(), 0), ("busy", self.report(elu=0.9), 1)):
-            (tmp / f"{name}.json").write_text(json.dumps(report))
-            (tmp / f"{name}-summary.json").write_text(json.dumps({"runs": [{"reportJson": str(tmp / f"{name}.json")}]}))
+            (tmp / f"{name}.json").write_text(json.dumps(report), encoding="utf-8")
+            (tmp / f"{name}-summary.json").write_text(json.dumps({"runs": [{"reportJson": str(tmp / f"{name}.json")}]}), encoding="utf-8")
             done = subprocess.run([sys.executable, str(TOPIC / "clientload.py"), "check", str(tmp / f"{name}-summary.json"), str(tmp), "8-11"],
-                                  capture_output=True, text=True)
+                                  capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(done.returncode, code, done.stdout + done.stderr)
         self.assertIn("steady: worst worker ELU 0.9", done.stdout)
 
@@ -1038,7 +1038,7 @@ class SteadyHold(unittest.TestCase):
     def failures(self, **kw):
         write_hold_sweep(self.raw, **kw)
         collect.collect(self.raw, self.results)
-        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text(encoding="utf-8"))
         reports = {n: regenerate.load_gz(self.results / "sweep" / n / "report.json.gz") for n in regenerate.MATRIX}
         return sweep, regenerate.sweep_failures(sweep, reports)
 
@@ -1075,7 +1075,7 @@ class SteadyHold(unittest.TestCase):
     def test_a_sweep_without_the_hold_keeps_the_published_phases(self):
         write_sweep(self.raw)
         collect.collect(self.raw, self.results)
-        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text(encoding="utf-8"))
         reports = {n: regenerate.load_gz(self.results / "sweep" / n / "report.json.gz") for n in regenerate.MATRIX}
         self.assertIsNone(sweep.get("steadyWarmupS"))
         self.assertEqual(regenerate.sweep_failures(sweep, reports), [])
@@ -1131,7 +1131,7 @@ class Sweep(unittest.TestCase):
         self.assertTrue(sweeps)
         for path in sweeps:
             with self.subTest(path.parent.name):
-                self.assertIs((json.loads(path.read_text()).get("git") or {}).get("dirty"), False)
+                self.assertIs((json.loads(path.read_text(encoding="utf-8")).get("git") or {}).get("dirty"), False)
 
     def test_every_mutant_is_refused_by_its_gate(self):
         for what, change, words in MUTANTS:
@@ -1185,7 +1185,7 @@ class Sweep(unittest.TestCase):
         collect.collect(self.raw, self.results)
         self.assertEqual(first, (self.results / "new" / "suite-1-100" / "report.json.gz").read_bytes())
         check = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--check"], capture_output=True, text=True,
-                               env=dict(os.environ, PYTHONUTF8="1"))
+                               env=dict(os.environ, PYTHONUTF8="1"), encoding="utf-8")
         self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_collected_results_carry_no_absolute_path(self):
@@ -1195,9 +1195,9 @@ class Sweep(unittest.TestCase):
         files = sorted(p for p in self.results.rglob("*") if p.is_file())
         self.assertTrue(files)
         for f in files:
-            text = gzip.decompress(f.read_bytes()).decode() if f.suffix == ".gz" else f.read_text()
+            text = gzip.decompress(f.read_bytes()).decode() if f.suffix == ".gz" else f.read_text(encoding="utf-8")
             self.assertEqual(portable.absolute_paths(text), [], f.relative_to(self.results))
-        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text(encoding="utf-8"))
         self.assertEqual(sweep["runs"]["suite-1-100"]["toolchain"]["gameserverBin"], "Examples/GameDemo/.build/release/GameServer")
         self.assertNotIn("root", sweep["git"])
 
@@ -1209,9 +1209,9 @@ class Sweep(unittest.TestCase):
         self.assertIn("--checkout-root", str(cm.exception))
         # A path outside the checkout stays visible, for the guard to catch.
         tc = next((self.raw / "sweep" / "suite-1-100").glob("scalability-*/run-1/toolchain.txt"))
-        tc.write_text(tc.read_text() + "npm /usr/local/lib/node_modules/npm/scripts/postinstall.js\n")
+        tc.write_text(tc.read_text(encoding="utf-8") + "npm /usr/local/lib/node_modules/npm/scripts/postinstall.js\n", encoding="utf-8")
         collect.collect(self.raw, self.results, checkout_root="/workspace/checkout")
-        copied = (self.results / "sweep" / "suite-1-100" / "toolchain.txt").read_text()
+        copied = (self.results / "sweep" / "suite-1-100" / "toolchain.txt").read_text(encoding="utf-8")
         self.assertIn("GAMESERVER_BIN=Examples/GameDemo/.build/release/GameServer", copied)
         self.assertIn("npm /usr/local/lib/node_modules/npm/scripts/postinstall.js", copied)
 

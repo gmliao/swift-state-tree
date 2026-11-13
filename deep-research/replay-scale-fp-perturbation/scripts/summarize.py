@@ -38,7 +38,7 @@ def source(out):
     """The batch's commit from source.json; exits when it's missing, unreadable or dirty."""
     path = out / "source.json"
     try:
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         sys.exit(f"{path}: the batch's commit isn't recorded ({e}); rerun with run-batch.sh")
     commit = record.get("commit")
@@ -60,12 +60,12 @@ def summarize(out, host, swift, arch):
     out = pathlib.Path(out)
     git_sha = source(out)[:8]
     recs, sums, formats = [], [], set()
-    for line in (out / "summary.tsv").read_text().splitlines():
+    for line in (out / "summary.tsv").read_text(encoding="utf-8").splitlines():
         cols = line.split("\t")
         seed, players, move_every, ticks, rec_exit, ver_exit, sha = cols[:7]
         second = cols[7] if len(cols) > 7 else ""
         content, content2, split, split2 = (cols[8:12] + ["", "", "", ""])[:4]
-        log = (out / "logs" / f"s{seed}.verify.log").read_text()
+        log = (out / "logs" / f"s{seed}.verify.log").read_text(encoding="utf-8")
         formats.add(record_format(log))
         name = next((p.name for p in (out / "records").glob(f"s{seed}.*")), f"s{seed}")
         mism = re.search(r"mismatched ticks vs recorded=(\d+)", log)
@@ -113,8 +113,8 @@ def summarize(out, host, swift, arch):
 def main(argv):
     out, host, swift, arch, json_out, sums_out = argv[:6]
     doc, sums_text = summarize(out, host, swift, arch)
-    pathlib.Path(sums_out).write_text(sums_text)
-    pathlib.Path(json_out).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    pathlib.Path(sums_out).write_text(sums_text, encoding="utf-8")
+    pathlib.Path(json_out).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     recs = doc["recordings"]
     print(json.dumps({k: doc["meta"][k] for k in ("record_format", "sha256sums_sha256")}),
           "recordings", len(recs),

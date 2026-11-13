@@ -25,19 +25,19 @@ def now():
 
 def output(*cmd):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+        return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8").stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
 
 def load(directory):
-    return json.loads((directory / "run.json").read_text())
+    return json.loads((directory / "run.json").read_text(encoding="utf-8"))
 
 
 def save(directory, record):
     path = directory / "run.json"
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(record, indent=2) + "\n")
+    tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
 

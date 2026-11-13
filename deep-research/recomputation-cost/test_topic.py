@@ -58,7 +58,7 @@ def sweep(raw, run_id="s1", dirty=False, swift="Swift version 6.2.4 (swift-6.2.4
     out.mkdir(parents=True)
     record = {"runId": run_id, "pinCpus": "0-7", "onlyCells": cells, **regenerate.CONSTANTS, **(constants or {}),
               "git": {"commit": "abc", "dirty": dirty}, "swiftVersion": swift, "endedAt": "2026-11-08T01:00:00Z"}
-    (out / "run.json").write_text(json.dumps(record))
+    (out / "run.json").write_text(json.dumps(record), encoding="utf-8")
     procs = []
     for players, cadence in regenerate.CELLS:
         for enc in ("messagepack", "json"):
@@ -76,7 +76,7 @@ def sweep(raw, run_id="s1", dirty=False, swift="Swift version 6.2.4 (swift-6.2.4
         d = out / name
         d.mkdir()
         if kind == "sizes":
-            (d / "loadtest.json").write_text(json.dumps(loadtest(10, players, cadence, "on", enc=extra)))
+            (d / "loadtest.json").write_text(json.dumps(loadtest(10, players, cadence, "on", enc=extra)), encoding="utf-8")
             (d / "records").mkdir()
             for room in (0, 1):
                 (d / "records" / f"room-{room}.sstr").write_bytes(sstr(ticks=20))
@@ -84,18 +84,18 @@ def sweep(raw, run_id="s1", dirty=False, swift="Swift version 6.2.4 (swift-6.2.4
             (d / "streams" / "s0.bin").write_bytes(struct.pack(">I", 2) + b"ab")
             if extra == "messagepack" and name.endswith("-r1"):
                 for room in (0, 1):
-                    (d / f"replay-room-{room}.txt").write_text("REPLAY_TIMING run=1 ticks=20 wallMs=2.0\n")
+                    (d / f"replay-room-{room}.txt").write_text("REPLAY_TIMING run=1 ticks=20 wallMs=2.0\n", encoding="utf-8")
                     (d / f"verify-room-{room}.txt").write_text(
-                        "Verified state hashes\nREPLAY_TIMING run=1 ticks=20 wallMs=2.0\nREPLAY_TIMING run=2 ticks=20 wallMs=2.0\n")
+                        "Verified state hashes\nREPLAY_TIMING run=1 ticks=20 wallMs=2.0\nREPLAY_TIMING run=2 ticks=20 wallMs=2.0\n", encoding="utf-8")
                     (d / f"open-room-{room}.json").write_text(json.dumps(
-                        {"medianMs": 0.5, "p10Ms": 0.4, "p90Ms": 0.6, "repeat": 200, "bytes": 100}) + "\n")
+                        {"medianMs": 0.5, "p10Ms": 0.4, "p90Ms": 0.6, "repeat": 200, "bytes": 100}) + "\n", encoding="utf-8")
         else:
             cpu = 50.0 if side == "on" else 40.0
             (d / "loadtest.json").write_text(json.dumps(loadtest(200, players, cadence, "on" if side == "on" else "off",
-                                                                 cpu=cpu, late=late, started=f"2026-11-08T00:{extra}")))
-            (d / "profile.jsonl").write_text(PROFILE)
+                                                                 cpu=cpu, late=late, started=f"2026-11-08T00:{extra}")), encoding="utf-8")
+            (d / "profile.jsonl").write_text(PROFILE, encoding="utf-8")
             if side == "on":
-                (d / "record-check.json").write_text(json.dumps({"pass": check_ok}))
+                (d / "record-check.json").write_text(json.dumps({"pass": check_ok}), encoding="utf-8")
 
 
 class RecordCheckTests(unittest.TestCase):
@@ -104,10 +104,10 @@ class RecordCheckTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.d = pathlib.Path(tmp.name)
         (self.d / "records").mkdir()
-        (self.d / "verify.txt").write_text("Verified state hashes\n")
+        (self.d / "verify.txt").write_text("Verified state hashes\n", encoding="utf-8")
 
     def write(self, rooms=2, actions=1200, **record_kw):
-        (self.d / "loadtest.json").write_text(json.dumps(loadtest(rooms, 2, 5, "on", actions=actions)))
+        (self.d / "loadtest.json").write_text(json.dumps(loadtest(rooms, 2, 5, "on", actions=actions)), encoding="utf-8")
         for room in range(2):
             (self.d / "records" / f"room-{room}.sstr").write_bytes(sstr(**record_kw))
 
@@ -128,7 +128,7 @@ class RecordCheckTests(unittest.TestCase):
         (self.d / "records" / "spool" / "room-2.part").write_bytes(b"x")
         self.assertFalse(regenerate.record_check(self.d)["pass"])
         (self.d / "records" / "spool" / "room-2.part").unlink()
-        (self.d / "verify.txt").write_text("state hash mismatch at tick 3\n")
+        (self.d / "verify.txt").write_text("state hash mismatch at tick 3\n", encoding="utf-8")
         self.assertFalse(regenerate.record_check(self.d)["pass"])
 
 
@@ -175,9 +175,9 @@ class TopicTests(unittest.TestCase):
         raw, results = pathlib.Path(tmp.name) / "raw", pathlib.Path(tmp.name) / "results"
         sweep(raw)
         for lt in raw.glob("*/*/loadtest.json"):
-            doc = json.loads(lt.read_text())
+            doc = json.loads(lt.read_text(encoding="utf-8"))
             doc["metadata"]["commandLine"] += extra(lt.parent.parent.name, lt.parent.name)
-            lt.write_text(json.dumps(doc))
+            lt.write_text(json.dumps(doc), encoding="utf-8")
         collect.collect(raw, results)
         return results
 
@@ -200,10 +200,10 @@ class TopicTests(unittest.TestCase):
         files = sorted(results.glob("*/*.json"))
         self.assertTrue(files)
         for f in files:
-            doc = json.loads(f.read_text())
+            doc = json.loads(f.read_text(encoding="utf-8"))
             leaked = [x for x in strings(doc) if re.search(r"(^|[\s=])/", x)]
             self.assertEqual(leaked, [], f.name)
-        doc = json.loads(next(f for f in files if f.name.startswith("cost-")).read_text())
+        doc = json.loads(next(f for f in files if f.name.startswith("cost-")).read_text(encoding="utf-8"))
         run, proc = doc["name"].split("/")
         self.assertIn(f"--record-dir raw/{run}/{proc}/records --stream-dir raw/{run}/{proc}/streams", doc["meta"]["command"])
 
@@ -273,7 +273,7 @@ class TopicTests(unittest.TestCase):
 class RunScriptTests(unittest.TestCase):
     def dry(self, **env):
         done = subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True,
-                              env={**os.environ, "DRY_RUN": "1", "RUN_ID": "dry", **env})
+                              env={**os.environ, "DRY_RUN": "1", "RUN_ID": "dry", **env}, encoding="utf-8")
         return done.returncode, done.stdout + done.stderr
 
     def test_dry_run_lists_every_process(self):
@@ -316,9 +316,9 @@ class FirstRecordsTests(unittest.TestCase):
 
     def first(self, n, function=None):
         function = function or subprocess.run(
-            ["sed", "-n", "/^first_records() {/,/^}/p", str(TOPIC / "run.sh")], capture_output=True, text=True, check=True).stdout
+            ["sed", "-n", "/^first_records() {/,/^}/p", str(TOPIC / "run.sh")], capture_output=True, text=True, check=True, encoding="utf-8").stdout
         script = f'set -euo pipefail\nDRY_RUN=0\n{function}\nrec="$(first_records "$1" {n})"\nprintf "%s\\n" "$rec"\n'
-        return subprocess.run(["bash", "-c", script, "bash", str(self.tmp / "cell")], capture_output=True, text=True)
+        return subprocess.run(["bash", "-c", script, "bash", str(self.tmp / "cell")], capture_output=True, text=True, encoding="utf-8")
 
     def test_returns_the_first_records_by_name(self):
         for n in (1, 2):

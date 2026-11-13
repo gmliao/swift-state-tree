@@ -23,7 +23,7 @@ SETTINGS = {"VISIBILITY_TEST_ENTITY_COUNT": "entity_count", "VISIBILITY_TEST_VIE
 def sweeps(raw):
     claimed = {}
     for record_path in sorted(raw.glob("*/run.json")):
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         if record.get("superseded"):
             continue
         if record["repeat"] in claimed:
@@ -46,7 +46,7 @@ def only_run(report, path, key):
 
 
 def read(path):
-    return json.loads(path.read_text()) if path.exists() else None
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 def collect(raw, results):
@@ -64,7 +64,7 @@ def collect(raw, results):
             if not match:
                 sys.exit(f"{path}: not <cell>-<variant>.json")
             cell, variant = match.groups()
-            d = json.loads(path.read_text())
+            d = json.loads(path.read_text(encoding="utf-8"))
             meta, cmd = d["metadata"], d["metadata"]["commandLine"]
             config = meta["benchmarkConfig"]
             settings = config.get("visibility")
@@ -141,7 +141,7 @@ def collect(raw, results):
                 },
                 "metrics": metrics,
             }
-            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(run_id)
     return written
 

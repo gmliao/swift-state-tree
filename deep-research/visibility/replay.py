@@ -12,7 +12,7 @@ import json, pathlib, re, subprocess, sys
 
 
 def verdict(binary, record):
-    proc = subprocess.run([binary, "--input", str(record), "--verify"], capture_output=True, text=True)
+    proc = subprocess.run([binary, "--input", str(record), "--verify"], capture_output=True, text=True, encoding="utf-8")
     lines = [l.strip() for l in (proc.stdout + proc.stderr).splitlines()]
     sync = next((l for l in lines if l.startswith("Sync Output:")), None)
     return {
@@ -38,7 +38,7 @@ def main(binary, record_dir, out):
         rooms = {r.name: verdict(binary, r) for r in records}
         result[match.group(1)] = rooms
         failed += [f"{run.name}/{name}" for name, v in rooms.items() if not v["passed"]]
-    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     if failed:
         sys.exit("replay failed: " + ", ".join(failed))
 

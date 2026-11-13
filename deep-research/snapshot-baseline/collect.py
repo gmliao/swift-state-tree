@@ -35,7 +35,7 @@ def raw_files():
             yield raw, None
     sweeps = {}
     for record_path in sorted(RAW.glob("*/run.json")):
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         if record.get("superseded"):
             continue
         if record["repeat"] in sweeps:
@@ -58,7 +58,7 @@ def recorded_dirty(raw, sweep):
 legacy = "USE_SNAPSHOT_FOR_SYNC=false"
 for raw, sweep in raw_files():
     repeat = None if sweep is None else sweep["repeat"]
-    d = json.load(open(raw))
+    d = json.load(open(raw, encoding="utf-8"))
     meta, cmd = d["metadata"], d["metadata"]["commandLine"]
     strategy = cmd[cmd.index("--sync-strategy") + 1] if "--sync-strategy" in cmd else "delta"
     active = "--active-players" in cmd
@@ -116,5 +116,5 @@ for raw, sweep in raw_files():
             out["meta"]["git_dirty"] = recorded_dirty(raw, sweep)
         if mode != "both":
             out["params"]["sync_mode"] = mode
-        json.dump(out, open(RES / f"{run_id}.json", "w"), indent=2, sort_keys=True)
+        json.dump(out, open(RES / f"{run_id}.json", "w", encoding="utf-8"), indent=2, sort_keys=True)
         print(run_id, out["metrics"]["bytes_per_sync"], round(out["metrics"]["avg_cost_per_sync_ms"], 3))

@@ -29,7 +29,7 @@ HERE = pathlib.Path(__file__).parent
 def load_runs(results: pathlib.Path = HERE / "results") -> dict[str, dict]:
     """The runs in ``results/`` itself: an archived set in a subdirectory (``results/d8321fde/``) is
     no input, here or to stopcheck.py."""
-    return {p.stem: json.loads(p.read_text()) for p in sorted(results.glob("*.json"))}
+    return {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in sorted(results.glob("*.json"))}
 
 
 def cell_of(run: dict) -> tuple:
@@ -132,7 +132,7 @@ def before_reconnect_fix(commit: str | None) -> bool | None:
     if not commit:
         return None
     try:
-        shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=HERE, capture_output=True, text=True)
+        shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=HERE, capture_output=True, text=True, encoding="utf-8")
         if shallow.returncode != 0 or shallow.stdout.strip() != "false":
             return None
         done = subprocess.run(["git", "merge-base", "--is-ancestor", LOADTEST_RECONNECT_FIX, commit],
@@ -692,7 +692,7 @@ def recorded_rule(runs: dict[str, dict]):
     (sha,) = hashes
     commits = sorted({c for _, c in recorded if c})
     prefix = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--show-prefix"],
-                            capture_output=True, text=True).stdout.strip()
+                            capture_output=True, text=True, encoding="utf-8").stdout.strip()
     shown = None
     for commit in commits:
         done = subprocess.run(["git", "-C", str(HERE), "show", f"{commit}:{prefix}analysis.py"], capture_output=True)
@@ -1420,7 +1420,7 @@ def main() -> int:
         return 1
     generated = tables(runs)
     if args.check:
-        readme = (HERE / "README.md").read_text()
+        readme = (HERE / "README.md").read_text(encoding="utf-8")
         ok = results_section(readme) == generated
         # #490's re-run section is generated too, from results/rerun-490/.
         rerun_ok = section(readme, RERUN_HEADING) == rerun_section(rerun)

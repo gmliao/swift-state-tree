@@ -72,9 +72,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--run-file", type=pathlib.Path,
                     help="the run's ingested result when it isn't in results/ (a smoke run's data/<run-id>/result.json)")
     args = ap.parse_args(argv)
-    runs = {p.stem: json.loads(p.read_text()) for p in sorted(args.results.glob("*.json"))}
+    runs = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in sorted(args.results.glob("*.json"))}
     if args.run_file is not None:
-        runs[args.run_id] = json.loads(args.run_file.read_text())
+        runs[args.run_id] = json.loads(args.run_file.read_text(encoding="utf-8"))
     found = reasons(runs, args.run_id)
     if found:
         print(f"stop after {args.run_id}:")

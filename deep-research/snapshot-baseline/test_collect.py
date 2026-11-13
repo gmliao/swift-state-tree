@@ -26,8 +26,8 @@ def collect_in_copy(raw_files):
     (topic / "raw").mkdir(parents=True)
     shutil.copy(TOPIC / "collect.py", topic / "collect.py")
     for name, data in raw_files.items():
-        (topic / "raw" / name).write_text(json.dumps(data))
-    done = subprocess.run([sys.executable, str(topic / "collect.py")], capture_output=True, text=True, cwd=tmp)
+        (topic / "raw" / name).write_text(json.dumps(data), encoding="utf-8")
+    done = subprocess.run([sys.executable, str(topic / "collect.py")], capture_output=True, text=True, cwd=tmp, encoding="utf-8")
     return tmp, topic / "results", done
 
 
@@ -55,9 +55,9 @@ def collect_sweep_in_copy(git):
     (topic / "raw" / "s1").mkdir(parents=True)
     shutil.copy(TOPIC / "collect.py", topic / "collect.py")
     (topic / "raw" / "s1" / "run.json").write_text(json.dumps({"runId": "s1", "repeat": 1, "order": "forward",
-                                                                "superseded": None, "git": git, "serverEnv": {}}))
-    (topic / "raw" / "s1" / "rq1-rooms.json").write_text(json.dumps(raw_cell("abcdef1234")))
-    done = subprocess.run([sys.executable, str(topic / "collect.py")], capture_output=True, text=True, cwd=tmp)
+                                                                "superseded": None, "git": git, "serverEnv": {}}), encoding="utf-8")
+    (topic / "raw" / "s1" / "rq1-rooms.json").write_text(json.dumps(raw_cell("abcdef1234")), encoding="utf-8")
+    done = subprocess.run([sys.executable, str(topic / "collect.py")], capture_output=True, text=True, cwd=tmp, encoding="utf-8")
     return tmp, topic / "results", done
 
 
@@ -66,7 +66,7 @@ class DirtyFlag(unittest.TestCase):
         tmp, results, done = collect_sweep_in_copy({"commit": "abcdef1234", "dirty": False})
         self.addCleanup(shutil.rmtree, tmp)
         self.assertEqual(done.returncode, 0, done.stderr)
-        (result,) = [json.loads(p.read_text()) for p in results.glob("*.json")]
+        (result,) = [json.loads(p.read_text(encoding="utf-8")) for p in results.glob("*.json")]
         self.assertIs(result["meta"]["git_dirty"], False)
 
     def test_a_sweep_without_the_flag_is_refused(self):
@@ -82,7 +82,7 @@ class DirtyFlag(unittest.TestCase):
 
 class Collect(unittest.TestCase):
     def test_the_tracked_record_is_reproduced_byte_for_byte(self):
-        raws = {p.name: json.loads(p.read_text()) for p in sorted((TOPIC / "raw").glob("*.json"))}
+        raws = {p.name: json.loads(p.read_text(encoding="utf-8")) for p in sorted((TOPIC / "raw").glob("*.json"))}
         self.assertEqual(len(raws), 16)
         tmp, results, done = collect_in_copy(raws)
         try:
@@ -100,7 +100,7 @@ class Collect(unittest.TestCase):
         try:
             self.assertEqual(done.returncode, 0, done.stderr)
             (result,) = results.glob("*.json")
-            self.assertEqual(json.loads(result.read_text())["meta"]["git_sha"], "d2c647b")
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["meta"]["git_sha"], "d2c647b")
         finally:
             shutil.rmtree(tmp)
 

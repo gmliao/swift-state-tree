@@ -25,7 +25,7 @@ def timeline_entries(applied=T0, lifted=T0 + 60_000, profile="BO75"):
 class TimelineTests(unittest.TestCase):
     def write(self, entries):
         d = pathlib.Path(tempfile.mkdtemp())
-        (d / "t.json").write_text(json.dumps(entries))
+        (d / "t.json").write_text(json.dumps(entries), encoding="utf-8")
         return d / "t.json"
 
     def test_segments_are_half_open_around_apply_and_lift(self):
@@ -235,7 +235,7 @@ class ProfileTests(unittest.TestCase):
             {"ts": T0 + 1_000, "counters": {"pongTimeoutCloses": 3, "sendBufferedBytesMax": 900}},
             {"ts": T0 + 2_000, "counters": {"pongTimeoutCloses": 7}},
         ]
-        (d / "profile.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+        (d / "profile.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
         got = a.read_profile(d / "profile.jsonl", T0, T0 + 2_000)
         self.assertEqual((got["pongTimeoutCloses"], got["sendBacklogCloses"], got["sendBufferedBytesMax"], got["windows"]), (5, 1, 900, 2))
         self.assertEqual(got["seen"], ["pongTimeoutCloses", "sendBacklogCloses", "sendBufferedBytesMax"],
@@ -252,7 +252,7 @@ class MemoryTests(unittest.TestCase):
         # Two client instances (M, SR) once wrote one system-metrics.json: two JSON documents.
         d = pathlib.Path(tempfile.mkdtemp())
         one = json.dumps({"system": [{"tsMs": T0, "rssMb": 300}]})
-        (d / "system-metrics.json").write_text(one + one)
+        (d / "system-metrics.json").write_text(one + one, encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "more than one collector"):
             a.read_memory(d, a.Timeline(T0, T0 + 60_000, "P0"))
 
@@ -262,7 +262,7 @@ class MemoryTests(unittest.TestCase):
 
         def slope(samples):
             d = pathlib.Path(tempfile.mkdtemp())
-            (d / "system-metrics.json").write_text(json.dumps({"system": [{"tsMs": ts, "rssMb": 300} for ts in samples]}))
+            (d / "system-metrics.json").write_text(json.dumps({"system": [{"tsMs": ts, "rssMb": 300} for ts in samples]}), encoding="utf-8")
             return a.read_memory(d, t)["rssSlopeLast30sMbPerS"]
 
         full = [end - 30_000 + i * 1_000 for i in range(30)]
@@ -278,14 +278,14 @@ class MemoryTests(unittest.TestCase):
         end = T0 + 150_000
         system = [{"tsMs": T0 - 10_000, "rssMb": 100}, {"tsMs": T0 + 10_000, "rssMb": 900}]
         system += [{"tsMs": end - 30_000 + i * 1_000, "rssMb": 300 + i} for i in range(30)]
-        (d / "system-metrics.json").write_text(json.dumps({"system": system}))
+        (d / "system-metrics.json").write_text(json.dumps({"system": system}), encoding="utf-8")
         ns = lambda est, fin: {"netns": "", "tcpInuse": 0, "tcpTw": 0,
                                "established": {"sendQBytes": est}, "otherStates": {"FIN-WAIT-1": {"sendQBytes": fin}}}
         sock = [
             {"t": T0 + 5_000, "hostTcpMemPages": 4_000, "hostTcpOrphan": 0, "namespaces": [ns(1_000, 500), {"netns": "lt-client", "established": {"sendQBytes": 10**9}, "otherStates": {}}]},
             {"t": T0 - 5_000, "hostTcpMemPages": 50, "hostTcpOrphan": 0, "namespaces": [ns(10, 0)]},
         ]
-        (d / "sockstat.jsonl").write_text("".join(json.dumps(x) + "\n" for x in sock))
+        (d / "sockstat.jsonl").write_text("".join(json.dumps(x) + "\n" for x in sock), encoding="utf-8")
         m = a.read_memory(d, t)
         self.assertEqual((m["baseline"]["rssPeakMb"], m["impaired"]["rssPeakMb"]), (100, 900))
         self.assertEqual(m["impaired"]["hostTcpMemPeakPages"], 4_000)
@@ -299,19 +299,19 @@ class IngestTests(unittest.TestCase):
     def test_ingest_builds_per_group_windows_with_segments(self):
         d = pathlib.Path(tempfile.mkdtemp()) / "u-bo75-r1"
         (d / "samples" / "lt-client").mkdir(parents=True)
-        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries()))
+        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries()), encoding="utf-8")
         (d / "run.json").write_text(json.dumps({
             "meta": {"git_sha": "abc"},
             "params": {"rooms": 1, "population": "U"},
             "groups": {"impaired": {"instance": "lt-client", "target": 1, "sendTargetPerS": 10}},
-        }))
+        }), encoding="utf-8")
         records = [
             {"r": "join", "k": "c1", "t": T0 - 40_000, "land": "l1", "player": "p1"},
             {"r": "rtt", "k": "c1", "intendedAt": T0 - 10_000, "sentAt": T0 - 10_000, "respondedAt": T0 - 9_990},
             {"r": "close", "key": "c1", "t": T0 + 20_000, "joined": True, "initiator": "client", "cause": "stale", "player": "p1"},
             {"r": "reconnect", "k": "c1", "key": "c1", "cause": "stale", "closedAt": T0 + 20_000, "outcome": "recovered", "firstSyncAt": T0 + 61_000},
         ]
-        with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
+        with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
 
         result = a.ingest(d)
@@ -331,17 +331,17 @@ class IngestTests(unittest.TestCase):
     def test_a_missing_instance_directory_is_an_empty_manifest(self):
         d = pathlib.Path(tempfile.mkdtemp()) / "run"
         d.mkdir()
-        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries()))
+        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries()), encoding="utf-8")
         (d / "run.json").write_text(json.dumps({
             "meta": {}, "params": {"rooms": 1, "population": "U"},
             "groups": {"impaired": {"instance": "lt-clinet", "target": 5, "sendTargetPerS": 5}},
-        }))
+        }), encoding="utf-8")
         self.assertEqual(a.ingest(d)["groups"]["impaired"]["manifest"], {"files": 0, "joinKeys": 0})
 
 
 def lifecycle(*lines):
     d = pathlib.Path(tempfile.mkdtemp())
-    (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+    (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
     return d / "land-lifecycle.jsonl"
 
 
@@ -453,11 +453,11 @@ class SegmentWindowTests(unittest.TestCase):
         d = pathlib.Path(tempfile.mkdtemp()) / "run"
         (d / "samples" / "lt-client").mkdir(parents=True)
         lifted = T0 + 60_500  # an impaired segment of 60.5 s
-        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted)))
+        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted)), encoding="utf-8")
         (d / "run.json").write_text(json.dumps({
             "meta": {}, "params": {"rooms": 1, "population": "U"},
             "groups": {"impaired": {"instance": "lt-client", "target": 1, "sendTargetPerS": 1}},
-        }))
+        }), encoding="utf-8")
         records = [
             {"r": "join", "k": "c1", "t": T0 - 40_000, "land": "l1", "player": "p1"},
             # Intended in the baseline's last window, sent 0.7 s late, in the impaired segment.
@@ -469,7 +469,7 @@ class SegmentWindowTests(unittest.TestCase):
             # Cut off by the last phase's end, 1 s before the run's end.
             {"r": "rtt", "k": "c1", "intendedAt": lifted + 89_000, "sentAt": lifted + 89_000, "respondedAt": None, "end": "phaseEnd"},
         ]
-        with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
+        with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
         ws = a.ingest(d)["groups"]["impaired"]["windows"]
         by_seg = {s: [w for w in ws if w["segment"] == s] for s in a.SEGMENTS}
@@ -552,7 +552,7 @@ class ClientBoundTests(unittest.TestCase):
     def test_the_reader_tags_each_loop_record_with_its_worker(self):
         d = pathlib.Path(tempfile.mkdtemp())
         for name in ("w0", "w3"):
-            with gzip.open(d / f"{name}.ndjson.gz", "wt") as f:
+            with gzip.open(d / f"{name}.ndjson.gz", "wt", encoding="utf-8") as f:
                 f.write(json.dumps({"r": "loop", "from": 0, "to": 1_000, "elu": 0.1}) + "\n")
                 f.write(json.dumps({"r": "join", "k": "c", "t": 0, "land": "l1", "player": "p"}) + "\n")
         records = list(a.read_samples(d))
@@ -642,14 +642,14 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p
     lifted = T0 + 60_000
     (d / "impairment-timeline.json").parent.mkdir(parents=True, exist_ok=True)
     loop_ms = {"loopDelayP99Ms": loop_p99} if loop_p99 is not None else {}
-    (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted, profile=profile)))
+    (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted, profile=profile)), encoding="utf-8")
     (d / "run.json").write_text(json.dumps({
         "meta": {"git": {"commit": "a" * 40, "dirty": False}}, "params": {"rooms": 10, "population": "M"},
         "groups": {
             "impaired": {"instance": "lt-client", "target": conns, "sendTargetPerS": conns, **loop_ms},
             "healthy-mixed": {"instance": "lt-good", "target": conns, "sendTargetPerS": conns, **loop_ms},
         },
-    }))
+    }), encoding="utf-8")
     start, end = T0 - 30_000, lifted + 90_000
     log = []
     for instance in ("lt-client", "lt-good"):
@@ -678,20 +678,20 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p
             hot = instance == "lt-good" and any(b <= t - T0 < b + 1_000 for b in busy)
             records.append({"r": "loop", "from": t, "to": t + 1_000, "elu": 0.95 if hot else 0.2})
         (d / "samples" / instance).mkdir(parents=True, exist_ok=True)
-        with gzip.open(d / "samples" / instance / "w0.ndjson.gz", "wt") as f:
+        with gzip.open(d / "samples" / instance / "w0.ndjson.gz", "wt", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
-    (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in log))
+    (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in log), encoding="utf-8")
     slope = 3.0 if outage else 0.0
     (d / "system-metrics.json").write_text(json.dumps({"system": [
-        {"tsMs": t, "rssMb": 200 + slope * (t - start) / 1000} for t in range(start, end, 1_000)]}))
+        {"tsMs": t, "rssMb": 200 + slope * (t - start) / 1000} for t in range(start, end, 1_000)]}), encoding="utf-8")
     (d / "profile.jsonl").write_text("".join(
         json.dumps({"ts": t, "counters": {"pongTimeoutCloses": conns if outage and t == T0 + 30_000 else 0, "sendBacklogCloses": 0}}) + "\n"
-        for t in range(start, end, 1_000)))
+        for t in range(start, end, 1_000)), encoding="utf-8")
     # Every room converged after recovery (one land, "l").
     (d / "convergence.json").write_text(json.dumps({
         "totals": {"converged": 1, "convergedLate": 0, "mismatched": 0, "missingClients": 0, "inconclusive": 0},
         "startedAt": end, "endedAt": end + 1_000,
-        "lands": [{"land": "l", "outcome": "converged", "attempts": 1, "connections": []}]}))
+        "lands": [{"land": "l", "outcome": "converged", "attempts": 1, "connections": []}]}), encoding="utf-8")
     return a.ingest(d)
 
 
@@ -1376,7 +1376,7 @@ class RegenerateTests(unittest.TestCase):
         root = pathlib.Path(tempfile.mkdtemp())
         synthetic_run(root, "p0-w1", "P0")
         # A second worker of the healthy instance whose sampler never wrote a span.
-        with gzip.open(root / "p0-w1" / "samples" / "lt-good" / "w1.ndjson.gz", "wt") as f:
+        with gzip.open(root / "p0-w1" / "samples" / "lt-good" / "w1.ndjson.gz", "wt", encoding="utf-8") as f:
             f.write(json.dumps({"r": "phase", "name": "steady", "originAt": T0, "endAt": T0 + 1}) + "\n")
         loop = a.ingest(root / "p0-w1")["groups"]["healthy-mixed"]["loop"]
         self.assertEqual(list(loop["uncovered"]), ["w1"], "every worker file counts, not only those with spans")
@@ -1447,7 +1447,7 @@ def land(name, outcome, connections=(), **extra):
 
 def read_report(report):
     d = pathlib.Path(tempfile.mkdtemp())
-    (d / "convergence.json").write_text(json.dumps(report))
+    (d / "convergence.json").write_text(json.dumps(report), encoding="utf-8")
     return a.read_convergence(d / "convergence.json")
 
 
@@ -1466,7 +1466,7 @@ class ConvergenceTests(unittest.TestCase):
         mismatch = {"key": "k1", "instance": "lt-client", "outcome": "mismatched", "reconnected": False, "differences": 1,
                     "paths": [{"path": "/hp", "client": 1, "server": 2}], "player": "0", "decodeErrors": 0}
         ok = dict(mismatch, key="k2", outcome="converged", differences=0, paths=[])
-        (d / "convergence.json").write_text(json.dumps(convergence_report([land("r0", "converged", [ok]), land("r1", "mismatched", [ok, mismatch])])))
+        (d / "convergence.json").write_text(json.dumps(convergence_report([land("r0", "converged", [ok]), land("r1", "mismatched", [ok, mismatch])])), encoding="utf-8")
         conv = a.read_convergence(d / "convergence.json")
         self.assertEqual(conv["durationMs"], 12_500)
         self.assertEqual([l["land"] for l in conv["notConverged"]], ["r1"])
@@ -1558,7 +1558,7 @@ class PairingTests(unittest.TestCase):
 
     def log(self, lines):
         d = pathlib.Path(tempfile.mkdtemp())
-        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
         return a.read_lifecycle(d / "l.jsonl")
 
     def test_the_new_lines_are_read_apart_from_joins_and_closes(self):
@@ -1581,7 +1581,7 @@ class PairingTests(unittest.TestCase):
             '{"event":"sessionOpened","peerHost":"10.201.0.2","peerPort":58842,"sessionID":"A1","uptimeNs":79010080000000,"wallMs":1794293622739}\n'
             '{"event":"sessionOpened","sessionID":"B2","uptimeNs":79010090000000,"wallMs":1794293622749}\n'
             '{"event":"syncLagCloseDecided","code":4011,"sessionID":"A1","uptimeNs":79020080000000,"wallMs":1794293632739}\n'
-            '{"cause":"serverClose","code":4011,"event":"sessionClosed","sessionID":"A1","uptimeNs":79020090000000,"wallMs":1794293632749}\n')
+            '{"cause":"serverClose","code":4011,"event":"sessionClosed","sessionID":"A1","uptimeNs":79020090000000,"wallMs":1794293632749}\n', encoding="utf-8")
         log = a.read_lifecycle(d / "l.jsonl")
         self.assertEqual(log["A1"]["opened"], {"peerHost": "10.201.0.2", "peerPort": 58842, "t": 1794293622739})
         self.assertEqual(log["A1"]["lagCloses"], [{"code": 4011, "t": 1794293632739}])
@@ -1647,19 +1647,19 @@ class PairingTests(unittest.TestCase):
         lines = [l for l in extra_log if opened_lines or l["event"] != "sessionOpened"]
         if opened_lines:
             # The run's own sessions get their opened lines too: the whole log is from one server.
-            for l in (json.loads(x) for x in (d / "land-lifecycle.jsonl").read_text().splitlines()):
+            for l in (json.loads(x) for x in (d / "land-lifecycle.jsonl").read_text(encoding="utf-8").splitlines()):
                 if l["event"] == "sessionJoined":
                     lines.append(opened(l["sessionID"], 40_000 + len(lines), l["wallMs"] - 100))
-        with (d / "land-lifecycle.jsonl").open("a") as f:
+        with (d / "land-lifecycle.jsonl").open("a", encoding="utf-8") as f:
             f.write("".join(json.dumps(l) + "\n" for l in lines))
         # Into each worker's own file (a second file without loop spans would fail the client-bound
         # gate), each file closed with its `sockets` line, as a worker process writes it at shutdown.
         for instance, mine in (("lt-client", list(sockets)), ("lt-good", [])):
             records = mine + ([{"r": "sockets", "created": len(mine), "recorded": len(mine), "leftAtExit": 0}] if counts else [])
             w0 = d / "samples" / instance / "w0.ndjson.gz"
-            with gzip.open(w0, "rt") as f:
+            with gzip.open(w0, "rt", encoding="utf-8") as f:
                 kept = f.read()
-            with gzip.open(w0, "wt") as f:
+            with gzip.open(w0, "wt", encoding="utf-8") as f:
                 f.write(kept + "".join(json.dumps(r) + "\n" for r in records))
         run = a.ingest(d)
         # The profile counts the pong-timeout closes the log has (criterion 2's counter check).
@@ -1775,7 +1775,7 @@ class RerunSectionTests(unittest.TestCase):
             rule = r.recorded_rule(runs)
             self.assertIsNot(rule, r.a)
             self.assertEqual(rule.RULE_SHA256, runs[sorted(runs)[0]]["meta"]["analysisSha256"])
-            self.assertEqual(r.rerun_section(runs), r.section((r.HERE / "README.md").read_text(), r.RERUN_HEADING))
+            self.assertEqual(r.rerun_section(runs), r.section((r.HERE / "README.md").read_text(encoding="utf-8"), r.RERUN_HEADING))
         self.assertEqual(r.a.__name__, "analysis", "the tables use this checkout's rule again afterwards")
 
     def test_a_constant_of_the_rule_is_read_when_the_tables_are_built(self):
@@ -1815,7 +1815,7 @@ class RerunSectionTests(unittest.TestCase):
 
     def test_the_readme_has_the_section_and_check_covers_it(self):
         import regenerate as r
-        readme = (r.HERE / "README.md").read_text()
+        readme = (r.HERE / "README.md").read_text(encoding="utf-8")
         self.assertEqual(r.section(readme, r.RERUN_HEADING), r.rerun_section(r.load_runs(r.RERUN_DIR) if r.RERUN_DIR.is_dir() else {}))
 
 
@@ -1829,7 +1829,7 @@ class LagDecisionTests(unittest.TestCase):
                  decided("s2", 4010, T0 + 53_000), closed("s2", "connectionLost", T0 + 53_002),
                  decided("s3", 4011, T0 + 54_000),
                  decided("s4", 4010, T0 + 200_000), closed("s4", "serverClose", T0 + 200_050, 4010)]
-        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
         out = a.lag_decisions(a.read_lifecycle(d / "l.jsonl"), T0 - 30_000, T0 + 150_000)
         self.assertEqual(out["4010"], {"decided": 2, "landed": 1, "superseded": {"connectionLost": 1}, "noClose": 0})
         self.assertEqual(out["4011"], {"decided": 1, "landed": 0, "superseded": {}, "noClose": 1})

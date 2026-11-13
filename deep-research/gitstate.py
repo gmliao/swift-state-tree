@@ -47,9 +47,9 @@ def dirt(topic: pathlib.Path) -> list[str]:
     """The entries that make the checkout dirty for a run of `topic` (empty: clean). A git that
     can't report its status counts as dirty."""
     topic = pathlib.Path(topic).resolve()
-    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=topic, capture_output=True, text=True)
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=topic, capture_output=True, text=True, encoding="utf-8")
     status = subprocess.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=topic,
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8")
     if top.returncode != 0 or status.returncode != 0:
         return [f"git status failed: {(status.stderr or top.stderr).strip()}"]
     rel = topic.relative_to(pathlib.Path(top.stdout.strip()).resolve()).as_posix()

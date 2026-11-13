@@ -91,10 +91,10 @@ def sweep_commit(sweep_dir: pathlib.Path, dry_run: bool) -> str | None:
     writes no sweep record, takes the checkout's HEAD; otherwise no record means no commit."""
     record = sweep_dir / "run.json"
     if record.exists():
-        return (json.loads(record.read_text()).get("git") or {}).get("commit")
+        return (json.loads(record.read_text(encoding="utf-8")).get("git") or {}).get("commit")
     if not dry_run:
         return None
-    done = subprocess.run(["git", "-C", str(TOPIC), "rev-parse", "HEAD"], capture_output=True, text=True)
+    done = subprocess.run(["git", "-C", str(TOPIC), "rev-parse", "HEAD"], capture_output=True, text=True, encoding="utf-8")
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
@@ -225,7 +225,7 @@ def in_ns(ns: str, argv: list[str]) -> list[str]:
 
 
 def existing_namespaces() -> list[str]:
-    done = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True)
+    done = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True, encoding="utf-8")
     names = {line.split()[0] for line in done.stdout.splitlines() if line.strip()}
     return [ns for ns in NAMESPACES if ns in names]
 
@@ -234,7 +234,7 @@ def timewait_count() -> int:
     query = ["ss", "-tanH", "state", "time-wait", "( sport = :8080 or dport = :8080 )"]
     total = 0
     for ns in [None] + existing_namespaces():
-        done = subprocess.run(query if ns is None else in_ns(ns, query), capture_output=True, text=True)
+        done = subprocess.run(query if ns is None else in_ns(ns, query), capture_output=True, text=True, encoding="utf-8")
         total += sum(1 for line in done.stdout.splitlines() if line.strip())
     return total
 
@@ -261,7 +261,7 @@ def up() -> bool:
 
 def instance_report(out: pathlib.Path, instance: str) -> dict | None:
     reports = sorted((out / "load" / instance).glob("ws-loadtest-*.json"))
-    return json.loads(reports[-1].read_text()) if reports else None
+    return json.loads(reports[-1].read_text(encoding="utf-8")) if reports else None
 
 
 def join_forms(report: dict | None) -> dict | None:
@@ -327,7 +327,7 @@ def main(argv: list[str]) -> int:
         return 3
 
     scenario_source = pathlib.Path(os.environ["SCENARIO_OVERRIDE"]) if os.environ.get("SCENARIO_OVERRIDE") else plan.scenario_file(cell, rooms)
-    scenario = json.loads(scenario_source.read_text())
+    scenario = json.loads(scenario_source.read_text(encoding="utf-8"))
     if cell == "SR":
         scenario = plan.with_impaired_seconds(scenario, args.sr_pause)
     tl = plan.timeline(scenario)
@@ -422,8 +422,8 @@ def main(argv: list[str]) -> int:
         print(f"cell.py: {out} exists (set OVERWRITE=1 to redo this run)", file=sys.stderr)
         return 1
     out.mkdir(parents=True, exist_ok=True)
-    scenario_path.write_text(json.dumps(scenario, indent=2) + "\n")
-    meta = json.loads((args.out_root / args.sweep / "run.json").read_text()) if (args.out_root / args.sweep / "run.json").exists() else {}
+    scenario_path.write_text(json.dumps(scenario, indent=2) + "\n", encoding="utf-8")
+    meta = json.loads((args.out_root / args.sweep / "run.json").read_text(encoding="utf-8")) if (args.out_root / args.sweep / "run.json").exists() else {}
     # `rerun` and `analysisSha256` (#490): the re-run, and the analysis rule it is judged by, reach
     # each run's result, so regenerate.py can refuse tables from another analysis.py.
     meta = {k: meta.get(k) for k in META_FROM_SWEEP}
@@ -440,7 +440,7 @@ def main(argv: list[str]) -> int:
     record = {"meta": meta, "params": params, "groups": groups}
 
     def save():
-        (out / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        (out / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     def log(message):
         print(f"{rid}: {message}", flush=True)
@@ -462,8 +462,8 @@ def main(argv: list[str]) -> int:
         log("step setup")
         # Torn down even when setup fails: a partial setup can leave namespaces behind.
         setup_done = True
-        done = subprocess.run(setup_argv, cwd=LOADTEST, capture_output=True, text=True)
-        (out / "impair-setup.log").write_text(done.stdout + done.stderr)
+        done = subprocess.run(setup_argv, cwd=LOADTEST, capture_output=True, text=True, encoding="utf-8")
+        (out / "impair-setup.log").write_text(done.stdout + done.stderr, encoding="utf-8")
         if done.returncode != 0:
             raise StepFailed("setup", f"impair.sh setup exited {done.returncode}; see impair-setup.log")
         log("step server")
@@ -471,7 +471,7 @@ def main(argv: list[str]) -> int:
             raise StepFailed("server", "port 8080 already answers: stop that server first")
         with held():
             server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=server_environ(os.environ, server_env),
-                                      stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
+                                      stdout=open(out / "server.log", "w", encoding="utf-8"), stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.time() + 60
         while not up():
             if server.poll() is not None or time.time() > deadline:
@@ -483,21 +483,21 @@ def main(argv: list[str]) -> int:
         save()
         log("step samplers")
         with held():
-            procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"),
+            procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w", encoding="utf-8"),
                                                  stderr=subprocess.STDOUT, start_new_session=True)
         with held():
-            procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"),
+            procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w", encoding="utf-8"),
                                                 stderr=subprocess.STDOUT, start_new_session=True)
         log("step schedule")
         with held():
-            procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"),
+            procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w", encoding="utf-8"),
                                                  stderr=subprocess.STDOUT, start_new_session=True)
         log("step clients")
         client_env = dict(os.environ, WS_LOADTEST_SKIP_BUILD="1")
         for inst, spec in insts.items():
             with held():
                 procs[inst] = subprocess.Popen(client_argv(inst, spec, start_at, server.pid), cwd=LOADTEST, env=client_env,
-                                               stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT,
+                                               stdout=open(out / f"loadtest-{inst}.log", "w", encoding="utf-8"), stderr=subprocess.STDOUT,
                                                start_new_session=True)
         converge_at = start_at / 1000 + converge_s
         while time.time() < converge_at:
@@ -510,7 +510,7 @@ def main(argv: list[str]) -> int:
                 raise StepFailed("server", f"GameServer exited ({server.returncode}) during the run; see server.log")
             time.sleep(0.5)
         log("step converge")
-        conv = subprocess.run(converge_argv, cwd=LOADTEST, capture_output=True, text=True)
+        conv = subprocess.run(converge_argv, cwd=LOADTEST, capture_output=True, text=True, encoding="utf-8")
         meta["steps"]["converge"] = {"exitCode": conv.returncode, "stderr": conv.stderr[-2000:]}
         save()
         log("step finish")
@@ -537,11 +537,11 @@ def main(argv: list[str]) -> int:
         if server is not None:
             meta["steps"]["server"] = {"pid": server.pid, "exitCode": server.returncode}
             # The ramp the server says it ran with (its startup line); None from a build without it.
-            found = SPAWN_RAMP_LINE.search((out / "server.log").read_text(errors="replace")) if (out / "server.log").exists() else None
+            found = SPAWN_RAMP_LINE.search((out / "server.log").read_text(errors="replace", encoding="utf-8")) if (out / "server.log").exists() else None
             meta["spawnRampTicksEffective"] = int(found.group(1)) if found else None
         if setup_done:
             log("step teardown")
-            down = subprocess.run(["bash", IMPAIR, "teardown"], cwd=LOADTEST, capture_output=True, text=True)
+            down = subprocess.run(["bash", IMPAIR, "teardown"], cwd=LOADTEST, capture_output=True, text=True, encoding="utf-8")
             meta["steps"]["teardown"] = {"exitCode": down.returncode}
             if down.returncode != 0 and failure is None:
                 failure = StepFailed("teardown", f"impair.sh teardown exited {down.returncode}: {down.stderr[-500:]}")

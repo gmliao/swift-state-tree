@@ -24,7 +24,7 @@ RUN_ID = SAVED_FILE + ["external-input-failure", "multiroom-load-2026-11"]
 
 
 def block(script, start, end="^}"):
-    text = (HERE / script).read_text()
+    text = (HERE / script).read_text(encoding="utf-8")
     m = re.search(rf"(?ms)^{re.escape(start)}.*?{end}$", text)
     assert m, f"{script}: no block starting {start!r}"
     return m.group(0)
@@ -32,7 +32,7 @@ def block(script, start, end="^}"):
 
 def bash(body, *args, env=None):
     return subprocess.run(["bash", "-c", "set -euo pipefail\n" + body, "bash", *map(str, args)],
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, env=env, encoding="utf-8")
 
 
 class Base(unittest.TestCase):
@@ -46,7 +46,7 @@ class SavedFile(Base):
 
     def test_each_run_sh_returns_the_named_file(self):
         log = self.tmp / "run.log"
-        log.write_text("warm-up\n📁 Results saved to: /out/a: b.json\nResults saved to: /out/later.json\n")
+        log.write_text("warm-up\n📁 Results saved to: /out/a: b.json\nResults saved to: /out/later.json\n", encoding="utf-8")
         for topic in SAVED_FILE:
             with self.subTest(topic):
                 done = bash(block(f"{topic}/run.sh", "saved_file() {") + "\n" + self.CALL, log)
@@ -54,7 +54,7 @@ class SavedFile(Base):
 
     def test_a_miss_stops_the_sweep_naming_the_log(self):
         empty = self.tmp / "empty.log"
-        empty.write_text("the benchmark crashed\n")
+        empty.write_text("the benchmark crashed\n", encoding="utf-8")
         for topic in SAVED_FILE:
             for log in (empty, self.tmp / "missing.log"):
                 with self.subTest(topic=topic, log=log.name):
@@ -79,7 +79,7 @@ class RunId(Base):
                 self.assertIn("isn't in a git checkout: a run records its commit", done.stderr)
 
     def test_inside_git_names_the_commit(self):
-        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE, capture_output=True, text=True, check=True).stdout.strip()
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE, capture_output=True, text=True, check=True, encoding="utf-8").stdout.strip()
         for topic in RUN_ID:
             with self.subTest(topic):
                 done = self.run_id(topic, HERE / topic)

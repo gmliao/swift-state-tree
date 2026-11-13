@@ -42,10 +42,10 @@ def check(run_dir: pathlib.Path) -> tuple[bool, list[str]]:
     for name in ("run.json", "impairment-timeline.json", "land-stats.jsonl"):
         if not (run_dir / name).exists():
             raise Missing(f"{run_dir}: no {name}")
-    record = json.loads((run_dir / "run.json").read_text())
+    record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     ramp = (record.get("params") or {}).get("spawnRampTicks")
     effective = (record.get("meta") or {}).get("spawnRampTicksEffective")
-    timeline = json.loads((run_dir / "impairment-timeline.json").read_text())
+    timeline = json.loads((run_dir / "impairment-timeline.json").read_text(encoding="utf-8"))
     try:
         applied = next(e for e in timeline if e["action"] == "apply")["wallMsAfter"]
         lifted = next(e for e in timeline if e["action"] == "lift")["wallMsAfter"]

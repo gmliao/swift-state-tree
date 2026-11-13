@@ -66,7 +66,7 @@ class ServerEnvTests(unittest.TestCase):
         # so the lists can't drift). The ones that changed the path while the switch existed stay
         # in SERVER_ENV, so older records still parse and a record with one set is still refused.
         # The two that only added the metric's log are classified with the metrics below.
-        source = (HERE.parent / "Sources/SwiftStateTreeTransport/TransportEnvConfig.swift").read_text()
+        source = (HERE.parent / "Sources/SwiftStateTreeTransport/TransportEnvConfig.swift").read_text(encoding="utf-8")
         block = re.search(r"static let all = \[(.*?)\]", source, re.S)
         self.assertIsNotNone(block)
         removed = re.findall(r'"([A-Z_]+)"', block.group(1))
@@ -162,7 +162,7 @@ class ServerEnvTests(unittest.TestCase):
         self.assertEqual(keys - set(serverenv.SERVER_ENV), set())
 
     def test_the_cli_prints_the_names_for_unset(self):
-        out = subprocess.run([sys.executable, str(HERE / "serverenv.py")], capture_output=True, text=True, check=True).stdout
+        out = subprocess.run([sys.executable, str(HERE / "serverenv.py")], capture_output=True, text=True, check=True, encoding="utf-8").stdout
         self.assertEqual(out.split(), list(serverenv.SERVER_ENV))
 
 

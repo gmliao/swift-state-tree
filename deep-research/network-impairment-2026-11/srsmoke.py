@@ -39,7 +39,7 @@ def failures(run_dir: pathlib.Path) -> tuple[list[str], dict]:
     for name in ("run.json", "impairment-timeline.json", "land-lifecycle.jsonl"):
         if not (run_dir / name).exists():
             return [f"{run_dir}: no {name}"], {}
-    run = json.loads((run_dir / "run.json").read_text())
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     params = run.get("params") or {}
     if params.get("cell") != "SR":
         out.append(f"{run_dir}: cell {params.get('cell')!r}: the smoke is SR (the 300-room SR-CAL is srpause.py's)")

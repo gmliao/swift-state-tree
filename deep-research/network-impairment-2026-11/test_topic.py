@@ -31,7 +31,7 @@ def clean_env(**extra):
 
 def head_form() -> calibration.wireform.WireForm:
     """The form a sweep at this checkout's HEAD runs (the server's defaults)."""
-    head = subprocess.run(["git", "-C", str(TOPIC), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    head = subprocess.run(["git", "-C", str(TOPIC), "rev-parse", "HEAD"], capture_output=True, text=True, check=True, encoding="utf-8").stdout.strip()
     return calibration.intended_form({}, head)
 
 
@@ -41,7 +41,7 @@ def head_calibration(path: pathlib.Path) -> pathlib.Path:
     rows = head_form().row_addressing
     cal = json.loads(json.dumps(calibration.BUILTIN))
     cal.update(name="test-head", commit="49fde351", features=["fieldMerge", "pathIndex"] + (["rowAddressing"] if rows else []))
-    path.write_text(json.dumps(cal))
+    path.write_text(json.dumps(cal), encoding="utf-8")
     return path
 
 
@@ -113,7 +113,7 @@ class Plan(unittest.TestCase):
         self.assertEqual(plan.scenario_file("M-COMBO", 10).name, "impairment-10.json")
         with self.assertRaises(ValueError):
             plan.scenario_file("SR-CAL", 10)
-        base = json.loads(plan.scenario_file("SR", 300).read_text())
+        base = json.loads(plan.scenario_file("SR", 300).read_text(encoding="utf-8"))
         sr = plan.with_impaired_seconds(base, 123)
         self.assertEqual(sr["impairment"]["impairedSeconds"], 123)
         self.assertEqual(sr["impairment"]["warmupSeconds"], 30, "the warm-up covers the ramp-free plateau (#425)")
@@ -142,12 +142,12 @@ class SyncLagStaleness(unittest.TestCase):
     def test_plan_refuses_a_stale_rate_cell_before_it_is_scheduled(self):
         env = dict(os.environ, RATE="100000bit")
         done = subprocess.run([sys.executable, str(TOPIC / "plan.py"), "order", "--cells", "M-COMBO", "--repeats", "1", "--rooms", "300"],
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=env, encoding="utf-8")
         self.assertEqual(done.returncode, 2)
         self.assertEqual(done.stdout, "")
         self.assertIn("M-COMBO: recalibrate: #344 frames add 86 % to the calibrated demand", done.stderr)
         ok = subprocess.run([sys.executable, str(TOPIC / "plan.py"), "order", "--cells", "M-COMBO U-P0", "--repeats", "1"],
-                            capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k != "RATE"})
+                            capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k != "RATE"}, encoding="utf-8")
         self.assertEqual(ok.returncode, 0, ok.stderr)
 
 
@@ -206,7 +206,7 @@ class Calibration(unittest.TestCase):
         # The 11-07 calibration ran before both knobs: it fits a like-for-like sweep.
         old = calibration.wireform.WireForm("messagepack", False, False, False)
         self.assertEqual(calibration.settings(calibration.BUILTIN, "U-RATE", old)["rate"], "25218749bit")
-        cal = json.loads(head_calibration(pathlib.Path(tempfile.mktemp())).read_text())
+        cal = json.loads(head_calibration(pathlib.Path(tempfile.mktemp())).read_text(encoding="utf-8"))
         self.assertEqual(calibration.settings(cal, "M-COMBO", head_form())["limits"], {"down": 168, "up": 10000})
 
     def test_the_sweeps_form_follows_the_servers_rules(self):
@@ -245,14 +245,14 @@ class Calibration(unittest.TestCase):
 def write_p0_run(d: pathlib.Path, down_bytes_per_s: float, key="messagepack:fieldMerge,pathIndex", commit="a" * 40):
     d.mkdir(parents=True)
     apply_ms, lift_ms = 1_000_000, 1_060_000
-    (d / "impairment-timeline.json").write_text(json.dumps([{"action": "apply", "wallMsAfter": apply_ms}, {"action": "lift", "wallMsAfter": lift_ms}]))
+    (d / "impairment-timeline.json").write_text(json.dumps([{"action": "apply", "wallMsAfter": apply_ms}, {"action": "lift", "wallMsAfter": lift_ms}]), encoding="utf-8")
     lines = []
     for t in range(apply_ms - 40_000, lift_ms + 100_000, 1000):
         sent = int((t - (apply_ms - 40_000)) / 1000 * down_bytes_per_s)
         lines.append(json.dumps({"t": t, "qdiscs": [{"kind": "netem", "handle": "1:", "parent": "root", "sentBytes": sent},
                                                     {"kind": "netem", "handle": "20:", "parent": "1:2", "sentBytes": 7}]}))
-    (d / "netem-backlog.jsonl").write_text("\n".join(lines) + "\n")
-    (d / "run.json").write_text(json.dumps({"meta": {"git": {"commit": commit}, "wireForms": {"lt-client": {key: 10}}}}))
+    (d / "netem-backlog.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (d / "run.json").write_text(json.dumps({"meta": {"git": {"commit": commit}, "wireForms": {"lt-client": {key: 10}}}}), encoding="utf-8")
 
 
 class Calibrate(unittest.TestCase):
@@ -316,7 +316,7 @@ class StopCheck(unittest.TestCase):
                "meta": {"git": {"commit": "a", "dirty": False},
                         "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV},
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
-        (tmp / "results" / "p0-r2.json").write_text(json.dumps(run))
+        (tmp / "results" / "p0-r2.json").write_text(json.dumps(run), encoding="utf-8")
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
         empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1493, 0, 7, "silent 7", "fail")]
         out = io.StringIO()
@@ -334,7 +334,7 @@ class StopCheck(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / "results").mkdir()
         run = {"params": {"profile": "COMBO"}, "meta": {"git": {"commit": "a", "dirty": True}}}
-        (tmp / "result.json").write_text(json.dumps(run))
+        (tmp / "result.json").write_text(json.dumps(run), encoding="utf-8")
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
         with mock.patch.multiple(regenerate, **empty):
             # Not in results/: without --run-file it isn't found; with it, it's checked and stops.
@@ -344,7 +344,7 @@ class StopCheck(unittest.TestCase):
                                         sendBacklogEnv={"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, syncLagEnv={k: None for k in cell_mod.SYNC_LAG_ENV},
                                         clientCpu={"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0},
                                         clientElu={"segments": {}, "max": 0.1}))
-            (tmp / "result.json").write_text(json.dumps(clean))
+            (tmp / "result.json").write_text(json.dumps(clean), encoding="utf-8")
             self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results"), "--run-file", str(tmp / "result.json")]), 0)
 
     def test_a_step_3_run_starts_clean_beside_the_sweeps_results_and_sees_its_controls(self):
@@ -355,21 +355,21 @@ class StopCheck(unittest.TestCase):
         shutil.copy(TOPIC.parent.parent / ".gitignore", repo / ".gitignore")
         for src, dest in ((TOPIC / "runmeta.py", rel / "runmeta.py"), (TOPIC.parent / "gitstate.py", rel.parent / "gitstate.py")):
             shutil.copy(src, repo / dest)
-        (repo / rel / "results" / "tracked.json").write_text("{}")
-        git = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, check=True)
+        (repo / rel / "results" / "tracked.json").write_text("{}", encoding="utf-8")
+        git = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, check=True, encoding="utf-8")
         git("init", "-q"); git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t")
         control = {"params": {"profile": "P0", "population": "M", "rooms": 300}, "meta": {"git": {"commit": "a", "dirty": False}}}
-        (repo / rel / "results" / "sweep-M-P0-r1.json").write_text(json.dumps(control))  # step 2's ingest, untracked
+        (repo / rel / "results" / "sweep-M-P0-r1.json").write_text(json.dumps(control), encoding="utf-8")  # step 2's ingest, untracked
         out = repo / rel / "data" / "sr"
         subprocess.run([sys.executable, str(rel / "runmeta.py"), "start", str(out), "sr", "1", "sweep", "1", "", "0", "0", "SR"],
-                       cwd=repo, check=True, capture_output=True, text=True)
-        git_meta = json.loads((out / "run.json").read_text())["git"]
+                       cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8")
+        git_meta = json.loads((out / "run.json").read_text(encoding="utf-8"))["git"]
         self.assertIs(git_meta["dirty"], False, "step 2's results/ marked step 3 dirty")
         sr = {"params": {"profile": "SR", "population": "M", "rooms": 300},
               "meta": {"git": git_meta, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
                        "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV},
                        "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
-        (repo / rel / "results" / "sr-SR-r1.json").write_text(json.dumps(sr))
+        (repo / rel / "results" / "sr-SR-r1.json").write_text(json.dumps(sr), encoding="utf-8")
         seen = []
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
         empty["session_rows"] = lambda runs: seen.append(sorted(runs)) or []
@@ -377,11 +377,11 @@ class StopCheck(unittest.TestCase):
             self.assertEqual(stopcheck.main(["sr-SR-r1", "--results", str(repo / rel / "results")]), 0)
         self.assertIn("sweep-M-P0-r1", seen[0], "the stop check didn't read step 2's P0 control")
         # A changed tracked file under results/ still counts.
-        (repo / rel / "results" / "tracked.json").write_text('{"x": 1}')
+        (repo / rel / "results" / "tracked.json").write_text('{"x": 1}', encoding="utf-8")
         out2 = repo / rel / "data" / "sr2"
         subprocess.run([sys.executable, str(rel / "runmeta.py"), "start", str(out2), "sr2", "1", "sweep", "1", "", "0", "0", "SR"],
-                       cwd=repo, check=True, capture_output=True, text=True)
-        self.assertIs(json.loads((out2 / "run.json").read_text())["git"]["dirty"], True)
+                       cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8")
+        self.assertIs(json.loads((out2 / "run.json").read_text(encoding="utf-8"))["git"]["dirty"], True)
 
     def test_a_run_without_results_stops(self):
         self.assertTrue(stopcheck.reasons({}, "r9"))
@@ -507,7 +507,7 @@ class Tables(unittest.TestCase):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / "old").mkdir()
-        (tmp / "old" / "a-U-P0-r1.json").write_text(json.dumps(self.run_()))
+        (tmp / "old" / "a-U-P0-r1.json").write_text(json.dumps(self.run_()), encoding="utf-8")
         self.assertEqual(regenerate.load_runs(tmp), {})
         self.assertEqual(list(regenerate.load_runs(tmp / "old")), ["a-U-P0-r1"])
         with contextlib.redirect_stdout(io.StringIO()) as out:
@@ -545,7 +545,7 @@ def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000
     backlog = backlog or {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}
     params = {"cell": cell} | ({"rooms": rooms} if rooms is not None else {})
     (d / "run.json").write_text(json.dumps({"params": params, "groups": {"impaired": {"target": target}},
-                                            "meta": {"sendBacklogEnv": backlog}}))
+                                            "meta": {"sendBacklogEnv": backlog}}), encoding="utf-8")
     slow = slow if slow is not None else {f"p{i}": f"k{i}" for i in (1, 2, 3)} | {f"p{i}b": f"k{i}" for i in (1, 2, 3)}
     keys = sorted(set(slow.values()))
     resyncs = resyncs or {}
@@ -576,10 +576,10 @@ def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000
             rows.append({"r": "join", "k": key, "t": t_join, "land": "l", "serverPlayer": next(p for p, k in slow.items() if k == key)})
             rows += [{"r": "resync", "k": key, "t": r, "player": key} for r in resyncs.get(key, [])]
     (d / "samples" / "lt-client").mkdir(parents=True)
-    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
+    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt", encoding="utf-8") as f:
         f.write("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["t"])))
     (d / "impairment-timeline.json").write_text(json.dumps([
-        {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+        {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]), encoding="utf-8")
     lines = []
     for close in closes:
         sid, player, cause, t = close[:4]
@@ -587,7 +587,7 @@ def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000
         lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l",
                       "wallMs": joined_at.get(sid, apply_ms - 10_000)})
         lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": code, "wallMs": t})
-    (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
     return d
 
 
@@ -596,7 +596,7 @@ def write_load_run(d: pathlib.Path, workers: dict, apply_ms=1_000_000, lift_ms=1
     function of the span's start (ms) giving (elu, cpuMs or None), one 1 s span each over every segment."""
     d.mkdir(parents=True)
     (d / "impairment-timeline.json").write_text(json.dumps([
-        {"action": "apply", "profile": "COMBO", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+        {"action": "apply", "profile": "COMBO", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]), encoding="utf-8")
     by_instance: dict[str, dict] = {}
     for name, spans in workers.items():
         inst, worker = name.split("/")
@@ -604,7 +604,7 @@ def write_load_run(d: pathlib.Path, workers: dict, apply_ms=1_000_000, lift_ms=1
     for inst, ws in by_instance.items():
         (d / "samples" / inst).mkdir(parents=True)
         for worker, spans in ws.items():
-            with gzip.open(d / "samples" / inst / f"{worker}.ndjson.gz", "wt") as f:
+            with gzip.open(d / "samples" / inst / f"{worker}.ndjson.gz", "wt", encoding="utf-8") as f:
                 for t in range(apply_ms - 30_000, lift_ms + 90_000, 1000):
                     elu, cpu = spans(t)
                     r = {"r": "loop", "from": t, "to": t + 1000, "elu": elu}
@@ -649,8 +649,8 @@ class ClientLoad(unittest.TestCase):
         # One extra span of 1000 ms CPU straddling the apply, half in each segment.
         # Appended to the one worker's own file (its other spans carry no CPU time).
         p = d / "samples" / "lt-client" / "w0.ndjson.gz"
-        rows = gzip.open(p, "rt").read()
-        with gzip.open(p, "wt") as f:
+        rows = gzip.open(p, "rt", encoding="utf-8").read()
+        with gzip.open(p, "wt", encoding="utf-8") as f:
             f.write(rows + json.dumps({"r": "loop", "from": 999_500, "to": 1_000_500, "elu": 0.2, "cpuMs": 1000}) + "\n")
         cpu, _, _ = clientload.measure(d, {"lt-client": 1}, "8")
         self.assertEqual((cpu["segments"]["baseline"], cpu["segments"]["impaired"]), (round(500 * 100 / 30_000, 1), round(500 * 100 / 60_000, 1)))
@@ -669,8 +669,8 @@ class ClientLoad(unittest.TestCase):
         # No spans in a segment: neither figure.
         gap = write_load_run(self.tmp / "c", {"lt-client/w0": lambda t: (0.3, 100)}, lift_ms=1_060_000)
         for p in (gap / "samples" / "lt-client").glob("*.gz"):
-            rows = [json.loads(l) for l in gzip.open(p, "rt") if json.loads(l)["from"] < 1_060_000]
-            with gzip.open(p, "wt") as f:
+            rows = [json.loads(l) for l in gzip.open(p, "rt", encoding="utf-8") if json.loads(l)["from"] < 1_060_000]
+            with gzip.open(p, "wt", encoding="utf-8") as f:
                 f.write("".join(json.dumps(r) + "\n" for r in rows))
         cpu, elu, missing = clientload.measure(gap, {"lt-client": 1}, "8-11")
         self.assertEqual((cpu, elu), (None, None))
@@ -681,8 +681,8 @@ class ClientLoad(unittest.TestCase):
         apply_ms = 1_000_000
         d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 400), "lt-client/w1": lambda t: (0.3, 400)})
         p = d / "samples" / "lt-client" / "w1.ndjson.gz"
-        rows = [json.loads(l) for l in gzip.open(p, "rt") if json.loads(l)["from"] < apply_ms + 20_000]
-        with gzip.open(p, "wt") as f:
+        rows = [json.loads(l) for l in gzip.open(p, "rt", encoding="utf-8") if json.loads(l)["from"] < apply_ms + 20_000]
+        with gzip.open(p, "wt", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in rows))
         cpu, elu, missing = clientload.measure(d, {"lt-client": 2}, "8-11")
         self.assertEqual((cpu, elu), (None, None))
@@ -746,7 +746,7 @@ class SrPause(unittest.TestCase):
         self.assertEqual(seconds, 14 + 10)
         self.assertEqual((basis["maxPauseTo4010Ms"], basis["minPauseTo4010Ms"]), (13_400, 13_000))
         self.assertNotIn("maxPauseToFirstResyncMs", basis)
-        done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
+        done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual((done.returncode, done.stdout.strip()), (0, "24"))
         self.assertIn("one resync each", done.stderr)
         self.assertNotIn("first resync", done.stderr)
@@ -787,8 +787,8 @@ class SrPause(unittest.TestCase):
 
     def rewrite_samples(self, d, edit):
         p = d / "samples" / "lt-client" / "w0.ndjson.gz"
-        rows = edit([json.loads(l) for l in gzip.open(p, "rt")])
-        with gzip.open(p, "wt") as f:
+        rows = edit([json.loads(l) for l in gzip.open(p, "rt", encoding="utf-8")])
+        with gzip.open(p, "wt", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in rows))
 
     def test_the_client_fields_come_from_the_connections_own_close(self):
@@ -862,8 +862,8 @@ class SrPause(unittest.TestCase):
                                                                                       "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": "10000"}),
                                            "send-backlog settings")
         unrecorded = write_srcal(self.tmp / "k", three)
-        edit = json.loads((unrecorded / "run.json").read_text()); edit["meta"].pop("sendBacklogEnv")
-        (unrecorded / "run.json").write_text(json.dumps(edit))
+        edit = json.loads((unrecorded / "run.json").read_text(encoding="utf-8")); edit["meta"].pop("sendBacklogEnv")
+        (unrecorded / "run.json").write_text(json.dumps(edit), encoding="utf-8")
         cases["backlog not recorded"] = (unrecorded, "send-backlog settings None")
         nosamples = write_srcal(self.tmp / "l", three)
         shutil.rmtree(nosamples / "samples")
@@ -872,13 +872,13 @@ class SrPause(unittest.TestCase):
         (missing / "impairment-timeline.json").unlink()
         cases["no timeline"] = (missing, "no impairment-timeline.json")
         broken = write_srcal(self.tmp / "g", [])
-        (broken / "impairment-timeline.json").write_text(json.dumps([{"action": "apply", "profile": "SR", "wallMsAfter": 1}]))
+        (broken / "impairment-timeline.json").write_text(json.dumps([{"action": "apply", "profile": "SR", "wallMsAfter": 1}]), encoding="utf-8")
         cases["one-sided timeline"] = (broken, "unreadable timeline")
         for name, (d, words) in cases.items():
             with self.subTest(name):
                 with self.assertRaisesRegex(srpause.Refused, words):
                     srpause.pause_seconds(d)
-                done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
+                done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True, encoding="utf-8")
                 self.assertEqual(done.returncode, 1)
                 self.assertEqual(done.stdout, "")
 
@@ -888,9 +888,9 @@ def write_land_stats(d: pathlib.Path, monsters, ramp=0, effective=0, apply_ms=1_
     apply to 100 s after the recovery, ``monsters(t)`` live per land (t: s from the baseline's
     start), 6 spawned per s, 4 killed and 2 at the base."""
     d.mkdir(parents=True)
-    (d / "run.json").write_text(json.dumps({"params": {"spawnRampTicks": ramp}, "meta": {"spawnRampTicksEffective": effective}}))
+    (d / "run.json").write_text(json.dumps({"params": {"spawnRampTicks": ramp}, "meta": {"spawnRampTicksEffective": effective}}), encoding="utf-8")
     (d / "impairment-timeline.json").write_text(json.dumps([
-        {"action": "apply", "profile": "P0", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+        {"action": "apply", "profile": "P0", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]), encoding="utf-8")
     start = apply_ms - 30_000
     rows = []
     for ts in range(apply_ms - 45_000, lift_ms + 100_000, 1000):
@@ -898,7 +898,7 @@ def write_land_stats(d: pathlib.Path, monsters, ramp=0, effective=0, apply_ms=1_
         rows.append({"fromTs": ts - 1000, "ts": ts, "writeFailures": 0, "lands": {
             f"l{i}": {"tick": int(age * 20), "monsters": monsters((ts - start) / 1000), "baseHealth": 0, "players": 5,
                       "spawned": int(6 * age), "killed": int(4 * age), "reachedBase": int(2 * age)} for i in range(lands)}})
-    (d / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (d / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return d
 
 
@@ -914,7 +914,7 @@ class Stationarity(unittest.TestCase):
 
     def verdict(self, d):
         stationary, lines = stationarity.check(d)
-        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True)
+        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(done.returncode, 0 if stationary else 1, done.stdout + done.stderr)
         return stationary, lines
 
@@ -955,7 +955,7 @@ class Stationarity(unittest.TestCase):
     def test_a_missing_input_exits_1_with_the_reason(self):
         d = write_land_stats(self.tmp / "nostats", lambda t: 30)
         (d / "land-stats.jsonl").unlink()
-        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True)
+        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(done.returncode, 1)
         self.assertIn("no land-stats.jsonl", done.stderr)
 
@@ -980,9 +980,9 @@ class SrSmoke(unittest.TestCase):
         (d / "samples" / "lt-client").mkdir(parents=True)
         (d / "samples" / "lt-good").mkdir(parents=True)
         (d / "run.json").write_text(json.dumps({"params": {"cell": cell, "rooms": rooms, "slowReadS": pause},
-                                                "groups": {"impaired": {"target": len(readers)}}}))
+                                                "groups": {"impaired": {"target": len(readers)}}}), encoding="utf-8")
         (d / "impairment-timeline.json").write_text(json.dumps([
-            {"action": "apply", "profile": "SR", "wallMsAfter": self.APPLY}, {"action": "lift", "profile": "P0", "wallMsAfter": self.LIFT}]))
+            {"action": "apply", "profile": "SR", "wallMsAfter": self.APPLY}, {"action": "lift", "profile": "P0", "wallMsAfter": self.LIFT}]), encoding="utf-8")
         life, slow = [], []
         for i, key in enumerate(readers):
             sid, player = f"s{i}", f"p{i}"
@@ -1008,9 +1008,9 @@ class SrSmoke(unittest.TestCase):
         if healthy_close:
             good.append({"r": "close", "key": "g1", "t": self.APPLY + 5_000, "joined": True, "initiator": "server", "code": 4010})
         for inst, recs in (("lt-client", slow), ("lt-good", good)):
-            with gzip.open(d / "samples" / inst / "w0.ndjson.gz", "wt") as f:
+            with gzip.open(d / "samples" / inst / "w0.ndjson.gz", "wt", encoding="utf-8") as f:
                 f.write("".join(json.dumps(r) + "\n" for r in recs))
-        (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in life))
+        (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in life), encoding="utf-8")
         return d
 
     def test_passes_with_one_resync_then_4010_and_a_rebuild(self):
@@ -1105,7 +1105,7 @@ class DryRunPlan(unittest.TestCase):
                 self.assertIn(f"--for {impaired} ", text)
                 if plan.profile(cell) == "SR":
                     # The slow readers stop reading at the apply: the warm-up plus the baseline.
-                    tl = plan.timeline(json.loads(plan.scenario_file(cell, 300).read_text()))
+                    tl = plan.timeline(json.loads(plan.scenario_file(cell, 300).read_text(encoding="utf-8")))
                     self.assertIn(f"--slow-read {tl['warmupSeconds'] + tl['baselineSeconds']}:{impaired}", text)
                 self.assertEqual(text.count("ip netns exec "), len(plan.instances(cell, 300)))
                 self.assertEqual(text.count("--input-latency-min-seen 0 "), len(plan.instances(cell, 300)))
@@ -1136,7 +1136,7 @@ class DryRunPlan(unittest.TestCase):
 
     def test_cell_py_alone_refuses_sr_without_its_pause(self):
         done = subprocess.run([sys.executable, str(TOPIC / "cell.py"), "SR", "1", "--sweep", "dry", "--server", "x", "--dry-run"],
-                              env=clean_env(), capture_output=True, text=True)
+                              env=clean_env(), capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(done.returncode, 3)
         self.assertIn("SR needs SR_PAUSE", done.stderr)
 
@@ -1359,7 +1359,7 @@ class Fakes(unittest.TestCase):
         # A throwaway repository: none of the caller's repository variables, signing or hooks.
         env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
         git = lambda *a: subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *a],
-                                        cwd=root, env=env, capture_output=True, text=True, check=True)
+                                        cwd=root, env=env, capture_output=True, text=True, check=True, encoding="utf-8")
         git("init", "-q")
         git("add", "-A")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fakes")
@@ -1370,16 +1370,16 @@ class Fakes(unittest.TestCase):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
         for name, body in (("ip", FAKE_IP), ("ss", "#!/bin/sh\nexit 0\n"), ("tc", "#!/bin/sh\nexit 0\n"), ("swift", "#!/bin/sh\nexit 0\n")):
-            (bin_dir / name).write_text(body)
+            (bin_dir / name).write_text(body, encoding="utf-8")
         tools = self.tmp / "tools"
         tools.mkdir()
-        (tools / "converge-main.js").write_text(FAKE_CONVERGE)
-        (tools / "sockstat-main.js").write_text(FAKE_SOCKSTAT)
+        (tools / "converge-main.js").write_text(FAKE_CONVERGE, encoding="utf-8")
+        (tools / "sockstat-main.js").write_text(FAKE_SOCKSTAT, encoding="utf-8")
         for name, body in (("impair.sh", FAKE_IMPAIR), ("client.sh", FAKE_CLIENT), ("server.py", FAKE_SERVER)):
-            (self.tmp / name).write_text(body)
+            (self.tmp / name).write_text(body, encoding="utf-8")
         for f in list(bin_dir.iterdir()) + [self.tmp / "server.py"]:
             f.chmod(0o755)
-        (self.tmp / "scenario.json").write_text(json.dumps(TINY_SCENARIO))
+        (self.tmp / "scenario.json").write_text(json.dumps(TINY_SCENARIO), encoding="utf-8")
         port = 18000 + os.getpid() % 1000
         self.env = clean_env(PATH=f"{bin_dir}:{os.environ['PATH']}", IMPAIR_SH=str(self.tmp / "impair.sh"),
                              LOADTEST_SCRIPT=str(self.tmp / "client.sh"), NODE_TOOLS=str(tools),
@@ -1396,9 +1396,9 @@ class Fakes(unittest.TestCase):
         argv = [sys.executable, str(self.topic / "cell.py"), cell, "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
                 "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root),
                 "--row-addressing", "false"]
-        done = subprocess.run(argv, env=dict(self.env, **env), capture_output=True, text=True, timeout=90)
-        record = json.loads((self.out_root / f"t-{cell}-r1" / "run.json").read_text())
-        trace = (self.tmp / "trace").read_text().split() if (self.tmp / "trace").exists() else []
+        done = subprocess.run(argv, env=dict(self.env, **env), capture_output=True, text=True, timeout=90, encoding="utf-8")
+        record = json.loads((self.out_root / f"t-{cell}-r1" / "run.json").read_text(encoding="utf-8"))
+        trace = (self.tmp / "trace").read_text(encoding="utf-8").split() if (self.tmp / "trace").exists() else []
         return done, record, trace
 
     def test_a_run_goes_through_every_step_and_records_it(self):
@@ -1411,10 +1411,10 @@ class Fakes(unittest.TestCase):
         self.assertEqual(trace[-1], "teardown")
         self.assertIn("schedule", trace)
         out = self.out_root / "t-M-COMBO-r1"
-        timeline = json.loads((out / "impairment-timeline.json").read_text())
+        timeline = json.loads((out / "impairment-timeline.json").read_text(encoding="utf-8"))
         self.assertEqual([e["action"] for e in timeline], ["apply", "lift"])
         self.assertTrue((out / "convergence.json").exists())
-        conv = json.loads((out / "convergence.json").read_text())
+        conv = json.loads((out / "convergence.json").read_text(encoding="utf-8"))
         self.assertEqual(conv["controls"], ["lt-client=/tmp/sst-ctl-lt-client.sock", "lt-good=/tmp/sst-ctl-lt-good.sock"])
         p = record["params"]
         self.assertEqual((p["rate"], p["limits"], p["population"], p["rooms"]), ("4047216bit", {"down": 168, "up": 10000}, "M", 10))
@@ -1460,15 +1460,15 @@ class Fakes(unittest.TestCase):
         self.addCleanup(lambda: [p.unlink() for p in (self.topic / "results").glob(f"{run_id}*.json")])
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
-        return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+        return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd, encoding="utf-8")
 
     def test_a_sweep_records_its_row_addressing_pin(self):
         rid = f"test-pin-{os.getpid()}"
         done = self.sweep(rid, INGEST="0")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        sweep = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        sweep = json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(sweep["wire"]["ROW_ADDRESSING"], "false")
-        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(run["meta"]["rowAddressingPin"], "false")
 
     def test_a_bad_pin_is_refused_before_anything_runs(self):
@@ -1481,7 +1481,7 @@ class Fakes(unittest.TestCase):
         # isn't in the real history, so the cell refuses rather than guess the form.
         argv = [sys.executable, str(self.topic / "cell.py"), "M-COMBO", "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
                 "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root)]
-        done = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=90)
+        done = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=90, encoding="utf-8")
         self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
         self.assertIn("refused: ROW_ADDRESSING unset", done.stderr)
 
@@ -1494,12 +1494,12 @@ class Fakes(unittest.TestCase):
                "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": rid, "FAKE_CLIENT": "hang", "FAKE_PIDS": str(pids)}
         # Its own session, so a signal to its process group reaches run.sh and cell.py, and nothing else.
         proc = subprocess.Popen(["bash", str(self.topic / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, start_new_session=True)
+                                text=True, start_new_session=True, encoding="utf-8")
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         deadline = time.time() + 90
-        while time.time() < deadline and not (pids.exists() and len(pids.read_text().split()) >= 4):
+        while time.time() < deadline and not (pids.exists() and len(pids.read_text(encoding="utf-8").split()) >= 4):
             time.sleep(0.2)
-        started = [int(x) for x in pids.read_text().split()] if pids.exists() else []
+        started = [int(x) for x in pids.read_text(encoding="utf-8").split()] if pids.exists() else []
         self.assertEqual(len(started), 4, "both clients and their workers should be running")
         send(proc)
         out, err = proc.communicate(timeout=120)
@@ -1508,16 +1508,16 @@ class Fakes(unittest.TestCase):
 
         def running(pid):
             try:
-                return pathlib.Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1][0] != "Z"
+                return pathlib.Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split(") ", 1)[1][0] != "Z"
             except (FileNotFoundError, IndexError):
                 return False
         self.assertEqual([pid for pid in started if running(pid)], [], "a client or its worker outlived the stop")
-        self.assertIn("teardown", (self.tmp / "trace").read_text().split())
-        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        self.assertIn("teardown", (self.tmp / "trace").read_text(encoding="utf-8").split())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(run["meta"]["failure"]["step"], "stopped")
         self.assertIn("SIGTERM", run["meta"]["failure"]["message"])
         self.assertEqual(run["meta"]["steps"]["teardown"]["exitCode"], 0)
-        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: stopped by SIGTERM"), record["cells"][-1])
 
     def test_a_term_to_run_sh_stops_every_process_group_tears_down_and_records_the_run_stopped(self):
@@ -1537,7 +1537,7 @@ class Fakes(unittest.TestCase):
         import gzip
         cfg, mods = self.tmp / "config.gz", self.tmp / "modules"
         cfg.write_bytes(gzip.compress("".join(f"CONFIG_{k}={v}\n" for k, v in config.items()).encode()))
-        mods.write_text("".join(f"{m} 32768 0 - Live 0x0\n" for m in loaded))
+        mods.write_text("".join(f"{m} 32768 0 - Live 0x0\n" for m in loaded), encoding="utf-8")
         return {"KERNEL_CONFIG": str(cfg), "PROC_MODULES": str(mods)}
 
     def test_run_sh_stops_before_the_record_and_build_when_a_module_isnt_loaded(self):
@@ -1570,7 +1570,7 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=self.topic)
         self.assertEqual(done.returncode, 1)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
-        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: step setup failed"))
         self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
@@ -1583,9 +1583,9 @@ class Fakes(unittest.TestCase):
                          (f"data/{rid}-cal/calibration.json", hashlib.sha256(cal.read_bytes()).hexdigest()))
 
     def test_run_sh_stops_on_the_stop_check_and_goes_on_without_one(self):
-        (self.tmp / "ingest.py").write_text("import sys\nsys.exit(0)\n")
-        (self.tmp / "stop.py").write_text("import sys\nprint('stop after it: fail (missing: lifecycle log)')\nsys.exit(1)\n")
-        (self.tmp / "go.py").write_text("import sys\nsys.exit(0)\n")
+        (self.tmp / "ingest.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+        (self.tmp / "stop.py").write_text("import sys\nprint('stop after it: fail (missing: lifecycle log)')\nsys.exit(1)\n", encoding="utf-8")
+        (self.tmp / "go.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
         rid = f"test-stopcheck-{os.getpid()}"
         done = self.sweep(rid, ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "stop.py"), REPEATS="1 2")
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
@@ -1594,10 +1594,10 @@ class Fakes(unittest.TestCase):
         rid = f"test-go-{os.getpid()}"
         done = self.sweep(rid, ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "go.py"))
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))
         # The Fakes environment's RATE and LIMITS make it a smoke: ingested into its own directory.
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
-        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
 
@@ -1616,8 +1616,8 @@ class Fakes(unittest.TestCase):
             "args = sys.argv[1:]\n"
             "open(sys.argv[0] + '.log', 'a').write(' '.join(args) + '\\n')\n"
             f"out = pathlib.Path(args[args.index('--out') + 1]) if '--out' in args else pathlib.Path({str(self.topic / 'results')!r}) / (pathlib.Path(args[1]).name + '.json')\n"
-            "out.parent.mkdir(exist_ok=True); out.write_text('{}')\n")
-        (self.tmp / "go.py").write_text("import sys\nopen(sys.argv[0] + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nsys.exit(0)\n")
+            "out.parent.mkdir(exist_ok=True); out.write_text('{}')\n", encoding="utf-8")
+        (self.tmp / "go.py").write_text("import sys\nopen(sys.argv[0] + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nsys.exit(0)\n", encoding="utf-8")
         return {"ANALYSIS_PY": str(self.tmp / "ingest.py"), "STOPCHECK_PY": str(self.tmp / "go.py")}
 
     def topic_status(self):
@@ -1626,7 +1626,7 @@ class Fakes(unittest.TestCase):
         stray run directory there would otherwise not show (the callers compare before and after,
         so what was already there doesn't count)."""
         def status(topic, *flags):
-            done = subprocess.run(["git", "status", "--porcelain", *flags, "--", str(topic)], capture_output=True, text=True, cwd=topic)
+            done = subprocess.run(["git", "status", "--porcelain", *flags, "--", str(topic)], capture_output=True, text=True, cwd=topic, encoding="utf-8")
             return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
         return {"copy": status(self.topic), "real": status(TOPIC, "--ignored")}
 
@@ -1639,9 +1639,9 @@ class Fakes(unittest.TestCase):
         run = f"{rid}-M-COMBO-r1"
         self.assertTrue((self.topic / "data" / run / "result.json").exists())
         self.assertFalse((self.topic / "results" / f"{run}.json").exists())
-        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
-        self.assertIn(f"{run} --run-file {self.topic / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text())
-        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text(encoding="utf-8"))
+        self.assertIn(f"{run} --run-file {self.topic / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text(encoding="utf-8"))
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
         self.assertEqual(self.topic_status(), before)
 
@@ -1656,8 +1656,8 @@ class Fakes(unittest.TestCase):
         run = f"{rid}-M-BO75-r1"
         self.assertTrue((self.topic / "data" / run / "result.json").exists())
         self.assertFalse((self.topic / "results" / f"{run}.json").exists())
-        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
-        self.assertIs(json.loads((self.topic / "data" / rid / "run.json").read_text())["smoke"], True)
+        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text(encoding="utf-8"))
+        self.assertIs(json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))["smoke"], True)
         self.assertEqual(self.topic_status(), before)
 
     def test_a_named_cell_that_is_neither_a_smoke_nor_a_procedure_run_is_refused(self):
@@ -1674,7 +1674,7 @@ class Fakes(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertFalse((self.tmp / "ingest.py.log").exists())
         self.assertFalse((self.tmp / "go.py.log").exists())
-        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["cells"][-1]["status"], "ran-not-ingested")
 
     def test_run_sh_stops_when_ingest_fails(self):
@@ -1709,7 +1709,7 @@ class AfterRowDefault(unittest.TestCase):
             sweep = pathlib.Path(tmp)
             self.assertIsNone(cell_mod.sweep_commit(sweep, dry_run=False), "no record, not a dry run: no commit")
             self.assertTrue(cell_mod.sweep_commit(sweep, dry_run=True), "a dry run: the checkout's HEAD")
-            (sweep / "run.json").write_text(json.dumps({"git": {"commit": PRE_ROWS_COMMIT}}))
+            (sweep / "run.json").write_text(json.dumps({"git": {"commit": PRE_ROWS_COMMIT}}), encoding="utf-8")
             self.assertEqual(cell_mod.sweep_commit(sweep, dry_run=False), PRE_ROWS_COMMIT)
 
     def test_a_cell_without_the_sweeps_commit_is_refused_not_a_crash(self):
