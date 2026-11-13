@@ -33,6 +33,8 @@ struct PPScenarioState: StateNodeProtocol {
     @Sync(.perPlayer({ (v: [String: Int], player: PlayerID) in v.filter { $0.key.hasPrefix(player.rawValue) } }))
     var marks: [String: Int] = [:]
     @Sync(.perPlayer({ (v: PPScenarioRisky, _: PlayerID) in v })) var risky: PPScenarioRisky = PPScenarioRisky()
+    /// NaN converts but JSON can't encode it: the player's update is re-encoded without it.
+    @Sync(.perPlayer({ (v: Double, _: PlayerID) in v })) var speed: Double = 0
     @Sync(.serverOnly) var steps: Int = 0
     init() {}
 }
@@ -55,10 +57,13 @@ struct PPScenarioStep: ClientEventPayload {
     let mark: Int
     let risky: Int
     let board: Int
+    let speed: Int
 }
 
 extension PPScenarioStep {
     static let none = Int.min
+    /// As `speed`: sets NaN.
+    static let nan = Int.max
 }
 
 private func makePPScenarioLand(landID: String) -> LandDefinition<PPScenarioState> {
@@ -80,6 +85,7 @@ private func makePPScenarioLand(landID: String) -> LandDefinition<PPScenarioStat
                 if step.clearHand { state.hands.removeValue(forKey: ctx.playerID) }
                 if step.mark != PPScenarioStep.none { state.marks["\(ctx.playerID.rawValue).\(step.mark % 3)"] = step.mark }
                 if step.risky != PPScenarioStep.none { state.risky.n = step.risky }
+                if step.speed != PPScenarioStep.none { state.speed = step.speed == PPScenarioStep.nan ? .nan : Double(step.speed) }
                 if step.board != PPScenarioStep.none {
                     state.round += 1
                     state.board["b\(step.board % 4)"] = step.board
@@ -137,6 +143,8 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
     let adapter: TransportAdapter<State>
     let transport: DirtyIdentityRecordingTransport
     let faults = PPScenarioFaults()
+    /// The sync-lag clock, moved by hand (with the sync sequence on).
+    let clock = SyncLagManualClock()
 
     init(
         definition: LandDefinition<State>,
@@ -164,6 +172,25 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
         await adapter.setSyncEncodeFaultForTesting { $0 == faults.player() }
         await adapter.setMergedBroadcastFrameFaultForTesting { faults.mergedFrame() }
         await adapter.setSyncPlanFaultForTesting { if faults.takePlan() { throw PPScenarioPlanFault() } }
+        let clock = self.clock
+        await adapter.setSyncLagClockForTesting { clock.now }
+        await adapter.setSyncLagTimerIntervalForTesting(.seconds(3600))
+    }
+
+    /// The sequence of the last state frame `name`'s session got (opcode JSON array frames).
+    func lastSeq(_ name: String) async throws -> UInt64 {
+        let frames = await transport.sent.filter { $0.target == "session(s-\(name))" }
+        for frame in frames.reversed() {
+            guard let array = try JSONSerialization.jsonObject(with: frame.data) as? [Any],
+                  let op = array.first as? Int, (1...3).contains(op), array.count > 1,
+                  let seq = SyncAckFrame.syncSequence(array[1]) else { continue }
+            return seq
+        }
+        throw PPScenarioPlanFault()
+    }
+
+    func ack(_ name: String, _ seq: UInt64) async {
+        await adapter.onMessage(SyncAckFrame.encode(seq: seq, binary: false), from: SessionID("s-\(name)"))
     }
 
     /// Joins `name` on session `s-<name><suffix>`: a second join of a player supersedes its session.
@@ -182,10 +209,11 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
 
     func step(
         _ name: String, suffix: String = "", hand: String = "", clearHand: Bool = false,
-        mark: Int = PPScenarioStep.none, risky: Int = PPScenarioStep.none, board: Int = PPScenarioStep.none
+        mark: Int = PPScenarioStep.none, risky: Int = PPScenarioStep.none, board: Int = PPScenarioStep.none,
+        speed: Int = PPScenarioStep.none
     ) async throws {
         try await keeper.handleClientEvent(
-            AnyClientEvent(PPScenarioStep(hand: hand, clearHand: clearHand, mark: mark, risky: risky, board: board)),
+            AnyClientEvent(PPScenarioStep(hand: hand, clearHand: clearHand, mark: mark, risky: risky, board: board, speed: speed)),
             playerID: PlayerID(name), clientID: ClientID("c-\(name)\(suffix)"), sessionID: SessionID("s-\(name)\(suffix)")
         )
         await settle()
@@ -325,6 +353,70 @@ struct PerPlayerSyncTablesScenarioTests {
             await run.sync()
             await run.sync()
             #expect(await run.adapter.syncFailedPlans == 1, "\(cell): only the armed plan failed")
+        }
+    }
+
+    /// A per-player update that fails to encode is re-encoded without the patches that can't be
+    /// (NaN in JSON): what was sent commits, so the boxes advance as today's cache does and the
+    /// next plan doesn't send the kept patches again.
+    @Test("A per-player update re-encoded without an unencodable patch commits the rest", arguments: [true, false])
+    func droppingReencode(onePass: Bool) async throws {
+        let encoding = TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray)
+        try await comparePPScenario("dropping re-encode, one-pass \(onePass)", definition: { makePPScenarioLand(landID: "pp-scenario-nan") }, onePass: onePass, encoding: encoding) { run in
+            try await run.join("p1")
+            try await run.join("p2")
+            await run.sync()
+            for round in 0..<3 {
+                try await run.step("p1", hand: "h\(round)", mark: round, board: round)
+                await run.sync()
+            }
+            // One plan: p1's hand and mark change with its speed set to NaN.
+            try await run.step("p1", hand: "n", mark: 4, speed: PPScenarioStep.nan)
+            await run.sync()
+            #expect(await run.adapter.syncDroppedUpdates > 0, "the NaN patch was dropped")
+            try await run.step("p1", board: 7)
+            await run.sync()
+            try await run.step("p2", mark: 5)
+            await run.sync()
+            try await run.step("p1", speed: 3)
+            await run.sync()
+            try await run.step("p1", hand: "m", board: 8)
+            await run.sync()
+        }
+    }
+
+    /// A lagging reader is resynced in place (#332): its full view re-seeds its per-player boxes
+    /// from the plan's state, so its per-player changes made in the resync plan aren't sent again.
+    @Test("A resync re-seeds the reader's per-player boxes", arguments: [true, false])
+    func resync(onePass: Bool) async throws {
+        let encoding = TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true)
+        try await comparePPScenario("resync, one-pass \(onePass)", definition: { makePPScenarioLand(landID: "pp-scenario-resync") }, onePass: onePass, encoding: encoding) { run in
+            try await run.join("p1")
+            try await run.join("p2")
+            await run.sync()
+            let stale = try await run.lastSeq("p2")
+            await run.ack("p2", stale)
+            // p2 keeps acking its first view while p1 keeps up: past 3 s p2 is resynced.
+            for round in 0..<3 {
+                try await run.step("p2", hand: "x\(round)", mark: round)
+                try await run.step("p1", mark: round, board: round)
+                await run.sync()
+                await run.ack("p1", try await run.lastSeq("p1"))
+                run.clock.advance(1.5)
+                await run.ack("p2", stale)
+            }
+            run.clock.advance(0.6)
+            await run.ack("p2", stale)
+            // The resync plan: p2's own per-player fields change in it too.
+            try await run.step("p2", hand: "y", mark: 7)
+            await run.sync()
+            #expect(await run.adapter.syncLagResyncs == 1, "p2 was resynced")
+            await run.ack("p2", try await run.lastSeq("p2"))
+            await run.ack("p1", try await run.lastSeq("p1"))
+            try await run.step("p1", board: 9)
+            await run.sync()
+            try await run.step("p2", mark: 8)
+            await run.sync()
         }
     }
 
