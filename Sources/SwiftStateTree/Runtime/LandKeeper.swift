@@ -1259,9 +1259,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return tickLoop || syncLoop
     }
 
-    /// Returns the current number of players in the land.
-    ///
-    /// This counts unique players (not connections), as a player can have multiple connections.
     /// The player's entry as the keeper's joins left it: its client and its last session, or
     /// nil when the player has no entry. The realtime adapter's `registerSession` reads it to
     /// refuse a registration whose session the entry doesn't name (#531), by the rule of
@@ -1270,6 +1267,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         players[playerID].map { (clientID: $0.clientID, sessionID: $0.lastSessionID) }
     }
 
+    /// Returns the current number of players in the land.
+    ///
+    /// This counts unique players (not connections), as a player can have multiple connections.
     public func playerCount() -> Int {
         players.count
     }

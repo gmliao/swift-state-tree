@@ -1742,8 +1742,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64?
     ) async {
+        // The session's ticket, captured before the keeper read: a teardown runs outside this
+        // queue and can end it during the await. Then the land is gone, and the registration
+        // neither refuses nor registers (#531).
+        let existingTicket = sessionTickets.ticket(for: sessionID)
+        let ticket = existingTicket ?? sessionTickets.issue(sessionID)
         let entry = await keeper.entrySession(for: playerID)
         await holds.at(.registrationAfterKeeperRead)
+        guard sessionTickets.isCurrent(ticket) else {
+            logger.info("Registration dropped: the land was torn down during the keeper read", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "playerID": .string(playerID.rawValue),
+            ])
+            return
+        }
         if let entry {
             // The keeper's sender check, `rejectSenderIfSuperseded`: a recorded client or
             // session that differs is another join's.
@@ -1759,6 +1771,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "refusedTotal": .stringConvertible(staleRegistrationRefusals),
                 ])
                 endedSessions.insert(sessionID)
+                // The ticket taken for this registration isn't the session's to keep.
+                if existingTicket == nil { sessionTickets.end(ticket) }
                 // Without a generation (a caller that passed none), the close is by ID.
                 closeSessionDetached(sessionID, generation: acceptedConnectionGeneration)
                 return
@@ -1769,7 +1783,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             clientID: clientID,
             playerID: playerID,
             authInfo: authInfo,
-            acceptedConnectionGeneration: acceptedConnectionGeneration
+            acceptedConnectionGeneration: acceptedConnectionGeneration,
+            ticket: ticket
         )
     }
 
@@ -1796,16 +1811,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Registers a session in the membership queue, without the keeper check: the public
     /// `registerSession` after its check, and `performJoinQueued` after its keeper join and
     /// admission. The player's other sessions are superseded (`sessionPerPlayerPolicy`).
+    ///
+    /// - Parameter ticket: The session's ticket the caller captured before its own awaits (the
+    ///   public path's keeper read). Not current any more (a teardown): nothing is registered.
+    ///   Nil: the session's current ticket, or a new one.
     func _registerSessionImpl(
         sessionID: SessionID,
         clientID: ClientID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
-        acceptedConnectionGeneration: UInt64? = nil
+        acceptedConnectionGeneration: UInt64? = nil,
+        ticket captured: Ticket<SessionID>? = nil
     ) async {
+        if let captured, !sessionTickets.isCurrent(captured) { return }
+        var carried = captured
         // Rebinding the session to another player starts a new generation: work captured for
         // the previous player's binding (an initial sync reading the state) must not act on it.
         if let previous = membershipCoordinator.playerID(for: sessionID), previous != playerID {
+            carried = nil
             sessionTickets.end(sessionID)
             syncLag.removeValue(forKey: sessionID)
             firstViewEncodeFailures.removeValue(forKey: sessionID)
@@ -1823,7 +1846,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Under a ticket taken before the await: a disconnect, a supersede or a teardown during
         // it ends the session, and the write must not bring back an entry for it (#531).
         endedSessions.remove(sessionID)
-        let ticket = sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
+        let ticket = carried ?? sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
         await holds.at(.registrationGeneration)
         if let webSocketTransport = transport as? WebSocketTransport {
             let current = await webSocketTransport.registerSession(sessionID, for: playerID)

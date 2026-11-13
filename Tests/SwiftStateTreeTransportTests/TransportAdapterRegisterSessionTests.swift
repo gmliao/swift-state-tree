@@ -312,6 +312,39 @@ struct TransportAdapterRegisterSessionTests {
         }
     }
 
+    @Test(
+        "A teardown during the registration's keeper read: nothing is registered, refused or closed, and no generation comes back",
+        arguments: [false, true]
+    )
+    func teardownDuringKeeperReadRegistersNothing(entryNamesAnother: Bool) async throws {
+        let f = await RegisterSessionFixture()
+        // The keeper's entry names S1 (registered) or S2 itself (would register).
+        if entryNamesAnother {
+            try await f.keeperJoin(s1, c1, as: player)
+            await f.register(s1, c1, as: player)
+        } else {
+            try await f.keeperJoin(s2, c2, as: player)
+        }
+        let gate = TestGate()
+        let holds = HoldRegistry<TransportAdapterHoldPoint>()
+        // Installed after the setup: the first read is S2's.
+        holds.on(.registrationAfterKeeperRead, arrival: 1) { await gate.arrive() }
+        await f.adapter.installHolds(holds.hook)
+
+        let registration = Task { await f.register(s2, c2, as: player, generation: 7) }
+        #expect(await gate.waitForArrivals(1))
+        // Outside the membership queue, which the registration holds.
+        await f.adapter.endSessionTicketsForTeardown()
+        gate.open()
+        await registration.value
+
+        #expect(await f.adapter.membershipSessionIDs(for: player) == (entryNamesAnother ? [s1] : []))
+        #expect(await f.adapter.connectionGenerations[s2] == nil)
+        #expect(await f.adapter.staleRegistrationRefusals == 0)
+        #expect(await f.adapter.supersededSessionCount == 0)
+        #expect(await f.transport.closed.isEmpty)
+    }
+
     @Test("A disconnect issued during the registration waits for it, then removes the session")
     func disconnectWaitsForRegistration() async throws {
         let f = await RegisterSessionFixture()
