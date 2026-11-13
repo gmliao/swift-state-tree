@@ -1,6 +1,10 @@
 # A sync failure ends the unit it corrupted (#535)
 
-**Status:** rev 3, plan only. No code before this plan is reviewed.
+**Status:** rev 4, plan only. No code before this plan is reviewed.
+- Rev 3 (334595b6) got a no-GO: 2 must-fix and 6 should. Rev 4 answers them:
+  - P1 (mid-batch failure): §3.2 is split into the mark, made where the failure is seen, and the settle, run at the end of the turn after the consumed prefix is removed and its outcomes published. Only the unexecuted suffix gets `landClosed`.
+  - P2 (the terminal entry): §3.2 step 5 is an unconditional finalize step at the end of every turn that failed, of any kind, ordered after any turn record and before any teardown entry. The legacy output position needs `beginSync` to return the position with in-turn sync off (§3.3).
+  - Shoulds: D10 (a) is worded as the cause as of the router's close request, with the window named; D11 has a testable definition (clock, interval, reset, retry scheduling, tickless, skipped plans, recorded); action responses are best effort until membership ends; D5 names the mechanism, its install, its false positive and its real gap; N2's skipped effects are listed; the resync-view docs row stays "target" until PR 2.
 - Rev 2 (131ff6d3) got a no-GO: 6 must-fix and 5 should. Rev 3 (on `main` 9755a625 merged with `origin/main`, which brings `docs/core/failure-handling.md`) answers them:
   - N1: §3.2 step 3. `failLand` cancels the action jobs still in their resolvers, after the drain flag, as the empty-room drain does; each slot is filled once. The resolvers' delivery check citation is corrected.
   - N2: §3.4 and D4. OnLeave resolvers on a failed land are a decision; the recommended option skips them by checking the failure before they start, and keeps the membership cleanup.
@@ -163,23 +167,41 @@ public struct LandFailurePosition: Sendable, Equatable, Codable {
 
 ### 3.2 The failing turn
 
-`LandKeeper.failLand(_ failure: LandFailure)` is private and synchronous, and is called only inside a turn. It follows `completeShutdownTurn` (LK 4852-4861), which already does this for a shutdown input. In one segment it:
+`LandKeeper.failLand(_ failure: LandFailure)` is private and synchronous, and is called only inside a turn. It follows `completeShutdownTurn` (LK 4852-4861), which already does this for a shutdown input, at the end of its batch.
+
+**Two parts, both in the failing turn (Review P1).** A failure can be seen in the middle of a batch (`.handlerWrite`), while `applyInputs` still holds the whole batch in `pendingItems` and removes the consumed prefix only after its loop (`removePendingItems(Array(items.prefix(consumed)))`, LK 3876). Dropping the pending inputs there would fail the applied items, the failing item and the rest with `landClosed`, and the turn's completion would then publish the real outcomes into the same slots (LK 5002-5021; legacy LK 3672-3679). So:
+- **The mark** (steps 1, 2 and 4) runs where the failure is seen: it closes intake at once and stops the batch.
+- **The settle** (steps 3, 5 and 6) runs at the end of that turn, after the loop has broken, the consumed prefix (the items before the failing one, and the failing item with its handler error as its outcome) has been removed, and the turn's outcomes have been published as today. The settle then drops only what is left: the unexecuted suffix of the batch and anything queued behind it.
+- A failure seen in the sync phase (in-turn) or applied from a `landFailure` item comes after the turn's inputs, so its mark and settle are adjacent; the order is the same.
+
+Setting the drain flag in the middle of the batch changes nothing for the rest of that turn's completion: publishing outcomes and building the turn's record don't check `isDraining`. The PR asserts that.
+
+The steps:
 1. **Stores `failure`**: the first one wins, and later ones are logged at debug.
 2. **Closes intake:** `drainFlag.set(cause: .failed)`. The first cause stays (`DrainFlag.set`, LK 5326), so a later `forceShutdown` can't overwrite it.
    - From here every existing `isDraining` check refuses. In LK: 1426, 1474, 1649 and 1703 (joins resumed after their awaits), 1805-1870 (the join and leave resolvers), 2439, 2515-2529 (`forceShutdown`), 2980 (`submitServerInput`), 3392, 4060, 4785, 4823 and 5193-5195.
    - In LM, 373, 427, 475 and 483 count a draining keeper as absent, so a join to the land ID waits for this instance to be dropped, then builds a new one.
    - The PR lists each site with the test that reaches it.
-3. **Settles every waiter:** `dropPendingInputs(reason: "landFailed")`, `releaseHeldInputsForDrain()` and `resumeShutdownTurnWaiters()`, as the shutdown turn does. `dropPendingInputs` already fails:
+3. **Settles every waiter** (at the turn's end): `dropPendingInputs(reason: "landFailed")`, `releaseHeldInputsForDrain()` and `resumeShutdownTurnWaiters()`, as the shutdown turn does. `dropPendingInputs` already fails:
    - `inputTurnWaiters` (LK 628);
    - legacy pass callers;
    - tickless action job slots, with `LandInputRejection.landClosed`.
 
-   Inputs already applied in this turn get their outcome from the turn as today. Three more waiters are added to the settle:
-   - **Action jobs still in their resolvers** aren't in `pendingItems`, so `dropPendingInputs` doesn't reach them. `failLand` calls `cancelAllActionJobs()` (LK 2244) right after setting the drain flag, in the same order as the empty-room drain (LK 5171-5174). `cancelActionJob` fills each caller's slot at once with the delivery check's rejection (`rejectIfLandClosed`, LK 1869-1872, which now throws `landClosed`) and cancels the job's task. It skips a job already completed or already cancelled (LK 2252), so every slot is filled exactly once, including a job whose result was delivered earlier in this turn. A job whose resolvers resume later finds its slot filled and its delivery refused (`deliverResolvedAction` checks `rejectIfLandClosed`).
+   Inputs applied in this turn, the failing one included, are no longer pending when the settle runs: they keep the outcomes the turn published, and no slot is filled twice. Three more waiters are added to the settle:
+   - **Action jobs still in their resolvers** aren't in `pendingItems`, so `dropPendingInputs` doesn't reach them. The settle calls `cancelAllActionJobs()` (LK 2244), after the drain flag was set by the mark, in the same order as the empty-room drain (LK 5171-5174). `cancelActionJob` fills each caller's slot at once with the delivery check's rejection (`rejectIfLandClosed`, LK 1869-1872, which now throws `landClosed`) and cancels the job's task. It skips a job already completed or already cancelled (LK 2252), so every slot is filled exactly once, including a job whose result was delivered earlier in this turn. A job whose resolvers resume later finds its slot filled and its delivery refused (`deliverResolvedAction` checks `rejectIfLandClosed`).
    - **Server inputs in flight:** counted down by the drop.
    - **The input that failed** (for `.handlerWrite`): its caller gets the handler's error, as today.
 4. **Stops the batch and the tick** (§3.7). The input loop (`applyPendingItems`, LK 3849-3874) breaks after the failing item. `runTick` checks the failure before `handler(&state, ctx)` (LK 4472) and doesn't run it, and it runs no sync phase. Later ticks don't start: the tick loop checks `isDraining`.
-5. **Queues the record's end** (D9). `failLand` doesn't write to the recorder: the failing turn's own record is built and submitted after it (LK 4462-4509, and the submission at 4952-4958). It stores the terminal entry, and the turn's record submission appends it **after** that turn's record, through the same ordered recorder pipeline. A failure applied from the legacy path (§3.3) is submitted the same way, after the record of the turn that applied it. The entry isn't an input.
+5. **Finalizes the record** (D9), unconditionally (Review P2). The terminal entry can't ride on the failing turn's own submission, because some failing turns submit nothing:
+   - a sync-only turn (`runSyncOnlyTurn`) never calls `submitTurnRecord`, and its `enqueueTicklessTurnEnd(since:)` returns early when nothing was submitted (LK 4680-4683); a failing plan commits nothing;
+   - the turn that applies a `landFailure` item: the item isn't an input, and `runInputDrain` skips submission when `outcome.record.isEmpty` (LK 4952-4957);
+   - legacy tick-land recording calls `recorder.record` directly and conditionally (LK 3690-3706).
+
+   So every turn that ran `failLand` ends with a finalize step, `finalizeFailureRecord()`, of its own:
+   - **with a recorder:** it submits the terminal entry through the ordered submission pipeline, after whatever the turn submitted (nothing, for the three cases above) and before the teardown starts (step 6 runs after it in the same segment, so any entry the teardown writes is submitted later). On the legacy tick path, which records directly, the entry is written by the same task after the tick's record, in the same order;
+   - **without a recorder:** it only clears the stored entry.
+
+   The entry isn't an input.
 6. **Starts the teardown outside the turn** (§3.4).
 
 **Callers:**
@@ -208,7 +230,7 @@ The PR lists every `await` in these paths, and a test holds at each (§8).
 
 **On a stale generation, the mandatory cleanup still runs.** A sync that read the state calls `keeper.endSync()` (TA 3327-3328, 6677-6682) whether or not it sends, so the keeper's sync bookkeeping isn't left open.
 
-**Action responses and errors after the failure.** "No output after the failure" means no state frame and no event frame. Action responses and errors still go out until the session closes: they report what the keeper decided for that request, which stays true. A response to an input applied before the failure is its real outcome. A caller whose input was dropped or cancelled gets `landClosed` (§3.2 step 3). Neither carries land state, and the 4016 close follows.
+**Action responses and errors after the failure.** "No output after the failure" means no state frame and no event frame. Action responses and errors are sent **best effort, until the session's membership ends**: they report what the keeper decided for that request, which stays true, and carry no land state. The teardown forwards each session's disconnect before it closes the socket, and that ends the session's response tickets and cancels its response tasks (TA 1559-1563: "nothing is sent to the closed session"); a `finishActionResponse` suspended at TA 5974-5993 is then dropped. So a response to an input applied before the failure, or a dropped input's `landClosed`, can be lost while the socket is still open. No barrier is added: the client gets the 4016 close, which tells it the land failed, and an in-flight request's outcome is undefined after a close in any case.
 
 **The legacy path's failure becomes a turn input.**
 
@@ -222,7 +244,7 @@ extension LandKeeper {
 ```
 
 - The item is internal (`PendingItem.landFailure`), not a user `HandleServerInput`, and it isn't recorded as an input.
-- **It carries two positions** (D9). The *output position* is the last committed tick or pass whose state the failing output read; the adapter captures it at its state read (TA 3301), before its await. The *end position* is the turn that applies the item. Turns between the two ran live, with their inputs applied and recorded, so replay runs them; the run ends at the end position.
+- **It carries two positions** (D9). The *output position* is the last committed tick or pass whose state the failing output read. **This needs a code change:** `beginSyncLocatedIfRecording` returns no position when in-turn sync is off (TA 3855-3861), so the legacy state read (TA 3301) can't capture it today. The keeper's `beginSync` returns the last committed tick and pass with the state whenever a recorder exists, in-turn or not, and the adapter keeps it with the failure. The *end position* is the turn that applies the item. Turns between the two ran live, with their inputs applied and recorded, so replay runs them; the run ends at the end position.
 - The turn that applies it re-reads the drain flag and validates the ticket, then calls `failLand`.
 - A tickless idle land schedules that turn as `submitServerInput` does.
 
@@ -233,9 +255,9 @@ After `failLand`, the keeper starts one `Task` that holds no keeper state across
 1. **`await transport.landDidFail(failure)`**, a new `LandKeeperTransport` requirement whose default does nothing. A custom transport therefore compiles, and the keeper still tears the land down. `TransportAdapter` implements it:
    - **With a host hook** (`onLandFailure`, which `LandManager` installs at creation with the instance's epoch): the server's stop, with the epoch.
      - `LandManager.detachForStop(landID:epoch:)` detaches only if the stored instance has that epoch, in one synchronous segment (Review M7). The epoch check and the detach can't be split by an await. Epochs are the manager's (LM 125-126).
-     - The stop then closes the bound sessions. **Where the code is decided is D10.** Today the server picks the `SessionClose` value before `await landRouter.closeSessions` (NIOLandServer 181), and the router then awaits its snapshot (LandRouter 469), each adapter lookup (474) and the leave forwarding (482-486) before it closes anything. Under the recommended D10 (a), `closeSessions` takes a closure the router evaluates in the synchronous segment of each session's close; it reads `keeper.destructionCause` (nonisolated) and gives 4016 for `.failed`, 4014 otherwise. A failure during the router's awaits then changes the code of every session not yet closed.
+     - The stop then closes the bound sessions. **Where the code is decided is D10.** Today the server picks the `SessionClose` value before `await landRouter.closeSessions` (NIOLandServer 181), and the router then awaits its snapshot (LandRouter 469), each adapter lookup (474) and the leave forwarding (482-486) before it closes anything. Under the recommended D10 (a), `closeSessions` takes a closure the router evaluates when it **issues** each session's close request, after that session's leave and `afterLeave` (LandRouter 425-440, 479-487); it reads `keeper.destructionCause` (nonisolated) and gives 4016 for `.failed`, 4014 otherwise. The code is "the cause as of the router's close request". The request then hops to the `WebSocketTransport` actor to close, so a failure in that last hop still leaves 4014; the plan accepts that window rather than threading the closure into the transport.
      - The destroy sees `.failed` whenever the failing turn set the drain cause first (step 2). `SingleFlight` keeps the stop's work to one run.
-     - **OnLeave on the router's leave (D4).** The router's close forwards each session's leave to the keeper (`adapter.onDisconnect` → `keeper.leave`, LandRouter 425-440, 462-487). `leave` removes the player, then runs the OnLeave resolvers (LK ~2398-2420), and checks `isDraining` only after them (LK 2439). On a failed land, under D4 (a), `leave` checks `failure` **before** the resolvers: it removes the player and ends its membership in the adapter and router as today, and skips the resolvers and the handler. The other drain causes keep today's order.
+     - **OnLeave on the router's leave (D4).** The router's close forwards each session's leave to the keeper (`adapter.onDisconnect` → `keeper.leave`, LandRouter 425-440, 462-487). `leave` removes the player, then runs the OnLeave resolvers (LK ~2398-2420), and checks `isDraining` only after them (LK 2439). On a failed land, under D4 (a), `leave` checks `failure` **before** the resolvers: it removes the player and ends its membership in the adapter and router as today, and skips the resolvers and the handler. Everything the OnLeave input would have done is skipped with them: its sequence allocation, its lifecycle record, the handler, and the broadcast-only removal sync it requests (LK 3639-3643). The keeper's membership removal doesn't remove the player's entry in the application's state (for example `state.players[id]`): that is OnLeave's job, and the destroy handlers see it. The other drain causes keep today's order.
    - **Without a hook** (an adapter built directly): the adapter closes every session it holds with 4016 through `endAndCloseSession`.
 2. **The keeper's own destroy:** a private `destroyFailedLand()`.
    - It clears `players` without OnLeave (D4 (a); under D4 (b) the router's leaves have already run them).
@@ -279,7 +301,7 @@ Registration goes through one function, `LandDefinition.validateForRegistration(
 
 **The detector (D5).** The recommended contract is **mutable access**, not actual change.
 - `@Sync`'s `_modify` already sets `_isDirty` before its yield, "so a write made before the throw is kept" (SyncPolicy.swift 140-156). The detector uses that same point: `@Sync`'s setter and `_modify` bump an access count at entry.
-- **Where the count lives: not in the state.** It is a thread-local counter that `withMutableStateSync` installs for the handler call and reads back after it (the keeper's turn is synchronous, so the handler runs on one thread). `@Sync`'s accessors increment it when installed; otherwise they do one thread-local read. No stored property is added to any `StateNode`, so `Equatable`, `Codable`, snapshots, the state hash and the record don't change by a byte.
+- **Where the count lives: not in the state.** It is a thread-local counter that `withMutableStateSync` installs for the handler call and reads back after it. The handler path has no await (LK 3141-3159), so the call runs on one thread, and a thread-local is sound where a `@TaskLocal` isn't needed. The mechanism is a POSIX thread-specific key (`pthread_key_create` / `pthread_getspecific`), which works on macOS and Linux, in a small `Support` helper. The install saves the previous value and restores it with `defer`, so a nested or re-entrant handler call and a later keeper on the same pooled thread start from their own count. `@Sync`'s accessors increment it when installed; otherwise they do one thread-local read. No stored property is added to any `StateNode`, so `Equatable`, `Codable`, snapshots, the state hash and the record don't change by a byte.
 - **Cost:** one thread-local read per `@Sync` write outside handlers, plus an increment inside them; the install and read-back per handler call. Wrap-around is harmless (`&+=`, only equality before and after is compared). The off-path A/B measures it.
   - So `try validateThenMutate(&state.x)` counts as a write even when the validation throws first.
   - The documented rule is: validate before taking `inout` access. This is the rule #87's (B) already states.
@@ -290,7 +312,8 @@ Registration goes through one function, `LandDefinition.validateForRegistration(
 - **What it can't see** (named in the docs, beside #87's (B) rule):
   - **whole-state replacement** (`state = other`): no accessor runs;
   - **a copy held from before the handler, assigned back** (the same replacement);
-  - **hand-written `StateNodeProtocol` conformances** that store state without `@Sync`.
+  - **storage without `@Sync`**: a hand-written `StateNodeProtocol` conformance, or any synced storage that doesn't go through `@Sync`. A manual conformance that uses `@Sync` is counted.
+- **Its false positive:** a handler that writes a temporary `@Sync` value of its own (a local wrapper, not the land's state) counts as a write, and a throw after it ends the land. The docs name it; the PR's tests pin it.
 
   For these, debug builds keep the existing snapshot compare and warn; release builds keep today's behavior (the input fails alone). A test covers a caught case (an in-place write through a copy of a nested node, written back through `_modify`) and pins each uncaught case as a named gap. D5 (b) and (c) are the alternatives.
 
@@ -384,8 +407,9 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 4. **PR 4, #87.** §3.7, after D5. It settles #87's (B) and leaves (A) open.
 
 **The failure-handling page.** `docs/core/failure-handling.md` and its `.zh-TW.md` (on `main`, 44f15d90) list each path with its status. Each PR flips its rows from "target" to "current", in both languages, in the same PR:
-- PR 1: "A server event that fails to encode" (with #521); "One player's state frame fails to encode entirely" (#532, to "the land"); "A resync's full view keeps failing to encode" (if D3 (a)); and the "Close codes" section (4016).
-- PR 2: "A field whose conversion throws at run time"; "A patch the encoding can't carry … or a path outside the schema".
+- PR 1: "A server event that fails to encode" (with #521); "One player's state frame fails to encode entirely" (#532, to "the land"); and the "Close codes" section (4016).
+- PR 2: "A resync's full view keeps failing to encode" (if D3 (a)), since its per-patch part is row 11, which PR 2 converts; it stays "target" until then.
+- PR 2 also: "A field whose conversion throws at run time"; "A patch the encoding can't carry … or a path outside the schema".
 - PR 3: "Other type errors the type alone decides" (refused at registration), with the gaps of §4 named.
 - PR 4: "A handler that throws after writing state".
 - Under D2a (a), the "If a failure is confined to one player's view" row of the summary table says no such failure is known, and why (§1).
@@ -439,11 +463,15 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
   - a stale ticket (the land restarted under a hold at the flush's await) is ignored.
 - **Action jobs (N1):** an action held in its resolver when the land fails gets `landClosed` at once, before the teardown's `landDidFail` returns; its resolver resuming later doesn't fill the slot again.
 - **OnLeave on a failed land (D4):** with a host, an OnLeave resolver held when the failure arrives; under D4 (a), a leave forwarded by the router after the failure runs no resolver and no handler, and the player's membership ends in the adapter and the router.
-- **Debug settle and action results:** a failure during debug settle's state read sends nothing and still calls `endSync`; an action response for an input applied before the failure is still sent before the 4016 close.
+- **Debug settle:** a failure during debug settle's state read sends nothing and still calls `endSync`.
+- **A mid-batch failure (Review P1):** a batch of A (succeeds), B (throws after a write) and C (not executed), each once as an action with a tickless job slot and once with an ordinary turn waiter: A gets its response, B its handler error, C `landClosed`; each slot is filled exactly once (a slot hook that fails on a second fill), and A and B are removed from the queue before the settle.
+- **The finalize step (Review P2):** the terminal entry is recorded for a failure in a sync-only turn (nothing else submitted), in the turn applying a `landFailure` item, on the legacy tick-land recording path, and in an input drain; it comes after any record of that turn and before any teardown entry; without a recorder nothing is written.
+- **The legacy output position:** with in-turn sync off and a recorder, a legacy sync failure records the position of the state it read, and the turns run between it and the turn that applied the item replay.
+- **D5's thread-local:** two keepers run in turn on the same thread (a single-thread executor), the second starting from a clean count; a nested handler call restores the outer count; the temporary-`@Sync` false positive is pinned.
 - **Record order (D9):** the terminal entry comes after the failing turn's record, for a tick land, a tickless pass and a sync-only turn; on the legacy path, the record holds both positions, and the turns between them replay.
 - **The teardown:**
   - with a host, a hold right before the manager's detach, with an admin `DELETE` racing it. The stop runs once.
-  - The close code (D10): a failure arriving while the router is held after its snapshot (`stopSnapshot`) gives 4016 to every session closed after it, under D10 (a).
+  - The close code (D10): a failure arriving while the router is held after its snapshot (`stopSnapshot`) gives 4016 to every session whose close request is issued after it, under D10 (a).
   - A failure for an old epoch (the land ID has a new instance) detaches nothing.
   - Without a host, and with a custom transport using the default, the land is destroyed with `.failed` while players were still in it.
   - Destroy handlers see `.failed`; OnLeave runs or doesn't, per D4.
@@ -479,6 +507,10 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - the failure check in `leave` moved after the resolvers (the held-OnLeave test);
 - the close code latched before the router's awaits (the `stopSnapshot` test);
 - the terminal entry written before the turn's record (the record-order test);
+- the settle run inside the batch loop (the A/B/C test);
+- the finalize step made conditional on the turn's submission (the sync-only and `landFailure`-item tests);
+- the thread-local install without restore (the nested-call and reused-thread tests);
+- D11's reset on a skipped plan, or its bound on count alone or time alone (the manual-clock tests);
 - the validation run inside the cache's lock (a test whose `init()` re-enters validation for another type).
 
 ## 9. Decisions for the maintainer
@@ -544,7 +576,7 @@ Each has options and a recommendation.
   - **Recommend (a).** Without it, a replay can't tell a failed run from a truncated one, and for `.input` it would run work the live land skipped.
 
 - **D10, where the close code is decided** (with a host).
-  - (a) At each session's close: the router evaluates a closure in the synchronous segment of the close, reading the keeper's cause. A failure during the router's awaits gives 4016 to every session closed after it.
+  - (a) Per session, as of the router's close request: the router evaluates a closure when it issues each close, reading the keeper's cause. A failure during the router's awaits gives 4016 to every session whose close is requested after it; a failure during the final hop to the transport doesn't.
   - (b) Latched once when the stop starts: a stop that began as an admin stop closes every session with 4014, and a failure arriving later changes only the destroy cause.
   - **Recommend (a).** The code then says what ended each session as of its close. (b) is simpler, but a client closed after the failure would be told "stopped" for a land that failed.
 - **D11, row 15's bound on a sync plan that keeps throwing.** Today, with periodic sync, a throwing plan retries on every tick, forever; without it, three follow-ups and then doubling join-sync retries.
@@ -552,6 +584,14 @@ Each has options and a recommendation.
   - (b) A time bound: failed plans for at least 1 s and at least three plans.
   - (c) Keep retrying (no bound).
   - **Recommend (b).** A plan that threw sent nothing and committed nothing, so a retry can still restore a fully correct state; (a) ends a land after a few ticks of a transient fault, and (c) leaves clients frozen indefinitely, which the rule rules out. One second is short against a tens-of-minutes session.
+  - **The definition under (b), testable:**
+    - **Clock:** a monotonic clock (`ContinuousClock`), injected through a package `SyncFailureClock` so a test drives it by hand.
+    - **The interval** starts at the first failed plan after a committed plan (or after the land started). Each failed plan counts one; join-sync attempts are plans and count.
+    - **Reset:** a committed plan (`.committed`) resets the count and the start. A plan that was skipped (no members, frozen) or deferred by back-pressure neither counts nor resets: no plan ran.
+    - **The bound:** the land ends at the first failed plan with count ≥ 3 **and** elapsed ≥ 1 s since the start.
+    - **Retries:** with the doubling join-sync retry gone, a land without periodic sync schedules one repair sync-only turn after each failed plan, at a fixed `inTurnRepairDelay`, until the bound ends the land; so three quick failures inside 1 s still get further attempts until the second passes. A land with periodic sync retries on its next tick, as today. A tickless land is a land without periodic sync, through its repair turns; the legacy path's follow-up (`noteFailedPlanForFollowUp`) schedules the same fixed-delay follow-up.
+    - **Recorded, not recomputed:** the end is the terminal entry (D9) with stage `.syncPhase`. Replay doesn't run sync phases, so it never recomputes the bound.
+  - **Tests:** a manual clock with three failures inside 1 s (no end; a fourth after 1 s ends it), a manual clock past 1 s with two failures (no end; the third ends it), a commit in between that resets both, a skipped and a deferred plan that change nothing, and a tickless land's repair-turn progression to the end.
 
 ## 10. Out of scope
 
