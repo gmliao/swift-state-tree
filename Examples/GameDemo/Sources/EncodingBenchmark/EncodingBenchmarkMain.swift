@@ -1051,6 +1051,7 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         DirtyTrackingMode.modeKey,
         "USE_SYNC_TABLES",
         "TYPED_LEAF_VALUES",
+        "PER_PLAYER_SYNC_TABLES",
         "WSL_DISTRO_NAME",
         "WSL_INTEROP"
     ]
@@ -1256,14 +1257,17 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "joinThroughRouter": config.joinThroughRouter,
             "rowAddressing": config.rowAddressing.map { ($0 == .on) as Any } ?? NSNull(),
             "rowAddressingResolved": config.rowAddressingResolved,
-            // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (true unset, the default), so a
-            // same-binary A/B shows its side.
+            // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` / `PER_PLAYER_SYNC_TABLES` as set (true unset,
+            // the default), so a same-binary A/B shows its side.
             "useSyncTables": env.syncTablesEnabled,
             "typedLeafValues": env.typedLeafValuesEnabled,
+            "perPlayerSyncTables": env.perPlayerSyncTablesEnabled,
             // What ran, by the adapter's rule: the tables with either switch under delta sync, typed
             // leaves only where the tables are.
             "syncTablesInEffect": tablesInEffect,
             "typedLeafValuesInEffect": tablesInEffect && env.typedLeafValuesEnabled,
+            // The per-player tables follow the broadcast tables (#514).
+            "perPlayerSyncTablesInEffect": tablesInEffect && env.perPlayerSyncTablesEnabled,
         ] as [String: Any]
     }
     
