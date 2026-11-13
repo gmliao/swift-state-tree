@@ -1086,6 +1086,25 @@ class SyncRootSlot<State> {
     /// Appends the field's patches; returns the write to last-sent, or nil when there is none.
     func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? { nil }
 
+    /// A per-player field (#514): a view without the field after one with it is a delete of the
+    /// field's root path, and last-sent becomes absent, as today's per-player diff and cache
+    /// treat a field that leaves a player's snapshot. Broadcast fields always have a view.
+    var deletesWhenAbsent = false
+
+    /// Last-sent holds a value (the field is present on the client).
+    var isPresent: Bool { false }
+
+    /// The write that makes last-sent absent, or nil when it already is.
+    func stageClear() -> SyncStagedWrite? { nil }
+
+    /// A diff that found no view: a delete when the field is a per-player one that was present.
+    final func absent(into out: inout SyncPatchList) -> SyncStagedWrite? {
+        guard deletesWhenAbsent, isPresent else { return nil }
+        out.append(StatePatch(path: path, operation: .delete), table: 0)
+        out.needsSort = true
+        return stageClear()
+    }
+
     /// Diffs from nothing emit a create per row (`SyncTableBroadcastDiff.emitsRowCreates`).
     var emitsRowCreates = false
 
@@ -1143,8 +1162,15 @@ final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
         last.flatMap { try? differ.convert($0) }
     }
 
+    override var isPresent: Bool { last != nil }
+
+    override func stageClear() -> SyncStagedWrite? {
+        guard last != nil else { return nil }
+        return SyncStagedWrite { self.last = nil }
+    }
+
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
-        guard let value = read(state) else { return nil }
+        guard let value = read(state) else { return absent(into: &out) }
         guard let old = last else {
             // A node held by the root is a row of its own table; any other value a root field.
             out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: differ.ownTable ?? 0)
@@ -1195,8 +1221,18 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         seeded ? try? differ.convert(last.dictionary) : nil
     }
 
+    override var isPresent: Bool { seeded }
+
+    override func stageClear() -> SyncStagedWrite? {
+        guard seeded else { return nil }
+        return SyncStagedWrite {
+            self.last = SyncSlottedTable()
+            self.seeded = false
+        }
+    }
+
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
-        guard let value = read(state) else { return nil }
+        guard let value = read(state) else { return absent(into: &out) }
         guard seeded else {
             guard emitsRowCreates, cursor != nil else {
                 // The whole map is a field of the root row.
@@ -1361,8 +1397,15 @@ final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
 
     override var lastSentForTesting: Any? { last }
 
+    override var isPresent: Bool { last != nil }
+
+    override func stageClear() -> SyncStagedWrite? {
+        guard last != nil else { return nil }
+        return SyncStagedWrite { self.last = nil }
+    }
+
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
-        guard let value = try convert(state) else { return nil }
+        guard let value = try convert(state) else { return absent(into: &out) }
         // A fallback field's patches may address rows of any table: the list is sorted as today.
         guard let old = last else {
             out.append(StatePatch(path: path, operation: .set(value)), table: 0)
@@ -1678,5 +1721,267 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
         assert(staged.owner == nil || staged.owner == ObjectIdentifier(self), "staged writes applied to tables that didn't make them")
         for commit in staged.commits { commit() }
         if staged.seeds { isSeeded = true }
+    }
+}
+
+// MARK: - The per-player diff (#514)
+
+/// One plan's writes to the per-player boxes (`SyncTablePerPlayerDiff.apply(_:)`), per player.
+/// It mirrors the lifecycle of today's staged per-player cache (`StagedCaches.perPlayer`): a
+/// player's entry is kept, discarded (`discard(_:)`, a per-player encode failure) or committed
+/// with the plan, and a failed plan drops all of it. A full view's reseed replaces the player's
+/// entry, as it replaces the staged snapshot today.
+///
+/// `@unchecked Sendable`: as `SyncTableStaged`, the writes capture the boxes of the one owner
+/// that made the diff, and only travel inside that owner's sync plan.
+package struct SyncTablePerPlayerStaged: @unchecked Sendable {
+    fileprivate struct Entry {
+        let boxes: AnyObject
+        /// The boxes are new (the player had none): the commit installs them.
+        let installs: Bool
+        var commits: [() -> Void]
+    }
+
+    fileprivate var entries: [PlayerID: Entry] = [:]
+    fileprivate var owner: ObjectIdentifier?
+
+    package init() {}
+
+    package var isEmpty: Bool { entries.isEmpty }
+
+    /// Whether this plan staged writes for `playerID`.
+    package func holds(_ playerID: PlayerID) -> Bool { entries[playerID] != nil }
+
+    /// Drops `playerID`'s staged writes: its boxes stay as committed (what its client has).
+    package mutating func discard(_ playerID: PlayerID) {
+        entries.removeValue(forKey: playerID)
+    }
+}
+
+/// A player's boxes: one root slot per per-player root field, without path cursors, so no patch
+/// carries a split or a row tag (row addressing's slots are the broadcast tables', section 7 of
+/// the plan).
+private final class SyncTablePlayerBoxes<State> {
+    let slots: [SyncRootSlot<State>]
+
+    init(slots: [SyncRootSlot<State>]) {
+        self.slots = slots
+    }
+}
+
+/// The typed per-player diff of a land's state (Notes/plans/2026-11-13-per-player-sync-tables.md):
+/// per synced player, a box per player-dependent root field holding what that player's client
+/// was last sent, and the diff of the player's view against it. It replaces today's per-player
+/// snapshot cache and tree diff; the adapter decides which fields each plan diffs (today's
+/// per-player mode) and when a player is seeded.
+///
+/// A root field whose conversion throws in a diff is dropped for that player from that diff:
+/// none of its patches, none of its writes (`ExtractionDrops`, scope perPlayer).
+package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
+    private var players: [PlayerID: SyncTablePlayerBoxes<State>] = [:]
+    private let layout: AtomicLayoutTable
+    private let order: CanonicalPatchOrder
+    private let builder: SyncTableBuilder
+    private let typed: Bool
+    /// The per-player root field names, in path order (getSyncFields' classification).
+    package let fieldNames: [String]
+    /// How each per-player root field is diffed: a typed kind, or `.fallback` for the snapshot
+    /// diff (every field of a type without a typed description).
+    package let kinds: [String: SyncTableFieldKind]
+
+    package init(prototype: State? = nil, typedLeafValues: Bool = false, logger: Logger? = nil) {
+        layout = AtomicLayoutTable.forState(State.self)
+        order = CanonicalPatchOrder.forState(State.self)
+        builder = SyncTableBuilder(order: order, typedLeafValues: typedLeafValues, logger: logger)
+        let names = (prototype ?? State()).getSyncFields()
+            .filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }
+            .map(\.name)
+        fieldNames = names.sorted { ("/" + SyncEngine.escapedPathComponent($0)).utf8.lexicographicallyPrecedes(("/" + SyncEngine.escapedPathComponent($1)).utf8) }
+        // Probe one description: a type without one takes the snapshot diff for every field.
+        // A field's kind doesn't depend on the player.
+        let probe = State._syncTablePerPlayerFields(for: PlayerID(""))
+        typed = probe != nil
+        var kinds: [String: SyncTableFieldKind] = [:]
+        for name in names { kinds[name] = .fallback }
+        for field in probe ?? [] where kinds[field.name] != nil { kinds[field.name] = field.kind }
+        self.kinds = kinds
+    }
+
+    private func makeBoxes(for playerID: PlayerID) -> SyncTablePlayerBoxes<State> {
+        var slots: [SyncRootSlot<State>] = []
+        if let fields = State._syncTablePerPlayerFields(for: playerID) {
+            for field in fields where fieldNames.contains(field.name) {
+                slots.append(field.build(builder).root())
+            }
+        } else {
+            for name in fieldNames {
+                let only: Set<String> = [name]
+                slots.append(SyncSnapshotRootSlot<State>(name: name) { state in
+                    try state.snapshot(for: playerID, dirtyFields: only).values[name]
+                })
+            }
+        }
+        for slot in slots { slot.deletesWhenAbsent = true }
+        slots.sort { $0.path.utf8.lexicographicallyPrecedes($1.path.utf8) }
+        assert(slots.map(\.name) == fieldNames, "one slot per per-player field: \(slots.map(\.name)) against \(fieldNames)")
+        return SyncTablePlayerBoxes(slots: slots)
+    }
+
+    /// Whether `playerID` has boxes, committed or staged by `staged`.
+    package func hasBoxes(_ playerID: PlayerID, staged: SyncTablePerPlayerStaged) -> Bool {
+        players[playerID] != nil || staged.holds(playerID)
+    }
+
+    /// A sync plan's per-player diff for `playerID`, as today's `computePerPlayerDiffFromSnapshot`:
+    /// - `fields`: the per-player fields today's mode compares (nil: every field).
+    /// - A player without boxes is seeded (no patches): with every field when `seedsAll` (the
+    ///   one-pass extraction's seed), otherwise with `fields`. A field that throws stays unseeded.
+    ///
+    /// Always against the `.cached` baseline: the per-player tables exist only with the broadcast
+    /// tables, which need the delta strategy, and a key reset keeps `.cached` and only retypes
+    /// the update. The `.empty` baseline is the full-snapshot strategy's.
+    /// Once per player per plan: a second call would diff against the committed boxes, not the
+    /// plan's staged writes.
+    package func planDiff(
+        _ state: State,
+        for playerID: PlayerID,
+        fields: Set<String>?,
+        seedsAll: Bool,
+        drops: inout ExtractionDrops,
+        into staged: inout SyncTablePerPlayerStaged
+    ) -> [StatePatch] {
+        assert(staged.entries[playerID] == nil, "the per-player diff of \(playerID) ran twice in one plan")
+        staged.owner = ObjectIdentifier(self)
+        if let boxes = players[playerID] {
+            var entry = SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: false, commits: [])
+            let patches = diff(boxes, state, playerID: playerID, fields: fields, drops: &drops, commits: &entry.commits)
+            staged.entries[playerID] = entry
+            #if DEBUG
+            // The tests' diff fault, as the broadcast tables and the snapshot diff apply it.
+            if let fault = SyncEngineDiffFaultForTesting.current {
+                return fault(lastSentSnapshot(for: playerID) ?? StateSnapshot(values: [:]), patches)
+            }
+            #endif
+            return patches
+        }
+        let boxes = makeBoxes(for: playerID)
+        var entry = SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: true, commits: [])
+        defer { staged.entries[playerID] = entry }
+        // Today's first diff seeds the cache from the extraction and returns no patches.
+        seed(boxes, state, playerID: playerID, fields: seedsAll ? nil : fields, clearsAbsent: false, drops: &drops, commits: &entry.commits)
+        return []
+    }
+
+    private func diff(
+        _ boxes: SyncTablePlayerBoxes<State>,
+        _ state: State,
+        playerID: PlayerID,
+        fields: Set<String>?,
+        drops: inout ExtractionDrops,
+        commits: inout [() -> Void]
+    ) -> [StatePatch] {
+        var list = SyncPatchList()
+        for slot in boxes.slots where fields?.contains(slot.name) ?? true {
+            let emitted = list.entries.count
+            let sorts = list.needsSort
+            do {
+                if let write = try slot.diff(state, layout: layout.root?.child(slot.name), into: &list) {
+                    commits.append(write.commit)
+                }
+            } catch {
+                // The whole root field is dropped for this player: none of its patches.
+                list.entries.removeSubrange(emitted...)
+                list.needsSort = sorts
+                drops.note(error, field: slot.name, scope: .perPlayer(playerID))
+            }
+        }
+        // A type outside the canonical order (known once its differs are built), or no typed
+        // description: sorted, as the broadcast tables do.
+        if list.needsSort || builder.hasUnorderedType || !typed || SyncTableOrderForTesting.sorts {
+            return order.sorted(list.entries.map(\.patch))
+        }
+        return list.canonical(tableCount: max(order.types.count, 1))
+    }
+
+    /// Stages a seed of `fields` (nil: every field) on `boxes`. `clearsAbsent`: a field without a
+    /// view becomes absent (a reseed); a field that throws keeps its committed value and presence.
+    private func seed(
+        _ boxes: SyncTablePlayerBoxes<State>,
+        _ state: State,
+        playerID: PlayerID,
+        fields: Set<String>?,
+        clearsAbsent: Bool,
+        drops: inout ExtractionDrops,
+        commits: inout [() -> Void]
+    ) {
+        for slot in boxes.slots where fields?.contains(slot.name) ?? true {
+            do {
+                if let write = try slot.stageSeed(state) {
+                    commits.append(write.commit)
+                } else if clearsAbsent, let clear = slot.stageClear() {
+                    commits.append(clear.commit)
+                }
+            } catch {
+                drops.note(error, field: slot.name, scope: .perPlayer(playerID))
+            }
+        }
+    }
+
+    /// A full view's reseed of `playerID` (`planFullViewUpdate`, which re-stages today's cache
+    /// from an `.all` extraction): every field takes the view, a field without one becomes
+    /// absent, and a field that throws keeps its committed value and presence, as today's
+    /// re-stage falls back to the cached value. Replaces the player's earlier writes in the plan.
+    package func stageReseed(_ state: State, for playerID: PlayerID, drops: inout ExtractionDrops, into staged: inout SyncTablePerPlayerStaged) {
+        staged.owner = ObjectIdentifier(self)
+        let committed = players[playerID]
+        let staging = staged.entries[playerID]
+        let boxes = committed ?? (staging?.boxes as? SyncTablePlayerBoxes<State>) ?? makeBoxes(for: playerID)
+        var entry = SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: committed == nil, commits: [])
+        seed(boxes, state, playerID: playerID, fields: nil, clearsAbsent: true, drops: &drops, commits: &entry.commits)
+        staged.entries[playerID] = entry
+    }
+
+    /// The seed today's `lateJoinSnapshot` stages when the player has neither a staged nor a
+    /// committed cache (the standalone firstSync): every field. Otherwise nothing.
+    package func stageSeedIfAbsent(_ state: State, for playerID: PlayerID, drops: inout ExtractionDrops, into staged: inout SyncTablePerPlayerStaged) {
+        guard !hasBoxes(playerID, staged: staged) else { return }
+        staged.owner = ObjectIdentifier(self)
+        let boxes = makeBoxes(for: playerID)
+        var entry = SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: true, commits: [])
+        seed(boxes, state, playerID: playerID, fields: nil, clearsAbsent: false, drops: &drops, commits: &entry.commits)
+        staged.entries[playerID] = entry
+    }
+
+    /// What `playerID`'s client was last sent for the per-player field `name` (committed), or nil.
+    package func lastSentSnapshot(of name: String, for playerID: PlayerID) -> SnapshotValue? {
+        players[playerID]?.slots.first { $0.name == name }?.lastSentSnapshot
+    }
+
+    /// `playerID`'s committed boxes as a snapshot of the present fields, or nil without boxes
+    /// (tests, and the per-player cache accessor).
+    package func lastSentSnapshot(for playerID: PlayerID) -> StateSnapshot? {
+        guard let boxes = players[playerID] else { return nil }
+        var values: [String: SnapshotValue] = [:]
+        for slot in boxes.slots {
+            if let value = slot.lastSentSnapshot { values[slot.name] = value }
+        }
+        return StateSnapshot(values: values)
+    }
+
+    /// The players with committed boxes (tests).
+    package var playersForTesting: Set<PlayerID> { Set(players.keys) }
+
+    /// Forgets `playerID`'s boxes (a disconnect or a supersede): its next seed starts from empty.
+    package func clear(_ playerID: PlayerID) {
+        players.removeValue(forKey: playerID)
+    }
+
+    package func apply(_ staged: SyncTablePerPlayerStaged) {
+        assert(staged.owner == nil || staged.owner == ObjectIdentifier(self), "staged per-player writes applied to tables that didn't make them")
+        for (playerID, entry) in staged.entries {
+            let boxes = entry.boxes as! SyncTablePlayerBoxes<State>
+            if entry.installs { players[playerID] = boxes }
+            for commit in entry.commits { commit() }
+        }
     }
 }

@@ -81,6 +81,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     var lastCeilingLogAt: ContinuousClock.Instant?
     /// Waiters for `syncCycleElements == 0` (see `OutboundWriter.waitForSyncCycleDrain`).
     var syncCycleDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Waiters for `elements == 0` (see `OutboundWriter.waitForIdle`).
+    var idleWaiters: [CheckedContinuation<Void, Never>] = []
     /// Set when the consumer task ended; later waits return at once.
     var consumerEnded = false
 
@@ -89,12 +91,16 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         elements -= 1
         bytes -= sentBytes
         var waiters: [CheckedContinuation<Void, Never>] = []
+        if elements == 0 {
+            waiters = idleWaiters
+            idleWaiters = []
+        }
         // After `releaseWaiters` the count was settled to 0: a send that returns late from a
         // consumer teardown gave up on must not take it below 0.
         if isSyncCycle, !consumerEnded {
             syncCycleElements -= 1
             if syncCycleElements == 0 {
-                waiters = syncCycleDrainWaiters
+                waiters += syncCycleDrainWaiters
                 syncCycleDrainWaiters = []
             }
         }
@@ -108,8 +114,9 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         lock.lock()
         consumerEnded = true
         syncCycleElements = 0
-        let waiters = syncCycleDrainWaiters
+        let waiters = syncCycleDrainWaiters + idleWaiters
         syncCycleDrainWaiters = []
+        idleWaiters = []
         lock.unlock()
         for waiter in waiters { waiter.resume() }
     }
@@ -253,6 +260,22 @@ final class OutboundWriter: @unchecked Sendable {
                 return
             }
             counters.syncCycleDrainWaiters.append(waiter)
+            counters.lock.unlock()
+        }
+    }
+
+    /// Tests only: returns once every queued element was handed to the transport (at once when
+    /// none is queued), or when the consumer has ended. Event-driven: the consumer resumes it
+    /// when the count reaches 0, so a test waits on the send, not on a clock.
+    func waitForIdle() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            counters.lock.lock()
+            if counters.elements == 0 || counters.consumerEnded {
+                counters.lock.unlock()
+                waiter.resume()
+                return
+            }
+            counters.idleWaiters.append(waiter)
             counters.lock.unlock()
         }
     }

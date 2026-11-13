@@ -173,6 +173,11 @@ final class StateNodeBuilderMacroTests {
                     return fields
                 }
 
+                public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? {
+                    let fields: [SyncTableField<Self>] = []
+                    return fields
+                }
+
                 /// Update or insert a value in players dictionary and mark as dirty
                 /// Note: This method always marks the field as dirty, even if the value didn't change
                 public mutating func updatePlayers(_ value: String, forKey key: String) {
@@ -328,6 +333,23 @@ final class StateNodeBuilderMacroTests {
                     _syncCheck_secret(_syncFieldKind { (node: Self) in
                             Self._syncPolicy_secret.filteredValue(node._secret.wrappedValue, for: nil)
                         })
+                    return fields
+                }
+
+                public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(1)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "secret",
+                        policy: .custom,
+                        conversion: .standard,
+                        read: {
+                                Self._syncPolicy_secret.filteredValue($0._secret.wrappedValue, for: playerID)
+                            },
+                        convert: { value in
+                                .string(value)
+                            }
+                        ))
                     return fields
                 }
 

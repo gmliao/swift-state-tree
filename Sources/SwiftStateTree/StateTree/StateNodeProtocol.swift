@@ -219,6 +219,12 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// field, built by `@StateNodeBuilder`. Nil (the default) means the type has no typed
     /// description, and every field holding it takes today's snapshot diff.
     static func _syncTableFields() -> [SyncTableField<Self>]?
+
+    /// The player-dependent root fields as one player's typed per-player diff sees them: one per
+    /// `@Sync` field whose policy is neither `.broadcast` nor `.serverOnly`, with `read` the
+    /// field's view for `playerID` and `convert` the conversion `snapshot(for: playerID)` uses.
+    /// Nil (the default) means no typed description: each such field takes today's snapshot diff.
+    static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]?
 }
 
 extension StateNodeProtocol {
@@ -229,6 +235,9 @@ extension StateNodeProtocol {
 
     /// Default: no typed description (hand-written conformances).
     public static func _syncTableFields() -> [SyncTableField<Self>]? { nil }
+
+    /// Default: no typed description (hand-written conformances).
+    public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? { nil }
 }
 
 // MARK: - Default Implementation for snapshotForSync

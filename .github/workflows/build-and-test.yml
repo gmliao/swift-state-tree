@@ -116,6 +116,37 @@ jobs:
         done
       timeout-minutes: 40
 
+  # Per-player fields on typed per-player tables (#514) are on by default wherever the broadcast
+  # tables are. This job runs the Transport and NIO targets again with them opted out
+  # (PER_PLAYER_SYNC_TABLES=false), the broadcast tables at their default, so today's per-player
+  # snapshot diff keeps coverage. The identity tests toggle the three configurations in process.
+  per-player-sync-tables-off:
+    name: build (per-player sync tables off)
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.2.4-noble
+    env:
+      PER_PLAYER_SYNC_TABLES: "false"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Show toolchain
+      run: swift --version
+
+    # It fails the job when the test that pins the switch didn't run.
+    - name: Run the Transport and NIO tests with the per-player tables off
+      shell: bash
+      run: |
+        set -o pipefail
+        swift test --filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' 2>&1 | tee per-player-sync-tables-off.log
+        pin='A config built with init takes PER_PLAYER_SYNC_TABLES'
+        if ! grep -q "✔ Test \"$pin" per-player-sync-tables-off.log; then
+          echo "::error::the test \"$pin\" did not run"
+          exit 1
+        fi
+      timeout-minutes: 40
+
   # The Examples packages have their own test targets and builds, which the root `swift test`
   # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
   # The Demo tests pin its lands' sync table fallback lists.

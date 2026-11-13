@@ -74,7 +74,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
             DeclSyntax(try generateGetFieldMetadata(properties: properties)),
-            DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters))
+            DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)),
+            DeclSyntax(try generateSyncTablePerPlayerFieldsMethod(propertiesWithNodes: propertiesWithNodes))
         ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)
 
         // Static stored properties only where the type is provably not generic (#520).
@@ -446,6 +447,47 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return try FunctionDeclSyntax(
             """
             public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
+    /// Generate `_syncTablePerPlayerFields(for:)`: one `SyncTableField.make` per player-dependent
+    /// `@Sync` field (policy neither `.broadcast` nor `.serverOnly`, as `getSyncFields()` and
+    /// `extractPerPlayerSnapshot` classify it), for one player's typed per-player diff. `read` is the
+    /// field's view for `playerID` and `convert` the conversion `snapshot(for: playerID)` uses, so a
+    /// nested player-dependent node is filtered for the same player (#514).
+    private static func generateSyncTablePerPlayerFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let perPlayer = propertiesWithNodes.filter { property, _ in
+            guard property.hasSync else { return false }
+            let policy = property.policyType ?? .unknown
+            return policy != .broadcast && policy != .serverOnly
+        }
+        var codeLines: [String] = []
+        if perPlayer.isEmpty {
+            codeLines.append("let fields: [SyncTableField<Self>] = []")
+        } else {
+            codeLines.append("var fields: [SyncTableField<Self>] = []")
+            codeLines.append("fields.reserveCapacity(\(perPlayer.count))")
+        }
+        for (property, _) in perPlayer {
+            let name = property.name
+            let policy = (property.policyType ?? .unknown).rawValue
+            let (conversion, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
+            codeLines.append("fields.append(SyncTableField<Self>.make(")
+            codeLines.append("    name: \"\(name)\",")
+            codeLines.append("    policy: .\(policy),")
+            codeLines.append("    conversion: .standard,")
+            codeLines.append("    read: { Self._syncPolicy_\(name).filteredValue($0._\(name).wrappedValue, for: playerID) },")
+            codeLines.append("    convert: { value in \(needsTry ? "try " : "")\(conversion) }")
+            codeLines.append("))")
+        }
+        codeLines.append("return fields")
+        let body = codeLines.joined(separator: "\n")
+        return try FunctionDeclSyntax(
+            """
+            public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? {
                 \(raw: body)
             }
             """

@@ -185,6 +185,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；預設開啟（`fromEnvironment`）。關閉是否更快取決於 land（見 [FAQ](../FAQ.zh-TW.md)） |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | 使用單次 snapshot 擷取；設為 `false` 使用舊版 broadcast + per-player 路徑 |
 | `USE_SYNC_TABLES` | Bool | true | broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略），為預設路徑。兩種方式送出的 frame 位元組相同。設為 `false` 可退回 snapshot diff，此 fallback 之後會移除。在 row addressing 實際生效之處（預設情況下，即有 path hash 的 opcode encoding、in-turn sync 與經由 router 的 join），`USE_SYNC_TABLES=false` 沒有作用，每個這樣的 land 啟動時會記錄一次警告；要在那裡跑 snapshot diff fallback，須同時設 `ROW_ADDRESSING=false`。其他情況（json、`IN_TURN_SYNC=false`、直接 join）`false` 仍會選用 fallback。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
+| `PER_PLAYER_SYNC_TABLES` | Bool | true | per-player 欄位（`.broadcast` 與 `.serverOnly` 以外的任何 policy）改在 typed per-player tables 上做 diff（每位玩家一組），不再於每次 sync 擷取 per-player snapshot。只要 typed sync tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。只要 policy 只依欄位的值與玩家而定，且該 land 從未有 sync 轉換 throw、也未有 frame 編碼失敗，兩種方式送出的 frame 位元組相同。設為 `false` 可退回 per-player snapshot diff |
 | `TYPED_LEAF_VALUES` | Bool | true | 在 typed sync tables 上，內建 leaf 型別（數值、`Bool`、`String`、各 ID 型別、DeterministicMath 的 atomic 型別及其 optional）的欄位變更時，改以型別專屬的轉換取代通用轉換。只要 tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。兩種方式送出的 frame 位元組相同。設為 `false` 可關閉 |
 | `SYNC_STRATEGY` | String | `delta` | `delta` 只送變更欄位；`full-snapshot` 每次同步送每個接收者的完整視圖（量測用基線，非正式模式） |
 | `TRANSPORT_PROFILE_JSONL_PATH` | String | 關閉 | 設定後啟用 transport profiling，將 JSONL 寫入此路徑 |
@@ -255,7 +256,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `syncFailedPlans` | 拋出錯誤、什麼都沒 commit 的 sync plan |
 | `syncDroppedUpdates` | 因無法編碼或擷取而被丟棄的 patch、update 或欄位 |
 
-Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_ms`，各為該視窗內完整 sync plan 的 `{sum, plans, mean}`。三者分別涵蓋 snapshot 擷取、broadcast diff 與 per-player diff。擷取以一次呼叫同時產出 broadcast 與 per-player snapshot，因此不拆分給兩者。編碼、frame 規劃與 joiner 的完整 view 不計入任何一項。diff 工作中 broadcast 的占比為 `sync_broadcast_ms / (sync_broadcast_ms + sync_perplayer_ms)`。`sync_combined_plans` 計算沒有合併 broadcast frame 的 plan：其 per-player 時間包含把 broadcast diff 併入每位玩家 update 的工作，因此計算占比時要依此篩選，或註明所用模式。只有 profiling 開啟時才讀取時鐘。
+Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_ms`，各為該視窗內完整 sync plan 的 `{sum, plans, mean}`。三者分別涵蓋 snapshot 擷取、broadcast diff 與 per-player diff。擷取以一次呼叫同時產出 broadcast 與 per-player snapshot，因此不拆分給兩者。per-player sync tables 生效時（`PER_PLAYER_SYNC_TABLES`）不做 per-player 擷取：per-player 欄位的讀取與轉換改在 per-player diff 中進行，這部分工作因此從 `sync_extract_ms` 移到 `sync_perplayer_ms`。比較各階段占比時，只在同一設定的 run 之間比較。編碼、frame 規劃與 joiner 的完整 view 不計入任何一項。diff 工作中 broadcast 的占比為 `sync_broadcast_ms / (sync_broadcast_ms + sync_perplayer_ms)`。`sync_combined_plans` 計算沒有合併 broadcast frame 的 plan：其 per-player 時間包含把 broadcast diff 併入每位玩家 update 的工作，因此計算占比時要依此篩選，或註明所用模式。只有 profiling 開啟時才讀取時鐘。
 
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。也有 `closeFrameTimeouts`：伺服器發起的關閉中，close frame 在 5 秒內沒寫出、因此不等它就關閉 channel 的次數。客戶端在 channel 仍可寫時停止讀取，就會出現這種情況（NIO hosting）。
 

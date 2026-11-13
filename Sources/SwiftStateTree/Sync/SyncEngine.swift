@@ -63,7 +63,22 @@ public struct SyncEngine: Sendable {
     package var broadcastCacheRetired = false
     
     /// Cache for per-player snapshots (individual cache per player)
-    private var lastPerPlayerSnapshots: [PlayerID: StateSnapshot] = [:]
+    private var lastPerPlayerSnapshots: [PlayerID: StateSnapshot] {
+        get {
+            assert(!perPlayerCacheRetired, "the per-player cache is read while the per-player tables hold last-sent")
+            return perPlayerCacheStorage
+        }
+        set {
+            assert(!perPlayerCacheRetired, "the per-player cache is written while the per-player tables hold last-sent")
+            perPlayerCacheStorage = newValue
+        }
+    }
+    private var perPlayerCacheStorage: [PlayerID: StateSnapshot] = [:]
+
+    /// The owner diffs per-player fields on the typed per-player tables
+    /// (`SyncTablePerPlayerDiff`, #514), which hold what each client was last sent. The per-player
+    /// cache then stays empty and must be neither read nor written: debug builds stop on either.
+    package var perPlayerCacheRetired = false
     
     /// Track which players have received firstSync signal
     /// This is separate from cache population to handle lateJoin scenarios:
@@ -96,6 +111,7 @@ public struct SyncEngine: Sendable {
             lastBroadcastSnapshot = broadcast
         }
         assert(!broadcastCacheRetired || staged.broadcast == nil, "a broadcast cache is staged while the typed tables hold last-sent")
+        assert(!perPlayerCacheRetired || staged.perPlayer.isEmpty, "a per-player cache is staged while the per-player tables hold last-sent")
         for (playerID, snapshot) in staged.perPlayer {
             lastPerPlayerSnapshots[playerID] = snapshot
         }
@@ -124,7 +140,7 @@ public struct SyncEngine: Sendable {
 
     /// The cached per-player snapshot of `playerID` (tests).
     package func cachedPerPlayerSnapshotForTesting(_ playerID: PlayerID) -> StateSnapshot? {
-        lastPerPlayerSnapshots[playerID]
+        perPlayerCacheStorage[playerID]
     }
 
     /// Whether `playerID` is marked as having received its firstSync (tests).
@@ -987,6 +1003,24 @@ public struct SyncEngine: Sendable {
         }
     }
 
+    /// `generateUpdateFromBroadcastDiff` with the player's per-player patches already computed
+    /// (the per-player tables, #514): the firstSync mark and the merge as there.
+    package func updateFromBroadcastDiff(
+        for playerID: PlayerID,
+        broadcastDiff: [StatePatch],
+        perPlayerDiff: [StatePatch],
+        staged: inout StagedCaches
+    ) -> StateUpdate {
+        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+            && !staged.firstSyncReceived.contains(playerID)
+        let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
+        if isFirstSyncForPlayer {
+            staged.firstSyncReceived.insert(playerID)
+            return .firstSync(mergedPatches)
+        }
+        return mergedPatches.isEmpty ? .noChange : .diff(mergedPatches)
+    }
+
     /// Generate a per-player-only update using a pre-extracted per-player snapshot.
     ///
     /// Use this when broadcast patches are sent separately.
@@ -1184,7 +1218,7 @@ public struct SyncEngine: Sendable {
     ///
     /// - Parameter playerID: The player ID whose cache should be cleared.
     public mutating func clearCacheForDisconnectedPlayer(_ playerID: PlayerID) {
-        lastPerPlayerSnapshots.removeValue(forKey: playerID)
+        if !perPlayerCacheRetired { lastPerPlayerSnapshots.removeValue(forKey: playerID) }
         hasReceivedFirstSync.remove(playerID)  // Also clear firstSync flag
     }
     
@@ -1504,21 +1538,24 @@ extension SyncEngine {
     ///
     /// `broadcastLastSent`, when given, stands for the broadcast cache: the typed tables hold what
     /// clients were last sent for a broadcast field, the caller seeds them, and the broadcast
-    /// cache is neither read nor staged here.
+    /// cache is neither read nor staged here. `perPlayerLastSent`, when given, stands for the
+    /// player's per-player cache in the same way (the per-player tables, #514): the caller seeds
+    /// them.
     package func lateJoinSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
         staged: inout StagedCaches,
         drops: inout ExtractionDrops,
-        broadcastLastSent: ((String) -> SnapshotValue?)? = nil
+        broadcastLastSent: ((String) -> SnapshotValue?)? = nil,
+        perPlayerLastSent: ((String) -> SnapshotValue?)? = nil
     ) -> StateSnapshot {
         let names = state.getSyncFields().filter { $0.policyType != .serverOnly }.map(\.name)
         let broadcastCache = broadcastLastSent == nil ? lastBroadcastSnapshot : nil
-        let perPlayerCache = lastPerPlayerSnapshots[playerID]
+        let perPlayerCache = perPlayerLastSent == nil ? lastPerPlayerSnapshots[playerID] : nil
         let snapshot = Self.extractDroppingThrowingFields(
             candidates: names,
             fields: nil,
-            fallback: { broadcastLastSent?($0) ?? broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
+            fallback: { broadcastLastSent?($0) ?? broadcastCache?.values[$0] ?? perPlayerLastSent?($0) ?? perPlayerCache?.values[$0] },
             scope: .view,
             drops: &drops
         ) { fields in
@@ -1527,7 +1564,7 @@ extension SyncEngine {
         if broadcastLastSent == nil, lastBroadcastSnapshot == nil {
             staged.broadcast = extractBroadcastSnapshot(from: state, mode: .all, drops: &drops)
         }
-        if staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {
+        if perPlayerLastSent == nil, staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {
             staged.perPlayer[playerID] = extractPerPlayerSnapshot(for: playerID, from: state, mode: .all, drops: &drops)
         }
         return snapshot

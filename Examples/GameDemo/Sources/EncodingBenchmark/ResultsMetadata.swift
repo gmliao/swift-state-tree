@@ -170,6 +170,7 @@ enum ResultsManager {
             DirtyTrackingMode.modeKey,
             "USE_SYNC_TABLES",
             "TYPED_LEAF_VALUES",
+            "PER_PLAYER_SYNC_TABLES",
             "WSL_DISTRO_NAME",
             "WSL_INTEROP"
         ]

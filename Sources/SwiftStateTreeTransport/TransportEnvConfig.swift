@@ -10,6 +10,7 @@
 // | ENABLE_DIRTY_TRACKING | Bool | init param | truthy: 1/true/yes/y/on; falsy: 0/false/no/n/off; unset uses init default |
 // | USE_SNAPSHOT_FOR_SYNC | Bool | true | disabled when "false"/"0"/"no"/"off"; otherwise enabled |
 // | USE_SYNC_TABLES | Bool | true | the broadcast diff on the typed sync tables (delta strategy only); "false"/"0"/"no"/"n"/"off" opts out to the snapshot diff, a fallback to be removed. Row addressing turns the tables on regardless |
+// | PER_PLAYER_SYNC_TABLES | Bool | true | per-player fields diffed on typed per-player tables wherever the broadcast tables are in effect (#514); "false"/"0"/"no"/"n"/"off" opts out to today's per-player snapshot diff |
 // | TYPED_LEAF_VALUES | Bool | true | a changed leaf of a known type is converted by its typed form on the typed sync tables (only where they are in effect); "false"/"0"/"no"/"n"/"off" opts out |
 // | SYNC_STRATEGY | String | init param | "delta" or "full-snapshot" (case-insensitive); unknown values use init default |
 // | TRANSPORT_PROFILE_JSONL_PATH | String | (required) | Output path for profiling JSONL; unset = disabled |
@@ -32,7 +33,8 @@ import SwiftStateTree
 /// Use `fromEnvironment(enableDirtyTrackingDefault:)` to read all transport env vars
 /// with consistent parsing. Init parameters serve as defaults when env vars are unset.
 /// A config built with `init` reads no environment variable, except `USE_SYNC_TABLES`
-/// (`useSyncTables`) and `TYPED_LEAF_VALUES` (`typedLeafValues`).
+/// (`useSyncTables`), `PER_PLAYER_SYNC_TABLES` (`perPlayerSyncTables`) and `TYPED_LEAF_VALUES`
+/// (`typedLeafValues`).
 public struct TransportEnvConfig: Sendable {
     public let enableDirtyTracking: Bool
     public let useSnapshotForSync: Bool
@@ -58,6 +60,29 @@ public struct TransportEnvConfig: Sendable {
         get { useSyncTables }
         set { useSyncTables = newValue }
     }
+
+    /// Per-player fields are diffed on typed per-player tables (`SyncTablePerPlayerDiff`, #514)
+    /// instead of per-player snapshots (`PER_PLAYER_SYNC_TABLES`, on by default). It takes effect
+    /// wherever the broadcast tables are in effect; elsewhere it is ignored. Off is today's
+    /// per-player snapshot diff, kept as the rollback.
+    ///
+    /// Every config takes the environment's value, as `useSyncTables` does.
+    package var perPlayerSyncTables = TransportEnvConfig.perPlayerSyncTablesFromEnvironment
+
+    /// `perPlayerSyncTables`, for diagnostics and equivalence tests outside this package.
+    /// `PER_PLAYER_SYNC_TABLES` is the supported switch. Set it before passing the config to an
+    /// adapter.
+    @_spi(Diagnostics) public var perPlayerSyncTablesEnabled: Bool {
+        get { perPlayerSyncTables }
+        set { perPlayerSyncTables = newValue }
+    }
+
+    /// `PER_PLAYER_SYNC_TABLES`, read once per process.
+    private static let perPlayerSyncTablesFromEnvironment = EnvHelpers.getEnvBool(
+        key: TransportEnvKeys.perPlayerSyncTables,
+        defaultValue: true,
+        environment: ProcessInfo.processInfo.environment
+    )
 
     /// On the typed sync tables, a changed leaf field registered with the standard conversion
     /// is converted by its typed form (`SyncLeafWritable`) instead of `SnapshotValue.make(from:)`
