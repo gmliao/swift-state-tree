@@ -1,6 +1,6 @@
 # Per-player fields on typed per-player sync tables (#514)
 
-**Status:** draft, rev 6 (2026-11-13), for review.
+**Status:** reviewed, GO on rev 6 (212d5b74, 2026-11-13), with the purity qualifier added after the GO.
 - This is step 2's PR 3 (`2026-11-10-flat-storage-step2.md` §5 and §7), which never started. Read at `main` 9bf7df61.
 - Rev 1 (65cb9b53) got a no-GO: 4 must-fix, 6 should, 1 nit. Rev 2 (38e59fed) addressed them: M1 in §3, M2 in §1 and §3, M3 in §3, M4 in §2, S1 in §3, S2 in §5 and §7, S3 in §4, S4 in §5 and §6, S5 in §2, S6 in §4, N1 in §3.
 - Rev 2 got 2 must-fix, 3 should and 1 nit. Rev 3 (4141176d) addressed them: M5 and M6 in §2 (the selection is today's per-player mode, so the retry set is gone), S7 and N2 in §3, S8 and S9 in §4.
@@ -18,8 +18,8 @@
 - D4: a player's second session getting no per-player changes is a bug, #531. This PR keeps today's bytes, and its pin is marked as a known bug citing #531.
 - D5 (maintainer):
   - M7: option (b'). A box the mode doesn't compare stays at what its client has; it isn't silently advanced as today's one-pass cache is.
-  - M8: the revised throw contract. **Byte identity with today holds for a run in which, since the land started, no sync conversion has thrown and no frame encode has failed, anywhere in the land.** That covers broadcast and per-player, in any extraction, diff, seed or view, and any dropped patch or total frame failure. Any such failure puts the land outside the contract for the rest of the run, and its outputs are then the named, interim ones (M7, T1, T2, §5), until #535 closes the land on the failure.
-  - The condition is land-wide on purpose (rev 6). A per-player history doesn't hold: a throw for one player changes another player's seed under today's B1 (M12), and today's full views can carry an old, divergent value forward (M13). The land-wide form is also the contract #535 makes real, since after #535 no failed land keeps running.
+  - M8: the revised throw contract. **Byte identity with today holds, for policies that satisfy the purity contract, for a run in which, since the land started, no sync conversion has thrown and no frame encode has failed, anywhere in the land.** That covers broadcast and per-player, in any extraction, diff, seed or view, and any dropped patch or total frame failure. Any such failure puts the land outside the contract for the rest of the run, and its outputs are then the named, interim ones (M7, T1, T2, §5), until #535 closes the land on the failure.
+  - The condition is land-wide on purpose (rev 6). A per-player history doesn't hold: a throw for one player changes another player's seed under today's B1 (M12), and today's full views can carry an old, divergent value forward (M13). The land-wide form is also the failure half of the contract that #535 makes real, since after #535 no failed land keeps running. #535 doesn't enforce purity: a policy that reads the root state (#199) can diverge with no throw and no encode failure (§2, D1).
 
 **Interim (#535).** The maintainer decided on 2026-11-13 that sync conversion and encode failures are no longer absorbed: the land is closed. #535 will replace both failure-path behaviors this plan specifies, the throwing conversions and the lag after a failed encode. Their pinned outputs here are interim, and the tests that pin them cite #535.
 
@@ -114,7 +114,7 @@ The per-player tables compute the mode with the same functions and diff exactly 
   - **B2 doesn't differ:** it extracts only the mode's fields (SE 1408-1428).
 - **An empty `.dirtyTracking` on a player with a box:** nothing, as SE 800-803.
 
-The saving against today is the extraction of fields the mode doesn't compare. Its patches equal today's under D5's land-wide condition: no conversion throw and no encode failure anywhere in the land since it started. The differences outside that are named here and in Throws, each with its expected output.
+The saving against today is the extraction of fields the mode doesn't compare. Its patches equal today's under D5's land-wide condition, for policies that satisfy the purity contract: no conversion throw and no encode failure anywhere in the land since it started. The differences outside that are named here and in Throws, each with its expected output.
 
 **Throws (M8, D5; interim, #535).** Byte identity isn't claimed when a conversion throws. There are two named differences:
 - **(T1) B1's fallback.** Today B1 is all-or-nothing across every player and every per-player field (`onePass = nil; break`, TA 5046-5052). A throw in any field of any player, inside S or not, sends every player to B2. That changes which fields a player without a box is seeded with: every per-player field under B1, only the mode's fields under B2. The typed path reads per (player, field), so a throw affects only that pair, and a field it doesn't read can't throw.
