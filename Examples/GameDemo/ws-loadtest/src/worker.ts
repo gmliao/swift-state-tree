@@ -262,7 +262,7 @@ export interface WorkerOptions {
     reconnect?: ReconnectOption;
     /** `--reconstruct`: rebuild each connection's client state with the SDK's view (`reconstruction`). */
     reconstruction?: { sdk: SdkCore; schema: unknown };
-    /** `--row-addressing on`: joins declare `rowAddressing`. Default false. */
+    /** `--row-addressing on` (the default): joins declare `rowAddressing`. */
     rowAddressing?: boolean;
 }
 

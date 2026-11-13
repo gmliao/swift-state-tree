@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Checks EncodingBenchmark's `--join-through-router` and `--row-addressing`:
 # - each refused combination exits 2 and names what it refuses;
-# - a small router run (messagepack-pathhash, row addressing on and off) completes, every
-#   session joined, and its result's routerJoin records perConnection bytes and whether row
-#   entries were in effect, the sync-lag policy it ran with, no connection the server closed,
-#   and every ack taken (none dropped, no session with unacked frames after the last sync);
-# - a run without the flags has no routerJoin and records both flags off;
+# - a small router run (messagepack-pathhash; row addressing by default, explicitly on and off)
+#   completes, every session joined, and its result's routerJoin records perConnection bytes and
+#   whether row entries were in effect, the sync-lag policy it ran with, no connection the server
+#   closed, and every ack taken (none dropped, no session with unacked frames after the last sync);
+# - `--row-addressing` not given resolves on with the router and a -pathhash format, off
+#   otherwise, and is never refused; only an explicit `on` is refused where rows can't take effect;
+# - a run without the flags has no routerJoin, no router join and rows requested null, resolved off;
 # - --active-players' injected moves reach router-joined players.
 # Usage: Examples/GameDemo/scripts/check-encoding-benchmark-router.sh [path to a built EncodingBenchmark]
 # Without a path it builds EncodingBenchmark in debug. Runs in CI's examples job.
@@ -48,6 +50,19 @@ refuses "--compare-worker-pool" --join-through-router on --compare-worker-pool -
 refuses "--hash-cost" --join-through-router on --hash-cost
 refuses "--baseline entity-delta" --join-through-router on --baseline entity-delta --parallel false --rooms 2
 
+# The row-specific refusals apply only to an explicit `on`: the same commands without the flag run.
+accepts() {
+  if "$BIN" "$@" --output json --iterations 2 --ticks-per-sync 1 >"$WORK/accept.out" 2>&1; then
+    echo "ok: accepts $*"
+  else
+    echo "FAIL: $* exited non-zero without --row-addressing"
+    sed -n '1,5s/^/    /p' "$WORK/accept.out"
+    failures=$((failures + 1))
+  fi
+}
+accepts --format messagepack-pathhash --rooms 2 --parallel false
+accepts --join-through-router on --format opcode-json --rooms 2 --parallel false
+
 # Reads a JSON result from stdout (the last top-level object) and checks it with python.
 run_json() {
   local name="$1" check="$2"
@@ -65,16 +80,22 @@ start = text.rfind("\n{") + 1 if not text.startswith("{") else 0
 result = json.loads(text[start:])
 check = sys.argv[2]
 router = result.get("routerJoin")
+config = result["config"]
 if check == "default":
     assert router is None, f"routerJoin on a default run: {router}"
-    config = result["config"]
-    assert config["joinThroughRouter"] is False and config["rowAddressing"] is False, config
-elif check in ("rows-on", "rows-off"):
+    assert config["joinThroughRouter"] is False, config
+    assert config["rowAddressing"] is None and config["rowAddressingResolved"] is False, config
+elif check in ("rows-default", "rows-on", "rows-off", "rows-resolved-off"):
+    # rows-default: not given, resolved on; rows-on / rows-off: given; rows-resolved-off: not
+    # given, resolved off (a format without path hashes).
+    on = check in ("rows-default", "rows-on")
+    requested = {"rows-default": None, "rows-on": True, "rows-off": False, "rows-resolved-off": None}[check]
+    assert config["rowAddressing"] is requested and config["rowAddressingResolved"] is on, config
     assert router, "no routerJoin"
     assert router["joinPath"] == "router" and router["bytesCounted"] == "perConnection", router
-    assert router["rowAddressingRequested"] == (check == "rows-on"), router
-    assert router["rowAddressingInEffect"] == (check == "rows-on"), router
-    assert ("rowAddressing" in router["stateUpdateFeatures"]) == (check == "rows-on"), router
+    assert router["rowAddressingRequested"] == on, router
+    assert router["rowAddressingInEffect"] == on, router
+    assert ("rowAddressing" in router["stateUpdateFeatures"]) == on, router
     # The lands run as hosted: the sync sequence is on, every connection acks, and none is closed.
     assert "syncSequence" in router["stateUpdateFeatures"], router
     assert router["serverCloses"] == 0, router
@@ -94,7 +115,9 @@ PY
 }
 
 run_json default default --format messagepack-pathhash --rooms 2 --players-per-room 3 --parallel false
-run_json router-rows-off rows-off --format messagepack-pathhash --rooms 2 --players-per-room 3 --parallel false --join-through-router on
+run_json router-default rows-default --format messagepack-pathhash --rooms 2 --players-per-room 3 --parallel false --join-through-router on
+run_json router-rows-off rows-off --format messagepack-pathhash --rooms 2 --players-per-room 3 --parallel false --join-through-router on --row-addressing off
+run_json router-opcode-json rows-resolved-off --format opcode-json --rooms 1 --players-per-room 3 --parallel false --join-through-router on
 run_json router-rows-on rows-on --format messagepack-pathhash --rooms 2 --players-per-room 3 --parallel true --join-through-router on --row-addressing on
 run_json router-rows-on-json rows-on --format opcode-json-pathhash --rooms 1 --players-per-room 3 --parallel false --join-through-router on --row-addressing on
 

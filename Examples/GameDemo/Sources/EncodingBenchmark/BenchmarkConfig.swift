@@ -33,6 +33,9 @@ enum EncodingFormat: String, CaseIterable {
             .withDynamicKeyCompression(DynamicKeyCompressionMode.enabled)
             .withPathIndex(PathIndexMode.enabled)
             .withFieldMerge(FieldMergeMode.enabled)
+            // Row entries take effect only for joins through a router: the router path turns
+            // them on (`RouterJoin.encoding`); the local path's adapters run without them.
+            .withRowAddressing(false)
     }
 
     private var baseTransportEncodingConfig: TransportEncodingConfig {
@@ -255,9 +258,17 @@ struct BenchmarkConfig {
     /// `WebSocketTransport`, joined by fake connections (RouterJoin.swift). Off by default: the
     /// default path's numbers are unchanged.
     var joinThroughRouter: Bool = false
-    /// `--row-addressing on`: the lands' encoding names root map rows by slot. Needs
-    /// `--join-through-router on`: row entries take effect only for joins through a router.
-    var rowAddressing: Bool = false
+    /// `--row-addressing on|off` as given, nil when not given. `on` names root map rows by slot
+    /// and needs `--join-through-router on` and a -pathhash format; not given, it follows where
+    /// it can take effect (`rowAddressingResolved`), the library's default.
+    var rowAddressing: OnOff? = nil
+
+    /// Row addressing for the run: as given, or on where it can take effect (the router path
+    /// with a -pathhash format, not `--all`), as the library defaults it on.
+    var rowAddressingResolved: Bool {
+        if let rowAddressing { return rowAddressing == .on }
+        return joinThroughRouter && !runAll && format.usesPathHash
+    }
 }
 
 /// `--join-through-router` and `--row-addressing` take `on` or `off`.
@@ -280,7 +291,8 @@ enum ArgumentParser {
     /// op, which the JSON object format doesn't have. Row entries need the router path and a
     /// path-hash format (the only ones with row entries).
     static func routerJoinRefusal(_ config: BenchmarkConfig) -> String? {
-        if config.rowAddressing {
+        // Only an explicit `on` is refused: not given, it resolves off where it can't take effect.
+        if config.rowAddressing == .on {
             let unsupported = [
                 (!config.joinThroughRouter, "runs without --join-through-router on (row entries take effect only for joins through a router)"),
                 (config.runAll, "--all (it runs formats without row entries)"),
@@ -377,7 +389,7 @@ enum ArgumentParser {
                 // hero-defense options do.
                 if mode == .on { config.heroDefenseOptionsGiven = true }
             } else {
-                config.rowAddressing = mode == .on
+                config.rowAddressing = mode
             }
             i += 1
         case "--players":
@@ -629,9 +641,10 @@ enum ArgumentParser {
                               routerJoin. Not with --game-type other than hero-defense,
                               --use-worker-pool, --compare-worker-pool, --hash-cost, --baseline,
                               --all or --format json-object.
-      --row-addressing <m>    on or off (default off). on: the lands name root map rows by slot.
-                              Needs --join-through-router on and a -pathhash --format (not --all).
-                              routerJoin records whether it was in effect.
+      --row-addressing <m>    on or off. Default: on with --join-through-router on and a
+                              -pathhash --format (not --all), off otherwise. on: the lands name
+                              root map rows by slot; given explicitly, it needs those and fails
+                              if rows aren't in effect. routerJoin records whether it was.
       --merge-stats           Hero-defense multi-room runs: count, over the measured iterations,
                               the patches sent inside merged entries with field merge's order
                               rule and without it (plans each frame twice; timings aren't

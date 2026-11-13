@@ -376,6 +376,7 @@ func runMultiRoomBenchmark(
         let (set, joined) = await RouterRooms.make(
             format: format,
             rowAddressing: routerConfig.rowAddressing,
+            rowAddressingRequired: routerConfig.rowAddressingRequired,
             syncLag: routerConfig.syncLag,
             roomCount: roomCount,
             playersPerRoom: playersPerRoom,
@@ -492,7 +493,8 @@ func runMultiRoomBenchmark(
                 "iterations": iterations, "ticksPerSync": ticksPerSync, "monsterCap": monsterCap,
                 "activePlayers": activePlayers, "parallel": parallel,
             ],
-            baselineFormat: entityDelta == nil ? nil : EntityDeltaRun.formatName)
+            baselineFormat: entityDelta == nil ? nil : EntityDeltaRun.formatName,
+            negotiatedFeatures: routerRooms?.stateUpdateFeatures)
         // Checkpoint 0: the joins, the initial sync and the warm-up flush.
         try await capture?.checkpoint(sync: 0, frames: entityDeltaFirst)
     } catch {
@@ -1247,9 +1249,11 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "activePlayers": config.activePlayers,
             "monsterCap": config.monsterCap,
             "monsterActiveEvery": config.monsterActiveEvery,
-            // `--join-through-router` / `--row-addressing` (false without them).
+            // `--join-through-router` (false without it); `--row-addressing` as given (null when
+            // not given) and as resolved.
             "joinThroughRouter": config.joinThroughRouter,
-            "rowAddressing": config.rowAddressing,
+            "rowAddressing": config.rowAddressing.map { ($0 == .on) as Any } ?? NSNull(),
+            "rowAddressingResolved": config.rowAddressingResolved,
             // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (true unset, the default), so a
             // same-binary A/B shows its side.
             "useSyncTables": env.syncTablesEnabled,
@@ -1286,7 +1290,11 @@ struct EncodingBenchmark {
         config.pathIndex?.apply()
         config.fieldMerge?.apply()
         if config.joinThroughRouter {
-            RouterJoin.config = RouterJoinConfig(rowAddressing: config.rowAddressing, syncLag: .fromEnvironment())
+            RouterJoin.config = RouterJoinConfig(
+                rowAddressing: config.rowAddressingResolved,
+                rowAddressingRequired: config.rowAddressing == .on,
+                syncLag: .fromEnvironment()
+            )
         }
         MergeStatsRun.enabled = config.mergeStats
         FieldMergeStatistics.setEnabled(config.mergeStats)

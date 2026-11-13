@@ -399,7 +399,7 @@ export interface RunOptions {
     sendMode?: SendMode;
     /** Time move events until visible (default false). */
     inputLatency?: boolean;
-    /** Joins declare `rowAddressing` (default false). */
+    /** Joins declare `rowAddressing` (`--row-addressing`, default on). */
     rowAddressing?: boolean;
     /** A phase fails when a smaller share of its inputs was seen (default `INPUT_LATENCY_MIN_SEEN_DEFAULT`; 0: off). */
     inputLatencyMinSeen?: number;

@@ -25,8 +25,10 @@ import SwiftStateTree
 
 /// The router path's options, set once from the command line.
 struct RouterJoinConfig: Sendable {
-    /// `--row-addressing on`: the lands' encoding has `rowAddressing` on.
+    /// The lands' encoding has `rowAddressing` on (`BenchmarkConfig.rowAddressingResolved`).
     let rowAddressing: Bool
+    /// `--row-addressing on` given explicitly: the run fails if rows aren't in effect.
+    var rowAddressingRequired: Bool = false
     /// The lands' sync-lag policy (`SyncLagPolicy.fromEnvironment()`, as a server's): the lands run
     /// as hosted, with the sync sequence and lag tracking, so every connection acks.
     let syncLag: SyncLagPolicy
@@ -154,6 +156,7 @@ struct RouterRooms: Sendable {
     static func make(
         format: EncodingFormat,
         rowAddressing: Bool,
+        rowAddressingRequired: Bool,
         syncLag: SyncLagPolicy,
         roomCount: Int,
         playersPerRoom: Int,
@@ -272,7 +275,7 @@ struct RouterRooms: Sendable {
             steps += 1
         }
         await set.requireNoServerClose(during: "the joins")
-        if rowAddressing, !set.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing) {
+        if rowAddressingRequired, !set.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing) {
             print("Error: --row-addressing on, but the lands don't have row entries in effect (features: \(set.stateUpdateFeatures)); the server log says why")
             exit(1)
         }
