@@ -129,7 +129,6 @@ private func pendingPoll(_ condition: () async -> Bool) async -> Bool {
     return await condition()
 }
 
-private struct PendingFlipBlocked: Error {}
 
 /// A router, its transport and one land, with a session connected.
 private struct PendingHarness {
@@ -193,7 +192,7 @@ private struct PendingHarness {
 
     /// Sends the join with the flip blocked; returns once the router has returned (pending).
     func joinPending() async throws {
-        await adapter.setSyncPlanFaultForTesting { throw PendingFlipBlocked() }
+        await adapter.setJoinFlipHeldForTesting(true)
         let join = try JSONEncoder().encode(TransportMessage.join(
             requestID: "join-1", landType: "pending-inbound", landInstanceId: "one",
             playerID: "p1", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
@@ -222,7 +221,7 @@ private struct PendingHarness {
 
     /// Lets the flip happen.
     func flip() async {
-        await adapter.setSyncPlanFaultForTesting(nil)
+        await adapter.setJoinFlipHeldForTesting(false)
         await adapter.syncNow()
     }
 

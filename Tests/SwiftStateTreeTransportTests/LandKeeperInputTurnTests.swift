@@ -106,6 +106,11 @@ private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
 private actor InputTurnTransport: Transport {
     var delegate: TransportDelegate?
     private var sent: [(target: SwiftStateTreeTransport.EventTarget, data: Data)] = []
+    private(set) var closes: [(sessionID: SessionID, code: UInt16)] = []
+
+    func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        closes.append((sessionID, close.code))
+    }
 
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
@@ -637,8 +642,8 @@ struct LandKeeperInputTurnTests {
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
     }
 
-    @Test("failure repair: a failed in-turn plan on a tickless land is repaired by one sync-only turn")
-    func failedPlanIsRepairedByASyncOnlyTurn() async throws {
+    @Test("a failed in-turn plan on a tickless land ends the land at its first throw (#535 row 15)")
+    func failedPlanEndsTheLand() async throws {
         let f = try await InputTurnFixture.make()
         let failOnce = InputTurnSwitch()
         failOnce.set(true)
@@ -650,9 +655,15 @@ struct LandKeeperInputTurnTests {
         }
         let before = await f.transport.texts(for: f.session).count
         try await f.add(7, sync: true)
-        #expect(await f.adapter.syncFailedPlans == 1)
-        #expect(try await f.waitForFrame(containing: "/total", after: before), "the repair turn sent the state")
-        #expect(await f.keeper.inTurnRepairTurns == 1)
+        #expect(f.keeper.failure?.kind == .syncPlan, "failure \(String(describing: f.keeper.failure))")
+        #expect(f.keeper.failure?.position.stage == .syncPhase)
+        #expect(f.keeper.destructionCause == .failed)
+        await f.keeper.waitUntilDrained()
+        #expect(await f.transport.closes.map(\.code) == [SessionClose.Code.landFailed], "the session closed with 4016")
+        #expect(await f.transport.texts(for: f.session).count == before, "no state frame after the failed plan")
+        #expect(await f.keeper.inTurnRepairTurns == 0, "no repair turn")
+        // Intake is closed: a later input is refused.
+        await #expect(throws: (any Error).self) { try await f.add(1, sync: true) }
     }
 
     @Test("freeze and resume interleaved with a deferred writer retry: the change still goes out once")
