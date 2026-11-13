@@ -103,7 +103,7 @@ class Refused(ValueError):
 
 
 def load(path: str | None) -> dict:
-    return BUILTIN if not path else json.loads(pathlib.Path(path).read_text())
+    return BUILTIN if not path else json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
 
 
 def form(calibration: dict) -> wireform.WireForm:

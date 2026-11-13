@@ -6,6 +6,9 @@
 #   lessons     scripts/lint-lessons.sh --self-test, then the repository (CI: build › Lint lessons)
 #   wall-clock  scripts/lint-wall-clock-tests.sh --self-test, then with the base's baseline
 #               (CI: wall-clock-tests)
+#   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
+#               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
+#               breaks it). Not in CI yet.
 #   ShellCheck  every tracked script, plus new untracked ones, outside CI's exclusion; an excluded
 #               script with no findings fails (CI: shellcheck). The exclusion is read from the
 #               workflow, so it can't drift. Needs ShellCheck 0.11.0, the version CI pins. Skipped
@@ -22,6 +25,9 @@
 # Usage: scripts/pre-push-checks.sh [base]   (default origin/main; run `git fetch` first)
 # Tests: scripts/test-pre-push-checks.sh
 set -uo pipefail
+# Python's own text I/O in UTF-8 whatever the host's locale (belt and braces: the lint below keeps
+# deep-research/ and scripts/ explicit).
+export PYTHONUTF8=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root" || exit 1
 base="${1:-origin/main}"
@@ -86,6 +92,7 @@ shell_check() {
 echo "pre-push-checks: base $base (merge base ${fork:0:12}), $(grep -c . <<<"$changed") changed file(s)"
 run lessons lessons
 run wall-clock wall_clock
+run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'
 if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
   run shellcheck shell_check
 else

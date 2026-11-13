@@ -338,16 +338,16 @@ class CollectPathTests(unittest.TestCase):
         raw, results = pathlib.Path(tmp.name) / "raw", pathlib.Path(tmp.name) / "results"
         cell = raw / "s1" / "rate10"
         (cell / "load").mkdir(parents=True)
-        (cell / "cell.json").write_text("{}")
+        (cell / "cell.json").write_text("{}", encoding="utf-8")
         (cell / "load" / "toolchain.txt").write_text(
-            "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n")
+            "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n", encoding="utf-8")
         record = {"repeat": 1, "runId": "s1", "git": {"commit": "c657c37b", "dirty": False, "root": "/workspace/checkout"}}
         spec = {"actions_per_second": 1, "outcome": None, "injects": [], "env": {}}
         evaluated = ({"cell": "rate10", "rooms": 1, "preS": 1, "steadyS": 1, "tailS": 1, "spec": spec}, {}, {}, {}, [])
         with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
                 mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
             collect.collect(raw, results)
-        doc = json.loads((results / "rate10-rep1.json").read_text())
+        doc = json.loads((results / "rate10-rep1.json").read_text(encoding="utf-8"))
         self.assertEqual(portable.absolute_paths(doc), [])
         self.assertIn("external server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer",
                       doc["meta"]["client_toolchain"])
@@ -355,21 +355,21 @@ class CollectPathTests(unittest.TestCase):
 
         # Without a recorded root it needs --checkout-root; a path outside the checkout stays visible.
         record["git"].pop("root")
-        (cell / "load" / "toolchain.txt").write_text("external server binary /srv/build/Examples/GameDemo/GameServer\n")
+        (cell / "load" / "toolchain.txt").write_text("external server binary /srv/build/Examples/GameDemo/GameServer\n", encoding="utf-8")
         with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
                 mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
             with self.assertRaises(SystemExit) as cm:
                 collect.collect(raw, results)
             self.assertIn("--checkout-root", str(cm.exception))
             collect.collect(raw, results, checkout_root="/workspace/checkout")
-        doc = json.loads((results / "rate10-rep1.json").read_text())
+        doc = json.loads((results / "rate10-rep1.json").read_text(encoding="utf-8"))
         self.assertEqual(doc["meta"]["client_toolchain"], "external server binary /srv/build/Examples/GameDemo/GameServer")
 
 
 class RunShTests(unittest.TestCase):
     def dry(self, **env):
         e = dict(os.environ, DRY_RUN="1", RUN_ID="dry-test", **env)
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True, env=e)
+        return subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True, env=e, encoding="utf-8")
 
     def test_dry_run_lists_every_cell(self):
         p = self.dry(REPEAT="1")

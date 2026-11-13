@@ -69,7 +69,7 @@ def pause_seconds(run_dir: pathlib.Path) -> tuple[int, dict]:
             raise Refused(f"{run_dir}: no {name}")
     if not analysis.sample_files(run_dir / "samples" / SLOW_INSTANCE):
         raise Refused(f"{run_dir}: no samples/{SLOW_INSTANCE}/ worker files (the slow readers' joins)")
-    run = json.loads((run_dir / "run.json").read_text())
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     params = run.get("params") or {}
     if params.get("cell") != "SR-CAL":
         raise Refused(f"{run_dir}: not the SR calibration (cell {params.get('cell')!r})")

@@ -120,7 +120,7 @@ class Timeline:
 def read_timeline(path: pathlib.Path) -> Timeline:
     """The run's one apply and one lift. The change time is ``wallMsAfter``: both directions'
     ``tc qdisc change`` had returned by then."""
-    entries = json.loads(path.read_text())
+    entries = json.loads(path.read_text(encoding="utf-8"))
     applies = [e for e in entries if e["action"] == "apply"]
     lifts = [e for e in entries if e["action"] == "lift"]
     if len(applies) != 1 or len(lifts) != 1:
@@ -485,7 +485,7 @@ def read_lifecycle(path: pathlib.Path, run_end: int | None = None) -> dict[str, 
     if not path.exists():
         return None
     out: dict[str, dict] = {}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
@@ -876,7 +876,7 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
     maxes = {k: 0 for k in PROFILE_MAXES}
     lines = 0
     seen: set[str] = set()
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         obj = json.loads(line)
@@ -932,7 +932,7 @@ def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
     rss: list[tuple[float, float]] = []
     if system_path.exists():
         try:
-            system = json.loads(system_path.read_text())
+            system = json.loads(system_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
             # Two collectors writing one file (two client instances) leave it unreadable: say so.
             raise ValueError(f"{system_path} is not valid JSON ({error}); was it written by more than one collector?") from error
@@ -941,7 +941,7 @@ def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
             rss.append((t, sample["rssMb"]))
             bump(timeline.segment_of(t), "rssPeakMb", sample["rssMb"])
     if sockstat_path.exists():
-        for line in sockstat_path.read_text().splitlines():
+        for line in sockstat_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             sample = json.loads(line)
@@ -1008,7 +1008,7 @@ def loop_summary(records: list[dict], start: int, end: int, workers: list[str]) 
 
 def ingest(run_dir: pathlib.Path) -> dict:
     """``results/<run-id>.json`` content for one run directory."""
-    run = json.loads((run_dir / "run.json").read_text())
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     timeline = read_timeline(run_dir / "impairment-timeline.json")
     start = timeline.segments["baseline"][0]
     end = timeline.segments["recovery"][1]
@@ -1133,7 +1133,7 @@ def read_convergence(path: pathlib.Path) -> dict | None:
     missing input)."""
     if not path.exists():
         return None
-    report = json.loads(path.read_text())
+    report = json.loads(path.read_text(encoding="utf-8"))
     return {
         "totals": report["totals"],
         "durationMs": report["endedAt"] - report["startedAt"],
@@ -1159,7 +1159,7 @@ def main(argv: list[str]) -> int:
         here = pathlib.Path(__file__).parent
         out = args.out or here / "results" / f"{args.run_dir.name}.json"
         out.parent.mkdir(exist_ok=True)
-        out.write_text(json.dumps(ingest(args.run_dir), indent=1) + "\n")
+        out.write_text(json.dumps(ingest(args.run_dir), indent=1) + "\n", encoding="utf-8")
         print(out)
     return 0
 

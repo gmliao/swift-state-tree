@@ -83,7 +83,7 @@ class Summary(unittest.TestCase):
     def test_read_skips_blank_lines(self):
         d = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
-        (d / "land-stats.jsonl").write_text("\n".join(json.dumps(l) for l in lines(lambda t, i: 1, seconds=3)) + "\n\n")
+        (d / "land-stats.jsonl").write_text("\n".join(json.dumps(l) for l in lines(lambda t, i: 1, seconds=3)) + "\n\n", encoding="utf-8")
         self.assertEqual(len(landstats.read(d / "land-stats.jsonl")), 3)
 
 

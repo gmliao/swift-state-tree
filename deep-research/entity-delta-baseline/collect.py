@@ -22,7 +22,7 @@ def sweeps(raw):
     """The measured sweeps, one per repeat, and the state-only ones (run.sh STATE_ONLY=1)."""
     claimed, state_only = {}, []
     for record_path in sorted(raw.glob("*/run.json")):
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         if record.get("superseded"):
             continue
         if record.get("stateOnly"):
@@ -77,13 +77,13 @@ def collect(raw, results):
             cell, variant = split_tag(path.stem)
             if variant is None:
                 sys.exit(f"{path}: not <cell>-<variant>.json")
-            d = json.loads(path.read_text())
+            d = json.loads(path.read_text(encoding="utf-8"))
             meta, cmd = d["metadata"], d["metadata"]["commandLine"]
             if ("--baseline" in cmd) != (variant == "b2") or ("--no-server-events" in cmd) != (variant != "sst-events"):
                 sys.exit(f"{path}: flags {cmd} don't match variant {variant}")
             views_path, decode_path = directory / f"{path.stem}.views.json", directory / f"{path.stem}.decode.json"
-            views = json.loads(views_path.read_text()) if views_path.exists() else None
-            decode = json.loads(decode_path.read_text()) if decode_path.exists() else None
+            views = json.loads(views_path.read_text(encoding="utf-8")) if views_path.exists() else None
+            decode = json.loads(decode_path.read_text(encoding="utf-8")) if decode_path.exists() else None
             cap, active = arg(cmd, "--monster-cap", int), "--active-players" in cmd
             iterations = arg(cmd, "--iterations", int)
             axis = "rooms" if cell == "rooms" else "active" if cell.startswith("active") else "monsters"
@@ -158,7 +158,7 @@ def collect(raw, results):
                     },
                     "metrics": metrics,
                 }
-                (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+                (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
                 written.append(run_id)
         written += collect_b1(directory, record, raw, results)
     return written
@@ -176,7 +176,7 @@ def collect_state(directory, record, raw, results):
             sys.exit(f"{path}: not <cell>-sst.state.json")
         axis = "rooms" if cell == "rooms" else "active" if cell.startswith("active") else "monsters"
         git = record.get("git") or {}
-        for run, state in json.loads(path.read_text()).items():
+        for run, state in json.loads(path.read_text(encoding="utf-8")).items():
             m = re.search(r"-r(\d+)-p(\d+)-m(\d+)(-active)?-serial$", run)
             if not m:
                 sys.exit(f"{path}: unexpected run {run}")
@@ -196,13 +196,13 @@ def collect_state(directory, record, raw, results):
             }
             run_id = (f"{axis}-p{players}-r{rooms}" + (f"-cap{cap}" if axis == "monsters" else "") + f"-rep{record['repeat']}")
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (out_dir / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(f"state/{run_id}")
     return written
 
 
 def projection_digest(path, key):
-    hashes = json.loads(path.read_text()).get(key)
+    hashes = json.loads(path.read_text(encoding="utf-8")).get(key)
     if hashes is None:
         sys.exit(f"{path}: no run {key}")
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
@@ -217,9 +217,9 @@ def collect_b1(directory, record, raw, results):
         cell, variant = split_tag(stem)
         if variant not in B1_VARIANTS:
             sys.exit(f"{path}: not <cell>-b1[-tuned].colyseus.json")
-        report = json.loads(path.read_text())
-        views = json.loads((directory / f"{stem}.views.json").read_text())
-        decode = json.loads((directory / f"{stem}.decode.json").read_text())
+        report = json.loads(path.read_text(encoding="utf-8"))
+        views = json.loads((directory / f"{stem}.views.json").read_text(encoding="utf-8"))
+        decode = json.loads((directory / f"{stem}.decode.json").read_text(encoding="utf-8"))
         axis = "rooms" if cell == "rooms" else "active" if cell.startswith("active") else "monsters"
         for run, converted in report["runs"].items():
             m = re.search(r"-r(\d+)-p(\d+)-m(\d+)(-active)?-serial$", run)
@@ -262,7 +262,7 @@ def collect_b1(directory, record, raw, results):
                 },
                 "metrics": metrics,
             }
-            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(run_id)
     return written
 

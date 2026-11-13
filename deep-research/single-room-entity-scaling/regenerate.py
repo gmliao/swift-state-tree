@@ -45,7 +45,7 @@ LABEL = {"json-object": "JSON Object", "messagepack-pathhash": "Opcode MsgPack (
 
 
 def load(directory):
-    return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(directory.glob("*.json"))]
 
 
 def point(r):
@@ -260,7 +260,7 @@ def main():
     a = ap.parse_args()
     t = results_markdown()
     if a.check:
-        if results_section((TOPIC / "README.md").read_text()).strip() != t.strip():
+        if results_section((TOPIC / "README.md").read_text(encoding="utf-8")).strip() != t.strip():
             print("MISMATCH")
             sys.exit("README.md ## Results does not match regenerated tables")
         print("OK")

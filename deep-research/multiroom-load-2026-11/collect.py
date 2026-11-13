@@ -41,7 +41,7 @@ def parse_header(path):
     out = {"exit": None, "cmd": None, "shims": {}, "serverAffinity": None, "sha": None, "sendBacklogEnv": None}
     if not path.exists():
         return out
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("exit="):
             out["exit"] = int(line.split()[0].split("=", 1)[1])
         elif line.startswith("sha="):
@@ -66,7 +66,7 @@ def parse_toolchain(path):
     out = {"swift": None, "node": None, "gameserverBin": None, "sourceSha": None}
     if path is None or not path.exists():
         return out
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("Swift version") and out["swift"] is None:
             out["swift"] = line.strip()
         elif line.startswith("node "):
@@ -119,7 +119,7 @@ def steady_land_stats(path, report):
 
 
 def collect_sweep(directory, results, checkout_root=None):
-    record = json.loads((directory / "run.json").read_text())
+    record = json.loads((directory / "run.json").read_text(encoding="utf-8"))
     dirty = (record.get("git") or {}).get("dirty")
     if not isinstance(dirty, bool):
         sys.exit(f"{directory}/run.json: no git.dirty recorded (got {dirty!r}); run the sweep with this topic's run.sh, whose runmeta.py records git.dirty in run.json")
@@ -141,7 +141,7 @@ def collect_sweep(directory, results, checkout_root=None):
         toolchain = parse_toolchain(suite / "run-1" / "toolchain.txt" if suite else None)
         target = out / name
         target.mkdir()
-        report_data = json.loads(report.read_text()) if report else None
+        report_data = json.loads(report.read_text(encoding="utf-8")) if report else None
         features = join_features(report_data) if report else None
         if report:
             # mtime=0: the same report gives the same bytes.
@@ -181,7 +181,7 @@ def collect_sweep(directory, results, checkout_root=None):
     sweep["runs"] = runs
     # run.sh records the GameServer binary by its path in the checkout (GAMESERVER_BIN, toolchain.txt).
     sweep = portable.relativize(sweep, root)
-    (out / "sweep.json").write_text(json.dumps(sweep, indent=2, sort_keys=True) + "\n")
+    (out / "sweep.json").write_text(json.dumps(sweep, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
 
@@ -190,7 +190,7 @@ def collect(raw, results, run_id=None, checkout_root=None):
     for run_json in sorted(raw.glob("*/run.json")):
         if run_id is not None and run_json.parent.name != run_id:
             continue
-        record = json.loads(run_json.read_text())
+        record = json.loads(run_json.read_text(encoding="utf-8"))
         if record.get("superseded"):
             print(f"skipping {run_json.parent.name}: superseded ({record['superseded'].get('reason')})", file=sys.stderr)
             continue

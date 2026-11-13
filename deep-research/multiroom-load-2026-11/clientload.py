@@ -115,9 +115,9 @@ def failures(load: dict | None) -> list[str]:
 
 def report_of(summary_path: str, ws: str) -> dict:
     """The one run's report a scalability summary names (run.sh has checked it exists)."""
-    summary = json.load(open(summary_path))
+    summary = json.load(open(summary_path, encoding="utf-8"))
     path = summary["runs"][0]["reportJson"]
-    return json.load(open(path if os.path.isabs(path) else os.path.join(ws, path)))
+    return json.load(open(path if os.path.isabs(path) else os.path.join(ws, path), encoding="utf-8"))
 
 
 def main(argv: list[str]) -> int:

@@ -20,13 +20,13 @@ def main(capture, out):
             sys.exit(f"{run}: unexpected run name")
         rooms = {}
         for room in sorted(run.glob("room-*.ndjson")):
-            lines = room.read_text().splitlines()[1:]
+            lines = room.read_text(encoding="utf-8").splitlines()[1:]
             rooms[room.name] = [hashlib.sha256(json.dumps(json.loads(l)["projections"], sort_keys=True).encode()).hexdigest()
                                 for l in lines if l]
         result[match.group(1)] = rooms
     if not result:
         sys.exit(f"{capture}: no runs")
-    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

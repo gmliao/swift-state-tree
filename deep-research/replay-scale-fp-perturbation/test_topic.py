@@ -67,12 +67,12 @@ else:
 
 def git_repo(repo, dirty=False):
     """A checkout for run-batch.sh to record: committed, its build and outputs ignored as in the real one."""
-    (repo / ".gitignore").write_text(".build/\nout/\nresults/\nbin/\nstub/\n")
+    (repo / ".gitignore").write_text(".build/\nout/\nresults/\nbin/\nstub/\n", encoding="utf-8")
     for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     if dirty:
-        (repo / "uncommitted.py").write_text("x")
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        (repo / "uncommitted.py").write_text("x", encoding="utf-8")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 # A stand-in swift: `build` (run in Examples/GameDemo) installs the stand-in runner into
@@ -88,7 +88,7 @@ def write_stub(repo):
     stub.mkdir()
     (repo / "Examples" / "GameDemo").mkdir(parents=True)
     for name, text in (("ReevaluationRunner", STUB), ("swift", SWIFT_STUB), ("sstr.py", SSTR_STUB)):
-        (stub / name).write_text(text)
+        (stub / name).write_text(text, encoding="utf-8")
         (stub / name).chmod(0o755)
 
 
@@ -99,7 +99,7 @@ def run_batch(repo, out, path=None, **env):
     e = dict(os.environ, **env)
     if path is not None:
         e["PATH"] = path
-    return subprocess.run(["bash", str(RUN_BATCH), str(repo), str(out)], capture_output=True, text=True, env=e)
+    return subprocess.run(["bash", str(RUN_BATCH), str(repo), str(out)], capture_output=True, text=True, env=e, encoding="utf-8")
 
 
 class RunBatch(unittest.TestCase):
@@ -138,7 +138,7 @@ class RunBatch(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("done: 41 recordings, record failures 0, verify failures 0, content digest failures 0, "
                       "second recordings differing 0 (in bytes: 0)", p.stdout)
-        self.assertEqual(json.loads((out / "source.json").read_text()),
+        self.assertEqual(json.loads((out / "source.json").read_text(encoding="utf-8")),
                          {"commit": head, "dirty": False, "status": [], "built": True,
                           "commitAtEnd": head, "dirtyAtEnd": False, "statusAtEnd": []})
         doc, sums = summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
@@ -151,8 +151,8 @@ class RunBatch(unittest.TestCase):
         self.assertIn("  s202.sstr\n", sums)
         results = self.tmp / "results"
         results.mkdir()
-        (results / "batch-3.0-SHA256SUMS.txt").write_text(sums)
-        (results / "batch-3.0-x86_64.json").write_text(json.dumps(doc))
+        (results / "batch-3.0-SHA256SUMS.txt").write_text(sums, encoding="utf-8")
+        (results / "batch-3.0-x86_64.json").write_text(json.dumps(doc), encoding="utf-8")
         batches = regenerate.load_batches(results)
         self.assertEqual(list(batches), ["3.0"])
         self.assertEqual(regenerate.check_batches("3.0", batches["3.0"], results), [])
@@ -168,7 +168,7 @@ class RunBatch(unittest.TestCase):
         out = self.tmp / "out"
         p = run_batch(self.tmp, out, SEEDS="1")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        record = json.loads((out / "source.json").read_text())
+        record = json.loads((out / "source.json").read_text(encoding="utf-8"))
         self.assertEqual((record["dirty"], record["status"]), (True, ["?? uncommitted.py"]))
         with self.assertRaises(SystemExit) as refused:
             summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
@@ -180,7 +180,7 @@ class RunBatch(unittest.TestCase):
         p = run_batch(self.tmp, self.tmp / "out", SEEDS="1", SWIFT="false")
         self.assertEqual(p.returncode, 1)
         self.assertIn("building ReevaluationRunner failed", p.stderr)
-        self.assertNotIn("built", json.loads((self.tmp / "out" / "source.json").read_text()))
+        self.assertNotIn("built", json.loads((self.tmp / "out" / "source.json").read_text(encoding="utf-8")))
         self.assertFalse((self.tmp / "out" / "summary.tsv").exists())
 
     def test_a_tree_that_changes_while_the_batch_runs_is_refused(self):
@@ -224,7 +224,7 @@ class RunBatch(unittest.TestCase):
             (tools / t).symlink_to(shutil.which(t))
         p = run_batch(self.tmp, self.tmp / "out", path=str(tools), SEEDS="1 2")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        rows = [l.split("\t") for l in (self.tmp / "out" / "summary.tsv").read_text().splitlines()]
+        rows = [l.split("\t") for l in (self.tmp / "out" / "summary.tsv").read_text(encoding="utf-8").splitlines()]
         import hashlib
         want = hashlib.sha256((self.tmp / "out" / "records" / "s1.sstr").read_bytes()).hexdigest()
         self.assertEqual((rows[0][6], rows[0][7]), (want, want))
@@ -246,7 +246,7 @@ class RunBatch(unittest.TestCase):
         p = run_batch(self.tmp, out, SEEDS="1 2", STUB_SPLIT="records-2")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("content digest failures 0, second recordings differing 0 (in bytes: 2)", p.stdout)
-        rows = [l.split("\t") for l in (out / "summary.tsv").read_text().splitlines()]
+        rows = [l.split("\t") for l in (out / "summary.tsv").read_text(encoding="utf-8").splitlines()]
         self.assertTrue(all(r[6] != r[7] and r[8] == r[9] and r[10:12] == ["0", "1"] for r in rows), rows)
         self.assertEqual(sorted(p.name for p in (out / "views").iterdir() if p.suffix == ".json"), [])
 
@@ -266,7 +266,7 @@ class Turns(unittest.TestCase):
     def record(self, split):
         d = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
-        (d / "sstr.py").write_text(SSTR_STUB)
+        (d / "sstr.py").write_text(SSTR_STUB, encoding="utf-8")
         out = d / ("split" if split else "whole") / "s.sstr"
         out.parent.mkdir()
         env = dict(os.environ, STUB_READER=str(TOPIC.parent / "recomputation-cost" / "regenerate.py"), STUB_SPLIT="split")
@@ -292,20 +292,20 @@ class Summarize(unittest.TestCase):
         source = ({"commit": good, "dirty": False, "status": [], "built": True, "commitAtEnd": good, "dirtyAtEnd": False}
                   if source is None else source)
         if source != "missing":
-            (d / "source.json").write_text(json.dumps(source))
+            (d / "source.json").write_text(json.dumps(source), encoding="utf-8")
         (d / "logs").mkdir()
         (d / "records").mkdir()
         rows = []
         for i, fmt in enumerate(formats, 1):
             (d / "records" / f"s{i}.sstr").write_bytes(b"x")
             (d / "logs" / f"s{i}.verify.log").write_text(
-                (f"📼 Record: {fmt}, complete\n" if fmt else "") + "   Total Ticks: 1200\n")
+                (f"📼 Record: {fmt}, complete\n" if fmt else "") + "   Total Ticks: 1200\n", encoding="utf-8")
             # Seed 2's second recording differs in bytes from its first; its content differs too
             # unless `content_same`.
             second_content = f"c{i}" if (i != 2 or content_same) else "c9"
             rows.append(f"{i}\t5\t20\t1200\t0\t0\th{i}\t" + ("h9" if i == 2 else f"h{i}")
                         + f"\tc{i}\t{second_content}\t0\t" + ("1" if i == 2 else "0"))
-        (d / "summary.tsv").write_text("\n".join(rows) + "\n")
+        (d / "summary.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
         return d
 
     def test_format_names_and_second_recordings(self):
@@ -347,7 +347,7 @@ class CheckBatches(unittest.TestCase):
                "verified_vs_recorded": True, "verified_run1_vs_run2": True, "sha256": "h",
                "second_recording_identical": True}
         sums = "h  s.sstr\n"
-        (self.results / "batch-3.0-SHA256SUMS.txt").write_text(sums)
+        (self.results / "batch-3.0-SHA256SUMS.txt").write_text(sums, encoding="utf-8")
         import hashlib
         self.batch = {"_file": "batch-3.0-x86_64.json",
                       "meta": {"record_format": "3.0", "sha256sums_sha256": hashlib.sha256(sums.encode()).hexdigest(),

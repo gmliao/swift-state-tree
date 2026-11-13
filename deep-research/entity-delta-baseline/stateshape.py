@@ -206,7 +206,7 @@ class Schema:
 
 
 def room_state(path):
-    lines = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    lines = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     header, syncs = lines[0], [l for l in lines[1:] if "projections" in l]
     if not syncs:
         raise SystemExit(f"{path}: no syncs captured")
@@ -277,7 +277,7 @@ def main(argv):
     runs = sorted(p for p in capture.iterdir() if p.is_dir())
     if not runs:
         raise SystemExit(f"{capture}: no captured runs")
-    out.write_text(json.dumps({run.name: run_state(run) for run in runs}, indent=2, sort_keys=True) + "\n")
+    out.write_text(json.dumps({run.name: run_state(run) for run in runs}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

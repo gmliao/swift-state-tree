@@ -66,11 +66,11 @@ def provenance_line(runs):
 
 
 def load(directory):
-    return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(directory.glob("*.json"))]
 
 
 def load_states(directory):
-    return [json.loads(p.read_text()) for p in sorted((directory / "state").glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted((directory / "state").glob("*.json"))]
 
 
 STATE_FIGURES = ("broadcast_snapshot_bytes", "broadcast_key_table_bytes", "broadcast_key_table_entries",
@@ -85,7 +85,7 @@ def state_point(s):
 def git_tree(commit, path):
     try:
         return subprocess.run(["git", "-C", str(TOPIC), "rev-parse", f"{commit}:{path}"],
-                              capture_output=True, text=True, check=True).stdout.strip()
+                              capture_output=True, text=True, check=True, encoding="utf-8").stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -319,7 +319,7 @@ def main():
         check_states(states, runs)
     md = tables(runs, states)
     if args.check:
-        ok = results_section((TOPIC / "README.md").read_text()).strip() == md.strip()
+        ok = results_section((TOPIC / "README.md").read_text(encoding="utf-8")).strip() == md.strip()
         print("OK" if ok else "MISMATCH")
         sys.exit(0 if ok else 1)
     print(md)

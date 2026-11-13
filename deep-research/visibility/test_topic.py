@@ -27,7 +27,7 @@ def write_capture(root, filter_, radius, checkpoints, players=("p0",), tps=1):
     header = {"cell": {"visibility": {"entityCount": 2, "filter": filter_, "viewRadius": radius}, "ticksPerSync": tps},
               "sessions": {f"s-{p}": p for p in players}}
     lines = [json.dumps(header)] + [json.dumps({"frames": [], "projections": c, "sync": i}) for i, c in enumerate(checkpoints)]
-    (run / "room-0.ndjson").write_text("\n".join(lines) + "\n")
+    (run / "room-0.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return root
 
 
@@ -55,7 +55,7 @@ class CapcheckTests(unittest.TestCase):
                 ok = True
             except SystemExit:
                 ok = False
-            return ok, json.loads((tmp / "out.json").read_text())
+            return ok, json.loads((tmp / "out.json").read_text(encoding="utf-8"))
 
     def test_consistent_pair_passes(self):
         inside = {"id": "e0", "position": pos(35000, 20000)}
@@ -103,7 +103,7 @@ class CapcheckTests(unittest.TestCase):
                 ok = True
             except SystemExit:
                 ok = False
-            return ok, json.loads((tmp / "out.json").read_text())["r1-p1-k1-serial"]
+            return ok, json.loads((tmp / "out.json").read_text(encoding="utf-8"))["r1-p1-k1-serial"]
 
     def test_broadcast_twin_equal_to_every_all_view_passes(self):
         viewers = {"p0": {"position": pos(20000, 20000), "slot": 0}, "p1": {"position": pos(80000, 20000), "slot": 1}}
@@ -133,7 +133,7 @@ class CapcheckTests(unittest.TestCase):
             tmp = pathlib.Path(tmp)
             cap = write_capture(tmp / "c", filter_, 15.0, checkpoints, players=("p0", "p1"), tps=tps)
             capcheck.stats(cap, tmp / "s.json")
-            return json.loads((tmp / "s.json").read_text())["r1-p1-k1-serial"]
+            return json.loads((tmp / "s.json").read_text(encoding="utf-8"))["r1-p1-k1-serial"]
 
     def two_viewers(self, entries, exits, p0, p1):
         """Checkpoint 0 (p0 sees e0, p1 nothing, counters 0) then one measured sync."""
@@ -203,7 +203,7 @@ def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, cons
     out.mkdir(parents=True)
     (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": order or regenerate.ORDERS[(repeat - 1) % 3], "nodeVersion": "v22",
                                               "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": [],
-                                              "serverEnv": serverenv.record({})}))
+                                              "serverEnv": serverenv.record({})}), encoding="utf-8")
     for cell in ("default", "tps2"):
         entities, radius, players, tps = regenerate.CELLS[cell]
         key = f"r10-p{players}-k{tps}-serial"
@@ -212,20 +212,20 @@ def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, cons
             if (cell, variant) == skip:
                 continue
             tag = f"{cell}-{variant}"
-            (out / f"{tag}.json").write_text(json.dumps(benchmark(cell, variant)))
+            (out / f"{tag}.json").write_text(json.dumps(benchmark(cell, variant)), encoding="utf-8")
             if not captured:
                 continue
             room = {"comparisons": 10, "decodeErrors": 0, "differences": [] if gate_ok else [{"sync": 1}]}
-            (out / f"{tag}.views.json").write_text(json.dumps({"runs": {name: [room, room]}}))
+            (out / f"{tag}.views.json").write_text(json.dumps({"runs": {name: [room, room]}}), encoding="utf-8")
             (out / f"{tag}.decode.json").write_text(json.dumps({"provenance": {"verified": True}, "runs": {name: {
                 "roomBytes": {"rooms": 2, "bytesPerRoomSync": 160.0 * players, "deflateBytesPerRoomSync": 80.0 * players},
-                "summary": {"decode": {"usPerFrame": 1.0}, "decodeApply": {"usPerFrame": 5.0}}}}}))
-            (out / f"{tag}.capstats.json").write_text(json.dumps({key: {"rooms": 2, "visiblePerRecipient": 3.0, "viewChangesPerRecipientSync": 0.5}}))
-            (out / f"{tag}.replay.json").write_text(json.dumps({key: {"room-0.sstr": {"passed": replay_ok}, "room-1.sstr": {"passed": True}}}))
+                "summary": {"decode": {"usPerFrame": 1.0}, "decodeApply": {"usPerFrame": 5.0}}}}}), encoding="utf-8")
+            (out / f"{tag}.capstats.json").write_text(json.dumps({key: {"rooms": 2, "visiblePerRecipient": 3.0, "viewChangesPerRecipientSync": 0.5}}), encoding="utf-8")
+            (out / f"{tag}.replay.json").write_text(json.dumps({key: {"room-0.sstr": {"passed": replay_ok}, "room-1.sstr": {"passed": True}}}), encoding="utf-8")
         if captured:
-            (out / f"{cell}.consistency.json").write_text(json.dumps({key: {"rooms": 2, "checks": 84, "failure": None if consistent else "x"}}))
+            (out / f"{cell}.consistency.json").write_text(json.dumps({key: {"rooms": 2, "checks": 84, "failure": None if consistent else "x"}}), encoding="utf-8")
             (out / f"{cell}.broadcast-consistency.json").write_text(
-                json.dumps({key: {"rooms": 2, "checks": 85, "failure": None if broadcast_consistent else "x"}}))
+                json.dumps({key: {"rooms": 2, "checks": 85, "failure": None if broadcast_consistent else "x"}}), encoding="utf-8")
 
 
 class TopicTests(unittest.TestCase):
@@ -314,7 +314,7 @@ class TopicTests(unittest.TestCase):
 
     def test_the_matrix_is_run_shs(self):
         out = subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True,
-                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}).stdout
+                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}, encoding="utf-8").stdout
         self.assertEqual({l.split()[1].rsplit("-", 1)[0] for l in out.splitlines() if l.startswith("done ") and "-" in l},
                          set(regenerate.CELLS))
 
@@ -339,25 +339,25 @@ class TopicTests(unittest.TestCase):
         tmp = pathlib.Path(tempfile.mkdtemp())
         sweep(tmp / "raw", "s1", 1, captured=False)
         path = tmp / "raw" / "s1" / "default-radius.json"
-        d = json.loads(path.read_text())
+        d = json.loads(path.read_text(encoding="utf-8"))
         d["metadata"]["benchmarkConfig"]["visibility"]["VISIBILITY_TEST_FILTER"] = "all"
-        path.write_text(json.dumps(d))
+        path.write_text(json.dumps(d), encoding="utf-8")
         with self.assertRaises(SystemExit):
             collect.collect(tmp / "raw", tmp / "results")
 
     def test_collect_skips_a_smoke_sweep(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
         sweep(tmp / "raw", "s1", 1)
-        record = json.loads((tmp / "raw" / "s1" / "run.json").read_text())
+        record = json.loads((tmp / "raw" / "s1" / "run.json").read_text(encoding="utf-8"))
         record["onlyCells"] = ["default"]
-        (tmp / "raw" / "s1" / "run.json").write_text(json.dumps(record))
+        (tmp / "raw" / "s1" / "run.json").write_text(json.dumps(record), encoding="utf-8")
         self.assertEqual(collect.collect(tmp / "raw", tmp / "results"), [])
 
 
 class RunShTests(unittest.TestCase):
     def dry(self, **env):
         e = dict(os.environ, DRY_RUN="1", RUN_ID="dry-test", **env)
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True, env=e)
+        return subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True, env=e, encoding="utf-8")
 
     def test_dry_run_lists_every_cell_and_check(self):
         p = self.dry(REPEAT="1")

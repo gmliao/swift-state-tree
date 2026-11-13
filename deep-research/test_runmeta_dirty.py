@@ -34,13 +34,13 @@ DATA_DIR_TOPICS = {"network-impairment-2026-11"}
 
 
 def git(cwd, *args):
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
 
 
 def local_imports(script: pathlib.Path) -> list[pathlib.Path]:
     """The repository modules a script imports, by its sys.path: its own directory and deep-research/."""
     names = set()
-    for node in ast.walk(ast.parse(script.read_text())):
+    for node in ast.walk(ast.parse(script.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             names.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
@@ -77,7 +77,7 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                 self.assertEqual(git(REPO, "check-ignore", "-q", "--no-index", path).returncode, 0, f"{path} isn't ignored")
         for topic in ("entity-delta-baseline", "snapshot-baseline", "visibility"):
             with self.subTest(topic):
-                self.assertIn('export BENCHMARK_RESULTS_DIR="$OUT/', (HERE / topic / "run.sh").read_text())
+                self.assertIn('export BENCHMARK_RESULTS_DIR="$OUT/', (HERE / topic / "run.sh").read_text(encoding="utf-8"))
 
     def test_runmeta_ignores_outputs_and_counts_untracked_sources(self):
         topics = sorted(t for t in HERE.iterdir() if (t / "runmeta.py").exists())
@@ -87,7 +87,7 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                 repo = pathlib.Path(tmp)
                 rel = pathlib.Path("deep-research") / topic.name
                 (repo / rel / "results").mkdir(parents=True)
-                (repo / rel / "results" / "tracked.json").write_text("{}")  # a committed result
+                (repo / rel / "results" / "tracked.json").write_text("{}", encoding="utf-8")  # a committed result
                 shutil.copy(REPO / ".gitignore", repo / ".gitignore")
                 shutil.copy(topic / "runmeta.py", repo / rel / "runmeta.py")
                 # The modules runmeta imports (serverenv.py), at the same place relative to it.
@@ -103,28 +103,28 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                     out = repo / rel / output_dir(topic) / run_id
                     # start <dir> <run-id> <repeat> <order> <flag> <pin-cpus> <flag> <overwrite>
                     done = subprocess.run(["python3", str(rel / "runmeta.py"), "start", str(out), run_id, "1", "o", "1", "", "0", "0"],
-                                          cwd=repo, capture_output=True, text=True)
+                                          cwd=repo, capture_output=True, text=True, encoding="utf-8")
                     self.assertEqual(done.returncode, 0, done.stderr)
-                    return json.loads((out / "run.json").read_text())["git"]["dirty"]
+                    return json.loads((out / "run.json").read_text(encoding="utf-8"))["git"]["dirty"]
 
                 self.assertIs(start("s1"), False)
-                (repo / rel / output_dir(topic) / "s1" / "cell.log").write_text("x")  # a sweep's own outputs
+                (repo / rel / output_dir(topic) / "s1" / "cell.log").write_text("x", encoding="utf-8")  # a sweep's own outputs
                 self.assertIs(start("s2"), False, f"files under {output_dir(topic)}/ marked the tree dirty")
                 # An earlier invocation's ingested results and run data, untracked (network-impairment's
                 # step 2 before its SR step), in a new subdirectory too.
-                (repo / rel / "results" / "sweep-M-P0-r1.json").write_text("{}")
+                (repo / rel / "results" / "sweep-M-P0-r1.json").write_text("{}", encoding="utf-8")
                 (repo / rel / "results" / "sub").mkdir()
-                (repo / rel / "results" / "sub" / "x.json").write_text("{}")
+                (repo / rel / "results" / "sub" / "x.json").write_text("{}", encoding="utf-8")
                 (repo / rel / "data").mkdir(exist_ok=True)
-                (repo / rel / "data" / "x.log").write_text("x")
+                (repo / rel / "data" / "x.log").write_text("x", encoding="utf-8")
                 self.assertIs(start("s2b"), False, "untracked files under results/ or data/ marked the tree dirty")
-                (repo / rel / "new_script.py").write_text("x")  # an uncommitted source
+                (repo / rel / "new_script.py").write_text("x", encoding="utf-8")  # an uncommitted source
                 self.assertIs(start("s3"), True, "an untracked source didn't mark the tree dirty")
                 (repo / rel / "new_script.py").unlink()
-                (repo / rel / "results" / "tracked.json").write_text('{"x": 1}')  # a changed committed result
+                (repo / rel / "results" / "tracked.json").write_text('{"x": 1}', encoding="utf-8")  # a changed committed result
                 self.assertIs(start("s4"), True, "a changed tracked file under results/ didn't mark the tree dirty")
                 git(repo, "checkout", "--", ".")
-                (repo / rel / "runmeta.py").write_text((repo / rel / "runmeta.py").read_text() + "\n# x\n")
+                (repo / rel / "runmeta.py").write_text((repo / rel / "runmeta.py").read_text(encoding="utf-8") + "\n# x\n", encoding="utf-8")
                 self.assertIs(start("s5"), True, "a changed tracked source didn't mark the tree dirty")
 
 

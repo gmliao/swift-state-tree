@@ -170,7 +170,7 @@ class CrossCheck(unittest.TestCase):
         for key, value in over.items():
             section, field = key.split("__")
             doc[section][field] = value
-        (self.dir / f"{cell}-p{players}-on-on-rep1.json").write_text(json.dumps(doc))
+        (self.dir / f"{cell}-p{players}-on-on-rep1.json").write_text(json.dumps(doc), encoding="utf-8")
 
     def tree(self, commit, path):
         return {"Sources": regenerate.SOURCES_TREE, "Package.swift": regenerate.PACKAGE_TREE}[path]
@@ -218,7 +218,7 @@ def write_capture(directory, label, rooms):
         for n, frames_ in enumerate(syncs):
             lines.append(json.dumps({"sync": n, "frames": [{"to": to, "data": base64.b64encode(b).decode()} for to, b in frames_],
                                      "projections": {"p1": {"v": n}}}))
-        (run / f"room-{i}.ndjson").write_text("\n".join(lines) + "\n")
+        (run / f"room-{i}.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class Frames(unittest.TestCase):
@@ -228,7 +228,7 @@ class Frames(unittest.TestCase):
             write_capture(d, "mp-delta-r1-p5-m4-serial", rooms)
             if projection is not None:
                 path = d / "mp-delta-r1-p5-m4-serial" / "room-0.ndjson"
-                path.write_text(path.read_text().replace('"v": 0', f'"v": {projection}'))
+                path.write_text(path.read_text(encoding="utf-8").replace('"v": 0', f'"v": {projection}'), encoding="utf-8")
             return frames.hashes(d)["mp-delta-r1-p5-m4-serial"]
 
     def test_the_same_frames_hash_alike_and_projections_dont_count(self):
@@ -268,7 +268,7 @@ class Collect(unittest.TestCase):
                "git": {"commit": "abc1234", "dirty": False, "sourcesTree": "t1", "packageTree": "t2"},
                "swiftVersion": "Swift version 6.2.4", "nodeVersion": "v24", "superseded": None, "cells": []}
         rec.update(over)
-        (d / "run.json").write_text(json.dumps(rec))
+        (d / "run.json").write_text(json.dumps(rec), encoding="utf-8")
         return d
 
     def bench(self, directory, tag, form_flags, players=(10,)):
@@ -279,7 +279,7 @@ class Collect(unittest.TestCase):
                             "build": {"configuration": "release", "swiftVersion": "Swift version 6.2.4"}},
                "results": [{"rooms": 1, "playersPerRoom": p, "serial": {"totalBytes": 2000 * p, "syncMs": 100.0, "cpuMs": 400.0,
                                                                          "finalMonsterCount": 4}} for p in players]}
-        (directory / f"{tag}.json").write_text(json.dumps(doc))
+        (directory / f"{tag}.json").write_text(json.dumps(doc), encoding="utf-8")
 
     def test_measured_and_capture_invocations_become_results(self):
         d = self.record("s2", "measured", 2)
@@ -287,17 +287,17 @@ class Collect(unittest.TestCase):
         c = self.record("cap", "capture", None)
         (c / "idle-players-mp-nodt-dk.views.json").write_text(json.dumps({"runs": {
             "x-r1-p10-m4-serial": [{"decodeErrors": 0, "differences": [], "comparisons": 50}],
-            "x-r1-p20-m4-serial": [{"decodeErrors": 0, "differences": ["d"], "comparisons": 50}]}}))
+            "x-r1-p20-m4-serial": [{"decodeErrors": 0, "differences": ["d"], "comparisons": 50}]}}), encoding="utf-8")
         (c / "idle-players-mp-nodt-dk.frames.json").write_text(json.dumps({
             "x-r1-p10-m4-serial": {"sha256": "aa", "frames": 4, "syncs": 2},
-            "x-r1-p20-m4-serial": {"sha256": "bb", "frames": 4, "syncs": 2}}))
+            "x-r1-p20-m4-serial": {"sha256": "bb", "frames": 4, "syncs": 2}}), encoding="utf-8")
         written = collect.collect(self.raw, self.results)
         self.assertEqual(sorted(written), ["capture/idle-players-p10-mp-nodt-dk", "capture/idle-players-p20-mp-nodt-dk",
                                            "idle-players-p10-mp-nodt-dk-rep2", "idle-players-p20-mp-nodt-dk-rep2"])
-        r = json.loads((self.results / "idle-players-p20-mp-nodt-dk-rep2.json").read_text())
+        r = json.loads((self.results / "idle-players-p20-mp-nodt-dk-rep2.json").read_text(encoding="utf-8"))
         self.assertEqual((r["params"]["order"], r["params"]["parallel"], r["meta"]["sources_tree"]), ("reverse", "false", "t1"))
         self.assertEqual((r["metrics"]["sync_ms_per_sync"], r["metrics"]["iteration_cpu_ms"], r["metrics"]["bytes_per_sync"]), (0.5, 2.0, 200.0))
-        cap = json.loads((self.results / "capture" / "idle-players-p20-mp-nodt-dk.json").read_text())
+        cap = json.loads((self.results / "capture" / "idle-players-p20-mp-nodt-dk.json").read_text(encoding="utf-8"))
         self.assertEqual((cap["metrics"]["gate_passed"], cap["metrics"]["frames_sha256"], cap["meta"]["deterministic_hashing"]), (False, "bb", True))
 
     def test_smoke_runs_are_skipped_and_a_repeat_claimed_twice_is_refused(self):
@@ -313,7 +313,7 @@ class Collect(unittest.TestCase):
 class RunSh(unittest.TestCase):
     def dry(self, **env):
         full = dict(os.environ, DRY_RUN="1", RUN_ID="test", PIN_CPUS="", **env)
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True)
+        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, encoding="utf-8")
 
     def forms_of(self, out, cell):
         return [line.split(f"{cell}-", 1)[1].split()[0].split(".")[0] for line in out.splitlines()

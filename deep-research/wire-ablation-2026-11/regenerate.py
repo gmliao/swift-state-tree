@@ -53,8 +53,8 @@ EMPTY = "_No results yet: the measurement host's run fills this section._"
 
 
 def load(directory):
-    runs = [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
-    captures = [json.loads(p.read_text()) for p in sorted((directory / "capture").glob("*.json"))]
+    runs = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(directory.glob("*.json"))]
+    captures = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((directory / "capture").glob("*.json"))]
     return runs, captures
 
 
@@ -169,7 +169,7 @@ def check(runs, captures, points=None):
 def git_tree(commit, path):
     try:
         return subprocess.run(["git", "-C", str(TOPIC), "rev-parse", f"{commit}:{path}"],
-                              capture_output=True, text=True, check=True).stdout.strip()
+                              capture_output=True, text=True, check=True, encoding="utf-8").stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -190,7 +190,7 @@ def cross_check(runs, single_room=SINGLE_ROOM_RESULTS, tree=git_tree, points=Non
             if not path.exists():
                 failures.append(f"{where}: single-room-entity-scaling/results/{path.name} missing (single-room-entity-scaling's rerun results aren't committed)")
                 continue
-            other = json.loads(path.read_text())
+            other = json.loads(path.read_text(encoding="utf-8"))
             sha = other["meta"].get("git_sha")
             trees = (tree(sha, "Sources"), tree(sha, "Package.swift")) if sha else (None, None)
             if trees != (SOURCES_TREE, PACKAGE_TREE):
@@ -290,7 +290,7 @@ def main():
     a = ap.parse_args()
     t = results_markdown()
     if a.check:
-        if results_section((TOPIC / "README.md").read_text()).strip() != t.strip():
+        if results_section((TOPIC / "README.md").read_text(encoding="utf-8")).strip() != t.strip():
             print("MISMATCH")
             sys.exit("README.md ## Results does not match regenerated tables")
         print("OK")

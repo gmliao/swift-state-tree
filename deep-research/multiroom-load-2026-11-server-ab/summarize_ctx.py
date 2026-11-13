@@ -71,14 +71,14 @@ def main():
         if not source.exists():
             continue
         samples = []
-        for line in source.read_text().splitlines():
+        for line in source.read_text(encoding="utf-8").splitlines():
             row = json.loads(line) if line.strip() else None
             if row and "th" in row:
                 samples.append(row)
-        with gzip.open(run_dir / "report.json.gz", "rt") as f:
+        with gzip.open(run_dir / "report.json.gz", "rt", encoding="utf-8") as f:
             start, end = steady_window(json.load(f))
         out[run_dir.name] = summarize(samples, start, end)
-    (HERE / "data" / "diag-ctx.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+    (HERE / "data" / "diag-ctx.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

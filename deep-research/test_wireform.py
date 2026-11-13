@@ -12,7 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import wireform  # noqa: E402
 
 PARENT = {name: subprocess.run(["git", "-C", str(wireform.REPO), "rev-parse", "--short=8", f"{c}^"],
-                               capture_output=True, text=True, check=True).stdout.strip()
+                               capture_output=True, text=True, check=True, encoding="utf-8").stdout.strip()
           for name, c in wireform.KNOBS.items()}
 
 

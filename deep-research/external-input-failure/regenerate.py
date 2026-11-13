@@ -60,7 +60,7 @@ LABELS = {
 
 
 def load(directory):
-    return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(directory.glob("*.json"))]
 
 
 def check(runs):
@@ -237,7 +237,7 @@ def main():
     check(runs)
     md = tables(runs)
     if args.check:
-        ok = results_section((TOPIC / "README.md").read_text()).strip() == md.strip()
+        ok = results_section((TOPIC / "README.md").read_text(encoding="utf-8")).strip() == md.strip()
         print("OK" if ok else "MISMATCH")
         sys.exit(0 if ok else 1)
     print(md)

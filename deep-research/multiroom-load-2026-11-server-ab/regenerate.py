@@ -37,7 +37,7 @@ FIT_ROOMS = (100, 300, 500)
 
 
 def load(run):
-    with gzip.open(HERE / "data" / "runs" / run / "report.json.gz", "rt") as f:
+    with gzip.open(HERE / "data" / "runs" / run / "report.json.gz", "rt", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -134,7 +134,7 @@ def codes_cell(x):
 
 
 def build():
-    host = json.loads((HERE / "data" / "host-cpu.json").read_text())
+    host = json.loads((HERE / "data" / "host-cpu.json").read_text(encoding="utf-8"))
     runs = {d.name: row(d.name, host) for d in sorted((HERE / "data" / "runs").iterdir())
             if not d.name.startswith("diag-")}
     suite = {(b, r): [runs[f"suite-{s}-{b}-{r}"] for s in SUITES] for b in BUILDS for r in ROOMS}
@@ -312,7 +312,7 @@ def signp(v):
 
 
 def run_start(run):
-    header = (HERE / "data" / "provenance" / "diag" / "chain" / f"{run}.run-header.txt").read_text()
+    header = (HERE / "data" / "provenance" / "diag" / "chain" / f"{run}.run-header.txt").read_text(encoding="utf-8")
     return re.search(r"^start=(\S+)", header, re.M).group(1)
 
 
@@ -322,8 +322,8 @@ def phase_sync(report, name):
 
 
 def build_diagnosis():
-    host = json.loads((HERE / "data" / "host-cpu.json").read_text())
-    ctx = json.loads((HERE / "data" / "diag-ctx.json").read_text())
+    host = json.loads((HERE / "data" / "host-cpu.json").read_text(encoding="utf-8"))
+    ctx = json.loads((HERE / "data" / "diag-ctx.json").read_text(encoding="utf-8"))
     names = sorted(d.name for d in (HERE / "data" / "runs").iterdir() if d.name.startswith("diag-"))
     runs = {n: row(n, host) for n in names}
     for n in names:
@@ -334,7 +334,7 @@ def build_diagnosis():
     parts = []
 
     # Run log.
-    chain = (HERE / "data" / "provenance" / "diag" / "chain" / "chain.log").read_text()
+    chain = (HERE / "data" / "provenance" / "diag" / "chain" / "chain.log").read_text(encoding="utf-8")
     starts = re.findall(r"^\S+ (diag-\S+) start cfg=\S+ env=\[[^\]]*\]: TIME_WAIT=(\d+) waited=(\d+)s", chain, re.M)
     assert sorted(s[0] for s in starts) == names, "chain.log and data/runs disagree on the diagnosis runs"
     tw = [int(s[1]) for s in starts]
@@ -614,7 +614,7 @@ def replace_between(text, start, end, body):
 
 
 def main():
-    text = README.read_text()
+    text = README.read_text(encoding="utf-8")
     new = replace_between(text, START, END, build())
     new = replace_between(new, DIAG_START, DIAG_END, build_diagnosis())
     if "--check" in sys.argv:
@@ -623,7 +623,7 @@ def main():
             sys.exit(1)
         print("README.md generated sections are current.")
         return
-    README.write_text(new)
+    README.write_text(new, encoding="utf-8")
 
 
 if __name__ == "__main__":

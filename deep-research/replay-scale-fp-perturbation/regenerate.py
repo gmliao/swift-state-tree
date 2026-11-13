@@ -27,7 +27,7 @@ def batch_heading(fmt):
 
 
 def load_runs():
-    return [json.loads(p.read_text()) for p in sorted((HERE / "results").glob("*.json"))
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted((HERE / "results").glob("*.json"))
             if not p.name.startswith("batch-")]
 
 
@@ -37,7 +37,7 @@ def load_batches(results=None):
     for p in sorted((results or HERE / "results").glob("batch-*.json")):
         m = re.fullmatch(r"batch-(\d+(?:\.\d+)*)-.+\.json", p.name)
         if m:
-            by_format.setdefault(m.group(1), []).append(dict(json.loads(p.read_text()), _file=p.name))
+            by_format.setdefault(m.group(1), []).append(dict(json.loads(p.read_text(encoding="utf-8")), _file=p.name))
     return by_format
 
 
@@ -204,12 +204,12 @@ def main():
     a = ap.parse_args()
     t = tables(load_runs())
     if a.check:
-        current = results_section((HERE / "README.md").read_text())
+        current = results_section((HERE / "README.md").read_text(encoding="utf-8"))
         if current.strip() != t.strip():
             print("MISMATCH")
             print("README.md ## Results does not match regenerated tables", file=sys.stderr)
             sys.exit(1)
-        readme = (HERE / "README.md").read_text()
+        readme = (HERE / "README.md").read_text(encoding="utf-8")
         for fmt, batches in load_batches().items():
             heading = batch_heading(fmt)
             if heading not in readme:

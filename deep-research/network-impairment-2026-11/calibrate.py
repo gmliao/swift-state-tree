@@ -34,7 +34,7 @@ RECOVERY_MS = 90_000
 
 def segments(run_dir: pathlib.Path) -> tuple[int, int]:
     """[baseline start, recovery end] in epoch ms, from the timeline's apply and lift."""
-    entries = json.loads((run_dir / "impairment-timeline.json").read_text())
+    entries = json.loads((run_dir / "impairment-timeline.json").read_text(encoding="utf-8"))
     apply = next(e for e in entries if e["action"] == "apply")["wallMsAfter"]
     lift = next(e for e in entries if e["action"] == "lift")["wallMsAfter"]
     return int(apply - BASELINE_MS), int(lift + RECOVERY_MS)
@@ -43,7 +43,7 @@ def segments(run_dir: pathlib.Path) -> tuple[int, int]:
 def downstream_bytes_per_s(run_dir: pathlib.Path) -> float:
     start, end = segments(run_dir)
     samples = []
-    for line in (run_dir / "netem-backlog.jsonl").read_text().splitlines():
+    for line in (run_dir / "netem-backlog.jsonl").read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
@@ -58,7 +58,7 @@ def downstream_bytes_per_s(run_dir: pathlib.Path) -> float:
 
 def wire_form(run_dir: pathlib.Path) -> tuple[str, list[str]]:
     """The one wire form every instance's joins were given (wireform.join_form over their counts)."""
-    forms = json.loads((run_dir / "run.json").read_text())["meta"].get("wireForms") or {}
+    forms = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["meta"].get("wireForms") or {}
     if not forms or any(v is None for v in forms.values()):
         raise SystemExit(f"{run_dir}: the joins' wire form wasn't recorded for every instance: {forms}")
     merged: dict[str, int] = {}
@@ -78,7 +78,7 @@ def build(u_p0: pathlib.Path, m_p0: pathlib.Path, name: str) -> dict:
     encoding, features = wire_form(u_p0)
     if wire_form(m_p0) != (encoding, features):
         raise SystemExit(f"U-P0 ran {(encoding, features)}, M-P0 ran {wire_form(m_p0)}: one calibration needs one wire form")
-    commit = json.loads((u_p0 / "run.json").read_text())["meta"]["git"]["commit"]
+    commit = json.loads((u_p0 / "run.json").read_text(encoding="utf-8"))["meta"]["git"]["commit"]
     down = {"U": downstream_bytes_per_s(u_p0), "M": downstream_bytes_per_s(m_p0)}
     cells = json.loads(json.dumps(calibration.BUILTIN["cells"]))
     for cell, (population, fraction) in calibration.RATE_CELLS.items():
@@ -104,7 +104,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--out", type=pathlib.Path, required=True)
     args = ap.parse_args(argv)
     result = build(args.u_p0, args.m_p0, args.name)
-    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(args.out)
     for cell in calibration.RATE_CELLS:
         print(f"  {cell}: rate {result['cells'][cell]['rate']}, limits {result['cells'][cell]['limits']}")
