@@ -20,7 +20,7 @@ CELLS = ("monsters-cap4", "monsters-cap10", "monsters-cap50", "monsters-cap100",
 def sweeps(raw):
     claimed = {}
     for record_path in sorted(raw.glob("*/run.json")):
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         if record.get("superseded"):
             continue
         if record["repeat"] in claimed:
@@ -67,10 +67,10 @@ def collect(raw, results):
             cell, form = split_tag(path.stem)
             if form is None:
                 sys.exit(f"{path}: not <cell>-<form>.json")
-            d = json.loads(path.read_text())
+            d = json.loads(path.read_text(encoding="utf-8"))
             meta, cmd = d["metadata"], d["metadata"]["commandLine"]
             views_path = directory / f"{path.stem}.views.json"
-            views = json.loads(views_path.read_text()) if views_path.exists() else None
+            views = json.loads(views_path.read_text(encoding="utf-8")) if views_path.exists() else None
             cap, active = arg(cmd, "--monster-cap", int), "--active-players" in cmd
             iterations, tps = arg(cmd, "--iterations", int), arg(cmd, "--ticks-per-sync", int)
             for r in d["results"]:
@@ -118,7 +118,7 @@ def collect(raw, results):
                     },
                     "metrics": metrics,
                 }
-                (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+                (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
                 written.append(run_id)
     return written
 

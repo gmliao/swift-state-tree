@@ -27,7 +27,7 @@ def run_hash(run_dir):
     h, frames, syncs = hashlib.sha256(), 0, 0
     for room in sorted(run_dir.glob("room-*.ndjson"), key=room_index):
         h.update(struct.pack(">I", room_index(room)))
-        for line in room.read_text().splitlines():
+        for line in room.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             entry = json.loads(line)

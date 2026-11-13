@@ -104,7 +104,7 @@ def profile_lines(path):
     if not path.exists():
         return []
     lines = []
-    for raw in path.read_text().splitlines():
+    for raw in path.read_text(encoding="utf-8").splitlines():
         try:
             lines.append(json.loads(raw))
         except json.JSONDecodeError:
@@ -199,14 +199,14 @@ def main():
         print("+ stop the server")
         return
     out.mkdir(parents=True, exist_ok=True)
-    scenario_path.write_text(json.dumps(scenario(c, args, args.tail_s), indent=2) + "\n")
+    scenario_path.write_text(json.dumps(scenario(c, args, args.tail_s), indent=2) + "\n", encoding="utf-8")
     if c["leavers"]:
-        leavers_path.write_text(json.dumps(scenario(c, args, 1), indent=2) + "\n")
+        leavers_path.write_text(json.dumps(scenario(c, args, 1), indent=2) + "\n", encoding="utf-8")
     meta = {"cell": args.cell, "spec": c, "rooms": args.rooms, "preS": args.pre_s, "steadyS": args.steady_s, "tailS": args.tail_s,
             "serverCpus": args.server_cpus, "clientCpus": args.client_cpus, "steps": {}}
 
     def save():
-        (out / "cell.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+        (out / "cell.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     def fail(message):
         meta["failure"] = message
@@ -218,17 +218,17 @@ def main():
         fail("port 8080 already answers: stop that server first")
     except OSError:
         pass
-    server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=env, stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT)
+    server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=env, stdout=open(out / "server.log", "w", encoding="utf-8"), stderr=subprocess.STDOUT)
     load = leavers = None
     try:
         wait_for(lambda: True if _up() else None, 60, "server start")
         start_at = int((time.time() + START_MARGIN_S) * 1000)
         meta["startAt"] = start_at
         save()
-        load = subprocess.Popen(load_argv(start_at, server.pid), cwd=LOADTEST, stdout=open(out / "loadtest.log", "w"),
+        load = subprocess.Popen(load_argv(start_at, server.pid), cwd=LOADTEST, stdout=open(out / "loadtest.log", "w", encoding="utf-8"),
                                 stderr=subprocess.STDOUT)
         if c["leavers"]:
-            leavers = subprocess.Popen(leavers_argv(start_at), cwd=LOADTEST, stdout=open(out / "loadtest-leavers.log", "w"),
+            leavers = subprocess.Popen(leavers_argv(start_at), cwd=LOADTEST, stdout=open(out / "loadtest-leavers.log", "w", encoding="utf-8"),
                                        stderr=subprocess.STDOUT)
         # The tail starts after warm-up, steady and the connect ramp (1000 connections per second).
         tail_at = start_at / 1000 + args.pre_s + args.steady_s + args.rooms * cells.PLAYERS / 1000 + 1
@@ -266,7 +266,7 @@ def main():
             fail(f"abandonedResolvers didn't read 0 within {bound_ms} ms")
         meta["steps"]["drain"] = {"quietTs": quiet_ts, "boundMs": bound_ms, "zeroTs": drain_ts}
         save()
-        converge = subprocess.run(converge_argv, cwd=LOADTEST, capture_output=True, text=True)
+        converge = subprocess.run(converge_argv, cwd=LOADTEST, capture_output=True, text=True, encoding="utf-8")
         meta["steps"]["converge"] = {"exitCode": converge.returncode, "stderr": converge.stderr[-2000:]}
         save()
         lands = sorted(l for l in admin("/admin/lands")["data"] if l.startswith(LAND_TYPE + ":"))
@@ -274,7 +274,7 @@ def main():
         query = "&".join("states=" + urllib.parse.quote(l.split(":", 1)[1], safe="") for l in lands)
         states = control(sock, "GET", "/lands?" + query)
         meta["steps"]["states"] = {"readAt": int(time.time() * 1000), "lands": len(lands)}
-        (out / "client-states.json").write_text(json.dumps(states) + "\n")
+        (out / "client-states.json").write_text(json.dumps(states) + "\n", encoding="utf-8")
         records.mkdir(exist_ok=True)
         for i, land in enumerate(lands):
             admin(f"/admin/lands/{urllib.parse.quote(land, safe='')}/reevaluation-record", records / f"room-{i}.sstr")
@@ -303,10 +303,10 @@ def main():
     for i, land in enumerate(lands):
         sstr, view = records / f"room-{i}.sstr", records / f"room-{i}.json"
         subprocess.run([args.runner, "--convert", str(sstr), str(view)], cwd=GAMEDEMO, env=env, check=True, capture_output=True)
-        frames = json.loads(view.read_text())["tickFrames"]
+        frames = json.loads(view.read_text(encoding="utf-8"))["tickFrames"]
         entry = {"recordedActions": sum(len(f["actions"]) for f in frames), "replayed": i in replayed}
         if i in replayed:
-            proc = subprocess.run([args.runner, "--input", str(sstr), "--verify"], cwd=GAMEDEMO, env=env, capture_output=True, text=True)
+            proc = subprocess.run([args.runner, "--input", str(sstr), "--verify"], cwd=GAMEDEMO, env=env, capture_output=True, text=True, encoding="utf-8")
             lines = [l.strip() for l in (proc.stdout + proc.stderr).splitlines()]
             sync = next((l for l in lines if l.startswith("Sync Output:")), None)
             entry.update(exitCode=proc.returncode, syncOutput=sync,
@@ -314,7 +314,7 @@ def main():
         result[land] = entry
         sstr.unlink()
         view.unlink()
-    (out / "records.json").write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    (out / "records.json").write_text(json.dumps(result, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     records.rmdir()
     shutil.rmtree(out / ".spool", ignore_errors=True)
     meta["done"] = True

@@ -87,7 +87,7 @@ def partition(runs):
 
 
 def load(directory):
-    return [json.load(open(p)) for p in sorted(directory.glob("*.json"))]
+    return [json.load(open(p, encoding="utf-8")) for p in sorted(directory.glob("*.json"))]
 
 
 # The commits of the tracked results that carry no dirty flag (meta.git_dirty): collect.py didn't
@@ -432,7 +432,7 @@ def main():
         parts.append(re.sub(r"(?m)^### ", "#### ", tables(record)))
     md = "\n".join(parts)
     if args.check:
-        readme = (TOPIC / "README.md").read_text()
+        readme = (TOPIC / "README.md").read_text(encoding="utf-8")
         ok = results_section(readme).strip() == md.strip()
         print("OK" if ok else "MISMATCH")
         sys.exit(0 if ok else 1)

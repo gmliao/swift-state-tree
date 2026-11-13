@@ -46,11 +46,11 @@ def main():
     out = {}
     for run_dir in sorted((HERE / "data" / "rerun").iterdir()):
         samples = []
-        for line in (meta / SAMPLER[run_dir.name]).read_text().splitlines():
+        for line in (meta / SAMPLER[run_dir.name]).read_text(encoding="utf-8").splitlines():
             if line.strip():
                 row = json.loads(line)
                 samples.append((row["ts"] * 1000.0, row["total"]))
-        with gzip.open(run_dir / "report.json.gz", "rt") as f:
+        with gzip.open(run_dir / "report.json.gz", "rt", encoding="utf-8") as f:
             start, end = steady_window(json.load(f))
         inside = [total for ts, total in samples if start <= ts < end]
         out[run_dir.name] = {
@@ -59,7 +59,7 @@ def main():
             "totalMeanPct": round(sum(inside) / len(inside), 1) if inside else None,
             "totalP95Pct": nearest_rank(inside, 0.95) if inside else None,
         }
-    (HERE / "data" / "host-cpu.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+    (HERE / "data" / "host-cpu.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(out, indent=2, sort_keys=True))
 
 

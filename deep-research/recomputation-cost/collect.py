@@ -70,7 +70,7 @@ def params(name: str, loadtest: dict) -> dict:
 def collect(raw: pathlib.Path, results: pathlib.Path) -> list:
     written = []
     for record_path in sorted(raw.glob("*/run.json")):
-        sweep, record = record_path.parent, json.loads(record_path.read_text())
+        sweep, record = record_path.parent, json.loads(record_path.read_text(encoding="utf-8"))
         constants = {k: record.get(k) for k in regenerate.CONSTANTS}
         if record.get("onlyCells") or constants != regenerate.CONSTANTS:
             print(f"skipping {sweep.name}: a smoke sweep (cells {record.get('onlyCells')}, {constants})", file=sys.stderr)
@@ -79,7 +79,7 @@ def collect(raw: pathlib.Path, results: pathlib.Path) -> list:
             print(f"skipping {sweep.name}: not finished", file=sys.stderr)
             continue
         for d in sorted(p for p in sweep.iterdir() if p.is_dir() and not p.name.startswith(".")):
-            loadtest = json.loads((d / "loadtest.json").read_text())
+            loadtest = json.loads((d / "loadtest.json").read_text(encoding="utf-8"))
             meta = loadtest["metadata"]
             p = params(d.name, loadtest)
             out = {
@@ -108,10 +108,10 @@ def collect(raw: pathlib.Path, results: pathlib.Path) -> list:
                 out["cost"] = regenerate.cost_figures(d, loadtest)
                 if p["side"] == "on":
                     check = d / "record-check.json"
-                    out["recordCheck"] = json.loads(check.read_text()) if check.exists() else None
+                    out["recordCheck"] = json.loads(check.read_text(encoding="utf-8")) if check.exists() else None
             target = results / sweep.name / f"{d.name}.json"
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            target.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(out["name"])
     return written
 

@@ -73,7 +73,7 @@ def capture(directory, syncs, frames, fmt="messagepack-pathhash", environment=No
               "schema": SCHEMA, "cell": {"environment": environment or {}}}
     lines = [json.dumps(header)] + [json.dumps({"sync": i, "frames": f, "projections": p})
                                     for i, (p, f) in enumerate(zip(syncs, frames))]
-    (run / "room-0.ndjson").write_text("\n".join(lines) + "\n")
+    (run / "room-0.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return run
 
 
@@ -156,7 +156,7 @@ class StateShape(unittest.TestCase):
             d = pathlib.Path(tmp)
             capture(d / "cap", SYNCS, FRAMES)
             stateshape.main([str(d / "cap"), str(d / "out.json")])
-            out = json.loads((d / "out.json").read_text())
+            out = json.loads((d / "out.json").read_text(encoding="utf-8"))
         self.assertEqual(list(out), ["messagepack-pathhash-delta-r1-p2-m4-serial"])
 
     def test_unpack_reads_what_pack_writes(self):
@@ -185,7 +185,7 @@ class RealCaptures(unittest.TestCase):
                 text = gzip.decompress((REAL / name).read_bytes()).decode("utf-8")
                 run = pathlib.Path(tmp) / "messagepack-pathhash-delta-r1-p5-m0-serial"
                 run.mkdir()
-                (run / "room-0.ndjson").write_text(text)
+                (run / "room-0.ndjson").write_text(text, encoding="utf-8")
                 s = stateshape.run_state(run)  # raises on a slot used before its definition
                 lines = [json.loads(l) for l in text.splitlines() if l.strip()]
                 header, syncs = lines[0], [l for l in lines[1:] if "projections" in l]

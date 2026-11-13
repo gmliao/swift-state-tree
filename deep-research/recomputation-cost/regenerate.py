@@ -388,7 +388,7 @@ def native_format(records: list) -> str | None:
 
 
 def measure_run(run_dir: pathlib.Path) -> dict:
-    loadtest = json.loads((run_dir / "loadtest.json").read_text())
+    loadtest = json.loads((run_dir / "loadtest.json").read_text(encoding="utf-8"))
     meta = loadtest["metadata"]["loadTestConfig"]
     records = sorted(p for p in (run_dir / "records").glob("*") if p.suffix in (".json", ".sstr"))
     loaded = [load_record(p) for p in records]
@@ -450,16 +450,16 @@ def replay_figures(run_dir: pathlib.Path) -> dict:
     out = {}
     for replay in sorted(run_dir.glob("replay-*.txt")):
         name = replay.stem.removeprefix("replay-")
-        timing = {int(m[1]): (int(m[2]), float(m[3])) for m in REPLAY_TIMING.finditer(replay.read_text())}
+        timing = {int(m[1]): (int(m[2]), float(m[3])) for m in REPLAY_TIMING.finditer(replay.read_text(encoding="utf-8"))}
         entry = {"ticks": timing[1][0] if 1 in timing else None, "wallMs": timing[1][1] if 1 in timing else None,
                  "verified": False, "open": None}
         verify = run_dir / f"verify-{name}.txt"
         if verify.exists():
-            vt = verify.read_text()
+            vt = verify.read_text(encoding="utf-8")
             entry["verified"] = verified(vt) and 2 in {int(m[1]) for m in REPLAY_TIMING.finditer(vt)}
         opened = run_dir / f"open-{name}.json"
         if opened.exists():
-            line = [ln for ln in opened.read_text().splitlines() if ln.startswith("{")][-1]
+            line = [ln for ln in opened.read_text(encoding="utf-8").splitlines() if ln.startswith("{")][-1]
             o = json.loads(line)
             entry["open"] = {k: o[k] for k in ("medianMs", "p10Ms", "p90Ms", "repeat", "bytes")}
         out[name] = entry
@@ -487,7 +487,7 @@ def cost_figures(run_dir: pathlib.Path, loadtest: dict) -> dict:
     }
     profile = run_dir / "profile.jsonl"
     if profile.exists():
-        lines = [json.loads(ln) for ln in profile.read_text().splitlines() if ln.strip()]
+        lines = [json.loads(ln) for ln in profile.read_text(encoding="utf-8").splitlines() if ln.strip()]
         out["profileWindows"] = len(lines)
         out["lagP99Ms"] = percentile([ln["lag_ms"] for ln in lines if "lag_ms" in ln], 0.99)
         for key in ("encode_ms", "send_ms"):
@@ -504,7 +504,7 @@ def record_check(run_dir: pathlib.Path) -> dict:
     """A recording-on process recorded everything: every room's record saved and complete, nothing
     left in the spool, each record spanning the steady phase, the records' actions adding up to the
     actions completed, and the first record verified (verify.txt)."""
-    loadtest = json.loads((run_dir / "loadtest.json").read_text())
+    loadtest = json.loads((run_dir / "loadtest.json").read_text(encoding="utf-8"))
     summary, config = loadtest["results"]["summary"], loadtest["metadata"]["loadTestConfig"]
     steady_ticks = config["steadySeconds"] * 1000 // config["tickIntervalMs"]
     records = sorted((run_dir / "records").glob("*.sstr"))
@@ -525,7 +525,7 @@ def record_check(run_dir: pathlib.Path) -> dict:
         "spoolLeft": len(list(spool.iterdir())) if spool.exists() else 0,
         "incomplete": incomplete, "minTicks": min(ticks) if ticks else 0, "steadyTicks": steady_ticks,
         "recordedActions": actions, "actionsCompleted": summary["totalActionsCompleted"],
-        "verified": verify.exists() and verified(verify.read_text()),
+        "verified": verify.exists() and verified(verify.read_text(encoding="utf-8")),
     }
     out["pass"] = (out["records"] == out["rooms"] and out["spoolLeft"] == 0 and incomplete == 0
                    and out["minTicks"] >= steady_ticks and actions == out["actionsCompleted"] and out["verified"])
@@ -557,7 +557,7 @@ def wire_form(run: dict) -> wireform.WireForm:
 
 
 def load(results_dir: pathlib.Path) -> list:
-    return [json.loads(p.read_text()) for p in sorted(results_dir.glob("*/*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(results_dir.glob("*/*.json"))]
 
 
 def check(runs: list) -> None:
@@ -784,11 +784,11 @@ def results_markdown(runs: list) -> str:
 
 def render(readme_path: pathlib.Path, runs: list, check_only: bool) -> bool:
     generated = results_markdown(runs)
-    readme = readme_path.read_text()
+    readme = readme_path.read_text(encoding="utf-8")
     start, end = readme.index(RESULTS_HEADING), readme.index(RESULTS_END) + len(RESULTS_END)
     if check_only:
         return readme[start:end] == generated
-    readme_path.write_text(readme[:start] + generated + readme[end:])
+    readme_path.write_text(readme[:start] + generated + readme[end:], encoding="utf-8")
     return True
 
 
@@ -805,7 +805,7 @@ def main():
         return
     if args.record_check:
         out = record_check(args.record_check)
-        (args.record_check / "record-check.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+        (args.record_check / "record-check.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if not out["pass"]:
             sys.exit(f"record check failed for {args.record_check}: {out}")
         return

@@ -46,7 +46,7 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
     out.mkdir(parents=True)
     (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": "sst-first", "nodeVersion": "v22",
                                               "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": [],
-                                              "serverEnv": serverenv.record({})}))
+                                              "serverEnv": serverenv.record({})}), encoding="utf-8")
     cells = [("rooms", dict(rooms=10, players=5)), ("monsters-cap50", dict(rooms=1, players=5, cap=50)),
              ("active-players", dict(rooms=1, players=10, cap=4, active=True))]
     for cell, kw in cells:
@@ -55,20 +55,20 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
                 continue
             base = {"sst-events": 700, "sst": 650, "b2": 330}[variant] * scale
             tag = f"{cell}-{variant}"
-            (out / f"{tag}.json").write_text(json.dumps(benchmark(variant, bytes_per_sync=base, **kw)))
+            (out / f"{tag}.json").write_text(json.dumps(benchmark(variant, bytes_per_sync=base, **kw)), encoding="utf-8")
             name = label(variant, kw["rooms"], kw["players"], kw.get("cap"), kw.get("active", False))
             if not captured:
                 continue
             room = {"comparisons": 10, "decodeErrors": 0, "differences": [] if gate_ok else [{"sync": 1}]}
-            (out / f"{tag}.views.json").write_text(json.dumps({"runs": {name: [room]}}))
+            (out / f"{tag}.views.json").write_text(json.dumps({"runs": {name: [room]}}), encoding="utf-8")
             decode = {"provenance": {"verified": verified},
                       "runs": {name: {"roomBytes": {"rooms": 1, "bytesPerRoomSync": base / kw["rooms"], "deflateBytesPerRoomSync": base / kw["rooms"] / 2},
                                       "summary": {"decodeApply": {"usPerFrame": 5.0},
                                                   "decode": None if variant == "b2" else {"usPerFrame": 1.0}}}}}
-            (out / f"{tag}.decode.json").write_text(json.dumps(decode))
+            (out / f"{tag}.decode.json").write_text(json.dumps(decode), encoding="utf-8")
             key = "r" + name.split("-delta-r", 1)[1]
             state = "changed" if (cell, variant) == changed else "same"
-            (out / f"{tag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": [state + cell]}}))
+            (out / f"{tag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": [state + cell]}}), encoding="utf-8")
             if variant != "sst":
                 continue
             for b1, typing in (("b1", "number"), ("b1-tuned", "tuned")):
@@ -77,12 +77,12 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
                 btag, bname = f"{cell}-{b1}", "colyseus-schema-delta-" + key
                 per_room = (400 if b1 == "b1" else 380) * scale / kw["rooms"]
                 (out / f"{btag}.colyseus.json").write_text(json.dumps({"package": "@colyseus/schema", "version": "5.0.42", "typing": typing,
-                    "runs": {bname: {"rooms": 1, "syncs": 200, "firstSyncBytes": 900, "encodeUsPerRoomSyncNode": 9.0, "fieldTypes": {}}}}))
-                (out / f"{btag}.views.json").write_text(json.dumps({"runs": {bname: [room]}}))
+                    "runs": {bname: {"rooms": 1, "syncs": 200, "firstSyncBytes": 900, "encodeUsPerRoomSyncNode": 9.0, "fieldTypes": {}}}}), encoding="utf-8")
+                (out / f"{btag}.views.json").write_text(json.dumps({"runs": {bname: [room]}}), encoding="utf-8")
                 (out / f"{btag}.decode.json").write_text(json.dumps({"provenance": {"verified": verified}, "runs": {bname: {
                     "roomBytes": {"rooms": 1, "bytesPerRoomSync": per_room, "deflateBytesPerRoomSync": per_room / 2},
-                    "summary": {"decodeApply": {"usPerFrame": 7.0}, "decode": None}}}}))
-                (out / f"{btag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": ["same" + cell]}}))
+                    "summary": {"decodeApply": {"usPerFrame": 7.0}, "decode": None}}}}), encoding="utf-8")
+                (out / f"{btag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": ["same" + cell]}}), encoding="utf-8")
 
 
 FIXTURE_CELLS = [("rooms", 5, 10, None), ("monsters", 5, 1, 50), ("active", 10, 1, 4)]
@@ -107,21 +107,21 @@ class Topic(unittest.TestCase):
         sweep(self.raw, "b", 2, scale=1.2)
         written = self.collect()
         self.assertEqual(len(written), 2 * 3 * 5)
-        b1 = json.loads((self.results / "active-p10-r1-b1-tuned-rep1.json").read_text())
+        b1 = json.loads((self.results / "active-p10-r1-b1-tuned-rep1.json").read_text(encoding="utf-8"))
         self.assertEqual(b1["params"]["monster_cap"], 4)
         self.assertEqual(b1["metrics"]["bytes_per_room_sync_deflate"], 190)
         self.assertEqual(b1["meta"]["package"], "@colyseus/schema@5.0.42")
-        self.assertIsNone(json.loads((self.results / "rooms-p5-r10-b1-rep1.json").read_text())["params"]["monster_cap"])
-        r = json.loads((self.results / "monsters-p5-r1-cap50-b2-rep1.json").read_text())
+        self.assertIsNone(json.loads((self.results / "rooms-p5-r10-b1-rep1.json").read_text(encoding="utf-8"))["params"]["monster_cap"])
+        r = json.loads((self.results / "monsters-p5-r1-cap50-b2-rep1.json").read_text(encoding="utf-8"))
         self.assertEqual(r["metrics"]["bytes_per_sync"], 330)
         self.assertEqual(r["metrics"]["bytes_per_sync_bitpacked_bound"], 198)
         self.assertTrue(r["metrics"]["gate_passed"])
         self.assertIsNone(r["metrics"]["decode_us_per_frame"])
-        s = json.loads((self.results / "rooms-p5-r10-sst-rep2.json").read_text())
+        s = json.loads((self.results / "rooms-p5-r10-sst-rep2.json").read_text(encoding="utf-8"))
         self.assertAlmostEqual(s["metrics"]["sync_us_per_room_sync"], 2.0)
         self.assertAlmostEqual(s["metrics"]["bytes_per_sync"], 650 * 1.2)
         self.assertEqual(s["params"]["server_events"], False)
-        self.assertEqual(json.loads((self.results / "rooms-p5-r10-sst-events-rep1.json").read_text())["params"]["server_events"], True)
+        self.assertEqual(json.loads((self.results / "rooms-p5-r10-sst-events-rep1.json").read_text(encoding="utf-8"))["params"]["server_events"], True)
 
     def test_tables_take_the_median_over_repeats(self):
         sweep(self.raw, "a", 1)
@@ -228,7 +228,7 @@ class Topic(unittest.TestCase):
 
     def test_the_matrix_is_run_shs(self):
         out = subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True,
-                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}).stdout
+                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}, encoding="utf-8").stdout
         cells = set()
         for line in out.splitlines():
             if "EncodingBenchmark --scalability" not in line or "--capture-views" in line or "--baseline" in line:
@@ -245,9 +245,9 @@ class Topic(unittest.TestCase):
     def test_refuses_flags_that_dont_match_the_variant(self):
         sweep(self.raw, "a", 1)
         path = self.raw / "a" / "rooms-sst.json"
-        d = json.loads(path.read_text())
+        d = json.loads(path.read_text(encoding="utf-8"))
         d["metadata"]["commandLine"].remove("--no-server-events")
-        path.write_text(json.dumps(d))
+        path.write_text(json.dumps(d), encoding="utf-8")
         with self.assertRaises(SystemExit):
             self.collect()
 
@@ -256,9 +256,9 @@ class Topic(unittest.TestCase):
         sweep(self.raw, "b", 1)
         with self.assertRaises(SystemExit):
             self.collect()
-        record = json.loads((self.raw / "a" / "run.json").read_text())
+        record = json.loads((self.raw / "a" / "run.json").read_text(encoding="utf-8"))
         record["superseded"] = {"reason": "redone"}
-        (self.raw / "a" / "run.json").write_text(json.dumps(record))
+        (self.raw / "a" / "run.json").write_text(json.dumps(record), encoding="utf-8")
         self.assertEqual(len(self.collect()), 15)
 
     def test_a_repeat_without_captures_needs_no_b1(self):
@@ -269,18 +269,18 @@ class Topic(unittest.TestCase):
 
     def test_skips_a_sweep_of_only_some_cells(self):
         sweep(self.raw, "a", 1)
-        record = json.loads((self.raw / "a" / "run.json").read_text())
+        record = json.loads((self.raw / "a" / "run.json").read_text(encoding="utf-8"))
         record["onlyCells"] = ["rooms"]
-        (self.raw / "a" / "run.json").write_text(json.dumps(record))
+        (self.raw / "a" / "run.json").write_text(json.dumps(record), encoding="utf-8")
         self.assertEqual(self.collect(), [])
 
     def test_dry_run_with_cells_runs_only_those(self):
         env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry", CELLS="monsters-cap4")
-        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True, encoding="utf-8").stdout
         measured = [l for l in out.splitlines() if "EncodingBenchmark --scalability" in l and "--capture-views" not in l]
         self.assertEqual(len(measured), 3)
         self.assertTrue(all("--monster-cap 4 " in l + " " for l in measured))
-        bad = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(env, CELLS="nope"), capture_output=True, text=True)
+        bad = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(env, CELLS="nope"), capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(bad.returncode, 2)
 
     def test_no_results_is_the_placeholder(self):
@@ -288,7 +288,7 @@ class Topic(unittest.TestCase):
 
     def test_dry_run_runs_three_variants_per_cell_with_their_flags(self):
         env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry")
-        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True, encoding="utf-8").stdout
         measured = [l for l in out.splitlines() if l.startswith("+ ") and "EncodingBenchmark --scalability" in l and "--capture-views" not in l]
         self.assertEqual(len(measured), 6 * 3)
         self.assertIn("+ unset " + " ".join(serverenv.SERVER_ENV) + "\n", out)
@@ -307,7 +307,7 @@ class Topic(unittest.TestCase):
         converts = [l for l in lines if "colyseus-baseline-main.js" in l]
         self.assertEqual(len(converts), 6 * 2)
         self.assertTrue(all("/.views-" in l and "-sst " in l + " " for l in converts), converts[0])
-        b2_first = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(env, ORDER="b2-first"), capture_output=True, text=True, check=True).stdout
+        b2_first = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(env, ORDER="b2-first"), capture_output=True, text=True, check=True, encoding="utf-8").stdout
         first = next(l for l in b2_first.splitlines() if "EncodingBenchmark --scalability" in l)
         self.assertIn("--baseline entity-delta", first)
 
@@ -322,14 +322,14 @@ def state_sweep(raw, run_id, shared=200, own=10, dirty=False, trees=("srctree", 
     (out / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": 0, "order": "sst-first", "stateOnly": True, "pinCpus": "0-7", "nodeVersion": "v22",
         "swiftVersion": "Swift version 6.2.4", "git": {"commit": "def", "dirty": dirty, "sourcesTree": trees[0], "packageTree": trees[1]},
-        "superseded": None, "cells": [], "serverEnv": serverenv.record({})}))
+        "superseded": None, "cells": [], "serverEnv": serverenv.record({})}), encoding="utf-8")
     for cell, rooms, players, cap, active in (("rooms", 10, 5, None, False), ("monsters-cap50", 1, 5, 50, False),
                                              ("active-players", 1, 10, 4, True)):
         state = {"captured_rooms": 1, "players_per_room": players, "syncs": 200, "dynamic_key_tables": True,
                  "broadcast_snapshot_bytes": shared - 20, "broadcast_key_table_bytes": 20, "broadcast_key_table_entries": 1,
                  "per_player_snapshot_bytes": own, "per_player_key_table_bytes": 0,
                  "shared_bytes_per_room": shared, "own_bytes_per_client": own}
-        (out / f"{cell}-sst.state.json").write_text(json.dumps({label("sst", rooms, players, cap, active): state}))
+        (out / f"{cell}-sst.state.json").write_text(json.dumps({label("sst", rooms, players, cap, active): state}), encoding="utf-8")
 
 
 class StateCounts(unittest.TestCase):
@@ -403,7 +403,7 @@ class StateCounts(unittest.TestCase):
 
     def test_dry_run_state_only_runs_only_the_sst_capture_and_counts(self):
         env = dict(os.environ, DRY_RUN="1", STATE_ONLY="1", RUN_ID="dry")
-        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True, encoding="utf-8").stdout
         captures = [l for l in out.splitlines() if "--capture-views" in l]
         self.assertEqual(len(captures), 6)
         self.assertTrue(all("--no-server-events" in l and "--baseline" not in l for l in captures))
@@ -411,7 +411,7 @@ class StateCounts(unittest.TestCase):
         self.assertNotIn("verify-views", out)
         self.assertNotIn("ws-loadtest", out)
         env["REPEAT"] = "1"
-        p = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True)
+        p = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(p.returncode, 2)
         self.assertIn("STATE_ONLY=1 takes no REPEAT", p.stderr)
 

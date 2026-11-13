@@ -45,16 +45,16 @@ def nearest_rank(values, p):
 def main():
     meta = Path(sys.argv[1])
     path = HERE / "data" / "host-cpu.json"
-    out = json.loads(path.read_text()) if path.exists() else {}
+    out = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     for run_dir in sorted((HERE / "data" / "runs").iterdir()):
         if not (meta / sampler(run_dir.name)).exists():
             continue
         samples = []
-        for line in (meta / sampler(run_dir.name)).read_text().splitlines():
+        for line in (meta / sampler(run_dir.name)).read_text(encoding="utf-8").splitlines():
             if line.strip():
                 row = json.loads(line)
                 samples.append((row["ts"] * 1000.0, row["total"]))
-        with gzip.open(run_dir / "report.json.gz", "rt") as f:
+        with gzip.open(run_dir / "report.json.gz", "rt", encoding="utf-8") as f:
             start, end = steady_window(json.load(f))
         inside = [total for ts, total in samples if start <= ts < end]
         out[run_dir.name] = {
@@ -63,7 +63,7 @@ def main():
             "totalMeanPct": round(sum(inside) / len(inside), 1) if inside else None,
             "totalP95Pct": nearest_rank(inside, 0.95) if inside else None,
         }
-    path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

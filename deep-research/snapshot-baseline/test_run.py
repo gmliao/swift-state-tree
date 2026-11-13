@@ -29,7 +29,7 @@ def strategy(cmd):
 
 def executable(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -66,15 +66,15 @@ echo '{"differences":0}' > "$out"
 
     def run(self, **env):
         full = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "PIN_CPUS": "", "FAIL_GATE": "", "SMOKE": "1", **env}
-        return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True)
+        return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True, encoding="utf-8")
 
     def record(self, run_id):
-        return json.loads((self.topic / "raw" / run_id / "run.json").read_text())
+        return json.loads((self.topic / "raw" / run_id / "run.json").read_text(encoding="utf-8"))
 
 
 def dry_run(**env):
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", "SMOKE": "1", **env},
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8")
 
 
 class DryRun(unittest.TestCase):
@@ -106,7 +106,7 @@ class DryRun(unittest.TestCase):
     def test_generated_run_id(self):
         proc = dry_run(REPEAT="1")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=TOPIC).stdout.strip()
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=TOPIC, encoding="utf-8").stdout.strip()
         self.assertRegex(proc.stdout, rf"RUN_ID=\d{{8}}T\d{{6}}Z-{sha}\n")
 
     def test_repeat_order_extra_without_gate(self):
@@ -157,7 +157,7 @@ class DryRun(unittest.TestCase):
             (pathlib.Path(tmp) / "Examples" / "GameDemo").mkdir(parents=True)
             shutil.copy(TOPIC / "run.sh", topic / "run.sh")
             proc = subprocess.run(["bash", str(topic / "run.sh")], capture_output=True, text=True,
-                                  env={**os.environ, "DRY_RUN": "1", "SMOKE": "1", "REPEAT": "1", "RUN_ID": "s"})
+                                  env={**os.environ, "DRY_RUN": "1", "SMOKE": "1", "REPEAT": "1", "RUN_ID": "s"}, encoding="utf-8")
             self.assertEqual(proc.returncode, 1, proc.stdout)
             self.assertNotIn("EncodingBenchmark", proc.stdout)
             self.assertIn("serverenv.py", proc.stderr)
@@ -222,18 +222,18 @@ class FullRun(unittest.TestCase):
             record = box.record("sweep-1")
             self.assertEqual(len(record["redos"]), 1)
             self.assertEqual(len(record["cells"]), 24)
-            self.assertIn("rq1-rooms-delta.json", (box.topic / "raw" / "sweep-1" / "overwrites.log").read_text())
+            self.assertIn("rq1-rooms-delta.json", (box.topic / "raw" / "sweep-1" / "overwrites.log").read_text(encoding="utf-8"))
 
     def test_cell_files_without_a_record_are_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = Sandbox(tmp)
             out = box.topic / "raw" / "sweep-1"
             out.mkdir(parents=True)
-            (out / "monsters-cap10-delta.log").write_text("earlier\n")
+            (out / "monsters-cap10-delta.log").write_text("earlier\n", encoding="utf-8")
             proc = box.run(REPEAT="1", RUN_ID="sweep-1")
             self.assertEqual(proc.returncode, 1)
             self.assertIn(f"refusing to overwrite {out}/monsters-cap10-delta.log", proc.stderr)
-            self.assertEqual((out / "monsters-cap10-delta.log").read_text(), "earlier\n")
+            self.assertEqual((out / "monsters-cap10-delta.log").read_text(encoding="utf-8"), "earlier\n")
             self.assertEqual(len(box.record("sweep-1")["cells"]), 4)
 
 
@@ -264,15 +264,15 @@ class Collect(unittest.TestCase):
         subprocess.run([sys.executable, "-I", str(topic / "runmeta.py"), "start", str(out), run_id, str(repeat),
                         order, "0", "", "0", "0"], check=True, capture_output=True, cwd=topic, env={**env, **server_env})
         if dirty is not None:
-            record = json.loads((out / "run.json").read_text())
+            record = json.loads((out / "run.json").read_text(encoding="utf-8"))
             record["git"] = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": dirty}
-            (out / "run.json").write_text(json.dumps(record))
-        json.dump(fake_raw(self.CMD, [10, 30]), open(out / "rq1-rooms-full-snapshot.json", "w"))
-        json.dump({"gate": "report"}, open(out / "rq1-rooms-full-snapshot.views.json", "w"))
+            (out / "run.json").write_text(json.dumps(record), encoding="utf-8")
+        json.dump(fake_raw(self.CMD, [10, 30]), open(out / "rq1-rooms-full-snapshot.json", "w", encoding="utf-8"))
+        json.dump({"gate": "report"}, open(out / "rq1-rooms-full-snapshot.views.json", "w", encoding="utf-8"))
         return out
 
     def collect(self, topic):
-        return subprocess.run([sys.executable, "-I", str(topic / "collect.py")], capture_output=True, text=True, cwd=topic)
+        return subprocess.run([sys.executable, "-I", str(topic / "collect.py")], capture_output=True, text=True, cwd=topic, encoding="utf-8")
 
     def topic(self, tmp):
         topic = pathlib.Path(tmp) / "snapshot-baseline"
@@ -282,14 +282,14 @@ class Collect(unittest.TestCase):
         shutil.copy(TOPIC.parent / "serverenv.py", topic.parent / "serverenv.py")
         shutil.copy(TOPIC.parent / "gitstate.py", topic.parent / "gitstate.py")
         (topic / "raw").mkdir()
-        json.dump(fake_raw(self.CMD, [10, 30]), open(topic / "raw" / "rq1-rooms-full-snapshot.json", "w"))
+        json.dump(fake_raw(self.CMD, [10, 30]), open(topic / "raw" / "rq1-rooms-full-snapshot.json", "w", encoding="utf-8"))
         return topic
 
     def test_a_sweep_whose_run_json_has_no_dirty_flag_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             topic = self.topic(tmp)
             self.sweep(topic, "sweep-1", 1, dirty=None)
-            self.assertIsNone(json.loads((topic / "raw" / "sweep-1" / "run.json").read_text())["git"]["dirty"])
+            self.assertIsNone(json.loads((topic / "raw" / "sweep-1" / "run.json").read_text(encoding="utf-8"))["git"]["dirty"])
             proc = self.collect(topic)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn(f"{pathlib.Path('raw', 'sweep-1', 'run.json')}: no git.dirty recorded (got None); "
@@ -308,7 +308,7 @@ class Collect(unittest.TestCase):
                 "rooms-p5-r10-msgpack-full-rep2.json", "rooms-p5-r10-msgpack-full.json",
                 "rooms-p5-r30-msgpack-full-rep2.json", "rooms-p5-r30-msgpack-full.json",
             ])
-            rep = json.load(open(topic / "results" / "rooms-p5-r30-msgpack-full-rep2.json"))
+            rep = json.load(open(topic / "results" / "rooms-p5-r30-msgpack-full-rep2.json", encoding="utf-8"))
             self.assertEqual((rep["params"]["repeat"], rep["params"]["order"], rep["params"]["sweep"]),
                              (2, "snapshot-first", "r1-looks-like-repeat-1"))
             self.assertEqual(rep["meta"]["source_file"], "r1-looks-like-repeat-1/rq1-rooms-full-snapshot.json")
@@ -317,7 +317,7 @@ class Collect(unittest.TestCase):
             self.assertEqual(rep["meta"]["server_env"], {**{k: None for k in SERVER_ENV}, "USE_SNAPSHOT_FOR_SYNC": "false"})
             self.assertEqual(rep["params"]["use_snapshot_for_sync"], "false")
             self.assertFalse(rep["meta"]["command"].startswith("USE_SNAPSHOT_FOR_SYNC"))
-            record = json.load(open(topic / "results" / "rooms-p5-r30-msgpack-full.json"))
+            record = json.load(open(topic / "results" / "rooms-p5-r30-msgpack-full.json", encoding="utf-8"))
             self.assertNotIn("repeat", record["params"])
             self.assertIs(record["params"]["use_snapshot_for_sync"], False)
             self.assertIsNone(record["meta"]["server_env"])
@@ -334,7 +334,7 @@ class Collect(unittest.TestCase):
             subprocess.run([sys.executable, "-I", str(topic / "runmeta.py"), "supersede", str(first), "redone as sweep-b"], check=True)
             proc = self.collect(topic)
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            rep = json.load(open(topic / "results" / "rooms-p5-r10-msgpack-full-rep1.json"))
+            rep = json.load(open(topic / "results" / "rooms-p5-r10-msgpack-full-rep1.json", encoding="utf-8"))
             self.assertEqual(rep["params"]["sweep"], "sweep-b")
 
 

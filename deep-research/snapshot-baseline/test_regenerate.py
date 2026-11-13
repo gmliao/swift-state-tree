@@ -150,7 +150,7 @@ def ablation(directory, sha="49fde351aa", onon=None, offoff=None, mutate=None):
                          "metrics": {"total_bytes": bps * 200, "bytes_per_sync": bps, "gate_passed": True}}
                     if mutate:
                         mutate(r)
-                    (directory / f"{cell}-p{pt[0]}-{form}-rep{repeat}.json").write_text(json.dumps(r))
+                    (directory / f"{cell}-p{pt[0]}-{form}-rep{repeat}.json").write_text(json.dumps(r), encoding="utf-8")
     return directory
 
 
@@ -227,11 +227,11 @@ class Repeats(unittest.TestCase):
         results.mkdir()
         # Only the record: the repeats the host committed are another set than this test's.
         for r in record():
-            (results / f"{r['meta']['source_file'].replace('/', '_')}-{len(list(results.iterdir()))}.json").write_text(json.dumps(r))
+            (results / f"{r['meta']['source_file'].replace('/', '_')}-{len(list(results.iterdir()))}.json").write_text(json.dumps(r), encoding="utf-8")
         n_record = len(record())
         with unittest.mock.patch.object(regenerate, "RESULTS", results):
             for r in self.repeats():
-                (results / f"rep{r['params']['repeat']}-{len(list(results.iterdir()))}.json").write_text(json.dumps(r))
+                (results / f"rep{r['params']['repeat']}-{len(list(results.iterdir()))}.json").write_text(json.dumps(r), encoding="utf-8")
             self.assertEqual(len(record()), n_record)
             self.assertEqual(len(self.repeats()), 3 * n_record)
             import contextlib, io

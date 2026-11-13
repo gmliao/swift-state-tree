@@ -157,7 +157,7 @@ def offenders(text):
 
 
 def bash(script):
-    return subprocess.run(["bash", "-c", "set -euo pipefail\n" + script], capture_output=True, text=True)
+    return subprocess.run(["bash", "-c", "set -euo pipefail\n" + script], capture_output=True, text=True, encoding="utf-8")
 
 
 # ~2 MB on stdout, far more than a pipe holds; the match is on the first line. (Not python: it
@@ -167,9 +167,9 @@ PRODUCER = "{ echo CONFIG_X=m; seq 1 300000; }"
 
 class Scripts(unittest.TestCase):
     def test_no_tracked_pipefail_script_pipes_into_an_early_exit_reader(self):
-        files = subprocess.run(["git", "ls-files", "*.sh", "*.bash"], cwd=REPO, capture_output=True, text=True, check=True).stdout.split()
+        files = subprocess.run(["git", "ls-files", "*.sh", "*.bash"], cwd=REPO, capture_output=True, text=True, check=True, encoding="utf-8").stdout.split()
         self.assertTrue(files)
-        found = [f"{f}:{i}: {line}" for f in files for i, line in offenders((REPO / f).read_text(errors="replace"))]
+        found = [f"{f}:{i}: {line}" for f in files for i, line in offenders((REPO / f).read_text(errors="replace", encoding="utf-8"))]
         self.assertEqual(found, [], "early-exit reader in a pipefail pipeline:\n  " + "\n  ".join(found))
 
     def test_the_pattern_flags_each_form_and_passes_the_full_readers(self):

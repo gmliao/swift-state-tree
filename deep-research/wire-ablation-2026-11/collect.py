@@ -27,7 +27,7 @@ def invocations(raw):
     """(measured: {repeat: (path, record)}, capture: (path, record) or None), smoke runs skipped."""
     measured, captures = {}, []
     for record_path in sorted(raw.glob("*/run.json")):
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         if record.get("superseded"):
             continue
         if record.get("onlyCells") or record.get("onlyForms"):
@@ -86,7 +86,7 @@ def collect_measured(directory, record, results):
         cell, form = split_tag(path.stem)
         if form is None:
             sys.exit(f"{path}: not <cell>-<form>.json")
-        d = json.loads(path.read_text())
+        d = json.loads(path.read_text(encoding="utf-8"))
         meta, cmd = d["metadata"], d["metadata"]["commandLine"]
         cap, active = arg(cmd, "--monster-cap", int), "--active-players" in cmd
         iterations, tps = arg(cmd, "--iterations", int), arg(cmd, "--ticks-per-sync", int)
@@ -119,7 +119,7 @@ def collect_measured(directory, record, results):
                 },
             }
             name = f"{cell}-p{players}-{form}-rep{record['repeat']}"
-            (results / f"{name}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (results / f"{name}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(name)
     return written
 
@@ -136,7 +136,7 @@ def collect_capture(directory, record, results):
         frames_path = directory / f"{stem}.frames.json"
         if not frames_path.exists():
             sys.exit(f"{frames_path}: missing (the capture pass's frame hashes)")
-        report, frames = json.loads(views_path.read_text()), json.loads(frames_path.read_text())
+        report, frames = json.loads(views_path.read_text(encoding="utf-8")), json.loads(frames_path.read_text(encoding="utf-8"))
         for label in sorted(frames):
             m = re.search(r"-r(\d+)-p(\d+)-m(\d+)(-active)?-serial$", label)
             if not m:
@@ -159,7 +159,7 @@ def collect_capture(directory, record, results):
                 },
             }
             name = f"{cell}-p{players}-{form}"
-            (out_dir / f"{name}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (out_dir / f"{name}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(f"capture/{name}")
     return written
 

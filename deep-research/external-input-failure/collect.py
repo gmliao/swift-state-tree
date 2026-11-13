@@ -56,12 +56,12 @@ def percentile(buckets, q):
 
 
 def jsonl(path):
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()] if path.exists() else []
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()] if path.exists() else []
 
 
 def samples(*directories):
     for f in sorted(f for directory in directories for f in glob.glob(str(directory / "w*.ndjson.gz"))):
-        with gzip.open(f, "rt") as stream:
+        with gzip.open(f, "rt", encoding="utf-8") as stream:
             for line in stream:
                 if line.strip():
                     yield json.loads(line)
@@ -83,7 +83,7 @@ def join_forms(totals):
 def sweeps(raw):
     claimed = {}
     for record_path in sorted(raw.glob("*/run.json")):
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         if record.get("superseded"):
             continue
         if record["repeat"] in claimed:
@@ -95,7 +95,7 @@ def sweeps(raw):
 
 def evaluate(d, record):
     """One cell directory's metrics, counts and gates."""
-    meta = json.loads((d / "cell.json").read_text())
+    meta = json.loads((d / "cell.json").read_text(encoding="utf-8"))
     c, name = meta["spec"], meta["cell"]
     if c != cells.CELLS[name]:
         sys.exit(f"{d}: the cell ran with another definition than cells.py has now")
@@ -116,7 +116,7 @@ def evaluate(d, record):
         found = sorted((d / name).glob("ws-loadtest-*.json"))
         if len(found) != 1:
             sys.exit(f"{d}/{name}: expected one report, found {len(found)}")
-        return json.loads(found[0].read_text())
+        return json.loads(found[0].read_text(encoding="utf-8"))
     report = report_in("load")
     # The leave cell's second instance: its actions, joins and leaves count with the first's.
     instances = [report] + ([report_in("load-leavers")] if c["leavers"] else [])
@@ -127,9 +127,9 @@ def evaluate(d, record):
     # before #351 have no such line and read the same.
     profile = [l for l in jsonl(d / "transport-profile.jsonl") if not l.get("final")]
     probe = jsonl(d / "tick-probe.jsonl")
-    states = json.loads((d / "client-states.json").read_text())["connections"]
-    converge = json.loads((d / "converge.json").read_text())
-    records = json.loads((d / "records.json").read_text())
+    states = json.loads((d / "client-states.json").read_text(encoding="utf-8"))["connections"]
+    converge = json.loads((d / "converge.json").read_text(encoding="utf-8"))
+    records = json.loads((d / "records.json").read_text(encoding="utf-8"))
     steps = meta["steps"]
 
     # Errors, disconnects and the outcome identity, over every phase.
@@ -262,7 +262,7 @@ def evaluate(d, record):
         gate("cooperative_drained_in_time", drained_ts is not None and drained_ts <= bound,
              f"gauge at 0 for good at {drained_ts}, bound {bound} (last send + longest call + 1 interval + 250 ms)")
 
-    rss = [s["rssMb"] for s in json.loads((d / "system-metrics.json").read_text())["system"]]
+    rss = [s["rssMb"] for s in json.loads((d / "system-metrics.json").read_text(encoding="utf-8"))["system"]]
     metrics = {
         "tick_gap_p50_ms": percentile(buckets, 0.5), "tick_gap_p99_ms": percentile(buckets, 0.99),
         "tick_gap_max_ms": max((l["maxGapUs"] for l in inside), default=0) / 1000, "tick_gaps": sum(buckets.values()),
@@ -333,7 +333,7 @@ def collect(raw, results, checkout_root=None):
         root = portable.checkout_root(record, checkout_root, str(record_path))
         for d in sorted(p for p in directory.iterdir() if p.is_dir() and (p / "cell.json").exists()):
             meta, metrics, counts, gates, failures = evaluate(d, record)
-            toolchain = (d / "load" / "toolchain.txt").read_text() if (d / "load" / "toolchain.txt").exists() else ""
+            toolchain = (d / "load" / "toolchain.txt").read_text(encoding="utf-8") if (d / "load" / "toolchain.txt").exists() else ""
             run_id = f"{meta['cell']}-rep{record['repeat']}"
             out = {
                 "meta": {"git_sha": (record.get("git") or {}).get("commit"), "git_dirty": (record.get("git") or {}).get("dirty"),
@@ -348,7 +348,7 @@ def collect(raw, results, checkout_root=None):
                 "metrics": metrics, "counts": counts, "gates": gates, "failures": failures,
             }
             out = portable.relativize(out, root)
-            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             written.append(run_id + ("" if not failures else f"  FAILED: {'; '.join(failures)}"))
     return written
 

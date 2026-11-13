@@ -56,7 +56,7 @@ def runs(capture):
 
 
 def read_room(path):
-    lines = [l for l in path.read_text().splitlines() if l]
+    lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l]
     return json.loads(lines[0]), [json.loads(l) for l in lines[1:]]
 
 
@@ -114,7 +114,7 @@ def stats(capture, out):
             "viewChangesPerRecipientSync": changes / recipients_syncs,
             "observedViewChangesPerRecipientSync": observed / recipients_syncs,
         }
-    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def compare_room(radius_path, all_path):
@@ -204,7 +204,7 @@ def consistency(radius_capture, all_capture, out, compare=None):
                 failed = True
                 break
         result[key] = report
-    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+    pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     if failed:
         sys.exit("consistency check failed: " + "; ".join(f"{k}: {v['failure']}" for k, v in result.items() if v["failure"]))
 

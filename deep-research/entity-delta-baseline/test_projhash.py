@@ -10,13 +10,13 @@ def capture(root, fmt, projections):
     run.mkdir(parents=True)
     lines = [json.dumps({"format": fmt})] + [json.dumps({"sync": i, "frames": [{"to": "*", "data": fmt}], "projections": p})
                                               for i, p in enumerate(projections)]
-    (run / "room-0.ndjson").write_text("\n".join(lines) + "\n")
+    (run / "room-0.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def hashes(root):
     out = root / "out.json"
     subprocess.run([sys.executable, str(TOPIC / "projhash.py"), str(root), str(out)], check=True)
-    return json.loads(out.read_text())
+    return json.loads(out.read_text(encoding="utf-8"))
 
 
 class ProjHash(unittest.TestCase):

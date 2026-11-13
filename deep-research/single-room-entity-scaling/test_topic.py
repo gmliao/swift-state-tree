@@ -40,7 +40,7 @@ def sweep(raw, run_id, repeat, *, gate_ok=True, only=None, env=None, skip=(), ov
     (d / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": repeat, "capture": True, "pinCpus": "0-7", "onlyCells": only,
         "serverEnv": env if env is not None else serverenv.record({}),
-        "git": {"commit": COMMIT, "dirty": False}, "superseded": None, "cells": []}))
+        "git": {"commit": COMMIT, "dirty": False}, "superseded": None, "cells": []}), encoding="utf-8")
     for cell, players, cap, active in (("monsters-cap4", [5], 4, False), ("active-players", [5, 10], 4, True)):
         for form in regenerate.FORMS:
             if (cell, form) in skip:
@@ -48,8 +48,8 @@ def sweep(raw, run_id, repeat, *, gate_ok=True, only=None, env=None, skip=(), ov
             b = benchmark(cell, form, players, cap, active)
             if override:
                 override(cell, form, b)
-            (d / f"{cell}-{form}.json").write_text(json.dumps(b))
-            (d / f"{cell}-{form}.views.json").write_text(json.dumps(views(players, cap, active, gate_ok)))
+            (d / f"{cell}-{form}.json").write_text(json.dumps(b), encoding="utf-8")
+            (d / f"{cell}-{form}.views.json").write_text(json.dumps(views(players, cap, active, gate_ok)), encoding="utf-8")
 
 
 class Topic(unittest.TestCase):
@@ -154,18 +154,18 @@ class Topic(unittest.TestCase):
     def test_run_sh_and_runmeta_take_the_shared_list(self):
         # One list (deep-research/serverenv.py): run.sh unsets what runmeta.py records.
         env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry")
-        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True, encoding="utf-8").stdout
         self.assertIn("+ unset " + " ".join(serverenv.SERVER_ENV) + "\n", out)
-        self.assertNotIn("SERVER_ENV", (TOPIC / "runmeta.py").read_text())
+        self.assertNotIn("SERVER_ENV", (TOPIC / "runmeta.py").read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run([sys.executable, str(TOPIC / "runmeta.py"), "start", tmp, "r", "1", "1", "0-7", "0"],
                            env={**os.environ, "IN_TURN_SYNC": "true"}, check=True, capture_output=True)
-            record = json.loads((pathlib.Path(tmp) / "run.json").read_text())
+            record = json.loads((pathlib.Path(tmp) / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["serverEnv"], {**serverenv.record({}), "IN_TURN_SYNC": "true"})
 
     def test_the_matrix_is_run_shs(self):
         env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry")
-        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True, encoding="utf-8").stdout
         cmds = [l for l in out.splitlines() if "EncodingBenchmark --scalability" in l and "--capture-views" not in l]
         self.assertEqual(len(cmds), len(regenerate.POINTS) * len(regenerate.FORMS))
         seen = {}

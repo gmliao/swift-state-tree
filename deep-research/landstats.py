@@ -25,7 +25,7 @@ FLOWS = ("spawned", "killed", "reachedBase")
 
 def read(path: pathlib.Path) -> list[dict]:
     """The file's lines (``{fromTs, ts, writeFailures, lands}``), blank lines skipped."""
-    return [json.loads(raw) for raw in path.read_text().splitlines() if raw.strip()]
+    return [json.loads(raw) for raw in path.read_text(encoding="utf-8").splitlines() if raw.strip()]
 
 
 def summary(lines: list[dict], start: int, end: int, bin_ms: int = BIN_MS) -> dict | None:
