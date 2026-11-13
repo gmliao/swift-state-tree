@@ -42,9 +42,9 @@ DEFAULT_ENCODING = "messagepack"
 # EnvHelpers.getEnvBool's false and true values (Sources/SwiftStateTree/Support/EnvHelpers.swift).
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
-# The merge commit that made ROW_ADDRESSING default on (#392, PR F); None until it merges: a
-# server without the variable set ran with row addressing off.
-ROW_DEFAULT_COMMIT: str | None = None
+# The merge commit that made ROW_ADDRESSING default on (#392, PR #533): a server commit that
+# doesn't contain it ran with row addressing off when the variable wasn't set.
+ROW_DEFAULT_COMMIT: str | None = "9dd7dbce39217c271d0c33e399a2286227503300"
 
 
 def env_off(value) -> bool:

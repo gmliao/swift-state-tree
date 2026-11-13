@@ -61,6 +61,10 @@
 #                      smoke overrides of the calibration, recorded in params.calibrationOverrides.
 #   PATH_INDEX, FIELD_MERGE, TRANSPORT_ENCODING  the server's wire form (defaults: on, on,
 #                      messagepack); the rate cells' calibration must have the same form.
+#   PIN_ROW_ADDRESSING=true|false  the server's ROW_ADDRESSING, recorded in run.json wire.ROW_ADDRESSING.
+#                      Unset, the server runs its default at the sweep's commit (on from #533's
+#                      merge), resolved by ancestry: a commit unknown to the repository is refused.
+#                      A shell ROW_ADDRESSING never reaches the server (cell.py's server_environ).
 #   SERVER_CPUS=<list> (default 0-7), CLIENT_CPUS=<list> (default 8-11): taskset lists.
 #   OVERWRITE=1        lets a run replace its data/<run-id>/.
 #   DRY_RUN=1          prints every run's every command and runs none (nothing is written).
@@ -111,7 +115,7 @@ if [ -n "$RERUN" ] && { [ "$MODE" = calibrate ] || [ "$SMOKE" = 1 ]; }; then
 fi
 case "$ROOMS" in 300 | 10) ;; *) echo "ROOMS must be 300 or 10, not '$ROOMS'" >&2; exit 2 ;; esac
 case "$SR_PAUSE" in "" | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;; *) echo "SR_PAUSE must be whole seconds, not '$SR_PAUSE'" >&2; exit 2 ;; esac
-for v in PATH_INDEX FIELD_MERGE; do
+for v in PATH_INDEX FIELD_MERGE PIN_ROW_ADDRESSING; do
   case "${!v-}" in "" | true | false) ;; *) echo "$v must be true or false (or unset), not '${!v}'" >&2; exit 2 ;; esac
 done
 # File-valued inputs are resolved against the caller's directory now: run.sh cds to
@@ -229,6 +233,8 @@ record["srPauseS"] = int(sr_pause) if sr_pause else None
 record["calibrationFile"] = recorded_path(cal, os.environ.get("CALIBRATION_GIVEN"), topic)
 record["calibrationSha256"] = hashlib.sha256(pathlib.Path(cal).read_bytes()).hexdigest() if cal else None
 record["wire"] = {k: os.environ.get(k) or None for k in ("PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING")}
+# PIN_ROW_ADDRESSING; null: unpinned, the server's default at the sweep's commit (git.commit).
+record["wire"]["ROW_ADDRESSING"] = os.environ.get("PIN_ROW_ADDRESSING") or None
 record["calibrationOverrides"] = {k: os.environ[k] for k in ("RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT") if os.environ.get(k)}
 # A smoke's results stay in its own data/<run-id>/ (run.sh's positive list).
 record["smoke"] = os.environ.get("SMOKE") == "1"
@@ -254,6 +260,7 @@ STOPCHECK="${STOPCHECK_PY:-$TOPIC/stopcheck.py}"
 CELL_ARGS=(--sweep "$RUN_ID" --server "$SERVER" --rooms "$ROOMS" --server-cpus "$SERVER_CPUS" --client-cpus "$CLIENT_CPUS")
 [ -n "$SR_PAUSE" ] && CELL_ARGS+=(--sr-pause "$SR_PAUSE")
 [ -n "$CALIBRATION" ] && CELL_ARGS+=(--calibration "$CALIBRATION")
+[ -n "${PIN_ROW_ADDRESSING-}" ] && CELL_ARGS+=(--row-addressing "$PIN_ROW_ADDRESSING")
 
 while read -r cell repeat; do
   [ -n "$cell" ] || continue

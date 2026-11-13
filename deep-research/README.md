@@ -4,7 +4,7 @@
 
 Experiment data for SwiftStateTree.
 
-Each folder answers one question and has its own README (question, environment, commands, results, caveats). Where there's a `regenerate.py`, `python3 regenerate.py --check` confirms that the README's tables match the raw results.
+Each folder answers one question and has its own README (question, environment, commands, results, caveats). Where there's a `regenerate.py`, `python3 regenerate.py --check` confirms that the README's tables match the raw results. `bash deep-research/run-tests.sh` runs every test file as CI does; off Linux it also runs the Linux-gated classes (`SST_FORCE_LINUX_TESTS=1`), so run it before pushing a change their code reaches.
 
 | Folder | Question | Last updated | Regenerate |
 |---|---|---|---|

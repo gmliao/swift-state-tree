@@ -1329,7 +1329,10 @@ TINY_SCENARIO = {
 }
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "the fakes need Linux")
+# run-tests.sh sets SST_FORCE_LINUX_TESTS=1 off Linux: they run on macOS too, and a change
+# their code reaches must not skip them before CI.
+@unittest.skipUnless(sys.platform.startswith("linux") or os.environ.get("SST_FORCE_LINUX_TESTS") == "1",
+                     "the fakes need Linux (SST_FORCE_LINUX_TESTS=1 runs them anyway)")
 class Fakes(unittest.TestCase):
     """cell.py and run.sh for real, with fake impair.sh, client, node tools and server.
 
@@ -1383,12 +1386,16 @@ class Fakes(unittest.TestCase):
                              HEALTH_URL=f"http://127.0.0.1:{port}/schema", FAKE_PORT=str(port), START_MARGIN_S="1",
                              SCENARIO_OVERRIDE=str(self.tmp / "scenario.json"), FAKE_TRACE=str(self.tmp / "trace"),
                              RATE="4047216bit", LIMITS="168:10000", KERNEL_CONFIG=str(self.tmp / "no-kernel-config.gz"),
+                             # The throwaway repository's commit isn't in the real history, so the
+                             # sweep pins row addressing instead of resolving its default by ancestry.
+                             PIN_ROW_ADDRESSING="false",
                              PYTHONPATH=os.pathsep.join(filter(None, (str(TOPIC.parent), os.environ.get("PYTHONPATH")))))
         self.out_root = self.tmp / "data"
 
     def cell(self, cell="M-COMBO", **env):
         argv = [sys.executable, str(self.topic / "cell.py"), cell, "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
-                "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root)]
+                "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root),
+                "--row-addressing", "false"]
         done = subprocess.run(argv, env=dict(self.env, **env), capture_output=True, text=True, timeout=90)
         record = json.loads((self.out_root / f"t-{cell}-r1" / "run.json").read_text())
         trace = (self.tmp / "trace").read_text().split() if (self.tmp / "trace").exists() else []
@@ -1454,6 +1461,29 @@ class Fakes(unittest.TestCase):
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
         return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+
+    def test_a_sweep_records_its_row_addressing_pin(self):
+        rid = f"test-pin-{os.getpid()}"
+        done = self.sweep(rid, INGEST="0")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        sweep = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        self.assertEqual(sweep["wire"]["ROW_ADDRESSING"], "false")
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        self.assertEqual(run["meta"]["rowAddressingPin"], "false")
+
+    def test_a_bad_pin_is_refused_before_anything_runs(self):
+        done = self.sweep(f"test-badpin-{os.getpid()}", PIN_ROW_ADDRESSING="maybe")
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("PIN_ROW_ADDRESSING must be true or false", done.stderr)
+
+    def test_an_unpinned_cell_at_an_unknown_commit_is_refused(self):
+        # Without the pin, the default comes from the sweep's commit; this throwaway repository's
+        # isn't in the real history, so the cell refuses rather than guess the form.
+        argv = [sys.executable, str(self.topic / "cell.py"), "M-COMBO", "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
+                "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root)]
+        done = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertIn("refused: ROW_ADDRESSING unset", done.stderr)
 
     def stopped_mid_run(self, rid, send):
         """Starts a sweep whose clients hang (each with a worker), stops it with ``send(proc)`` once
@@ -1689,6 +1719,23 @@ class AfterRowDefault(unittest.TestCase):
                 rc = cell_mod.main(["U-RATE", "1", "--sweep", "s", "--server", "/nonexistent", "--out-root", tmp])
             self.assertEqual(rc, 3, err.getvalue())
             self.assertIn("refused: ROW_ADDRESSING unset and the server commit not recorded", err.getvalue())
+
+    def test_a_pinned_sweep_needs_no_commit_and_the_server_gets_the_pin(self):
+        # The pin decides the form without the sweep's commit (none here), and the server is
+        # started with it, unlike a shell ROW_ADDRESSING.
+        for pin in ("false", "true"):
+            with self.subTest(pin=pin), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(calibration.intended_form(cell_mod.server_environ({}, {"ROW_ADDRESSING": pin})).row_addressing,
+                                 pin == "true")
+                out, err = io.StringIO(), io.StringIO()
+                # A smoke's rate and limits, so the built-in calibration's form isn't checked.
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                        unittest.mock.patch.dict(os.environ, {"RATE": "4047216bit", "LIMITS": "168:10000"}):
+                    rc = cell_mod.main(["M-COMBO", "1", "--sweep", "s", "--server", "/nonexistent", "--out-root", tmp,
+                                        "--row-addressing", pin, "--dry-run"])
+                self.assertEqual(rc, 0, err.getvalue())
+                server_line = next(l for l in out.getvalue().splitlines() if l.startswith("+ step server:"))
+                self.assertIn(f"ROW_ADDRESSING={pin}", server_line)
 
 
 if __name__ == "__main__":

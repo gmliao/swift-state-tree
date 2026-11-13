@@ -1,9 +1,12 @@
 # Per-player fields on typed per-player sync tables (#514)
 
-**Status:** draft, rev 3 (2026-11-13), for review.
+**Status:** reviewed, GO on rev 6 (212d5b74, 2026-11-13), with the purity qualifier added after the GO.
 - This is step 2's PR 3 (`2026-11-10-flat-storage-step2.md` §5 and §7), which never started. Read at `main` 9bf7df61.
 - Rev 1 (65cb9b53) got a no-GO: 4 must-fix, 6 should, 1 nit. Rev 2 (38e59fed) addressed them: M1 in §3, M2 in §1 and §3, M3 in §3, M4 in §2, S1 in §3, S2 in §5 and §7, S3 in §4, S4 in §5 and §6, S5 in §2, S6 in §4, N1 in §3.
-- Rev 2 got 2 must-fix, 3 should and 1 nit. Rev 3 addresses them: M5 and M6 in §2 (the selection is today's per-player mode, so the retry set is gone), S7 and N2 in §3, S8 and S9 in §4.
+- Rev 2 got 2 must-fix, 3 should and 1 nit. Rev 3 (4141176d) addressed them: M5 and M6 in §2 (the selection is today's per-player mode, so the retry set is gone), S7 and N2 in §3, S8 and S9 in §4.
+- Rev 3 got 2 must-fix, M7 and M8: two "by construction" claims were false. Rev 4 (fc910e75) took the maintainer's decision D5. M7 was answered in §2 (D1) and §3, M8 in §2 (Throws) and §5.
+- Rev 4 got 3 must-fix and 2 should: older text still contradicted D5. Rev 5 brings that text in line. M9 is in §2 step 2, M10 in §2 Throws and §3's presence table, M11 in D5 and §5, S10 in §3 Staging, and S11 in §5.
+- Rev 5 (4e6b02b2) got 2 must-fix and 3 should, all on the boundary of the identity condition. Rev 6 deliberately narrows the condition from per-player histories to a land-wide one (D5). That closes M12 and M13's contract holes and makes S12 moot. Rev 6 still specifies what the boxes get per full-view path and after a clear (M13, S12 in §3), the drop counts (S13 in §2) and S14 in §5.
 - No code before this plan is reviewed.
 
 **Depends on:** row addressing's default flip (PR F of `2026-11-10-row-addressing.md` §9), which lands first. Section 7 lists the overlap.
@@ -13,6 +16,12 @@
 - D2: one PR, on by default, with an opt-out. This follows #523's pattern and stays within the approved flattening plan.
 - D3: the env key is `PER_PLAYER_SYNC_TABLES`, classified in `deep-research/serverenv.py`.
 - D4: a player's second session getting no per-player changes is a bug, #531. This PR keeps today's bytes, and its pin is marked as a known bug citing #531.
+- D5 (maintainer):
+  - M7: option (b'). A box the mode doesn't compare stays at what its client has; it isn't silently advanced as today's one-pass cache is.
+  - M8: the revised throw contract. **Byte identity with today holds, for policies that satisfy the purity contract, for a run in which, since the land started, no sync conversion has thrown and no frame encode has failed, anywhere in the land.** That covers broadcast and per-player, in any extraction, diff, seed or view, and any dropped patch or total frame failure. Any such failure puts the land outside the contract for the rest of the run, and its outputs are then the named, interim ones (M7, T1, T2, §5), until #535 closes the land on the failure.
+  - The condition is land-wide on purpose (rev 6). A per-player history doesn't hold: a throw for one player changes another player's seed under today's B1 (M12), and today's full views can carry an old, divergent value forward (M13). The land-wide form is also the failure half of the contract that #535 makes real, since after #535 no failed land keeps running. #535 doesn't enforce purity: a policy that reads the root state (#199) can diverge with no throw and no encode failure (§2, D1).
+
+**Interim (#535).** The maintainer decided on 2026-11-13 that sync conversion and encode failures are no longer absorbed: the land is closed. #535 will replace both failure-path behaviors this plan specifies, the throwing conversions and the lag after a failed encode. Their pinned outputs here are interim, and the tests that pin them cite #535.
 
 ## 0. Before starting: the share
 
@@ -31,6 +40,14 @@
 This plan removes (b) and (c), except the conversion of changed leaves. (a) is the land's own code.
 
 **Stop rule:** if (b) + (c) is under 15 % of vis sync time, report it on #514 and keep #514 deferred. Everything below applies only if the share clears 15 %.
+
+**Result (2026-11-13, posted on #514).** A macOS `sample` profile at 1 ms, from a release build of bde54fee, 12000 iterations. Sync is 5421 samples:
+- (a) 3.3 %
+- (b) 23.2 %
+- (c) 27.9 %
+- (d) 45.7 %, of which per-player encoding is 32.1 %
+
+(b) + (c) = 51.1 %: go.
 
 ## 1. Scope
 
@@ -72,13 +89,13 @@ The macro therefore emits a second list, `_syncTablePerPlayerFields()`, one desc
 
 **Under this plan, per sync:**
 1. Deduplicate by player, as today.
-2. **The same two branches, with the same predicate.** An entry exists exactly when today's branch would make one. B1 makes none for a state without per-player fields. B2 makes an empty one per player, which under a key reset still becomes `.firstSync([])` (M4). B1's all-or-nothing fallback to B2 is kept, and so are B2's drop counts, because the branch decides which entries exist.
-3. **Per player that has an entry,** per per-player root field that today's mode compares (D1 below), call `read(state, playerID)` and diff the output against the player's box (§3). The broadcast tables' differs do the work, and only a changed leaf is converted.
+2. **The same two branches, with the same predicate.** An entry exists exactly when today's branch would make one. B1 makes none for a state without per-player fields. B2 makes an empty one per player, which under a key reset still becomes `.firstSync([])` (M4). B1's eligibility is kept: `useSnapshotForSync` and no broadcast drop (TA 5040). A broadcast drop still means B2. Today's global fallback on a per-player throw is replaced by T1's pair-local handling (TA 5046-5052, Throws below), and the drop counts follow D5, not B2 (M9).
+3. **Per player that has an entry,** per per-player root field that today's mode compares (D1 below), call `read(state, playerID)` and diff the output against the player's box (§3). The one exception is a B1 player without a box, which is seeded with every per-player field (M10, Throws). The broadcast tables' differs do the work, and in an incremental typed diff only a changed leaf is converted.
 4. **Stage per (player, field)** in the plan's per-player staging (§3, separate from the broadcast staging).
 5. **Hand the per-player patches to the recipients in recipient order** (§3, S1).
 
 **Kept as today:**
-- **Throwing conversions.** No patches for that field and that player, its box isn't advanced, and the drop is counted as B2 counts it.
+- **Throwing conversions** (interim, #535). No patches for that field and that player, and its box isn't advanced. Which conversions run, and so which drops are counted, follows D5's named differences (D1, Throws, below).
 - **Patch order.** Every state-update encoder sorts each frame's patches by the land's canonical order (`CanonicalFrameOrder`, set at registration, TA 1262 and 1291). The typed diff's emit order therefore can't change bytes. The frame identity tests check this.
 - **Key reset.** Unchanged.
 
@@ -92,17 +109,40 @@ The macro therefore emits a second list, `_syncTablePerPlayerFields()`, one desc
 The per-player tables compute the mode with the same functions and diff exactly the per-player fields it names:
 - **`.all`:** every per-player field of the player. The box is replaced, so a field the output hides becomes absent, with a delete as today's `.all` compare emits. A dropped field keeps its box value, as an extraction drop keeps its cached value.
 - **`.dirtyTracking(S)`:** the per-player fields in S. The others aren't read, their boxes are untouched, and no delete is emitted for them, as with today's `dirtyFields` rule (SE 333-343).
+  - **Today's B1 differs (M7, D5).** B1 extracts every per-player field (`.include(perPlayerFields)`, TA 5048), and `mergeDirtyFields` copies every extracted value into the cache (SE 454-461). Only the removals are limited to S. So today a field outside S is silently advanced to the live output, with no patch. Under the purity contract, with no earlier failure, that cache already equals the live output, so the two agree.
+  - **Where they don't agree:** after a total per-player encode failure (#532), and under a policy that reads the root state (#199, unsupported). There the typed box stays at what the client has, and the next diff of the field sends the missed change. Today's cache has moved on, so only what changed after it goes out. This is a named difference: the typed path's expected output is the diff from the client's value.
+  - **B2 doesn't differ:** it extracts only the mode's fields (SE 1408-1428).
 - **An empty `.dirtyTracking` on a player with a box:** nothing, as SE 800-803.
 
-The saving against today is the extraction of fields the mode doesn't compare. Its patches equal today's by construction.
+The saving against today is the extraction of fields the mode doesn't compare. Its patches equal today's under D5's land-wide condition, for policies that satisfy the purity contract: no conversion throw and no encode failure anywhere in the land since it started. The differences outside that are named here and in Throws, each with its expected output.
 
-**Throws.** Only a read field can throw. Today a B1 failure falls to B2 with the same mode, and B2 extracts only the mode's fields, so it counts drops only among them. A field outside the mode that would throw is never counted in either version. The drop counts are therefore equal.
+**Throws (M8, D5; interim, #535).** Byte identity isn't claimed when a conversion throws. There are two named differences:
+- **(T1) B1's fallback.** Today B1 is all-or-nothing across every player and every per-player field (`onePass = nil; break`, TA 5046-5052). A throw in any field of any player, inside S or not, sends every player to B2. That changes which fields a player without a box is seeded with: every per-player field under B1, only the mode's fields under B2. The typed path reads per (player, field), so a throw affects only that pair, and a field it doesn't read can't throw.
+  - **Expected output:** the seeds and patches today's B1 gives without that throw.
+  - **For the throwing pair:** no patches (a root whose conversion throws part-way keeps none of its patches), the box isn't advanced, and one drop is counted. The other players stay on B1.
+  - **A field the typed path doesn't read** (outside S, for a player with a box) can't throw, and counts nothing.
+- **The initial B1 seed (M10).** A B1 player without a box is seeded with every per-player field, as today's B1 extraction seeds it. That is the one exception to mode selection (step 3). The seed has no patches. When a conversion throws during the seed, whether the field is inside S or outside it:
+  - the fields that converted are seeded, present or absent;
+  - the throwing field is left unseeded, so it is absent and is set when it is next compared;
+  - one drop is counted per (player, root field) whose conversion was attempted and failed;
+  - the other players stay on B1.
+- **(T2) An unchanged leaf whose conversion would throw,** in an incremental typed diff only. Today's B2 extraction converts the whole field, so that field is dropped whole and counted. The incremental typed diff converts only changed leaves, so it never converts that leaf.
+  - **Expected output:** the changed leaves' patches, and no drop counted.
+  - **A changed leaf that throws** drops its field for that player, as today.
+  - **Where T2 doesn't apply:** a seed, and the fallback's conversion, still convert whole values (`SyncTables.swift` ~1136-1139, 1175-1177, 1355-1357), so an unchanged throwing leaf throws there and the field is dropped as above.
+- **Drop counts (S13).** Under the contract no drop occurs, so the counts are 0 on both paths. Outside it, a cycle can count the same failing pair at several stages, today as on the typed path:
+  - the cycle's ordinary extraction or diff (TA ~4416, ~4529);
+  - a full view's extraction (`lateJoinSnapshot`, SE 1508-1528);
+  - its re-stage (TA ~4669);
+  - `lateJoinSnapshot`'s seed when the player has no cache (SE 1530-1531).
 
-**Lag, as today (M6).** A total per-player encode failure for p removes `p`'s staging (§3), as today removes `staged.perPlayer[p]` (TA 4929-4939). `beginSync` has already cleared the dirty marks (TA 3252-3256), so p's client lags its committed boxes until a later mode compares those fields:
-- with one-pass off and only broadcast fields dirty next cycle, the mode is `.all` and the lag is re-diffed;
-- with one-pass on, the mode is `.dirtyTracking(planDirtyFields)`, and p stays behind on a clean per-player field until it is written again.
+  The typed path counts one drop per failing (player, root field) at each stage that attempts that conversion. The ordinary stage differs from today as T1 and T2 say. The full-view stages run today's code for the view, and count as today for the seeds. §5's expected outputs state the counts per stage.
 
-The PR keeps that behavior byte for byte and pins it in both settings, marked as a known bug citing #532 (the per-player half of the lag after a failed encode; its broadcast half is the documented limit at TA 4933-4936).
+**Lag after a failed encode (M6, M7; interim, #535).** A total per-player encode failure for p removes `p`'s staging (§3), as today removes `staged.perPlayer[p]` (TA 4929-4939). The committed boxes are what p's client has. `beginSync` has already cleared the dirty marks (TA 3252-3256), so p's client lags until a later mode compares those fields:
+- **With one-pass off:** as today. When only broadcast fields are dirty next cycle, the mode is `.all` and the lag is re-diffed.
+- **With one-pass on,** the mode is `.dirtyTracking(planDirtyFields)`, so a clean per-player field isn't compared. Its box stays at the client's value (D5), so when the field is next written, the diff sends the missed change with it. Today the cache was silently advanced, so the missed value stays wrong until that value itself changes (the #532 comment). This is the named difference from M7.
+
+Both settings are pinned with their expected outputs, marked as a known bug citing #532, and as interim citing #535.
 
 **Every write to a per-player field marks it dirty.** A per-player field is a root `@Sync` field, and each mutation route goes through its wrapper:
 - the setter, which sets `_isDirty`;
@@ -111,9 +151,12 @@ The PR keeps that behavior byte for byte and pins it in both settings, marked as
 
 Today the `.dirtyTracking` modes already depend on these marks for the compare, so no new dependency is added. The PR still pins each route on a per-player field: the setter, `state.entities[k] = v`, `state.entities[k]?.position = …`, a nested node field write, and `f(&state.entities)`.
 
-**Tests for D1,** each against today's output, with dirty tracking on and off:
+**Tests for D1,** with dirty tracking on and off. Each runs against today's output, except where D5 names the expected output:
 - a dropped, clean per-player field while another per-player field is dirty, with one-pass on and with one-pass off (M5);
-- a transient per-player encoder failure for p, then a broadcast-only mutation, with one-pass on and with one-pass off (M6);
+- a transient per-player encoder failure for p, then a broadcast-only mutation, with one-pass on and with one-pass off (M6). With one-pass on, the expected output is D5's;
+- an existing box with a changed filtered output outside S under B1, after an encode failure, then a write to that field (M7). The expected output is the diff from the client's value;
+- a player without a box, S = {a}, while a clean b throws for another player (M8, T1). The expected output is B1's seeds without the throw;
+- a field in S where one leaf changes, and an unchanged leaf would throw (M8, T2). The expected output is the changed leaf's patch, with no drop counted;
 - the B2 fallback triggered by a broadcast drop;
 - a failed plan, then a committed one.
 
@@ -127,18 +170,23 @@ Today the `.dirtyTracking` modes already depend on these marks for the compare, 
 
 | Box | `read` gives | Emits | Stages |
 |---|---|---|---|
-| no box for the player | anything | nothing: today's first diff seeds the cache from the extraction and returns no patches (SE 805-808) | the read fields (B1: every per-player field, as its extraction; B2: the mode's fields) |
+| no box for the player | anything | nothing: today's first diff seeds the cache from the extraction and returns no patches (SE 805-808) | B1: every per-player field (the one exception to mode selection, M10); B2: the mode's fields. A field whose conversion throws stays unseeded (absent). A throw for another player doesn't switch B1's seed to B2's (T1) |
 | present(old) | a value | the typed diff of old → new | the new value |
 | present(old) | nil | a delete of the field's root path, as today's diff does | absent |
 | absent | a value | a set of the whole field, as today's diff of a field that appears | present(new) |
 | absent | nil | nothing | — |
 
-- **The rows apply only to the fields the mode compares** (D1). A field outside a `.dirtyTracking` mode isn't read, and its box and presence are untouched. That is today's `dirtyFields` rule, under which a delete is emitted only for a field in the dirty set (SE 333-343). Under `.all` every per-player field is read, and a field the output lacks is deleted, as today's `.all` compare does.
+- **The rows apply only to the fields the mode compares** (D1), except the initial B1 seed (M10). A field outside a `.dirtyTracking` mode isn't read, and its box and presence are untouched. That is today's `dirtyFields` rule, under which a delete is emitted only for a field in the dirty set (SE 333-343). Under `.all` every per-player field is read, and a field the output lacks is deleted, as today's `.all` compare does.
 - **A field never seeded in a player's existing box** is absent: today's compare sees it as new and sets it.
 - **A full-view seed replaces presence** from the view: present when the view has the field, absent otherwise.
 - Typed and fallback boxes follow the same table.
 
-**Staging (M3).** Per-player writes are staged in their own namespace on the plan, `plan.stagedPerPlayerTables`, not inside the broadcast `SyncTableStaged`. A broadcast-only failure resets the broadcast staging (`plan.stagedTables = SyncTableStaged()`, TA 4766-4769 and 5470) while the per-player frames still go out. With one struct, the per-player boxes would fall behind the clients. The rule is to mirror today's `plan.staged.perPlayer[p]` exactly. Every place that sets, keeps or removes `plan.staged.perPlayer[p]` does the same to `p`'s staged per-player writes and seed. The cases depend on the branch (S7):
+**Staging (M3).** Per-player writes are staged in their own namespace on the plan, `plan.stagedPerPlayerTables`, not inside the broadcast `SyncTableStaged`. A broadcast-only failure resets the broadcast staging (`plan.stagedTables = SyncTableStaged()`, TA 4766-4769 and 5470) while the per-player frames still go out. With one struct, the per-player boxes would fall behind the clients. The rule is to mirror the **lifecycle** of today's `plan.staged.perPlayer[p]`: keep, discard, commit, and per-player ownership. Every place that sets, keeps or removes `plan.staged.perPlayer[p]` does the same to `p`'s staged per-player writes and seed. The staged **contents** follow D5, not today's merge (S10). Today's `mergeDirtyFields` stages every extracted value under B1 (SE 456-457), but the per-player staging holds only:
+- the fields the mode compared;
+- the initial B1 seed (M10);
+- a full-view seed (§3, full views).
+
+The cases depend on the branch (S7):
 - **Opcode 107 merged frame** (`useStateUpdateWithEvents`, TA 4471-4494). When the merged broadcast frame can't encode, the broadcast staging is reset (TA 4766-4769) and `staged.perPlayer` is kept, while the per-player frames still go out. So the per-player staging is kept.
 - **Combined frame** (json and opcodeJsonArray, `collectCombinedPendingUpdates`): each player's frame encodes both scopes. A failure there is a total per-player failure for that player (below), not a broadcast-only one.
 - **Total per-player failure** for p (`data == nil`, TA 4929-4939, in either branch): `staged.perPlayer[p]` and the firstSync mark are removed, so `p`'s per-player staging is discarded. A re-encode that succeeds after dropping, such as the row-drop remake (TA 4586-4598), isn't a total failure and keeps the staging as today does. Only `data == nil` removes it.
@@ -159,13 +207,14 @@ Today the `.dirtyTracking` modes already depend on these marks for the compare, 
 | Today | Under the per-player tables |
 |---|---|
 | Diffs read `staged.perPlayer[p] ?? lastPerPlayerSnapshots[p]` (SE 778-830); `applyStaged` writes it (SE 94-103) | `p`'s staged writes, else its committed boxes. Applied at commit |
-| A full view (late join, resync) re-stages `staged.perPlayer[id] = extractPerPlayerSnapshot(.all)` (TA 4669) | Stage a seed of `p`'s boxes and presence from the same state copy, with the player-aware read. The broadcast tables are untouched |
-| The late-join view fills a dropped field from the caches (SE 1508-1534) | That field of `p`'s box, converted to `SnapshotValue` (nothing when absent) |
+| A full view through `planFullViewUpdate` (a join in a sync cycle, a resync) re-stages unconditionally: `staged.perPlayer[id] = extractPerPlayerSnapshot(.all)` (TA ~4669) | Stage a seed of every per-player field of `p`'s boxes and presence, from the same state copy, with the player-aware read. A field whose conversion throws keeps its committed box value and presence, as today's re-stage falls back to the old cache (M13). With no box, it stays unseeded (absent). The broadcast tables are untouched |
+| The standalone firstSync (TA ~5765) uses `lateJoinSnapshot`, which seeds `staged.perPlayer` only when the player has neither a staged nor a committed cache (SE 1530-1531) | The same rule. Seed `p`'s boxes only when `p` has neither staged nor committed boxes; otherwise they are untouched (M13) |
+| The late-join view fills a dropped field from the caches (`fallback:`, SE ~1519) | That field of `p`'s box, converted to `SnapshotValue` (nothing when absent). The view carries that old value, as today |
 | Per-player encode failure (TA 4934-4940) | Discards `p`'s per-player staging (above) |
 | `cachedPerPlayerSnapshot` (SE 116), read by `SyncOutputShadow` | Unchanged: the shadow runs its own engine |
 | `cachedPerPlayerSnapshotForTesting` | With the per-player tables in effect, `p`'s boxes as a `StateSnapshot` |
 
-**Two clears, two invariants (N1).** The boxes are cleared beside `clearCacheForDisconnectedPlayer`, at its exact placement in each path:
+**Two clears, two invariants (N1).** A clear removes `p`'s boxes and presence, so `p`'s next seed starts from empty, as today's cleared cache does (S12). The boxes are cleared beside `clearCacheForDisconnectedPlayer`, at its exact placement in each path:
 - **Disconnect** (TA ~1593, outside a turn): only when the player has no other session (`membershipCoordinator.sessionIDs(for:)` is empty), checked after the `keeper.leave` await in the same synchronous segment as the clear. A re-joined player's boxes are never cleared (`Notes/solutions/2026-11-05-callback-outlives-its-instance-clears-by-key.md`).
 - **Supersede** (TA ~1973, at admission): unconditionally. The new session starts from empty, like a first join.
 
@@ -214,7 +263,7 @@ The cases:
 - an output going empty and back;
 - nil ↔ value for an optional node output;
 - NaN / −0.0;
-- a conversion that throws for one player only: that player's patches, box and drop count as today's, the other players unaffected;
+- a conversion that throws for one player only, against D5's expected outputs (T1, T2), not today's. The other players' output is as without the throw;
 - a failed plan, after which the next plan equals today's;
 - NFC and NFD forms of one key;
 - players added and removed between steps.
@@ -234,13 +283,25 @@ Each run includes:
 - joins mid-run;
 - a forced resync;
 - a forced key reset (`syncPlanFaultForTesting`, and an encode drop);
-- a throwing per-player conversion with a late join right after;
+- a throwing per-player conversion with a late join right after (a failure scenario, below);
 - a disconnect and reconnect;
 - a supersede;
 - the D1 cases (§2: M5's dropped clean field and M6's transient encoder failure, each with one-pass on and off).
 
+**Byte identity with today's frames covers only the runs under D5's land-wide condition (M11).** A run with a throwing conversion or an encode failure anywhere in the land is a failure scenario. Each scenario has its own expected frames, per-stage drop counts, boxes and presence, per configuration. These are checked through the failure and the later throw-free cycles, including a reseed. No return to byte identity with today is promised after a failure.
+
+**Failure scenarios** (interim, #535), each in B1 and B2 where it applies:
+- a no-box player's own throw, for a field outside S and for one inside S (M10);
+- an existing player whose throwing field is outside S, so it is skipped and counts zero drops (T1);
+- two failing roots for one player;
+- a root whose conversion throws after some of its patches were emitted, which keeps none of them;
+- T1's cross-player case: a no-box player while another player's clean field throws;
+- T2's unchanged throwing leaf, in an incremental diff, and in a seed, where it does throw;
+- M6's transient encoder failure, then broadcast-only cycles, then a write to the lagging field;
+- the cycles after each, while the throw stops, through a full-view reseed, a standalone firstSync of a player that has boxes, and a throwing full view, against their expected outputs (S11, M13).
+
 **The failure paths, explicitly (M3, M4):**
-- **Opcode 107:** the merged broadcast frame fails to encode while the per-player frames go out (TA 4766-4769). Then the next plan's frames and the committed boxes must equal today's.
+- **Opcode 107:** the merged broadcast frame fails to encode while the per-player frames go out (TA 4766-4769). This is a failure scenario under D5, starting from a run under the contract. The expected per-player output is that the per-player staging is kept and committed (M3), and the next plan's per-player frames diff from it. The broadcast part follows today's unstaging (S14).
 - **Combined frame** (json, opcodeJsonArray): one player's frame fails, which is a total per-player failure for that player.
 - **A total per-player failure** in each branch, against a re-encode that succeeds after a row drop, which keeps the staging.
 - **The broadcast-only sync:** per-player boxes unchanged.
@@ -259,7 +320,7 @@ Each run includes:
 - verify-views;
 - the sync-output goldens;
 - the replay state hash;
-- a recorded visibility run with the per-player tables on verifies against `SyncOutputShadow` with 0 mismatches.
+- a recorded visibility run with the per-player tables on verifies against `SyncOutputShadow` with 0 mismatches. The shadow runs today's engine, so 0 mismatches is required only for runs under D5's condition. The visibility run has no throwing conversion and no encode failure, and the check asserts that its drop and encode-failure counters are 0.
 
 **Mutants,** each killed by a named test:
 - skip the resync seed;
@@ -267,6 +328,10 @@ Each run includes:
 - tag per-player patches with a row;
 - advance a dropped field's box;
 - skip the disconnect clear;
+- advance a box outside S under B1 (M7);
+- restore the global B2 fallback on a per-player throw (T1);
+- convert unchanged leaves in an incremental diff (T2);
+- keep partial patches from a root whose later conversion throws (T1);
 - keep presence on nil (M1);
 - read a nested per-player field without the player (M2);
 - stage per-player writes in the broadcast namespace (M3);
@@ -323,7 +388,8 @@ This PR branches after F merges and pins `--row-addressing` in the brief.
 - **#192** (one frame per sync for per-player lands): unaffected; frame count and kinds are unchanged.
 - **#130** (an independent per-player oracle): still open. The differential test compares against today's engine.
 - **#199** (policies that read the root state): D1 relies on filter purity, as today's `.dirtyTracking` modes already do. A root-state policy needs its field dirtied by what it reads, as #199 notes.
-- **#532** (a player's client stays behind after its state frame fails to encode entirely): pinned, not fixed (§2, M6).
+- **#532** (a player's client stays behind after its state frame fails to encode entirely): pinned with D5's expected output, not fixed (§2, M6, M7).
+- **#535** (close the land on a sync conversion or encode failure): it replaces both failure-path behaviors here. Their pins are interim.
 - **#314** (hash-seed-independent patch order): frames are canonically ordered (#435).
 - **#524** (`PlayerHandle`): the boxes are keyed by `PlayerID`; a handle could key them by slot later.
 

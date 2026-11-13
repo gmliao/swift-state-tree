@@ -147,7 +147,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR" || exit
 
-SCENARIO_PATH="$ROOT_DIR/$SCENARIO"
+# The scenario, like --output-dir: relative to ws-loadtest/ unless absolute.
+case "$SCENARIO" in
+  /*) SCENARIO_PATH="$SCENARIO" ;;
+  *) SCENARIO_PATH="$ROOT_DIR/$SCENARIO" ;;
+esac
 if [ ! -f "$SCENARIO_PATH" ]; then
   echo "Scenario not found: $SCENARIO_PATH"
   exit 1
