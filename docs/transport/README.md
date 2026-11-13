@@ -190,24 +190,18 @@ Transport-related behavior can be tuned via environment variables. All variables
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ENABLE_DIRTY_TRACKING` | Bool | init param | Enable dirty-field tracking for smaller diffs; disable for high-update-ratio scenarios |
+| `ENABLE_DIRTY_TRACKING` | Bool | init param | Enable dirty-field tracking for smaller diffs; on by default (`fromEnvironment`). Whether off is faster depends on the land (see the [FAQ](../FAQ.md)) |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | Use one-pass snapshot extraction; set to `false` for legacy separate broadcast + per-player path |
-| `USE_SYNC_TABLES` | Bool | false | Experimental: diff broadcast fields on the typed sync tables instead of snapshots (delta strategy only). The frames are the same bytes either way. See [Sync](../core/sync.md#rules-for-synced-value-types) for the rules a synced value type must follow |
-| `TYPED_LEAF_VALUES` | Bool | false | Experimental: on the typed sync tables, a changed field of a built-in leaf type (numbers, `Bool`, `String`, the ID types, the DeterministicMath atomic types and their optionals) is converted by its typed form instead of the general conversion. It applies wherever the tables are in effect (`USE_SYNC_TABLES`, or row addressing, which turns them on), and is ignored elsewhere. The frames are the same bytes either way |
+| `USE_SYNC_TABLES` | Bool | true | Diff broadcast fields on the typed sync tables instead of snapshots (delta strategy only), the default path. The frames are the same bytes either way. `false` opts out to the snapshot diff, a fallback to be removed; row addressing turns the tables on regardless. See [Sync](../core/sync.md#rules-for-synced-value-types) for the rules a synced value type must follow |
+| `TYPED_LEAF_VALUES` | Bool | true | On the typed sync tables, a changed field of a built-in leaf type (numbers, `Bool`, `String`, the ID types, the DeterministicMath atomic types and their optionals) is converted by its typed form instead of the general conversion. It applies wherever the tables are in effect (`USE_SYNC_TABLES`, or row addressing, which turns them on), and is ignored elsewhere. The frames are the same bytes either way. `false` opts out |
 | `SYNC_STRATEGY` | String | `delta` | `delta` sends changed fields only; `full-snapshot` sends each recipient's complete view every sync (measurement baseline, not a production mode) |
-| `ENABLE_CHANGE_OBJECT_METRICS` | Bool | false | Log changed-vs-unchanged object ratio of the measured syncs (see `AUTO_DIRTY_SAMPLE_EVERY`) |
-| `CHANGE_OBJECT_METRICS_LOG_EVERY` | Int | 10 | Measured syncs between change-object metric logs |
-| `CHANGE_OBJECT_METRICS_EMA_ALPHA` | Double | 0.2 | EMA alpha for change rate per sync (0.01–1.0); scaled to the sample interval |
-| `AUTO_DIRTY_TRACKING` | Bool | true | Auto-switch dirty tracking based on change rate hysteresis |
-| `AUTO_DIRTY_OFF_THRESHOLD` | Double | 0.55 | EMA threshold to switch dirty tracking OFF |
-| `AUTO_DIRTY_ON_THRESHOLD` | Double | 0.30 | EMA threshold to switch dirty tracking ON |
-| `AUTO_DIRTY_REQUIRED_SAMPLES` | Int | 30 | Consecutive syncs past a threshold before mode switch (rounded up to whole samples) |
-| `AUTO_DIRTY_SAMPLE_EVERY` | Int | 1 | Measure the change rate on one sync in N (clamped to 1–1024); 1 measures every sync. Above 1 the samples are at a fixed phase, so a workload whose busy syncs repeat with a period dividing N is always measured at the same point |
 | `TRANSPORT_PROFILE_JSONL_PATH` | String | (disabled) | When set, enables transport profiling and writes JSONL to this path |
 | `TRANSPORT_PROFILE_INTERVAL_MS` | Int | 1000 | Profiling write interval in ms (min 100) |
 | `TRANSPORT_PROFILE_SAMPLE_RATE` | Double | 0.01 | Latency sample rate (0.001–1.0) |
 | `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` | Int | 500 | Max latency samples per interval (10–10000) |
 | `OUTBOUND_WRITER_MAX_BYTES` | Int | 67108864 (64 MiB) | Per-land ceiling for bytes queued in the outbound writer (min 1024). Frames over it are dropped and the affected sessions are disconnected |
+
+Removed: `ENABLE_CHANGE_OBJECT_METRICS`, `CHANGE_OBJECT_METRICS_*` and `AUTO_DIRTY_*` (the change-object metric and the automatic dirty-tracking switch). They are ignored; the first adapter in a process logs a warning naming any that is set.
 
 Read elsewhere:
 

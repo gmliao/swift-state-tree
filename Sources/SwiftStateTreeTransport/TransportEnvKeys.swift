@@ -11,14 +11,6 @@ enum TransportEnvKeys {
     static let useSyncTables = "USE_SYNC_TABLES"
     static let typedLeafValues = "TYPED_LEAF_VALUES"
     static let syncStrategy = SyncStrategy.environmentKey
-    static let enableChangeObjectMetrics = "ENABLE_CHANGE_OBJECT_METRICS"
-    static let changeObjectMetricsLogEvery = "CHANGE_OBJECT_METRICS_LOG_EVERY"
-    static let changeObjectMetricsEmaAlpha = "CHANGE_OBJECT_METRICS_EMA_ALPHA"
-    static let autoDirtyTracking = "AUTO_DIRTY_TRACKING"
-    static let autoDirtyOffThreshold = "AUTO_DIRTY_OFF_THRESHOLD"
-    static let autoDirtyOnThreshold = "AUTO_DIRTY_ON_THRESHOLD"
-    static let autoDirtyRequiredSamples = "AUTO_DIRTY_REQUIRED_SAMPLES"
-    static let autoDirtySampleEvery = "AUTO_DIRTY_SAMPLE_EVERY"
     static let outboundWriterMaxBytes = "OUTBOUND_WRITER_MAX_BYTES"
     /// `TransportEncodingConfig.pathIndex` (default true).
     static let pathIndex = "PATH_INDEX"

@@ -257,3 +257,7 @@ The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-bet
 - The records' settings check: the benchmark's records carry the `VISIBILITY_TEST_*` settings and the replay refuses others. A live server's record carries none and is replayed only with the defaults, so a live run with other knobs replayed at the defaults isn't caught; the live check runs at the defaults.
 - The capture and record pass's timings aren't kept: capture and live state-hash recording add work to the tick and the sync.
 - The client decode figures are the SDK's, with its apply cost cut by #303.
+
+## Reruns from the sync tables default on
+
+From the commit that made the typed sync tables the default and removed the auto dirty switch, EncodingBenchmark runs without `--dirty-tracking` record `dirtyTracking: on`, where the results here ran the adapter's default, the auto switch (it started on and could switch off; their metadata records the `AUTO_DIRTY_*` keys unset). A rerun from then on also runs the broadcast diff on the typed tables with typed leaf values; the frames are the same bytes.

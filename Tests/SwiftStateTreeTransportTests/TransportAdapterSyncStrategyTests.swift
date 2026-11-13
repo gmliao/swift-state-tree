@@ -44,13 +44,6 @@ private func makeEnvConfig(strategy: SyncStrategy, useSnapshotForSync: Bool) -> 
         enableDirtyTracking: true,
         useSnapshotForSync: useSnapshotForSync,
         syncStrategy: strategy,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: false,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
 }

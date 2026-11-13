@@ -171,13 +171,6 @@ struct TransportSessionCloseTests {
                 enableDirtyTracking: true,
                 useSnapshotForSync: true,
                 syncStrategy: .delta,
-                enableChangeObjectMetrics: false,
-                changeObjectMetricsLogEvery: 10,
-                changeObjectMetricsEmaAlpha: 0.2,
-                enableAutoDirtyTracking: false,
-                autoDirtyOffThreshold: 0.55,
-                autoDirtyOnThreshold: 0.30,
-                autoDirtyRequiredConsecutiveSamples: 30,
                 profilingConfig: nil,
                 outboundWriterMaxBytes: 1
             ),

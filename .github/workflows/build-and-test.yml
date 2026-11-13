@@ -76,19 +76,18 @@ jobs:
         fi
       timeout-minutes: 5
 
-  # The broadcast diff on the typed sync tables (USE_SYNC_TABLES, off by default): the transport
-  # and NIO test targets again with the switch on, so that side stays covered until the default
-  # flips. A second run adds TYPED_LEAF_VALUES (leaf fields converted by their typed form, which
-  # applies only on the tables). Those targets hold the adapter's tests; the one adapter built in SwiftStateTreeTests
-  # (the debug projection's wire shape) isn't run here. In-turn sync is at its default: the
-  # legacy path with the tables on is left to the local full runs.
-  sync-tables:
-    name: build (sync tables on)
+  # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
+  # job runs the whole suite again with both opted out (USE_SYNC_TABLES=false,
+  # TYPED_LEAF_VALUES=false), so the snapshot-diff fallback keeps the coverage it had as the
+  # default until it is removed. In-turn sync is at its default.
+  sync-tables-off:
+    name: build (sync tables off)
     runs-on: ubuntu-22.04
     container:
       image: swift:6.2.4-noble
     env:
-      USE_SYNC_TABLES: "true"
+      USE_SYNC_TABLES: "false"
+      TYPED_LEAF_VALUES: "false"
 
     steps:
     - uses: actions/checkout@v4
@@ -96,34 +95,25 @@ jobs:
     - name: Show toolchain
       run: swift --version
 
-    # It fails the job when the test that pins the switch didn't run (a renamed target or test
-    # would otherwise match nothing and pass).
-    - name: Run the transport and NIO tests on the tables
+    # It fails the job when the tests that pin the switches didn't run (a renamed target or
+    # test would otherwise match nothing and pass). They check the adapter's effective state,
+    # not only the environment.
+    - name: Run the tests with the tables and typed leaves off
       shell: bash
       run: |
         set -o pipefail
-        swift test --filter 'SwiftStateTreeTransportTests|SwiftStateTreeNIOTests' 2>&1 | tee sync-tables.log
-        if ! grep -q '✔ Test "A config built with init takes USE_SYNC_TABLES' sync-tables.log; then
-          echo "::error::the test that pins USE_SYNC_TABLES did not run"
-          exit 1
-        fi
-      timeout-minutes: 30
-
-    - name: Run the transport and NIO tests on the tables with typed leaves
-      shell: bash
-      env:
-        TYPED_LEAF_VALUES: "true"
-      run: |
-        set -o pipefail
-        swift test --filter 'SwiftStateTreeTransportTests|SwiftStateTreeNIOTests' 2>&1 | tee typed-leaves.log
-        if ! grep -q '✔ Test "A config built with init takes TYPED_LEAF_VALUES' typed-leaves.log; then
-          echo "::error::the test that pins TYPED_LEAF_VALUES did not run"
-          exit 1
-        fi
-      timeout-minutes: 30
+        swift test 2>&1 | tee sync-tables-off.log
+        for pin in 'A config built with init takes USE_SYNC_TABLES' 'A config built with init takes TYPED_LEAF_VALUES'; do
+          if ! grep -q "✔ Test \"$pin" sync-tables-off.log; then
+            echo "::error::the test \"$pin\" did not run"
+            exit 1
+          fi
+        done
+      timeout-minutes: 40
 
   # The Examples packages have their own test targets and builds, which the root `swift test`
   # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
+  # The Demo tests pin its lands' sync table fallback lists.
   examples:
     runs-on: ubuntu-22.04
     container:
@@ -147,6 +137,11 @@ jobs:
       working-directory: Examples/Demo
       run: swift build
       timeout-minutes: 30
+
+    - name: Demo tests
+      working-directory: Examples/Demo
+      run: swift test
+      timeout-minutes: 20
 
     - name: Tracked files unchanged by the tests
       run: |

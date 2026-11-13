@@ -15,13 +15,6 @@ private func syncTablesConfig(tables: Bool, dirtyTracking: Bool, snapshotForSync
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: snapshotForSync,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: false,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
     config.useSyncTables = tables
@@ -109,41 +102,32 @@ struct SyncTablesByteIdentityTests {
         #expect(await on.adapter.syncEngineForTesting().cachedBroadcastSnapshotForTesting == nil)
     }
 
-    @Test("A config built with init takes USE_SYNC_TABLES, so a whole test run can be switched")
+    @Test("A config built with init takes USE_SYNC_TABLES (on by default), so a whole test run can be switched")
     func initTakesTheEnvironment() async throws {
         let config = TransportEnvConfig(
             enableDirtyTracking: true,
             useSnapshotForSync: true,
             syncStrategy: .delta,
-            enableChangeObjectMetrics: false,
-            changeObjectMetricsLogEvery: 10,
-            changeObjectMetricsEmaAlpha: 0.2,
-            enableAutoDirtyTracking: false,
-            autoDirtyOffThreshold: 0.55,
-            autoDirtyOnThreshold: 0.30,
-            autoDirtyRequiredConsecutiveSamples: 30,
             profilingConfig: nil
         )
-        let expected = EnvHelpers.getEnvBool(key: "USE_SYNC_TABLES", defaultValue: false)
+        let expected = EnvHelpers.getEnvBool(key: "USE_SYNC_TABLES", defaultValue: true)
         #expect(config.useSyncTables == expected)
         // The adapter follows the config: its engine's broadcast cache stays empty on the tables.
         let run = await DirtyIdentityRun(envConfig: config, encoding: .messagepack)
+        #expect(await run.adapter.usesSyncTablesForTesting() == expected)
         try await run.runScript()
         let cache = await run.adapter.syncEngineForTesting().cachedBroadcastSnapshotForTesting
         #expect((cache == nil) == expected)
         #expect(await run.adapter.lastSentBroadcastSnapshotForTesting() != nil)
     }
 
-    @Test("A config built with init takes TYPED_LEAF_VALUES, which applies only where the tables do")
+    @Test("A config built with init takes TYPED_LEAF_VALUES (on by default), which applies only where the tables do")
     func initTakesTypedLeafValues() async throws {
-        let expected = EnvHelpers.getEnvBool(key: "TYPED_LEAF_VALUES", defaultValue: false)
+        let expected = EnvHelpers.getEnvBool(key: "TYPED_LEAF_VALUES", defaultValue: true)
         var config = syncTablesConfig(tables: false, dirtyTracking: true, snapshotForSync: true)
         config.typedLeafValues = expected
         #expect(TransportEnvConfig(
-            enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta,
-            enableChangeObjectMetrics: false, changeObjectMetricsLogEvery: 10, changeObjectMetricsEmaAlpha: 0.2,
-            enableAutoDirtyTracking: false, autoDirtyOffThreshold: 0.55, autoDirtyOnThreshold: 0.30,
-            autoDirtyRequiredConsecutiveSamples: 30, profilingConfig: nil
+            enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta, profilingConfig: nil
         ).typedLeafValues == expected)
         // Tables off: the switch is ignored.
         let off = await DirtyIdentityRun(envConfig: config, encoding: .messagepack)
@@ -154,64 +138,36 @@ struct SyncTablesByteIdentityTests {
         #expect(await on.adapter.usesTypedLeafValuesForTesting() == expected)
     }
 
-    /// The change-object metrics read the plan's broadcast snapshot, which the tables don't
-    /// extract, and the auto switch reads the metrics: both sides must count the same syncs and
-    /// reach the same dirty-tracking decisions.
-    @Test("Change-object metrics and the auto dirty switch agree with the tables on and off", arguments: [1, 3])
-    func metricsAndAutoDirtyAgree(sampleEvery: Int) async throws {
-        func config(tables: Bool) -> TransportEnvConfig {
-            var config = TransportEnvConfig(
-                enableDirtyTracking: true,
-                useSnapshotForSync: true,
-                syncStrategy: .delta,
-                enableChangeObjectMetrics: true,
-                changeObjectMetricsLogEvery: 1000,
-                changeObjectMetricsEmaAlpha: 0.5,
-                enableAutoDirtyTracking: true,
-                // As in AutoDirtySamplingTests: with dirty tracking on only the dirty fields are
-                // extracted, so the rate is 1 and the switch turns it off; with it off, the
-                // quiet step's rate (two of six fields) is under the on threshold and turns it
-                // back on.
-                autoDirtyOffThreshold: 0.9,
-                autoDirtyOnThreshold: 0.4,
-                autoDirtyRequiredConsecutiveSamples: 2,
-                profilingConfig: nil,
-                autoDirtySampleEvery: sampleEvery
-            )
-            config.useSyncTables = tables
-            return config
-        }
+    /// `setDirtyTrackingEnabled(_:)` is the only way dirty tracking changes at run time: both
+    /// diffs must send the same frames across the switch, off in busy steps and on again in quiet
+    /// ones.
+    @Test("Switching dirty tracking at run time sends the same frames with the tables on and off", arguments: dirtyIdentityEncodings.map(\.0))
+    func runTimeDirtySwitch(encodingName: String) async throws {
+        let encoding = try #require(dirtyIdentityEncodings.first { $0.0 == encodingName }?.1)
         let pathHashes = try dirtyIdentityPathHashes()
         var frames: [[(target: String, data: Data)]] = []
-        var samples: [UInt64] = []
-        var dirtyTracking: [[Bool]] = []
         for tables in [true, false] {
-            let run = await DirtyIdentityRun(envConfig: config(tables: tables), encoding: .messagepack, pathHashes: pathHashes)
-            var decisions: [Bool] = []
+            var config = dirtyIdentityConfig(dirtyTracking: true)
+            config.useSyncTables = tables
+            let run = await DirtyIdentityRun(envConfig: config, encoding: encoding, pathHashes: pathHashes)
             try await run.runScript()
-            decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
+            await run.adapter.setDirtyTrackingEnabled(false)
             for round in 0..<12 {
                 // The round, the title and every player's position.
                 try await run.step(1, move: 1, title: "b\(round)")
                 await run.sync()
-                decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
             }
-            for round in 0..<24 {
+            #expect(await !run.adapter.dirtyTrackingEnabledForTesting())
+            await run.adapter.setDirtyTrackingEnabled(true)
+            for round in 0..<12 {
                 // The round and the title.
                 try await run.step(1, title: "q\(round)")
                 await run.sync()
-                decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
             }
+            #expect(await run.adapter.usesSyncTablesForTesting() == tables)
             frames.append(await run.transport.sent)
-            samples.append(await run.adapter.changeMetricsSamplesForTesting())
-            dirtyTracking.append(decisions)
         }
-        expectSameFrames(frames[0], frames[1], "metrics, sample every \(sampleEvery)")
-        #expect(samples[0] > 0, "the metrics were collected")
-        #expect(samples[0] == samples[1], "the same syncs were measured")
-        #expect(dirtyTracking[0] == dirtyTracking[1], "the same dirty-tracking decisions, sync by sync")
-        // The script must make the auto switch act, or two constant arrays would pass.
-        #expect(dirtyTracking[0].contains(true) && dirtyTracking[0].contains(false), "the switch flipped: \(dirtyTracking[0])")
+        expectSameFrames(frames[0], frames[1], "run-time dirty switch, \(encodingName)")
     }
 
     @Test("The dirty-tracking land's broadcast fields are typed")
@@ -232,13 +188,6 @@ struct SyncTablesByteIdentityTests {
             enableDirtyTracking: true,
             useSnapshotForSync: true,
             syncStrategy: .fullSnapshot,
-            enableChangeObjectMetrics: false,
-            changeObjectMetricsLogEvery: 10,
-            changeObjectMetricsEmaAlpha: 0.2,
-            enableAutoDirtyTracking: false,
-            autoDirtyOffThreshold: 0.55,
-            autoDirtyOnThreshold: 0.30,
-            autoDirtyRequiredConsecutiveSamples: 30,
             profilingConfig: nil
         )
         config.useSyncTables = true

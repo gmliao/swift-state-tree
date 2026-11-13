@@ -364,3 +364,7 @@ The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-bet
   `single-room-entity-scaling` both used `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected,
   and the pre-refreeze record's drift table confirms it. Both topics' current records take the
   shipped path (`USE_SNAPSHOT_FOR_SYNC` unset), after the fix.
+
+## Reruns from the sync tables default on
+
+From the commit that made the typed sync tables the default and removed the auto dirty switch, EncodingBenchmark runs without `--dirty-tracking` record `dirtyTracking: on`, where the results here ran the adapter's default, the auto switch (it started on and could switch off; their metadata records the `AUTO_DIRTY_*` keys unset). A rerun from then on also runs the broadcast diff on the typed tables with typed leaf values; the frames are the same bytes.

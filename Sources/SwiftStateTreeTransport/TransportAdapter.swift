@@ -147,16 +147,6 @@ extension StateUpdate {
     }
 }
 
-/// Input of the change-object metrics, applied by the commit.
-struct SyncPhaseMetrics {
-    let updates: [StateUpdate]
-    let broadcastSnapshot: StateSnapshot
-    /// On the tables: the root dictionaries of nodes, left out of `broadcastSnapshot`, by their
-    /// entry count (nil: the full snapshot would leave the field out). Nil: `broadcastSnapshot`
-    /// holds every field.
-    var nodeMapEntries: [String: Int?]? = nil
-}
-
 /// The broadcast-only cycle's log line, written by the commit.
 struct SyncPhaseBroadcastLog {
     let patchCount: Int
@@ -175,13 +165,12 @@ struct SyncPhaseBroadcastLog {
 ///   membership stamps) directly; that is synchronous and fine until the sync phase runs inside
 ///   the keeper's turn.
 /// - **commit** (`commitSyncPhase`): writes the staged caches and firstSync marks, removes the
-///   consumed events, applies the metric and dirty-tracking updates, and enqueues the frames as
-///   one writer element.
+///   consumed events, and enqueues the frames as one writer element.
 ///
 /// Neither an encode failure nor an extraction failure fails a plan: the update is re-encoded
 /// without the patches that do not encode, and a field whose snapshot conversion throws is left
 /// out (`droppedUpdates`). A plan that still throws (only the test fault hook does) commits
-/// nothing: caches, firstSync marks, events and metrics are unchanged. Its dirty fields are merged
+/// nothing: caches, firstSync marks and events are unchanged. Its dirty fields are merged
 /// into the next plan's (`TransportAdapter.carriedDirtyFields`), and the next committed full plan
 /// resets the key scopes (`TransportAdapter.keyScopeResetPending`).
 /// One sync plan's phase times: snapshot extraction (broadcast and per-player in one call), the
@@ -256,10 +245,6 @@ struct SyncPhasePlan {
     var heldEventsEnd = 0
     /// In-turn joiners whose firstSync did not encode, not even empty: not flipped (#69).
     var encodeSkippedJoiners: [SessionID] = []
-    /// Change-object metric input; `nil` when metrics are not collected.
-    var metrics: SyncPhaseMetrics?
-    /// The commit counts this sync toward the metrics sampling (`AUTO_DIRTY_SAMPLE_EVERY`).
-    var countsChangeMetricsSync = false
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
     /// What the plan intends to send, per scope, for the sync stream; nil unless the land records
     /// it (`TransportAdapter.digestsPlans`).
@@ -547,14 +532,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         keyScopeResetPending
     }
 
-    /// Tests only: whether dirty tracking is on now (auto dirty tracking may have switched it).
+    /// Tests only: whether dirty tracking is on now.
     func dirtyTrackingEnabledForTesting() -> Bool {
         enableDirtyTracking
-    }
-
-    /// Tests only: how many syncs the change-object metrics measured.
-    func changeMetricsSamplesForTesting() -> UInt64 {
-        dirtyTrackingMetricsState.syncCount
     }
 
     /// Dirty fields of failed plans, merged into the next plan's (tests).
@@ -573,17 +553,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// The broadcast diff runs on the sync tables.
-    /// The last change-object metric: changed objects and the estimated total, or nil before
-    /// the first.
-    func lastChangeMetricsForTesting() -> (changed: Int, total: Int)? {
-        lastChangeMetrics
-    }
-
-    /// The change-object metric's state: its EMA and samples so far.
-    func changeRateEmaForTesting() -> (ema: Double, samples: UInt64) {
-        (dirtyTrackingMetricsState.changeRateEma, dirtyTrackingMetricsState.syncCount)
-    }
-
     func usesSyncTablesForTesting() -> Bool {
         broadcastTables != nil
     }
@@ -723,38 +692,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Overridable at runtime via `SYNC_STRATEGY`.
     private let syncStrategy: SyncStrategy
 
-    /// Enable logging of changed-vs-unchanged object ratio per sync.
-    /// Disabled by default. Enable with ENABLE_CHANGE_OBJECT_METRICS=true.
-    private let enableChangeObjectMetrics: Bool
-    /// Log interval (sync cycles) for change-object metrics.
-    private let changeObjectMetricsLogEvery: Int
-    /// Dirty tracking metrics calculator (pure computation, no async/await).
-    private let dirtyTrackingMetrics: DirtyTrackingMetrics
-    /// Mutable state for dirty tracking metrics calculation.
-    private var dirtyTrackingMetricsState: DirtyTrackingMetrics.State
-    
-    /// Auto-switch dirty tracking based on changeRateEma (hysteresis).
-    /// Enabled by default. Set AUTO_DIRTY_TRACKING=false to disable.
-    private let enableAutoDirtyTracking: Bool
-    /// When dirty tracking is ON and EMA >= this threshold for N consecutive samples, switch OFF.
-    private let autoDirtyOffThreshold: Double
-    /// When dirty tracking is OFF and EMA <= this threshold for N consecutive samples, switch ON.
-    private let autoDirtyOnThreshold: Double
-    /// Required consecutive samples before switching dirty tracking mode: the configured syncs,
-    /// in samples (`DirtyTrackingSampling.requiredSamples(forSyncs:)`).
-    private let autoDirtyRequiredConsecutiveSamples: Int
-    /// Which syncs collect change-object metrics (`AUTO_DIRTY_SAMPLE_EVERY`, #391).
-    private let dirtyTrackingSampling: DirtyTrackingSampling
-    /// Syncs that could collect change-object metrics so far, counted by the commit; the plan
-    /// reads it to decide whether its sync is a sample.
-    private var changeMetricsSyncIndex: UInt64 = 0
-    /// On the tables, the metric takes root dictionaries of nodes from their entry counts
-    /// (`TransportEnvConfig.changeMetricsFromRows`).
-    private let changeMetricsFromRows: Bool
-    /// The last change-object metric computed: changed objects and the estimated total (tests).
-    private var lastChangeMetrics: (changed: Int, total: Int)?
-    private var autoDirtyOffCandidateCount: Int = 0
-    private var autoDirtyOnCandidateCount: Int = 0
 
 
     /// Expected schema hash for version verification.
@@ -1383,17 +1320,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             self.broadcastTables = nil
         }
-        self.enableChangeObjectMetrics = envConfig.enableChangeObjectMetrics
-        self.changeObjectMetricsLogEvery = envConfig.changeObjectMetricsLogEvery
-        let sampling = DirtyTrackingSampling(every: envConfig.autoDirtySampleEvery)
-        self.dirtyTrackingSampling = sampling
-        self.dirtyTrackingMetrics = DirtyTrackingMetrics(emaAlpha: sampling.sampledAlpha(envConfig.changeObjectMetricsEmaAlpha))
-        self.dirtyTrackingMetricsState = DirtyTrackingMetrics.State()
-        self.enableAutoDirtyTracking = envConfig.enableAutoDirtyTracking
-        self.changeMetricsFromRows = envConfig.changeMetricsFromRows
-        self.autoDirtyOffThreshold = envConfig.autoDirtyOffThreshold
-        self.autoDirtyOnThreshold = envConfig.autoDirtyOnThreshold
-        self.autoDirtyRequiredConsecutiveSamples = sampling.requiredSamples(forSyncs: envConfig.autoDirtyRequiredConsecutiveSamples)
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
 
@@ -1479,14 +1405,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "syncTables": .string(usesSyncTables ? "on" : "off"),
             "typedLeafValues": .string(usesSyncTables && envConfig.typedLeafValues ? "on" : "off"),
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
-            "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ",")),
-            "changeObjectMetrics": .string(envConfig.enableChangeObjectMetrics ? "on" : "off"),
-            "autoDirtyTracking": .string(envConfig.enableAutoDirtyTracking ? "on" : "off"),
-            "autoDirtyOffThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOffThreshold)),
-            "autoDirtyOnThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOnThreshold)),
-            "autoDirtyRequiredSamples": .string("\(envConfig.autoDirtyRequiredConsecutiveSamples)"),
-            "autoDirtySampleEvery": .string("\(envConfig.autoDirtySampleEvery)")
+            "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ","))
         ])
+        // Taken only by a logger that prints warnings, so a quiet adapter (a benchmark's) doesn't
+        // use up the process's one report.
+        let removedKeys = self.logger.logLevel <= .warning ? TransportRemovedEnvKeys.shared.takeFirst() : []
+        if !removedKeys.isEmpty {
+            self.logger.warning("Removed environment keys are set and ignored: the auto dirty switch and the change-object metric no longer exist; dirty tracking follows ENABLE_DIRTY_TRACKING", metadata: [
+                "keys": .string(removedKeys.joined(separator: ","))
+            ])
+        }
         if rowAddressingRequested && !rowAddressing {
             self.logger.warning("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
                 "landID": .string(landID),
@@ -2942,7 +2870,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard let state = state as? State else {
             preconditionFailure("runSyncPhaseInTurn called with a state of another land type")
         }
-        // Read once: the auto-switch in the commit may change `enableDirtyTracking`.
+        // Read once: `setDirtyTrackingEnabled` may change `enableDirtyTracking` while the phase runs.
         let clearDirtyFlags = enableDirtyTracking
         let joiners = readyInTurnJoins(limit: joinFlipBudgetForTesting ?? JoinFlipConfig.budget).map { entry in
             SyncPhaseJoiner(
@@ -3222,7 +3150,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
-        // here, once: the auto-switch in the commit may change `enableDirtyTracking`.
+        // here, once: `setDirtyTrackingEnabled` may change `enableDirtyTracking` meanwhile.
         let needsFollowUp = await withSyncState(
             clearDirtyFlags: enableDirtyTracking,
             broadcastOnly: false,
@@ -4271,8 +4199,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The commit of a sync phase: synchronous, in the same actor turn as its plan.
     ///
-    /// Writes the staged caches and firstSync marks, removes the events the plan consumed, applies
-    /// the metric and dirty-tracking updates, and enqueues the frames as one writer element. Dirty
+    /// Writes the staged caches and firstSync marks, removes the events the plan consumed, and
+    /// enqueues the frames as one writer element. Dirty
     /// flags were cleared by the keeper when `beginSync` took the copy (#68); a committed full plan
     /// ends the carry of failed plans' dirty fields, and one that reset the key scopes ends a
     /// pending reset.
@@ -4405,12 +4333,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for sessionID in overflowed {
             failInTurnJoin(sessionID: sessionID, reason: .eventOverflow)
         }
-        if plan.countsChangeMetricsSync {
-            changeMetricsSyncIndex &+= 1
-        }
-        if let metrics = plan.metrics {
-            logChangeObjectMetrics(updates: metrics.updates, broadcastSnapshot: metrics.broadcastSnapshot, nodeMapEntries: metrics.nodeMapEntries)
-        }
         if let log = plan.broadcastOnlyLog {
             logBroadcastSync(patchCount: log.patchCount, bytes: log.bytes, mode: log.mode)
         }
@@ -4468,11 +4390,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
         let extractAll = fullSnapshot
         var drops = ExtractionDrops()
-        let collectsChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
-        // One sync in `AUTO_DIRTY_SAMPLE_EVERY` is measured; the others skip the metric work.
-        let shouldCollectChangeMetrics = collectsChangeMetrics
-            && dirtyTrackingSampling.isSample(syncIndex: changeMetricsSyncIndex)
-        plan.countsChangeMetricsSync = collectsChangeMetrics
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state, extractAll: extractAll)
         // `extractSyncSnapshots` may extract with a different mode than requested
         // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from
@@ -4550,19 +4467,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             || (usesBroadcastKeyTable && broadcastKeysMayBeDefined && !unsyncedRecipients.isEmpty)
         plan.resetsKeyScopes = resetsKeyScopes && !recipients.isEmpty
 
-        var metricUpdates: [StateUpdate] = []
         var pendingUpdates: [PendingSyncUpdate]
         if useStateUpdateWithEvents {
             let framesBefore = plan.frames.count
-            if let broadcastUpdate = try planMergedBroadcastFrame(
+            try planMergedBroadcastFrame(
                 broadcastDiff: broadcastDiff,
                 recipients: recipients,
                 events: events,
                 resetsKeyScope: resetsKeyScopes,
                 into: &plan
-            ), shouldCollectChangeMetrics {
-                metricUpdates.append(broadcastUpdate)
-            }
+            )
             // The broadcast key-scope reset this plan's resyncs caused, and its bytes (#332).
             if resetsKeyScopes && !requestedKeyScopeReset && !plan.syncLag.resyncPlayers.isEmpty {
                 plan.syncLag.causedKeyScopeReset = true
@@ -4646,59 +4560,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // After the full views: their drops are this plan's extraction drops too.
         plan.digest?.noteDrops(drops)
         plan.noteExtractionDrops(drops)
-        if shouldCollectChangeMetrics {
-            metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
-            // On the tables no broadcast snapshot was extracted: the metric (one sync in
-            // `AUTO_DIRTY_SAMPLE_EVERY`) extracts its own, with the mode the diff used. A field
-            // that throws takes the tables' last-sent value, as it takes the cache's today; its
-            // drop was already noted by the diff.
-            var metricSnapshot = broadcastSnapshot
-            var nodeMapEntries: [String: Int?]?
-            if let broadcastTables {
-                // Root dictionaries of nodes count by their entries, unconverted
-                // (`metricNodeMapEntries`); every other field is extracted as today.
-                var extractMode = broadcastMode
-                if changeMetricsFromRows {
-                    let entries = broadcastTables.metricNodeMapEntries(
-                        state, fields: broadcastMode.fields, dropped: drops.broadcastFields
-                    )
-                    let rest = (broadcastMode.fields ?? Set(
-                        state.getSyncFields().filter { $0.policyType == .broadcast }.map(\.name)
-                    )).subtracting(entries.keys)
-                    extractMode = .include(rest)
-                    nodeMapEntries = entries
-                }
-                if case .include(let rest) = extractMode, rest.isEmpty {
-                    metricSnapshot = StateSnapshot(values: [:])
-                } else {
-                    var metricDrops = ExtractionDrops()
-                    metricSnapshot = syncEngine.extractBroadcastSnapshot(
-                        from: state,
-                        mode: extractMode,
-                        drops: &metricDrops,
-                        broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
-                    )
-                }
-                #if DEBUG
-                // Against the full snapshot on one metric sync in 16: the oracle's numbers.
-                if let nodeMapEntries, changeMetricsSyncIndex % 16 == 0 {
-                    var oracleDrops = ExtractionDrops()
-                    let full = syncEngine.extractBroadcastSnapshot(
-                        from: state,
-                        mode: broadcastMode,
-                        drops: &oracleDrops,
-                        broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
-                    )
-                    let fast = changeCounts(updates: metricUpdates, snapshot: metricSnapshot, nodeMapEntries: nodeMapEntries)
-                    let oracle = changeCounts(updates: metricUpdates, snapshot: full, nodeMapEntries: nil)
-                    if fast != oracle {
-                        SyncTableContract.report("change-object metric from rows \(fast) differs from the full snapshot's \(oracle)")
-                    }
-                }
-                #endif
-            }
-            plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: metricSnapshot, nodeMapEntries: nodeMapEntries)
-        }
         planPerPlayerFrames(
             pendingUpdates,
             recipients: recipients,
@@ -4865,7 +4726,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
-    /// events. Returns the broadcast update (for the metrics), `nil` when no frame is planned.
+    /// events, when there is anything to send.
     /// With `resetsKeyScope` it is always planned, typed `.firstSync` (broadcast key scope reset).
     /// If it fails to encode, it is re-encoded typed `.firstSync` without the patches that do not
     /// encode (broadcast key scope reset, the same frame for every recipient); if even an empty
@@ -4876,9 +4737,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         events: PendingEventManager,
         resetsKeyScope: Bool,
         into plan: inout SyncPhasePlan
-    ) throws -> StateUpdate? {
+    ) throws {
         guard resetsKeyScope || !broadcastDiff.isEmpty || events.hasAnyEvents else {
-            return nil
+            return
         }
         guard let first = recipients.first else {
             // No recipient (every member is in initial sync): drop the queued events, as before.
@@ -4888,7 +4749,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 targeted: events.targetedEventCount,
                 broadcast: events.broadcastEventCount
             )
-            return nil
+            return
         }
 
         let broadcastUpdate: StateUpdate = resetsKeyScope
@@ -4909,13 +4770,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             for recipient in recipients {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
-            return nil
+            return
         }
         for recipient in recipients {
             plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
         }
         plan.stateUpdateCount += recipients.count
-        return broadcastUpdate
     }
 
     /// `encodeMergedBroadcastFrame`; on failure, the update without the patches that do not encode,
@@ -5731,183 +5591,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
-    private func extractPatches(from update: StateUpdate) -> [StatePatch] {
-        switch update {
-        case .noChange:
-            return []
-        case .firstSync(let patches), .diff(let patches):
-            return patches
-        }
-    }
     
-    private func isLikelyCollectionObject(_ object: [String: SnapshotValue]) -> Bool {
-        if object.isEmpty {
-            return false
-        }
-        var nestedCount = 0
-        for value in object.values {
-            switch value {
-            case .object, .array:
-                nestedCount += 1
-            default:
-                break
-            }
-        }
-        return nestedCount > 0 && nestedCount * 2 >= object.count
-    }
-    
-    /// `nodeMapEntries` (`SyncPhaseMetrics`): root dictionaries of nodes left out of `snapshot`,
-    /// by their entry count. Every entry of such a field is an object, so it counts as the
-    /// snapshot's object would: its entries when it has any, else 1; nothing when it is absent.
-    private func estimateTotalSyncObjects(from snapshot: StateSnapshot, nodeMapEntries: [String: Int?]? = nil) -> Int {
-        var total = 0
-        for case let count? in (nodeMapEntries ?? [:]).values {
-            total += count > 0 ? count : 1
-        }
-        for value in snapshot.values.values {
-            switch value {
-            case .object(let object):
-                if isLikelyCollectionObject(object) {
-                    total += object.count
-                } else {
-                    total += 1
-                }
-            default:
-                total += 1
-            }
-        }
-        return max(0, total)
-    }
-    
-    /// `nodeMapEntries`: as in `estimateTotalSyncObjects`. A patch under such a field is keyed
-    /// as the snapshot's object would key it: every entry is an object, and a missing entry
-    /// falls to the collection test, so with entries the key is the field and the second
-    /// segment, whatever that segment is; empty or absent, the field.
-    private func objectKeyFromPatchPath(_ path: String, snapshot: StateSnapshot, nodeMapEntries: [String: Int?]? = nil) -> String? {
-        let segments = path
-            .split(separator: "/", omittingEmptySubsequences: true)
-            .map(String.init)
-        guard let top = segments.first else { return nil }
-
-        if let entries = nodeMapEntries?[top] {
-            if let count = entries, count > 0, segments.count >= 2 {
-                return "/\(top)/\(segments[1])"
-            }
-            return "/\(top)"
-        }
-        
-        guard let topValue = snapshot.values[top] else {
-            return "/\(top)"
-        }
-        
-        if case .object(let object) = topValue,
-           segments.count >= 2 {
-            let second = segments[1]
-            if let child = object[second] {
-                switch child {
-                case .object, .array:
-                    return "/\(top)/\(second)"
-                default:
-                    break
-                }
-            }
-            if isLikelyCollectionObject(object) {
-                return "/\(top)/\(second)"
-            }
-        }
-        
-        return "/\(top)"
-    }
-    
-    /// The metric's two numbers for `updates` against `snapshot` (and `nodeMapEntries`), as
-    /// `DirtyTrackingMetrics.calculate` computes them, without its state.
-    private func changeCounts(updates: [StateUpdate], snapshot: StateSnapshot, nodeMapEntries: [String: Int?]?) -> (changed: Int, total: Int) {
-        var keys = Set<String>()
-        for update in updates {
-            for patch in extractPatches(from: update) {
-                if let key = objectKeyFromPatchPath(patch.path, snapshot: snapshot, nodeMapEntries: nodeMapEntries) {
-                    keys.insert(key)
-                }
-            }
-        }
-        return (keys.count, max(estimateTotalSyncObjects(from: snapshot, nodeMapEntries: nodeMapEntries), keys.count))
-    }
-
-    private func logChangeObjectMetrics(
-        updates: [StateUpdate],
-        broadcastSnapshot: StateSnapshot,
-        nodeMapEntries: [String: Int?]?
-    ) {
-        // Use calculator for pure computation (no await, easily testable)
-        let result = dirtyTrackingMetrics.calculate(
-            updates: updates,
-            broadcastSnapshot: broadcastSnapshot,
-            state: &dirtyTrackingMetricsState,
-            extractPatches: extractPatches,
-            estimateTotalObjects: { self.estimateTotalSyncObjects(from: $0, nodeMapEntries: nodeMapEntries) },
-            objectKeyFromPath: { self.objectKeyFromPatchPath($0, snapshot: $1, nodeMapEntries: nodeMapEntries) }
-        )
-        lastChangeMetrics = (result.changedObjects, result.estimatedTotalObjects)
-        
-        // Handle side effects (auto-switch dirty tracking, logging)
-        maybeAutoSwitchDirtyTracking(changeRateEma: result.changeRateEma)
-        
-        if enableChangeObjectMetrics, Int(dirtyTrackingMetricsState.syncCount % UInt64(changeObjectMetricsLogEvery)) == 0 {
-            logger.info("📊 Change-object metrics", metadata: [
-                "landID": .string(landID),
-                "changedObjects": .string("\(result.changedObjects)"),
-                "unchangedObjects": .string("\(result.unchangedObjects)"),
-                "estimatedTotalObjects": .string("\(result.estimatedTotalObjects)"),
-                "changeRate": .string(String(format: "%.4f", result.changeRate)),
-                "changeRateEma": .string(String(format: "%.4f", result.changeRateEma)),
-                "dirtyTracking": .string(enableDirtyTracking ? "on" : "off"),
-                "samples": .string("\(dirtyTrackingMetricsState.syncCount)")
-            ])
-        }
-    }
-    
-    private func maybeAutoSwitchDirtyTracking(changeRateEma: Double) {
-        guard enableAutoDirtyTracking else { return }
-        
-        if enableDirtyTracking {
-            autoDirtyOnCandidateCount = 0
-            if changeRateEma >= autoDirtyOffThreshold {
-                autoDirtyOffCandidateCount += 1
-                if autoDirtyOffCandidateCount >= autoDirtyRequiredConsecutiveSamples {
-                    enableDirtyTracking = false
-                    autoDirtyOffCandidateCount = 0
-                    logger.notice("🔄 Auto-switch dirty tracking", metadata: [
-                        "landID": .string(landID),
-                        "newMode": .string("off"),
-                        "changeRateEma": .string(String(format: "%.4f", changeRateEma)),
-                        "offThreshold": .string(String(format: "%.4f", autoDirtyOffThreshold)),
-                        "requiredSamples": .string("\(autoDirtyRequiredConsecutiveSamples)")
-                    ])
-                }
-            } else {
-                autoDirtyOffCandidateCount = 0
-            }
-        } else {
-            autoDirtyOffCandidateCount = 0
-            if changeRateEma <= autoDirtyOnThreshold {
-                autoDirtyOnCandidateCount += 1
-                if autoDirtyOnCandidateCount >= autoDirtyRequiredConsecutiveSamples {
-                    enableDirtyTracking = true
-                    autoDirtyOnCandidateCount = 0
-                    logger.notice("🔄 Auto-switch dirty tracking", metadata: [
-                        "landID": .string(landID),
-                        "newMode": .string("on"),
-                        "changeRateEma": .string(String(format: "%.4f", changeRateEma)),
-                        "onThreshold": .string(String(format: "%.4f", autoDirtyOnThreshold)),
-                        "requiredSamples": .string("\(autoDirtyRequiredConsecutiveSamples)")
-                    ])
-                }
-            } else {
-                autoDirtyOnCandidateCount = 0
-            }
-        }
-    }
-
     /// Encode updates serially. Every update is attempted, so a failure is attributed to exactly
     /// the recipients whose update failed.
     private func encodeUpdatesSerially(

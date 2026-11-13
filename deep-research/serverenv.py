@@ -4,17 +4,19 @@ syncs, for the topics that measure the shipped path (snapshot-baseline, entity-d
 visibility).
 
 - the sync path: USE_SNAPSHOT_FOR_SYNC, IN_TURN_SYNC, USE_SYNC_TABLES (#465: the adapter's broadcast
-  diff on the typed tables, default off), ROW_ADDRESSING (#487: row-addressed wire frames, which turn
-  the sync tables on; default off), TYPED_LEAF_VALUES (#513: leaf fields converted by their typed
-  form wherever the sync tables are in effect; default off), SYNC_STRATEGY (delta or full-snapshot: what every sync sends; the
+  diff on the typed tables; default off until the default flip, on since, =false opts out),
+  ROW_ADDRESSING (#487: row-addressed wire frames, which turn the sync tables on; default off),
+  TYPED_LEAF_VALUES (#513: leaf fields converted by their typed form wherever the sync tables are
+  in effect; default off until the same flip, on since), SYNC_STRATEGY (delta or full-snapshot: what every sync sends; the
   benchmark's --sync-strategy sets it in-process, so unsetting the shell's doesn't change a run). The
   first two of #465/#487 are listed before they reach main, so a shell that has one set can't
   change a run's sync path unrecorded;
 - the wire knobs: PATH_INDEX, FIELD_MERGE, DYNAMIC_KEY_COMPRESSION;
 - dirty tracking: ENABLE_DIRTY_TRACKING, the benchmark's own ENCODING_BENCHMARK_DIRTY_TRACKING,
-  AUTO_DIRTY_* (AUTO_DIRTY_SAMPLE_EVERY: which syncs the change rate is measured on, #391), and
-  CHANGE_OBJECT_METRICS_EMA_ALPHA (the change-rate EMA that the auto switch compares with its
-  thresholds);
+  and the removed auto switch's AUTO_DIRTY_* and CHANGE_OBJECT_METRICS_EMA_ALPHA. The switch and
+  its change-object metric were removed with the default flip of USE_SYNC_TABLES; their keys stay
+  listed, so older records still parse and a record with one set is still refused (the server
+  ignores them now, with a warning);
 - hero-defense's server events: HERO_DEFENSE_SERVER_EVENTS (the benchmark's --no-server-events
   flag is the topics' switch, not this variable);
 - the action-job caps (the action completion queue): ACTION_IN_FLIGHT_MAX_PER_SESSION,

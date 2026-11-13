@@ -38,13 +38,6 @@ private func frameIdentityConfig(tables: Bool, dirtyTracking: Bool) -> Transport
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: false,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
     config.syncTablesEnabled = tables
@@ -375,5 +368,33 @@ struct SyncTablesFrameIdentityTests {
             ],
             script: visibilityScript
         )
+    }
+
+    @Test("The card game", arguments: frameIdentityCells)
+    func cardGame(cell: String) async throws {
+        try await compare(
+            cell: cell, landID: "card-game:frame-identity", landType: "card-game",
+            definition: { CardGame.makeLand() },
+            // `hands` is a per-player slice, so it isn't on the tables. Every broadcast field is typed.
+            kinds: [
+                "players": .value, "publicCards": .value, "currentRound": .value, "gamePhase": .value,
+                "deckSize": .value, "turnOrder": .value, "currentPlayerIndex": .value,
+            ]
+        ) { run in
+            // Players draw on ticks, overflow their hands to the public pile, join, leave and come back.
+            try await run.join("alice")
+            try await run.join("bob")
+            await run.sync()
+            let ticks = frameIdentityFull ? 400 : 160
+            for tick in 0..<ticks {
+                if tick == ticks / 8 { try await run.join("carol") }
+                if tick == ticks / 3 { await run.leave("bob") }
+                if tick == ticks / 2 { try await run.join("bob") }
+                if tick == ticks * 3 / 4 { try await run.join("dave") }
+                await run.tick()
+                if tick % 2 == 1 { await run.sync() }
+            }
+            await run.sync()
+        }
     }
 }

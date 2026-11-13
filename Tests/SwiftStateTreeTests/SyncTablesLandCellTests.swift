@@ -43,24 +43,14 @@ private actor LandCellTransport: Transport {
     }
 }
 
-/// `autoDirty`: the change-object metric and the auto switch on, switching after
-/// `autoDirtySamples` samples (2 by default, so short scripts switch). `metricsFromRows`: `TransportEnvConfig.changeMetricsFromRows`.
-private func landCellConfig(tables: Bool, dirtyTracking: Bool, autoDirty: Bool = false, autoDirtySamples: Int = 2, metricsFromRows: Bool = true) -> TransportEnvConfig {
+private func landCellConfig(tables: Bool, dirtyTracking: Bool) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: autoDirty ? 0.5 : 0.2,
-        enableAutoDirtyTracking: autoDirty,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: autoDirty ? autoDirtySamples : 30,
         profilingConfig: nil
     )
     config.useSyncTables = tables
-    config.changeMetricsFromRows = metricsFromRows
     return config
 }
 
@@ -76,10 +66,7 @@ private struct LandCellRun<State: StateNodeProtocol> {
         tables: Bool,
         dirtyTracking: Bool,
         encoding: TransportEncodingConfig,
-        pathHashes: [String: UInt32]?,
-        autoDirty: Bool = false,
-        autoDirtySamples: Int = 2,
-        metricsFromRows: Bool = true
+        pathHashes: [String: UInt32]?
     ) async {
         transport = LandCellTransport()
         // No sync loop: syncs happen only where the script asks, so runs are comparable.
@@ -88,7 +75,7 @@ private struct LandCellRun<State: StateNodeProtocol> {
             keeper: keeper,
             transport: transport,
             landID: landID,
-            transportEnvConfig: landCellConfig(tables: tables, dirtyTracking: dirtyTracking, autoDirty: autoDirty, autoDirtySamples: autoDirtySamples, metricsFromRows: metricsFromRows),
+            transportEnvConfig: landCellConfig(tables: tables, dirtyTracking: dirtyTracking),
             encodingConfig: encoding,
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true
@@ -149,15 +136,6 @@ private struct LandCellRun<State: StateNodeProtocol> {
         await afterSync?()
         await sync()
         await afterSync?()
-    }
-
-    /// The change-object metric after the last sync, as one comparable line: changed objects,
-    /// total, the EMA and its samples, and the dirty tracking mode.
-    func metricLine() async -> String {
-        let metrics = await adapter.lastChangeMetricsForTesting()
-        let ema = await adapter.changeRateEmaForTesting()
-        let dirty = await adapter.dirtyTrackingEnabledForTesting()
-        return "\(metrics.map { "\($0.changed)/\($0.total)" } ?? "-") ema \(ema.ema) n \(ema.samples) dirty \(dirty)"
     }
 }
 
@@ -370,259 +348,4 @@ struct SyncTablesLandCellTests {
     func nestedPolicy(cell: String) async throws {
         try await compare(cell: cell, landID: "nested-policy-cell", definition: makeNestedPolicyCellLand, opCount: 26)
     }
-}
-
-// MARK: - The change-object metric from rows
-
-/// A value whose conversion throws while `broken` is set.
-struct MetricRowsFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
-    var broken = false
-    var value = 0
-    func toSnapshotValue() throws -> SnapshotValue {
-        if broken { throw MetricRowsFault() }
-        return .int(value)
-    }
-}
-
-struct MetricRowsFault: Error {}
-
-@StateNodeBuilder
-struct MetricRowsUnit: StateNodeProtocol {
-    @Sync(.broadcast) var hp: Int = 0
-    @Sync(.broadcast) var pos: Int = 0
-    @Sync(.broadcast) var fragile: MetricRowsFragile = MetricRowsFragile()
-    init() {}
-}
-
-/// Root dictionaries of nodes (by `String`, with the empty key and a key named after a node
-/// field, and by `Int`) beside a value field.
-@StateNodeBuilder
-struct MetricRowsState: StateNodeProtocol {
-    @Sync(.broadcast) var units: [String: MetricRowsUnit] = [:]
-    @Sync(.broadcast) var byInt: [Int: MetricRowsUnit] = [:]
-    @Sync(.broadcast) var score: Int = 0
-    init() {}
-}
-
-private let metricRowsKeys = ["", "hp", "a/b", "t~x", "e\u{301}", "\u{e9}", "pos"]
-
-private func makeMetricRowsLand() -> LandDefinition<MetricRowsState> {
-    Land("metric-rows-cell", using: MetricRowsState.self) {
-        ClientEvents { Register(LandCellStep.self) }
-        Rules {
-            HandleEvent(LandCellStep.self) { (state: inout MetricRowsState, step: LandCellStep, _: LandContext) in
-                let n = step.n
-                let key = metricRowsKeys[abs(n) % metricRowsKeys.count]
-                switch step.op {
-                case 0: state.units[key, default: MetricRowsUnit()].hp = n
-                case 1: state.units[key, default: MetricRowsUnit()].pos = n
-                case 2: state.units.removeValue(forKey: key)
-                case 3: state.units.removeAll()
-                case 4: state.units[key, default: MetricRowsUnit()].fragile.broken = true
-                case 5: state.units[key]?.fragile.broken = false
-                case 6: state.score = n
-                case 7: state.byInt[n % 3, default: MetricRowsUnit()].hp = n
-                default: state.byInt.removeValue(forKey: n % 3)
-                }
-            }
-        }
-    }
-}
-
-@Suite("The change-object metric from rows equals the full snapshot's", .timeLimit(.minutes(2)))
-struct ChangeMetricsFromRowsTests {
-    /// The metric after every sync of `script`, with the metric from rows and with the full
-    /// snapshot (the oracle), on the tables with the auto switch on.
-    private func traces<State: StateNodeProtocol>(
-        definition: @escaping () -> LandDefinition<State>,
-        landID: String,
-        dirtyTracking: Bool,
-        script: (LandCellRun<State>, @escaping () async -> Void) async throws -> Void
-    ) async throws -> [[String]] {
-        var result: [[String]] = []
-        for fromRows in [true, false] {
-            let run = await LandCellRun<State>(
-                definition: definition(), landID: landID, tables: true, dirtyTracking: dirtyTracking,
-                encoding: .messagepack, pathHashes: try landCellPathHashes(definition(), landID: landID),
-                autoDirty: true, metricsFromRows: fromRows
-            )
-            let lines = LandCellLines()
-            try await script(run) { await lines.append(await run.metricLine()) }
-            result.append(await lines.lines)
-        }
-        return result
-    }
-
-    @Test("The nested-policy land, sync by sync", arguments: [true, false])
-    func nestedPolicy(dirtyTracking: Bool) async throws {
-        let ops = scriptedOps(opCount: 26, count: 26 * 6)
-        let t = try await traces(definition: makeNestedPolicyCellLand, landID: "nested-policy-cell", dirtyTracking: dirtyTracking) { run, after in
-            try await run.runScript(ops: ops, afterSync: after)
-        }
-        #expect(t[0].count > 40)
-        #expect(t[0] == t[1], "\(zip(t[0], t[1]).enumerated().filter { $0.element.0 != $0.element.1 }.prefix(3))")
-        // Starting off, the auto switch turns dirty tracking on during the script (starting on,
-        // this land's change rate stays under the off threshold).
-        if dirtyTracking {
-            #expect(t[0].allSatisfy { $0.hasSuffix("dirty true") }, "\(t[0])")
-        } else {
-            #expect(Set(t[0].map { $0.hasSuffix("dirty true") }).count == 2, "\(t[0])")
-        }
-    }
-
-    @Test("Root dictionaries of nodes: the empty key, escaped and respelled keys, emptying, throws", arguments: [true, false])
-    func explicitCases(dirtyTracking: Bool) async throws {
-        // `n` picks the key (`n % 7`) and is the value written: 7 is the empty key with a value
-        // that differs from the default 0.
-        let empty = 7, hp = 1, slash = 2, tilde = 3, nfd = 4, nfc = 5
-        let t = try await traces(definition: makeMetricRowsLand, landID: "metric-rows-cell", dirtyTracking: dirtyTracking) { run, after in
-            // A throw before the first seed: the row converts nowhere, `units` is unseeded.
-            try await run.step(4, empty)
-            try await run.join("alice")
-            await run.sync(); await after()
-            try await run.step(5, empty)
-            await run.sync(); await after()
-            // The empty key's row changed beside a row named after a node field.
-            try await run.step(0, empty)
-            try await run.step(1, empty)
-            try await run.step(0, hp)
-            await run.sync(); await after()
-            // Only the empty key's row: two nested fields, two keys today (`/units/hp`,
-            // `/units/pos`), whatever the row's own key.
-            try await run.step(0, empty + 7)
-            try await run.step(1, empty + 7)
-            await run.sync(); await after()
-            // A throw after the seed: `units` takes last-sent.
-            try await run.step(4, hp)
-            try await run.step(0, slash)
-            await run.sync(); await after()
-            try await run.step(5, hp)
-            await run.sync(); await after()
-            // The empty key's row deleted, then every row.
-            try await run.step(2, empty)
-            await run.sync(); await after()
-            try await run.step(3, 0)
-            await run.sync(); await after()
-            try await run.step(0, slash)
-            try await run.step(0, tilde)
-            try await run.step(0, nfd)
-            await run.sync(); await after()
-            try await run.step(2, nfc)
-            try await run.step(0, nfc)
-            try await run.step(6, 9)
-            await run.sync(); await after()
-            // A second player joins: its firstSync is its own plan, outside the metric (the
-            // view that reaches the metric is tested in `unsyncedRecipientView`).
-            try await run.join("bob")
-            await run.sync(); await after()
-            for n in 0..<24 {
-                try await run.step(n % 9, n)
-                if n % 2 == 1 { await run.sync(); await after() }
-            }
-        }
-        #expect(t[0].count > 15)
-        #expect(t[0] == t[1], "\(zip(t[0], t[1]).enumerated().filter { $0.element.0 != $0.element.1 }.prefix(3))")
-    }
-}
-
-extension ChangeMetricsFromRowsTests {
-    /// A recipient whose firstSync failed gets its whole view inside the next sync, and that view
-    /// is one of the metric's updates. With dirty tracking on, the sync's mode holds only the
-    /// changed `score`, so `units` is out of the mode; with it off, `units` is in it with two
-    /// rows.
-    @Test("An unsynced recipient's view reaches the metric, its node map in and out of the mode", arguments: [true, false])
-    func unsyncedRecipientView(dirtyTracking: Bool) async throws {
-        var lines: [[String]] = []
-        var changed: [Int] = []
-        for (fromRows, failFirstSync) in [(true, true), (false, true), (true, false)] {
-            let run = await LandCellRun<MetricRowsState>(
-                definition: makeMetricRowsLand(), landID: "metric-rows-cell", tables: true, dirtyTracking: dirtyTracking,
-                encoding: .messagepack, pathHashes: try landCellPathHashes(makeMetricRowsLand(), landID: "metric-rows-cell"),
-                // The metric runs; the mode holds for this short script.
-                autoDirty: true, autoDirtySamples: 1000, metricsFromRows: fromRows
-            )
-            try await run.join("alice")
-            try await run.step(0, 2)
-            try await run.step(0, 3)
-            await run.sync()
-            // A failed plan schedules a follow-up sync 100 ms later (no loops run here). Hold it,
-            // so the traced sync below is the one that carries bob's view, on every path and
-            // load; it is let go at the end of the run.
-            let followUps = MetricRowsGate()
-            await run.adapter.installHolds(HoldRegistry.at(.failedPlanFollowUp) { await followUps.arrive() })
-            defer { followUps.open() }
-            if failFirstSync {
-                let once = MetricRowsFailOnce()
-                await run.adapter.setFirstSyncPlanFaultForTesting { try once.fire() }
-                try await run.join("bob")
-                #expect(once.didFire)
-                await run.adapter.setFirstSyncPlanFaultForTesting(nil)
-            } else {
-                try await run.join("bob")
-            }
-            try await run.step(6, 5)
-            await run.sync()
-            lines.append([await run.metricLine()])
-            changed.append(try #require(await run.adapter.lastChangeMetricsForTesting()).changed)
-        }
-        #expect(lines[0] == lines[1], "rows \(lines[0]), oracle \(lines[1])")
-        #expect(lines[0][0].hasSuffix("dirty \(dirtyTracking)"), "\(lines[0])")
-        // The control (bob synced) counts the broadcast `score` patch alone. The view sets each
-        // root field whole, so it adds `/units` and `/byInt` (one key each, whatever the rows),
-        // in and out of the mode. The mode shows in the total: out of it (dirty on) the maps add
-        // nothing to the estimate, so the total is the changed count; in it (dirty off) `units`
-        // adds its 2 rows and the empty `byInt` 1, beside `score`.
-        #expect(changed == [3, 3, 1], "\(changed)")
-        #expect(lines[0][0].hasPrefix(dirtyTracking ? "3/3 " : "3/4 "), "\(lines[0])")
-    }
-}
-
-/// Suspends every arrival until `open()`.
-final class MetricRowsGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func arrive() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            if isOpen {
-                lock.unlock()
-                continuation.resume()
-            } else {
-                waiters.append(continuation)
-                lock.unlock()
-            }
-        }
-    }
-
-    func open() {
-        lock.lock()
-        isOpen = true
-        let resumed = waiters
-        waiters.removeAll()
-        lock.unlock()
-        resumed.forEach { $0.resume() }
-    }
-}
-
-/// Throws on its first call only.
-final class MetricRowsFailOnce: @unchecked Sendable {
-    struct Fault: Error {}
-    private let lock = NSLock()
-    private var fired = false
-    var didFire: Bool { lock.withLock { fired } }
-    func fire() throws {
-        let first = lock.withLock { () -> Bool in
-            defer { fired = true }
-            return !fired
-        }
-        if first { throw Fault() }
-    }
-}
-
-/// Lines collected across `await`s.
-private actor LandCellLines {
-    var lines: [String] = []
-    func append(_ line: String) { lines.append(line) }
 }
