@@ -560,6 +560,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         enableDirtyTracking
     }
 
+    /// Whether `sessionID` has a current session ticket (tests).
+    func hasSessionTicketForTesting(_ sessionID: SessionID) -> Bool {
+        sessionTickets.ticket(for: sessionID) != nil
+    }
+
     /// Dirty fields of failed plans, merged into the next plan's (tests).
     func carriedDirtyFieldsForTesting() -> Set<String> {
         carriedDirtyFields
@@ -1716,8 +1721,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // The item's ticket, taken when it is enqueued: every later step receives it, and none
         // issues one after an `await` (#531). A teardown, which runs outside the queue, or a
         // disconnect of the session queued ahead ends it, and then the registration does nothing.
-        let existingTicket = sessionTickets.ticket(for: sessionID)
-        let ticket = existingTicket ?? sessionTickets.issue(sessionID)
+        // A ticket issued here is held by every registration queued with it until the last one
+        // is done (`releaseRegistrationTicket`).
+        let ticket: Ticket<SessionID>
+        if let existing = sessionTickets.ticket(for: sessionID) {
+            ticket = existing
+            if registrationTicketHolders[sessionID]?.ticket == existing {
+                registrationTicketHolders[sessionID]?.holders += 1
+            }
+        } else {
+            ticket = sessionTickets.issue(sessionID)
+            registrationTicketHolders[sessionID] = RegistrationTicketHolders(ticket: ticket, holders: 1)
+        }
         do {
             try await enqueueMembership {
                 await self.registerSessionCheckingKeeper(
@@ -1726,8 +1741,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     playerID: playerID,
                     authInfo: authInfo,
                     acceptedConnectionGeneration: acceptedConnectionGeneration,
-                    ticket: ticket,
-                    ticketIssuedForIt: existingTicket == nil
+                    ticket: ticket
                 )
             }
         } catch {
@@ -1742,15 +1756,42 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// or client (#531).
     private(set) var staleRegistrationRefusals = 0
 
+    /// A session ticket a registration's enqueue issued (the session had none), and how many
+    /// queued registrations of the session hold it. It isn't the session's until one of them
+    /// registers it: the last holder to finish ends it when none did, so a refused registration
+    /// doesn't end it under a later one queued with it (#531).
+    struct RegistrationTicketHolders {
+        let ticket: Ticket<SessionID>
+        var holders: Int
+    }
+
+    private var registrationTicketHolders: [SessionID: RegistrationTicketHolders] = [:]
+
+    /// One holder of `ticket` is done. The last one ends the ticket, unless the session is a
+    /// member by now (a holder registered it; the ticket, or its renewal, is the session's).
+    private func releaseRegistrationTicket(_ sessionID: SessionID, _ ticket: Ticket<SessionID>) {
+        guard var held = registrationTicketHolders[sessionID], held.ticket == ticket else { return }
+        held.holders -= 1
+        guard held.holders == 0 else {
+            registrationTicketHolders[sessionID] = held
+            return
+        }
+        registrationTicketHolders.removeValue(forKey: sessionID)
+        if membershipCoordinator.playerID(for: sessionID) == nil {
+            sessionTickets.end(ticket)
+        }
+    }
+
     private func registerSessionCheckingKeeper(
         sessionID: SessionID,
         clientID: ClientID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64?,
-        ticket queuedTicket: Ticket<SessionID>,
-        ticketIssuedForIt: Bool
+        ticket queuedTicket: Ticket<SessionID>
     ) async {
+        // In the segment that returns, whatever the outcome.
+        defer { releaseRegistrationTicket(sessionID, queuedTicket) }
         // Checked after the keeper read: a teardown outside this queue can end the ticket
         // during the await. Then the land is gone, and the registration neither refuses nor
         // registers. A registration ahead of this one that rebound the session renewed the
@@ -1780,8 +1821,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     "refusedTotal": .stringConvertible(staleRegistrationRefusals),
                 ])
                 endedSessions.insert(sessionID)
-                // The ticket taken for this registration isn't the session's to keep.
-                if ticketIssuedForIt { sessionTickets.end(ticket) }
+                // A ticket this registration's enqueue issued is ended by its last holder (the
+                // `defer`), not here: a registration of the session queued with it still holds it.
                 // Without a generation (a caller that passed none), the close is by ID.
                 closeSessionDetached(sessionID, generation: acceptedConnectionGeneration)
                 return

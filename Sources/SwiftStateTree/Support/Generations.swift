@@ -31,9 +31,9 @@ package struct Current<Key: Hashable & Sendable>: ~Copyable {
 package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     private var counter = EpochCounter()
     private var current: [Key: Epoch] = [:]
-    /// Per key, each renewed epoch's successor (`renew`), for the key's current lineage only:
-    /// `issue` and `end` drop it.
-    private var successors: [Key: [Epoch: Epoch]] = [:]
+    /// Per key, the epochs `renew` moved on to the current one: the key's current lineage only,
+    /// which `issue` and `end` drop.
+    private var renewedFrom: [Key: Set<Epoch>] = [:]
 
     package init() {}
 
@@ -43,7 +43,7 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     package mutating func issue(_ key: Key) -> Ticket<Key> {
         let epoch = counter.next()
         current[key] = epoch
-        successors.removeValue(forKey: key)
+        renewedFrom.removeValue(forKey: key)
         return Ticket(key: key, epoch: epoch)
     }
 
@@ -59,7 +59,7 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     /// Ends `key`'s current generation, whatever it is.
     package mutating func end(_ key: Key) {
         current.removeValue(forKey: key)
-        successors.removeValue(forKey: key)
+        renewedFrom.removeValue(forKey: key)
     }
 
     /// Starts the next generation of `ticket`'s key, only if `ticket` is still the current one;
@@ -70,21 +70,18 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     /// the key on, it didn't end it.
     package mutating func renew(_ ticket: Ticket<Key>) -> Ticket<Key>? {
         guard isCurrent(ticket) else { return nil }
-        let lineage = successors[ticket.key] ?? [:]
-        let renewed = issue(ticket.key)
-        successors[ticket.key] = lineage.merging([ticket.epoch: renewed.epoch]) { _, new in new }
-        return renewed
+        let epoch = counter.next()
+        current[ticket.key] = epoch
+        renewedFrom[ticket.key, default: []].insert(ticket.epoch)
+        return Ticket(key: ticket.key, epoch: epoch)
     }
 
     /// `ticket` if it is current, or the current ticket it was renewed into (`renew`, any number
     /// of times); nil when its generation was ended or replaced by `issue`. For work queued with
     /// a ticket behind other work that may renew the same key.
     package func resolve(_ ticket: Ticket<Key>) -> Ticket<Key>? {
-        var epoch = ticket.epoch
-        while current[ticket.key] != epoch {
-            guard let next = successors[ticket.key]?[epoch] else { return nil }
-            epoch = next
-        }
+        guard let epoch = current[ticket.key] else { return nil }
+        guard epoch == ticket.epoch || renewedFrom[ticket.key]?.contains(ticket.epoch) == true else { return nil }
         return Ticket(key: ticket.key, epoch: epoch)
     }
 
@@ -92,7 +89,7 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     /// ticket issued before becomes current again.
     package mutating func endAll() {
         current.removeAll()
-        successors.removeAll()
+        renewedFrom.removeAll()
     }
 
     /// Ends `ticket`'s generation only if it is still the current one; returns whether it was.
@@ -101,7 +98,7 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
     package mutating func end(_ ticket: Ticket<Key>) -> Bool {
         guard isCurrent(ticket) else { return false }
         current.removeValue(forKey: ticket.key)
-        successors.removeValue(forKey: ticket.key)
+        renewedFrom.removeValue(forKey: ticket.key)
         return true
     }
 

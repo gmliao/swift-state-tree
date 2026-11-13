@@ -374,6 +374,48 @@ struct TransportAdapterRegisterSessionTests {
         #expect(await f.adapter.connectionGenerations[s1] == 6)
     }
 
+    @Test(
+        "A refused registration doesn't end the ticket under a later one of the session queued with it; the last refused one ends it",
+        arguments: [false, true]
+    )
+    func refusedRegistrationLeavesQueuedOneItsTicket(laterRefusedToo: Bool) async throws {
+        let f = await RegisterSessionFixture()
+        let p2 = PlayerID("p2")
+        // The keeper's entry for `player` names S2, so S1's registration as `player` is refused.
+        try await f.keeperJoin(s2, c2, as: player)
+        if laterRefusedToo { try await f.keeperJoin(s3, c3, as: p2) }
+        await f.adapter.onConnect(sessionID: s1, clientID: c1)
+        let gate = TestGate()
+        let holds = HoldRegistry<TransportAdapterHoldPoint>()
+        holds.on(.registrationAfterKeeperRead, arrival: 1) { await gate.arrive() }
+        let queued = await f.queuedSignal(on: holds)
+
+        // R1 issues S1's ticket at its enqueue; R2, queued behind it, holds the same ticket.
+        let r1 = Task {
+            await f.adapter.registerSession(sessionID: s1, clientID: c1, playerID: player, authInfo: nil, connectionGeneration: 5)
+        }
+        #expect(await gate.waitForArrivals(1))
+        let r2 = Task {
+            await f.adapter.registerSession(sessionID: s1, clientID: c1, playerID: p2, authInfo: nil, connectionGeneration: 6)
+        }
+        #expect(await queued.waitForArrivals(2))
+        gate.open()
+        await r1.value
+        await r2.value
+
+        if laterRefusedToo {
+            #expect(await f.adapter.staleRegistrationRefusals == 2)
+            #expect(await f.adapter.membershipSessionIDs(for: p2).isEmpty)
+            #expect(await !f.adapter.hasSessionTicketForTesting(s1), "the last holder ends the ticket")
+        } else {
+            #expect(await f.adapter.staleRegistrationRefusals == 1)
+            #expect(await f.adapter.membershipSessionIDs(for: p2) == [s1])
+            #expect(await f.adapter.connectionGenerations[s1] == 6)
+            #expect(await f.adapter.hasSessionTicketForTesting(s1))
+        }
+        #expect(await f.adapter.membershipSessionIDs(for: player).isEmpty)
+    }
+
     @Test("A disconnect issued during the registration waits for it, then removes the session")
     func disconnectWaitsForRegistration() async throws {
         let f = await RegisterSessionFixture()
