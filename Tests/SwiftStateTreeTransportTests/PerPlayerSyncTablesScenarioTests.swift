@@ -145,6 +145,10 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
     let faults = PPScenarioFaults()
     /// The sync-lag clock, moved by hand (with the sync sequence on).
     let clock = SyncLagManualClock()
+    /// Holds each failed plan's delayed follow-up cycle (`startDelayedFollowUpSync`), so the
+    /// frames follow from the script's own syncs, not from whether a 100 ms timer fired first
+    /// in one configuration and not in another. Opened when the script is done (`finish`).
+    let followUps = TestGate()
 
     init(
         definition: LandDefinition<State>,
@@ -175,7 +179,12 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
         let clock = self.clock
         await adapter.setSyncLagClockForTesting { clock.now }
         await adapter.setSyncLagTimerIntervalForTesting(.seconds(3600))
+        let followUps = self.followUps
+        await adapter.installHolds(HoldRegistry.at(.failedPlanFollowUp) { await followUps.arrive() })
     }
+
+    /// Lets the held follow-up cycles run once the frames are read.
+    func finish() { followUps.open() }
 
     /// The sequence of the last state frame `name`'s session got (opcode JSON array frames).
     func lastSeq(_ name: String) async throws -> UInt64 {
@@ -255,6 +264,7 @@ private func comparePPScenario<State: StateNodeProtocol>(
         #expect(await run.adapter.usesPerPlayerTablesForTesting() == config.perPlayerTables, sourceLocation: sourceLocation)
         try await script(run)
         frames.append(await run.transport.sent)
+        run.finish()
     }
     #expect(frames[2].count > 10, "\(label): the script sends frames", sourceLocation: sourceLocation)
     expectSameFrames(frames[0], frames[2], "\(label), both tables", sourceLocation: sourceLocation)
@@ -457,6 +467,7 @@ struct PerPlayerSyncTablesScenarioTests {
             #expect(sent == (config.perPlayerTables ? 1 : 0), "\(label): frames to p2 on the write")
             let hand = await run.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID("p2"))?.values["hands"]
             #expect(hand == .object(["p2": .array([.string("b"), .string("d")])]), "\(label): last-sent")
+            run.finish()
         }
     }
 
@@ -517,6 +528,7 @@ struct PerPlayerSyncTablesScenarioTests {
             let toSecond = after.filter { $0.target == "session(\(second.rawValue))" }.count
             #expect(toFirst + toSecond == 1 && min(toFirst, toSecond) == 0, "\(label): #531, one session gets p1's change: \(toFirst), \(toSecond)")
             #expect(!after.contains { $0.target == "session(s-p2)" }, "\(label): p2 gets nothing")
+            run.finish()
         }
     }
 }
