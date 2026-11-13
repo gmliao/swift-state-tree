@@ -14,6 +14,9 @@ import analysis, calibrate, calibration, clientload, plan, regenerate, srpause, 
 import cell as cell_mod  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True, False)
+# A real commit before row addressing came in (6f7920c0's parent): its default is off there, whatever
+# gameserver_wire.ROW_DEFAULT_COMMIT names.
+PRE_ROWS_COMMIT = "c657c37b303799811764a4d7799a0b91c7399341"
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
                   "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING", "MODE", "SERVER_CPUS", "CLIENT_CPUS", "OVERWRITE", "BUILD",
                   "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "INGEST", "IMPAIR_SH", "LOADTEST_SCRIPT", "NODE_TOOLS", "HEALTH_URL", "START_MARGIN_S", "SCENARIO_OVERRIDE")
@@ -26,10 +29,18 @@ def clean_env(**extra):
     return env
 
 
+def head_form() -> calibration.wireform.WireForm:
+    """The form a sweep at this checkout's HEAD runs (the server's defaults)."""
+    head = subprocess.run(["git", "-C", str(TOPIC), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    return calibration.intended_form({}, head)
+
+
 def head_calibration(path: pathlib.Path) -> pathlib.Path:
-    """A calibration whose runs had the sweep's (HEAD's) wire form."""
+    """A calibration whose runs had the sweep's (HEAD's) wire form: with row addressing where HEAD's
+    default has it (gameserver_wire.ROW_DEFAULT_COMMIT), as a MODE=calibrate run at HEAD records."""
+    rows = head_form().row_addressing
     cal = json.loads(json.dumps(calibration.BUILTIN))
-    cal.update(name="test-head", commit="49fde351", features=["fieldMerge", "pathIndex"])
+    cal.update(name="test-head", commit="49fde351", features=["fieldMerge", "pathIndex"] + (["rowAddressing"] if rows else []))
     path.write_text(json.dumps(cal))
     return path
 
@@ -196,10 +207,10 @@ class Calibration(unittest.TestCase):
         old = calibration.wireform.WireForm("messagepack", False, False, False)
         self.assertEqual(calibration.settings(calibration.BUILTIN, "U-RATE", old)["rate"], "25218749bit")
         cal = json.loads(head_calibration(pathlib.Path(tempfile.mktemp())).read_text())
-        self.assertEqual(calibration.settings(cal, "M-COMBO", HEAD_FORM)["limits"], {"down": 168, "up": 10000})
+        self.assertEqual(calibration.settings(cal, "M-COMBO", head_form())["limits"], {"down": 168, "up": 10000})
 
     def test_the_sweeps_form_follows_the_servers_rules(self):
-        self.assertEqual(calibration.intended_form({}), HEAD_FORM)
+        self.assertEqual(calibration.intended_form({}, PRE_ROWS_COMMIT), HEAD_FORM)
         self.assertEqual(calibration.intended_form({"TRANSPORT_ENCODING": "json"}), calibration.wireform.WireForm("json", False, False, False))
 
     def test_the_other_cells_carry_over_and_only_jitter_cells_reorder(self):
@@ -1641,6 +1652,43 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid)
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step ingest", done.stderr)
+
+
+class AfterRowDefault(unittest.TestCase):
+    """ROW_ADDRESSING's default after its flip (gameserver_wire.ROW_DEFAULT_COMMIT set; a stand-in,
+    6f7920c0, which this checkout contains and PRE_ROWS_COMMIT, its parent, doesn't)."""
+
+    def setUp(self):
+        gw = calibration.gameserver_wire
+        self.saved, gw.ROW_DEFAULT_COMMIT = gw.ROW_DEFAULT_COMMIT, "6f7920c0"
+
+    def tearDown(self):
+        calibration.gameserver_wire.ROW_DEFAULT_COMMIT = self.saved
+
+    def test_the_sweeps_form_follows_its_commit(self):
+        self.assertEqual(calibration.intended_form({}, PRE_ROWS_COMMIT), HEAD_FORM)
+        self.assertTrue(calibration.intended_form({}, "6f7920c0").row_addressing)
+        # The cell builds it from the server's environment, which never has ROW_ADDRESSING.
+        environ = cell_mod.server_environ({"ROW_ADDRESSING": "false"}, {})
+        self.assertTrue(calibration.intended_form(environ, "6f7920c0").row_addressing)
+        with self.assertRaises(calibration.wireform.MissingWireForm):
+            calibration.intended_form({})
+
+    def test_the_cell_reads_the_sweeps_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sweep = pathlib.Path(tmp)
+            self.assertIsNone(cell_mod.sweep_commit(sweep, dry_run=False), "no record, not a dry run: no commit")
+            self.assertTrue(cell_mod.sweep_commit(sweep, dry_run=True), "a dry run: the checkout's HEAD")
+            (sweep / "run.json").write_text(json.dumps({"git": {"commit": PRE_ROWS_COMMIT}}))
+            self.assertEqual(cell_mod.sweep_commit(sweep, dry_run=False), PRE_ROWS_COMMIT)
+
+    def test_a_cell_without_the_sweeps_commit_is_refused_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cell_mod.main(["U-RATE", "1", "--sweep", "s", "--server", "/nonexistent", "--out-root", tmp])
+            self.assertEqual(rc, 3, err.getvalue())
+            self.assertIn("refused: ROW_ADDRESSING unset and the server commit not recorded", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -129,7 +129,7 @@ def result(name, repeat=1):
     outcomes = {"applied": 100, "failed": 10 if "failed" in c["injects"] else 0,
                 "timedOut": 10 if "timedOut" in c["injects"] else 0, "errored": 0, "unmatched": 0, "answeredAfterPhaseEnd": 0}
     return {
-        "meta": {"git_sha": "abc1234", "build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
+        "meta": {"git_sha": "c657c37b", "build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
                  "node_version": "v24.22.2", "pin_cpus": "server:0-7 client:8-11"},
         "params": {"cell": name, "repeat": repeat, "rooms": c["rooms"], "pre_s": cells.PRE_S, "steady_s": cells.STEADY_S,
                    "tail_s": cells.TAIL_S, "env": c["env"], "outcome": c["outcome"], "injects": c["injects"]},
@@ -261,16 +261,17 @@ class RegenerateTests(unittest.TestCase):
                      "rate10 rep1: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on")
         self.refused(self.edited("rate10", lambda r: r["counts"].update(
             joinForms={"messagepack:none": 1, "messagepack:fieldMerge,pathIndex": 249})), "rate10 rep1: wire form missing: joins were given different")
-        # Not recorded: the commit decides; the fixture's (abc1234) is unknown, so the form is missing.
+        # Not recorded: the commit decides; the fixture's (c657c37b) contains the pathIndex knob, so the
+        # form is missing.
         self.refused(self.edited("rate10", lambda r: r["counts"].update(joinForms=None)), "rate10 rep1: wire form missing")
 
     def test_the_results_open_with_their_provenance(self):
         self.assertEqual(regenerate.tables(self.runs()).splitlines()[0],
-                         "Provenance, from the results' meta: commit `abc1234`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
+                         "Provenance, from the results' meta: commit `c657c37b`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
 
     def test_refuses_results_without_a_commit_or_from_two(self):
         self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha=None)), "no commit in its meta")
-        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha="def5678")), "results from 2 commits (abc1234, def5678)")
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha="def5678")), "results from 2 commits (c657c37b, def5678)")
 
     def test_overflowing_tick_gaps_read_as_at_least_1000(self):
         runs = self.edited("rate50", lambda r: r["metrics"].update(tick_gap_p99_ms=1000))
@@ -340,7 +341,7 @@ class CollectPathTests(unittest.TestCase):
         (cell / "cell.json").write_text("{}")
         (cell / "load" / "toolchain.txt").write_text(
             "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n")
-        record = {"repeat": 1, "runId": "s1", "git": {"commit": "abc1234", "dirty": False, "root": "/workspace/checkout"}}
+        record = {"repeat": 1, "runId": "s1", "git": {"commit": "c657c37b", "dirty": False, "root": "/workspace/checkout"}}
         spec = {"actions_per_second": 1, "outcome": None, "injects": [], "env": {}}
         evaluated = ({"cell": "rate10", "rooms": 1, "preS": 1, "steadyS": 1, "tailS": 1, "spec": spec}, {}, {}, {}, [])
         with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
@@ -393,6 +394,30 @@ class RunShTests(unittest.TestCase):
     def test_pins_server_and_client_apart_by_default(self):
         p = self.dry(REPEAT="1")
         self.assertIn("--server-cpus 0-7 --client-cpus 8-11", p.stdout)
+
+
+class AfterRowDefault(unittest.TestCase):
+    """ROW_ADDRESSING's default after its flip (gameserver_wire.ROW_DEFAULT_COMMIT set; a stand-in,
+    6f7920c0, which this checkout contains and c657c37b, its parent, doesn't)."""
+
+    def setUp(self):
+        self.saved, regenerate.gameserver_wire.ROW_DEFAULT_COMMIT = regenerate.gameserver_wire.ROW_DEFAULT_COMMIT, "6f7920c0"
+
+    def tearDown(self):
+        regenerate.gameserver_wire.ROW_DEFAULT_COMMIT = self.saved
+
+    def run_at(self, commit, forms):
+        return {"params": {"env": {}}, "meta": {"git_sha": commit}, "counts": {"joinForms": forms}}
+
+    def test_the_commit_decides_and_a_missing_one_is_a_refusal(self):
+        rows_off = {"messagepack:fieldMerge,pathIndex": 3}
+        rows_on = {"messagepack:fieldMerge,pathIndex,rowAddressing,syncSequence": 3}
+        self.assertIsNone(regenerate.wire_failure("x", self.run_at("c657c37b", rows_off)), "before the flip: off")
+        self.assertIsNone(regenerate.wire_failure("x", self.run_at("6f7920c0", rows_on)), "from it: on")
+        self.assertIn("intended messagepack, pathIndex on, fieldMerge on, rowAddressing on",
+                      regenerate.wire_failure("x", self.run_at("6f7920c0", rows_off)))
+        self.assertIn("wire form missing: ROW_ADDRESSING unset and the server commit not recorded",
+                      regenerate.wire_failure("x", self.run_at(None, rows_off)))
 
 
 if __name__ == "__main__":

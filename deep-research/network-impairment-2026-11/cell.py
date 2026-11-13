@@ -86,6 +86,18 @@ META_FROM_SWEEP = ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig",
                    "rerun", "analysisSha256")
 
 
+def sweep_commit(sweep_dir: pathlib.Path, dry_run: bool) -> str | None:
+    """The sweep's commit (run.sh writes it in <sweep>/run.json `git.commit`). A dry run, which
+    writes no sweep record, takes the checkout's HEAD; otherwise no record means no commit."""
+    record = sweep_dir / "run.json"
+    if record.exists():
+        return (json.loads(record.read_text()).get("git") or {}).get("commit")
+    if not dry_run:
+        return None
+    done = subprocess.run(["git", "-C", str(TOPIC), "rev-parse", "HEAD"], capture_output=True, text=True)
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
 def server_environ(environ, server_env):
     """The server's environment: the shell's without the sync-path switches, plus the run's own."""
     return {**{k: v for k, v in environ.items() if k not in SYNC_PATH_ENV}, **server_env}
@@ -295,10 +307,12 @@ def main(argv: list[str]) -> int:
     out = (args.out_root / rid).resolve()
     population, profile = plan.population(cell), plan.profile(cell)
     cal = calibration.load(args.calibration)
-    sweep_form = calibration.intended_form(os.environ)
     try:
+        # The server's form: its environment (the shell's without the sync-path switches, which
+        # the server doesn't get) at the sweep's commit, for ROW_ADDRESSING's default.
+        sweep_form = calibration.intended_form(server_environ(os.environ, {}), sweep_commit(args.out_root / args.sweep, args.dry_run))
         netem = calibration.settings(cal, cell, sweep_form, calibration.overrides_from(os.environ))
-    except calibration.Refused as e:
+    except (calibration.Refused, calibration.wireform.MissingWireForm) as e:
         print(f"cell.py: {rid}: refused: {e}", file=sys.stderr)
         return 3
     if profile == "SR" and cell != plan.CALIBRATION_CELL and not args.sr_pause:
