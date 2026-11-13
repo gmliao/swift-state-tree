@@ -1,16 +1,21 @@
 # A player's second session gets no per-player changes (#531): findings and fix spec
 
-**Status:** rev 2, for review. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
+**Status:** rev 3, for review. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
 
 - **Rev 2** answers review of rev 1 (8572647d):
   - corrected facts: recipient order is unspecified; `registerSession` doesn't touch the keeper, so which session is receive-only depends on the caller's keeper join; the seed doesn't move the first session's baseline; the starvation is scoped to cached diffs; no claim about per-player sync tables, which aren't on `main`;
   - the fix spec: `registerSession` goes through the membership queue (M1), its connection generation is written under a ticket (M2), the supersede's delayed close is generation-aware (S3);
   - every direct test caller of `registerSession` and what A does to it (S4); the lifecycle exceptions and exact OnJoin/OnLeave counts (S5); Q2 decided after the fixtures (S6);
   - Q1–Q3 as the maintainer's questions, each with options and a recommendation.
+- **Rev 3** answers review of rev 2 (3c1cc1cc):
+  - the adapter and the keeper can still name different sessions, since a host's keeper join isn't in the adapter's queue: a keeper check in the registration (option (a), recommended) or a documented ordering rule (b) (§4.1, Q1);
+  - S3 names `endJoinBeforeAdmission` and passes the router's captured generation; the guarantee is limited to transports that implement the generation-aware close;
+  - tests hold where the queue is already held, and the M2 test ends the ticket without the queue;
+  - Q2's reason, and the OnJoin/OnLeave count conditions.
 
 **Summary.** #531's mechanism holds for cached diffs. Two adapter members of one player share one per-player baseline, so one of the two recipients in a sync gets that player's per-player changes and the other doesn't. Which one is unspecified. Only the public `TransportAdapter.registerSession(...)` creates the second member.
 
-The recommended fix is that `registerSession` supersedes, as the library's own joins do (option A), and runs in the adapter's membership queue like every other membership change.
+The recommended fix is that `registerSession` supersedes, as the library's own joins do (option A), runs in the adapter's membership queue like every other membership change, and refuses a registration whose session the keeper's entry doesn't name (§4.1).
 
 ## 1. The reproduction path
 
@@ -69,15 +74,29 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
   - `performJoinQueued` calls that internal implementation directly (:2320), since it already runs inside the queue. An enqueue from inside the queue would wait on its own tail.
   - Order-sensitive per-player work then goes through one serial queue, as the reentrancy rule requires: a host's `registerSession` can't interleave with a join's admission or a disconnect's leave.
 - **The supersede.** The internal implementation calls `supersedeSessions(of: playerID, keeping: sessionID)` in the same synchronous segment as `registerPlayer`/`registerClient` (:1646-1651), before the transport await. A rebind (the session moved from another player, :1641-1645) keeps its existing handling first.
+- **The keeper check (rev 3).** A queued registration still trusts the caller's keeper join, which isn't in the adapter's queue, so the two can pick different sessions:
+  1. the host joins S2 in the keeper and hasn't registered it yet;
+  2. the library joins S3 through the queue, so the keeper and the adapter both name S3;
+  3. the host registers S2, and under A it supersedes S3.
+
+  The adapter then keeps S2 and the keeper keeps S3, so S2's inputs are rejected (`LandKeeper.swift:1844-1863`), and S3 was closed. The M2 ticket can't see this: nothing ended S2. Two options:
+  - **(a) Check the keeper's entry in the registration** (recommended). A package read on the keeper, `entrySession(for: PlayerID) -> (clientID: ClientID?, sessionID: SessionID?)?`, returns the entry's `clientID` and `lastSessionID` (`InternalPlayerSession`, :5344-5345); no such query exists today. The public registration reads it first, inside the queue; the rest of the registration runs after that await in one synchronous segment, re-reading the adapter's state there.
+    - The entry names this session (or this client, for a session the keeper hasn't seen): register, superseding the others.
+    - The entry names another session or client: refuse. The session isn't registered; it is closed (generation-aware, S3), and a counter `staleRegistrationRefusals` counts it, with a warning. That is what the library does to a join that lost (`endJoinBeforeAdmission`).
+    - No entry: register, as today. The keeper's sender check has the same rule (:1850-1851), and callers that drive the adapter without a keeper join keep working.
+    - `performJoinQueued` (:2320) calls the internal implementation without the check: its own keeper join just ran in the queue, and #234's `refusesResolvedJoin` already covers a stale one.
+    - Cost: one keeper hop per public registration, none for the library's joins. A host keeper join that lands after the read is that host's next registration, which the same check then admits.
+  - **(b) Document the ordering rule.** The API docs and Q1/Q3 say: the caller must order its keeper join and its registration against the library's joins, and "newest registration" in the adapter is separate from "newest join" in the keeper. No code, and the mismatch above stays possible.
+  - The test: the interleaving above, forced with holds. Under (a), the registration of S2 is refused, S2 is closed, and the adapter and the keeper both name S3, with S3's inputs accepted. Under (b), it pins the documented mismatch.
 - **M2. The connection generation under a ticket.** `connectionGenerations[sessionID] = …` is written after `await webSocketTransport.registerSession(…)` (:1656-1660). A disconnect or supersede during that await ends the session, and the write would then bring back an entry for an ended session. The fix:
   - capture the session's ticket before the await (`sessionTickets.ticket(for:) ?? sessionTickets.issue(_:)`, as :1748 does);
   - write the generation inside `sessionTickets.ifCurrent(ticket) { … }` after it.
   - The `else if` branch (no `WebSocketTransport`, :1661-1662) has no await and is unchanged.
 - **S3. Generation-aware delayed closes.** `supersedeSessions` closes the old session by ID in a detached task (`Task { await transport.closeSession(old) }`, :1982). If the old session ID reconnects before that task runs, the new connection is closed. The fix:
   - capture `connectionGenerations[old]` before it is removed (:1972);
-  - close with `closeSession(old, with: .normal, generation:)` (`WebSocketTransport.swift:585-588`), which does nothing once the connection's generation differs.
-  - `admitJoining`'s refusal close of the joining session (:1844-1846) has the same pattern and gets the same change.
-  - The generation-aware close is a `Transport` requirement (`Transport.swift:73`, with a default at :98), as the lag close already uses it (:3748), so no transport needs a branch. A session with no recorded generation passes `nil`, which closes by ID as today.
+  - close with `closeSession(old, with: .normal, generation:)`.
+  - `endJoinBeforeAdmission` (:1833-, its close at :1844-1846) has the same pattern for a join refused before admission. That session was never admitted, so it has no `connectionGenerations` entry: its close passes the generation the router captured when it accepted the connection (`LandRouter.swift:289`, read at :840 and passed to `admitJoin` at :885-894, as `performJoinQueued`'s `connectionGeneration`). Without one (a direct caller), it passes `nil`.
+  - **Limit:** the generation-aware close is a `Transport` requirement (`Transport.swift:73`), but its default ignores the generation and closes by ID (:97-100). Only a transport that implements it, `WebSocketTransport` (`WebSocketTransport.swift:585-588`), gets the protection; others close by ID as today.
 
 ### 4.2 Direct test callers of `registerSession` (S4)
 
@@ -93,7 +112,7 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
 
 - **Exceptions today** (checked): in reevaluation mode, replay viewers skip OnJoin (`LandKeeper.swift:1434-1436`, :1657-1659), and their leave skips OnLeave (:2382-2383).
 - **A's supersede calls neither.** It is adapter-only: the keeper isn't called, so no OnJoin and no OnLeave run for the superseded session. The keeper's entry is whatever the caller's keeper joins made it.
-- **The tests assert exact counts:** a host path of keeper join + `registerSession` for S1, then keeper join + `registerSession` for S2 of the same player, runs OnJoin twice and OnLeave once (the keeper's kick-old). The same without the second keeper join runs OnJoin once and OnLeave zero times.
+- **The tests assert exact counts,** in live mode with OnJoin and OnLeave handlers installed: a host path of keeper join + `registerSession` for S1, then keeper join + `registerSession` for S2 of the same player, runs OnJoin twice and OnLeave once (the keeper's kick-old). Without the second keeper join, S2's registration is refused under (a) (the entry names S1), and the counts stay OnJoin once, OnLeave zero. The same two-join path in reevaluation mode runs OnJoin zero times and OnLeave zero times (the exceptions above).
 - **The newer session survives the old one's delayed close:** S1's ID reconnects as a new connection before the supersede's close task runs, and that connection stays open (S3).
 
 ### 4.4 Tests
@@ -101,8 +120,13 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
 - **Red first:** two members via `registerSession`, a per-player change, a normal cached sync. Exactly one of the two sessions gets the patch (`.noChange` or broadcast only for the other). No assertion on which.
 - **After A:** the older session is superseded (closed, its membership and ticket ended) in the registration's segment. The newer one gets the change; no sync phase has two recipients for one player.
 - **The library path:** `performJoin` → admission → the internal registration supersedes nothing (admission already did), counted by `supersededSessionCount`.
-- **Queue order (M1):** a keeper join held at its admission (`HoldPoints`, `.admitJoinEntry`) and a disconnect held at `keeper.leave`, each while a `registerSession` for the same player is issued. The registration runs only after the held operation, and no state shows two members. Holds, not timing.
-- **Ticket (M2):** a hold at `registerSession`'s transport await; the session disconnects during it; after the await, `connectionGenerations` has no entry for the session.
+- **Queue order (M1):** holds where the queue is already held, not at `.admitJoinEntry`, which sits before `enqueueMembership` (`TransportAdapter.swift:2233-2234`):
+  - a library join held at the keeper's `.join` hold (`LandKeeper.swift:1618`), reached from `performJoinQueued` inside the queue;
+  - a disconnect held at `keeper.leave`, inside the queue (:1531);
+  - in each, a `registerSession` for the same player is issued during the hold and runs only after it; no state shows two members.
+- **Ticket (M2):** a hold at the registration's transport await. The registration holds the queue across it, so a public disconnect would queue behind it. The ticket is ended without the queue instead, by `endSessionTicketsForTeardown()` (:1669-1673); after the await, `connectionGenerations` has no entry for the session.
+- **A disconnect during the registration** (separately): issued during the same hold, it waits for the registration and then removes the session.
+- **The keeper check:** the rev 3 interleaving (§4.1).
 - **Delayed close (S3):** as §4.3.
 - **The lifecycle counts:** as §4.3.
 
@@ -112,17 +136,18 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
   - (a) A: `registerSession` supersedes (newest wins, no signature change).
   - (b) B: it refuses a second registration (a source break or an ignorable result).
   - (c) C: several sessions per player (adapter and keeper changes).
-  - **Recommendation: (a).** The library already has one session per player end to end; `registerSession` is the only path that breaks it, and A aligns it with no signature change. C is a feature for its own issue if wanted.
+  - **Recommendation: (a), with the keeper check (§4.1 (a)).** The library's own joins keep one session per player in the adapter and the keeper; `registerSession` is the path that breaks it. A with the check brings it in line with no signature change. Without the check, A still leaves the adapter and the keeper able to name different sessions when a host's keeper join races a library join, and the ordering rule (§4.1 (b)) has to be documented instead. C is a feature for its own issue if wanted.
 - **Q2 (under A): the multi-session branches** (`classifySyncLag`'s fan-out, the disconnect path's "another session remains").
   - (a) Keep them, and add an assertion in `syncPhaseRecipients` that no player appears twice.
   - (b) Keep them without an assertion.
   - (c) Remove them, with a test that two members can't exist.
-  - **Recommendation: (a).** It needs §4.2 decided first: the sync-lag two-member fixtures become supersede cases and no test-only two-member fixture remains, or the assertion would fail in them. The branches stay reachable through `.player` targets and the disconnect order, so removing them (c) needs more proof than the assertion.
+  - **Recommendation: (a), as defensive code.** `.player` targets never create a second member, and once membership is serialized (M1) and superseded (A), the branches are unreachable from the public API. The assertion catches a regression. It needs §4.2 decided first: the sync-lag two-member fixtures become supersede cases and no test-only two-member fixture remains, or the assertion would fail in them. The sync-lag fan-out test goes with this answer: rewritten as a supersede case under (a) or (b), removed under (c).
+  - Removing them (c) needs a reachability review of every path that adds a member, beyond this issue.
 - **Q3: `registerSession`'s visibility.**
   - (a) Keep it public with A's semantics.
   - (b) Make it `package`: a larger source break, and it removes the host path that #531 found.
   - (c) Deprecate it in favour of `performJoin`.
-  - **Recommendation: (a).** A makes it safe; (c) can follow if no host needs it.
+  - **Recommendation: (a), with the keeper check.** With it, a registration the keeper's entry doesn't back is refused. Without it, the docs carry the ordering rule (§4.1 (b)). (c) can follow if no host needs it.
 
 ## Related
 
