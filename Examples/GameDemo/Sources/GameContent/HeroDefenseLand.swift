@@ -261,8 +261,6 @@ public enum HeroDefense {
                 }
 
                 HandleEvent(MoveToEvent.self) { (state: inout HeroDefenseState, event: MoveToEvent, ctx: LandContext) in
-                    // EncodingBenchmark's input count; no probe is registered elsewhere.
-                    ctx.services.get(InputProbe.self)?.noteApplied()
                     let playerID = ctx.playerID
 
                     // Update player's target position (clamp to world bounds)
@@ -270,6 +268,9 @@ public enum HeroDefense {
                         let clampedTarget = MovementSystem.clampToWorldBounds(event.target, ctx)
                         player.targetPosition = clampedTarget
                         state.players[playerID] = player
+                        // EncodingBenchmark's input count, once the move changed the state; no
+                        // probe is registered elsewhere.
+                        ctx.services.get(InputProbe.self)?.noteApplied()
                     } else {
                         ctx.logger.warning("⚠️ MoveToEvent: Player not found", metadata: [
                             "playerID": .string(playerID.rawValue),

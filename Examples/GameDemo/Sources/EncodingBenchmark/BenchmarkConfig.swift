@@ -579,6 +579,8 @@ enum ArgumentParser {
         i += 1
     }
 
+        // --message-encoding with --hash-cost, and the --inputs-from-wire and
+        // --actions-per-player combinations that can't run.
         if let refusal = InputRun.refusal(config) {
             try? FileHandle.standardError.write(contentsOf: Data("\(refusal)\n".utf8))
             exit(2)
@@ -735,7 +737,8 @@ enum ArgumentParser {
                               (events, action responses, client frames) in place of the
                               format's. Default: json for json-object and the opcode-json
                               formats, messagepack for the messagepack formats. Recorded as
-                              messageEncoding in each result.
+                              messageEncoding in each result. Not with --hash-cost; with
+                              --actions-per-player, not opcode-json-array (its Void ACK traps).
       --all                   Run benchmark for all formats
       --compare-parallel      Compare serial vs parallel execution for each format
       --scalability           Run scalability test (different room counts)

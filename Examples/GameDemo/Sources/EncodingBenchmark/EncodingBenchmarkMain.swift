@@ -215,8 +215,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     let wire = InputRun.actionsPerPlayer > 0
         ? WireInputs(roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding, actionsPerPlayer: InputRun.actionsPerPlayer)
         : nil
-    var inputCounts = wire.map { InputCounts(expected: roomCount * $0.inputsPerRoomIteration * iterations) }
-    let appliedBefore = inputProbes.reduce(0) { $0 + $1.applied }
+    var inputCounts = wire.map { InputCounts(rooms: roomCount, expectedPerRoom: $0.inputsPerRoomIteration * iterations) }
+    let appliedBefore = inputProbes.map(\.applied)
     let capture: ViewCaptureWriter<State>?
     do {
         let strategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta"
@@ -290,7 +290,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                     for input in actionFrames[roomIndex] {
                         await room.adapter.onMessage(input.frame, from: input.session)
                     }
-                    inputCounts?.submitted += actionFrames[roomIndex].count
+                    inputCounts?.submitted[roomIndex] += actionFrames[roomIndex].count
                     if ticksPerSync > 0 {
                         let tickStart = ContinuousClock.now
                         perfWindow?.begin(.ticks)
@@ -325,10 +325,10 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     if inputCounts != nil {
-        var rejected = 0
-        for room in rooms { rejected += await room.transport.errorFrameCount() }
-        inputCounts?.rejected = rejected
-        inputCounts?.applied = inputProbes.reduce(0) { $0 + $1.applied } - appliedBefore
+        for (roomIndex, room) in rooms.enumerated() {
+            inputCounts?.rejected[roomIndex] = await room.transport.errorFrameCount()
+            inputCounts?.applied[roomIndex] = inputProbes[roomIndex].applied - appliedBefore[roomIndex]
+        }
     }
     do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
     if let recordDirectory = ViewCapture.config?.recordDirectory {
@@ -535,8 +535,8 @@ func runMultiRoomBenchmark(
     let wire = InputRun.fromWire && activePlayers
         ? WireInputs(roomCount: roomCount, playersPerRoom: playersPerRoom, encoding: format.messageEncoding, actionsPerPlayer: 0)
         : nil
-    var inputCounts = wire.map { InputCounts(expected: roomCount * $0.inputsPerRoomIteration * iterations) }
-    let appliedBefore = inputProbes.reduce(0) { $0 + $1.applied }
+    var inputCounts = wire.map { InputCounts(rooms: roomCount, expectedPerRoom: $0.inputsPerRoomIteration * iterations) }
+    let appliedBefore = inputProbes.map(\.applied)
     // `--baseline entity-delta`: the baseline encodes the same projections (EntityDeltaBaseline.swift).
     let entityDelta = EntityDeltaRun.enabled ? EntityDeltaCell(roomCount: roomCount, playersPerRoom: playersPerRoom) : nil
     let captureRooms = ViewCapture.config?.rooms ?? 0
@@ -650,7 +650,7 @@ func runMultiRoomBenchmark(
                     for (playerIndex, frame) in moveFrames.enumerated() {
                         await room.adapter.onMessage(frame, from: sessions[playerIndex])
                     }
-                    inputCounts?.submitted += moveFrames.count
+                    inputCounts?.submitted[roomIndex] += moveFrames.count
                     if ticksPerSync > 0 {
                         perfWindow?.begin(.ticks)
                         for _ in 0 ..< ticksPerSync {
@@ -706,10 +706,10 @@ func runMultiRoomBenchmark(
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     if inputCounts != nil {
-        var rejected = 0
-        for room in rooms { rejected += await room.transport.errorFrameCount() }
-        inputCounts?.rejected = rejected
-        inputCounts?.applied = inputProbes.reduce(0) { $0 + $1.applied } - appliedBefore
+        for (roomIndex, room) in rooms.enumerated() {
+            inputCounts?.rejected[roomIndex] = await room.transport.errorFrameCount()
+            inputCounts?.applied[roomIndex] = inputProbes[roomIndex].applied - appliedBefore[roomIndex]
+        }
     }
     let fieldMergeCounts = FieldMergeStatistics.take()
     do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
@@ -1833,6 +1833,7 @@ struct EncodingBenchmark {
             allResults.append([
                 "format": format.rawValue,
                 "displayName": format.displayName,
+                "messageEncoding": MessageEncodingOverride.name(format.messageEncoding),
                 "serial": [
                     "timeMs": serialResult.timeMs,
                     "totalBytes": serialResult.totalBytes,
@@ -2353,6 +2354,7 @@ struct EncodingBenchmark {
                 "iterations": config.iterations,
                 "ticksPerSync": config.ticksPerSync,
                 "format": config.format.rawValue,
+                "messageEncoding": MessageEncodingOverride.name(config.format.messageEncoding),
                 "cpuCores": cpuCores,
                 "staticWorkerCount": workerCount,
                 "dynamicWorkerCount": cpuCores

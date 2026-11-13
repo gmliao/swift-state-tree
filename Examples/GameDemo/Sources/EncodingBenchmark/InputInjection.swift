@@ -42,10 +42,16 @@ enum InputRun {
     /// one room at a time, and only Hero Defense (moves) and the visibility test (actions) have
     /// an input to submit.
     static func refusal(_ config: BenchmarkConfig) -> String? {
+        if config.messageEncoding != nil, config.hashCost {
+            return "--message-encoding doesn't apply to --hash-cost (it hashes states and sends no messages)"
+        }
         if config.actionsPerPlayer > 0 {
             let unsupported = [
                 (config.gameType != .visibilityTest, "--game-type other than visibility-test"),
                 (!config.inputsFromWire, "runs without --inputs-from-wire (actions are sent as client frames)"),
+                // The land answers each action with an immediate Void ACK, and opcode JSON's
+                // payload encoder has no Void case: it traps (#521 plan §2.3).
+                (config.messageEncoding == .opcodeJsonArray, "--message-encoding opcode-json-array (the Void ACK traps there)"),
             ].filter(\.0).map(\.1)
             if !unsupported.isEmpty {
                 return "--actions-per-player doesn't support \(unsupported.joined(separator: ", "))"
@@ -178,28 +184,44 @@ struct WireInputs {
 
 // MARK: - Counts
 
-/// A run's inputs: handed to the adapter, refused with an error frame, and applied by a
-/// handler. The summary requires submitted, accepted and applied all equal to the expected count.
+/// A run's inputs, per room: handed to the adapter, refused with an error frame, and applied by
+/// a handler. The run requires submitted, accepted and applied all equal to the expected count in
+/// every room, so a shortfall in one room can't hide behind an excess in another.
 struct InputCounts {
-    var submitted = 0
-    /// Error frames the server sent during the measured iterations.
-    var rejected = 0
-    /// `InputProbe.applied` over every room, measured iterations only.
-    var applied = 0
-    let expected: Int
+    /// Inputs per room over the measured iterations.
+    let expectedPerRoom: Int
+    var submitted: [Int]
+    /// Error frames each room's server sent during the measured iterations.
+    var rejected: [Int]
+    /// Each room's `InputProbe.applied`, measured iterations only.
+    var applied: [Int]
 
-    var accepted: Int { submitted - rejected }
-
-    var json: [String: Any] {
-        ["submitted": submitted, "accepted": accepted, "rejected": rejected, "applied": applied, "expected": expected]
+    init(rooms: Int, expectedPerRoom: Int) {
+        self.expectedPerRoom = expectedPerRoom
+        submitted = Array(repeating: 0, count: rooms)
+        rejected = Array(repeating: 0, count: rooms)
+        applied = Array(repeating: 0, count: rooms)
     }
 
-    /// Exits with a message when any count differs from the expected one: a run whose inputs
-    /// didn't all arrive and apply isn't the workload asked for.
+    var json: [String: Any] {
+        let submittedTotal = submitted.reduce(0, +)
+        let rejectedTotal = rejected.reduce(0, +)
+        return [
+            "submitted": submittedTotal, "accepted": submittedTotal - rejectedTotal, "rejected": rejectedTotal,
+            "applied": applied.reduce(0, +), "expected": expectedPerRoom * submitted.count,
+        ]
+    }
+
+    /// Exits with a message naming the first room whose count differs from the expected one: a
+    /// run whose inputs didn't all arrive and apply isn't the workload asked for.
     func requireComplete(label: String) {
-        guard submitted != expected || accepted != expected || applied != expected else { return }
-        try? FileHandle.standardError.write(contentsOf: Data(
-            "error: \(label): inputs submitted \(submitted), accepted \(accepted) (rejected \(rejected)), applied \(applied); expected \(expected) each\n".utf8))
-        exit(1)
+        for room in submitted.indices {
+            let accepted = submitted[room] - rejected[room]
+            guard submitted[room] != expectedPerRoom || accepted != expectedPerRoom || applied[room] != expectedPerRoom
+            else { continue }
+            try? FileHandle.standardError.write(contentsOf: Data(
+                "error: \(label): room \(room): inputs submitted \(submitted[room]), accepted \(accepted) (rejected \(rejected[room])), applied \(applied[room]); expected \(expectedPerRoom) each\n".utf8))
+            exit(1)
+        }
     }
 }
