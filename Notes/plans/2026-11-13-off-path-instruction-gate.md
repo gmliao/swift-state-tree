@@ -44,7 +44,7 @@ A time gate can't tell a moved function from added work.
   - `ENCODING_BENCHMARK_PERF_CONTROL=<ctl-fifo>,<ack-fifo>`: the FIFOs given to `perf stat --delay=-1 --control fifo:<ctl>,<ack>`.
   - `ENCODING_BENCHMARK_PERF_WINDOW=nonsync|ticks`. `nonsync` is the default.
 - **Spans:**
-  - `nonsync`: per room and iteration, everything in the timed iteration except `syncNow()`. That is the span `timeMs − syncMs` measures; in Hero Defense it includes the move injection.
+  - `nonsync`: per room and iteration, everything in the timed iteration except `syncNow()`. That is the span `timeMs − syncMs` measures. In Hero Defense it includes the move injection only with `--active-players`; without it (the A/B cells so far), `nonsync` is the two ticks.
   - `ticks`: the `stepTickOnce()` loop only.
   - In the generic runner (visibility test), both name the tick loop.
 - **Toggles:** each `enable` / `disable` waits for perf's ack, so the counters are on exactly for the span. There are 2 toggles per room and iteration; both sides pay the same toggle cost.
