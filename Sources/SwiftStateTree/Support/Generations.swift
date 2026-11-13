@@ -56,6 +56,14 @@ package struct GenerationTable<Key: Hashable & Sendable>: Sendable {
         current.removeValue(forKey: key)
     }
 
+    /// Starts the next generation of `ticket`'s key, only if `ticket` is still the current one;
+    /// nil when it isn't. For work that holds a ticket across an `await` and must move its key to
+    /// a new generation: unlike `issue`, it can't start one for a key that was ended meanwhile.
+    package mutating func renew(_ ticket: Ticket<Key>) -> Ticket<Key>? {
+        guard isCurrent(ticket) else { return nil }
+        return issue(ticket.key)
+    }
+
     /// Ends every key's current generation (a teardown). The counter keeps counting, so no
     /// ticket issued before becomes current again.
     package mutating func endAll() {

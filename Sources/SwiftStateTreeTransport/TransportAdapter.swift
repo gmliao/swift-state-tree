@@ -1713,6 +1713,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64?
     ) async {
+        // The item's ticket, taken when it is enqueued: every later step receives it, and none
+        // issues one after an `await` (#531). A teardown, which runs outside the queue, or a
+        // disconnect of the session queued ahead ends it, and then the registration does nothing.
+        let existingTicket = sessionTickets.ticket(for: sessionID)
+        let ticket = existingTicket ?? sessionTickets.issue(sessionID)
         do {
             try await enqueueMembership {
                 await self.registerSessionCheckingKeeper(
@@ -1720,7 +1725,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     clientID: clientID,
                     playerID: playerID,
                     authInfo: authInfo,
-                    acceptedConnectionGeneration: acceptedConnectionGeneration
+                    acceptedConnectionGeneration: acceptedConnectionGeneration,
+                    ticket: ticket,
+                    ticketIssuedForIt: existingTicket == nil
                 )
             }
         } catch {
@@ -1740,17 +1747,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientID: ClientID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
-        acceptedConnectionGeneration: UInt64?
+        acceptedConnectionGeneration: UInt64?,
+        ticket: Ticket<SessionID>,
+        ticketIssuedForIt: Bool
     ) async {
-        // The session's ticket, captured before the keeper read: a teardown runs outside this
-        // queue and can end it during the await. Then the land is gone, and the registration
-        // neither refuses nor registers (#531).
-        let existingTicket = sessionTickets.ticket(for: sessionID)
-        let ticket = existingTicket ?? sessionTickets.issue(sessionID)
+        // Checked again after the keeper read: a teardown outside this queue can end the
+        // ticket during the await. Then the land is gone, and the registration neither refuses
+        // nor registers.
         let entry = await keeper.entrySession(for: playerID)
         await holds.at(.registrationAfterKeeperRead)
         guard sessionTickets.isCurrent(ticket) else {
-            logger.info("Registration dropped: the land was torn down during the keeper read", metadata: [
+            logger.info("Registration dropped: its ticket ended before it ran (a teardown, or the session's disconnect)", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
             ])
@@ -1772,7 +1779,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
                 endedSessions.insert(sessionID)
                 // The ticket taken for this registration isn't the session's to keep.
-                if existingTicket == nil { sessionTickets.end(ticket) }
+                if ticketIssuedForIt { sessionTickets.end(ticket) }
                 // Without a generation (a caller that passed none), the close is by ID.
                 closeSessionDetached(sessionID, generation: acceptedConnectionGeneration)
                 return
@@ -1812,24 +1819,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `registerSession` after its check, and `performJoinQueued` after its keeper join and
     /// admission. The player's other sessions are superseded (`sessionPerPlayerPolicy`).
     ///
-    /// - Parameter ticket: The session's ticket the caller captured before its own awaits (the
-    ///   public path's keeper read). Not current any more (a teardown): nothing is registered.
-    ///   Nil: the session's current ticket, or a new one.
+    /// - Parameter ticket: The session's ticket, taken before the caller's first `await`: the
+    ///   public path's at its enqueue, the library join's at its admission. This function issues
+    ///   none. Not current any more (a teardown): nothing is registered.
     func _registerSessionImpl(
         sessionID: SessionID,
         clientID: ClientID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64? = nil,
-        ticket captured: Ticket<SessionID>? = nil
+        ticket carried: Ticket<SessionID>
     ) async {
-        if let captured, !sessionTickets.isCurrent(captured) { return }
-        var carried = captured
+        guard sessionTickets.isCurrent(carried) else { return }
+        var ticket = carried
         // Rebinding the session to another player starts a new generation: work captured for
         // the previous player's binding (an initial sync reading the state) must not act on it.
         if let previous = membershipCoordinator.playerID(for: sessionID), previous != playerID {
-            carried = nil
-            sessionTickets.end(sessionID)
+            guard let renewed = sessionTickets.renew(ticket) else { return }
+            ticket = renewed
             syncLag.removeValue(forKey: sessionID)
             firstViewEncodeFailures.removeValue(forKey: sessionID)
         }
@@ -1846,7 +1853,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Under a ticket taken before the await: a disconnect, a supersede or a teardown during
         // it ends the session, and the write must not bring back an entry for it (#531).
         endedSessions.remove(sessionID)
-        let ticket = carried ?? sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
         await holds.at(.registrationGeneration)
         if let webSocketTransport = transport as? WebSocketTransport {
             let current = await webSocketTransport.registerSession(sessionID, for: playerID)
@@ -2527,14 +2533,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
 
             // Register session. Already in the membership queue, and the keeper join just ran in
-            // it: the internal registration, without the public one's enqueue and keeper check.
-            await _registerSessionImpl(
-                sessionID: sessionID,
-                clientID: clientID,
-                playerID: playerID,
-                authInfo: authInfo,
-                acceptedConnectionGeneration: connectionGeneration
-            )
+            // it: the internal registration, without the public one's enqueue and keeper check,
+            // under the admission's ticket. Without one, the admission ended meanwhile (a
+            // teardown): nothing to register.
+            if let admittedTicket {
+                await _registerSessionImpl(
+                    sessionID: sessionID,
+                    clientID: clientID,
+                    playerID: playerID,
+                    authInfo: authInfo,
+                    acceptedConnectionGeneration: connectionGeneration,
+                    ticket: admittedTicket
+                )
+            }
 
             if completesInTurn {
                 // Ready once registered (and its OnJoin consumed): a land without periodic
