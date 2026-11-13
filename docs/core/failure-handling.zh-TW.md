@@ -17,18 +17,18 @@
 
 ## 範圍：結束什麼
 
-範圍取決於失敗弄錯了什麼（#535 決定）：
+範圍取決於失敗弄錯了什麼（#535 決定；見[決定紀錄](https://github.com/gmliao/swift-state-tree/issues/535#issuecomment-6852509570)與[計畫](https://github.com/gmliao/swift-state-tree/blob/440210de/Notes/plans/2026-11-13-sync-failure-ends-unit.md)）：
 
 | 失敗 | 弄錯了什麼 | 結束什麼 |
 |---|---|---|
 | 註冊 land 時就能知道的型別錯誤 | 從第一次同步起的每個接收者 | 什麼都不執行：**拒絕註冊** |
 | 弄壞每個接收者的 view 或 land 狀態的失敗，包括執行時才發現的型別錯誤 | 每個接收者，或狀態本身 | 關閉 **land**，並記錄錯誤 |
-| 若失敗只影響單一玩家的 view | 只有該玩家的 client | 關閉 **該 session**。重新加入會送出完整 view，狀態再次正確，所以 land 繼續執行 |
+| 只影響單一連線的失敗，例如該連線的 outbound 佇列超過 writer 的上限 | 只有該連線的 frame | 關閉 **該 session**。重新加入會送出完整 view，狀態再次正確，所以 land 繼續執行 |
 | client 送來的格式錯誤輸入 | 尚未弄錯任何東西 | 拒絕 **該輸入**，並告知 client。session 與 land 繼續執行 |
 
 event 編碼失敗是值本身的問題，與接收者無關：每個 event 在分送給接收者之前只編碼一次。所以不論目標是誰，它都會結束 land（#521）。
 
-是否有任何同步失敗只限於單一玩家，仍在 #535 中討論。玩家的 view 是 land 狀態的確定性函數，重新加入會重算出同樣的失敗；目前內建的 encoder 也沒有會因接收者不同而拋出錯誤的輸入。#535 正在決定是否改為所有同步失敗都結束 land。上表的 session 一列陳述的是原則；結束 session 的失敗不能形成循環，所以重新加入後再次發生時就結束 land。
+目前沒有已知只限於單一玩家 view 的同步失敗。玩家的 view 是 land 狀態的確定性函數，重新加入會重算出同樣的失敗。所以每個同步失敗都結束 land，包括 resync 或第一次 view 的 frame（#535）。上表的 session 一列適用於真正只屬於單一連線的失敗，例如 outbound writer 的上限。結束 session 的失敗不能形成循環：重新加入後再次發生就結束 land。
 
 ## 程式碼目前的狀態
 
@@ -39,14 +39,20 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | 以參考型別（class）作為同步狀態（#464） | 註冊時拒絕：`SyncValueSemantics.validate`（`LandTypeRegistry.swift:38`、`NIOLandHost.swift:363`、`SchemaExtractor.swift:20`） | 已符合 |
-| 其他僅由型別就能決定的型別錯誤：不支援的值或 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 同步時才發現；處理方式同下一節第一列 | 目標：註冊時拒絕（#535） |
+| 其他僅由型別就能決定的型別錯誤：不支援的值或 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 同步時才發現；處理方式同「結束 land」第一列 | 目標：註冊時拒絕（#535） |
+| existential 型別的同步欄位（`Any`、`any P`） | 允許；無法轉換的值在同步時才發現，處理方式同「結束 land」第一列 | 目標：宣告的型別寫出 `any` 或 `Any` 時在編譯期拒絕，`AnyHashable` 與 `AnyCodable` 依名稱拒絕。未加 `any` 的 protocol 名稱、指向 existential 的 typealias，以及手寫的 conformance 在編譯期抓不到：這類欄位在第一次轉換失敗時結束 land（#535） |
 
 ### 結束 land
 
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | 執行時 conversion 拋出錯誤的欄位 | 該次同步捨棄這個欄位（client 保留舊值），計數並記錄，frame 的其餘部分照常送出（`SyncEngine.swift:1405-1428`、`TransportAdapter.swift:4190`） | 目標：關閉 land（#535） |
-| 編碼無法承載的 patch（例如 JSON 中的非有限數）或 schema 之外的路徑 | 去掉該 patch 重新編碼後送出；該欄位在 client 上維持過期，直到它再次改變（`TransportAdapter.swift:5663`） | 目標：關閉 land（#535） |
+| 轉成相同字串的 dictionary key | 後一筆默默覆蓋前一筆（`SnapshotValue.swift:424`） | 目標：關閉 land（#535） |
+| 編碼無法承載的 patch（例如 JSON 中的非有限數） | 去掉該 patch 重新編碼後送出；該欄位在 client 上維持過期，直到它再次改變（`TransportAdapter.swift:5663`） | 目標：關閉 land（#535） |
+| 路徑在 schema 之外的 patch | 同上一列被丟棄，並計數（`TransportAdapter.swift:719-723`） | 目標：關閉 land（#535） |
+| 拋出錯誤的同步 plan | 不送任何東西並重試：有週期同步時每個 tick 重試；沒有時先做有限次數的 follow-up，之後在有 join 等待時，透過延遲加倍的 join-sync turn 重試（`TransportAdapter.swift:3320`、`LandKeeper.swift:4423-4435`） | 目標：第一次拋出錯誤就關閉 land，不重試（#535） |
+| 單一玩家的狀態 frame 完全無法編碼 | 該 cycle 不送任何東西給這位玩家，它的 client 可能在某些欄位上落後，直到這些欄位再次改變（`TransportAdapter.swift:4940-4951`） | 目標：關閉 land（#535、#532） |
+| resync 或第一次 view 的完整 view 無法編碼 | 重試；超過上限後以 4012 `unencodableView` 關閉 session（`TransportAdapter.swift:3634`） | 目標：第一次失敗就關閉 land，不重試；不再送出 4012（#535） |
 | 編碼失敗的 server event | 記錄錯誤，event 不送出（`TransportAdapter.swift:3026-3031`、`:3135`） | 目標：關閉 land（#521） |
 | 寫入狀態後才拋出錯誤的 handler | 該輸入單獨失敗，之後的輸入繼續；它的寫入保留並同步出去，debug build 會發出警告（`LandKeeper.swift:3836-3837`、`:3189`） | 目標：關閉 land（#535）；部分寫入由 #87 追蹤 |
 | replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:273`、`TransportMessageEncoder.swift:336`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
@@ -56,8 +62,6 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
-| 單一玩家的狀態 frame 完全無法編碼 | 該 cycle 不送任何東西給這位玩家，它的 client 可能在某些欄位上落後，直到這些欄位再次改變（`TransportAdapter.swift:4940-4951`） | 目標：結束它，而不是繼續；由 #535 決定是 session 還是 land（#532） |
-| resync 的完整 view 持續無法編碼 | 重試；超過上限後以 4012 `unencodableView` 關閉 session（`TransportAdapter.swift:3634`） | 依 session 一列已符合；可能隨 #535 的決定改為結束 land |
 | outbound writer 因超過上限而丟棄 frame | 該 frame 指向的每個 session 都被結束，在 transport 能關閉 session 時也會斷線；client 重新加入後取得完整 view（`TransportAdapter+Outbound.swift:38-63`） | 已符合 |
 
 ### 拒絕輸入
@@ -67,9 +71,17 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | payload 無法解碼的 action | 在 intake 拒絕；client 收到錯誤（`LandKeeper.swift:2721`、`TransportAdapter.swift:6079`） | 已符合 |
 | payload 無法解碼的 client event | 直接丟棄，不回錯誤給 client（`LandDefinition.swift:276-277`），卻仍被記錄為已套用，因為記錄發生在 handler 執行之前（`LandKeeper.swift:3487-3498`） | 目標：比照 action 拒絕，且不記錄（#537） |
 
+### land 因失敗結束時
+
+| 路徑 | 目前 | 狀態 |
+|---|---|---|
+| OnLeave 與 destroy handler | 目前沒有任何失敗會結束 land。host 停止 land 時，每個 session 的 leave 會在檢查 land 的 drain 之前執行 OnLeave resolver（`LandKeeper.swift:2397-2439`） | 目標：失敗的 land 不執行 OnLeave（略過 resolver 與 handler；玩家的成員關係照常結束），destroy handler 與存檔執行時看得到這個失敗（#535） |
+
 ## Close code
 
-因失敗而關閉時使用的 close code 由 #535 定義。既有的 4012 `unencodableView` 目前仍在使用。
+- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session（目標，#535）。
+- **4012 `unencodableView`：** 目前在 resync 或第一次 view 的 frame 持續無法編碼時送出。#535 落地後保留不用，不再送出。
+- **4014 `landStopped`：** 管理端停止，不變。
 
 ## 其他系統的做法
 
