@@ -1,6 +1,10 @@
 # A sync failure ends the unit it corrupted (#535)
 
-**Status:** rev 6, plan only. No code before this plan is reviewed.
+**Status:** rev 7, plan only. No code before this plan is reviewed.
+- Rev 6 (400b9608) got a no-GO: 2 must-fix and 4 should. Rev 7 answers them:
+  - S1: §3.2 step 5. On a failure, the legacy paths' turn record goes through the ordered recorder pipeline with the terminal entry after it, both enqueued in the failing segment; nothing is written directly after an await, so a teardown save can't come first.
+  - S2: §3.4. "Sessions closed" is a set-once latch per epoch, created in the segment that detaches, that a late joiner can await; a hook whose epoch-conditioned detach finds no instance and no latch returns at once.
+  - Shoulds: the legacy A/B/C construction is replaced by what can be built (§8); §3.8 lists `resumeInputTurnWaiters`' bookkeeping as an existing exception and drops action responses; the output gate's contract is "no new enqueue", with action responses and errors exempt; a custom transport's `closeOutputs` is its own responsibility.
 - Rev 5 (a74f6145) got a no-GO: 3 must-fix and 4 should, all one class: keeper state read or changed across an await. Rev 6 answers them, and checks every step of §3 against the reentrancy rule, with the awaits the failure path crosses listed in §3.8:
   - Q1: §3.2 step 4 and §3.3. A synchronous output gate: the mark closes it in the failing segment (a set-once, lock-protected flag on the transport, `closeOutputs(for:)`), every adapter send point checks it, the failing turn skips `runTurnOutputs`, and the sync-only, repair and writer-drain entries check the failure.
   - Q2: §3.2 step 5. The terminal entry is enqueued in the same synchronous segment as the turn's record, before any await; the enqueue point is listed per turn kind.
@@ -219,7 +223,8 @@ The steps:
    - **tick turn (in-turn):** the tick's record is enqueued in `runTick`'s segment; the terminal entry follows it there.
    - **sync-only turn:** the terminal entry is enqueued in `runSyncOnlyTurn`'s segment, and is then the turn's only submission; `enqueueTicklessTurnEnd(since:)` follows it, since the count moved.
    - **the `landFailure` item's turn:** the entry is that turn's only submission, enqueued where the item is applied.
-   - **legacy tick-land and legacy pass recording,** which write with `await recorder.record(...)` directly (LK 3690-3706, 4298-4324): the failing segment moves the entry into a local; the same task writes it after its last record write. That writes to the recorder, not to keeper state.
+   - **the tickless legacy pass** already records through the pipeline (`finishTicklessLegacyPass`, LK 3737-3768, `enqueueRecorderSubmission`): on a failure, its record and then the terminal entry are enqueued in the apply segment, before the pass's awaits.
+   - **the legacy tick path** today writes its input record with `await recorder.record(...)` directly, after `holds.at(.turnRecord)` (LK 3683-3706), outside the pipeline; a teardown save, whose submission tracker waits only for the pipeline's tail (ReevaluationRecorderService 26-37, 45-58), could get in first. **On a failure, that write moves into the pipeline:** the apply segment already holds the recorded inputs (`applied`), so it enqueues one submission that writes them (`recorder.record(...)`, as today) and then the terminal entry, and the direct write after `.turnRecord` is skipped. No sync phase ran, so the tick's later writes (the state snapshot, LK 4298-4324) don't happen. A path without a failure keeps today's direct write.
    - **without a recorder:** nothing is enqueued, and the stored entry is cleared in the segment.
 
    The teardown's record entries (the destroy's save) are submitted later, by the drain, so the terminal entry precedes them. The entry isn't an input.
@@ -233,6 +238,8 @@ The steps:
 ### 3.3 The adapter
 
 **It stops at once, through the output gate (§3.2 step 4).** A failure the adapter sees itself closes the same gate.
+
+**The gate's contract: no new enqueue.** The gate is checked where a frame is enqueued to the outbound writer. Frames already in the writer when it closes still go out (`OutboundWriter` 173-182 has no gate), as do events enqueued earlier in the failing turn; no dequeue policy is added. **Action responses and errors are exempt:** the shared `writeElement` path checks the gate only for state and event frames, and a response or error goes out best effort until the session's membership ends (below). A custom transport's `closeOutputs(for:)` is its own responsibility: the protocol's doc says that its empty default blocks nothing, and that a transport that sends on its own schedule must stop new state and event output when it is called.
 - In the segment where it sees a failure, the adapter sets its private `landFailure` and bumps a `GenerationTable` generation for the land's output.
 - From then on, every send path (state, broadcast-only, events, first sync) returns without sending.
 - Every plan returns `.landFailed`.
@@ -278,7 +285,11 @@ extension LandKeeper {
 **The task** holds no keeper state across its awaits, and runs:
 
 1. **`await transport.landDidFail(failure)`**, a new `LandKeeperTransport` requirement whose default does nothing. A custom transport therefore compiles, and the keeper still tears the land down. **It returns once the sessions are closed, never after the destroy**: the host's stop awaits `forceShutdown`, which joins this `drainTask`, so waiting for the stop's end here would deadlock. `TransportAdapter` implements it:
-   - **With a host hook** (`onLandFailure`, which `LandManager` installs at creation with the instance's epoch): it starts the server's stop in the stop's own task (its `SingleFlight`), with the epoch, and awaits a "sessions closed" signal the stop raises after `closeSessions`. The stop's own task then calls `forceShutdown`, which joins `drainTask`; by then `landDidFail` has returned, so there is no cycle.
+   - **With a host hook** (`onLandFailure`, which `LandManager` installs at creation with the instance's epoch): it starts the server's stop in the stop's own task (its `SingleFlight`), with the epoch, and awaits that epoch's **sessions-closed latch**. The stop's own task then calls `forceShutdown`, which joins `drainTask`; by then `landDidFail` has returned, so there is no cycle.
+     - **The latch is lasting state, not an event (Review S2).** It is a set-once completion keyed by epoch, held in the server's stop flights (`LandStopFlights`) beside the flight. It is created in the same synchronous segment as the detach that starts a stop for that epoch, whichever stop does it (an admin `DELETE` or a failure), and set after that stop's `closeSessions` returns. A late joiner awaits it and returns at once if it is already set.
+     - **An admin stop already past `closeSessions`** set the latch earlier: the failure's hook finds the epoch's latch set and returns at once.
+     - **An epoch-conditioned detach that finds no instance** (the epoch was detached by an earlier stop, or the land is gone): the hook looks up that epoch's latch in the same segment. If a latch exists, it awaits it (the earlier stop will set it); if none exists, no stop of this epoch will ever raise one, and the hook returns at once.
+     - The cycle `drainTask` → `landDidFail` → latch → stop → `forceShutdown` → `drainTask` can't close: the latch is set before the stop calls `forceShutdown`, and a stop that never ran leaves no latch to wait for.
      - `LandManager.detachForStop(landID:epoch:)` detaches only if the stored instance has that epoch, in one synchronous segment (Review M7). The epoch check and the detach can't be split by an await. Epochs are the manager's (LM 125-126).
      - The stop then closes the bound sessions. **Where the code is decided is D10.** Today the server picks the `SessionClose` value before `await landRouter.closeSessions` (NIOLandServer 181), and the router then awaits its snapshot (LandRouter 469), each adapter lookup (474) and the leave forwarding (482-486) before it closes anything. Under the recommended D10 (a), `closeSessions` takes a closure the router evaluates when it **issues** each session's close request, after that session's leave and `afterLeave` (LandRouter 425-440, 479-487); it reads `keeper.destructionCause` (nonisolated) and gives 4016 for `.failed`, 4014 otherwise. The code is "the cause as of the router's close request". The request then hops to the `WebSocketTransport` actor to close, so a failure in that last hop still leaves 4014; the plan accepts that window rather than threading the closure into the transport.
      - The destroy sees `.failed` whenever the failing turn set the drain cause first (step 2). `SingleFlight` keeps the stop's work to one run.
@@ -348,11 +359,11 @@ Every step of §3 was checked against the rule "keeper state is mutated only ins
 | Await | Where | Captured before it | After it |
 |---|---|---|---|
 | none in §3.2 | the mark, the settle, the record enqueue, the teardown's synchronous part | — | — (all in the failing segment) |
-| `await submission?.value` / `holds.at(.turnRecord)` | `runInputDrain` after `runInputTurn` (LK 4713-4717 pattern) | the record and terminal handles | waiting only; publication of the prefix's outcomes, which was decided in the segment (`inputTurnResults` for the prefix) |
-| the legacy pass's awaits (`finishTicklessLegacyPass`, `.turnRecord`, recording; LK 3663-3690) | legacy pass | the suffix was already dropped and the prefix removed in the apply segment; the terminal entry is a local | recorder writes of the local entry; publication of `outcomes` (prefix only) |
+| `await submission?.value` / `holds.at(.turnRecord)` | `runInputDrain` after `runInputTurn` (LK 4713-4717 pattern) | the record and terminal handles (both enqueued) | `resumeInputTurnWaiters`' existing bookkeeping (LK 4958-4961, 5015-5022): it removes the prefix's `inputTurnResults`, the job-turn marks and the waiters, and fills slots. That is an existing post-await exception of every input drain, not added here; on a failure it touches only the prefix |
+| the legacy pass's awaits (`finishTicklessLegacyPass`, `.turnRecord`; LK 3663-3690) | legacy pass | the suffix was already dropped and the prefix removed in the apply segment; the record and terminal entry are already in the pipeline | the existing legacy publication of `outcomes` (prefix only), the same existing exception |
 | `await transport.landDidFail` | the teardown task | `failure` (a value) | none on the keeper; the drain follows |
 | the drain's awaits (`.drainStart`, `waitForTickInFlight`, destroy handlers, save, `onLandDestroyed`) | `drainAfterIdleCheck` | — | the drain's existing bookkeeping (§3.4 step 2), an existing exception |
-| adapter: legacy state read → send (TA 3301-3318), first-sync suspensions (TA 5722-5740), legacy event flush, broadcast-only, debug settle (TA 6671-6682), action results (TA 5941-5993) | adapter, outside turns | the output generation (`GenerationTable` ticket) | a send only through `ifCurrent` **and** an open output gate; `keeper.endSync()` always (TA 3327-3328) |
+| adapter: legacy state read → send (TA 3301-3318), first-sync suspensions (TA 5722-5740), legacy event flush, broadcast-only, debug settle (TA 6671-6682) | adapter, outside turns | the output generation (`GenerationTable` ticket) | a state or event enqueue only through `ifCurrent` **and** an open output gate; `keeper.endSync()` always (TA 3327-3328). Action responses (TA 5941-5993) are exempt from the gate (§3.3) |
 | `await keeper.submitLandFailure` | adapter, legacy path | `failure`, both positions, the lifecycle ticket | nothing on the adapter; the keeper applies it in its own turn, re-reading the drain flag and the ticket |
 | router: snapshot, adapter lookup, leave and `afterLeave`, the hop to the transport | host stop | the epoch (detach), the close-code closure | the close code read at the close request (D10) |
 
@@ -417,7 +428,7 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 | `InTurnSyncResult.landFailed(LandFailure)` | new enum case on a public protocol's result (the same note) |
 | `InTurnSyncResult.committedWithRepairPending` | no longer returned after PR 2; deprecated (D7) |
 | `LandKeeperTransport.landDidFail(_:)` | new requirement with a do-nothing default |
-| `LandKeeperTransport.closeOutputs(for:)` (synchronous, `nonisolated`) | new requirement with a do-nothing default |
+| `LandKeeperTransport.closeOutputs(for:)` (synchronous, `nonisolated`) | new requirement with a do-nothing default; its doc names stopping a custom transport's own output as that transport's responsibility |
 | `SessionClose.Code.landFailed` (4016); `SessionClose.landFailed` (package, as `.landStopped`) | new constant |
 | `SyncError.collidingKeys` | new enum case (D8; the same switch note) |
 | `SyncRegistrationError`; `LandDefinition.validateForRegistration(context:)` | new; thrown by entry points that already throw |
@@ -507,7 +518,9 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - **A mid-batch failure (Review P1):** a batch of A (succeeds), B (throws after a write) and C (not executed), each once as an action with a tickless job slot and once with an ordinary turn waiter: A gets its response, B its handler error, C `landClosed`; each slot is filled exactly once (a slot hook that fails on a second fill). It fails if the settle moves after the publication:
   - in-turn: C's waiter gets `landClosed`, never `.success(())`, and `appliedItems` holds A and B only;
   - in-turn: `inputTurnResults` holds no entry for C after the turn;
-  - legacy: with a hold at `.turnRecord`, C's own caller runs its pass during the hold, and C stays unapplied (its handler never runs) and gets `landClosed`. **Construction:** A, B and C are each sent by their own legacy caller, so each `runLegacyPass` registers its caller before its synchronous apply (LK 3800-3817); B's caller arrives last and its pass applies the batch. The drop then fills C's `legacyPassResults` and `legacyPassAppliedBy` (LK 4894-4899), so the `assert` at LK 3812 isn't tripped. Tickless action jobs use `runTicklessJobPass` (LK 2112), which has no legacy caller, so the job-slot part of A/B/C runs on the in-turn variant only.
+  - the batch cut is tested **in-turn only**, where A, B and C can be one batch (queued while a hold keeps the input drain from starting). On the legacy path each `runLegacyPass` applies every ready input synchronously before its first await (LK 3798-3812), so A's and C's callers apply their own inputs; three legacy callers can't be made to share one batch without changing the code, and this plan claims no legacy batch-cut coverage.
+  - legacy, separately: (i) a legacy caller whose input arrives after the failure is rejected with `landClosed` at intake and never applied; (ii) an input queued behind the failing one in the same `pendingItems` (queued by a tick land's intake while its tick is held, then applied by the legacy tick) is dropped by the settle with `landClosed`, filling `legacyPassResults` and `legacyPassAppliedBy` where it has a legacy caller (LK 4894-4899).
+  - Tickless action jobs use `runTicklessJobPass` (LK 2112), which has no legacy caller, so the job-slot part runs on the in-turn variant only.
 - **The finalize step (Review P2):** the terminal entry is recorded for a failure in a sync-only turn (nothing else submitted), in the turn applying a `landFailure` item, on the legacy tick-land recording path, and in an input drain; it comes after any record of that turn and before any teardown entry; without a recorder nothing is written.
 - **The legacy output position:** with in-turn sync off and a recorder, a legacy sync failure records the position of the state it read, and the turns run between it and the turn that applied the item replay.
 - **D5's thread-local:** two keepers run in turn on the same thread (a single-thread executor), the second starting from a clean count; a nested handler call restores the outer count; the temporary-`@Sync` false positive is pinned.
@@ -532,6 +545,9 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - **The output gate (Q1):** after a `.handlerWrite`, with a hold at `.turnRecord`, a pending repair sync-only turn, a writer-drain retry and a legacy cycle holding a valid output ticket: nothing is sent, and the failing turn's own sync phase and events (the prefix's included) are not sent.
 - **The record enqueue (Q2):** the terminal entry is enqueued before the `.turnRecord` hold (asserted at the hold), for each turn kind of §3.2 step 5.
 - **The terminal entry versus an admin stop:** the failing turn held at `.turnRecord`, then an admin `DELETE`, then the save: the persisted record holds the turn's record and the terminal entry, in order. The entry was enqueued before the hold, so the tail the save's submission tracker captures (ReevaluationRecorderService 45-58) includes it.
+- **The legacy terminal entry (S1):** the legacy tick path held at `.turnRecord` after a failure, then an admin stop and its save: the saved record holds the turn's input record and then the terminal entry, last. The same for the tickless legacy pass.
+- **The sessions-closed latch (S2):** (i) an admin stop held right after `closeSessions` (latch set), then a failure: the hook returns at once and the teardown finishes; (ii) an admin stop that has detached the epoch and is held before `closeSessions`, then a failure: the hook's detach finds no instance, awaits the existing latch, and returns once the admin stop sets it; (iii) a failure after the land was fully destroyed for that epoch: no instance and no latch, the hook returns at once. None deadlocks (each test has a time-boxed await that fails the test, not a wall-clock poll).
+- **The output gate's contract:** a state frame already in the writer when the gate closes is sent; none is enqueued after; an action response enqueued after the gate is still sent while the session's membership lasts.
 - **The teardown's synchronous part (Q3):** after the failing segment, `players` is empty and `drainTask` is set before any await (a hold at the teardown task's start); a host stop and the teardown task racing don't deadlock (the stop's `forceShutdown` joins `drainTask` after `landDidFail` returned).
 
 **Mutants.** Each is run once and caught by a named test:
@@ -559,6 +575,9 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - the terminal entry enqueued after an await (the record-enqueue test);
 - the teardown's `players` clear or `drainTask` install moved into the task (the teardown test);
 - `landDidFail` awaiting the stop's end (the no-deadlock test);
+- the latch made a one-shot event, or created after the detach's segment (the latch tests (i) and (ii));
+- the hook waiting when no latch exists (latch test (iii));
+- the legacy tick's record written directly on a failure (the legacy terminal-entry test);
 - `appliedItems` or `inputTurnResults` written for the whole batch (the in-turn A/B/C test);
 - the finalize step made conditional on the turn's submission (the sync-only and `landFailure`-item tests);
 - the thread-local install without restore (the nested-call and reused-thread tests);
