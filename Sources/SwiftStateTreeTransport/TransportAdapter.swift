@@ -1748,15 +1748,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
         acceptedConnectionGeneration: UInt64?,
-        ticket: Ticket<SessionID>,
+        ticket queuedTicket: Ticket<SessionID>,
         ticketIssuedForIt: Bool
     ) async {
-        // Checked again after the keeper read: a teardown outside this queue can end the
-        // ticket during the await. Then the land is gone, and the registration neither refuses
-        // nor registers.
+        // Checked after the keeper read: a teardown outside this queue can end the ticket
+        // during the await. Then the land is gone, and the registration neither refuses nor
+        // registers. A registration ahead of this one that rebound the session renewed the
+        // ticket instead of ending it: this one goes on under the renewed ticket, so the later
+        // registration wins, as the queue orders them.
         let entry = await keeper.entrySession(for: playerID)
         await holds.at(.registrationAfterKeeperRead)
-        guard sessionTickets.isCurrent(ticket) else {
+        guard let ticket = sessionTickets.resolve(queuedTicket) else {
             logger.info("Registration dropped: its ticket ended before it ran (a teardown, or the session's disconnect)", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
@@ -1830,8 +1832,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         acceptedConnectionGeneration: UInt64? = nil,
         ticket carried: Ticket<SessionID>
     ) async {
-        guard sessionTickets.isCurrent(carried) else { return }
-        var ticket = carried
+        guard var ticket = sessionTickets.resolve(carried) else { return }
         // Rebinding the session to another player starts a new generation: work captured for
         // the previous player's binding (an initial sync reading the state) must not act on it.
         if let previous = membershipCoordinator.playerID(for: sessionID), previous != playerID {
@@ -2534,8 +2535,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Register session. Already in the membership queue, and the keeper join just ran in
             // it: the internal registration, without the public one's enqueue and keeper check,
-            // under the admission's ticket. Without one, the admission ended meanwhile (a
-            // teardown): nothing to register.
+            // under the admission's ticket. Nil: no admission record is left for the session
+            // here, and nothing is registered. A teardown during the keeper join doesn't make it
+            // nil: the admission issues a fresh ticket after that await (#548).
             if let admittedTicket {
                 await _registerSessionImpl(
                     sessionID: sessionID,

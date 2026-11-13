@@ -345,6 +345,35 @@ struct TransportAdapterRegisterSessionTests {
         #expect(await f.transport.closed.isEmpty)
     }
 
+    @Test("Two queued registrations that rebind one session: the later one wins")
+    func queuedRebindsLaterWins() async throws {
+        let f = await RegisterSessionFixture()
+        let p2 = PlayerID("p2"), p3 = PlayerID("p3")
+        await f.register(s1, c1, as: player)
+        let gate = TestGate()
+        let holds = HoldRegistry<TransportAdapterHoldPoint>()
+        holds.on(.registrationAfterKeeperRead, arrival: 1) { await gate.arrive() }
+        let queued = await f.queuedSignal(on: holds)
+
+        // Both are enqueued with the session's ticket; the first renews it when it rebinds.
+        let toP2 = Task {
+            await f.adapter.registerSession(sessionID: s1, clientID: c1, playerID: p2, authInfo: nil, connectionGeneration: 5)
+        }
+        #expect(await gate.waitForArrivals(1))
+        let toP3 = Task {
+            await f.adapter.registerSession(sessionID: s1, clientID: c1, playerID: p3, authInfo: nil, connectionGeneration: 6)
+        }
+        #expect(await queued.waitForArrivals(2))
+        gate.open()
+        await toP2.value
+        await toP3.value
+
+        #expect(await f.adapter.membershipSessionIDs(for: p3) == [s1])
+        #expect(await f.adapter.membershipSessionIDs(for: p2).isEmpty)
+        #expect(await f.adapter.membershipSessionIDs(for: player).isEmpty)
+        #expect(await f.adapter.connectionGenerations[s1] == 6)
+    }
+
     @Test("A disconnect issued during the registration waits for it, then removes the session")
     func disconnectWaitsForRegistration() async throws {
         let f = await RegisterSessionFixture()

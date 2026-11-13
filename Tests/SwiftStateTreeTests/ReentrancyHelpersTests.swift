@@ -83,6 +83,37 @@ struct ReentrancyHelpersTests {
         #expect(table.isCurrent(b))
     }
 
+    @Test("renew moves a current ticket on; a held ticket resolves to the renewal, not past an end or an issue")
+    func renewAndResolve() throws {
+        var table = GenerationTable<String>()
+        let t0 = table.issue("a")
+        let t1Renewal = table.renew(t0)
+        let t1 = try #require(t1Renewal)
+        #expect(!table.isCurrent(t0) && table.isCurrent(t1))
+        let t2Renewal = table.renew(t1)
+        let t2 = try #require(t2Renewal)
+        // A ticket held from before the renewals resolves through both.
+        #expect(table.resolve(t0) == t2)
+        #expect(table.resolve(t1) == t2)
+        #expect(table.renew(t0) == nil, "renew takes a current ticket only")
+
+        // `issue` starts a generation no earlier ticket resolves to.
+        let fresh = table.issue("a")
+        #expect(table.resolve(t0) == nil && table.resolve(t2) == nil)
+        #expect(table.resolve(fresh) == fresh)
+
+        // `end` and `endAll` end the lineage.
+        let rRenewal = table.renew(fresh)
+        let r = try #require(rRenewal)
+        table.end("a")
+        #expect(table.resolve(fresh) == nil && table.resolve(r) == nil)
+        let b0 = table.issue("b")
+        let b1Renewal = table.renew(b0)
+        let b1 = try #require(b1Renewal)
+        table.endAll()
+        #expect(table.resolve(b0) == nil && table.resolve(b1) == nil)
+    }
+
     // MARK: - Lifecycle
 
     @Test("A second start while starting joins the in-flight start")

@@ -13,9 +13,11 @@
 #               turn can end the key during the await, and a ticket issued then is current for a
 #               key that is gone (#531). Take the ticket before the first `await` and pass it on;
 #               to move a held ticket to a new generation, `renew(_:)` (it checks the ticket is
-#               still current). The scope is per function in line order: a function starts at a
-#               `func`/`init` declaration line, and a closure or a nested function is not a scope
-#               of its own (an `await` in it counts for the rest of the outer function).
+#               still current). A hint, not a proof: it reads lines in order, and every line that
+#               declares a `func` or an `init` starts a new scope, a nested one too (an `await`
+#               before it no longer counts after it); a closure isn't a scope (an `await` in it
+#               counts for the rest of the function). It can't see an `issue` inside a helper
+#               called after an `await`: there the ticket has to be a parameter.
 #
 # A line that must keep the pattern carries `// lint-allow: <rule>` on the same line.
 # Comment-only lines are skipped. The check is per line: a format string on a later line than
