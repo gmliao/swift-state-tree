@@ -1,8 +1,21 @@
 # A patch's path built on demand from its split (#392, the remaining step)
 
-**Status:** rev 1, for review. No code. Read at `main` 746fe207. Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the PR). Scope and gate: #392's comment of 2026-11-13 ("Next step (decided)").
+**Status:** rev 2, for review. No code. Read at `main` 746fe207. Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the PR). Scope and gate: #392's comment of 2026-11-13 ("Next step (decided)").
 
-**Summary.** `StatePatch.path` is a stored string that every typed emit builds next to the split it already has. This change makes the split the stored form and builds `path` only when a reader asks. The wire doesn't change. The work saved is the per-level string building in the typed diff, and, on the opcode encodings, the path work in the encoders, if they compare splits instead of strings. Two readers on the hot path would otherwise build the string per patch per recipient and erase the saving: the field-merge frame prefix cache (§2.3) and `mergePatches` (§2.4). The plan changes both.
+- **Rev 2** answers review of rev 1 (1854f58b):
+  - every encoder call site that passes `patch.path` as an argument is a hot reader, and becomes lazy (§1.3, §2.5);
+  - two identity contracts, kept apart: the frame cache's UTF-8 bytes, and the merge's and `==`'s `String` equality (§1.4, §2.3, §2.4);
+  - reconstruction is defined as lossless only where the emit's literal bytes equal the template's, and is the string form otherwise (§2.1);
+  - walk-off rebuilds from a node template (§2.2);
+  - the retag at SyncTables :880 and the full-view and digest readers (§1.3, §2.5);
+  - concrete A/B cells (§4);
+  - more mutants (§4);
+  - Q1–Q4 decided (§5);
+  - the per-player follow-up is #547 (§3).
+
+**Summary.** `StatePatch.path` is a stored string that every typed emit builds next to the split it already has. This change makes the split the stored form and builds `path` only when a reader asks. The wire doesn't change. The work saved:
+- the per-level string building in the typed diff;
+- on the opcode encodings, the path strings the encoders build or compare per patch per frame, now that those readers take the split.
 
 ## 1. What is there now
 
@@ -11,58 +24,79 @@
 - `StatePatch` (`Sources/SwiftStateTree/Sync/StatePatch.swift:71`): `public let path: String`, `operation`, and `package let split: PatchSplit?`. `==` and `Codable` use `path` and `operation` only.
 - `PatchSplit` (`Core/PathHasher.swift:213`): `pathHash: UInt32`, `dynamicKeys: [String]`, `row: PatchRow?`, `owner: PathHasherIdentity`.
   - `pathHash` is the full pattern's hash, also for a row-tagged split: `asRow` keeps it and adds `PatchRow(table: pathHash, …)` (:227).
-  - The keys are stored as the path spells them, escaped (`Cursor.descending`, :270).
+  - The keys are the path's own components as the emit spelled them, escaped (`Cursor.descending`, :270).
 - `PathHasherIdentity` (:207) is an empty final class that every split references. `PathHasher` is a struct; `hashToPath: [UInt32: String]` is immutable after init (:25).
 - Pattern hashes can't collide: `hashToPath` is built with `Dictionary(uniqueKeysWithValues:)` (:49), which traps on a duplicate. So `pathHash` names one pattern.
-- Patterns are dot-joined raw field names with `*` for a dynamic key (`PathFlattener.swift:183`). Nothing rejects `~` or `/` in a name; macro-generated names are Swift identifiers, which can't contain them, `.` or `*`. Not checked: raw (backticked) identifiers and hand-written `SyncTableField.make(name:)`.
+- The trie stores each literal label as the pattern spells it (`insert`, :61–:80), and `Cursor.descending` looks up the escaped component (:270–:279).
+  - So a hand-written pattern label `a~1b` matches the path component `a~1b` today. Escaping the label again would give `a~01b`.
+  - `children` is a `[String: …]` dictionary, so a component matches a canonically equivalent label whose bytes differ (NFC against NFD).
+  - Macro-generated labels are Swift identifiers (`PathFlattener.swift:183`, `TypeToSchemaConverter.swift:206`), which contain neither `~` nor `/`. Not checked: raw (backticked) identifiers and hand-written `SyncTableField.make(name:)`.
 - The only path-from-split code is `StateUpdateDecoder`'s private `reconstructPath(from:dynamicKeys:)` (`StateUpdateDecoder.swift:617`), on the client-decode side.
 
 ### 1.2 Who builds a path (checked)
 
 - **With a split:** the typed diff in `SyncTables.swift`.
   - Every level gets `path: String` beside `cursor:` (`diff(_:_:path:cursor:…)`, :482 and the overrides).
-  - The string is built at each level even when the cursor gives the split: rows `path + "/" + escaped` (:765, :840); fields `rowPath + component` (:654, :662); roots `"/" + escapedPathComponent(name)` (:1075).
-  - Patches are made at :597, :771–:784, :846–:880, :1176–:1304.
+  - The string is built at each level even when the cursor gives the split: rows `path + "/" + escaped` (:765, :840); fields `rowPath + component`, with the component cached per field (:654, :662); roots `"/" + escapedPathComponent(name)`, cached per root slot (:1075).
+  - Patches are made at :597, :771–:784, :846–:880, :1176–:1304. :880 re-tags a create, `StatePatch(path: patch.path, …, split: …asRow(slot, generation:))`.
 - **Without a split** (unchanged by this plan):
-  - `SyncEngine`'s snapshot diff (:315–:545), which also builds top-level paths unescaped (`"/\(key)"`);
-  - the typed per-player diff of #536: `SyncTablePerPlayerDiff` gets no cursor (`SyncTables.swift:1792`; `TransportAdapter.swift:1368`); a test pins it (`SyncTablePerPlayerDiffTests.swift:385`);
+  - `SyncEngine`'s snapshot diff (:315–:545);
+  - the typed per-player diff of #536, which has no cursor (`SyncTables.swift:1792`; `TransportAdapter.swift:1368`; pinned by `SyncTablePerPlayerDiffTests.swift:385`);
   - SyncTables :1103 and :1411;
   - the decoders and `Codable`;
   - `CanonicalPatchList.jsonSafe` (:112).
-- **Only the opcode encodings get splits.** The typed diff's root cursor is `hasher?.rootCursor` (`TransportAdapter.swift:1349`), and the hasher exists only for the opcode encoders (`splittingPathHasher`, `CanonicalFrameOrder.swift:73`). The json encoding (`jsonObject`) keeps building strings as now (inferred from those two facts, to pin by a test).
+- **Only the opcode encodings get splits.** The typed diff's root cursor is `hasher?.rootCursor` (`TransportAdapter.swift:1349`), and the hasher exists only for the opcode encoders (`splittingPathHasher`, `CanonicalFrameOrder.swift:73`). The json encoding (`jsonObject`) keeps building strings as now (inferred from those two facts, pinned by a test, §4).
 
-### 1.3 Who reads `path` (checked; "hot" = per patch per sync)
+### 1.3 Who reads `path` (checked; "hot" = per patch per frame or per sync)
 
-- **Opcode encoders**, which share one structure (`OpcodeJSON…:284`, `OpcodeMsgPack…:226`):
-  - `RowEntryPlan` uses the split only.
-  - `FieldMergePlan.splitsAndEntries` runs on every frame with a hasher, field merge on or off (`FieldMergePlan.swift:67`). Hot:
-    - `commonPathPrefix` compares each leading patch's path with the previous frame's (:144);
-    - `rawPaths = patches.map(\.path)` (:88);
-    - `PatchShape` (:207, :222);
-    - `FieldMergePlanner.add` → `cut(patch.path)`, a byte scan plus FNV hash (:322), when field merge applies.
-  - The plain encode reads `path` only on an error or an unresolved atomic pattern (`encodePathID`, `wireValue`).
-  - `split(of:)` re-splits the string only without a carried split, and always in DEBUG (:126–:138). Dead helpers that re-split are OpcodeJSON :574 and :633, and OpcodeMsgPack :497.
-- **`SyncEngine.mergePatches`** (:657): hot. It runs per recipient per sync (`updateFromBroadcastDiff`, :1016, from `TransportAdapter.swift:5497`) and inserts every broadcast patch's path into a `Set<String>`.
+- **Opcode encoder call sites (hot).** Every one passes `patch.path` as a `String` argument, so the string is read, and with a computed `path` built, per patch per frame, even where the callee uses it only on an error or the atomic `.walkPath` branch:
+  - MsgPack: `wireValue(…, path:)` (:306, :314, :322) and `pathID(…, path:)` (:429), called at :249, :258, :357, :366, :379, :391–:392, :397, :408, :414, :421;
+  - opcode JSON: `wireValue` / `encodePathID` at :312, :320, :365, :379, :383, :392, :396, :404, :483, :488;
+  - through to `AtomicPatternIndex.positional` / `node` (`Sources/SwiftStateTree/Sync/AtomicPatternIndex.swift:60–:72`), which needs it only for `.walkPath` (:10–:13, :37–:45, :64).
+- **`RowEntryPlan`** uses the split only.
+- **`FieldMergePlan.splitsAndEntries`** (hot). It runs on every frame with a hasher, field merge on or off (`FieldMergePlan.swift:67`):
+  - `commonPathPrefix` compares each leading patch's path with the reference frame's (:144);
+  - `rawPaths = patches.map(\.path)` (:88);
+  - `PatchShape` (:207, :222);
+  - `FieldMergePlanner.add` → `cut(patch.path)` and `PathKey` (:219–:235, :322), when field merge applies;
+  - `split(of:)` re-splits the string only without a carried split, and always in DEBUG (:126–:138).
+- **`SyncEngine.mergePatches`** (:657), hot in the combined-frame encodings. json and opcodeJsonArray send one combined state frame per recipient, which merges broadcast and per-player patches, per recipient per sync (`updateFromBroadcastDiff`, :1016, from `TransportAdapter.swift:5497`). messagepack sends the shared opcode 107 broadcast frame and doesn't merge (`TransportAdapter.swift:4415–:4421`, 4539–4578).
 - **The json encoding:** `CanonicalPatchOrder.sorted` (:292) and `Codable` read the string. It has no splits (§1.2).
-- **Rare:**
-  - `SyncRowRef.init`, after an encode failure;
-  - `covers` and the dedup Set, on failure paths;
+- **Per joiner or recording only:**
+  - SyncTables :1287–:1304, the full view (`viewPatches`) and `liveDigestForm`;
+  - SyncTables :1634–:1635, the digest's root grouping while the sync stream is recorded;
   - `replacingRows`, once per joiner's full view;
+  - `CanonicalPatchList` and the sync-output verifier, only while the sync stream is recorded.
+- **Rare:**
+  - `SyncRowRef.init`, `covers` and the dedup Set, on failure paths;
   - the first-component filter, `.empty` baseline only;
-  - `CanonicalPatchList` and the sync-output verifier, only while the sync stream is recorded;
   - the SyncTables snapshot fallback (:489, :501), whose patches have string paths;
   - debug checks.
+- **Dead:** the re-split helpers at OpcodeJSON :574 and :633, and OpcodeMsgPack :497.
+
+### 1.4 Two identity contracts (checked)
+
+- **The frame cache compares UTF-8 bytes.** `commonPathPrefix` (:144), `PatchShape.matches` (:222, "the same bytes, not just canonically equivalent") and the planner's `PathKey` (:219–:235) all compare `utf8`. A resumed plan reuses the reference frame's splits, dynamic keys included. `FieldMergeTests` :354–:379 pins it: an NFD frame after an NFC one plans in full.
+- **The merge and `StatePatch.==` use `String ==`**, which is canonical equivalence: `mergePatches`' `Set<String>` and `firstIndex(where: { $0.path == patch.path })`.
 
 ## 2. The change
 
-### 2.1 The stored form
+### 2.1 The stored form, and when a split rebuilds its path
 
-- `StatePatch` stores either a split or a string, never both. A sketch: a private `enum Location { case split(PatchSplit), path(String) }`, with `public var path: String` computed and `package var split: PatchSplit?`. `public init(path:operation:)` keeps the string form; `package init(split:operation:)` replaces `init(path:operation:split:)`.
-- `PathHasherIdentity` gains the pattern templates. It is already a class that every split references, so `PatchSplit`'s layout doesn't change.
-  - A template per pattern hash: the components in order, each a literal (stored escaped with `escapedPathComponent`) or a key slot. Built in `PathHasher.init` from `pathHashes`.
-  - Escaping the literal at build time makes the computed path equal the emit's `"/" + escapedPathComponent(name)` by construction, also for a name that contains `~` or `/`.
-- `split.path` (or `PatchSplit.joinedPath`) is `"/" + components.joined("/")`, with the keys inserted as stored (already escaped): one allocation per call.
-- `==` stays "same path and same operation". When both patches carry splits of one owner, it compares `pathHash` and `dynamicKeys`, which is equivalent because both mappings are deterministic for one hasher. Otherwise it compares the computed strings. Q3 asks whether to keep the fast path.
+- `StatePatch` stores either a split or a string, never both. A sketch: a private `enum Location { case split(PatchSplit), path(String) }`, with `public var path: String` computed and `package var split: PatchSplit?`.
+  - `public init(path:operation:)` keeps the string form.
+  - `package init(split:operation:)` replaces `init(path:operation:split:)`.
+  - `package func retagged(_ split: PatchSplit) -> StatePatch` serves :880's row-generation re-tag without reading `path`.
+- **Templates.** `PathHasherIdentity` gains a template per pattern hash and per trie node (§2.2). It is already a class that every split references, so `PatchSplit`'s layout doesn't change.
+  - A template is the components in order, each a literal label exactly as stored in the trie, or a key slot. Built in `PathHasher.init`.
+  - Rebuilding is `"/" + components.joined("/")`, with the keys inserted as stored: one allocation, and no escaping, since both labels and keys are already spelled as the path spells them.
+- **Lossless, by definition.** A split rebuilds its emit's path byte for byte only when each literal the emit wrote has the same UTF-8 bytes as the trie label it matched. The keys are the emit's own bytes.
+  - The typed diff checks this once per root slot and per field, when it builds its cached components (SyncTables :654, :1075): it compares the cached escaped component's bytes with the label the cursor matched.
+  - Where they're byte-identical (every macro-generated name), the emit makes the split form. Elsewhere it makes the string form, as today (a hand-written `a~1b` label, a canonically equivalent but byte-different name).
+  - So no patch is ever split-form with a path that could differ from the emit's.
+- **`==`** stays "same path and same operation" under `String` equality:
+  - Two split-form patches of one owner (lossless by the rule above) compare `pathHash`, and each dynamic key with `String ==`. That is exactly `String ==` of the rebuilt paths: the literals are the same, and `/` is a separator in both.
+  - Any other pair compares the computed strings.
 - `Codable` encodes the computed string; the decoded patch has the string form, as today.
 
 ### 2.2 The typed diff stops building strings
@@ -70,68 +104,99 @@
 - The level argument becomes a position: the cursor when there is one, the string otherwise. A sketch: `enum DiffPosition { case cursor(PathHasher.Cursor), path(String) }`, with `descending(_ escaped:)` on both.
   - With a cursor, no string is built at any level, and a patch is made with `init(split:operation:)`.
   - Without one (no hasher: the json encoding, or the per-player diff), the strings are built as now.
-- Where the cursor walks off the trie (`descending` returns nil) or a position has no hash, the emit needs the string. Today these use the hasher's fallback split (`split` is nil, §1.1). The position then turns into the string form, which needs the parent's path once: computed from the cursor that last matched, plus the components after it.
-- The DEBUG shadow check at SyncTables :605 changes to: build the old string in DEBUG beside every split-made patch and assert that `patch.path` equals it. Every debug test run then checks the computed path. Q2 asks whether to keep this.
+- **Walk-off.** Where the cursor walks off the trie (`descending` returns nil), or a position has no hash, the emit needs the string, as today's fallback does.
+  - The cursor may sit on an unhashed intermediate node (`a.b` in `a.b.c`), which no pattern hash names. So the templates are per trie node, not only per pattern: each node keeps its template from the root.
+  - The position turns into the string form by rebuilding the node's template with the cursor's keys, then appending the components after it. Lossless by the same rule.
+- **The DEBUG oracle (Q2):** every split-made emit in a DEBUG build also builds the old string independently (today's concatenation) and asserts that `patch.path.utf8.elementsEqual(old.utf8)`. Every debug test run checks every split-made patch. It replaces the shadow check at SyncTables :605.
 
-### 2.3 Field merge compares splits
+### 2.3 Field merge compares splits, byte for byte
 
-`FieldMergePlan` is the per-frame reader on the default encodings, and the frame prefix cache compares each recipient's frame with the previous recipient's (§1.3). With a computed `path`, each comparison builds a string, so this reader moves to a path identity:
+The frame cache's contract is UTF-8 bytes (§1.4), so the identity it uses is too.
+- **`PatchPathIdentity`** is `(owner, pathHash, dynamicKeys)` for a split-form patch of the frame's hasher, and the string otherwise.
+  - Two split identities are equal when the owners and `pathHash` are the same and each dynamic key's `utf8` bytes are equal (not `String ==`).
+  - Two string identities compare bytes.
+  - A split against a string compares the split's rebuilt bytes, which only happens when a frame mixes forms.
+- **`FramePrefixCache.Reference`** stores identities instead of `rawPaths`. `commonPathPrefix` and `PatchShape` compare them.
+- **`FieldMergePlanner.add`'s `cut(patch.path)` (Q1 (a)):** it computes the path once per planned patch; resumed patches skip it. This stays hot work while field merge applies. The A/B reports it with cache hits and misses (`--merge-stats`), and with rows off, where more patches are planned.
 
-- **A `PatchPathIdentity`** is `(pathHash, dynamicKeys)` for a patch with a split of the frame's hasher, and the string otherwise.
-  - Two identities of the split kind are equal when their fields are. Two string identities compare bytes.
-  - A split against a string compares the computed string. This doesn't happen within one hasher's frame unless a frame mixes forms.
-- **`FramePrefixCache.Reference`** stores identities instead of `rawPaths`. `commonPathPrefix` and `PatchShape` compare identities.
-- **`FieldMergePlanner.add`'s `cut(patch.path)`**, which cuts at the merge prefix and hashes it, is the open point (Q1):
-  - (a) compute the path in `add` only, once per planned patch (resumed patches skip it), and measure;
-  - (b) key the cut by the split: the prefix's pattern hash and the keys it covers.
+### 2.4 `mergePatches`: a String-keyed broadcast index, once per sync
 
-  The PR starts with (a). (b) follows only if the A/B fails because of it.
+- Today a `Set<String>` of the broadcast paths is built per recipient. Instead, one String-keyed index (path → broadcast position) is built once per sync from the broadcast patches' computed paths. Each recipient's per-player patches look themselves up in it with `String` semantics, as today.
+- The cost is one rebuilt path per broadcast patch per sync, in the combined-frame encodings only (§1.3). Per recipient, the cost is one lookup per per-player patch, instead of today's per-recipient set of every broadcast path.
+- Behavior is unchanged: the first broadcast patch at a path is kept, and a per-player patch at the same path (canonically equal) replaces it.
 
-### 2.4 `mergePatches` builds the broadcast set once per sync
+### 2.5 The other readers, converted
 
-- Today the set of broadcast paths is built per recipient. The change builds it, or an identity set as in §2.3, once per sync from the broadcast patches, and each recipient's per-player patches look themselves up in it.
-- Per-player typed patches have string paths (§1.2) and broadcast ones have splits, so a lookup can mix forms. For typed lands, broadcast and per-player fields are different top-level fields, so no path is in both (inferred). The set keeps string equality across forms: a split identity is matched against a string by computing that one string.
-- Behavior is unchanged: the first broadcast patch at a path is kept, and a per-player patch at the same path replaces it.
-
-### 2.5 Other readers
-
-- The json encoding, the patch applier, `CanonicalPatchList`, `CanonicalPatchOrder` (string form only, §1.2), the verifier and the rare readers in §1.3 call `path`.
-- Readers that read it more than once per patch take it once into a local: `SyncRowRef`, `replacingRows`, dedup.
-- The dead re-split helpers (OpcodeJSON :574 and :633, OpcodeMsgPack :497) are removed.
+- **Encoder call sites (§1.3):** `wireValue`, `encodePathID` / `pathID` and `AtomicPatternIndex.positional` / `node` take the patch (or its split) and build the path only in their error branch and the `.walkPath` branch. Where a signature can't change cheaply, the parameter becomes `@autoclosure () -> String`. No call site evaluates `patch.path` on the success path.
+- **`FieldMergePlan`:** §2.3. `split(of:)` returns the carried split without reading `path` in release; its DEBUG re-split stays.
+- **SyncTables :880:** `retagged(_:)` (§2.1).
+- **SyncTables :1287–:1304** (full view, live digest) and **:1634–:1635** (digest roots, recording only) call `path` once per patch into a local.
+- **The json encoding, the patch applier, `CanonicalPatchList`, `CanonicalPatchOrder`** (string form only, §1.2), the verifier and the rare readers call `path`. A reader that needs it more than once per patch takes it once into a local: `SyncRowRef`, `replacingRows`, dedup.
+- The dead re-split helpers are removed.
 
 ## 3. Out of scope
 
-- **Splits for the typed per-player diff (#536).** It has no cursor, so its emits keep building strings, and the opcode encoders re-split them. Giving it a cursor is a separate change with its own byte-identity check: a per-player row would carry a row split and could take the row-entry form. A follow-up issue, to be opened when this is decided.
+- **Splits for the typed per-player diff: #547.** It has no cursor, so its patches keep their strings, and the pin `SyncTablePerPlayerDiffTests` :385–:386 stays.
+  - The cost that remains: each per-player patch's path is built per player per sync, and in each recipient frame the opcode encoders re-split it (`FieldMergePlan.split(of:)` without a carried split), read it at the call sites of §2.5 as a stored string, and include it in the frame identity as a string.
 - The snapshot diff (`SyncEngine`) and its unescaped top-level paths.
 - The client side (`StateUpdateDecoder.reconstructPath`).
 
 ## 4. Gate
 
 1. **Wire bytes and digests identical in every encoding** (json, opcodeJsonArray, messagepack), row addressing on and off:
-   - the existing pins: `SyncOutputGoldenTests` (including `escaped-keys-json`), RowEntry and FieldMerge fixture frames, `ShapeMatrixRoundTripTests` (keys `a/b`, `t~x`, `a[0]`, a decomposed accent), `AtomicArrayShapesTests`, `CanonicalMessagePackTests`, `SyncTablesByteIdentityTests`, `DirtyTrackingByteIdentityTests`, `ReevaluationMonitorFrameIdentityTests`, `SyncStrategyEquivalenceTests`;
+   - the existing pins: `SyncOutputGoldenTests` (including `escaped-keys-json`), RowEntry and FieldMerge fixture frames, `FieldMergeTests` :354–:379 (NFD after NFC), `ShapeMatrixRoundTripTests` (keys `a/b`, `t~x`, `a[0]`, a decomposed accent), `AtomicArrayShapesTests`, `CanonicalMessagePackTests`, `SyncTablesByteIdentityTests`, `DirtyTrackingByteIdentityTests`, `ReevaluationMonitorFrameIdentityTests`, `SyncStrategyEquivalenceTests`;
    - E2E on all three encodings, and the replay goldens through the router;
-   - EncodingBenchmark's bytes per cell, equal between base and head in the A/B (item 3).
-2. **The computed path equals the old string for every patch, escaping included:**
-   - the DEBUG assertion of §2.2, on every split-made patch in every debug test;
-   - a differential test: the typed diff and the snapshot diff of the same changes give the same path strings in the same canonical order. Fixtures include keys with `~`, `/`, `~1`, empty (`/m/`, `/m//v`), NFD/NFC, and a row create and delete. It builds on `CarriedPatchSplitTests` and `EmptyMapKeyTests`;
-   - a template test: for every pattern of the test schemas, `joinedPath` of a split equals `hasher`'s round-trip (`split(path).joinedPath == path`).
+   - EncodingBenchmark's bytes per cell, equal between base and head (item 3).
+2. **The computed path equals the old string, UTF-8 byte for byte, for every patch:**
+   - the DEBUG oracle of §2.2, on every split-made emit in every debug test;
+   - a differential test: the typed diff and the snapshot diff of the same changes give the same path bytes in the same canonical order. Fixtures include keys with `~`, `/`, `~1`, empty (`/m/`, `/m//v`), NFD and NFC, a row create, retag and delete, a walk-off after several unhashed nodes, and a walk-off under a wildcard. It builds on `CarriedPatchSplitTests` and `EmptyMapKeyTests`;
+   - a lossless-rule test: a schema with a hand-written `a~1b` label and one with a byte-different, canonically equal name both emit the string form, with paths byte-identical to today's;
+   - a template test: for every pattern and trie node of the test schemas, `rebuilt(split(path)).utf8 == path.utf8`;
+   - a json pin: a json-encoded land's patches are all string-form.
 3. **A/B with window instructions inside or better; time reported.**
    - The rule is #517's (`Notes/plans/2026-11-13-off-path-instruction-gate.md`): mean `instructions:u` per cell, REGRESSION above base by more than max(0.5 %, 3 × base's spread), GAIN below base's min.
-   - The window is `ENCODING_BENCHMARK_PERF_WINDOW=iteration`, which covers `syncNow()`: this change is on the sync path, and `nonsync` would leave it out.
-   - Cells: the 100-player cell through the router (the one #533 measured), Hero Defense, opcodeJsonArray and messagepack, row addressing on (the default). Json as a control: it should not move (§1.2).
-   - Release builds, both sides in one container from the pinned image. Run by the measurement host through a brief.
+   - The window is `ENCODING_BENCHMARK_PERF_WINDOW=iteration`, which covers `syncNow()`: this change is on the sync path, and `nonsync` would leave it out. Each result's `perfWindow.mode` must be `iteration`, with `toggles == 2 × iterations` (one room).
+   - Common flags, as #521's and the atomic-node plan's A/Bs; `--iterations` is set so that a run takes at least 20 s, the same on both sides:
+     ```
+     EncodingBenchmark --game-type hero-defense --rooms 1 --players-per-room 5 --monster-cap 100 \
+       --ticks-per-sync 2 --parallel false --iterations <n> --output json
+     ```
+   - Cells, with `USE_SYNC_TABLES=true` (the typed diff) and the other switches unset:
+
+     | Cell | Flags | Why |
+     |---|---|---|
+     | rows-json | `--format opcode-json-pathhash --join-through-router on --row-addressing on` | combined frames: `mergePatches` runs |
+     | rows-mp | `--format messagepack-pathhash --join-through-router on --row-addressing on` | the shared broadcast frame |
+     | router-json | `--format opcode-json-pathhash --join-through-router on --row-addressing off` | rows off: every patch through field merge |
+     | router-mp | `--format messagepack-pathhash --join-through-router on --row-addressing off` | the same, messagepack |
+     | rows-json-merge | rows-json `--merge-stats` | field merge's cache hits and misses, reported (timings not judged) |
+     | json-control | `--format json-object` (router join off) | string-form only: must not move |
+
+   - Checked per result:
+     - the resolved metadata: `routerJoin` with rows as asked, the encoding, `USE_SYNC_TABLES`;
+     - split-backed paths exercised: the run's patch counts, plus the DEBUG oracle's coverage in the test suite;
+     - bytes equal to the other side's;
+     - the pinned image digest on both sides, recorded beside `swift --version`.
+   - Release builds, both sides in one container from the pinned image. ABAB, at least 5 runs per side. Run by the measurement host through a brief.
 4. **Mutants:**
-   - the template's literal not escaped;
+   - the template's literal escaped again (`a~1b` → `a~01b`);
    - keys inserted in the wrong order;
-   - the prefix-cache identity comparing hashes only;
-   - `mergePatches` matching a split identity to a string by hash.
+   - the frame identity comparing keys with `String ==` instead of bytes (killed by `FieldMergeTests` :354–:379);
+   - the frame identity comparing hashes only;
+   - the lossless check skipped, so a byte-different label emits the split form;
+   - `mergePatches` keying split and string forms by different hashes;
+   - a call site evaluating `patch.path` eagerly, killed by a unit test with a DEBUG-only rebuild counter: encoding a frame of split-form patches with field merge off rebuilds no path (only `cut`, §2.3, and the error and `.walkPath` branches may rebuild).
 
-## 5. Questions for review
+## 5. Decisions (review of rev 1, accepted 2026-11-13)
 
-- **Q1.** Field merge's `cut` (§2.3): (a) compute the path in `add`, then measure, or (b) key it by the split now? Recommended: (a), with (b) only if the A/B fails because of it.
-- **Q2.** Keep the DEBUG assertion that builds the old string beside every split-made patch (§2.2)? It costs debug test time only. Recommended: yes.
-- **Q3.** `==` fast path on two splits of one owner (§2.1)? Recommended: yes. Equality is used by tests and dedup, and the fast path is exact for one hasher.
-- **Q4.** The PR's shape: one core PR as the issue says, or the `StatePatch` form plus the readers (§2.1, §2.3–§2.5) first and the typed diff's positions (§2.2) second, each with the gate? Recommended: one PR; the A/B only means something with both halves.
+- **Q1: (a),** after the call sites are converted (§2.5). `cut` computes the path per planned patch, and the A/B reports it as hot work, with cache hits and misses and a rows-off cell.
+- **Q2: yes,** byte for byte, with an independent old-string oracle on every split emit (§2.2).
+- **Q3: yes,** for in-schema split-form patches, which are lossless by §2.1's rule, with `String ==` on keys. Any other pair compares the computed strings.
+- **Q4: one PR,** with internal commits:
+  1. `StatePatch`'s form, templates and the lossless rule;
+  2. the readers;
+  3. the typed diff's positions;
+  4. tests and the oracle.
 
 ## Solutions consulted
 
