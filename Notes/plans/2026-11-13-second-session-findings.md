@@ -1,6 +1,6 @@
 # A player's second session gets no per-player changes (#531): findings and fix spec
 
-**Status:** rev 4; rev 3's spec reviewed GO (2026-11-13). Q1–Q3 are with the maintainer. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
+**Status:** rev 5; rev 3's spec reviewed GO (2026-11-13). The maintainer answered Q1 (A) and Q2 (a) on 2026-11-13; Q3 is open. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
 
 - **Rev 2** answers review of rev 1 (8572647d):
   - corrected facts: recipient order is unspecified; `registerSession` doesn't touch the keeper, so which session is receive-only depends on the caller's keeper join; the seed doesn't move the first session's baseline; the starvation is scoped to cached diffs; no claim about per-player sync tables, which aren't on `main`;
@@ -16,10 +16,14 @@
   - a test of the window between the keeper read and the adapter's commit;
   - S3's generation for `endJoinBeforeAdmission` comes from the router's `joinBudgetExpired`, and covers the final frame and both fallback closes;
   - a refused registration without a generation closes by ID, said beside the counter.
+- **Rev 5** records the maintainer's answers to Q1 and Q2 (§5):
+  - Q1: A, scoped as the realtime adapter's rule, with a package-level policy enum that has `.replaceOld` only, read by both join paths (§4.1);
+  - Q2: (a);
+  - several sessions per player is deferred to #539 (§6).
 
 **Summary.** #531's mechanism holds for cached diffs. Two adapter members of one player share one per-player baseline, so one of the two recipients in a sync gets that player's per-player changes and the other doesn't. Which one is unspecified. Only the public `TransportAdapter.registerSession(...)` creates the second member.
 
-The recommended fix is that `registerSession` supersedes, as the library's own joins do (option A), runs in the adapter's membership queue like every other membership change, and refuses a registration whose session the keeper's entry doesn't name (§4.1).
+The fix (option A, the maintainer's answer to Q1) is that `registerSession` supersedes, as the library's own joins do, runs in the adapter's membership queue like every other membership change, and refuses a registration whose session the keeper's entry doesn't name (§4.1). One session per player is `TransportAdapter`'s rule, not the library's: another adapter may allow several connections per user.
 
 ## 1. The reproduction path
 
@@ -72,6 +76,11 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
 ## 4. The fix, under option A
 
 ### 4.1 Changes
+
+- **The rule, in one place (rev 5).** How sessions map to a player is the adapter's concern. For `TransportAdapter`, the realtime adapter, the rule is newest wins and the older session is logged out, as in typical games. Another adapter, such as a future request-based one, may allow several concurrent connections per user; nothing here constrains it.
+  - A package-level enum, `SessionPerPlayerPolicy` (name to settle in the fix), with one case, `.replaceOld`. Both join paths read it: the library's join (`admitJoining`'s supersede) and `registerSession`'s. So the two can't drift onto different rules.
+  - No public policy API, and no other case: `rejectNew` and `allowMultiple` aren't added. `allowMultiple` needs #539 first (§6).
+  - The DocC of `TransportAdapter` and `registerSession` states the rule as the adapter's.
 
 - **M1. `registerSession` goes through the membership queue.** Today it runs outside it, beside `performJoinQueued` and `_onDisconnectImpl`, which both enqueue (`TransportAdapter.swift:2234`, :1531). The split:
   - the public `registerSession` calls `enqueueMembership { … }` (:3035) with an internal implementation;
@@ -148,18 +157,25 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
   - (b) B: it refuses a second registration (a source break or an ignorable result).
   - (c) C: several sessions per player (adapter and keeper changes).
   - **Recommendation: (a), with the keeper check (§4.1 (a)).** The library's own joins keep one session per player in the adapter and the keeper; `registerSession` is the path that breaks it. A with the check brings it in line with no signature change. Without the check, A still leaves the adapter and the keeper able to name different sessions when a host's keeper join races a library join, and the ordering rule (§4.1 (b)) has to be documented instead. C is a feature for its own issue if wanted.
+  - **Answer (the maintainer, 2026-11-13): A.** Newest wins and the older session is logged out, as in typical games. It is scoped as the realtime adapter's rule (`TransportAdapter`); another adapter may allow several concurrent connections per user. No public policy API: a package-level enum with only `.replaceOld`, read by both join paths, keeps them on one rule (§4.1). The keeper check stays as specified in the reviewed spec (§4.1 (a)). C is deferred to #539 (§6).
 - **Q2 (under A): the multi-session branches** (`classifySyncLag`'s fan-out, the disconnect path's "another session remains").
   - (a) Keep them, and add an assertion in `syncPhaseRecipients` that no player appears twice.
   - (b) Keep them without an assertion.
   - (c) Remove them, with a test that two members can't exist.
   - **Recommendation: (a), as defensive code.** `.player` targets never create a second member, and once membership is serialized (M1) and superseded (A), the branches are unreachable from the public API. The assertion catches a regression. It needs §4.2 decided first: the sync-lag two-member fixtures become supersede cases and no test-only two-member fixture remains, or the assertion would fail in them. The sync-lag fan-out test goes with this answer: rewritten as a supersede case under (a) or (b), removed under (c).
   - Removing them (c) needs a reachability review of every path that adds a member, beyond this issue.
+  - **Answer (the maintainer, 2026-11-13): (a).** The branches stay as defensive code, with the assertion. #539 revisits them (§6).
 - **Q3: `registerSession`'s visibility.**
   - (a) Keep it public with A's semantics.
   - (b) Make it `package`: a larger source break, and it removes the host path that #531 found.
   - (c) Deprecate it in favour of `performJoin`.
   - **Recommendation: (a), with the keeper check.** With it, a registration the keeper's entry doesn't back is refused. Without it, the docs carry the ordering rule (§4.1 (b)). (c) can follow if no host needs it.
+  - **Answer:** open (with the maintainer).
+
+## 6. Out of scope
+
+- **Several sessions of one user (#539, deferred).** What would make several sessions per player correct, for tabs or chat-room style use, is keying the sync baseline per session and keeping the projection per player: the per-player snapshot and staged caches, `hasReceivedFirstSync` and the initial-sync marker per session (option C's adapter half, §3). The keeper's one-entry model (kick-old, `rejectSenderIfSuperseded`, `leave`'s session check) would need its own decision there. The multi-session branches kept under Q2 (a) are revisited in #539.
 
 ## Related
 
-#92 (newest wins), #514 (per-player sync tables), #531.
+#92 (newest wins), #514 (per-player sync tables), #531, #539 (several sessions per player, deferred).
