@@ -1,6 +1,6 @@
 # Typed server events and client actions, without AnyCodable (#521)
 
-**Status:** rev 6, for review. No code before this plan is reviewed.
+**Status:** rev 7; rev 6 reviewed GO (2026-11-13). No code before this plan is reviewed.
 - Read at `main` 882cabe7; the cited lines are unchanged at 06125d40. Each fact is marked **checked** (read in the code or run) or **inferred** (reasoned, to be pinned by a test in the PR).
 - **Rev 2** answers review of rev 1: the handler lookup (M1), record payloads (M2), non-finite numbers (M3), replay loading (M4), the replay land's registry (M5), `Sendable` (M6), `PendingActionItem` (M7), the unit for untyped events (M8), EV5's bound (M9), what a failed cycle has already sent (M10), and the shoulds. Decisions review settled are recorded as such (§10). Those left to the maintainer are D1, D7, D9, D13 and the compatibility exceptions N3, N7–N10.
 - **Rev 3** answers review of rev 2:
@@ -24,6 +24,7 @@
   - PR 1a keeps a path for events without `wireForm` at every site, so `main` stays green between 1a and 1b (M3);
   - the N3 scan has a manifest and totals, and can't report "zero rejected" with anything unscanned (M4);
   - the shoulds, and `position` on each `LandFailure` this plan builds.
+- **Rev 7**, after the GO: the `Void` ACK pinned per encoding, excluded ticks reported as information, and the `docs/core/failure-handling.md` row each PR flips (§9).
 - **Order (#521):** after the `@Sync` wrapper changes (#519 merged; #520 merged as #527) and a fresh profile of main (§0).
 - **Error rule:** #535 and its scope decision (2026-11-13). A failure that can't be brought back to fully correct ends the smallest unit it corrupted: a session when only that session's output is wrong, the land when every recipient's output or the land's state is wrong. A type error knowable at registration is refused there. No absorb-and-continue path is added. A malformed input from a client is a client input error: the input is rejected as today, and nothing else ends.
 
@@ -181,7 +182,7 @@ The typed path is taken when the encoder's own `enablePayloadCompression` is set
 
 **Payloads without `wireForm`, in PR 1a (M3).** Every positional site keeps a path for a payload that isn't carried typed: it unwraps `AnyCodable.base`, casts it to `any PayloadCompression`, and calls `_writePayloadFields`. That is today's `encodePayloadAsArray` with the writer in place of `encodeAsArray()`. It covers the encoder tests that build `AnyServerEvent(type:payload:)` from a concrete value (`TransportMessageEncoderTests.swift:108-126`), action responses (`AnyCodable(result)`, `LandDSL.swift:872-`), and outgoing actions and client events. A dictionary payload still reaches today's `fatalError` there; resolving it through the registry (N5) is PR 1b's. Without this path, `main` would be red between 1a and 1b.
 
-**The `Void` payload (M2).** MessagePack's `encodePayloadAsArray` writes `Void` as `[]` before the cast (`MessagePackTransportMessageEncoder.swift:261-264`). It is reached by the immediate ACK of an action queued for a tick, `.completed(AnyCodable(()))` (`LandKeeper.swift:2799-2801` → TA :5886-5907). The branch is kept as it is, and the `Void` response is in the base goldens. Opcode JSON's version has no such branch (`TransportMessageEncoder.swift:320-339`), so an empty ACK there may reach the `fatalError` today (inferred). The base golden run settles it. If it traps, that is reported and filed as its own issue, and any fix is named there, not made under byte identity.
+**The `Void` payload (M2).** MessagePack's `encodePayloadAsArray` writes `Void` as `[]` before the cast (`MessagePackTransportMessageEncoder.swift:261-264`). It is reached by the immediate ACK of an action queued for a tick, `.completed(AnyCodable(()))` (`LandKeeper.swift:2799-2801` → TA :5886-5907). The branch is kept as it is, and the `Void` response is in the base goldens. Opcode JSON's version has no such branch (`TransportMessageEncoder.swift:320-339`): the response goes through it (:192), `()` isn't a `PayloadCompression`, and the cast's `fatalError` (:334-336) runs, so an empty ACK on compressed opcode JSON traps today (checked by reading; confirmed by an exit test). It is reported and filed as its own issue, and any fix is named there, not made under byte identity. So the pins differ per encoding (§7).
 
 **The type number** stays a dictionary lookup by the static name. An `ObjectIdentifier`-keyed table per adapter is a follow-up if the profile shows the lookup.
 
@@ -372,7 +373,8 @@ package protocol PayloadDecodingSource: Sendable {
 **Event frames, differential:** `encodeAsArray()` is removed in PR 1a, so the oracle doesn't use it:
 - **Goldens from base:** a first commit of PR 1a, on base, writes the bytes of every fixture below through today's encoders into committed goldens. The switch must then reproduce them.
 - **A test-only oracle** for generated values: the fields from `Mirror`, sorted by label (checked first against `getFieldMetadata()`'s names, the macro's order), each boxed in `AnyCodable` and converted by today's per-value path, which stays in the encoders as the fallback.
-- **Kinds:** server events, action responses (the `Void` ACK included, in every encoding), actions and client events (§6.1), each also through the no-`wireForm` path (M3), with `TransportMessageEncoderTests` unchanged.
+- **Kinds:** server events, action responses, actions and client events (§6.1), each also through the no-`wireForm` path (M3), with `TransportMessageEncoderTests` unchanged.
+- **The `Void` ACK, per encoding:** MessagePack, a byte golden (`[]`); JSON object, today's bytes; compressed opcode JSON, an exit test (`#expect(processExitsWith: .failure)`) if it traps on base, otherwise a golden. The golden-writing commit never encodes it on opcode JSON in-process.
 - **Types:** every payload type in the repository (Hero Defense, the reevaluation monitor, the demos), plus fixtures with one field of each leaf type and each fallback kind: `[Int]`, `[String: Int]`, `[PlayerID: Int]`, a nested struct, `AnyCodable` holding a dictionary and an array, `Date`, `Data`, `Decimal` (finite and NaN), `UUID`, `Float`, and unsigned values above `Int.max`.
 - **Values:** `Int.min`/`Int.max`, every `Int32` boundary of the math types, `−0.0`, NaN and ±∞ (MessagePack writes them, as today; the JSON encodings expect the encode failure of EV4), empty and non-ASCII strings, NFC and NFD forms.
 - **Assertion:** exact bytes, for the 107 body, the standalone frame in each of the three message encodings, the merged 107 frame, and the response, action and client-event frames, typed against the goldens and the oracle. Also with compression off (N10): today's keyed bytes.
@@ -486,9 +488,9 @@ package protocol PayloadDecodingSource: Sendable {
    - the macro: `_payloadWireName`, `_payloadHasTypedWriter`, `_writePayloadFields`, `_payloadFieldForms`, the `names:` list, `generateEncodeAsArray` removed, expansion tests (`PayloadMacroSortingTests` rewritten), and the cross-module fixture;
    - the MessagePack writer and the JSON wrapper; `AnyServerEvent.wireForm`; all eight positional sites switched (§6.1), each with the no-`wireForm` path (M3) and MessagePack's `Void` branch kept (M2);
    - EV1 in `validateForRegistration` (events and response types), since a type without the writer would otherwise fail at its first send;
-   - the docs, both languages.
+   - the docs, both languages. No `docs/core/failure-handling.md` row flips in PR 1a.
    - **Size (inferred, from the parts listed; the PR states the real count):** about +1,200 / −200 lines, half of it tests and goldens.
-3. **PR 1b, events around the writer:** the hybrid decision at init (D10); EV2 and EV3 in `validateForRegistration`; the replay land's registry and the re-emit resolution (N5); `serverEventsMatch` (A6). About +600 lines (inferred). Splitting keeps the byte-identity change, which removes a public method, reviewable on its own.
+3. **PR 1b, events around the writer:** the hybrid decision at init (D10); EV2 and EV3 in `validateForRegistration`; the replay land's registry and the re-emit resolution (N5); `serverEventsMatch` (A6). It flips the re-emit row of `docs/core/failure-handling.md` ("The replay land re-emits a recorded event…", #538) and its `.zh-TW.md` row to say: fixed for registered, decodable records, and the rest under EV7 (PR 3). About +600 lines (inferred). Splitting keeps the byte-identity change, which removes a public method, reviewable on its own.
 4. **PR 2, decode:**
    - decode sources, with the record check and the non-finite rule;
    - the three-index lookup, with A4 and A8 in `validateForRegistration`;
@@ -496,17 +498,18 @@ package protocol PayloadDecodingSource: Sendable {
    - client events (D2, N2, N3 (b));
    - records built from the intake tree, only when read;
    - the replay staged batch (A5);
+   - `docs/core/failure-handling.md` and `.zh-TW.md`: the client-event row ("A client event whose payload doesn't decode…", #537) and the replay-loading row ("Replay can't load or match a recorded input") flip to current;
    - the differential tests.
    - **Before it merges, the N3 scan (M4).** It may not report an all-clear it can't back.
      - **The check:** every client event in the published and cited record sets is decoded by **the same recorded-input decoder A5 uses** (§4), through its land's registry.
      - **The tool:** a `--scan-client-events <manifest>` mode of `ReevaluationRunner` (`Examples/GameDemo/Sources/ReevaluationRunner`), added in PR 2. It reads records only and changes nothing. It runs on the host's archive through a brief, and the report is posted on #521.
      - **The manifest:** the list of record files to scan, from the record sets the tags cite. The tool scans the list, not a directory walk, so a file that is missing from disk is reported, not passed over.
-     - **Totals, all printed:** files listed, found, opened and scanned; client events decoded, rejected (per set and type, with the first sequence of each), of an unknown land type, and of an unknown event type; read errors; and ticks excluded. The log reader leaves out the newest tick of an incomplete record (`ReevaluationRecordLog.swift:286-305`), so those ticks are counted as excluded, and their client events are read from the raw tick when present.
+     - **Totals, all printed:** files listed, found, opened and scanned; client events decoded, rejected (per set and type, with the first sequence of each), of an unknown land type, and of an unknown event type; read errors; and, for information, ticks excluded. The log reader leaves out the newest tick of an incomplete record (`ReevaluationRecordLog.swift:286-305`), and replay never verifies that tick (:300-305), so a malformed event there can't make a record stop verifying. Excluded ticks are counted and listed, not blockers.
      - **Known gaps are blockers:** the runner knows only the `hero-defense`, VisibilityTest and ResolverTest land types (`main.swift:225-291`). A record of another type counts as unknown land.
-     - **The verdict** is "zero rejected" only when rejected, unknown land, unknown type, read errors, missing and unopened files, and excluded ticks without raw events are all zero. Otherwise it prints what blocks it, and exits nonzero.
-     - **Fixtures** prove each blocker prints no all-clear: an unknown land type, an unknown event type, an unreadable file, a listed file that is missing, and an incomplete record with client events in its newest tick. Also one record with a malformed client event (rejected 1).
+     - **The verdict** is "zero rejected" only when rejected, unknown land, unknown type, read errors, missing and unopened files, are all zero; excluded ticks don't block. Otherwise it prints what blocks it, and exits nonzero.
+     - **Fixtures** prove each blocker prints no all-clear: an unknown land type, an unknown event type, an unreadable file, and a listed file that is missing. An incomplete record with client events in its newest tick prints the excluded count and still gives the verdict of the rest. Also one record with a malformed client event (rejected 1).
      - A nonzero rejected count, or any blocker, goes to the maintainer before merge, since those records would stop verifying (N3 (b)).
-5. **PR 3, failure units:** EV4 and EV7 on #535's stop path, after #535's mechanism merges. If #535 merges first, this folds into PRs 1b and 2.
+5. **PR 3, failure units:** EV4 and EV7 on #535's stop path, after #535's mechanism merges. It flips the event-encode row ("A server event that fails to encode") in both languages to current, and finishes the re-emit row. If #535 merges first, this folds into PRs 1b and 2.
 6. **Host A/B** per PR (1a and 1b together if they merge close together), base = main at run time, head = the PR merged with it. PR 0's knobs are on both sides.
 7. **Solutions:**
    - "the positional event payload is name-sorted, not declaration order", if the review agrees it is a trap (#521's text had it the other way);
