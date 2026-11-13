@@ -1,6 +1,7 @@
 # A sync failure ends the unit it corrupted (#535)
 
-**Status:** rev 4, plan only. No code before this plan is reviewed.
+**Status:** rev 5, plan only. No code before this plan is reviewed.
+- Rev 4 (7471e833) got a no-GO: 1 must-fix, the settle's placement. Rev 5 moves the queue part of the settle into the apply segment itself, as `completeShutdownTurn` does for a shutdown at the end of its batch (LK 3876-3878); `InputApplication` carries `consumed`, and only the consumed prefix is published. The record finalize and the teardown start stay at the turn's end, touch no keeper state, and their order relative to `submitTurnRecord` is stated (§3.2).
 - Rev 3 (334595b6) got a no-GO: 2 must-fix and 6 should. Rev 4 answers them:
   - P1 (mid-batch failure): §3.2 is split into the mark, made where the failure is seen, and the settle, run at the end of the turn after the consumed prefix is removed and its outcomes published. Only the unexecuted suffix gets `landClosed`.
   - P2 (the terminal entry): §3.2 step 5 is an unconditional finalize step at the end of every turn that failed, of any kind, ordered after any turn record and before any teardown entry. The legacy output position needs `beginSync` to return the position with in-turn sync off (§3.3).
@@ -169,12 +170,18 @@ public struct LandFailurePosition: Sendable, Equatable, Codable {
 
 `LandKeeper.failLand(_ failure: LandFailure)` is private and synchronous, and is called only inside a turn. It follows `completeShutdownTurn` (LK 4852-4861), which already does this for a shutdown input, at the end of its batch.
 
-**Two parts, both in the failing turn (Review P1).** A failure can be seen in the middle of a batch (`.handlerWrite`), while `applyInputs` still holds the whole batch in `pendingItems` and removes the consumed prefix only after its loop (`removePendingItems(Array(items.prefix(consumed)))`, LK 3876). Dropping the pending inputs there would fail the applied items, the failing item and the rest with `landClosed`, and the turn's completion would then publish the real outcomes into the same slots (LK 5002-5021; legacy LK 3672-3679). So:
-- **The mark** (steps 1, 2 and 4) runs where the failure is seen: it closes intake at once and stops the batch.
-- **The settle** (steps 3, 5 and 6) runs at the end of that turn, after the loop has broken, the consumed prefix (the items before the failing one, and the failing item with its handler error as its outcome) has been removed, and the turn's outcomes have been published as today. The settle then drops only what is left: the unexecuted suffix of the batch and anything queued behind it.
-- A failure seen in the sync phase (in-turn) or applied from a `landFailure` item comes after the turn's inputs, so its mark and settle are adjacent; the order is the same.
+**Two parts (Review P1, rev 4's fix corrected in rev 5).** A failure can be seen in the middle of a batch (`.handlerWrite`), while `applyInputs` still holds the whole batch in `pendingItems` and removes the consumed prefix only after its loop (`removePendingItems(Array(items.prefix(consumed)))`, LK 3876). The settle can't wait for the turn's end: the publication covers the whole batch and comes after an await.
+- In the in-turn input drain, `runInputTurn` stores a result for every item of the batch and returns `appliedItems: batch` (LK 5002-5010); `runInputDrain` awaits `submitTurnRecord` and only then resumes the waiters, giving an item with no outcome `.success(())` (LK ~4954-4958, 5016). An unexecuted item would be resumed with success, and a settle after that await would mutate keeper state after a suspension.
+- In the legacy pass, `processPendingActions` awaits between `applyInputs` and its publication (`finishTicklessLegacyPass`, `holds.at(.turnRecord)`, the recording, LK 3663-3690), with the suffix still in `pendingItems`, and `applyInputs` doesn't check the drain: another caller's pass could apply it after the failure.
 
-Setting the drain flag in the middle of the batch changes nothing for the rest of that turn's completion: publishing outcomes and building the turn's record don't check `isDraining`. The PR asserts that.
+So the queue part of the settle runs **in the apply segment**, where `completeShutdownTurn` already ends a batch at a shutdown (LK 3876-3878):
+- **The mark** (steps 1, 2 and 4) runs where the failure is seen: it stores the failure, sets the drain flag, and breaks the loop.
+- **The settle** (step 3) runs right after the loop, in the same synchronous segment: `applyInputs` removes the consumed prefix (the items before the failing one, and the failing item with its handler error as its outcome), then drops the unexecuted suffix and everything queued behind it with `landClosed`, then calls `cancelAllActionJobs`, `releaseHeldInputsForDrain` and `resumeShutdownTurnWaiters`. No await separates any of it from the failure.
+- **`InputApplication` carries `consumed`.** `runInputTurn` writes `inputTurnResults` and `appliedItems` for the consumed prefix only, so the suffix, already failed by the settle, is never resumed with `.success(())`. The legacy publication already filters by `outcomes`. The prefix's waiters, the failing item's included, get their real outcomes through the normal publication.
+- A failure seen in the sync phase (in-turn) or applied from a `landFailure` item comes after the turn's inputs were applied and published from the same segment's state, so its mark and settle are adjacent there.
+- **The turn's end** (steps 5 and 6) touches no keeper state: the terminal entry and the teardown's start are taken out of the keeper into locals in the apply segment (the stored entry is cleared there), and the end of the turn hands them on (step 5 gives the order).
+
+Setting the drain flag in the middle of the batch changes nothing for the rest of the turn's completion: publishing the prefix's outcomes and building the turn's record don't check `isDraining`. The PR asserts that.
 
 The steps:
 1. **Stores `failure`**: the first one wins, and later ones are logged at debug.
@@ -182,12 +189,12 @@ The steps:
    - From here every existing `isDraining` check refuses. In LK: 1426, 1474, 1649 and 1703 (joins resumed after their awaits), 1805-1870 (the join and leave resolvers), 2439, 2515-2529 (`forceShutdown`), 2980 (`submitServerInput`), 3392, 4060, 4785, 4823 and 5193-5195.
    - In LM, 373, 427, 475 and 483 count a draining keeper as absent, so a join to the land ID waits for this instance to be dropped, then builds a new one.
    - The PR lists each site with the test that reaches it.
-3. **Settles every waiter** (at the turn's end): `dropPendingInputs(reason: "landFailed")`, `releaseHeldInputsForDrain()` and `resumeShutdownTurnWaiters()`, as the shutdown turn does. `dropPendingInputs` already fails:
+3. **Settles every waiter** (in the apply segment): `dropPendingInputs(reason: "landFailed")` on the suffix and what is queued behind it, `releaseHeldInputsForDrain()` and `resumeShutdownTurnWaiters()`, as the shutdown turn does. `dropPendingInputs` already fails:
    - `inputTurnWaiters` (LK 628);
    - legacy pass callers;
    - tickless action job slots, with `LandInputRejection.landClosed`.
 
-   Inputs applied in this turn, the failing one included, are no longer pending when the settle runs: they keep the outcomes the turn published, and no slot is filled twice. Three more waiters are added to the settle:
+   Inputs applied in this turn, the failing one included, were removed as the consumed prefix before the drop: they keep the outcomes the turn publishes, and no slot is filled twice. Three more waiters are added to the settle:
    - **Action jobs still in their resolvers** aren't in `pendingItems`, so `dropPendingInputs` doesn't reach them. The settle calls `cancelAllActionJobs()` (LK 2244), after the drain flag was set by the mark, in the same order as the empty-room drain (LK 5171-5174). `cancelActionJob` fills each caller's slot at once with the delivery check's rejection (`rejectIfLandClosed`, LK 1869-1872, which now throws `landClosed`) and cancels the job's task. It skips a job already completed or already cancelled (LK 2252), so every slot is filled exactly once, including a job whose result was delivered earlier in this turn. A job whose resolvers resume later finds its slot filled and its delivery refused (`deliverResolvedAction` checks `rejectIfLandClosed`).
    - **Server inputs in flight:** counted down by the drop.
    - **The input that failed** (for `.handlerWrite`): its caller gets the handler's error, as today.
@@ -197,9 +204,11 @@ The steps:
    - the turn that applies a `landFailure` item: the item isn't an input, and `runInputDrain` skips submission when `outcome.record.isEmpty` (LK 4952-4957);
    - legacy tick-land recording calls `recorder.record` directly and conditionally (LK 3690-3706).
 
-   So every turn that ran `failLand` ends with a finalize step, `finalizeFailureRecord()`, of its own:
-   - **with a recorder:** it submits the terminal entry through the ordered submission pipeline, after whatever the turn submitted (nothing, for the three cases above) and before the teardown starts (step 6 runs after it in the same segment, so any entry the teardown writes is submitted later). On the legacy tick path, which records directly, the entry is written by the same task after the tick's record, in the same order;
-   - **without a recorder:** it only clears the stored entry.
+   So every turn that ran `failLand` ends with a finalize step, `finalizeFailureRecord(entry)`, of its own. The entry was moved out of the keeper into a local in the apply segment, so the step mutates no keeper state:
+   - **with a recorder:** the step runs after the turn's own submission (`submitTurnRecord`, when the turn has one) has been handed to the recorder, and submits the entry to the same ordered recorder pipeline, so it lands after that turn's record whatever the pipeline's internal awaits. When the turn submits nothing (the three cases above), it is the turn's only submission. On the legacy tick path, which records directly, the same task writes it after the tick's record;
+   - **without a recorder:** nothing is written (the stored entry was already cleared in the apply segment).
+
+   The teardown (step 6) starts only after this step has handed the entry to the recorder, so any entry the teardown writes comes later.
 
    The entry isn't an input.
 6. **Starts the teardown outside the turn** (§3.4).
@@ -464,7 +473,9 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - **Action jobs (N1):** an action held in its resolver when the land fails gets `landClosed` at once, before the teardown's `landDidFail` returns; its resolver resuming later doesn't fill the slot again.
 - **OnLeave on a failed land (D4):** with a host, an OnLeave resolver held when the failure arrives; under D4 (a), a leave forwarded by the router after the failure runs no resolver and no handler, and the player's membership ends in the adapter and the router.
 - **Debug settle:** a failure during debug settle's state read sends nothing and still calls `endSync`.
-- **A mid-batch failure (Review P1):** a batch of A (succeeds), B (throws after a write) and C (not executed), each once as an action with a tickless job slot and once with an ordinary turn waiter: A gets its response, B its handler error, C `landClosed`; each slot is filled exactly once (a slot hook that fails on a second fill), and A and B are removed from the queue before the settle.
+- **A mid-batch failure (Review P1):** a batch of A (succeeds), B (throws after a write) and C (not executed), each once as an action with a tickless job slot and once with an ordinary turn waiter: A gets its response, B its handler error, C `landClosed`; each slot is filled exactly once (a slot hook that fails on a second fill). It fails if the settle moves after the publication:
+  - in-turn: C's waiter gets `landClosed`, never `.success(())`, and `appliedItems` holds A and B only;
+  - legacy: with a hold at `.turnRecord`, C's own caller runs its pass during the hold, and C stays unapplied (its handler never runs) and gets `landClosed`.
 - **The finalize step (Review P2):** the terminal entry is recorded for a failure in a sync-only turn (nothing else submitted), in the turn applying a `landFailure` item, on the legacy tick-land recording path, and in an input drain; it comes after any record of that turn and before any teardown entry; without a recorder nothing is written.
 - **The legacy output position:** with in-turn sync off and a recorder, a legacy sync failure records the position of the state it read, and the turns run between it and the turn that applied the item replay.
 - **D5's thread-local:** two keepers run in turn on the same thread (a single-thread executor), the second starting from a clean count; a nested handler call restores the outer count; the temporary-`@Sync` false positive is pinned.
@@ -507,7 +518,8 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - the failure check in `leave` moved after the resolvers (the held-OnLeave test);
 - the close code latched before the router's awaits (the `stopSnapshot` test);
 - the terminal entry written before the turn's record (the record-order test);
-- the settle run inside the batch loop (the A/B/C test);
+- the settle moved after the publication or after the turn record's await (the A/B/C in-turn and legacy-hold tests);
+- `appliedItems` or `inputTurnResults` written for the whole batch (the in-turn A/B/C test);
 - the finalize step made conditional on the turn's submission (the sync-only and `landFailure`-item tests);
 - the thread-local install without restore (the nested-call and reused-thread tests);
 - D11's reset on a skipped plan, or its bound on count alone or time alone (the manual-clock tests);
