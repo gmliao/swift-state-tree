@@ -207,6 +207,11 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     return fields
                 }
 
+                public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? {
+                    let fields: [SyncTableField<Self>] = []
+                    return fields
+                }
+
                 private static func _syncCheck_score(_: _SyncTypedField) {
                 }
 
