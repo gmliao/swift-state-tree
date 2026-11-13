@@ -10,7 +10,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 /// A recorded scenario: its encoding and its script.
 enum SyncOutputGolden: String, CaseIterable, Sendable, CustomStringConvertible {
@@ -292,6 +292,40 @@ struct SyncOutputGoldenTests {
             summaries.append(result.syncOutput.summary)
         }
         #expect(streams[0].count > 0, "\(golden): the scenario syncs")
+        #expect(frames[0] == frames[1], "\(golden): frames")
+        #expect(streams[0] == streams[1], "\(golden): sync stream")
+        #expect(summaries[0] == summaries[1], "\(golden): replay summary")
+    }
+
+    /// The per-player tables (#514) against the shadow (plan §5): a golden scenario through the
+    /// router with them on replays with 0 mismatches, and records what it records with them off.
+    /// The shadow runs today's engine, so this holds under D5's condition: the check asserts the
+    /// run counted no drop and no encode failure. The verifier land stands in for the visibility
+    /// land: its per-player slices (an `Int`, a `Double`, a node) take the typed slots.
+    @Test("With the per-player tables on, a golden scenario through the router verifies against the shadow and records what it records with them off", arguments: SyncOutputGolden.allCases)
+    func perPlayerTablesKeepTheRecord(golden: SyncOutputGolden) async throws {
+        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
+        var frames: [Data] = [], streams: [[ReevaluationSyncStreamEntry]] = [], summaries: [String] = []
+        for on in [true, false] {
+            let f = await VerifierFixture.makeThroughRouter(encoding: encoding, rowAddressing: false, perPlayerTables: on)
+            #expect(await f.adapter.perPlayerSyncTablesInEffect() == on, "\(golden): per-player tables \(on)")
+            if on {
+                let kinds = try #require(await f.adapter.perPlayerSyncTableFieldKinds())
+                #expect(kinds.values.allSatisfy { $0 != .fallback }, "\(golden): \(kinds)")
+            }
+            try await golden.play(f)
+            #expect(await f.adapter.syncDroppedUpdates == 0, "\(golden), per-player tables \(on): no drop or encode failure")
+            streams.append(try await f.stream())
+            let recorder = try #require(await f.keeper.getReevaluationRecorder())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            frames.append(try encoder.encode(await recorder.getAllFrames()))
+            let result = try await f.replay()
+            #expect(result.syncOutput.verdict == .passed, "\(golden), per-player tables \(on): \(result.syncOutput.summary)")
+            #expect(result.syncOutput.perPlayer.compared > 0)
+            summaries.append(result.syncOutput.summary)
+        }
         #expect(frames[0] == frames[1], "\(golden): frames")
         #expect(streams[0] == streams[1], "\(golden): sync stream")
         #expect(summaries[0] == summaries[1], "\(golden): replay summary")

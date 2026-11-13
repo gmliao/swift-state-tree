@@ -245,6 +245,12 @@ struct SyncTablesByteIdentityTests {
         let config = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta, profilingConfig: nil)
         #expect(config.perPlayerSyncTables == expected)
         #expect(config.perPlayerSyncTablesEnabled == expected)
+        // An adapter built from that config with the broadcast tables on runs what it says.
+        var on = config
+        on.useSyncTables = true
+        let defaultRun = await DirtyIdentityRun(envConfig: on, encoding: .messagepack)
+        #expect(await defaultRun.adapter.perPlayerSyncTablesInEffect() == expected, "in effect as the environment says")
+        #expect(await defaultRun.adapter.syncEngineForTesting().perPlayerCacheRetired == expected)
         var off = config
         off.useSyncTables = false
         off.perPlayerSyncTables = true

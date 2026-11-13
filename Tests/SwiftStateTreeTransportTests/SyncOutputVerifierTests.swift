@@ -230,8 +230,9 @@ struct VerifierFixture {
     /// sequence, the schema's path hashes with the path index and field merge, in-turn sync, and
     /// the sync tables on with the delta strategy. The env config is given, not read, so the
     /// fixture is the same in a run with `USE_SYNC_TABLES=false`. `rowAddressing` is the only
-    /// knob: with it on, row addressing is in effect (the caller asserts it).
-    static func makeThroughRouter(encoding: InTurnEncoding, rowAddressing: Bool) async -> VerifierFixture {
+    /// knob: with it on, row addressing is in effect (the caller asserts it). `perPlayerTables`
+    /// sets `PER_PLAYER_SYNC_TABLES` (#514); nil takes the environment's.
+    static func makeThroughRouter(encoding: InTurnEncoding, rowAddressing: Bool, perPlayerTables: Bool? = nil) async -> VerifierFixture {
         let keeper = LandKeeper<VerifierState>(
             definition: makeVerifierLand(),
             initialState: VerifierState(),
@@ -240,6 +241,7 @@ struct VerifierFixture {
         )
         var env = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: false, syncStrategy: .delta, profilingConfig: nil)
         env.useSyncTables = true
+        if let perPlayerTables { env.perPlayerSyncTables = perPlayerTables }
         let transport = VerifierTransport()
         let adapter = TransportAdapter<VerifierState>(
             keeper: keeper,
@@ -793,6 +795,30 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.turnKind == .tick)
         #expect(mismatch.detail == "first differing path: /ticks")
         #expect(result.syncOutput.broadcast.compared > 0, "the hashes matched up to the failing output")
+    }
+
+    /// The fault reaches the per-player diff on both paths: the per-player tables (#514) and,
+    /// with `PER_PLAYER_SYNC_TABLES=false`, today's snapshot diff.
+    @Test("A diff-engine bug in the per-player diff both sides share fails the apply check", arguments: InTurnEncoding.allCases)
+    func perPlayerDiffEngineFaultIsCaughtByTheApplyCheck(encoding: InTurnEncoding) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        // A wrong value for `scores` in every per-player diff. The slice has no value for a
+        // player before its first score, so the patch is a diff from an absent field.
+        let fault: @Sendable (StateSnapshot, [StatePatch]) -> [StatePatch] = { _, patches in
+            patches.map { $0.path.hasPrefix("/scores") ? StatePatch(path: $0.path, operation: .set(.string("wrong"))) : $0 }
+        }
+        let result = try await SyncEngineDiffFaultForTesting.$current.withValue(fault) {
+            let f = await VerifierFixture.make(encoding: encoding)
+            try await playScript(f)
+            return try await f.replay()
+        }
+        guard case .failed(let mismatch) = result.syncOutput.verdict else {
+            Issue.record("expected a failed verdict, got \(result.syncOutput.summary)")
+            return
+        }
+        #expect(mismatch.check == .apply)
+        #expect(mismatch.scope.hasPrefix("per-player"), "\(mismatch.scope)")
+        #expect(mismatch.detail?.hasPrefix("first differing path: /scores") == true, "\(mismatch.detail ?? "")")
     }
     #endif
 

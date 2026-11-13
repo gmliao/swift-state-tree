@@ -84,6 +84,8 @@ private struct PPRowsRun {
     let frames = PPRowsFrames()
     let script = PPRowsScript()
     let hasher: PathHasher
+    /// The sync-lag clock, moved by hand.
+    let clock = SyncLagManualClock()
 
     init(encoding: RowAddressingEncoding, perPlayerTables: Bool) async throws {
         let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(ppRowsLand(PPRowsScript()))])
@@ -107,6 +109,26 @@ private struct PPRowsRun {
         )
         await frames.setDelegate(adapter)
         await keeper.setTransport(adapter)
+        let clock = self.clock
+        await adapter.setSyncLagClockForTesting { clock.now }
+        await adapter.setSyncLagTimerIntervalForTesting(.seconds(3600))
+    }
+
+    /// The sequence of the last state frame `name`'s session got.
+    func lastSeq(_ name: String, encoding: RowAddressingEncoding) async throws -> UInt64 {
+        let decoder = OpcodeJSONStateUpdateDecoder(
+            pathHasher: hasher, atomicLayout: AtomicLayoutTable.forState(PPRowsState.self), pathIndex: true, syncSequence: true
+        )
+        var last: UInt64?
+        for frame in await frames.sent where frame.target == "session(s-\(name))" {
+            if (try? JSONDecoder().decode(TransportMessage.self, from: frame.data)) != nil { continue }
+            if let seq = try decoder.decodeFrame(frame.data, format: encoding.format)?.syncSeq { last = seq }
+        }
+        return try #require(last)
+    }
+
+    func ack(_ name: String, _ seq: UInt64, encoding: RowAddressingEncoding) async {
+        await adapter.onMessage(SyncAckFrame.encode(seq: seq, binary: encoding == .messagepack), from: SessionID("s-\(name)"))
     }
 
     func join(_ name: String) async throws {
@@ -117,19 +139,19 @@ private struct PPRowsRun {
             clientID: client, sessionID: session, authInfo: nil, joinResponse: ppRowsJoinResponse
         )
         _ = try #require(result)
-        #expect(await adapter.waitForOutboundDrain())
+        await adapter.waitForOutboundIdleForTesting()
     }
 
     func leave(_ name: String) async {
         await adapter.onDisconnect(sessionID: SessionID("s-\(name)"), clientID: ClientID("c-\(name)"))
         await keeper.waitForInFlightWorkForTesting()
-        #expect(await adapter.waitForOutboundDrain())
+        await adapter.waitForOutboundIdleForTesting()
     }
 
     func tick(_ step: @escaping (inout PPRowsState) -> Void) async {
         script.queue(step)
         await keeper.stepTickOnce()
-        #expect(await adapter.waitForOutboundDrain())
+        await adapter.waitForOutboundIdleForTesting()
     }
 
     /// `name`'s view, decoded from every state frame its session received.
@@ -151,7 +173,11 @@ private struct PPRowsRun {
     }
 }
 
-@Suite("The per-player tables with row addressing in effect (#514)", .timeLimit(.minutes(1)))
+@Suite(
+    "The per-player tables with row addressing in effect (#514)",
+    .timeLimit(.minutes(1)),
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: row addressing takes effect only with in-turn sync")
+)
 struct PerPlayerSyncTablesRowsTests {
     @Test("Per-player frames are the same with the per-player tables on and off, and every client reaches its view", arguments: RowAddressingEncoding.allCases)
     func rowsInEffect(encoding: RowAddressingEncoding) async throws {
@@ -180,6 +206,30 @@ struct PerPlayerSyncTablesRowsTests {
                 // A join mid-run (its full view) and a leave.
                 if round == 4 { try await run.join("p3") }
                 if round == 8 { await run.leave("p2") }
+            }
+            // A lagging reader with rows in effect (#332): p3 keeps acking an old view while p1
+            // keeps up; past 3 s p3 is resynced, its per-player boxes reseeded from the view.
+            let stale = try await run.lastSeq("p3", encoding: encoding)
+            var round = 12
+            while await run.adapter.syncLagResyncs == 0 && round < 20 {
+                let n = round
+                await run.tick { state in
+                    state.round = n
+                    state.units["p3.u\(n % 2)", default: PPRowsUnit()].hp += 1
+                    state.seen = state.units
+                    state.hands[PlayerID("p3"), default: []].append("r\(n)")
+                }
+                run.clock.advance(1.5)
+                await run.ack("p1", try await run.lastSeq("p1", encoding: encoding), encoding: encoding)
+                await run.ack("p3", stale, encoding: encoding)
+                round += 1
+            }
+            #expect(await run.adapter.syncLagResyncs == 1, "\(encoding): p3 was resynced")
+            await run.ack("p3", try await run.lastSeq("p3", encoding: encoding), encoding: encoding)
+            await run.tick { state in
+                state.units["p3.u0"]!.tag = "after"
+                state.seen = state.units
+                state.hands[PlayerID("p3"), default: []].append("after")
             }
             let state = await run.keeper.currentState()
             for name in ["p1", "p3"] {

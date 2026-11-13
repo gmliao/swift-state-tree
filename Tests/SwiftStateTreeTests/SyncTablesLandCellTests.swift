@@ -303,6 +303,7 @@ struct SyncTablesLandCellTests {
         let ops = scriptedOps(opCount: opCount, count: opCount * 6)
         var frames: [[(target: String, data: Data)]] = []
         var lastSent: [StateSnapshot?] = []
+        var perPlayerLastSent: [[String: StateSnapshot?]] = []
         // Both tables on, the broadcast tables alone (per-player fields on today's path, #514),
         // and neither: each against neither.
         for (tables, perPlayerTables) in [(true, true), (true, false), (false, false)] {
@@ -310,9 +311,15 @@ struct SyncTablesLandCellTests {
                 definition: definition(), landID: landID, tables: tables, perPlayerTables: perPlayerTables,
                 dirtyTracking: dirtyTracking, encoding: encoding, pathHashes: pathHashes
             )
+            #expect(await run.adapter.perPlayerSyncTablesInEffect() == perPlayerTables, "\(cell): per-player tables in effect")
             try await run.runScript(ops: ops)
             frames.append(await run.transport.sent)
             lastSent.append(await run.adapter.lastSentBroadcastSnapshotForTesting())
+            var perPlayer: [String: StateSnapshot?] = [:]
+            for name in ["alice", "bob", "carol"] {
+                perPlayer[name] = await run.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID(name))
+            }
+            perPlayerLastSent.append(perPlayer)
             #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
         }
         #expect(frames[0].count > 40, "\(cell): the script sends frames")
@@ -320,6 +327,9 @@ struct SyncTablesLandCellTests {
         expectSameLandFrames(frames[1], frames[2], cell + " (broadcast tables)")
         #expect(lastSent[0] != nil, "\(cell): the tables are seeded")
         #expect(lastSent[0] == lastSent[2] && lastSent[1] == lastSent[2], "\(cell): last-sent")
+        // The per-player last-sent: the boxes against today's per-player cache, per player.
+        #expect(perPlayerLastSent[2].values.contains { $0 != nil }, "\(cell): per-player last-sent is seeded")
+        #expect(perPlayerLastSent[0] == perPlayerLastSent[2] && perPlayerLastSent[1] == perPlayerLastSent[2], "\(cell): per-player last-sent")
     }
 
     /// The cells compare the tables with the snapshot path only where a field is typed: a field

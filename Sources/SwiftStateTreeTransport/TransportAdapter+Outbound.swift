@@ -154,6 +154,13 @@ extension TransportAdapter {
         return true
     }
 
+    /// Tests only: returns once the outbound writer handed every queued frame to the transport,
+    /// as `waitForOutboundDrain` checks, but woken by the writer's consumer instead of polled.
+    /// Background sync work (follow-ups, deferred retries) is the caller's to hold or await.
+    func waitForOutboundIdleForTesting() async {
+        await outboundWriter.waitForIdle()
+    }
+
     /// Tests only: waits until no background sync work is left: every Task the adapter started
     /// for a deferred retry or a follow-up (`backgroundSyncTasks`) has finished, including any
     /// it started in turn, and the outbound writer has handed every frame to the transport.

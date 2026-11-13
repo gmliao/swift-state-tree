@@ -1097,11 +1097,6 @@ class SyncRootSlot<State> {
     /// The write that makes last-sent absent, or nil when it already is.
     func stageClear() -> SyncStagedWrite? { nil }
 
-    /// The patches from nothing to `state` (the full-snapshot strategy's `.empty` baseline): a set
-    /// of the whole field, or a delete when the field has no view and last-sent has one. Last-sent
-    /// becomes exactly the view.
-    func diffFromEmpty(_ state: State, into out: inout SyncPatchList) throws -> SyncStagedWrite? { nil }
-
     /// A diff that found no view: a delete when the field is a per-player one that was present.
     final func absent(into out: inout SyncPatchList) -> SyncStagedWrite? {
         guard deletesWhenAbsent, isPresent else { return nil }
@@ -1174,12 +1169,6 @@ final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
         return SyncStagedWrite { self.last = nil }
     }
 
-    override func diffFromEmpty(_ state: State, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
-        guard let value = read(state) else { return absent(into: &out) }
-        out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: differ.ownTable ?? 0)
-        return SyncStagedWrite { self.last = syncTableOwnedCopy(value) }
-    }
-
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
         guard let value = read(state) else { return absent(into: &out) }
         guard let old = last else {
@@ -1239,16 +1228,6 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         return SyncStagedWrite {
             self.last = SyncSlottedTable()
             self.seeded = false
-        }
-    }
-
-    override func diffFromEmpty(_ state: State, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
-        // Per-player fields only: no cursor, so no row entries.
-        guard let value = read(state) else { return absent(into: &out) }
-        out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: 0)
-        return SyncStagedWrite {
-            self.last = SyncSlottedTable(seeding: value, keyString: self.differ.keyString)
-            self.seeded = true
         }
     }
 
@@ -1423,13 +1402,6 @@ final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
     override func stageClear() -> SyncStagedWrite? {
         guard last != nil else { return nil }
         return SyncStagedWrite { self.last = nil }
-    }
-
-    override func diffFromEmpty(_ state: State, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
-        guard let value = try convert(state) else { return absent(into: &out) }
-        out.append(StatePatch(path: path, operation: .set(value)), table: 0)
-        out.needsSort = true
-        return SyncStagedWrite { self.last = value }
     }
 
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
@@ -1813,6 +1785,9 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
     private let typed: Bool
     /// The per-player root field names, in path order (getSyncFields' classification).
     package let fieldNames: [String]
+    /// How each per-player root field is diffed: a typed kind, or `.fallback` for the snapshot
+    /// diff (every field of a type without a typed description).
+    package let kinds: [String: SyncTableFieldKind]
 
     package init(prototype: State? = nil, typedLeafValues: Bool = false, logger: Logger? = nil) {
         layout = AtomicLayoutTable.forState(State.self)
@@ -1823,7 +1798,13 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
             .map(\.name)
         fieldNames = names.sorted { ("/" + SyncEngine.escapedPathComponent($0)).utf8.lexicographicallyPrecedes(("/" + SyncEngine.escapedPathComponent($1)).utf8) }
         // Probe one description: a type without one takes the snapshot diff for every field.
-        typed = State._syncTablePerPlayerFields(for: PlayerID("")) != nil
+        // A field's kind doesn't depend on the player.
+        let probe = State._syncTablePerPlayerFields(for: PlayerID(""))
+        typed = probe != nil
+        var kinds: [String: SyncTableFieldKind] = [:]
+        for name in names { kinds[name] = .fallback }
+        for field in probe ?? [] where kinds[field.name] != nil { kinds[field.name] = field.kind }
+        self.kinds = kinds
     }
 
     private func makeBoxes(for playerID: PlayerID) -> SyncTablePlayerBoxes<State> {
@@ -1842,6 +1823,7 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
         }
         for slot in slots { slot.deletesWhenAbsent = true }
         slots.sort { $0.path.utf8.lexicographicallyPrecedes($1.path.utf8) }
+        assert(slots.map(\.name) == fieldNames, "one slot per per-player field: \(slots.map(\.name)) against \(fieldNames)")
         return SyncTablePlayerBoxes(slots: slots)
     }
 
@@ -1850,41 +1832,41 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
         players[playerID] != nil || staged.holds(playerID)
     }
 
-    /// The boxes a plan's writes for `playerID` go to: staged by this plan, else committed.
-    private func boxes(_ playerID: PlayerID, staged: SyncTablePerPlayerStaged) -> SyncTablePlayerBoxes<State>? {
-        if let entry = staged.entries[playerID] { return (entry.boxes as! SyncTablePlayerBoxes<State>) }
-        return players[playerID]
-    }
-
     /// A sync plan's per-player diff for `playerID`, as today's `computePerPlayerDiffFromSnapshot`:
     /// - `fields`: the per-player fields today's mode compares (nil: every field).
     /// - A player without boxes is seeded (no patches): with every field when `seedsAll` (the
     ///   one-pass extraction's seed), otherwise with `fields`. A field that throws stays unseeded.
-    /// - `fromEmpty` (the `.empty` baseline): every field set whole, and a delete for a field that
-    ///   left the view; the boxes become exactly the view.
+    ///
+    /// Always against the `.cached` baseline: the per-player tables exist only with the broadcast
+    /// tables, which need the delta strategy, and a key reset keeps `.cached` and only retypes
+    /// the update. The `.empty` baseline is the full-snapshot strategy's.
+    /// Once per player per plan: a second call would diff against the committed boxes, not the
+    /// plan's staged writes.
     package func planDiff(
         _ state: State,
         for playerID: PlayerID,
         fields: Set<String>?,
         seedsAll: Bool,
-        fromEmpty: Bool,
         drops: inout ExtractionDrops,
         into staged: inout SyncTablePerPlayerStaged
     ) -> [StatePatch] {
+        assert(staged.entries[playerID] == nil, "the per-player diff of \(playerID) ran twice in one plan")
         staged.owner = ObjectIdentifier(self)
-        if let boxes = boxes(playerID, staged: staged) {
-            var entry = staged.entries[playerID] ?? SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: false, commits: [])
-            let patches = diff(boxes, state, playerID: playerID, fields: fromEmpty ? nil : fields, fromEmpty: fromEmpty, drops: &drops, commits: &entry.commits)
+        if let boxes = players[playerID] {
+            var entry = SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: false, commits: [])
+            let patches = diff(boxes, state, playerID: playerID, fields: fields, drops: &drops, commits: &entry.commits)
             staged.entries[playerID] = entry
+            #if DEBUG
+            // The tests' diff fault, as the broadcast tables and the snapshot diff apply it.
+            if let fault = SyncEngineDiffFaultForTesting.current {
+                return fault(lastSentSnapshot(for: playerID) ?? StateSnapshot(values: [:]), patches)
+            }
+            #endif
             return patches
         }
         let boxes = makeBoxes(for: playerID)
         var entry = SyncTablePerPlayerStaged.Entry(boxes: boxes, installs: true, commits: [])
         defer { staged.entries[playerID] = entry }
-        if fromEmpty {
-            // Today's `.empty` baseline sets every field even without a cache.
-            return diff(boxes, state, playerID: playerID, fields: nil, fromEmpty: true, drops: &drops, commits: &entry.commits)
-        }
         // Today's first diff seeds the cache from the extraction and returns no patches.
         seed(boxes, state, playerID: playerID, fields: seedsAll ? nil : fields, clearsAbsent: false, drops: &drops, commits: &entry.commits)
         return []
@@ -1895,7 +1877,6 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
         _ state: State,
         playerID: PlayerID,
         fields: Set<String>?,
-        fromEmpty: Bool,
         drops: inout ExtractionDrops,
         commits: inout [() -> Void]
     ) -> [StatePatch] {
@@ -1904,21 +1885,14 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
             let emitted = list.entries.count
             let sorts = list.needsSort
             do {
-                let write = fromEmpty
-                    ? try slot.diffFromEmpty(state, into: &list)
-                    : try slot.diff(state, layout: layout.root?.child(slot.name), into: &list)
-                if let write { commits.append(write.commit) }
+                if let write = try slot.diff(state, layout: layout.root?.child(slot.name), into: &list) {
+                    commits.append(write.commit)
+                }
             } catch {
                 // The whole root field is dropped for this player: none of its patches.
                 list.entries.removeSubrange(emitted...)
                 list.needsSort = sorts
                 drops.note(error, field: slot.name, scope: .perPlayer(playerID))
-                if fromEmpty, let kept = slot.lastSentSnapshot {
-                    // As today's extraction falls back to the cached value: a key reset sets the
-                    // field to what the client has, so the client keeps it.
-                    list.append(StatePatch(path: slot.path, operation: .set(kept)), table: 0)
-                    list.needsSort = true
-                }
             }
         }
         // A type outside the canonical order (known once its differs are built), or no typed

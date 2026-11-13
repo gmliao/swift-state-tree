@@ -435,19 +435,22 @@ struct RowAddressingAdapterTests {
     /// tables follow the broadcast tables however those were turned on.
     @Test("The per-player tables are in effect where the broadcast tables are, unless PER_PLAYER_SYNC_TABLES is off (#514)")
     func perPlayerTablesFollowTheBroadcastTables() async throws {
-        let rows: [(tables: Bool, rowAddressing: Bool, router: Bool, perPlayer: Bool, inEffect: Bool, label: String)] = [
-            (true, false, true, true, true, "both switches on"),
-            (true, false, true, false, false, "PER_PLAYER_SYNC_TABLES off"),
-            (false, false, true, true, false, "the broadcast tables off"),
-            (false, true, true, true, true, "the broadcast tables forced on by row addressing"),
-            (false, true, true, false, false, "forced on by row addressing, PER_PLAYER_SYNC_TABLES off"),
-            (false, true, false, true, false, "row addressing requested, not in effect (a direct join)"),
+        let rows: [(tables: Bool, rowAddressing: Bool, router: Bool, inTurn: Bool, perPlayer: Bool, inEffect: Bool, label: String)] = [
+            (true, false, true, true, true, true, "both switches on"),
+            (true, false, true, true, false, false, "PER_PLAYER_SYNC_TABLES off"),
+            (false, false, true, true, true, false, "the broadcast tables off"),
+            (false, true, true, true, true, true, "the broadcast tables forced on by row addressing"),
+            (true, true, true, true, true, true, "USE_SYNC_TABLES on, with row addressing in effect"),
+            (false, true, true, true, false, false, "forced on by row addressing, PER_PLAYER_SYNC_TABLES off"),
+            (false, true, false, true, true, false, "row addressing requested, not in effect (a direct join)"),
+            (false, true, true, false, true, false, "row addressing requested, not in effect (in-turn sync off)"),
         ]
         for row in rows {
             let run = try await RowAddressingRun.make(
                 encoding: .messagepack, rowAddressing: row.rowAddressing, joinsThroughRouter: row.router,
-                tables: row.tables, perPlayerTables: row.perPlayer
+                inTurnSync: row.inTurn, tables: row.tables, perPlayerTables: row.perPlayer
             )
+            #expect(run.adapter.rowAddressing == (row.rowAddressing && row.router && row.inTurn), "\(row.label): rows")
             #expect(await run.adapter.perPlayerSyncTablesInEffect() == row.inEffect, "\(row.label)")
             #expect(await run.adapter.syncEngineForTesting().perPlayerCacheRetired == row.inEffect, "\(row.label): the cache is retired")
         }

@@ -35,6 +35,12 @@ struct PPScenarioState: StateNodeProtocol {
     @Sync(.perPlayer({ (v: PPScenarioRisky, _: PlayerID) in v })) var risky: PPScenarioRisky = PPScenarioRisky()
     /// NaN converts but JSON can't encode it: the player's update is re-encoded without it.
     @Sync(.perPlayer({ (v: Double, _: PlayerID) in v })) var speed: Double = 0
+    /// Each player sees its own entries: a negative one throws for that player only (T1).
+    @Sync(.perPlayer({ (v: [String: PPScenarioRisky], player: PlayerID) in v.filter { $0.key.hasPrefix(player.rawValue) } }))
+    var secrets: [String: PPScenarioRisky] = [:]
+    /// A second root of the same kind, for two failing roots of one player.
+    @Sync(.perPlayer({ (v: [String: PPScenarioRisky], player: PlayerID) in v.filter { $0.key.hasPrefix(player.rawValue) } }))
+    var vault: [String: PPScenarioRisky] = [:]
     @Sync(.serverOnly) var steps: Int = 0
     init() {}
 }
@@ -58,6 +64,8 @@ struct PPScenarioStep: ClientEventPayload {
     let risky: Int
     let board: Int
     let speed: Int
+    let secret: Int
+    let vault: Int
 }
 
 extension PPScenarioStep {
@@ -86,6 +94,8 @@ private func makePPScenarioLand(landID: String) -> LandDefinition<PPScenarioStat
                 if step.mark != PPScenarioStep.none { state.marks["\(ctx.playerID.rawValue).\(step.mark % 3)"] = step.mark }
                 if step.risky != PPScenarioStep.none { state.risky.n = step.risky }
                 if step.speed != PPScenarioStep.none { state.speed = step.speed == PPScenarioStep.nan ? .nan : Double(step.speed) }
+                if step.secret != PPScenarioStep.none { state.secrets["\(ctx.playerID.rawValue).s"] = PPScenarioRisky(n: step.secret) }
+                if step.vault != PPScenarioStep.none { state.vault["\(ctx.playerID.rawValue).v"] = PPScenarioRisky(n: step.vault) }
                 if step.board != PPScenarioStep.none {
                     state.round += 1
                     state.board["b\(step.board % 4)"] = step.board
@@ -155,9 +165,10 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
         tables: Bool,
         perPlayerTables: Bool,
         onePass: Bool,
+        dirtyTracking: Bool = true,
         encoding: TransportEncodingConfig
     ) async {
-        var config = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: onePass, syncStrategy: .delta, profilingConfig: nil)
+        var config = TransportEnvConfig(enableDirtyTracking: dirtyTracking, useSnapshotForSync: onePass, syncStrategy: .delta, profilingConfig: nil)
         config.useSyncTables = tables
         config.perPlayerSyncTables = perPlayerTables
         transport = DirtyIdentityRecordingTransport()
@@ -208,39 +219,43 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
         await adapter.onConnect(sessionID: session, clientID: client)
         _ = try await adapter.performJoin(playerSession: PlayerSession(playerID: name), clientID: client, sessionID: session, authInfo: nil)
         await adapter.syncStateForNewPlayer(playerID: PlayerID(name), sessionID: session)
-        await settle()
+        await awaitIdle()
     }
 
     func leave(_ name: String, suffix: String = "") async {
         await adapter.onDisconnect(sessionID: SessionID("s-\(name)\(suffix)"), clientID: ClientID("c-\(name)\(suffix)"))
-        await settle()
+        await awaitIdle()
     }
 
     func step(
         _ name: String, suffix: String = "", hand: String = "", clearHand: Bool = false,
         mark: Int = PPScenarioStep.none, risky: Int = PPScenarioStep.none, board: Int = PPScenarioStep.none,
-        speed: Int = PPScenarioStep.none
+        speed: Int = PPScenarioStep.none, secret: Int = PPScenarioStep.none, vault: Int = PPScenarioStep.none
     ) async throws {
         try await keeper.handleClientEvent(
-            AnyClientEvent(PPScenarioStep(hand: hand, clearHand: clearHand, mark: mark, risky: risky, board: board, speed: speed)),
+            AnyClientEvent(PPScenarioStep(
+                hand: hand, clearHand: clearHand, mark: mark, risky: risky, board: board, speed: speed, secret: secret, vault: vault
+            )),
             playerID: PlayerID(name), clientID: ClientID("c-\(name)\(suffix)"), sessionID: SessionID("s-\(name)\(suffix)")
         )
-        await settle()
+        await awaitIdle()
     }
 
-    func settle() async {
+    /// Waits on events only: the keeper's in-flight work, then the writer handing every queued
+    /// frame to the transport. Background sync work is held (`followUps`).
+    func awaitIdle() async {
         await keeper.waitForInFlightWorkForTesting()
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await adapter.waitForOutboundIdleForTesting()
     }
 
     func sync() async {
         await adapter.syncNow()
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await adapter.waitForOutboundIdleForTesting()
     }
 
     func syncBroadcastOnly() async {
         await adapter.syncBroadcastOnly()
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await adapter.waitForOutboundIdleForTesting()
     }
 }
 
@@ -250,6 +265,7 @@ private func comparePPScenario<State: StateNodeProtocol>(
     _ label: String,
     definition: @escaping () -> LandDefinition<State>,
     onePass: Bool,
+    dirtyTracking: Bool = true,
     encoding: TransportEncodingConfig,
     sourceLocation: SourceLocation = #_sourceLocation,
     script: (PPScenarioRun<State>) async throws -> Void
@@ -258,26 +274,28 @@ private func comparePPScenario<State: StateNodeProtocol>(
     for config in ppScenarioConfigs {
         let run = await PPScenarioRun<State>(
             definition: definition(), tables: config.tables, perPlayerTables: config.perPlayerTables,
-            onePass: onePass, encoding: encoding
+            onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding
         )
         #expect(await run.adapter.usesSyncTablesForTesting() == config.tables, sourceLocation: sourceLocation)
         #expect(await run.adapter.usesPerPlayerTablesForTesting() == config.perPlayerTables, sourceLocation: sourceLocation)
+        // Held follow-ups resume even when the script throws.
+        defer { run.finish() }
         try await script(run)
         frames.append(await run.transport.sent)
-        run.finish()
     }
     #expect(frames[2].count > 10, "\(label): the script sends frames", sourceLocation: sourceLocation)
     expectSameFrames(frames[0], frames[2], "\(label), both tables", sourceLocation: sourceLocation)
     expectSameFrames(frames[1], frames[2], "\(label), broadcast tables alone", sourceLocation: sourceLocation)
 }
 
+/// Encoding × one-pass × dirty tracking. Without dirty tracking every plan's mode is `.all`.
 private let ppScenarioCells: [String] = dirtyIdentityEncodings.flatMap { encoding in
-    [true, false].map { onePass in "\(encoding.0)|\(onePass)" }
+    [true, false].flatMap { onePass in [true, false].map { dirty in "\(encoding.0)|\(onePass)|dirty-\(dirty)" } }
 }
 
-private func ppScenarioCell(_ cell: String) throws -> (encoding: TransportEncodingConfig, onePass: Bool) {
+private func ppScenarioCell(_ cell: String) throws -> (encoding: TransportEncodingConfig, onePass: Bool, dirtyTracking: Bool) {
     let parts = cell.split(separator: "|").map(String.init)
-    return (try #require(dirtyIdentityEncodings.first { $0.0 == parts[0] }?.1), parts[1] == "true")
+    return (try #require(dirtyIdentityEncodings.first { $0.0 == parts[0] }?.1), parts[1] == "true", parts[2] == "dirty-true")
 }
 
 // MARK: - Tests
@@ -286,8 +304,8 @@ private func ppScenarioCell(_ cell: String) throws -> (encoding: TransportEncodi
 struct PerPlayerSyncTablesScenarioTests {
     @Test("Failed plans, encode failures, broadcast-only syncs, throws, leaves and supersedes", arguments: ppScenarioCells)
     func failuresAndMembership(cell: String) async throws {
-        let (encoding, onePass) = try ppScenarioCell(cell)
-        try await comparePPScenario(cell, definition: { makePPScenarioLand(landID: "pp-scenario") }, onePass: onePass, encoding: encoding) { run in
+        let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
+        try await comparePPScenario(cell, definition: { makePPScenarioLand(landID: "pp-scenario") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
             try await run.join("p1")
             try await run.join("p2")
             await run.sync()
@@ -330,18 +348,17 @@ struct PerPlayerSyncTablesScenarioTests {
             await run.syncBroadcastOnly()
             await run.sync()
 
-            if !onePass {
-                // A per-player conversion throws, a player joins right after, then it converts.
-                // With the one-pass extraction today's fallback is all-or-nothing (M8), which the
-                // typed diff doesn't copy (T1), so the identity is checked without it.
-                try await run.step("p1", mark: 7, risky: -1)
-                await run.sync()
-                try await run.join("p3")
-                try await run.step("p3", hand: "g")
-                await run.sync()
-                try await run.step("p1", risky: 2)
-                await run.sync()
-            }
+            // A per-player conversion throws (for every player), a player joins right after,
+            // then it converts. With one-pass on, today falls back to the separate extraction
+            // for every player (T1) and the typed diff stays per pair; their frames agree here
+            // because every recipient already has boxes (see `oneTimeThrowOnePass`).
+            try await run.step("p1", mark: 7, risky: -1)
+            await run.sync()
+            try await run.join("p3")
+            try await run.step("p3", hand: "g")
+            await run.sync()
+            try await run.step("p1", risky: 2)
+            await run.sync()
 
             // A leave and a reconnect: the player's view again from empty.
             await run.leave("p2")
@@ -363,6 +380,90 @@ struct PerPlayerSyncTablesScenarioTests {
             await run.sync()
             await run.sync()
             #expect(await run.adapter.syncFailedPlans == 1, "\(cell): only the armed plan failed")
+        }
+    }
+
+    /// T1 and the failure scenarios with a per-player throw for one player, one-pass on and off
+    /// (interim, #535; D5's expected outputs). The throwing pair sends none of its field, its
+    /// box keeps what its client has, and one drop is counted per failing (player, root) that the
+    /// cycle converts; the other players and the player's other fields flow. Two failing roots
+    /// count two. A key reset while the throw lasts keeps the boxes. With one-pass on, today's
+    /// all-or-nothing fallback to the separate extraction (T1) changes only how a player
+    /// without boxes is seeded, and a recipient always has boxes here: a player's firstSync
+    /// commits its seed with its firstSync mark, and a clear removes both. So the frames are
+    /// also today's, and are compared with them.
+    @Test("A per-player throw for one player: its field is dropped, its box kept, the rest flows (T1)", arguments: ppScenarioCells)
+    func oneTimeThrowOnePass(cell: String) async throws {
+        let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
+        let textual = !cell.hasPrefix("messagepack")
+        try await comparePPScenario(cell, definition: { makePPScenarioLand(landID: "pp-scenario-t1") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
+            /// Runs a sync; returns the drops it counted and the frames each player got.
+            func cycle(_ body: () async throws -> Void = {}) async throws -> (drops: Int, frames: [String: [String]]) {
+                let before = await run.adapter.syncDroppedUpdates
+                let sentBefore = await run.transport.sent.count
+                try await body()
+                await run.sync()
+                let sent = await run.transport.sent.dropFirst(sentBefore)
+                var frames: [String: [String]] = [:]
+                for frame in sent { frames[frame.target, default: []].append(String(decoding: frame.data, as: UTF8.self)) }
+                return (await run.adapter.syncDroppedUpdates - before, frames)
+            }
+            func lastSent(_ name: String, _ field: String) async -> SnapshotValue? {
+                await run.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID(name))?.values[field]
+            }
+            func mentions(_ frames: [String]?, _ field: String) -> Bool {
+                (frames ?? []).contains { $0.contains("\\/\(field)") || $0.contains("\"\(field)\"") }
+            }
+            let p1 = "session(s-p1)", p2 = "session(s-p2)"
+            try await run.join("p1")
+            try await run.join("p2")
+            try await run.join("p3")
+            try await run.step("p1", secret: 1, vault: 1)
+            try await run.step("p2", secret: 1)
+            await run.sync()
+            let committed = await lastSent("p1", "secrets")
+            #expect(committed == .object(["p1.s": .object(["n": .int(1)])]))
+
+            // p1's entry throws for p1 only, while p1's hand and p2's own entry change.
+            let one = try await cycle {
+                try await run.step("p1", hand: "a", secret: -1)
+                try await run.step("p2", secret: 2)
+            }
+            #expect(one.drops == 1, "one failing (player, root)")
+            #expect(await lastSent("p1", "secrets") == committed, "p1's box keeps what its client has")
+            #expect(await lastSent("p2", "secrets") == .object(["p2.s": .object(["n": .int(2)])]))
+            if textual {
+                #expect(mentions(one.frames[p1], "hands") && !mentions(one.frames[p1], "secrets"))
+                #expect(mentions(one.frames[p2], "secrets"))
+            }
+
+            // Two failing roots for p1; p3's hand flows.
+            let two = try await cycle {
+                try await run.step("p1", secret: -2, vault: -1)
+                try await run.step("p3", hand: "b")
+            }
+            #expect(two.drops == 2, "two failing roots")
+            #expect(await lastSent("p1", "vault") == .object(["p1.v": .object(["n": .int(1)])]))
+
+            // A failed plan, then a key reset, while both still throw: the boxes stay.
+            run.faults.armPlan()
+            _ = try await cycle { try await run.step("p2", board: 1) }
+            let reset = try await cycle()
+            // The roots aren't dirty (their writes committed in the cycle before): with one-pass on
+            // the mode is the plan's dirty fields, so they aren't converted; off, it is `.all`.
+            #expect(reset.drops == (onePass && dirtyTracking ? 0 : 2), "the reset converts the throwing roots only under `.all`")
+            #expect(await lastSent("p1", "secrets") == committed)
+            if textual {
+                #expect(!mentions(reset.frames[p1], "secrets") && !mentions(reset.frames[p1], "vault"))
+            }
+
+            // Both convert again: the missed values go out.
+            let back = try await cycle { try await run.step("p1", secret: 3, vault: 4) }
+            #expect(back.drops == 0)
+            #expect(await lastSent("p1", "secrets") == .object(["p1.s": .object(["n": .int(3)])]))
+            if textual {
+                #expect(mentions(back.frames[p1], "secrets") && mentions(back.frames[p1], "vault"))
+            }
         }
     }
 
@@ -473,8 +574,8 @@ struct PerPlayerSyncTablesScenarioTests {
 
     @Test("A state without per-player fields: key resets after a failed plan and after a broadcast throw", arguments: ppScenarioCells)
     func noPerPlayerFields(cell: String) async throws {
-        let (encoding, onePass) = try ppScenarioCell(cell)
-        try await comparePPScenario(cell, definition: { makePPScenarioBroadcastLand(landID: "pp-scenario-broadcast") }, onePass: onePass, encoding: encoding) { run in
+        let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
+        try await comparePPScenario(cell, definition: { makePPScenarioBroadcastLand(landID: "pp-scenario-broadcast") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
             try await run.join("p1")
             try await run.join("p2")
             await run.sync()
@@ -517,7 +618,7 @@ struct PerPlayerSyncTablesScenarioTests {
             try await run.join("p2")
             await run.adapter.onConnect(sessionID: second, clientID: ClientID("c-p1-second"))
             await run.adapter.registerSession(sessionID: second, clientID: ClientID("c-p1-second"), playerID: PlayerID("p1"), authInfo: nil)
-            await run.settle()
+            await run.awaitIdle()
             await run.sync()
             let before = await run.transport.sent.count
             // A per-player-only change of p1.

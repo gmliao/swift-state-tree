@@ -610,6 +610,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         broadcastTables?.kinds
     }
 
+    /// How the per-player tables (#514) diff each per-player root field, or nil when they aren't
+    /// in effect. Diagnostics and equivalence tests only, as `syncTableFieldKinds()`: a field on
+    /// `.fallback` gains nothing from the tables.
+    @_spi(Diagnostics) public func perPlayerSyncTableFieldKinds() -> [String: SyncTableFieldKind]? {
+        perPlayerTables?.kinds
+    }
+
     /// What clients were last sent for the broadcast fields (tests): the typed tables as a
     /// snapshot when the broadcast diff runs on them, the engine's broadcast cache otherwise.
     func lastSentBroadcastSnapshotForTesting() -> StateSnapshot? {
@@ -1448,6 +1455,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "syncTables": .string(usesSyncTables ? "on" : "off"),
             "rowAddressing": .string(rowAddressing ? "on" : "off"),
             "typedLeafValues": .string(usesSyncTables && envConfig.typedLeafValues ? "on" : "off"),
+            "perPlayerSyncTables": .string(usesSyncTables && envConfig.perPlayerSyncTables ? "on" : "off"),
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ","))
         ])
@@ -5294,8 +5302,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var pendingUpdates: [PendingSyncUpdate] = []
         pendingUpdates.reserveCapacity(recipients.count)
         let hasEntries = !onePass || !perPlayerTables.fieldNames.isEmpty
-        let fromEmpty: Bool
-        if case .empty = baseline { fromEmpty = true } else { fromEmpty = false }
+        // The tables need the delta strategy, whose baseline is `.cached` (a key reset only
+        // retypes the update); `.empty` is the full-snapshot strategy's.
+        if case .empty = baseline { assertionFailure("the per-player tables diffed against the .empty baseline") }
         var diffed = Set<PlayerID>()
 
         for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
@@ -5303,7 +5312,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if hasEntries, diffed.insert(recipient.playerID).inserted {
                 perPlayerDiff = perPlayerTables.planDiff(
                     state, for: recipient.playerID, fields: perPlayerMode.fields, seedsAll: onePass,
-                    fromEmpty: fromEmpty, drops: &drops, into: &plan.stagedPerPlayerTables
+                    drops: &drops, into: &plan.stagedPerPlayerTables
                 )
             }
             var update: StateUpdate

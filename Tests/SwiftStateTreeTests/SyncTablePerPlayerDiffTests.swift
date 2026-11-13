@@ -76,9 +76,34 @@ struct PPRoot: StateNodeProtocol {
     @Sync(ppUnknownPolicy) var doubled: Int = 0
     /// NFC and NFD forms of one key.
     @Sync(.perPlayer({ (v: [String: Int], _: PlayerID) in v })) var keyed: [String: Int] = [:]
-    @Sync(.perPlayer({ (v: PPNonEquatable, _: PlayerID) in v })) var opaque: PPNonEquatable = PPNonEquatable()
+    /// The snapshot fallback's presence: hidden from p2 while `n` is 2.
+    @Sync(.perPlayer({ (v: PPNonEquatable, player: PlayerID) -> PPNonEquatable? in player.rawValue == "p2" && v.n == 2 ? nil : v }))
+    var opaque: PPNonEquatable = PPNonEquatable()
     @Sync(.broadcast) var tick: Int = 0
     @Sync(.serverOnly) var secret: Int = 0
+    init() {}
+}
+
+/// A node whose first leaf converts and whose second can throw, in declaration and path order.
+@StateNodeBuilder
+struct PPPairNode: StateNodeProtocol {
+    @Sync(.broadcast) var a: Int = 0
+    @Sync(.broadcast) var b: PPThrowing = PPThrowing()
+    init() {}
+}
+
+@StateNodeBuilder
+struct PPPairRoot: StateNodeProtocol {
+    @Sync(.perPlayer({ (v: PPPairNode, _: PlayerID) in v })) var pair: PPPairNode = PPPairNode()
+    init() {}
+}
+
+/// Two roots that can throw, and one that can't.
+@StateNodeBuilder
+struct PPTwoRoots: StateNodeProtocol {
+    @Sync(.perPlayer({ (v: PPThrowing, _: PlayerID) in v })) var first: PPThrowing = PPThrowing()
+    @Sync(.perPlayer({ (v: PPThrowing, _: PlayerID) in v })) var second: PPThrowing = PPThrowing()
+    @Sync(.perPlayer({ (v: Int, _: PlayerID) in v })) var fine: Int = 0
     init() {}
 }
 
@@ -168,8 +193,11 @@ private struct PerPlayerPair<State: StateNodeProtocol> {
     }
 
     /// One plan for `players` on both sides; `commit` false discards both, as a failed sync does.
-    /// `onePass`: today's one-pass extraction (every per-player field) and the typed seed of
-    /// every field; otherwise the separate extraction of `mode`'s fields.
+    /// `onePass`: today's one-pass extraction (every per-player field), which falls back to the
+    /// separate extraction for every player when any conversion throws (T1), and the typed seed
+    /// of every field; otherwise the separate extraction of `mode`'s fields.
+    /// `resetsKeys`: the adapter's key reset, which keeps the cycle's mode and the `.cached`
+    /// baseline and only retypes the update `.firstSync`, so the patches are the cycle's.
     mutating func step(
         _ state: State,
         players: [PlayerID],
@@ -178,24 +206,26 @@ private struct PerPlayerPair<State: StateNodeProtocol> {
         resetsKeys: Bool,
         commit: Bool
     ) throws -> Step {
-        // A key reset diffs every field from empty, as the adapter's `.empty` baseline does.
-        let mode: SnapshotMode = resetsKeys ? .all : (fields.map { .dirtyTracking($0) } ?? .all)
-        let baseline: SyncEngine.DiffBaseline = resetsKeys ? .empty : .cached
+        let mode: SnapshotMode = fields.map { .dirtyTracking($0) } ?? .all
+        let baseline: SyncEngine.DiffBaseline = .cached
         var result = Step()
         var staged = SyncEngine.StagedCaches()
-        let extracted = onePass ? try state.snapshotForSync(playerIDs: players, dirtyFields: mode.fields).perPlayer : nil
+        let extracted = onePass ? try? state.snapshotForSync(playerIDs: players, dirtyFields: mode.fields).perPlayer : nil
         for player in players {
             let snapshot = extracted?[player]
                 ?? engine.extractPerPlayerSnapshot(for: player, from: state, mode: mode, drops: &result.todayDrops)
             let update = engine.generatePerPlayerUpdateFromSnapshot(
                 for: player, perPlayerSnapshot: snapshot, perPlayerMode: mode, baseline: baseline, staged: &staged
             )
-            if case .diff(let patches) = update { result.today[player] = order.sorted(patches) } else { result.today[player] = [] }
+            switch update {
+            case .diff(let patches), .firstSync(let patches): result.today[player] = order.sorted(patches)
+            case .noChange: result.today[player] = []
+            }
         }
         var typedStaged = SyncTablePerPlayerStaged()
         for player in players {
             result.typed[player] = typed.planDiff(
-                state, for: player, fields: mode.fields, seedsAll: onePass, fromEmpty: resetsKeys,
+                state, for: player, fields: mode.fields, seedsAll: onePass,
                 drops: &result.typedDrops, into: &typedStaged
             )
         }
@@ -222,6 +252,9 @@ private struct PerPlayerPair<State: StateNodeProtocol> {
             let bv = b.values.filter { perPlayerNames.contains($0.key) }
             let cv = c.values.filter { perPlayerNames.contains($0.key) }
             guard Set(bv.keys) == Set(cv.keys) else { return "fields \(bv.keys.sorted()) against \(cv.keys.sorted())" }
+            // As the diff compares (-0.0 equals 0.0): a sign change sends nothing, and today's
+            // cache takes the new sign while a box keeps its client's, which no later diff can
+            // tell apart. The patches, the wire, are compared by bit pattern.
             for (key, value) in bv where !SnapshotValue.sameValue(value, cv[key]!) {
                 return "\(key): \(value) against \(cv[key]!)"
             }
@@ -232,14 +265,28 @@ private struct PerPlayerPair<State: StateNodeProtocol> {
     }
 }
 
-/// Patch lists equal, values compared as the diff compares them (NaN equals NaN), paths by bytes.
+/// Values equal as the wire sees them: doubles by bit pattern (-0.0 isn't 0.0), NaN equal to NaN.
+private func ppSameValue(_ lhs: SnapshotValue, _ rhs: SnapshotValue) -> Bool {
+    switch (lhs, rhs) {
+    case (.double(let x), .double(let y)):
+        return (x.isNaN && y.isNaN) || x.bitPattern == y.bitPattern
+    case (.array(let x), .array(let y)):
+        return x.count == y.count && zip(x, y).allSatisfy { ppSameValue($0, $1) }
+    case (.object(let x), .object(let y)):
+        return x.count == y.count && x.allSatisfy { key, value in y[key].map { ppSameValue(value, $0) } ?? false }
+    default:
+        return SnapshotValue.sameValue(lhs, rhs)
+    }
+}
+
+/// Patch lists equal, values compared by `ppSameValue`, paths by bytes.
 private func ppSamePatches(_ lhs: [StatePatch], _ rhs: [StatePatch]) -> Bool {
     guard lhs.count == rhs.count else { return false }
     for (a, b) in zip(lhs, rhs) {
         guard a.path.utf8.elementsEqual(b.path.utf8) else { return false }
         switch (a.operation, b.operation) {
         case (.set(let x), .set(let y)):
-            guard SnapshotValue.sameValue(x, y) else { return false }
+            guard ppSameValue(x, y) else { return false }
         default:
             guard a.operation == b.operation else { return false }
         }
@@ -307,10 +354,16 @@ private func runPerPlayerDifferential(
         let commit = Int.random(in: 0..<10, using: &g) != 0
         let resetsKeys = Int.random(in: 0..<20, using: &g) == 0
         // As the adapter plans it: no dirty field diffs every field (`.all`).
-        let result = try pair.step(
-            state, players: players, fields: allFields || dirty.isEmpty ? nil : dirty,
-            onePass: onePass, resetsKeys: resetsKeys, commit: commit
-        )
+        let result: PerPlayerPair<PPRoot>.Step
+        do {
+            result = try pair.step(
+                state, players: players, fields: allFields || dirty.isEmpty ? nil : dirty,
+                onePass: onePass, resetsKeys: resetsKeys, commit: commit
+            )
+        } catch {
+            Issue.record("seed \(seed), step \(index): \(error)", sourceLocation: sourceLocation)
+            return
+        }
         carried = commit ? [] : dirty
         for player in players {
             let lastSent = commit ? pair.lastSentDiffers(player) : nil
@@ -344,6 +397,13 @@ struct SyncTablePerPlayerDiffTests {
         let diff = SyncTablePerPlayerDiff<PPRoot>()
         #expect(diff.fieldNames == ["doubled", "entities", "hands", "holder", "keyed", "maybe", "opaque", "positive", "ratio", "risky"])
         #expect(PPRoot._syncTablePerPlayerFields(for: PlayerID("p0"))?.map(\.name).sorted() == diff.fieldNames)
+        // Typed slots, so the saving is real: a nil `_syncTablePerPlayerFields` would put every
+        // field on `.fallback`. A root holding nested player-dependent fields takes the fallback
+        // (M2), as does a non-Equatable one.
+        #expect(diff.kinds == [
+            "doubled": .value, "entities": .nodeMap, "hands": .value, "holder": .fallback, "keyed": .value,
+            "maybe": .optionalNode, "opaque": .fallback, "positive": .value, "ratio": .value, "risky": .value,
+        ])
     }
 
     @Test(
@@ -468,7 +528,7 @@ struct SyncTablePerPlayerDiffTests {
         #expect(next.typed[p0]!.map(\.path) == ["/keyed/a", "/keyed/b"])
     }
 
-    @Test("A player's first plan seeds its boxes and sends nothing; a key reset sets every field whole")
+    @Test("A player's first plan seeds its boxes and sends nothing; a key reset diffs against what the client has")
     func seedAndReset() throws {
         var state = PPRoot()
         let p2 = PlayerID("p2")
@@ -478,10 +538,173 @@ struct SyncTablePerPlayerDiffTests {
         let seeded = try pair.step(state, players: [p2], fields: ["entities"], onePass: false, resetsKeys: false, commit: true)
         #expect(seeded.typed[p2] == [])
         #expect(pair.typed.playersForTesting == [p2])
-        let reset = try pair.step(state, players: [p2], fields: nil, onePass: false, resetsKeys: true, commit: true)
+        state.entities["e"]!.x = 3
+        let reset = try pair.step(state, players: [p2], fields: ["entities"], onePass: false, resetsKeys: true, commit: true)
         #expect(ppSamePatches(reset.today[p2]!, reset.typed[p2]!), "\(ppDescribe(reset.today[p2]))\n--\n\(ppDescribe(reset.typed[p2]))")
+        #expect(reset.typed[p2]!.map(\.path) == ["/entities/e/x"])
         #expect(pair.lastSentDiffers(p2) == nil)
         pair.leave(p2)
         #expect(pair.typed.playersForTesting.isEmpty)
+    }
+
+    /// The nested-policy roots (`NestedNodePolicyTests`): per-player maps of nodes with their own
+    /// player-dependent fields, `@SnapshotConvertible` and plain. Scripted on both diffs, one-pass
+    /// on and off, every step compared.
+    @Test("The nested-policy roots: the typed per-player diff equals today's", arguments: [false, true])
+    func nestedPolicyRoots(onePass: Bool) throws {
+        try ppScripted(ConvertibleProbeRoot(), onePass: onePass, steps: [
+            { $0.perPlayerMap["k"]!.aliceOnly = 1 },
+            { $0.perPlayerMap["k2"] = ConvertiblePerPlayerProbeNode() },
+            { $0.slice[PlayerID("alice")]!.ppShown = 3; $0.tick += 1 },
+            { $0.slice.removeValue(forKey: PlayerID("bob")) },
+            { $0.perPlayerMap["k"]!.masked = 4 },
+            { $0.slice[PlayerID("bob")] = ConvertiblePerPlayerProbeNode() },
+            { $0.perPlayerMap.removeValue(forKey: "k") },
+        ])
+        try ppScripted(PlainProbeRoot(), onePass: onePass, steps: [
+            { $0.perPlayerMap["k"]!.aliceOnly = 1 },
+            { $0.perPlayerMap["k2"] = PlainPerPlayerProbeNode() },
+            { $0.slice[PlayerID("alice")]!.ppShown = 3; $0.tick += 1 },
+            { $0.slice.removeValue(forKey: PlayerID("bob")) },
+            { $0.perPlayerMap["k"]!.masked = 4 },
+            { $0.slice[PlayerID("bob")] = PlainPerPlayerProbeNode() },
+            { $0.perPlayerMap.removeValue(forKey: "k") },
+        ])
+    }
+
+    private func ppScripted<S: StateNodeProtocol>(
+        _ initial: S, onePass: Bool, steps: [(inout S) -> Void], sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        let players = [PlayerID("alice"), PlayerID("bob")]
+        var state = initial
+        var pair = PerPlayerPair<S>()
+        _ = try pair.step(state, players: players, fields: nil, onePass: onePass, resetsKeys: false, commit: true)
+        state.clearDirty()
+        for (index, mutate) in steps.enumerated() {
+            mutate(&state)
+            let dirty = state.getDirtyFields()
+            state.clearDirty()
+            let result = try pair.step(state, players: players, fields: dirty.isEmpty ? nil : dirty, onePass: onePass, resetsKeys: false, commit: true)
+            for player in players {
+                #expect(
+                    ppSamePatches(result.today[player]!, result.typed[player]!),
+                    "\(S.self) step \(index), \(player):\n\(ppDescribe(result.today[player]))\n--\n\(ppDescribe(result.typed[player]))",
+                    sourceLocation: sourceLocation
+                )
+                #expect(pair.lastSentDiffers(player) == nil, "\(S.self) step \(index), \(player): last-sent", sourceLocation: sourceLocation)
+            }
+        }
+    }
+
+    // MARK: One-pass (B1) failure scenarios: D5's expected outputs (interim, #535), not today's
+
+    /// One B1 plan on the typed side alone: today's B1 falls back to B2 for every player on a
+    /// throw (T1), so these outputs are pinned, not compared.
+    private func typedPlan<S: StateNodeProtocol>(
+        _ typed: SyncTablePerPlayerDiff<S>, _ state: S, _ players: [PlayerID], fields: Set<String>?, seedsAll: Bool = true
+    ) -> (patches: [PlayerID: [StatePatch]], drops: ExtractionDrops) {
+        var staged = SyncTablePerPlayerStaged()
+        var drops = ExtractionDrops()
+        var patches: [PlayerID: [StatePatch]] = [:]
+        for player in players {
+            patches[player] = typed.planDiff(state, for: player, fields: fields, seedsAll: seedsAll, drops: &drops, into: &staged)
+        }
+        typed.apply(staged)
+        return (patches, drops)
+    }
+
+    /// T1's cross-player case: p1 (with boxes) throws in S while p0 has no boxes yet. p0 is
+    /// seeded with every per-player field, as B1 seeds it without the throw. It kills the global
+    /// B2 fallback (seeding p0 with S once any throw counted). At the adapter that fallback can't
+    /// be told apart: every recipient there has boxes (its firstSync commits them).
+    @Test("One-pass: a player without boxes gets B1's seed while another player throws (T1)")
+    func onePassCrossPlayerThrow() throws {
+        var state = PPRoot()
+        state.entities["e"] = PPEntity()
+        state.hands[PlayerID("p0")] = ["c"]
+        state.ratio = 1
+        let p0 = PlayerID("p0"), p1 = PlayerID("p1")
+        let typed = SyncTablePerPlayerDiff<PPRoot>()
+        _ = typedPlan(typed, state, [p1], fields: nil)
+        state.risky.n = -1
+        state.ratio = 2
+        let plan = typedPlan(typed, state, [p1, p0], fields: ["risky", "ratio"])
+        #expect(plan.drops.perPlayerFields == [p1: ["risky"]] && plan.drops.count == 1)
+        #expect(plan.patches[p1]!.map(\.path) == ["/ratio"], "the throwing pair sends nothing; the rest flows")
+        #expect(plan.patches[p0] == [], "a seed sends nothing")
+        // p0's seed: B1's, as in a plan without the throw.
+        let reference = SyncTablePerPlayerDiff<PPRoot>()
+        var clean = state
+        clean.risky.n = 1
+        _ = typedPlan(reference, clean, [p0], fields: ["risky", "ratio"])
+        let seeded = try #require(typed.lastSentSnapshot(for: p0))
+        let expected = try #require(reference.lastSentSnapshot(for: p0))
+        #expect(Set(seeded.values.keys) == Set(expected.values.keys))
+        #expect(seeded.values.keys.contains("entities") && seeded.values.keys.contains("hands"), "fields outside S are seeded")
+        #expect(typed.lastSentSnapshot(for: p1)?.values["risky"] == .object(["n": .int(0)]), "p1's box keeps what its client has")
+    }
+
+    /// M10: a player without boxes whose own conversion throws, for a field outside S and one
+    /// inside it: the fields that convert are seeded, the throwing one stays unseeded (absent)
+    /// with one drop, and it is set whole when it is next compared.
+    @Test("One-pass: a player without boxes whose own field throws leaves that field unseeded (M10)", arguments: [false, true])
+    func onePassOwnThrow(insideS: Bool) throws {
+        var state = PPRoot()
+        state.risky.n = -1
+        state.ratio = 1
+        let p1 = PlayerID("p1")
+        let typed = SyncTablePerPlayerDiff<PPRoot>()
+        let seed = typedPlan(typed, state, [p1], fields: insideS ? ["risky"] : ["ratio"])
+        #expect(seed.drops.perPlayerFields == [p1: ["risky"]] && seed.drops.count == 1)
+        #expect(seed.patches[p1] == [])
+        let boxes = try #require(typed.lastSentSnapshot(for: p1))
+        #expect(boxes.values["risky"] == nil && boxes.values["ratio"] == .double(1), "\(boxes.values.keys.sorted())")
+        state.risky.n = 3
+        let next = typedPlan(typed, state, [p1], fields: ["risky"])
+        #expect(next.drops.count == 0)
+        #expect(next.patches[p1]!.map(\.path) == ["/risky"], "set whole: it was absent")
+        // B2 seeds only S: outside S the throwing field isn't read, so nothing is counted.
+        let b2 = SyncTablePerPlayerDiff<PPRoot>()
+        state.risky.n = -1
+        let b2Seed = typedPlan(b2, state, [p1], fields: insideS ? ["risky"] : ["ratio"], seedsAll: false)
+        #expect(b2Seed.drops.count == (insideS ? 1 : 0))
+    }
+
+    /// Two failing roots for one player: each is dropped and counted, both boxes keep their
+    /// values, and the other root flows; with B1 and B2 alike.
+    @Test("Two failing roots for one player: two drops, both boxes kept, the other root flows", arguments: [false, true])
+    func twoFailingRoots(onePass: Bool) throws {
+        var state = PPTwoRoots()
+        state.first.n = 1
+        state.second.n = 1
+        let p0 = PlayerID("p0")
+        let typed = SyncTablePerPlayerDiff<PPTwoRoots>()
+        _ = typedPlan(typed, state, [p0], fields: nil, seedsAll: onePass)
+        state.first.n = -1
+        state.second.n = -2
+        state.fine = 3
+        let plan = typedPlan(typed, state, [p0], fields: ["first", "second", "fine"], seedsAll: onePass)
+        #expect(plan.drops.perPlayerFields == [p0: ["first", "second"]] && plan.drops.count == 2)
+        #expect(plan.patches[p0]!.map(\.path) == ["/fine"])
+        let boxes = try #require(typed.lastSentSnapshot(for: p0))
+        #expect(boxes.values["first"] == .object(["n": .int(1)]) && boxes.values["second"] == .object(["n": .int(1)]))
+    }
+
+    /// A root whose conversion throws after some of its patches were emitted keeps none of them,
+    /// and its box isn't advanced: the next plan sends the whole change.
+    @Test("A node root whose second leaf throws keeps none of its patches (T1)")
+    func partialRoot() throws {
+        var state = PPPairRoot()
+        let p0 = PlayerID("p0")
+        let typed = SyncTablePerPlayerDiff<PPPairRoot>()
+        _ = typedPlan(typed, state, [p0], fields: nil)
+        state.pair.a = 2
+        state.pair.b.n = -1
+        let failing = typedPlan(typed, state, [p0], fields: ["pair"])
+        #expect(failing.drops.count == 1)
+        #expect(failing.patches[p0] == [], "the converted first leaf isn't kept: \(ppDescribe(failing.patches[p0]))")
+        state.pair.b.n = 5
+        let next = typedPlan(typed, state, [p0], fields: ["pair"])
+        #expect(next.patches[p0]!.map(\.path) == ["/pair/a", "/pair/b/n"])
     }
 }
