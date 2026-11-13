@@ -6,7 +6,7 @@
 # Usage: bash deep-research/run-tests.sh   (from anywhere in the checkout)
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$root"
+cd "$root" || exit 1
 case "$(uname -s)" in
   Linux) ;;
   *) export SST_FORCE_LINUX_TESTS=1; echo "Not Linux: SST_FORCE_LINUX_TESTS=1 (Linux-gated test classes run anyway)" ;;
