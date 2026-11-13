@@ -56,7 +56,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
         landID: String,
         services: LandServices,
         tables: Bool,
-        perPlayerTables: Bool = false,
+        perPlayerTables: Bool,
         dirtyTracking: Bool,
         encoding: TransportEncodingConfig,
         pathHashes: [String: UInt32]?
@@ -230,6 +230,7 @@ struct SyncTablesFrameIdentityTests {
         definition: @escaping () -> LandDefinition<State>,
         services: @escaping () -> LandServices = { LandServices() },
         kinds: [String: SyncTableFieldKind],
+        perPlayerKinds: [String: SyncTableFieldKind],
         script: (FrameIdentityRun<State>) async throws -> Void
     ) async throws {
         let parts = cell.split(separator: "|").map(String.init)
@@ -252,6 +253,9 @@ struct SyncTablesFrameIdentityTests {
             // snapshot diff on both sides, so the cell says nothing about the tables for it.
             #expect(await run.adapter.syncTableFieldKinds() == (tables ? kinds : nil), "\(cell): kinds")
             #expect(await run.adapter.perPlayerSyncTablesInEffect() == perPlayerTables, "\(cell): per-player tables in effect")
+            // Which per-player fields the per-player tables type: a nil description would put
+            // them all on `.fallback`, and the identity would hold with the saving gone.
+            #expect(await run.adapter.perPlayerSyncTableFieldKinds() == (perPlayerTables ? perPlayerKinds : nil), "\(cell): per-player kinds")
             try await script(run)
             frames.append(await run.transport.sent)
             #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
@@ -277,7 +281,8 @@ struct SyncTablesFrameIdentityTests {
             cell: cell, landID: "hero-defense:frame-identity", landType: "hero-defense",
             definition: { HeroDefense.makeLand() }, services: { heroDefenseServices(monsterCap: monsterCap) },
             // Every broadcast field is typed.
-            kinds: ["players": .nodeMap, "monsters": .nodeMap, "turrets": .nodeMap, "base": .node, "score": .value]
+            kinds: ["players": .nodeMap, "monsters": .nodeMap, "turrets": .nodeMap, "base": .node, "score": .value],
+            perPlayerKinds: [:]
         ) { run in
             var capReachedAt: Int?
             try await run.join("alice")
@@ -349,14 +354,18 @@ struct SyncTablesFrameIdentityTests {
         await run.sync()
     }
 
-    @Test("The visibility test land, per-player entities", arguments: frameIdentityCells)
-    func visibilityPerPlayer(cell: String) async throws {
-        let settings = VisibilityTestSettings(entityCount: 40, viewRadius: 15, filter: .radius)
+    /// The per-player policy with each filter: `.radius` (what each player sees changes as
+    /// entities move) and `.all` (every entity to every player).
+    @Test("The visibility test land, per-player entities", arguments: frameIdentityCells, [VisibilityFilter.radius, .all])
+    func visibilityPerPlayer(cell: String, filter: VisibilityFilter) async throws {
+        let settings = VisibilityTestSettings(entityCount: 40, viewRadius: 15, filter: filter)
         try await compare(
             cell: cell, landID: "visibility-test:frame-identity", landType: VisibilityTestConfig.landType,
             definition: { VisibilityTest.makeLand(VisibilityTestState.self, settings: settings) },
-            // `entities` is per-player here, so it isn't on the tables. Every broadcast field is typed.
+            // `entities` is per-player here, so it isn't on the broadcast tables. Every broadcast
+            // field is typed, and `entities` takes the per-player tables' node map slot.
             kinds: ["motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value, "viewers": .value],
+            perPlayerKinds: ["entities": .nodeMap],
             script: visibilityScript
         )
     }
@@ -372,6 +381,7 @@ struct SyncTablesFrameIdentityTests {
                 "entities": .nodeMap, "motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value,
                 "viewers": .value,
             ],
+            perPlayerKinds: [:],
             script: visibilityScript
         )
     }
@@ -385,7 +395,8 @@ struct SyncTablesFrameIdentityTests {
             kinds: [
                 "players": .value, "publicCards": .value, "currentRound": .value, "gamePhase": .value,
                 "deckSize": .value, "turnOrder": .value, "currentPlayerIndex": .value,
-            ]
+            ],
+            perPlayerKinds: ["hands": .value]
         ) { run in
             // Players draw on ticks, overflow their hands to the public pile, join, leave and come back.
             try await run.join("alice")
