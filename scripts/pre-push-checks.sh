@@ -8,7 +8,9 @@
 #               (CI: wall-clock-tests)
 #   ShellCheck  every tracked script, plus new untracked ones, outside CI's exclusion; an excluded
 #               script with no findings fails (CI: shellcheck). The exclusion is read from the
-#               workflow, so it can't drift. Needs ShellCheck 0.11.0, the version CI pins.
+#               workflow, so it can't drift. Needs ShellCheck 0.11.0, the version CI pins. Skipped
+#               when no .sh/.bash file and not the workflow changed: CI's result can't differ from
+#               the base's then, so a host without ShellCheck can push other changes.
 # When the change reaches them (files changed since the merge base with <base>, committed or not):
 #   deep-research  deep-research/** changed: deep-research/run-tests.sh (every test file, Linux-gated
 #               classes forced off Linux)
@@ -84,7 +86,11 @@ shell_check() {
 echo "pre-push-checks: base $base (merge base ${fork:0:12}), $(grep -c . <<<"$changed") changed file(s)"
 run lessons lessons
 run wall-clock wall_clock
-run shellcheck shell_check
+if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
+  run shellcheck shell_check
+else
+  echo "skip  shellcheck (no shell file changed)"
+fi
 if touches '^deep-research/'; then
   run deep-research bash deep-research/run-tests.sh
 elif touches '^(Sources|Examples)/'; then
