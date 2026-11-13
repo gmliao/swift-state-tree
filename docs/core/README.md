@@ -27,6 +27,7 @@ This section organizes SwiftStateTree's core concepts and APIs: StateNode, Sync,
 3. **[Runtime Operation](runtime.md)** - Deep dive into LandKeeper's operation
 4. **[Resolver Usage Guide](resolver.md)** - Learn how to use Resolver to load data
 5. **[Deterministic Re-evaluation](reevaluation.md)** - Recording and replay mechanism
+6. **[Failure Handling](failure-handling.md)** - What a failure ends, and where the code stands
 
 ## Runtime (LandKeeper)
 
