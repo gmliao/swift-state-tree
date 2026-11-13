@@ -42,6 +42,7 @@ All authoritative state must be serialized as Int32:
 
 ```swift
 // ✅ Correct: Int32 in JSON
+@StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var playerPosition: IVec2 = IVec2(x: 1000, y: 2000)
@@ -49,6 +50,7 @@ struct GameState: StateNodeProtocol {
 }
 
 // ❌ Wrong: Float in JSON
+@StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var playerPosition: (x: Float, y: Float) = (1.0, 2.0)
@@ -221,13 +223,16 @@ let sum = v1 + v2
 
 ```swift
 // Before (non-deterministic)
+@StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var playerX: Float = 0.0
+    @Sync(.broadcast)
     var playerY: Float = 0.0
 }
 
 // After (deterministic)
+@StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast)
     var playerPosition: Position2 = Position2(v: .zero)

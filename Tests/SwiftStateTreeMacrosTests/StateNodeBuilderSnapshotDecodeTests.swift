@@ -50,21 +50,21 @@ final class StateNodeBuilderSnapshotDecodeTests {
 
                     // Include score if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("score") == true {
-                        if let value = self._score.policy.filteredValue(self._score.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_score.filteredValue(self._score.wrappedValue, for: playerID) {
                             result["score"] = .int(value)
                         }
                     }
 
                     // Include name if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("name") == true {
-                        if let value = self._name.policy.filteredValue(self._name.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_name.filteredValue(self._name.wrappedValue, for: playerID) {
                             result["name"] = .string(value)
                         }
                     }
 
                     // Include internal_counter if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("internal_counter") == true {
-                        if let value = self._internal_counter.policy.filteredValue(self._internal_counter.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_internal_counter.filteredValue(self._internal_counter.wrappedValue, for: playerID) {
                             result["internal_counter"] = .int(value)
                         }
                     }
@@ -170,7 +170,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                         policy: .broadcast,
                         conversion: .standard,
                         read: {
-                                $0._score.policy.filteredValue($0._score.wrappedValue, for: nil)
+                                Self._syncPolicy_score.filteredValue($0._score.wrappedValue, for: nil)
                             },
                         convert: { value in
                                 .int(value)
@@ -181,7 +181,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                         policy: .broadcast,
                         conversion: .standard,
                         read: {
-                                $0._name.policy.filteredValue($0._name.wrappedValue, for: nil)
+                                Self._syncPolicy_name.filteredValue($0._name.wrappedValue, for: nil)
                             },
                         convert: { value in
                                 .string(value)
@@ -192,17 +192,17 @@ final class StateNodeBuilderSnapshotDecodeTests {
                         policy: .serverOnly,
                         conversion: .standard,
                         read: {
-                                $0._internal_counter.policy.filteredValue($0._internal_counter.wrappedValue, for: nil)
+                                Self._syncPolicy_internal_counter.filteredValue($0._internal_counter.wrappedValue, for: nil)
                             },
                         convert: { value in
                                 .int(value)
                             }
                         ))
                     _syncCheck_score(_syncFieldKind { (node: Self) in
-                            node._score.policy.filteredValue(node._score.wrappedValue, for: nil)
+                            Self._syncPolicy_score.filteredValue(node._score.wrappedValue, for: nil)
                         })
                     _syncCheck_name(_syncFieldKind { (node: Self) in
-                            node._name.policy.filteredValue(node._name.wrappedValue, for: nil)
+                            Self._syncPolicy_name.filteredValue(node._name.wrappedValue, for: nil)
                         })
                     return fields
                 }
@@ -220,6 +220,12 @@ final class StateNodeBuilderSnapshotDecodeTests {
                 @available(*, deprecated, message: "'name' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
                 private static func _syncCheck_name(_: _SyncFallbackField) {
                 }
+
+                private static let _syncPolicy_score: SyncPolicy<Int> = .broadcast
+
+                private static let _syncPolicy_name: SyncPolicy<String> = .broadcast
+
+                private static let _syncPolicy_internal_counter: SyncPolicy<Int> = .serverOnly
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(SimpleState.self)
 

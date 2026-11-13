@@ -1,0 +1,186 @@
+// Tests/SwiftStateTreeMacrosTests/SyncPolicyStaticExpansionTests.swift
+//
+// `@StateNodeBuilder` emits each `@Sync` field's policy as a static of the node type, and the
+// generated readers filter through it (#520). A static stored property only where the type is
+// provably not generic; a static computed one anywhere else.
+
+import SwiftSyntaxMacros
+import Testing
+import SwiftStateTreeMacros
+
+private let macros: [String: Macro.Type] = ["StateNodeBuilder": StateNodeBuilderMacro.self]
+
+/// The expansion with every run of whitespace as one space: the expansion re-indents and
+/// breaks the generated lines, and these tests check what is emitted, not its layout.
+private func expand(_ source: String, sourceLocation: SourceLocation = #_sourceLocation) -> String {
+    let (expanded, context) = expandCollectingDiagnostics(source, macros: macros, sourceLocation: sourceLocation)
+    #expect(context.diagnostics.isEmpty, "\(context.diagnostics.map(\.message))", sourceLocation: sourceLocation)
+    return normalized(expanded)
+}
+
+private func normalized(_ text: String) -> String {
+    text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
+
+/// Every generated read of `field`'s policy goes through `Self._syncPolicy_<field>`, and none
+/// through the wrapper: `snapshot(for:)`, the sync tables' `read`, the sync check and, for a
+/// player-dependent field, the per-player split of `snapshotForSync`.
+private func expectReadsThroughStatic(
+    _ expanded: String,
+    field: String,
+    playerDependent: Bool = false,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    let perPlayer = "Self._syncPolicy_\(field).filteredValue(self._\(field).wrappedValue, for: playerID)"
+    #expect(!expanded.contains("_\(field).policy"), sourceLocation: sourceLocation)
+    // snapshot(for:), plus the split for a player-dependent field.
+    #expect(occurrences(of: perPlayer, in: expanded) == (playerDependent ? 2 : 1), sourceLocation: sourceLocation)
+    if playerDependent {
+        #expect(expanded.contains("for playerID in playerIDs { if let value = \(perPlayer)"), sourceLocation: sourceLocation)
+    }
+    #expect(expanded.contains("read: { Self._syncPolicy_\(field).filteredValue($0._\(field).wrappedValue, for: nil) }"), sourceLocation: sourceLocation)
+    #expect(expanded.contains("Self._syncPolicy_\(field).filteredValue(node._\(field).wrappedValue, for: nil)"), sourceLocation: sourceLocation)
+}
+
+private func occurrences(of needle: String, in text: String) -> Int {
+    text.components(separatedBy: needle).count - 1
+}
+
+@Suite("StateNodeBuilder policy statics")
+struct SyncPolicyStaticExpansionTests {
+    @Test("A non-generic node stores each policy once, written as the attribute's argument")
+    func nonGeneric() {
+        let expanded = expand(
+            """
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var score: Int = 0
+                @Sync(.perPlayer({ (v: [String: Int], p: PlayerID) in v.filter { $0.key == p.rawValue } })) var mine: [String: Int] = [:]
+                @Sync(nestingUnknownIntPolicy) var other: Int = 0
+            }
+            """
+        )
+        #expect(expanded.contains("private static let _syncPolicy_score: SyncPolicy<Int> = .broadcast"))
+        #expect(expanded.contains("private static let _syncPolicy_mine: SyncPolicy<[String: Int]> = .perPlayer({ (v: [String: Int], p: PlayerID) in v.filter { $0.key == p.rawValue } })"))
+        #expect(expanded.contains("private static let _syncPolicy_other: SyncPolicy<Int> = nestingUnknownIntPolicy"))
+        #expect(expanded.contains("private static let _hasPlayerDependentSyncFields"))
+        expectReadsThroughStatic(expanded, field: "score")
+        expectReadsThroughStatic(expanded, field: "mine", playerDependent: true)
+        // A policy the macro can't classify counts as player-dependent.
+        expectReadsThroughStatic(expanded, field: "other", playerDependent: true)
+    }
+
+    @Test("A generic node computes each policy on every read")
+    func generic() {
+        let expanded = expand(
+            """
+            @StateNodeBuilder
+            struct Box<T: Sendable>: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+            }
+            """
+        )
+        #expect(expanded.contains("private static var _syncPolicy_count: SyncPolicy<Int> { .broadcast }"))
+        #expect(!expanded.contains("static let"))
+        expectReadsThroughStatic(expanded, field: "count")
+    }
+
+    @Test("A node in a generic type, an extension or a function gets no static stored property", arguments: [
+        """
+        struct Outer<T> {
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+            }
+        }
+        """,
+        """
+        extension Outer {
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+            }
+        }
+        """,
+        """
+        func make() {
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+            }
+        }
+        """,
+    ])
+    func noStoredStatics(source: String) {
+        let expanded = expand(source)
+        #expect(expanded.contains("private static var _syncPolicy_count: SyncPolicy<Int> { .broadcast }"))
+        #expect(!expanded.contains("static let"))
+        expectReadsThroughStatic(expanded, field: "count")
+    }
+
+    @Test("A node nested in non-generic types stores its policies")
+    func nestedInNonGeneric() {
+        let expanded = expand(
+            """
+            enum Namespace {
+                struct Outer {
+                    @StateNodeBuilder
+                    struct Node: StateNodeProtocol {
+                        @Sync(.broadcast) var count: Int = 0
+                    }
+                }
+            }
+            """
+        )
+        #expect(expanded.contains("private static let _syncPolicy_count: SyncPolicy<Int> = .broadcast"))
+        #expect(expanded.contains("private static let _hasPlayerDependentSyncFields"))
+        expectReadsThroughStatic(expanded, field: "count")
+    }
+
+    @Test("The policy is the unlabelled argument, also after wrappedValue:")
+    func wrappedValueLabel() {
+        let expanded = expand(
+            """
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(wrappedValue: 0, .broadcast) var score: Int
+            }
+            """
+        )
+        #expect(expanded.contains("private static let _syncPolicy_score: SyncPolicy<Int> = .broadcast"))
+        #expect(expanded.contains("SyncFieldInfo(name: \"score\", policyType: .broadcast)"))
+        expectReadsThroughStatic(expanded, field: "score")
+    }
+
+    @Test("@Sync with only wrappedValue: has no policy")
+    func wrappedValueOnly() {
+        let (_, context) = expandCollectingDiagnostics(
+            """
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(wrappedValue: 0) var count: Int
+            }
+            """,
+            macros: macros
+        )
+        #expect(context.diagnostics.first?.message == "@Sync property 'count' needs a policy, for example '@Sync(.broadcast)'")
+        #expect(context.diagnostics.count == 2)
+    }
+
+    @Test("@Sync without a policy is an error that names the field")
+    func missingPolicy() {
+        let (_, context) = expandCollectingDiagnostics(
+            """
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync var count: Int = 0
+            }
+            """,
+            macros: macros
+        )
+        // Reported twice like the macro's other errors (#404): the diagnostic, then the thrown
+        // error's description.
+        #expect(context.diagnostics.first?.message == "@Sync property 'count' needs a policy, for example '@Sync(.broadcast)'")
+        #expect(context.diagnostics.count == 2)
+    }
+}

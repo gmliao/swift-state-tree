@@ -1313,8 +1313,8 @@ extension SyncEngine {
                     let valueTypeName = String(describing: type(of: value))
                     
                     // Check if this is a Sync property wrapper
-                    // Sync struct has: policy (SyncPolicy<Value>) and _wrappedValue (Value)
-                    // We must find _wrappedValue, not policy
+                    // Sync stores _wrappedValue (Value) and _isDirty (Bool); its policy is
+                    // per declaration (#520). Find _wrappedValue by its label
                     if valueTypeName.contains("Sync<") || valueTypeName.hasPrefix("Sync<") {
                         // This is a Sync property wrapper - find _wrappedValue explicitly
                         if let wrappedChild = valueMirror.children.first(where: { $0.label == "_wrappedValue" }) {
@@ -1329,12 +1329,6 @@ extension SyncEngine {
                     } else if let wrappedChild = valueMirror.children.first(where: { $0.label == "wrappedValue" }) {
                         // Fallback: try wrappedValue (for other property wrappers)
                         value = wrappedChild.value
-                    } else if valueTypeName.contains("SyncPolicy") {
-                        // Error: we got the policy instead of the value
-                        throw SyncError.unsupportedValue(
-                            "Unexpectedly got SyncPolicy instead of wrappedValue from property wrapper. " +
-                            "This indicates a bug in property wrapper extraction. Type: \(valueTypeName)"
-                        )
                     }
                     // If none of the above, value is already the unwrapped value (not a property wrapper)
                     

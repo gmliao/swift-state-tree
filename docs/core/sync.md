@@ -42,6 +42,15 @@ struct ArenaState: StateNodeProtocol {
 
 The filter reads `visibleTo` from the value it is given, and `visibleTo` itself stays on the server. The GameDemo visibility-test land (`VisibilityTestLand.swift`) is a complete example.
 
+A policy belongs to its declaration, not to each value. `@StateNodeBuilder` emits the `@Sync` argument once for the node type, and every instance filters through it:
+- In a node type that isn't generic and isn't nested in a generic type, an extension or a function, the policy that filters is evaluated once, at its first use, and every instance shares it.
+- In any other node type, it is evaluated each time it is used.
+- In both cases the attribute's argument is also evaluated at each init that initializes the field through the attribute (an initial value, or `self.x = …` in an init), and that value is discarded. A factory such as `.perPlayerSlice()` therefore still runs at every such init. For a field declared without an initial value, an init that builds the wrapper by hand doesn't evaluate it.
+
+The policy is the one in the attribute. A wrapper built by hand in an init (`_x = Sync(wrappedValue: v, .serverOnly)`) doesn't change it: the policy passed there is ignored.
+
+So a policy expression must be pure, like its filter: callable from any context, since the sync may run on another executor than the one that created the state, and depending on nothing that changes after the land starts.
+
 ### Nested State Nodes
 
 A state node applies its own fields' policies wherever it sits: as a field, in an optional, in an array, or as the value of a `[String: X]` or `[PlayerID: X]` map, at any depth. A child sees what its parent's filter left, and its own policy is then applied on top:

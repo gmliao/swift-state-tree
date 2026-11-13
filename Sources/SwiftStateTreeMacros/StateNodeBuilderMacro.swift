@@ -77,9 +77,14 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters))
         ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)
 
+        // Static stored properties only where the type is provably not generic (#520).
+        let storesStatics = isProvablyNonGeneric(structDecl, in: context)
+        members += generateSyncPolicyMembers(properties: properties, stored: storesStatics)
+
         // Stored once per type: the broadcast encoding reads it for every nested node (#179).
-        // A generic struct can't have a static stored property; it keeps the cached default.
-        if structDecl.genericParameterClause == nil {
+        // A type that may be generic can't have a static stored property; it keeps the cached
+        // default.
+        if storesStatics {
             let typeName = structDecl.name.text
             members.append(DeclSyntax(
                 """
@@ -107,6 +112,41 @@ public struct StateNodeBuilderMacro: MemberMacro {
         }
 
         return members
+    }
+
+    /// Whether `structDecl` and everything around it are provably not generic, so the type can
+    /// have static stored properties. `false` when the struct or an enclosing type has generic
+    /// parameters, and for any enclosing extension (its extended type's parameters aren't in the
+    /// syntax), function, closure or other local context.
+    private static func isProvablyNonGeneric(_ structDecl: StructDeclSyntax, in context: some MacroExpansionContext) -> Bool {
+        guard structDecl.genericParameterClause == nil else { return false }
+        for enclosing in context.lexicalContext {
+            if let decl = enclosing.as(StructDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return false }
+            } else if let decl = enclosing.as(ClassDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return false }
+            } else if let decl = enclosing.as(EnumDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return false }
+            } else if let decl = enclosing.as(ActorDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return false }
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Each `@Sync` field's policy, once per declaration (#520): the attribute's argument as
+    /// written. A static stored property when `stored`, else a static computed one, which
+    /// evaluates the argument on every read.
+    private static func generateSyncPolicyMembers(properties: [PropertyInfo], stored: Bool) -> [DeclSyntax] {
+        properties.compactMap { property in
+            guard property.hasSync, let typeName = property.typeName, let policy = property.policyExpression else { return nil }
+            if stored {
+                return DeclSyntax("private static let _syncPolicy_\(raw: property.name): SyncPolicy<\(raw: typeName)> = \(raw: policy)")
+            }
+            return DeclSyntax("private static var _syncPolicy_\(raw: property.name): SyncPolicy<\(raw: typeName)> { \(raw: policy) }")
+        }
     }
 
     /// Collect all stored properties from a struct declaration
@@ -160,6 +200,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
                 // Extract policy type from @Sync attribute
                 var policyType: LocalPolicyType? = nil
+                var policyExpression: String? = nil
                 if hasSync {
                     if let attribute = variableDecl.attributes.first(where: { attr in
                         if let attr = attr.as(AttributeSyntax.self) {
@@ -168,6 +209,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         return false
                     })?.as(AttributeSyntax.self) {
                         policyType = extractPolicyType(from: attribute)
+                        policyExpression = syncPolicyArgument(of: attribute)?.expression.trimmedDescription
                     }
                 }
 
@@ -187,6 +229,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         hasSync: hasSync,
                         hasInternal: hasInternal,
                         policyType: policyType,
+                        policyExpression: policyExpression,
                         typeName: typeName,
                         initializer: initializer
                     ),
@@ -198,14 +241,19 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return properties
     }
 
+    /// The `@Sync` attribute's policy: its unlabelled argument. `@Sync(wrappedValue: 0, .broadcast)`
+    /// is a legal spelling too, so the first argument isn't necessarily the policy.
+    private static func syncPolicyArgument(of attribute: AttributeSyntax) -> LabeledExprSyntax? {
+        attribute.arguments?.as(LabeledExprListSyntax.self)?.first(where: { $0.label == nil })
+    }
+
     /// Extract policy type from @Sync attribute
     private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
-        guard let argument = attribute.arguments?.as(LabeledExprListSyntax.self) else {
+        guard attribute.arguments?.as(LabeledExprListSyntax.self) != nil else {
             return nil
         }
 
-        // Look for the first argument (the policy)
-        if let firstArg = argument.first {
+        if let firstArg = syncPolicyArgument(of: attribute) {
             var policyTypeString: String?
 
             // Try to extract the policy type from the argument
@@ -247,6 +295,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // nesting check (#179) could not see what it holds.
             if property.hasSync && property.typeName == nil {
                 let error = MacroError.missingTypeAnnotation(propertyName: property.name, node: node)
+                error.diagnose(context: context)
+                throw error
+            }
+            // The policy is emitted as the field's static (#520), so it must be written.
+            if property.hasSync && property.policyExpression == nil {
+                let error = MacroError.missingPolicy(propertyName: property.name, node: node)
                 error.diagnose(context: context)
                 throw error
             }
@@ -315,7 +369,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         // Generate code for each @Sync field
         // Note: Property wrappers are stored as _propertyName, but we access them via propertyName
-        // The property wrapper itself has .policy and .wrappedValue
+        // The wrapper stores the value; the policy is the field's static `_syncPolicy_<name>` (#520)
         for (property, _) in syncProperties {
             let propertyName = property.name
             let fieldName = propertyName
@@ -325,7 +379,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // Check if field should be included (either no dirtyFields filter, or field is dirty)
             codeLines.append("// Include \(fieldName) if no dirtyFields filter or if field is dirty")
             codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
-            codeLines.append("    if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
+            codeLines.append("    if let value = Self._syncPolicy_\(propertyName).filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
 
             // Generate optimized conversion code based on type
             // value is Value? from filteredValue (same type as the field), maintaining type safety
@@ -377,7 +431,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("    name: \"\(name)\",")
             codeLines.append("    policy: .\(policy),")
             codeLines.append("    conversion: .standard,")
-            codeLines.append("    read: { $0._\(name).policy.filteredValue($0._\(name).wrappedValue, for: nil) },")
+            codeLines.append("    read: { Self._syncPolicy_\(name).filteredValue($0._\(name).wrappedValue, for: nil) },")
             codeLines.append("    convert: { value in \(needsTry ? "try " : "")\(conversion) }")
             codeLines.append("))")
         }
@@ -385,7 +439,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // the field's deprecated check overload (`generateSyncCheckMembers`).
         for (property, _) in syncProperties where hasSyncCheck(property, genericParameters: genericParameters) {
             let name = property.name
-            codeLines.append("_syncCheck_\(name)(_syncFieldKind { (node: Self) in node._\(name).policy.filteredValue(node._\(name).wrappedValue, for: nil) })")
+            codeLines.append("_syncCheck_\(name)(_syncFieldKind { (node: Self) in Self._syncPolicy_\(name).filteredValue(node._\(name).wrappedValue, for: nil) })")
         }
         codeLines.append("return fields")
         let body = codeLines.joined(separator: "\n")
@@ -608,7 +662,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             let storageName = "_\(propertyName)"
 
             codeLines.append("for playerID in playerIDs {")
-            codeLines.append("    if let value = self.\(storageName).policy.filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
+            codeLines.append("    if let value = Self._syncPolicy_\(propertyName).filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
             let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
             if needsTry {
                 codeLines.append("        do {")
@@ -1349,6 +1403,8 @@ private struct PropertyInfo {
     let hasSync: Bool
     let hasInternal: Bool
     let policyType: LocalPolicyType?
+    /// The `@Sync` attribute's policy argument as written, emitted as the field's static policy.
+    let policyExpression: String?
     let typeName: String?  // Type name for optimization
     let initializer: String?
 }
@@ -1420,6 +1476,7 @@ private enum MacroError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case missingMarker(propertyName: String, structName: String, node: Syntax)
     case missingTypeAnnotation(propertyName: String, node: Syntax)
+    case missingPolicy(propertyName: String, node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1444,6 +1501,13 @@ private enum MacroError: Error, @unchecked Sendable {
                     message: StateNodeBuilderDiagnostic.missingTypeAnnotation(propertyName: propertyName)
                 )
             )
+        case .missingPolicy(let propertyName, let node):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: StateNodeBuilderDiagnostic.missingPolicy(propertyName: propertyName)
+                )
+            )
         }
     }
 }
@@ -1459,6 +1523,14 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
         severity: .error
     )
+
+    static func missingPolicy(propertyName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync property '\(propertyName)' needs a policy, for example '@Sync(.broadcast)'",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "missingPolicy"),
+            severity: .error
+        )
+    }
 
     static func missingTypeAnnotation(propertyName: String) -> StateNodeBuilderDiagnostic {
         StateNodeBuilderDiagnostic(
