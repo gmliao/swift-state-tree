@@ -9,7 +9,9 @@ visibility).
   never reads it, `--row-addressing` decides, so it is listed only so a record with it set is
   refused),
   TYPED_LEAF_VALUES (#513: leaf fields converted by their typed form wherever the sync tables are
-  in effect; default off until the same flip, on since), SYNC_STRATEGY (delta or full-snapshot: what every sync sends; the
+  in effect; default off until the same flip, on since), PER_PLAYER_SYNC_TABLES (#514: per-player
+  fields diffed on typed per-player tables wherever the broadcast tables are in effect; on by
+  default, =false opts out), SYNC_STRATEGY (delta or full-snapshot: what every sync sends; the
   benchmark's --sync-strategy sets it in-process, so unsetting the shell's doesn't change a run). The
   first two of #465/#487 are listed before they reach main, so a shell that has one set can't
   change a run's sync path unrecorded;
@@ -45,14 +47,15 @@ CHANGE_OBJECT_METRICS_EMA_ALPHA joined on
 2026-11-10/11 (#468, #489, ADDED_LATER) on the same terms: a record before then may lack them,
 and a record that has one must have it unset. AUTO_DIRTY_SAMPLE_EVERY and
 SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND joined with the merge of exp/next into main (2026-11-11), on
-the same terms and in the same tuple, as did TYPED_LEAF_VALUES (#513, 2026-11-11).
+the same terms and in the same tuple, as did TYPED_LEAF_VALUES (#513, 2026-11-11) and
+PER_PLAYER_SYNC_TABLES (#514, 2026-11-13).
 
 Usage: python3 serverenv.py   prints the names, space-separated, for run.sh's unset.
 """
 import os
 import sys
 
-SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "TYPED_LEAF_VALUES", "SYNC_STRATEGY", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION",
+SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "TYPED_LEAF_VALUES", "PER_PLAYER_SYNC_TABLES", "SYNC_STRATEGY", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION",
               "ENABLE_DIRTY_TRACKING", "ENCODING_BENCHMARK_DIRTY_TRACKING", "AUTO_DIRTY_TRACKING",
               "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES",
               "CHANGE_OBJECT_METRICS_EMA_ALPHA",
@@ -67,11 +70,11 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
 ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
-# Listed later than ADDED: since 2026-11-10/11 (#468, #489, the merge of exp/next, #507, #513). Records
-# before then may lack them.
+# Listed later than ADDED: since 2026-11-10/11 (#468, #489, the merge of exp/next, #507, #513), and
+# PER_PLAYER_SYNC_TABLES since 2026-11-13 (#514). Records before then may lack them.
 ADDED_LATER = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
                    "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND",
-                   "RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND", "TYPED_LEAF_VALUES")
+                   "RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND", "TYPED_LEAF_VALUES", "PER_PLAYER_SYNC_TABLES")
 
 
 def record(environ=None):

@@ -49,10 +49,11 @@ class ServerEnvTests(unittest.TestCase):
         # #468/#489: USE_SYNC_TABLES (#465), ROW_ADDRESSING (#487) and SYNC_STRATEGY change the sync
         # path or what it sends; run.sh unsets them with the rest, runmeta records them, and a run with
         # one set is refused, whatever its value.
-        # AUTO_DIRTY_SAMPLE_EVERY (#391) and SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND (#387) joined later,
-        # on the same terms.
+        # AUTO_DIRTY_SAMPLE_EVERY (#391), SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND (#387) and
+        # PER_PLAYER_SYNC_TABLES (#514) joined later, on the same terms.
         for name in ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
-                     "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND"):
+                     "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND",
+                     "PER_PLAYER_SYNC_TABLES"):
             self.assertIn(name, serverenv.SERVER_ENV)
             self.assertIsNone(serverenv.record({})[name])
             self.assertEqual(serverenv.record({name: "true"})[name], "true")
@@ -80,6 +81,14 @@ class ServerEnvTests(unittest.TestCase):
                 self.assertIn(name, serverenv.SERVER_ENV)
                 self.assertIsNone(serverenv.record({})[name])
                 self.assertIn(f"'{name}': 'false'", serverenv.failure("x", serverenv.record({name: "false"})))
+
+    def test_a_record_from_before_the_per_player_tables_switch_is_accepted(self):
+        # #514 (2026-11-13): every record before it lacks PER_PLAYER_SYNC_TABLES; lacking it isn't a
+        # refusal, and a record that has it must have it unset.
+        older = {k: None for k in serverenv.SERVER_ENV if k != "PER_PLAYER_SYNC_TABLES"}
+        self.assertIsNone(serverenv.failure("x", older))
+        self.assertIn("PER_PLAYER_SYNC_TABLES", serverenv.ADDED_LATER)
+        self.assertIn("'PER_PLAYER_SYNC_TABLES': 'false'", serverenv.failure("x", dict(older, PER_PLAYER_SYNC_TABLES="false")))
 
     def test_a_record_from_before_the_sync_tables_switch_is_accepted(self):
         # Every published record predates it: lacking the key isn't a refusal, as for ADDED.
