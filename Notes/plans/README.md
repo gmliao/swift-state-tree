@@ -151,3 +151,4 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 |---|---|---|---|
 | 2025-01-20 | [WebClient UI shell refactor](2025-01-20-webclient-ui-shell-refactor.md) | done | #28 (`DemoLayout`, `ConnectionStatusCard`) |
 | 2026-11-09 | [Server-originated turn inputs](2026-11-09-server-turn-inputs.md) | open | #387. PR 1: keeper, DSL, record/replay. Open: PR 2, the monitor migration |
+| 2026-11-13 | [Off-path A/B gates judge instructions, not time](2026-11-13-off-path-instruction-gate.md) | partial | #517. Done: the EncodingBenchmark perf window (24600fe5). Open: the brief and summary-script changes, the first set run under both rules, the bar's calibration |
