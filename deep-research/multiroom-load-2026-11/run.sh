@@ -273,7 +273,9 @@ export GAMESERVER_BIN="$GD/.build/release/GameServer"
 if [ "$WORKLOAD" = refreeze ]; then unset HERO_DEFENSE_SPAWN_RAMP_TICKS; else export HERO_DEFENSE_SPAWN_RAMP_TICKS=0; fi
 export GAMESERVER_SOURCE_SHA="$(git -C "$TOPIC" rev-parse HEAD)"
 # The shipped sync path (#468): the sync-path switches are unset for every server, whatever the shell
-# had (run.json records the shell's values, syncPathEnv; each run header says so too).
+# had (run.json records the shell's values, syncPathEnv; each run header says so too). Since
+# ROW_ADDRESSING's default flip (#392) that path is the row form: numbers across it aren't
+# comparable, and the wire form (regenerate's caption) names rowAddressing when it ran.
 SYNC_PATH_SHELL="USE_SNAPSHOT_FOR_SYNC=[${USE_SNAPSHOT_FOR_SYNC:-unset}] IN_TURN_SYNC=[${IN_TURN_SYNC:-unset}] USE_SYNC_TABLES=[${USE_SYNC_TABLES:-unset}] ROW_ADDRESSING=[${ROW_ADDRESSING:-unset}] SYNC_STRATEGY=[${SYNC_STRATEGY:-unset}] OUTBOUND_WRITER_MAX_BYTES=[${OUTBOUND_WRITER_MAX_BYTES:-unset}] JOIN_FLIP_BUDGET=[${JOIN_FLIP_BUDGET:-unset}]"
 unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES ROW_ADDRESSING SYNC_STRATEGY OUTBOUND_WRITER_MAX_BYTES JOIN_FLIP_BUDGET
 [ "$DRY_RUN" != 1 ] || echo "+ unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES ROW_ADDRESSING SYNC_STRATEGY OUTBOUND_WRITER_MAX_BYTES JOIN_FLIP_BUDGET (the shell had: $SYNC_PATH_SHELL)"

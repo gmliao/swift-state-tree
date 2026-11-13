@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""The effective wire form of a run: its encoding, and whether the path index and field merge
-were on (stdlib and git only).
+"""The effective wire form of a run: its encoding, and whether the path index, field merge and
+row addressing were on (stdlib and git only).
 
 The defaults changed in November 2026 (field merge on by default since #301, the path index since
 #308), so a run's numbers are only comparable with runs of the same form. Each tool records what
 it used: EncodingBenchmark's results metadata has ``pathIndex`` and ``fieldMerge``, and
 ws-loadtest and ServerLoadTest record the server's ``joinResponse.stateUpdateFeatures``.
+
+Row addressing (#392) is decided by evidence: a recorded feature list with ``rowAddressing`` is
+on, a list without it is off (before or after its default changed), and a caller that knows the
+run couldn't have it (an EncodingBenchmark run off the router path) passes ``row_addressing``.
+Only a run with no list and no value falls back to ancestry, against the feature's introduction.
 
 A run that doesn't record a knob is resolved by **ancestry**, never by date: if its recorded
 commit doesn't contain the knob's merge commit (``KNOBS``), the knob didn't exist and the run had
@@ -26,7 +31,7 @@ Use from a topic directory::
     encoding, features = joined if joined else (declared_encoding, None)
     form = wireform.resolve(commit, encoding, features=features)
     problems = wireform.check({"run-a": form_a, "run-b": form_b}, intended)
-    caption = form.caption()   # "messagepack, pathIndex off, fieldMerge off"
+    caption = form.caption()   # "messagepack, pathIndex off, fieldMerge off" (", rowAddressing on" when on)
 
 Run the tests: python3 deep-research/test_wireform.py
 """
@@ -45,6 +50,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 KNOBS = {
     "pathIndex": "a9cbed9b",  # #297
     "fieldMerge": "b6669cd9",  # #301
+    "rowAddressing": "6f7920c0",  # #491 (exp/next merged into main), which brought it in, off by default
 }
 
 # Branch commits a squash merge removed from history, recorded by runs made on the branch, mapped
@@ -76,13 +82,18 @@ class WireForm:
     encoding: str
     path_index: bool
     field_merge: bool
+    row_addressing: bool
 
     def caption(self) -> str:
+        """The form in words. Row addressing is named only when on, so captions of runs without it
+        read as they did before the field existed."""
         on = lambda v: "on" if v else "off"
-        return f"{self.encoding}, pathIndex {on(self.path_index)}, fieldMerge {on(self.field_merge)}"
+        rows = ", rowAddressing on" if self.row_addressing else ""
+        return f"{self.encoding}, pathIndex {on(self.path_index)}, fieldMerge {on(self.field_merge)}{rows}"
 
     def as_dict(self) -> dict:
-        return {"encoding": self.encoding, "pathIndex": self.path_index, "fieldMerge": self.field_merge}
+        return {"encoding": self.encoding, "pathIndex": self.path_index, "fieldMerge": self.field_merge,
+                "rowAddressing": self.row_addressing}
 
 
 @functools.lru_cache(maxsize=None)
@@ -113,19 +124,21 @@ def _knob(name: str, recorded, commit: str | None, repo: pathlib.Path) -> bool:
 
 
 def resolve(commit: str | None, encoding: str | None, *, path_index=None, field_merge=None,
-            features=None, repo: pathlib.Path = REPO) -> WireForm:
-    """The run's form. ``path_index`` / ``field_merge``: what the run recorded (``None``: not
-    recorded). ``features``: the joinResponse's ``stateUpdateFeatures`` instead (``None``: not
-    recorded; a list, even empty, decides both knobs)."""
+            row_addressing=None, features=None, repo: pathlib.Path = REPO) -> WireForm:
+    """The run's form. ``path_index`` / ``field_merge`` / ``row_addressing``: what the run recorded
+    (``None``: not recorded). ``features``: the joinResponse's ``stateUpdateFeatures`` instead
+    (``None``: not recorded; a list, even empty, decides all three)."""
     if not isinstance(encoding, str) or not encoding:
         raise MissingWireForm(f"encoding {encoding!r} not recorded")
     if features is not None:
-        if path_index is not None or field_merge is not None:
+        if path_index is not None or field_merge is not None or row_addressing is not None:
             raise ValueError("pass the features or the knobs, not both")
         if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
             raise MissingWireForm(f"stateUpdateFeatures is {features!r}, not a list of names")
         path_index, field_merge = "pathIndex" in features, "fieldMerge" in features
-    return WireForm(encoding, _knob("pathIndex", path_index, commit, repo), _knob("fieldMerge", field_merge, commit, repo))
+        row_addressing = "rowAddressing" in features
+    return WireForm(encoding, _knob("pathIndex", path_index, commit, repo), _knob("fieldMerge", field_merge, commit, repo),
+                    _knob("rowAddressing", row_addressing, commit, repo))
 
 
 def join_form(counts: dict[str, int] | None) -> tuple[str | None, list[str]] | None:

@@ -13,7 +13,7 @@ sys.path.insert(0, str(TOPIC))
 import analysis, calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stationarity, stopcheck  # noqa: E402
 import cell as cell_mod  # noqa: E402
 
-HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
+HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True, False)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
                   "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING", "MODE", "SERVER_CPUS", "CLIENT_CPUS", "OVERWRITE", "BUILD",
                   "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "INGEST", "IMPAIR_SH", "LOADTEST_SCRIPT", "NODE_TOOLS", "HEALTH_URL", "START_MARGIN_S", "SCENARIO_OVERRIDE")
@@ -193,14 +193,14 @@ class Calibration(unittest.TestCase):
             with self.subTest(cell), self.assertRaisesRegex(calibration.Refused, "no longer throttles"):
                 calibration.settings(calibration.BUILTIN, cell, HEAD_FORM)
         # The 11-07 calibration ran before both knobs: it fits a like-for-like sweep.
-        old = calibration.wireform.WireForm("messagepack", False, False)
+        old = calibration.wireform.WireForm("messagepack", False, False, False)
         self.assertEqual(calibration.settings(calibration.BUILTIN, "U-RATE", old)["rate"], "25218749bit")
         cal = json.loads(head_calibration(pathlib.Path(tempfile.mktemp())).read_text())
         self.assertEqual(calibration.settings(cal, "M-COMBO", HEAD_FORM)["limits"], {"down": 168, "up": 10000})
 
     def test_the_sweeps_form_follows_the_servers_rules(self):
         self.assertEqual(calibration.intended_form({}), HEAD_FORM)
-        self.assertEqual(calibration.intended_form({"TRANSPORT_ENCODING": "json"}), calibration.wireform.WireForm("json", False, False))
+        self.assertEqual(calibration.intended_form({"TRANSPORT_ENCODING": "json"}), calibration.wireform.WireForm("json", False, False, False))
 
     def test_the_other_cells_carry_over_and_only_jitter_cells_reorder(self):
         for cell in plan.CELLS:

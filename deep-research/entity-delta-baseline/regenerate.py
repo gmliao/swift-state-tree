@@ -30,7 +30,9 @@ def wire_failure(name, run):
     """Why the run isn't in the intended wire form (``deep-research/wireform.py``), or None."""
     try:
         form = wireform.resolve(run["meta"].get("git_sha"), run["params"].get("encoding"),
-                                path_index=run["meta"].get("path_index"), field_merge=run["meta"].get("field_merge"))
+                                path_index=run["meta"].get("path_index"), field_merge=run["meta"].get("field_merge"),
+                                # EncodingBenchmark's local path: rows need joins through a router.
+                                row_addressing=False)
     except wireform.MissingWireForm as missing:
         return f"{name}: wire form missing: {missing}"
     if (form.path_index, form.field_merge) != INTENDED_WIRE:

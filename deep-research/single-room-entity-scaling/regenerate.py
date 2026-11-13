@@ -88,8 +88,10 @@ def check(runs, points=None, repeats=REPEATS):
             failures.append(f"{name}: format {p['encoding']}, the form is {encoding}")
         try:
             form = wireform.resolve(meta.get("git_sha"), p["encoding"],
-                                    path_index=meta.get("path_index"), field_merge=meta.get("field_merge"))
-            want = wireform.WireForm(p["encoding"], path_index, field_merge)
+                                    path_index=meta.get("path_index"), field_merge=meta.get("field_merge"),
+                                    # EncodingBenchmark's local path: rows need joins through a router.
+                                    row_addressing=False)
+            want = wireform.WireForm(p["encoding"], path_index, field_merge, False)
             if form != want:
                 failures.append(f"{name}: ran {form.caption()}, its label says {want.caption()}")
         except wireform.MissingWireForm as missing:
@@ -134,7 +136,9 @@ def check_record(runs):
     for r in runs:
         try:
             form = wireform.resolve(r["meta"].get("git_sha"), r["params"]["encoding"],
-                                    path_index=r["meta"].get("path_index"), field_merge=r["meta"].get("field_merge"))
+                                    path_index=r["meta"].get("path_index"), field_merge=r["meta"].get("field_merge"),
+                                    # EncodingBenchmark's local path: rows need joins through a router.
+                                    row_addressing=False)
         except wireform.MissingWireForm as missing:
             problems.append(f"{r['meta'].get('source_file')}: wire form missing: {missing}")
             continue
