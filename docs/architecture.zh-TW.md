@@ -283,6 +283,7 @@ Client
 4. **協議抽象**：使用 Protocol 定義介面，支援未來 distributed actor 替換和多框架支援
 5. **隔離 Transport**：Land 層不依賴 Transport，維持可移植性
 6. **Actor 序列化**：使用 Swift Actor 確保線程安全
+7. **失敗就結束，不吸收**：無法回到完全正確的失敗，結束它所弄壞的最小單位（註冊、land、session 或輸入），絕不是 process；不加入吸收後繼續的路徑。見 [失敗處理](core/failure-handling.zh-TW.md)
 
 ## 相關文檔
 

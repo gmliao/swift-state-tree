@@ -283,6 +283,7 @@ These components are implementations for specific HTTP frameworks:
 4. **Protocol Abstraction**: Use Protocol to define interfaces, supporting future distributed actor replacement and multi-framework support
 5. **Transport Isolation**: Land layer doesn't depend on Transport, maintains portability
 6. **Actor Serialization**: Use Swift Actor to ensure thread safety
+7. **Fail, Don't Absorb**: A failure that can't be brought back to fully correct ends the smallest unit it corrupted (registration, land, session or input), never the process; no absorb-and-continue paths. See [Failure Handling](core/failure-handling.md)
 
 ## Related Documentation
 
