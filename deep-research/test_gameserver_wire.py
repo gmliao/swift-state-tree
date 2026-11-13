@@ -9,6 +9,15 @@ W = gw.wireform.WireForm
 
 
 class Intended(unittest.TestCase):
+    """The knobs' rules, with ROW_ADDRESSING's default off (before its flip): RowAddressing below
+    covers rows."""
+
+    def setUp(self):
+        self.saved, gw.ROW_DEFAULT_COMMIT = gw.ROW_DEFAULT_COMMIT, None
+
+    def tearDown(self):
+        gw.ROW_DEFAULT_COMMIT = self.saved
+
     def test_defaults_are_messagepack_with_both_features(self):
         self.assertEqual(gw.intended({}), W("messagepack", True, True, False))
         self.assertEqual(gw.intended({"TRANSPORT_ENCODING": None, "PATH_INDEX": None}), W("messagepack", True, True, False))
@@ -74,6 +83,8 @@ class RowAddressing(unittest.TestCase):
             gw.intended({})
         with self.assertRaisesRegex(gw.wireform.MissingWireForm, "unknown to the repository"):
             gw.intended({}, commit="0123456789abcdef0123456789abcdef01234567")
+        # A squashed branch commit resolves through its squash merge, as wireform's knobs do.
+        self.assertFalse(gw.intended({}, commit="b8e798b").row_addressing)
 
 
 if __name__ == "__main__":

@@ -561,7 +561,7 @@ SWIFT = regenerate.PINNED_SWIFT
 # A commit that has both knobs (#308's merge): needs the repository's history.
 KNOBS_COMMIT = "49fde351"
 NODE = "v20.20.2"
-SHA = "a" * 40
+SHA = "c657c37b303799811764a4d7799a0b91c7399341"  # a real commit before row addressing came in: the form resolves without it
 
 
 def published(name):
@@ -1227,6 +1227,27 @@ class Sweep(unittest.TestCase):
     def test_the_gates_matrix_is_run_shs(self):
         plan = [(n, r, p) for n, r, p, _ in runs(dry_run().stdout)]
         self.assertEqual(plan, [(n, r, p) for n, (r, p) in regenerate.MATRIX.items()])
+
+
+class AfterRowDefault(unittest.TestCase):
+    """ROW_ADDRESSING's default after its flip (gameserver_wire.ROW_DEFAULT_COMMIT set; a stand-in,
+    6f7920c0, which this checkout contains and c657c37b, its parent, doesn't)."""
+
+    def setUp(self):
+        self.saved, regenerate.gameserver_wire.ROW_DEFAULT_COMMIT = regenerate.gameserver_wire.ROW_DEFAULT_COMMIT, "6f7920c0"
+
+    def tearDown(self):
+        regenerate.gameserver_wire.ROW_DEFAULT_COMMIT = self.saved
+
+    def test_a_sweep_without_a_commit_is_refused_not_a_crash(self):
+        failures = regenerate.sweep_failures({"wire": {}, "git": {"commit": None}}, {})
+        self.assertIn("intended wire form missing: ROW_ADDRESSING unset and the server commit not recorded: "
+                      "its default changed in 6f7920c0", failures)
+
+    def test_the_commit_decides(self):
+        self.assertFalse(regenerate.intended_form({}, "c657c37b").row_addressing)
+        self.assertTrue(regenerate.intended_form({}, "6f7920c0").row_addressing)
+        self.assertFalse(regenerate.intended_form({"ROW_ADDRESSING": "false"}, "6f7920c0").row_addressing)
 
 
 if __name__ == "__main__":

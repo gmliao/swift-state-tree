@@ -70,7 +70,7 @@ def rows_requested(environ: dict, commit: str | None) -> bool:
     if not commit:
         raise wireform.MissingWireForm("ROW_ADDRESSING unset and the server commit not recorded: its default changed in "
                                        f"{ROW_DEFAULT_COMMIT}")
-    has = wireform.contains(commit, ROW_DEFAULT_COMMIT)
+    has = wireform.contains(wireform.squashed_merge(commit) or commit, ROW_DEFAULT_COMMIT)
     if has is None:
         raise wireform.MissingWireForm(f"ROW_ADDRESSING unset and commit {commit} is unknown to the repository")
     return has

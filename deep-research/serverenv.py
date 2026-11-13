@@ -5,8 +5,9 @@ visibility).
 
 - the sync path: USE_SNAPSHOT_FOR_SYNC, IN_TURN_SYNC, USE_SYNC_TABLES (#465: the adapter's broadcast
   diff on the typed tables; default off until the default flip, on since, =false opts out),
-  ROW_ADDRESSING (#487: row-addressed wire frames, which turn the sync tables on; default off until
-  its default flip (#392, gameserver_wire.ROW_DEFAULT_COMMIT), on since, =false opts out),
+  ROW_ADDRESSING (#487: row-addressed wire frames, which turn the sync tables on; EncodingBenchmark
+  never reads it, `--row-addressing` decides, so it is listed only so a record with it set is
+  refused),
   TYPED_LEAF_VALUES (#513: leaf fields converted by their typed form wherever the sync tables are
   in effect; default off until the same flip, on since), SYNC_STRATEGY (delta or full-snapshot: what every sync sends; the
   benchmark's --sync-strategy sets it in-process, so unsetting the shell's doesn't change a run). The
