@@ -273,7 +273,11 @@ case "$OUTPUT_DIR" in
   *) OUTPUT_PATH="$ROOT_DIR/$OUTPUT_DIR" ;;
 esac
 
-SCENARIO_PATH="$ROOT_DIR/$SCENARIO"
+# The scenario, like --output-dir: relative to ws-loadtest/ unless absolute.
+case "$SCENARIO" in
+  /*) SCENARIO_PATH="$SCENARIO" ;;
+  *) SCENARIO_PATH="$ROOT_DIR/$SCENARIO" ;;
+esac
 # Two instances sampling one server (populations M and SR) need their own files: --system-metrics-out.
 case "${SYSTEM_METRICS_OUT:-}" in
   "") SYSTEM_METRICS_PATH="$ROOT_DIR/monitoring/system-metrics.json" ;;
