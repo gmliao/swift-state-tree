@@ -336,7 +336,10 @@ class Refreeze(unittest.TestCase):
                 regenerate.results_markdown(self.results)
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "run.sh's real path runs on Linux")
+# run-tests.sh sets SST_FORCE_LINUX_TESTS=1 off Linux: they run on macOS too, and a change
+# their code reaches must not skip them before CI.
+@unittest.skipUnless(sys.platform.startswith("linux") or os.environ.get("SST_FORCE_LINUX_TESTS") == "1",
+                     "run.sh's real path runs on Linux (SST_FORCE_LINUX_TESTS=1 runs them anyway)")
 class Driver(unittest.TestCase):
     """run.sh itself, not dry: a fake scalability script, fake `swift` and `ss`, unpinned."""
 
