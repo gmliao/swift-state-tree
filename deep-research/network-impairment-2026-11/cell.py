@@ -298,6 +298,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--calibration")
     ap.add_argument("--server-cpus", default="0-7")
     ap.add_argument("--client-cpus", default="8-11")
+    # The sweep's own ROW_ADDRESSING (run.sh's PIN_ROW_ADDRESSING): given, the server gets it and
+    # the form doesn't depend on the default at the sweep's commit; unset, the server's default.
+    ap.add_argument("--row-addressing", choices=("true", "false"))
     ap.add_argument("--out-root", type=pathlib.Path, default=TOPIC / "data")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
@@ -307,10 +310,13 @@ def main(argv: list[str]) -> int:
     out = (args.out_root / rid).resolve()
     population, profile = plan.population(cell), plan.profile(cell)
     cal = calibration.load(args.calibration)
+    pin = {"ROW_ADDRESSING": args.row_addressing} if args.row_addressing else {}
     try:
         # The server's form: its environment (the shell's without the sync-path switches, which
-        # the server doesn't get) at the sweep's commit, for ROW_ADDRESSING's default.
-        sweep_form = calibration.intended_form(server_environ(os.environ, {}), sweep_commit(args.out_root / args.sweep, args.dry_run))
+        # the server doesn't get, plus the sweep's pin) at the sweep's commit, for ROW_ADDRESSING's
+        # default when the sweep doesn't pin it.
+        sweep_form = calibration.intended_form(server_environ(os.environ, pin),
+                                               sweep_commit(args.out_root / args.sweep, args.dry_run))
         netem = calibration.settings(cal, cell, sweep_form, calibration.overrides_from(os.environ))
     except (calibration.Refused, calibration.wireform.MissingWireForm) as e:
         print(f"cell.py: {rid}: refused: {e}", file=sys.stderr)
@@ -341,7 +347,8 @@ def main(argv: list[str]) -> int:
     server_env = {"TRANSPORT_PROFILE_JSONL_PATH": str(out / "profile.jsonl"), "LAND_LIFECYCLE_LOG_PATH": str(out / "land-lifecycle.jsonl"),
                   "HERO_DEFENSE_STATS_PATH": str(out / "land-stats.jsonl"),
                   "HERO_DEFENSE_SPAWN_RAMP_TICKS": str(SPAWN_RAMP_TICKS),
-                  "HOST": "0.0.0.0", "ENABLE_REEVALUATION": "false", "ENABLE_DEBUG_STATE_ROUTES": "true", "LOG_LEVEL": "error"}
+                  "HOST": "0.0.0.0", "ENABLE_REEVALUATION": "false", "ENABLE_DEBUG_STATE_ROUTES": "true", "LOG_LEVEL": "error",
+                  **pin}
     server_argv = pinned(args.server_cpus, [args.server])
     sockstat_argv = pinned(args.client_cpus, ["node", f"{NODE_TOOLS}/sockstat-main.js", "--out", str(out / "sockstat.jsonl"),
                                               "--netns", ",".join(["-"] + [ns for ns in NAMESPACES if ns != "lt-good" or with_good])])
@@ -428,6 +435,8 @@ def main(argv: list[str]) -> int:
     meta["syncLagEnv"] = {k: os.environ.get(k) or None for k in SYNC_LAG_ENV}
     # The sync-path switches the shell had; the server ran without them (server_environ).
     meta["syncPathEnv"] = {k: os.environ.get(k) or None for k in SYNC_PATH_ENV}
+    # The sweep's ROW_ADDRESSING pin, which the server did get (null: the server's default).
+    meta["rowAddressingPin"] = args.row_addressing
     record = {"meta": meta, "params": params, "groups": groups}
 
     def save():
