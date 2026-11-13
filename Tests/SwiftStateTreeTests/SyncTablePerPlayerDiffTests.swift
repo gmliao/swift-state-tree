@@ -318,9 +318,9 @@ private let ppSteps: Int = {
     return steps
 }()
 
-/// Random steps on both diffs: players join and leave, one plan in ten fails (nothing commits,
-/// the dirty fields are carried), one in twenty resets the key scopes. Every step's patches,
-/// drops and last-sent must be equal per player.
+/// Random steps on both diffs: players join and leave, and one plan in ten fails (nothing
+/// commits, the dirty fields are carried). Every step's patches, drops and last-sent must be
+/// equal per player.
 ///
 /// It yields every 64 steps so its cases don't hold every cooperative pool thread
 /// (`Notes/solutions/2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md`).
