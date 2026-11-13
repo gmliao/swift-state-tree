@@ -1,7 +1,8 @@
 # Typed server events and client actions, without AnyCodable (#521)
 
-**Status:** rev 1, for review. No code before this plan is reviewed.
-- Read at `main` 882cabe7. Each fact is marked **checked** (read in the code or run) or **inferred** (reasoned, to be pinned by a test in the PR).
+**Status:** rev 2, for review. No code before this plan is reviewed.
+- Read at `main` 882cabe7; the cited lines are unchanged at 06125d40. Each fact is marked **checked** (read in the code or run) or **inferred** (reasoned, to be pinned by a test in the PR).
+- **Rev 2** answers review of rev 1: the handler lookup (M1), record payloads (M2), non-finite numbers (M3), replay loading (M4), the replay land's registry (M5), `Sendable` (M6), `PendingActionItem` (M7), the unit for untyped events (M8), EV5's bound (M9), what a failed cycle has already sent (M10), and the shoulds. Decisions review settled are recorded as such (§10). Those left to the maintainer are D1, D7, D9, D13 and the compatibility exceptions N3, N7–N10.
 - **Order (#521):** after the `@Sync` wrapper changes (#519 merged; #520 merged as #527) and a fresh profile of main (§0).
 - **Error rule:** #535 and its scope decision (2026-11-13). A failure that can't be brought back to fully correct ends the smallest unit it corrupted: a session when only that session's output is wrong, the land when every recipient's output or the land's state is wrong. A type error knowable at registration is refused there. No absorb-and-continue path is added. A malformed input from a client is a client input error: the input is rejected as today, and nothing else ends.
 
@@ -19,7 +20,7 @@ The cost #521 cites (about 2.3 % of cycles in `tryCast*` frames, plus the name a
 
 Action and client-event decode isn't in that cell. It is profiled once the benchmark can submit inputs from wire bytes (§8, PR 0).
 
-**No stop rule (D1).** #521 gives the main reason as type information that is known at compile time and thrown away; the cost is secondary. The profile sets the expected size of the A/B, and is posted on #521.
+**No stop rule (D1, the maintainer's).** #521 gives the main reason as type information that is known at compile time and thrown away; the cost is secondary. The profile sets the expected size of the A/B, and is posted on #521.
 
 ## 1. Where AnyCodable sits today
 
@@ -27,35 +28,40 @@ Action and client-event decode isn't in that cell. It is profiled once the bench
 
 | Step | Where (checked) | What it does |
 |---|---|---|
-| Emit | `LandContext.emitEvent` (`LandContext.swift:231-234`) | `AnyServerEvent(event)` |
+| Emit | `LandContext.emitEvent` (`LandContext.swift:231-234`); `emitAnyServerEvent` (:240-242) for a pre-built event | `AnyServerEvent(event)` |
 | Name | `AnyServerEvent.init(_:)` (`EventPayload.swift:135-139`), `eventName(for:)` (:145-163) | `String(describing: type(of:))`, split on `.`, drop an `Event` suffix, on every emit |
 | Box | the same init, :137 | `payload = AnyCodable(event)`: the event as `Any` |
-| Queue and flush | `LandKeeper.flushOutputs` (`LandKeeper.swift:480-528`); in-turn, `runSyncPhaseInTurnIsolated` (`TransportAdapter.swift:2852-2864`) | each event goes to `enqueueEventSynchronously` (:2782-2808) |
+| Queue and flush | legacy: `LandKeeper.flushOutputs` (`LandKeeper.swift:480-528`), one `await transport?.sendEventToTransport` per event (:491-492); in-turn: `runSyncPhaseInTurnIsolated` (`TransportAdapter.swift:2852-2864`) | each event goes to `enqueueEventSynchronously` (:2782-2808) |
 | Opcode 107 body | `encodeServerEventBody` (TA :3075) → `EncodingPipeline.encodeServerEventBody` (`EncodingPipeline.swift:122-135`) → `MessagePackTransportMessageEncoder.encodeServerEventBody` (`MessagePackTransportMessageEncoder.swift:52-63`) | builds `[AnyCodable]` (`encodeEvent`, :191-247), then converts each element with `MessagePackValueEncoder` (:283-286) |
-| Positional payload | `encodePayloadAsArray` (MessagePack :251-279, opcode JSON `TransportMessageEncoder.swift:320-343`) | unwraps `payload.base`, casts it to `any PayloadCompression`, calls `encodeAsArray()` and boxes the result again. A payload type without `@Payload` reaches the default `encodeAsArray()`'s `fatalError` (EventPayload :37-41); a payload that isn't a `PayloadCompression` at all (a dictionary) reaches the encoder's own (MessagePack :273, opcode JSON :336) |
+| Positional payload | `encodePayloadAsArray` (MessagePack :251-279, opcode JSON `TransportMessageEncoder.swift:320-343`), only when the encoder's `enablePayloadCompression` is set | unwraps `payload.base`, casts it to `any PayloadCompression`, calls `encodeAsArray()` and boxes the result again. A payload type without `@Payload` reaches the default `encodeAsArray()`'s `fatalError` (EventPayload :37-41); a payload that isn't a `PayloadCompression` at all (a dictionary) reaches the encoder's own (MessagePack :273, opcode JSON :336) |
 | Per field | `encodeAsArray()` (macro, `PayloadMacro.swift:243-270`) | `[AnyCodable(self.a), AnyCodable(self.b), …]`: each field boxed, its static type lost |
 | Per value, MessagePack | `MessagePackValueEncoder.box` (:11-90) | 20 `as?` checks, then `as? AnyCodable` hands the field to `encodeAnyCodable` (:264-340), about 30 more cases; a struct field (`Position2`) falls through to `any Encodable` and re-enters `box` for each nested value |
 | Per value, opcode JSON | `OpcodeTransportMessageEncoder.encode` (`TransportMessageEncoder.swift:127-130`) | `JSONEncoder` over `[AnyCodable]`; each `AnyCodable.encode` runs its own cast switch (`AnyCodable.swift:39-80`) |
 | JSON object | `JSONTransportMessageEncoder` (`TransportMessageEncoder.swift:68-84`) | the synthesized `Codable` of `AnyServerEvent`, whose payload is `AnyCodable(event)`: one `any Encodable` hop into the event's own `Codable` |
-| Type number | `encodeEvent` (MessagePack :224, opcode JSON :293) | `eventHashes?[serverEvent.type]`: a string-keyed lookup per event; the per-land table comes from the schema through the host configuration (`NIOLandServer.swift:60`) |
-| Non-107 send | `sendEventImmediately` (TA :2946-3033) → `EventSendingPipeline.prepareImmediateSend` (`EventSendingPipeline.swift:88-`) | `messageEncoder.encode(.event(…))`: the same paths as above, one encode per event |
+| Type number | `encodeEvent` (MessagePack :224, opcode JSON :293) | `eventHashes?[serverEvent.type]`: a string-keyed lookup per event; a name missing from the table is sent as its string. The per-land table comes from the schema through the host configuration (`NIOLandServer.swift:60`) |
+| Non-107 send | `sendEventImmediately` (TA :2946-3033) → `EventSendingPipeline.prepareImmediateSend` (`EventSendingPipeline.swift:88-`) | `messageEncoder.encode(.event(…))`: the same paths as above, one encode per event, enqueued right after its own encode (:2985, :3024) |
 
-Each event is encoded once, before fan-out, on every path (checked: the 107 body is queued as a `MessagePackValue`, `EventSendingPipeline.swift:42-77`; the immediate path encodes once and enqueues the same `Data` to every session).
+Each event is encoded once, before fan-out, on every path (checked: the 107 body is queued as a `MessagePackValue`, `EventSendingPipeline.swift:42-77`; the immediate path encodes once and enqueues the same `Data` to every session). Events are encoded **one at a time, in order**: on the immediate path and on the legacy flush, the events before a failing one have already been enqueued when it fails (checked; this bounds what EV4 can claim, §5).
+
+**Encoders with compression off (checked).** The encoders' public inits default to `enablePayloadCompression: false` (MessagePack :32, opcode JSON :115). The host's configuration passes `shouldEncodePayloadAsArray` (`TransportEncodingConfig.swift:286`), true for `opcodeJsonArray` and `messagepack` (:56). With compression off, a payload is encoded keyed, through `AnyCodable`, and `encodeAsArray()` isn't called.
 
 **Four copies of the name rule (checked):** `AnyClientEvent.eventName` (EventPayload :89-108), `AnyServerEvent.eventName` (:145-164), `EventRegistry.eventName(for:)` (`EventRegistry.swift:166-185`), `SchemaExtractor.generateEventID` (`SchemaExtractor.swift:235-255`). The schema's event IDs, and so its `eventHashes` (ranks of the sorted IDs, :165-180), come from the last one.
+
+**Two copies of the action-name rule (checked):** `SchemaExtractor.generateActionID` (`SchemaExtractor.swift:210-230`) and `LandKeeper.generateActionIDForMatching` (`LandKeeper.swift:2808-`): `String(describing:)`, its last `.` component, then an `Action` suffix dropped (a type named `Action` gives the empty ID).
 
 ### 1.2 Client actions: wire to handler
 
 | Step | Where (checked) | What it does |
 |---|---|---|
-| Wire, MessagePack | `MessagePackDirectDecoder` opcode 101 (`MessagePackDirectDecoder.swift:81-89`), `decodeAnyCodable(from:)` (:485-524) | the payload `MessagePackValue` becomes a tree of `Any` in an `AnyCodable` |
+| Wire, MessagePack | `MessagePackDirectDecoder` opcode 101 (`MessagePackDirectDecoder.swift:81-89`), `decodeAnyCodable(from:)` (:485-524) | the payload `MessagePackValue` becomes a tree of `Any` in an `AnyCodable`. It throws on a map key that isn't a string, at any depth (:513-516); that rejects the frame |
 | Wire, opcode JSON | `TransportMessageDecoder.decodeAction` (`TransportMessageDecoder.swift:121-152`) | `JSONSerialization` tree wrapped in `AnyCodable`; an array payload is accepted here as an array |
 | Wire, JSON object | `ActionEnvelope`'s `Codable` (`TransportMessage.swift:4-12`) | `AnyCodable.init(from:)` (`AnyCodable.swift:15-37`) |
-| Handler match | `LandKeeper.submit` (`LandKeeper.swift:2683-2711`), `generateActionIDForMatching` (:2808-) | a linear scan of the land's handlers; per handler, up to four string comparisons (type name, last `.` component, schema ID, case-insensitive schema ID), each building strings with `String(describing:)` and splits. The first handler that matches any form wins |
-| Decode at intake | `LandKeeper.swift:2719-2721` | `JSONEncoder().encode(envelope.payload)`, then `JSONDecoder().decode(actionType, from:)`: a JSON round trip |
-| Queue | `PendingActionItem` (`LandKeeper.swift:189-197`) | keeps `action: AnyCodable` (the wire tree), not the decoded value |
+| Handler match | `LandKeeper.submit` (`LandKeeper.swift:2683-2711`) | a linear scan of the land's handlers in declaration order. Handler `h` matches input `x` when any of four predicates holds: (1) `name(h) == x`, where `name` is `String(describing:)`; (2) `last(name(h)) == last(x)`, where `last` is the last non-empty `.` component (`split` drops empty pieces, so `AddGoldAction.` matches); (3) `sid(h) == x`, the schema ID; (4) `sid(h).lowercased() == x.lowercased()`, on the whole input. The first handler that matches wins. So `X.AddGold` and `x.addgold` match nothing, `addgold` matches by (4), and `addgoldaction` matches nothing |
+| Replay match | `LandKeeper.swift:4110-4124` | predicates (1) and (2) only, against the record's `typeIdentifier`, which is `String(describing: actionType)` (:3437) |
+| Decode at intake | `LandKeeper.swift:2719-2721` | `JSONEncoder().encode(envelope.payload)`, then `JSONDecoder().decode(actionType, from:)`: a JSON round trip. `JSONEncoder` refuses NaN and ±∞, so a non-finite MessagePack double is rejected here |
+| Queue | `PendingActionItem` (`LandKeeper.swift:189-218`), public with a public non-throwing init; rebuilt at :1910, :2074 (resolver completion), :2748, :2767 (intake) and :4154 (replay) | keeps `action: AnyCodable` (the wire tree), not the decoded value. The decoded value goes to the resolver job separately (`decodedAction`, :2758) |
 | Decode at apply | `LandKeeper.swift:3412-3415` | the same round trip again, inside the turn |
-| Record | `ReevaluationRecordedAction` (`ActionRecorder.swift:652-`), built at `LandKeeper.swift:3434-3445` | `payload: actionItem.action`: the wire tree as received |
+| Record | `ReevaluationRecordedAction` (`ActionRecorder.swift:652-`), built at `LandKeeper.swift:3434-3445` on every apply, whether or not the keeper records | `payload: actionItem.action`: the wire tree as received |
 
 **Clients send action payloads as objects (checked).** The TypeScript SDK writes `[101, requestID, typeIdentifier, payload(object)]` (`sdk/ts/src/core/protocol.ts:156-166`). Its `actionFieldOrder` table is filled from the schema but not used to send. An array payload reaches the keeper as an array and fails the round trip's keyed decode (inferred; pinned by a test, §7).
 
@@ -63,7 +69,7 @@ Each event is encoded once, before fan-out, on every path (checked: the 107 body
 
 - Wire: as actions (opcode 103), into `AnyClientEvent.payload: AnyCodable` (MessagePack :103-115, opcode JSON :174-230). Checked.
 - Intake: `handleClientEvent` (`LandKeeper.swift:2850-`) looks up the descriptor by name (a dictionary) and queues the `AnyClientEvent` undecoded.
-- Apply: `AnyClientEventHandler` (`LandDefinition.swift:273-279`) runs the JSON round trip with `try?`. **A payload that doesn't decode silently skips the handler**: no error to the client, no log, and the event is still recorded (checked). That is an absorb path under #535's rule.
+- Apply: the event is recorded before its handlers run (`LandKeeper.swift:3487-3498`). `AnyClientEventHandler` (`LandDefinition.swift:273-279`) then runs the JSON round trip with `try?`. **A payload that doesn't decode silently skips the handler**: no error to the client, no log, and the event stays recorded (checked). That is an absorb path under #535's rule.
 
 ### 1.4 Other consumers of the boxed payload
 
@@ -71,7 +77,9 @@ Each event is encoded once, before fan-out, on every path (checked: the 107 body
 |---|---|---|
 | Server event records | `LandKeeper.swift:495-505`, `ReevaluationRecordedServerEvent` (`ActionRecorder.swift:744`) | `payload: AnyCodable` of the event, written to the record as the event's keyed JSON |
 | Replay comparison | `ReevaluationEngine.serverEventsMatch` (`ReevaluationEngine.swift:389-410`) | sorted-key JSON of recorded vs emitted payloads. An encode failure becomes `Data()` on both sides, so two unencodable payloads compare equal |
-| Replay re-emit | `GenericReplayLand` (`GenericReplayLand.swift:126-129`) → `emitAnyServerEvent` | `AnyServerEvent(type:payload:)` from a record: the payload is the concrete event (emitted by the replay run) or a decoded dictionary (a recorded event, under the fallback policy). A dictionary under a compressed encoding reaches `encodePayloadAsArray`'s `fatalError` (inferred; pinned by a red test, §7) |
+| Replay input loading | `LandKeeper.swift:4099-4256` | a recorded action whose type has no handler, or whose handler type isn't an `ActionPayload`, is logged and skipped (`continue`, :4126-4139). Any error while loading the tick's inputs is logged and the tick runs without them (:4251-4256). Unknown server inputs and lifecycle kinds, by contrast, fail the tick (`recordedPassMismatches`, :4189-4194, :4217-4222) |
+| Replay land | `GenericReplayLand.makeLand` (`GenericReplayLand.swift:47-70`) | a new `Land` with the base's ID, access control and tick; **no `ServerEvents` registry** |
+| Replay re-emit | `GenericReplayLand` (:126-129) → `emitAnyServerEvent` | `AnyServerEvent(type:payload:)` from a result. With `replayEventPolicy: .projectedWithFallback` (public, `ReevaluationFeature.swift:8-27`; the examples use `.projectedOnly`), a tick that emitted no events re-emits the recorded ones (`selectReplayEventsToEmit`, :11-24). Those come from the record source (`ReevaluationRunnerImpl.swift:306`), so the payload is a decoded dictionary. On a compressed encoding it reaches `encodePayloadAsArray`'s `fatalError` (inferred; pinned by a red exit test, §7) |
 | Sync-stream digest | `TransportAdapter.canonicalEvent` (:3988-3992), `SyncOutputVerifier.addEvents` (`SyncOutputVerifier.swift:292-299`) | `SnapshotValue.make(from: payload.base)`, only when the keeper records the sync stream |
 | Schema | `SchemaExtractor.swift:106-143` | event types and names only; no payload values |
 
@@ -81,16 +89,20 @@ Each event is encoded once, before fan-out, on every path (checked: the 107 body
 
 ### 2.1 A static wire name per payload type
 
-`@Payload` emits the name the schema uses (`SchemaExtractor.generateEventID`'s rule for events, `generateActionID`'s for actions), computed at expansion from the struct's name:
+`@Payload` emits the name the schema uses, computed at expansion from the struct's name:
 
 ```swift
 public static let _payloadWireName: String = "PlayerShoot"
 ```
 
-- **Generic or nested-in-generic types** take a computed static that calls `EventRegistry.eventName(for: Self.self)`, with the lexical-context predicate #527 introduced for `_syncPolicy_` (`2026-11-12-sync-policy-per-type.md` §3). No generic payload type exists outside tests (inferred; checked in the PR).
+- **The rule, per protocol the type conforms to:**
+  - **Events** (`ServerEventPayload`, `ClientEventPayload`): `generateEventID`'s rule, the name with an `Event` suffix dropped.
+  - **Actions** (`ActionPayload`): `generateActionID`'s rule, the name with an `Action` suffix dropped, including to the empty string for a type named `Action`.
+  - The macro sees the conformance list. When it can't tell (the conformance is added in an extension), it emits the computed form below.
+- **Generic types, nested-in-generic types, and unknown conformance** take a computed static that calls the runtime rule (`EventRegistry.eventName(for: Self.self)`, or the action rule), with the lexical-context predicate #527 introduced for `_syncPolicy_` (`2026-11-12-sync-policy-per-type.md` §3). No generic payload type exists outside tests (inferred; checked in the PR).
 - **`AnyServerEvent.init(_:)`** and `AnyClientEvent.init(_:)` read `E._payloadWireName` instead of deriving the name.
-- **One derivation left.** The two private copies in `EventPayload.swift` are removed. `EventRegistry.eventName(for:)` stays as the runtime rule: the fallback for types without the macro, and the schema's.
-- **Checked at registration:** for each registered event and action type, `_payloadWireName` equals the schema's ID. A mismatch is refused at land registration (a type error knowable there). It can happen only for a hand-written conformance.
+- **One derivation per kind left.** The two private copies in `EventPayload.swift` are removed. `EventRegistry.eventName(for:)` stays as the runtime event rule, and one shared function replaces the two copies of the action rule (`generateActionIDForMatching` calls it).
+- **Checked at registration (EV2):** for each registered event and action type, `_payloadWireName` equals the schema's ID.
 
 ### 2.2 A typed field writer
 
@@ -102,6 +114,7 @@ public func _writePayloadFields<W: _PayloadFieldWriter>(into w: inout W) throws 
     try w.field(self.playerID)
     try w.field(self.to)
 }
+public static var _payloadHasTypedWriter: Bool { true }
 ```
 
 **Two overloads, resolved at compile time** (in a protocol extension of `_PayloadFieldWriter`, so the macro's call site picks one per field from the field's static type):
@@ -121,7 +134,7 @@ public protocol _PayloadWireLeaf: Encodable {
 - The MessagePack writer's `leaf` runs `_writeWire` into a primitive writer that builds the `MessagePackValue`.
 - The JSON adapter's `leaf` is `container.encode(v)`. That is what today's `AnyCodable.encode` does for each leaf type (a native scalar, or `any Encodable` into the type's own `Codable`), so a leaf's JSON bytes are unchanged without a second form.
 
-**The rule for a type without a typed form (D5):**
+**The rule for a type without a typed form (D5, settled (a)):**
 - **Typed leaves:** `Bool`; `Int`, `Int8`–`Int64`; `UInt`, `UInt8`–`UInt64`; `Float`; `Double`; `String`; `PlayerID`, `ClientID`, `SessionID`, `LandID`; and, in `SwiftStateTreeDeterministicMath`, `IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle`. These are the `SyncLeafWritable` types plus `Float` and the unsigned types. Each leaf writes exactly the MessagePack value today's top-level path gives that type. That is `encodeAnyCodable`'s case for scalars and IDs, and the `Codable` form for the math types (`Position2` → `{"v": {"x": Int32, "y": Int32}}`, `Angle` → `{"degrees": Int32}`).
 - **The `SyncLeafWritable` conversions aren't reused as they are.** Their target is `SnapshotValue`, whose forms differ from the wire's for `Float` (widened to double) and for `UInt`/`UInt64` above `Int.max` (decimal strings). The leaves share their structure: one conformance file per module, as `SyncLeafWritable+DeterministicMath.swift`.
 - **Everything else is a fallback field:** arrays, dictionaries, optionals (which `@Payload` refuses anyway, :109-116), nested structs, `AnyCodable`, `Date`, `Data`, `Decimal`, enums. Typed arrays of leaves are a later extension.
@@ -129,19 +142,21 @@ public protocol _PayloadWireLeaf: Encodable {
 
 **In the repository today (checked):** the Hero Defense events and client events are all typed (`PlayerID`, `Int`, `Position2`, `Angle`). The reevaluation monitor's events have fallback fields: `expectedState`/`actualState: AnyCodable` and `mismatches: [TickMismatch]` (`ReevaluationMonitorEvents.swift:37-38, 63-64, 102`).
 
+**The macro's declared names.** `@Payload`'s `@attached(member, names: …)` (`StateTreeBuilder.swift:84`) lists `getFieldMetadata`, `getResponseType` and `encodeAsArray`. It gains `named(_payloadWireName)`, `named(_payloadHasTypedWriter)`, `named(_writePayloadFields)` and `named(_payloadFieldForms)`.
+
 ### 2.3 How it reaches each encoding
 
-`shouldEncodePayloadAsArray` is true for `opcodeJsonArray` and `messagepack` message encodings (`TransportEncodingConfig.swift:56`, checked).
+The typed path is taken when the encoder's own `enablePayloadCompression` is set, the same condition as today's positional path. With it off, today's keyed path runs unchanged (N10).
 
 | Encoding | Today | Typed |
 |---|---|---|
 | `messagepack` (the default config), and the 107 body | `[AnyCodable]` → `MessagePackValueEncoder` per element (§1.1) | A `_PayloadFieldWriter` that appends `MessagePackValue`s: the body is `.array([.int(1), typeValue, .array(fields)])`, as `encodeServerEventBody` builds it after `dropFirst()`. `rawBody` is nil for a typed event. A standalone frame packs `[103, 1, typeValue, fields]`. Building bytes directly, without `MessagePackValue`, is a later step |
-| `opcodeJsonArray` | `JSONEncoder` over `[AnyCodable]` | `JSONEncoder` over the same outer array, whose payload element is a typed `Encodable` wrapper: its `encode(to:)` opens an unkeyed container and runs the macro's writer through an adapter (`field` → `container.encode(v)` for a leaf, `container.encode(AnyCodable(v))` for a fallback) (D6) |
+| `opcodeJsonArray` | `JSONEncoder` over `[AnyCodable]` | `JSONEncoder` over the same outer array, whose payload element is a typed `Encodable` wrapper: its `encode(to:)` opens an unkeyed container and runs the macro's writer through an adapter (`field` → `container.encode(v)` for a leaf, `container.encode(AnyCodable(v))` for a fallback) (D6, settled (a)) |
 | `json` (object) | `JSONEncoder` of the whole `TransportMessage`; the payload is `AnyCodable(event)` → the event's synthesized `Codable` | unchanged, except the static name. This is the debugging encoding; the boxing here is one existential hop |
 | 107 merged frame | the queued bodies (`PendingEventManager`) are merged into the frame by `EncodingPipeline` (:78, :107) | unchanged: it merges the typed bodies |
-| Hybrid (`message: json/opcodeJsonArray`, `stateUpdate: opcodeMessagePack`) | every event first tries a body (JSON bytes unpacked as MessagePack, which fails), then is sent alone (TA :2794-2804) | decided once at adapter init: in a hybrid config every event is sent alone, as today's bytes show, and no body is attempted (D10). The per-event `.sentAlone` outcome goes away |
+| Hybrid (`message: json/opcodeJsonArray`, `stateUpdate: opcodeMessagePack`) | every event first tries a body (JSON bytes unpacked as MessagePack, which fails), then is sent alone (TA :2794-2804) | decided once at adapter init: in a hybrid config every event is sent alone, as today's bytes show, and no body is attempted (D10, settled (a)). The per-event `.sentAlone` outcome goes away |
 
-**`AnyServerEvent` carries the typed form (D3).** `init<E>(_:)` stores, beside `payload`, a package-level `wireForm: any PayloadCompression` (the same event value), when `E._payloadHasTypedWriter` is true. The encoders use `wireForm` when it is present. `AnyServerEvent(type:payload:)`, the hand-built and replay form, has none; it is resolved once at emit (§4, replay re-emit).
+**`AnyServerEvent` carries the typed form (D3, settled (a)).** `init<E: ServerEventPayload>(_:)` stores, beside `payload`, a package-level `wireForm: (any ServerEventPayload)?`, the same event value, set when `E._payloadHasTypedWriter` is true. `ServerEventPayload` is `Sendable` (`EventPayload.swift:13`); `PayloadCompression` isn't, so it can't be the stored type in the `Sendable` `AnyServerEvent`. The encoders use `wireForm` when it is present. `AnyServerEvent(type:payload:)`, the hand-built and replay form, has none; it is resolved once at emit (§4, replay re-emit).
 
 **The type number** stays a dictionary lookup by the static name. An `ObjectIdentifier`-keyed table per adapter is a follow-up if the profile shows the lookup.
 
@@ -152,25 +167,48 @@ public protocol _PayloadWireLeaf: Encodable {
 ```swift
 package protocol PayloadDecodingSource: Sendable {
     func decode<T: Decodable>(_ type: T.Type) throws -> T
-    var anyCodable: AnyCodable { get }   // built on demand, for records
+    /// Today's `AnyCodable` tree of the payload, for records. Throws where today's wire
+    /// decode throws (a MessagePack map key that isn't a string).
+    func makeRecordPayload() throws -> AnyCodable
+    /// Checks, without building the tree, that `makeRecordPayload()` would succeed.
+    func validateRecordable() throws
 }
 ```
 
-`ActionEnvelope` and `AnyClientEvent` gain a package-level `source`. Their public `payload` stays readable, as a computed property over `source.anyCodable`, and their `Codable` forms are unchanged (the source is excluded).
+`ActionEnvelope` and `AnyClientEvent` gain a package-level `source`. Their public `payload` stays readable, as a computed property (§6), and their `Codable` forms are unchanged (the source is excluded).
 - **MessagePack** (the default): the payload's `MessagePackValue`, decoded with `MessagePackValueDecoder`. No `Any` tree, no JSON.
-- **Opcode JSON and JSON object:** today's semantics, unchanged: the source holds the `AnyCodable` tree and decodes it with today's round trip. The accepted inputs are then identical by construction on the JSON encodings (D7).
+- **Opcode JSON and JSON object:** today's semantics, unchanged: the source holds the `AnyCodable` tree and decodes it with today's round trip. The accepted inputs are then identical by construction on the JSON encodings. `makeRecordPayload()` returns the tree and can't throw.
 - **Hand-built envelopes** (tests, benchmarks, `ActionEnvelope(typeIdentifier:payload:)`): an `AnyCodable` source, as above.
 
-**Decode once.** The intake decodes (`LandKeeper.swift:2719-2721`, from the source), and `PendingActionItem` keeps the decoded value (`package let decoded: any ActionPayload`). The apply step (:3412-3415) calls `invokeErased` with it. Live mode decodes nothing inside the turn.
+**What intake accepts, on MessagePack (M2, M3).** Today, MessagePack acceptance is the intersection of two steps: `decodeAnyCodable` (string map keys, at any depth) and the JSON round trip (which refuses non-finite numbers, among others). The typed decode must not accept more than that by accident:
+- **Record payloads are validated at intake, before a sequence is taken.** `validateRecordable()` runs on every MessagePack input, whether or not the keeper records, so what is accepted doesn't depend on recording. When the keeper records, `makeRecordPayload()` runs at intake instead, and the tree rides on the pending item. A failure rejects the input, as A2. Nothing can throw at apply.
+- **Non-finite numbers are refused (M3).** The MessagePack source's decoder refuses NaN and ±∞ for `Double` and `Float` fields, at any depth, as today's round trip does (`JSONEncoder`'s default `nonConformingFloatEncodingStrategy` is `.throw`). This is a rule of the source, not a change to `MessagePackValueDecoder`'s other uses. It keeps today's behavior, so it isn't an exception.
+- **The other differences** (an integral float into an integer field, a binary value into a `String` field, duplicate map keys, extra keys) are listed by the differential test, in both directions: what today accepts and the typed decode refuses, and the reverse. Each one is named in the PR (N1, D7).
 
-**A handler table, built at land definition.** One dictionary from every form today's scan accepts (type name, its last `.` component, schema ID, lowercased schema ID) to the handler.
-- Today's scan takes the first handler, in declaration order, that matches **any** form. A table keyed by the forms reproduces that only when no two handlers share a form, including lowercased.
-- So **two handlers whose forms collide are refused at land registration** (A4, a type error knowable there). With no collision, at most one handler matches any ID, and the lookup equals the scan.
-- The lookup is the exact ID, then its last `.` component, then its lowercased form, each one hash lookup.
+**Decode once (M7).** The intake decodes (`LandKeeper.swift:2719-2721`, from the source), and the pending item keeps the decoded value. The apply step (:3412-3415) calls `invokeErased` with it. Live mode decodes nothing inside the turn.
+- `PendingActionItem` gains package-level `decoded: (any ActionPayload)?` and `source: (any PayloadDecodingSource)?`. **The public init stays**, non-throwing and unchanged: it sets `decoded` to nil and wraps `action` in an `AnyCodable` source. An item from the public init is decoded at apply, with today's round trip, as now.
+- **A package init** takes the decoded value, the source and the record payload. The intake sites (:2748, :2767) use it.
+- **A package copy,** `with(resolverOutputs:resolvedAtTick:)`, carries `decoded`, `source` and the record payload across the rebuild sites: resolver completion (:2074) and delivery (:1910). Replay (:4154) uses the package init with the value decoded when the tick's inputs are staged (§4).
+- `startActionJob`'s separate `decodedAction` parameter goes away: the job reads `decoded` from its item.
 
-**Client events** take the same source and decode, at intake, through a decode closure the registry captures at `Register<E>` (D2). The handler receives the typed value. A payload that doesn't decode is rejected at intake with an error to the client, as for an action. Today it is silently skipped at apply (§1.3).
+**A handler lookup with today's predicates (M1).** Three indexes, built at land definition, one per predicate shape, each keyed by exactly what its predicate compares:
 
-**Not in this plan: a positional action wire form (D11).** #521 suggests a typed positional decoder for actions, but clients send objects (§1.2). A positional form would be a new wire form with an SDK change.
+| Index | Key, per handler | Looked up with |
+|---|---|---|
+| exact | `name(h)` and `sid(h)` | the whole input |
+| basename | `last(name(h))` | `last(input)`, the last non-empty `.` component, with `split`'s rules |
+| lowercased schema ID | `sid(h).lowercased()` | `input.lowercased()`, the whole input |
+
+- The lookup tries the three and returns the hit. It accepts exactly the inputs today's scan accepts: `X.AddGold`, `x.addgold` and `addgoldaction` match nothing, as today; `AddGoldAction.` and `addgold` match, as today.
+- **Collisions are refused at registration (A4).** Today's scan returns the first handler, in declaration order, for which any predicate holds. The indexes reproduce that only if no input matches two handlers. Every predicate implies that the input's lowercased last component equals the lowercased last component of `name(h)` or of `sid(h)`. So two handlers whose sets {lower(last(name)), lower(last(sid))} intersect are refused, and with none refused, no input can match two. The test is conservative: it also refuses some pairs the scan could separate, such as types whose names differ only in case (N9).
+- **Replay keeps its own two predicates.** A recorded action is matched with the exact and basename indexes only, on `name(h)`, as :4110-4124 does today.
+- **Erased handlers are validated at registration.** Each action handler's `getActionType()` must be an `ActionPayload` type, and each client-event handler's type must match its registry descriptor. Today the first check runs per input (:2715-2717, `actionNotRegistered`) and in replay (:4133-4139, a skip). It becomes a registration refusal (A8). The per-input check stays as an invariant (A7).
+
+**Client events (D2, settled (a))** take the same source and decode, at intake, through a decode closure the registry captures at `Register<E>`: `AnyEventDescriptor` (`EventRegistry.swift:6`) gains a package-level `decode: @Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload`. The handler receives the typed value. A payload that doesn't decode is rejected at intake with an error to the client, as for an action. Today it is silently skipped at apply (§1.3).
+
+**Records are built only when something reads them.** Today the action and client-event records are built on every apply (:3434-3445, :3488-3498), recording or not. They are built when the keeper has a recorder or runs in reevaluation mode, from the record payload made at intake. `appliedOrder` is kept either way, since the tickless pass record and the turn's emptiness use it (:3751-3753, :5007).
+
+**Not in this plan: a positional action wire form (D11, settled (a)).** #521 suggests a typed positional decoder for actions, but clients send objects (§1.2). A positional form would be a new wire form with an SDK change.
 
 ## 3. The byte-identity contract
 
@@ -180,50 +218,71 @@ package protocol PayloadDecodingSource: Sendable {
 - **Schema:** `SchemaGen` output is unchanged (no change to metadata or IDs). Each example's output is byte-identical, base against head, with its sha256 recorded. Records carry the schema hash, so a change would also show there.
 - **Records:**
   - Server event records: unchanged (`payload` is still the event).
-  - Action and client-event records: unchanged. `payload` is computed from the source, and for MessagePack that is today's `decodeAnyCodable(from:)` of the same value, so the record JSON is the same (D8).
-- **Actions:** the same handler is chosen for every ID (with no collision, §2.4). On the JSON encodings the same inputs are accepted and decode to the same values.
+  - Action and client-event records: unchanged. The record payload is today's tree: for MessagePack, `makeRecordPayload()` is today's `decodeAnyCodable(from:)` of the same value, so the record JSON is the same (D8, settled (a)).
+- **Actions:** the same handler is chosen for every ID, when no handlers collide (§2.4). On the JSON encodings, the same inputs are accepted and decode to the same values. On MessagePack, non-finite numbers and non-string keys are refused as today.
 
-**Can't hold, by design (named, each pinned):**
-- **(N1) MessagePack action and client-event decode tightens (D7).** `MessagePackValueDecoder` is exact. It refuses an integer field sent as a float (`decodeInteger` takes only `.int`/`.uint`, `MessagePackValueDecoder.swift:431-445`). Today's round trip can accept such an input, depending on how `JSONEncoder` writes the double (inferred). The TypeScript SDK sends integers as MessagePack integers, so SDK clients are unaffected (inferred, pinned by the E2E). The differential test (§7) lists every difference, and the PR names each one.
+**Can't hold, by design (named, each pinned).** N1, N2, N4, N5 and N6 follow from the rule or from review's settled decisions. N3 and N7–N10 are compatibility exceptions for the maintainer, with a recommendation in §10.
+- **(N1) MessagePack action and client-event decode differs where the differential finds it (D7).** `MessagePackValueDecoder` is exact. It refuses an integer field sent as a float (`decodeInteger` takes only `.int`/`.uint`, `MessagePackValueDecoder.swift:431-445`). Today's round trip can accept such an input, depending on how `JSONEncoder` writes the double (inferred). The TypeScript SDK sends integers as MessagePack integers, so SDK clients are unaffected (inferred, pinned by the E2E). Every difference, in either direction, is listed by the differential test (§7) and named in the PR.
 - **(N2) A malformed client event is rejected with an error,** and not recorded. Today it is accepted, recorded and silently not applied (§1.3).
-- **(N3) Records written before this change** that hold a malformed client event replay as they ran: skipped. That is gated on the record's version (`ReevaluationRecordVersionTests`), so an old record still verifies. A record of the new version never holds one.
-- **(N4) Types that crash today are refused instead.** A registered event type with no typed writer (no `@Payload`), on a compressed message encoding, is refused at land registration. Today the process hits `fatalError` at that type's first send.
-- **(N5) Replay re-emit of a recorded event as a dictionary** works on compressed encodings (§4). Today it is a `fatalError` (inferred).
+- **(N3) Records written before this change that hold a malformed client event.** They replay as they ran, skipped, gated on the record's version (`ReevaluationRecordVersionTests`), so an old record still verifies. A record of the new version never holds one. The maintainer decides whether old records keep verifying this way or are refused (§10).
+- **(N4) Types that crash today are refused instead** (EV1 for a type with neither the writer nor its own `encodeAsArray()`). Today the process hits `fatalError` at that type's first send.
+- **(N5) Replay re-emit of a recorded event as a dictionary** works on compressed encodings, through the base land's registry (§4). Today it is a `fatalError` (inferred).
 - **(N6) The failure outputs** change as §5 says.
+- **(N7) A hand-written `encodeAsArray()` without the writer (EV1).** Such a conformance works today. Registration can't tell it from the default `fatalError` one, so EV1 refuses both. The refusal names the fix: add `@Payload`, or implement `_writePayloadFields`.
+- **(N8) A registered event missing from the host's `eventHashes` (EV3).** Today it is sent with its string name, which a client built from that schema doesn't know. Under this plan it is refused at registration.
+- **(N9) Handler collisions (A4).** Two handlers whose folded names overlap are refused at registration. Today the first in declaration order wins.
+- **(N10) Encoders built with compression off.** Their events keep today's keyed `AnyCodable` path; nothing in them is typed. EV1 applies only where the encoder in use has compression on.
 
 ## 4. Replay and reevaluation
 
-- **Recording:** unchanged on all three input kinds (§3). Server events keep `payload = AnyCodable(event)`. Actions and client events record `source.anyCodable`, built only when a recorder or sink reads it (`PendingActionItem.action` becomes a computed property).
-- **Replay input decode:** a recorded action or client event is decoded once, when the source is read (`LandKeeper.swift:4103-4160`), through an `AnyCodable` source, which is today's semantics. Matching uses the handler table.
-  - A recorded payload that doesn't decode fails the replay with an error naming the sequence and type. It doesn't skip.
-  - The exception is a malformed client event in an old-version record (N3).
+- **Recording:** unchanged on all three input kinds (§3). Server events keep `payload = AnyCodable(event)`. Actions and client events record the tree made at intake (§2.4).
+- **Replay input loading: a per-tick staged batch (M4).** Today the loader skips an action without a handler, or whose type isn't an `ActionPayload` (:4126-4139). It also logs and swallows any load error, so the tick runs with inputs missing (:4251-4256). Under this plan:
+  - **Fetch:** the tick's records are read from the source, with the awaits as today.
+  - **Stage:** after the last await, in one synchronous segment, every recorded input of the tick is matched (§2.4, replay predicates) and decoded through an `AnyCodable` source, which is today's semantics, into a staging list. Nothing is appended to `pendingItems` yet.
+  - **Commit:** only when every input staged does the list go into `pendingItems`.
+  - **A failure is terminal for the run:** an unmatched type, a non-`ActionPayload` handler, a payload that doesn't decode, or a source read that throws. The tick fails with the reason in `recordedPassMismatches`, as unknown server inputs do today, and the run stops with a failed verdict. Later ticks would run on a state missing those inputs, so their comparisons can't mean anything.
+  - **The exception** is a malformed client event in an old-version record (N3). It is staged as an item the handler skips, as it ran.
 - **`serverEventsMatch`:** compares as today, sorted-key JSON of both payloads. Under #535's rule, an encode failure on either side is a mismatch with its error as the reason, not `Data()` on both sides (§1.4).
-- **Replay re-emit (`GenericReplayLand`):** `emitAnyServerEvent` resolves an untyped event once, at emit:
-  - If its payload is a concrete payload value, it is cast once to `any PayloadCompression` and written typed.
-  - If it is a dictionary, it is looked up by name in the land's `ServerEvents` registry, decoded into that type, then written typed.
-  - A name the registry doesn't know, or a dictionary that doesn't decode, is a land error (§5 EV7).
+- **The replay land's event registry (M5).** `GenericReplayLand.makeLand(basedOn:)` copies the base definition's server-event descriptors into the replay land's `serverEventRegistry`, through a package-level hook on the land builder. So the replay land registers the same event types, names and decode closures as the base.
+  - **Registration checks EV1–EV3** run on the replay land as on any land. Its registry equals the base's, and `registerWithGenericReplay` gives it the live land's configuration and `eventHashes` (`ReevaluationFeature.swift:225-250`). So it passes exactly when the base did. `makeLand` called on its own is checked against the configuration it is registered with.
+- **Replay re-emit:** `emitAnyServerEvent` resolves an untyped event once, at emit:
+  - If its payload is a concrete payload value, it is cast once to `any ServerEventPayload` and written typed.
+  - If it is a dictionary, it is looked up by name in the land's registry (the base's, above), decoded into that type, then written typed.
+  - A name the registry doesn't know, or a dictionary that doesn't decode, ends the land (EV7).
 - **Sync-stream digests** (`canonicalEvent`, `SyncOutputVerifier.addEvents`): unchanged. They read `payload.base`, which is still the event.
 
 ## 5. Error paths under #535's scope rule
 
 | # | Failure | Today (checked) | Under this plan | Unit that ends |
 |---|---|---|---|---|
-| EV1 | A registered event type has no typed writer (`_payloadHasTypedWriter` is false), on `opcodeJsonArray`/`messagepack` | `fatalError` at its first send | refused at land registration | registration (type knowable) |
+| EV1 | A registered event type has no typed writer (`_payloadHasTypedWriter` is false), and the encoder in use has compression on | `fatalError` at its first send, unless the type wrote its own `encodeAsArray()` (N7) | refused at land registration | registration (type knowable) |
 | EV2 | A registered type's static name differs from the schema ID | the client can't map the event | refused at land registration | registration |
-| EV3 | The host passes `eventHashes` and a registered event type is missing from it | sent with its string name | refused at land registration (the table and the land disagree) | registration |
-| EV4 | An event's value fails to encode (a fallback field that throws; a non-finite `Double` under `JSONEncoder`), target `.all` | 107: no body, then the standalone frame fails too: logged, `.lost`. Otherwise logged and dropped (TA :3026-3032) | the cycle's frames aren't sent; the land is stopped through #535's path | **the land**: every recipient's output is wrong (D9) |
-| EV5 | The same, target one or more players, a client or a session | as EV4 | each targeted session is closed with #535's per-session code; the land keeps running; #535's bound escalates to the land if the same player fails again right after rejoining | **the targeted sessions** (D9) |
+| EV3 | The host passes `eventHashes`, and a registered event type is missing from it | sent with its string name (N8) | refused at land registration (the table and the land disagree) | registration |
+| EV4 | A registered event's value fails to encode (a fallback field that throws; a non-finite `Double` under `JSONEncoder`), target `.all` | 107: no body, then the standalone frame fails too: logged, `.lost`. Otherwise logged and dropped (TA :3026-3032) | the failing event and everything after it in that cycle (its later events, its state update) aren't sent. Events of the cycle enqueued before it may already be out (§1.1). The land is stopped through #535's path | **the land**: every recipient's output is wrong (D9) |
+| EV5 | The same, target one or more players, a client or a session | as EV4 | each targeted session is closed with #535's per-session code; the land keeps running; a repeat ends the land (the bound below) | **the targeted sessions** (D9) |
 | EV6 | The merged 107 broadcast frame, or a per-session frame carrying targeted events, fails to encode | #535's classes 2–3 | as #535 decides | #535's |
-| EV7 | An untyped event (`emitAnyServerEvent`) whose name isn't registered or whose dictionary doesn't decode | a dictionary payload on a compressed encoding: `fatalError` (inferred) | treated as EV4/EV5 by its target | land or targeted sessions |
+| EV7 | An untyped event (`emitAnyServerEvent`) whose name isn't in the land's registry, or whose dictionary doesn't decode into the registered type | a dictionary payload on a compressed encoding: `fatalError` (inferred) | the land is stopped through #535's path, whatever the target | **the land**: the land's own code or its record emitted an event the land doesn't define, so it isn't a per-recipient fault (M8) |
 | A1 | An unknown action or client-event name | `actionNotRegistered` / `eventNotRegistered` thrown, an error frame to the client | unchanged | the input (rejected) |
-| A2 | A malformed action payload | the round trip throws at intake, an error frame (the catch in `handleActionRequest`, TA :5912-5921, and `handleActionError`, :6079) | the typed decode throws at intake, the same error frame | the input (rejected) |
+| A2 | A malformed action payload, including one that can't be recorded (§2.4) or holds a non-finite number | the round trip throws at intake, or the wire decode throws, an error frame (the catch in `handleActionRequest`, TA :5912-5921, and `handleActionError`, :6079) | the typed decode or the record check throws at intake, the same error frame | the input (rejected) |
 | A3 | A malformed client-event payload | silently skipped at apply, recorded (§1.3) | rejected at intake with an error frame, not recorded (N2) | the input (rejected) |
-| A4 | Two action handlers share an accepted name form | the first in declaration order wins, silently | refused at land registration | registration |
-| A5 | A recorded action or client event doesn't decode in replay | the apply-time round trip throws inside the replayed turn (inferred) | the replay fails with that error (except N3) | the replay run |
+| A4 | Two action handlers' folded names overlap (§2.4) | the first in declaration order wins, silently | refused at land registration (N9) | registration |
+| A5 | A recorded input can't be staged in replay (§4) | skipped with a warning, or the tick runs without its inputs (:4126-4139, :4251-4256) | the tick fails, and the run stops failed (except N3) | the replay run |
 | A6 | `serverEventsMatch` can't encode a payload | `Data()` on both sides: equal | a mismatch, with the error | the verification (fails) |
-| A7 | The typed value's cast to the handler's type fails | not reachable today (the round trip decodes the handler's own type) | can't fail by construction (the descriptor and the handler share `E`); if it does, the land is closed as an internal invariant, never skipped | the land |
+| A7 | A decoded value's cast to the handler's type fails | at intake, `actionNotRegistered` (:2715-2717) | can't fail after A8 (the descriptor and the handler share `E`); if it does, the land is stopped as an internal invariant, never skipped | the land |
+| A8 | An erased handler's type isn't an `ActionPayload`, or a client-event handler's type differs from its descriptor | per input: `actionNotRegistered`; in replay, a skip | refused at land registration | registration |
 
-**How EV4/EV5 stop things (depends on #535).** The encode happens in the sync phase (in-turn) or at flush (legacy). Both are inside a keeper turn or the adapter's phase, so a stop is a request that goes out, not an await (#535's design point and the reentrancy rule). Until #535's stop and session-close paths exist, this plan's PRs keep today's EV4/EV5 handling unchanged: they add no new absorb path, and they remove the hybrid per-event fallback (D10). The EV4/EV5 rows land with #535's mechanism (§9, PR 3).
+**EV5's repeat bound (M9).** #535's per-session close relies on a bound so a rejoin can't loop on the same failure. This plan defines it for event encode:
+- **What counts as a repeat:** a second EV5 failure for the same player and the same event type, in the same land instance, in a later membership generation than the first. The generation is the player's membership stamp (`membershipCoordinator.currentMembershipStamp(for:)`, TA :2980-2981), taken when the event fails.
+- **Within one generation**, any number of EV5 failures for that player (several events in a cycle, several cycles before the close takes effect) are one incident. They close the session once and don't count again.
+- **No time window.** The bound is counted, not timed, so tests drive it without clocks.
+- **Reset:** a later successful encode of an event of that type with that player among its recipients (targeted or `.all`) clears the entry. A player leaving the land doesn't clear it, so a leave and rejoin can't reset the bound.
+- **Kept state:** a dictionary from (player, event type name) to the generation of the first failure, in the adapter, mutated only in its synchronous sync-phase segment.
+- **Under D9 (b)** (always the land), the bound isn't needed and isn't built.
+
+**How EV4, EV5 and EV7 stop things (depends on #535).** No keeper state is mutated after an await to stop a land:
+- **In-turn sync:** the encode runs in the adapter's synchronous sync phase. A failure records the stop or close request in that segment and hands it to the keeper as a turn input, with a ticket for the land's current lifecycle generation.
+- **The legacy flush** (`flushOutputs`, :491-492) awaits per event. A failure there doesn't stop the land from the flush's frame. The adapter submits the same stop request as a turn input, with the ticket captured when the flush began. The keeper's handler re-reads the land's state and validates the ticket, as the reentrancy rule requires. The flush stops sending the rest of its batch.
+- **Until #535's stop and session-close paths exist,** this plan's PRs keep today's EV4/EV5 handling unchanged. They add no new absorb path, and they remove the hybrid per-event fallback (D10). EV7 on a compressed encoding keeps today's crash until then, since it is no worse than today and #535's stop is the fix. The EV4, EV5 and EV7 rows land with #535's mechanism (§9, PR 3).
 
 **Logs and counters** follow #535's fields: land type and ID, class (`eventEncode` / `actionDecode`), event or action name, target, error text, sync sequence. A malformed client input (A2, A3) is counted per land type and logged at debug, so a flood of bad inputs doesn't flood the log.
 
@@ -231,51 +290,80 @@ package protocol PayloadDecodingSource: Sendable {
 
 | API | Change | Compatibility |
 |---|---|---|
-| `PayloadCompression` | gains `_payloadWireName`, `_payloadHasTypedWriter`, `_writePayloadFields(into:)`, `_payloadFieldForms`. The defaults: the runtime name, `false`, a writer that throws, and an empty list | `@Payload` emits them; a hand-written conformance compiles and is refused at registration only where EV1 applies |
-| `PayloadCompression.encodeAsArray()` | deprecated; still emitted by the macro and still the path of a payload without the writer (D13) | source compatible, with a deprecation warning at call sites outside the macro |
-| `_PayloadFieldWriter`, `_PayloadPrimitiveWriter`, `_PayloadWireLeaf`, `_PayloadFieldForm` | new, public and underscored: the macro's expansion in user modules calls them, and `SwiftStateTreeDeterministicMath` conforms its types | additive |
-| `AnyServerEvent`, `AnyClientEvent` | no signature change; package `wireForm` / `source`; `AnyClientEvent.payload` becomes a computed get-only property | reads compile; the `Codable` forms are unchanged |
+| `PayloadCompression` | gains `_payloadWireName`, `_payloadHasTypedWriter`, `_writePayloadFields(into:)`, `_payloadFieldForms`. The defaults: the runtime name, `false`, a writer that throws, and an empty list | `@Payload` emits them. A hand-written conformance compiles, and is refused at registration only where EV1 applies (N7) |
+| `@Payload` | the `names:` list gains the four members (§2.2) | macro users recompile; no source change |
+| `PayloadCompression.encodeAsArray()` | deprecated; still emitted by the macro, and still the path of a payload without the writer under compression off (D13) | source compatible, with a deprecation warning at call sites outside the macro |
+| `_PayloadFieldWriter`, `_PayloadPrimitiveWriter`, `_PayloadWireLeaf`, `_PayloadFieldForm` | new, public and underscored: the macro's expansion in user modules calls them, and `SwiftStateTreeDeterministicMath` conforms its types | additive. A cross-module compile fixture proves the expansion builds outside `SwiftStateTree` (§7) |
+| `AnyServerEvent` | package `wireForm: (any ServerEventPayload)?`; no public signature change | `Codable` and `Sendable` unchanged |
+| `AnyClientEvent` | package `source`; `payload` becomes a computed get-only property (it is a `let` today) | reads compile; `Codable` unchanged |
+| `AnyEventDescriptor` | package `decode` closure, captured by `Register<E>` (§2.4) | additive |
 | `ActionEnvelope` | package `source`; `payload` becomes computed get-only; `init(typeIdentifier:payload:)` kept | reads compile; `Codable` unchanged |
-| `LandKeeper.PendingActionItem` | `action` becomes computed get-only; package `decoded`; the public init kept | reads compile |
-| `EventRegistry.eventName(for:)` | kept, the single runtime rule | unchanged |
-| Behavior | a malformed client event gets an error frame (N2); EV1–EV5, A4–A6 | named in the PR and in `docs/core` |
+| `LandKeeper.PendingActionItem` | `action` becomes computed get-only; package `decoded`, `source`, a package init and `with(resolverOutputs:resolvedAtTick:)`; **the public init kept**, non-throwing, decoding at apply as today (§2.4) | reads and the public init compile |
+| `LandContext.emitAnyServerEvent(_:to:)` | stays non-throwing. An event it can't resolve (EV7) ends the land through #535's stop, delivered as a turn input; the caller isn't told synchronously | signature unchanged; behavior per EV7 |
+| Registration refusals (EV1–EV3, A4, A8) | a new `LandDefinition.validatePayloads(configuration:) throws`, called by `NIOLandHost.register` next to `SyncValueSemantics.validate` (`NIOLandHost.swift:363-364`), before the server is mapped. It throws `PayloadRegistrationError`, one case per row with the type and the reason, all failures in one error. `LandKeeper` used directly (tests) calls it from its init's existing validation (inferred; the PR names the site) | new public error type; `register` already throws |
+| `EventRegistry.eventName(for:)` | kept, the single runtime event rule | unchanged |
+| Behavior | a malformed client event gets an error frame (N2); EV1–EV7, A2–A8 | named in the PR and in `docs/core` |
 
 **Docs:** `docs/transport_evolution.md` and its zh-TW companion describe `encodeAsArray` as the server's serializer (:276). They are updated to the typed writer and the fallback rule, in the same commit. `docs/core/runtime.md` is unaffected (its `AnyCodable` is the action response).
 
 ## 7. Tests
 
 **Red first, where they can be:**
-- the silent client-event skip (A3): a malformed client event gets no error today;
-- the replay re-emit of a recorded dictionary on a compressed encoding (N5), as an exit test (`#expect(processExitsWith: .failure)`) on base;
+- the silent client-event skip (A3): a malformed client event gets no error today, and is recorded;
+- the replay re-emit of a recorded dictionary on a compressed encoding (N5), as an exit test (`#expect(processExitsWith: .failure)`) on base, with `.projectedWithFallback`;
 - `serverEventsMatch` with two unencodable payloads (A6): equal today;
-- a hand-written `ServerEventPayload` without `@Payload` on `messagepack` (EV1), as an exit test on base.
+- a hand-written `ServerEventPayload` without `@Payload` on `messagepack` (EV1), as an exit test on base;
+- replay loading with a recorded action whose type has no handler, and with a source that throws (A5): the run passes today with the input missing.
 
 **Event frames, differential:** today's encoders stay callable (the compatibility path for payloads without the writer), so they are the oracle.
 - **Types:** every payload type in the repository (Hero Defense, the reevaluation monitor, the demos), plus fixtures with one field of each leaf type and each fallback kind: `[Int]`, `[String: Int]`, `[PlayerID: Int]`, a nested struct, `AnyCodable` holding a dictionary and an array, `Date`, `Data`, `Decimal` (finite and NaN), `UUID`, `Float`, and unsigned values above `Int.max`.
-- **Values:** `Int.min`/`Int.max`, every `Int32` boundary of the math types, `−0.0`, NaN and ±∞ (MessagePack; JSON expects the encode failure of EV4), empty and non-ASCII strings, NFC and NFD forms.
-- **Assertion:** exact bytes, for the 107 body, the standalone frame in each of the three message encodings, and the merged 107 frame, typed against the oracle.
+- **Values:** `Int.min`/`Int.max`, every `Int32` boundary of the math types, `−0.0`, NaN and ±∞ (MessagePack writes them, as today; the JSON encodings expect the encode failure of EV4), empty and non-ASCII strings, NFC and NFD forms.
+- **Assertion:** exact bytes, for the 107 body, the standalone frame in each of the three message encodings, and the merged 107 frame, typed against the oracle. Also with compression off (N10): today's keyed bytes.
 
 **Field forms:** a test lists `_payloadFieldForms` for every payload type in the repository. A new fallback field fails it until it is listed.
 
 **Names:**
-- `_payloadWireName` equals `EventRegistry.eventName(for:)` and the schema ID for every registered event and action type;
-- a generic fixture and a nested-type fixture;
-- macro expansion tests for a non-generic, a generic and a nested-in-generic payload;
+- `_payloadWireName` equals `EventRegistry.eventName(for:)`, or the action rule, and the schema ID, for every registered event and action type;
+- a generic fixture, a nested-type fixture, a type named `Action`, and a conformance added in an extension (the computed form);
+- macro expansion tests for a non-generic, a generic and a nested-in-generic payload, including the `names:` list;
 - `PayloadMacroSortingTests` extended to the writer's field order.
 
-**Action and client-event decode, differential:**
-- **Corpus:** each repository action and client-event type × valid payloads, extra keys, missing keys, wrong types, out-of-range integers, integral and non-integral floats for integer fields, NaN, strings for numbers, `nil`, nested values.
-- **Per encoding:** the typed decode against today's round trip, on accept/reject and on the decoded value (canonical JSON). On the JSON encodings they must agree everywhere. On MessagePack every disagreement is listed (D7).
-- **Handler table:** for a corpus of IDs (exact, module-qualified, schema ID, case variants, unknown), the table returns the handler today's scan returns. Today's scan is kept in the test as the oracle. A land with colliding forms is refused (A4).
-- **Decode once:** a counting hook shows one decode per live action at intake and none at apply.
-- **Records:** action and client-event records are byte-identical to today's for inputs from each encoding. The committed record fixtures (`ReevaluationReplayCompatibilityTests`, `ReevaluationRecordVersionTests`) replay unchanged, the old-version malformed-client-event case included (N3).
+**Cross-module compile fixture:** a payload type with `@Payload`, an event and an action, in a module that imports `SwiftStateTree` without `@testable` (a small test-support target). It must build, and its frames must equal the oracle's.
 
-**Error paths** (fault injection through `eventEncodingFaultForTesting`, extended with a target; no timing):
-- EV4: the land is stopped, its sessions closed with #535's code, nothing of that cycle sent, and another land keeps syncing;
-- EV5: only the targeted sessions are closed, the land keeps running, and the second failure after rejoin escalates;
-- EV1–EV3 and A4: refused at registration, with the reason;
-- A2/A3: an error frame, the land and session alive, nothing recorded for A3;
-- A5 and A6.
+**Action and client-event decode, differential:**
+- **Corpus:** each repository action and client-event type × valid payloads, extra keys, missing keys, duplicate keys, wrong types, out-of-range integers, integral and non-integral floats for integer fields, NaN and ±∞ for `Double` and `Float` fields (top level and nested), the largest finite values and subnormals, `−0.0`, strings for numbers, binary for strings, `nil`, nested values, and MessagePack maps with integer keys at depth 1 and 3.
+- **Per encoding:** the typed decode against today's path, on accept/reject and on the decoded value (canonical JSON). On the JSON encodings they must agree everywhere. On MessagePack the non-finite and non-string-key cases must agree (refused). Every other disagreement is listed, with its direction (N1, D7).
+- **Recording on and off:** the same corpus is accepted and refused identically with and without a recorder (§2.4).
+
+**Handler lookup:**
+- **Oracle:** today's scan, kept in the test.
+- **Corpus:** for each repository land, exact names, module-qualified names, schema IDs, case variants, `X.AddGold`, `x.addgold`, `addgoldaction`, `AddGoldAction.`, `..AddGoldAction`, `.`, the empty string, and unknown names. The lookup must return the handler the scan returns, or none where it returns none.
+- **Generated pairs:** pairs of handler names, including ones that differ only in case and ones where one's schema ID is the other's basename. Each pair is either refused (A4), or the lookup equals the scan on the corpus.
+- **Replay:** the replay lookup equals :4110-4124's two predicates on the same corpus.
+
+**Decode once:** a counting hook on the source shows one decode per live action at intake, none at apply. That holds for an action without resolvers, for one with resolvers across resolver completion and delivery (:2074, :1910), and on a tickless land. An item from the public init decodes once, at apply.
+
+**Records:**
+- Action and client-event records are byte-identical to today's for inputs from each encoding.
+- The committed record fixtures (`ReevaluationReplayCompatibilityTests`, `ReevaluationRecordVersionTests`) replay unchanged, the old-version malformed-client-event case included (N3).
+- No record is built without a recorder or reevaluation mode (a counting hook), and `appliedOrder` still drives the tickless pass record.
+
+**Replay land:** the replay land's registry lists the base's event types; a re-emitted recorded event is byte-identical to the live frame; EV1–EV3 on the replay land pass and fail as on the base.
+
+**Error paths** (fault injection through `eventEncodingFaultForTesting`, extended with a target and an event type; holds, not timing):
+- **EV4:** the land is stopped, its sessions closed with #535's code, and another land keeps syncing. Nothing after the failing event in that cycle is sent; events enqueued before it are, on the immediate path and on the legacy flush.
+- **EV5:**
+  - only the targeted sessions are closed, and the land keeps running;
+  - several failures in one generation close the session once;
+  - after a rejoin, the same player and type failing again ends the land;
+  - after a rejoin and a successful encode of that type, a new failure closes the session again;
+  - a leave and rejoin without a success doesn't reset the bound.
+- **EV7:** an unregistered name and an undecodable dictionary, each with a targeted and an `.all` target: the land ends in all four.
+- **Legacy flush:** the stop arrives as a turn input with a ticket; a stale ticket (the land restarted under a hold at the flush's await) is ignored.
+- **EV1–EV3, A4 and A8:** refused at registration, all failures in one `PayloadRegistrationError`, with the reasons.
+- **A2/A3:** an error frame, the land and session alive, nothing recorded.
+- **A5:** each failure kind stops the run failed, with the tick and reason; the staged batch commits nothing for a failed tick.
+- **A6.**
 
 **Hybrid config (D10):** events are sent alone, with today's bytes, and no body encode is attempted (a counting hook).
 
@@ -285,76 +373,132 @@ package protocol PayloadDecodingSource: Sendable {
 - the writer in declaration order (event frames);
 - an `Int` leaf written as `.uint`, or `Float` as `.double` (event frames);
 - the fallback through `MessagePackValueEncoder` instead of `encodeAnyCodable` (the top-level `Decimal` fixture);
-- a static name that keeps the `Event` suffix, or the full nested name (names);
-- the handler table last-wins, or without the lowercase form (handler table);
+- a static name that keeps the `Event` or `Action` suffix, or the full nested name (names);
+- one merged index for all forms, or `last(input)` looked up against schema IDs (handler lookup: `X.AddGold`);
+- the lowercased index keyed on the last component instead of the whole input (handler lookup: `x.addgold`);
+- the A4 fold without the schema ID's last component (generated pairs);
+- the record check run only when recording (recording on and off);
+- non-finite numbers accepted by the MessagePack source (decode differential);
 - `try?` restored on the client-event decode (A3);
+- the replay loader's `continue` or swallowed error restored, or a partial batch committed (A5);
+- the replay land built without the base's registry (replay land);
 - an event encode failure logged and dropped (EV4, EV5);
 - a broadcast failure that closes only sessions (EV4);
-- the apply-time decode kept (decode once);
-- records built from the decoded value instead of the source (records);
+- EV7 by target instead of the land (EV7);
+- the EV5 bound reset by a leave, or counting same-generation failures (EV5);
+- the apply-time decode kept, or `decoded` dropped by the copy (decode once);
+- records built from the decoded value instead of the source, or built without a recorder (records);
 - a 107 body built in a hybrid config (hybrid);
 - `?? Data()` restored in `serverEventsMatch` (A6).
 
 ## 8. Measurement (host A/B under the off-path instruction gate)
 
-`2026-11-13-off-path-instruction-gate.md` applies. Events and action decode are off the sync path, so this change's work is judged by windowed `instructions:u`, and time is reported.
+`2026-11-13-off-path-instruction-gate.md` applies. Event encode and input decode are off the sync path in purpose, so this change's work is judged by windowed `instructions:u`, and time is reported.
 
 **Prerequisites, as their own PR on main (PR 0), so both sides have them:**
 - **Where event encode runs.** Inferred: inside `syncNow()` under in-turn sync, since the sync phase enqueues the turn's events (TA :2852-2864); on the legacy path, at the tick's flush. Checked first with a counting probe. The perf window gains a mode **`iteration`** (the whole timed iteration, ticks and sync), so the judged span contains the encode wherever it runs.
-- **`--inputs-from-wire`:** `--active-players` injection today builds `AnyCodable` by a JSON round trip and calls the keeper (`BenchmarkExecution.swift:62-81`), which skips the wire decode. With the flag, each move is encoded as a client frame in the cell's encoding and goes through the transport's decoder.
-- **`--actions-per-player N`:** Hero Defense's `PlayAction` (`HeroDefenseLand.swift:258`), N per player per iteration, from wire bytes, inside the `nonsync` span.
+- **`--inputs-from-wire`:** `--active-players` injection today builds `AnyCodable` by a JSON round trip and calls the keeper (`BenchmarkExecution.swift:62-81`), which skips the wire decode. With the flag, each input is encoded as a client frame in the cell's encoding and goes through the transport's decoder.
+- **`--actions-per-player N`** on the visibility-test runner: `SetMotionAction(enabled: true)` (`VisibilityTestLand.swift:273`), N per player per iteration, from wire bytes, inside the `nonsync` span. It has a field, and with motion already on it leaves the state unchanged (inferred; checked by the cell's bytes against `vis-tick`). Hero Defense's only action, `PlayAction`, has no fields, so it isn't used. If a richer typed action is wanted, PR 0 adds a benchmark-only land rather than changing a game's schema.
+- **Input counts in the result JSON:** submitted, accepted (queued), and applied, per cell and run. The summary requires them equal to each other and to rooms × players × iterations × N on both sides, and fails otherwise.
 - Defaults unchanged. The window's refusals (`--parallel true`, the single-room path) still apply.
 
-**Cells** (messagepack-pathhash, 2000 iterations, `--parallel false`, as #527's):
+**Cells** (2000 iterations, `--parallel false`, as #527's; `--format messagepack-pathhash` unless named):
 
 | Cell | Command | Judged (`instructions:u`) | Expected |
 |---|---|---|---|
 | `cap100-events` | `--game-type hero-defense --rooms 1 --monster-cap 100` | `iteration` window | GAIN (event encode) |
 | `cap100-noevents` | the same with `--no-server-events` | `iteration` window, control | within the bar |
-| `cap100-actions` | `cap100-events` with `--actions-per-player 1 --inputs-from-wire` | `nonsync` window | GAIN (action decode) |
-| `cap100-moves` | `cap100-events` with `--active-players --inputs-from-wire` | `nonsync` window | GAIN (client-event decode, D2) |
+| `cap100-moves` | `cap100-events` with `--active-players --inputs-from-wire` | `nonsync` window | GAIN (client-event decode, `MoveToEvent`) |
+| `vis-actions` | `--game-type visibility-test --rooms 10 --players-per-room 5 --actions-per-player 1 --inputs-from-wire` | `nonsync` window | GAIN (action decode) |
 | `vis-tick` | `--game-type visibility-test --rooms 10 --players-per-room 5` (no server events, inferred) | `ticks` window, control | within the bar |
 
+- **The sync gate stays beside the iteration window.** `cap100-events` and `cap100-noevents` also run the standing on-path gate on `syncMs` (time, the old bar), since the `iteration` window contains the sync. A sync REGRESSION fails the set even when the window shows a GAIN.
 - **Bar:** the gate plan's REGRESSION at max(0.5 %, 3 × base's spread), and GAIN below base's min. Time is reported beside it with the old bar, and "layout move (#517)" is printed where time moves but instructions don't.
-- **Bytes and digests:** identical in every cell, base = base again = head, with the committed `capture-digest.py`. One extra capture pass runs `cap100-events` and `cap100-actions` with `--format opcode-json-pathhash` and `--format json-object`, so the JSON event frames are covered too (reported, not timed; PR 0 checks that those formats set the message encoding as named).
+- **Bytes and digests:** identical in every cell, base = base again = head, with the committed `capture-digest.py`. One extra capture pass runs `cap100-events`, `cap100-moves` and `vis-actions` with `--format opcode-json-pathhash` and `--format json-object`, so the JSON event frames and decode paths are covered too (reported, not timed; PR 0 checks that those formats set the message encoding as named).
 - **Repeats:** ABBA, a warm-up pair and 5 pairs per cell, for the timed set and the perf set. `SWIFT_DETERMINISTIC_HASHING=1` and the FIFO window in the perf set, in the standing container scope.
 - **Before the host:** a Mac direction check on `cap100-events`, ABAB. macOS has no `perf` window, so the check is time plus a `sample` profile of §0's buckets. If the buckets don't shrink, stop and report.
 - **The profile after:** a user-only `perf record` per side on `cap100-events`. The §0 buckets (a)–(c) are expected near zero for typed fields.
 
 ## 9. Steps
 
-1. **PR 0, on main first:** the benchmark knobs and the `iteration` window (§8); the §0 profile posted on #521.
+1. **PR 0, on main first:** the benchmark knobs, the input counts and the `iteration` window (§8); the §0 profile posted on #521.
 2. **PR 1, events:**
    - red tests (§7) and the oracle;
-   - core: `_PayloadFieldWriter`, `_PayloadWireLeaf` and leaf conformances (core and DeterministicMath), `_PayloadFieldForm`;
-   - the macro: `_payloadWireName`, `_writePayloadFields`, `_payloadFieldForms`, and expansion tests;
+   - core: `_PayloadFieldWriter`, `_PayloadWireLeaf` and leaf conformances (core and DeterministicMath), `_PayloadFieldForm`, the shared action-name function;
+   - the macro: `_payloadWireName`, `_payloadHasTypedWriter`, `_writePayloadFields`, `_payloadFieldForms`, the `names:` list, expansion tests, and the cross-module fixture;
    - the MessagePack writer and the JSON wrapper; `AnyServerEvent.wireForm`; the encoders switched;
-   - the hybrid decision at init (D10); registration checks EV1–EV3; the replay re-emit resolution (N5); `serverEventsMatch` (A6);
+   - the hybrid decision at init (D10); `validatePayloads` with EV1–EV3; the replay land's registry and the re-emit resolution (N5); `serverEventsMatch` (A6);
    - the docs.
-3. **PR 2, decode:** decode sources; the handler table and A4; decode once; client events (D2, N2, N3); records through the source; the differential tests.
-4. **PR 3, failure units:** EV4, EV5, EV7 on #535's stop and session-close paths, after #535's mechanism merges. If #535 merges first, this folds into PRs 1 and 2.
+3. **PR 2, decode:**
+   - decode sources, with the record check and the non-finite rule;
+   - the three-index lookup, with A4 and A8 in `validatePayloads`;
+   - decode once, through `PendingActionItem`'s package init and copy;
+   - client events (D2, N2, N3);
+   - records built from the intake tree, only when read;
+   - the replay staged batch (A5);
+   - the differential tests.
+4. **PR 3, failure units:** EV4, EV5 (with its bound), EV7 on #535's stop and session-close paths, after #535's mechanism merges. If #535 merges first, this folds into PRs 1 and 2.
 5. **Host A/B** per PR, base = main at run time, head = the PR merged with it. PR 0's knobs are on both sides.
-6. **Solutions:** an entry on "the positional event payload is name-sorted, not declaration order" if the review agrees it is a trap (#521's text had it the other way). Another entry if the work finds a reusable lesson about encoders that must reproduce a cast chain's per-type forms.
+6. **Solutions:**
+   - "the positional event payload is name-sorted, not declaration order", if the review agrees it is a trap (#521's text had it the other way);
+   - "a lookup that replaces a predicate scan needs one index per predicate, keyed by what the predicate compares" (M1's trap);
+   - another entry if the work finds a reusable lesson about encoders that must reproduce a cast chain's per-type forms.
 
-## 10. Open decisions (options and a recommendation each)
+## 10. Decisions
 
-- **D1, a stop rule after §0.** (a) None: the reason is architectural (#521). (b) Stop if (a)+(b)+(c) is under some share. **Recommend (a).**
-- **D2, client events in scope.** (a) Yes: the same decode mechanism, and it removes the silent skip (A3). (b) Actions only; client events later. **Recommend (a).**
-- **D3, where the typed form lives.** (a) `AnyServerEvent` keeps its public shape and carries a package `wireForm`; records and replay are untouched. (b) A typed event value through the whole emit pipeline (`LandContext`, the output collector, the adapter), replacing `AnyServerEvent`: a public break, for one existential box saved. **Recommend (a).**
-- **D4, the static name for generic payloads.** (a) A computed static calling the runtime rule (string work per send, generic types only). (b) A per-type cache keyed by `ObjectIdentifier`, behind a lock. **Recommend (a):** there are no generic payloads outside tests.
-- **D5, fields without a typed form.** (a) The `Codable` fallback, chosen at compile time, listed in `_payloadFieldForms`, logged at registration. (b) Refuse them, which breaks the monitor's `AnyCodable` and `[TickMismatch]` fields. (c) (a), plus an opt-in strict registration that refuses fallback fields. **Recommend (a);** (c) later if wanted.
-- **D6, the JSON encodings.** (a) Keep `JSONEncoder` with a typed wrapper: identical bytes by construction. (b) A hand-written JSON writer: faster, but it must reproduce `JSONEncoder`'s number formatting. **Recommend (a):** the JSON encodings are for debugging and compatibility.
-- **D7, MessagePack decode strictness.** (a) The exact typed decode, with every difference from today named (N1). (b) Shims that reproduce the round trip's leniency (an integral float into an integer field, and whatever else the differential finds). **Recommend (a):** it follows `2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md`, and SDK clients are unaffected.
-- **D8, what an action record holds.** (a) The wire payload, as today, built from the source only when recording. (b) The decoded value's `Codable` form, which changes the record bytes for inputs with extra keys or other numeric forms. **Recommend (a):** records stay byte-identical.
-- **D9, the unit for an event encode failure.** (a) By target: `.all` closes the land; targeted events close the targeted sessions, with #535's rejoin bound. (b) Always the land, since the failing value comes from the land's own code and a rejoin doesn't bring a missed event back. **Recommend (a),** as #535's scope rule reads; (b) is the simpler alternative if the maintainer considers a missed event uncorrectable by a rejoin.
-- **D10, hybrid configs.** (a) Decided at init: events go alone, as their bytes show today. (b) Build 107 bodies with the typed MessagePack writer whatever the message encoder is, which moves those configs' events into the merged frame (a wire change). **Recommend (a).**
-- **D11, a positional action wire form.** (a) Not in this plan; a follow-up with the SDK. (b) Accept it now as an alternative form. **Recommend (a).**
-- **D12, action responses.** (a) A follow-up issue: the same writer applies to `ResponsePayload`, with its own byte-identity pins. (b) In PR 1. **Recommend (a).**
-- **D13, `encodeAsArray()`.** (a) Deprecated, still emitted, removed in a later change. (b) Removed now. **Recommend (a):** it is the oracle for the byte-identity tests and the path of hand-written conformances.
+**Settled by review (2026-11-13), as (a):**
+- **D2, client events in scope:** (a) yes, the same decode mechanism; it removes the silent skip (A3).
+- **D3, where the typed form lives:** (a) `AnyServerEvent` keeps its public shape and carries a package `wireForm` (as `any ServerEventPayload`, M6).
+- **D4, the static name for generic payloads:** (a) a computed static calling the runtime rule.
+- **D5, fields without a typed form:** (a) the `Codable` fallback, chosen at compile time, listed and logged.
+- **D6, the JSON encodings:** (a) `JSONEncoder` with a typed wrapper.
+- **D8, what an action record holds:** (a) the wire payload, as today.
+- **D10, hybrid configs:** (a) decided at init; events go alone.
+- **D11, a positional action wire form:** (a) not in this plan.
+- **D12, action responses:** (a) a follow-up issue.
+
+**For the maintainer** (options and a recommendation each):
+- **D1, a stop rule after §0.**
+  - (a) None: the reason is architectural (#521).
+  - (b) Stop if (a)+(b)+(c) is under some share of the tick.
+  - **Recommend (a).** The profile still sets the A/B's expected size.
+- **D7, MessagePack decode strictness.**
+  - (a) The exact typed decode, with non-finite numbers and non-string keys refused as today, and every other difference named (N1).
+  - (b) Shims that reproduce the round trip's leniency for each difference the differential finds (an integral float into an integer field, a binary into a string, …).
+  - **Recommend (a):** it follows `2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md`, and SDK clients are unaffected.
+- **D9, the unit for an event encode failure.**
+  - (a) By target: `.all` ends the land; a targeted event closes the targeted sessions, with the repeat bound (§5).
+  - (b) Always the land: the failing value comes from the land's own code, and a rejoin doesn't bring a missed event back.
+  - **Recommend (a),** as #535's scope rule reads. (b) is simpler: no bound, no per-player state. Under either, EV7 is the land (M8).
+- **D13, `encodeAsArray()`.**
+  - (a) Deprecated, still emitted, removed in a later change.
+  - (b) Removed now.
+  - **Recommend (a):** it is the oracle for the byte-identity tests and the path of hand-written conformances under compression off.
+- **N3, old records holding a malformed client event.**
+  - (a) Replay them as they ran (skipped), gated on the record version.
+  - (b) Refuse old records that hold one: the run fails with the reason.
+  - **Recommend (a):** a record that verified keeps verifying, and the version gate keeps new records strict.
+- **N7, a hand-written `encodeAsArray()` without the writer.**
+  - (a) Refused at registration (EV1), with the fix named.
+  - (b) Sent through its `encodeAsArray()` as today; the default's `fatalError` stays for types with neither.
+  - **Recommend (a):** registration can't tell the two apart, and (b) keeps a process crash.
+- **N8, a registered event missing from `eventHashes`.**
+  - (a) Refused at registration (EV3).
+  - (b) Sent with its string name, as today, with a warning at registration.
+  - **Recommend (a):** a client built from the hashed schema can't map the string.
+- **N9, handler collisions.**
+  - (a) The conservative fold refusal (§2.4).
+  - (b) An exact refusal that computes, per pair, whether any input can match both. It refuses fewer pairs, but is harder to read and to test.
+  - **Recommend (a):** no repository land is refused (checked in the PR), and a refusal names both handlers.
+- **N10, encoders with compression off.**
+  - (a) Today's keyed path; EV1 not applied.
+  - (b) A typed keyed writer for them too.
+  - **Recommend (a):** the host's configuration always sets compression for the positional encodings; the off state is the encoders' public default, used by tests and custom stacks.
 
 ## 11. Related issues
 
-- **#535:** the failure rule and its scope decision; EV4, EV5 and EV7 use its stop and session-close paths. Its sweep gains `serverEventsMatch` (A6) and the client-event skip (A3).
+- **#535:** the failure rule and its scope decision; EV4, EV5 and EV7 use its stop and session-close paths. Its sweep gains `serverEventsMatch` (A6), the client-event skip (A3) and replay input loading (A5).
+- **The client-event skip** and **the replay re-emit crash** are filed as their own issues, so they are tracked if this plan's PRs move. PR 2 and PR 1 close them.
 - **#532:** a per-session frame failure, as EV6.
 - **#517:** the off-path gate this measurement uses.
 - **#519, #520 (#527):** done; the order #521 asks for.
