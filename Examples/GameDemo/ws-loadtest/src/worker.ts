@@ -262,7 +262,7 @@ export interface WorkerOptions {
     reconnect?: ReconnectOption;
     /** `--reconstruct`: rebuild each connection's client state with the SDK's view (`reconstruction`). */
     reconstruction?: { sdk: SdkCore; schema: unknown };
-    /** `--row-addressing on` (the default): joins declare `rowAddressing`. */
+    /** Joins declare `rowAddressing`. Omitted: false; only the CLI (`--row-addressing`) defaults it on. */
     rowAddressing?: boolean;
 }
 
@@ -306,11 +306,12 @@ export interface JoinMessage {
 export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge", "syncSequence"];
 
 /**
- * `rowAddressing` is declared only with `--row-addressing on`. The declaration is join metadata,
- * which a recording server keeps in its records, so a run without the flag sends exactly the join
- * it sent before the client could decode row entries. A server negotiates the feature only with
- * `ROW_ADDRESSING=true`; a run records the flag (`rowAddressing`), what each join negotiated
- * (`stateUpdateFeatures`) and the row entries it received (`rowEntries`).
+ * `rowAddressing` is declared when asked: the CLI asks by default (`--row-addressing off` doesn't),
+ * and the API (`runScenario`, `WorkerClient`, `buildJoinMessage`) only when given it, so a caller
+ * that omits it sends exactly the join sent before the client could decode row entries; a server
+ * with row addressing in effect (the default) refuses that join. The declaration is join metadata,
+ * which a recording server keeps in its records. A run records the option (`rowAddressing`), what
+ * each join negotiated (`stateUpdateFeatures`) and the row entries it received (`rowEntries`).
  */
 export const ROW_ADDRESSING_FEATURE = "rowAddressing";
 

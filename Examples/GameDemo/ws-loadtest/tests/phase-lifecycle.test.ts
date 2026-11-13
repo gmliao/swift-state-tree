@@ -108,7 +108,7 @@ describe("phase lifecycle against a stub server", () => {
         }
         expect(result.runConfig).toMatchObject({ layout: "rooms", connectMode: "ramp", connectRatePerSecond: 200, workers: 2 });
         expect(result.runConfig.phases.map((p) => p.lands)).toEqual([2, 4, 2]);
-        // Without --row-addressing, the run records it off and every join the server got
+        // Without the option (the API's default; only the CLI defaults it on), the run records it off and every join the server got
         // declares the three features only, as before the client decoded row entries.
         expect(result.runConfig.rowAddressing).toBe(false);
         for (const c of connections) {

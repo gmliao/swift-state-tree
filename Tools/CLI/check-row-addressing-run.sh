@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Checks the output of `./test-e2e-game.sh` with row addressing on (the default, CI's main step
 # on the in-turn leg), per encoding; with `--expect-off`, a run where it can't take effect or is
-# turned off (the in-turn-off leg, and `ROW_ADDRESSING=false`). Each "▶ Running … (…)" section of the output belongs to the one encoding named as a
-# word anywhere in its parentheses ("(drop one /score patch, json)" is json's). A section that
+# turned off (the in-turn-off leg, and `ROW_ADDRESSING=false`). Each "▶ Running … (…)" section
+# of the output belongs to the one encoding named as a word anywhere in its parentheses ("(drop one /score patch, json)" is json's). A section that
 # names none, or more than one, fails once it holds a join or a count, rather than going unchecked.
 #
 # An opcode encoding (jsonOpcode, messagepack), where row addressing takes effect:
-#   1. every join negotiated rowAddressing;
-#   2. its live hero-defense scenarios applied row-derived patches. Without it, a server that
+#   1. every join negotiated rowAddressing, and every section of it holds a join;
+#   2. each of its live hero-defense sections applied row-derived patches. Without it, a server that
 #      stopped sending row entries would pass as a copy of the normal run. Other runs (the
 #      visibility and resolver lands, whose state has no slot-addressed rows) may report 0.
 # json, where it can't (row entries need an opcode encoding, so the server drops the feature):
@@ -119,6 +119,15 @@ for encoding in "$@"; do
     fi
     if [ "$live_patches" -eq 0 ]; then
       echo "❌ The ${encoding} live scenarios applied no row-derived patch"
+      exit 1
+    fi
+    # Per section, so one section's joins or patches can't cover for another's.
+    if awk -v e="$encoding" '$1 == e && $2 == 0 { bad = 1 } END { exit !bad }' <<<"$sections"; then
+      echo "❌ A ${encoding} section holds row patch counts but no join"
+      exit 1
+    fi
+    if awk -v e="$encoding" '$1 == e && $5 == 1 && $4 == 0 { bad = 1 } END { exit !bad }' <<<"$sections"; then
+      echo "❌ A ${encoding} live section applied no row-derived patch"
       exit 1
     fi
   fi

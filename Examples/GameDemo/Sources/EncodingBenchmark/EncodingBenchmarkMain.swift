@@ -1086,6 +1086,8 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         // `--join-through-router` / `--row-addressing`: with the router on, bytes are counted per
         // connection and are not comparable with a run without it (each result's routerJoin).
         "joinThroughRouter": RouterJoin.config != nil,
+        // The value the run asked the library for: `--row-addressing` resolved (on by default
+        // with the router and a -pathhash format), not whether the flag was given.
         "rowAddressingRequested": RouterJoin.config?.rowAddressing ?? false,
         // Bytes are counted after each adapter's outbound writer drained, with no skipped
         // cycle (#160). Results without this key counted before the drain: do not mix them.

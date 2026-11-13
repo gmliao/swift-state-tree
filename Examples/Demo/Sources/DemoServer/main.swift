@@ -59,8 +59,8 @@ struct DemoServer {
         // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59); PATH_INDEX=false
         // sends path hashes instead of path indices (on by default; clients declare `pathIndex`);
         // FIELD_MERGE=false turns off merged entries (on by default; clients declare `fieldMerge`).
-        // ROW_ADDRESSING=true names the rows of root node maps by slot (off by default; clients
-        // declare `rowAddressing`).
+        // ROW_ADDRESSING=false turns off row entries, which name the rows of root node maps by slot
+        // (on by default where they take effect; clients declare `rowAddressing`).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
             .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
             .withPathIndex(TransportEncodingConfig.pathIndexFromEnvironment())
