@@ -124,3 +124,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-12 | [An equality trace misses a key bug when keys collide](2026-11-12-an-equality-trace-misses-a-key-bug-when-keys-collide.md) | testing, mutants, differential, change-metrics, sync-tables |
 | 2026-11-12 | [A get/set property wrapper copies the collection on every write](2026-11-12-a-get-set-property-wrapper-copies-the-collection-on-every-write.md) | copy-on-write, property-wrapper, modify-accessor, sync, dirty-tracking, performance |
 | 2026-11-12 | [A closure in every wrapper makes every node type non-trivial](2026-11-12-a-closure-in-every-wrapper-makes-every-node-non-trivial.md) | property-wrapper, value-witness, memory-layout, macro, static-storage, sync, performance |
+| 2026-11-13 | [A surviving mutant is a coverage gap or an equivalent site: find out which](2026-11-13-a-surviving-mutant-is-a-coverage-gap-or-an-equivalent-site.md) | testing, mutants, fault-injection, encode-failure, sync-tables, per-player |
+| 2026-11-13 | [A stacked branch carries a stale plan](2026-11-13-a-stacked-branch-carries-a-stale-plan.md) | git, stacked-prs, plans, review |
