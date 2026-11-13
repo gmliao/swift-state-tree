@@ -13,7 +13,7 @@ import Darwin
 /// perf that reads command lines and answers each with `ack\n` and a NUL, as perf does.
 @Suite("Perf control window")
 struct PerfControlTests {
-    @Test("Settings: unset is no window; nonsync is the default; malformed values are refused")
+    @Test("Settings: unset is no window; nonsync is the default; ticks and iteration parse; malformed values are refused")
     func settings() throws {
         #expect(try PerfControlSettings.fromEnvironment([:]) == nil)
         #expect(
@@ -22,6 +22,9 @@ struct PerfControlTests {
         #expect(
             try PerfControlSettings.fromEnvironment([PerfControlEnvKeys.control: "/c,/a", PerfControlEnvKeys.window: "ticks"])
                 == PerfControlSettings(controlPath: "/c", ackPath: "/a", mode: .ticks))
+        #expect(
+            try PerfControlSettings.fromEnvironment([PerfControlEnvKeys.control: "/c,/a", PerfControlEnvKeys.window: "iteration"])
+                == PerfControlSettings(controlPath: "/c", ackPath: "/a", mode: .iteration))
         #expect(throws: PerfControlError.malformedControl("/c")) {
             try PerfControlSettings.fromEnvironment([PerfControlEnvKeys.control: "/c"])
         }

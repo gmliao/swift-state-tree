@@ -56,6 +56,7 @@ await holds.at(.afterLandLookup)
 - Assert the precondition that makes the interleaving meaningful (for example, that an entry was evicted before the admission runs), so a test can't pass because the setup didn't happen.
 - No `sleep`-based waits in race tests (`CLAUDE.md` § Reentrancy: "Tests force the interleaving with a hold at the `await` (`HoldPoints`, `TestGate`), never timing").
 - **Gate and hold keys must be unique per test.** A static gate registry keeps one gate per key for the whole process, and Swift Testing runs tests in parallel. A key reused by two tests opens the other test's gate: #350's static gate, and `key(10)` reused in legacy mode on #353's first head. Hand out keys from a counter (`TicklessActionJobTests`' `freshKey()`), never a literal; the shared helper with a duplicate-registration check is #354.
+- **A polling helper outside the scanned folders hides its deadline from the lint.** `waitForOutboundDrain` lives in the library's `Sources/` (behind `@_spi(Diagnostics)`), so the wall-clock lint never saw its 1 ms poll and 5 s deadline, and #542's test called it unflagged. A test-support helper in `Sources/` goes in the lint's `SOURCE_TEST_HELPERS`, which counts its calls in every test file; prefer the event-driven wait (`waitForOutboundIdleForTesting`).
 
 ## When a test has to measure time
 

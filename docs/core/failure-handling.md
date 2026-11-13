@@ -17,18 +17,18 @@ One process hosts many lands, so the unit is never the process. A failure in one
 
 ## Scope: what ends
 
-The scope follows what the failure made wrong (decided in #535):
+The scope follows what the failure made wrong (decided in #535; see [the decisions](https://github.com/gmliao/swift-state-tree/issues/535#issuecomment-6852509570) and [the plan](https://github.com/gmliao/swift-state-tree/blob/440210de/Notes/plans/2026-11-13-sync-failure-ends-unit.md)):
 
 | The failure | What it made wrong | What ends |
 |---|---|---|
 | A type error knowable when the land is registered | every recipient, from the first sync | nothing runs: **registration is refused** |
 | A failure that corrupts every recipient's view or the land's state, including a type error found only at run time | every recipient, or the state itself | **the land** is closed, and the error logged |
-| If a failure is confined to one player's view | that player's client only | **that session** is closed. Rejoining sends a full view, which is correct again, so the land keeps running |
+| A failure confined to one connection, such as its outbound queue over the writer's ceiling | that connection's frames only | **that session** is closed. Rejoining sends a full view, which is correct again, so the land keeps running |
 | A malformed input from a client | nothing yet | **that input** is rejected, and the client is told. The session and the land keep running |
 
 An event that fails to encode is a fact about the value, not about who receives it: each event is encoded once, before it fans out to its recipients. So it ends the land, whatever its target (#521).
 
-Whether any sync failure is confined to one player is open in #535. A player's view is a deterministic function of the land's state, so a rejoin would recompute the same failure, and no shipped encoder has a throwing input that depends on the recipient. #535 is deciding whether every sync failure ends the land instead. The session row states the principle; a failure that ends a session must not loop, so one that recurs after the rejoin ends the land.
+No sync failure is known to be confined to one player's view. A player's view is a deterministic function of the land's state, so a rejoin recomputes the same failure. So every sync failure ends the land, including one in a resync's or a first view's frame (#535). The session row is for failures that are genuinely per-connection, such as the outbound writer's ceiling. A failure that ends a session must not loop: one that recurs after the rejoin ends the land.
 
 ## Where the code stands
 
@@ -39,14 +39,20 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 | Path | Today | Status |
 |---|---|---|
 | A reference type (class) as synced state (#464) | refused at registration: `SyncValueSemantics.validate` (`LandTypeRegistry.swift:38`, `NIOLandHost.swift:363`, `SchemaExtractor.swift:20`) | current |
-| Other type errors the type alone decides: an unsupported value or dictionary key type, a node with player-dependent fields under a broadcast field | found at sync time; handled as the next row | target: refuse at registration (#535) |
+| Other type errors the type alone decides: an unsupported value or dictionary key type, a node with player-dependent fields under a broadcast field | found at sync time; handled as the first row under "The land ends" | target: refuse at registration (#535) |
+| An existential synced field (`Any`, `any P`) | allowed; a value that doesn't convert is found at sync time and handled as the first row under "The land ends" | target: refused at compile time where the declared type spells `any` or `Any`, and `AnyHashable` and `AnyCodable` by name. A protocol spelled bare, a typealias to an existential and a hand-written conformance aren't caught there: such a field ends the land at its first failing conversion (#535) |
 
 ### The land ends
 
 | Path | Today | Status |
 |---|---|---|
 | A field whose conversion throws at run time | the field is dropped for that sync (the client keeps its old value), the drop is counted and logged, and the rest of the frame goes out (`SyncEngine.swift:1405-1428`, `TransportAdapter.swift:4190`) | target: close the land (#535) |
-| A patch the encoding can't carry (for example a non-finite number in JSON) or a path outside the schema | the frame is re-encoded without that patch and sent; the field stays stale on clients until it changes (`TransportAdapter.swift:5663`) | target: close the land (#535) |
+| Dictionary keys that convert to the same string | the later entry silently overwrites the earlier one (`SnapshotValue.swift:424`) | target: close the land (#535) |
+| A patch the encoding can't carry (for example a non-finite number in JSON) | the frame is re-encoded without that patch and sent; the field stays stale on clients until it changes (`TransportAdapter.swift:5663`) | target: close the land (#535) |
+| A patch whose path is outside the schema | dropped as the row above, and counted (`TransportAdapter.swift:719-723`) | target: close the land (#535) |
+| A sync plan that throws | nothing is sent and the plan is retried: on every tick with periodic sync; without it, a bounded number of follow-ups, then, while joins wait, join-sync turns with a doubling delay (`TransportAdapter.swift:3320`, `LandKeeper.swift:4423-4435`) | target: close the land at the first throw, with no retry (#535) |
+| One player's state frame fails to encode entirely | nothing is sent to that player that cycle, and its client can stay behind on fields until they change again (`TransportAdapter.swift:4940-4951`) | target: close the land (#535, #532) |
+| A resync's or first view's full view fails to encode | retried; after a bound, the session is closed with 4012 `unencodableView` (`TransportAdapter.swift:3634`) | target: close the land at the first failure, with no retry; 4012 is no longer sent (#535) |
 | A server event that fails to encode | logged, and the event isn't sent (`TransportAdapter.swift:3026-3031`, `:3135`) | target: close the land (#521) |
 | A handler that throws after writing state | the input fails alone and the inputs after it continue; its writes stay and are synced, with a warning in debug builds (`LandKeeper.swift:3836-3837`, `:3189`) | target: close the land (#535); #87 tracks the partial writes |
 | The replay land re-emits a recorded event on a compressed encoding, under the opt-in `.projectedWithFallback` event policy (`GenericReplayLand.swift:21`; not the default) | `fatalError`, which stops the whole process (`MessagePackTransportMessageEncoder.swift:273`, `TransportMessageEncoder.swift:336`) | target: re-emit through the land's registry; an event that can't be resolved ends the replay land, never the process (#538, #521) |
@@ -56,8 +62,6 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 
 | Path | Today | Status |
 |---|---|---|
-| One player's state frame fails to encode entirely | nothing is sent to that player that cycle, and its client can stay behind on fields until they change again (`TransportAdapter.swift:4940-4951`) | target: end it, not continue; #535 decides whether the session or the land (#532) |
-| A resync's full view keeps failing to encode | retried; after a bound, the session is closed with 4012 `unencodableView` (`TransportAdapter.swift:3634`) | current under the session row; may move to the land with #535's decision |
 | The outbound writer drops a frame over its ceiling | every session the frame addressed is ended, and disconnected where the transport can close sessions; the clients rejoin and get a full view (`TransportAdapter+Outbound.swift:38-63`) | current |
 
 ### The input is rejected
@@ -67,9 +71,17 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 | An action whose payload doesn't decode | rejected at intake; the client gets an error (`LandKeeper.swift:2721`, `TransportAdapter.swift:6079`) | current |
 | A client event whose payload doesn't decode | dropped without an error to the client (`LandDefinition.swift:276-277`), and still recorded as applied, since recording happens before the handlers run (`LandKeeper.swift:3487-3498`) | target: reject it, as for actions, and don't record it (#537) |
 
+### When a land ends on a failure
+
+| Path | Today | Status |
+|---|---|---|
+| OnLeave and the destroy handlers | no failure ends a land today. On a host's stop, each session's leave runs the OnLeave resolvers before the land's drain is checked (`LandKeeper.swift:2397-2439`) | target: a failed land runs no OnLeave (resolvers and handler skipped; the player's membership still ends), and its destroy handlers and save run with the failure visible (#535) |
+
 ## Close codes
 
-The close codes for a failure-driven close are to be defined by #535. The existing 4012 `unencodableView` is in use today.
+- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it (target, #535).
+- **4012 `unencodableView`:** sent today when a resync's or first view's frame keeps failing to encode. Once #535 lands it is reserved and no longer sent.
+- **4014 `landStopped`:** an admin stop, unchanged.
 
 ## How other systems do it
 

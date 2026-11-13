@@ -268,6 +268,9 @@ public enum HeroDefense {
                         let clampedTarget = MovementSystem.clampToWorldBounds(event.target, ctx)
                         player.targetPosition = clampedTarget
                         state.players[playerID] = player
+                        // EncodingBenchmark's input count, once the move changed the state; no
+                        // probe is registered elsewhere.
+                        ctx.services.get(InputProbe.self)?.noteApplied()
                     } else {
                         ctx.logger.warning("⚠️ MoveToEvent: Player not found", metadata: [
                             "playerID": .string(playerID.rawValue),

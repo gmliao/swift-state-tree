@@ -19,7 +19,7 @@ public enum PerfControlEnvKeys {
     /// `<ctl-fifo>,<ack-fifo>`: the two FIFOs given to perf's `--control fifo:<ctl>,<ack>`.
     /// Both are required: without the ack a toggle races the span it brackets.
     public static let control = "ENCODING_BENCHMARK_PERF_CONTROL"
-    /// `nonsync` (default) or `ticks`: which span the counters cover.
+    /// `nonsync` (default), `ticks` or `iteration`: which span the counters cover.
     public static let window = "ENCODING_BENCHMARK_PERF_WINDOW"
 }
 
@@ -27,9 +27,14 @@ public enum PerfControlEnvKeys {
 public enum PerfWindowMode: String, Sendable, CaseIterable {
     /// Everything in a timed iteration except `syncNow()`: what `timeMs − syncMs` measures.
     case nonsync
-    /// The `stepTickOnce()` loop only. The same span as `nonsync` in the generic runner; in the
-    /// hero-defense runner it leaves out the move injection.
+    /// The `stepTickOnce()` loop only. It leaves out the input injection (the hero-defense
+    /// runner's moves, the generic runner's `--actions-per-player`); without injected inputs it
+    /// is the same span as `nonsync` in the generic runner.
     case ticks
+    /// The whole timed iteration, every room's inputs, ticks and `syncNow()`: what `timeMs`
+    /// measures. For work whose place inside the iteration isn't fixed, such as server event
+    /// encode (in the sync phase under in-turn sync, at the tick's flush otherwise).
+    case iteration
 }
 
 public enum PerfControlError: Error, Equatable, CustomStringConvertible {
