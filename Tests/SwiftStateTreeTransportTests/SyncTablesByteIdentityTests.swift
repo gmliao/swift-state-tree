@@ -10,7 +10,9 @@ import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
-private func syncTablesConfig(tables: Bool, dirtyTracking: Bool, snapshotForSync: Bool, typedLeafValues: Bool = false) -> TransportEnvConfig {
+private func syncTablesConfig(
+    tables: Bool, dirtyTracking: Bool, snapshotForSync: Bool, typedLeafValues: Bool = false, perPlayerTables: Bool = true
+) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: snapshotForSync,
@@ -19,6 +21,7 @@ private func syncTablesConfig(tables: Bool, dirtyTracking: Bool, snapshotForSync
     )
     config.useSyncTables = tables
     config.typedLeafValues = typedLeafValues
+    config.perPlayerSyncTables = perPlayerTables
     return config
 }
 
@@ -79,6 +82,16 @@ struct SyncTablesByteIdentityTests {
             encoding: wire,
             pathHashes: pathHashes
         )
+        // The broadcast tables alone: per-player fields on today's per-player snapshot diff (#514).
+        let broadcastOnly = await DirtyIdentityRun(
+            envConfig: syncTablesConfig(tables: true, dirtyTracking: dirtyTracking, snapshotForSync: onePass, perPlayerTables: false),
+            encoding: wire,
+            pathHashes: pathHashes
+        )
+        #expect(await on.adapter.usesPerPlayerTablesForTesting())
+        #expect(await leaf.adapter.usesPerPlayerTablesForTesting())
+        #expect(await !broadcastOnly.adapter.usesPerPlayerTablesForTesting())
+        #expect(await !off.adapter.usesPerPlayerTablesForTesting(), "\(cell): the per-player tables need the broadcast tables")
         #expect(await leaf.adapter.usesTypedLeafValuesForTesting())
         #expect(await !on.adapter.usesTypedLeafValuesForTesting())
         // Each arm runs what it says: row addressing turns the tables on whatever the env says,
@@ -92,11 +105,14 @@ struct SyncTablesByteIdentityTests {
         try await off.runNegativeKeys()
         try await leaf.runScript()
         try await leaf.runNegativeKeys()
+        try await broadcastOnly.runScript()
+        try await broadcastOnly.runNegativeKeys()
         let onFrames = await on.transport.sent
         let offFrames = await off.transport.sent
         #expect(onFrames.count > 20, "the script sends frames")
         expectSameFrames(onFrames, offFrames, cell)
         expectSameFrames(await leaf.transport.sent, offFrames, "\(cell), typed leaves")
+        expectSameFrames(await broadcastOnly.transport.sent, offFrames, "\(cell), broadcast tables alone")
 
         // Last-sent ends equal too: the tables, as a snapshot, against the broadcast cache.
         let tablesLastSent = await on.adapter.lastSentBroadcastSnapshotForTesting()
@@ -105,6 +121,19 @@ struct SyncTablesByteIdentityTests {
         #expect(tablesLastSent == cache, "\(cell): last-sent")
         // With the tables on, the engine's broadcast cache is never written.
         #expect(await on.adapter.syncEngineForTesting().cachedBroadcastSnapshotForTesting == nil)
+
+        // Per-player last-sent ends equal per player: the per-player tables' committed boxes
+        // against the engine's per-player cache, which the tables never write.
+        for n in [1, 3, 4] {
+            let player = PlayerID("p\(n)")
+            let tables = await on.adapter.lastSentPerPlayerSnapshotForTesting(player)
+            let cached = await off.adapter.lastSentPerPlayerSnapshotForTesting(player)
+            #expect(tables != nil, "\(cell): \(player) is seeded")
+            #expect(tables == cached, "\(cell): \(player) per-player last-sent")
+            #expect(await on.adapter.syncEngineForTesting().cachedPerPlayerSnapshotForTesting(player) == nil)
+        }
+        // A player that left has no per-player boxes.
+        #expect(await on.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID("p2")) == nil)
     }
 
     @Test("A config built with init takes USE_SYNC_TABLES (on by default), so a whole test run can be switched")

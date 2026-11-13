@@ -10,6 +10,7 @@ enum TransportEnvKeys {
     static let useSnapshotForSync = "USE_SNAPSHOT_FOR_SYNC"
     static let useSyncTables = "USE_SYNC_TABLES"
     static let typedLeafValues = "TYPED_LEAF_VALUES"
+    static let perPlayerSyncTables = "PER_PLAYER_SYNC_TABLES"
     static let syncStrategy = SyncStrategy.environmentKey
     static let outboundWriterMaxBytes = "OUTBOUND_WRITER_MAX_BYTES"
     /// `TransportEncodingConfig.pathIndex` (default true).

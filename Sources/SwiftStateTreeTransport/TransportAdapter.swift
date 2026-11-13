@@ -212,6 +212,10 @@ struct SyncPhasePlan {
     /// The typed tables' writes to last-sent (the broadcast diff on the tables); the commit
     /// applies them. Stands for `staged.broadcast`, which stays nil then.
     var stagedTables = SyncTableStaged()
+    /// The per-player tables' writes (#514); the commit applies them. Stands for
+    /// `staged.perPlayer`, which stays empty then. Its lifecycle mirrors that cache's: a
+    /// per-player encode failure discards the player's part, a failed plan all of it.
+    var stagedPerPlayerTables = SyncTablePerPlayerStaged()
     /// Phase times of a full plan, only with transport profiling on.
     var phaseTimes: SyncPhaseTimes?
     /// Patches (or whole updates) dropped because they did not encode.
@@ -557,6 +561,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         broadcastTables != nil
     }
 
+    /// Per-player fields are diffed on the per-player tables (#514).
+    func usesPerPlayerTablesForTesting() -> Bool {
+        perPlayerTables != nil
+    }
+
+    /// Whether the per-player tables are in effect (#514): the broadcast tables are, and
+    /// `PER_PLAYER_SYNC_TABLES` is on. For diagnostics and equivalence tests outside this package.
+    @_spi(Diagnostics) public func perPlayerSyncTablesInEffect() -> Bool {
+        perPlayerTables != nil
+    }
+
+    /// What `playerID`'s client was last sent for the per-player fields (tests): the per-player
+    /// tables' committed boxes when they are in effect, the engine's per-player cache otherwise.
+    func lastSentPerPlayerSnapshotForTesting(_ playerID: PlayerID) -> StateSnapshot? {
+        perPlayerTables.map { $0.lastSentSnapshot(for: playerID) } ?? syncEngine.cachedPerPlayerSnapshotForTesting(playerID)
+    }
+
     /// The sync tables convert leaf fields by their typed form (`TYPED_LEAF_VALUES`).
     func usesTypedLeafValuesForTesting() -> Bool {
         broadcastTables?.typedLeafValues ?? false
@@ -659,6 +680,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// only), or nil: today's snapshot diff. With it, the sync path never reads the engine's
     /// broadcast cache (`SyncEngine.broadcastCacheRetired`); per-player fields stay on the engine.
     private let broadcastTables: SyncTableBroadcastDiff<State>?
+    /// The per-player diff on typed per-player tables (#514): in effect where the broadcast
+    /// tables are, unless `PER_PLAYER_SYNC_TABLES` is off. With it, the sync path never reads the
+    /// engine's per-player cache (`SyncEngine.perPlayerCacheRetired`).
+    private let perPlayerTables: SyncTablePerPlayerDiff<State>?
     private let logger: Logger
     private let enableLegacyJoin: Bool
     
@@ -1320,6 +1345,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             self.broadcastTables = nil
         }
+        if usesSyncTables && envConfig.perPlayerSyncTables {
+            self.perPlayerTables = SyncTablePerPlayerDiff<State>(typedLeafValues: envConfig.typedLeafValues, logger: logger)
+            self.syncEngine.perPlayerCacheRetired = true
+        } else {
+            self.perPlayerTables = nil
+        }
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
 
@@ -1602,6 +1633,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // Clear syncEngine cache for disconnected player
                 // This ensures reconnection behaves like first connection
                 syncEngine.clearCacheForDisconnectedPlayer(playerID)
+                perPlayerTables?.clear(playerID)
                 recordSyncStreamClear(playerID, outsideTurn: true)
                 initialSyncingPlayers.removeValue(forKey: playerID)
 
@@ -1982,6 +2014,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             Task { await transport.closeSession(old) }
         }
         syncEngine.clearCacheForDisconnectedPlayer(playerID)
+        perPlayerTables?.clear(playerID)
         recordSyncStreamClear(playerID)
         initialSyncingPlayers.removeValue(forKey: playerID)
     }
@@ -4239,6 +4272,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         syncEngine.applyStaged(plan.staged)
         broadcastTables?.apply(plan.stagedTables)
+        perPlayerTables?.apply(plan.stagedPerPlayerTables)
         let retriesFirstView = commitFirstViewEncodeFailures(plan)
         if (plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty) || retriesFirstView {
             noteFailedPlanForFollowUp()
@@ -4432,6 +4466,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             extractAll: extractAll,
             drops: &drops
         )
+        // The per-player tables (#514) keep today's branch: the one-pass extraction when it is
+        // on and no broadcast field dropped (it seeds every per-player field and has no entry for
+        // a state without per-player fields), else the separate one (an entry per player).
+        let perPlayerOnePass = useSnapshotForSync && drops.broadcastFields.isEmpty
         let extractEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
 
         var broadcastDiff: [StatePatch]
@@ -4494,28 +4532,44 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 plan.syncLag.keyScopeResetBytes = plan.frames[framesBefore...].filter(\.isStateUpdate).reduce(0) { $0 + $1.data.count }
             }
             let perPlayerStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
-            pendingUpdates = collectPerPlayerOnlyPendingUpdates(
-                recipients: recipients,
-                perPlayerByPlayer: perPlayerByPlayer,
-                perPlayerMode: perPlayerMode,
-                baseline: baseline,
-                typesFirstSync: resetsKeyScopes,
-                skipping: skippedPlayers,
-                staged: &plan.staged
-            )
+            if let perPlayerTables {
+                pendingUpdates = collectPerPlayerTablePendingUpdates(
+                    perPlayerTables, state: state, recipients: recipients, broadcastDiff: nil,
+                    perPlayerMode: perPlayerMode, onePass: perPlayerOnePass, baseline: baseline,
+                    typesFirstSync: resetsKeyScopes, skipping: skippedPlayers, drops: &drops, plan: &plan
+                )
+            } else {
+                pendingUpdates = collectPerPlayerOnlyPendingUpdates(
+                    recipients: recipients,
+                    perPlayerByPlayer: perPlayerByPlayer,
+                    perPlayerMode: perPlayerMode,
+                    baseline: baseline,
+                    typesFirstSync: resetsKeyScopes,
+                    skipping: skippedPlayers,
+                    staged: &plan.staged
+                )
+            }
             if let perPlayerStart { perPlayerTime = ContinuousClock.now - perPlayerStart }
         } else {
             let perPlayerStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
-            pendingUpdates = collectCombinedPendingUpdates(
-                recipients: recipients,
-                broadcastDiff: broadcastDiff,
-                perPlayerByPlayer: perPlayerByPlayer,
-                perPlayerMode: perPlayerMode,
-                baseline: baseline,
-                typesFirstSync: resetsKeyScopes,
-                skipping: skippedPlayers,
-                staged: &plan.staged
-            )
+            if let perPlayerTables {
+                pendingUpdates = collectPerPlayerTablePendingUpdates(
+                    perPlayerTables, state: state, recipients: recipients, broadcastDiff: broadcastDiff,
+                    perPlayerMode: perPlayerMode, onePass: perPlayerOnePass, baseline: baseline,
+                    typesFirstSync: resetsKeyScopes, skipping: skippedPlayers, drops: &drops, plan: &plan
+                )
+            } else {
+                pendingUpdates = collectCombinedPendingUpdates(
+                    recipients: recipients,
+                    broadcastDiff: broadcastDiff,
+                    perPlayerByPlayer: perPlayerByPlayer,
+                    perPlayerMode: perPlayerMode,
+                    baseline: baseline,
+                    typesFirstSync: resetsKeyScopes,
+                    skipping: skippedPlayers,
+                    staged: &plan.staged
+                )
+            }
             if let perPlayerStart { perPlayerTime = ContinuousClock.now - perPlayerStart }
         }
         pendingUpdates = withoutDroppedFields(pendingUpdates, drops: drops, baseline: baseline)
@@ -4538,7 +4592,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
             let (update, viewPatches) = planFullViewUpdate(
-                state: state, recipient: recipient, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops,
+                state: state, recipient: recipient, staged: &plan.staged, stagedTables: &plan.stagedTables,
+                stagedPerPlayerTables: &plan.stagedPerPlayerTables, drops: &drops,
                 rowsFromStagedTables: viewsFromStagedTables
             )
             pendingUpdates.append(update)
@@ -4557,7 +4612,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
             let (update, viewPatches) = planFullViewUpdate(
-                state: state, recipient: joiner.recipient, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops,
+                state: state, recipient: joiner.recipient, staged: &plan.staged, stagedTables: &plan.stagedTables,
+                stagedPerPlayerTables: &plan.stagedPerPlayerTables, drops: &drops,
                 rowsFromStagedTables: true
             )
             joinerUpdates.append(update)
@@ -4642,21 +4698,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         from state: State,
         staged: inout SyncEngine.StagedCaches,
         stagedTables: inout SyncTableStaged,
+        stagedPerPlayerTables: inout SyncTablePerPlayerStaged,
         drops: inout ExtractionDrops
     ) -> StateSnapshot {
         guard let broadcastTables else {
             return syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &staged, drops: &drops)
         }
+        let perPlayerTables = self.perPlayerTables
         let snapshot = syncEngine.lateJoinSnapshot(
             for: playerID,
             from: state,
             staged: &staged,
             drops: &drops,
-            broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
+            broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) },
+            perPlayerLastSent: perPlayerTables.map { tables in { tables.lastSentSnapshot(of: $0, for: playerID) } }
         )
         if !broadcastTables.isSeeded {
             broadcastTables.stageSeed(state, fields: nil, drops: &drops, into: &stagedTables)
         }
+        // As today's seed of a player with neither a staged nor a committed per-player cache.
+        perPlayerTables?.stageSeedIfAbsent(state, for: playerID, drops: &drops, into: &stagedPerPlayerTables)
         return snapshot
     }
 
@@ -4673,16 +4734,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         recipient: SyncPhaseRecipient,
         staged: inout SyncEngine.StagedCaches,
         stagedTables: inout SyncTableStaged,
+        stagedPerPlayerTables: inout SyncTablePerPlayerStaged,
         drops: inout ExtractionDrops,
         rowsFromStagedTables: Bool
     ) -> (update: PendingSyncUpdate, viewPatches: [StatePatch]) {
-        let snapshot = lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged, stagedTables: &stagedTables, drops: &drops)
-        staged.perPlayer[recipient.playerID] = syncEngine.extractPerPlayerSnapshot(
-            for: recipient.playerID,
-            from: state,
-            mode: .all,
-            drops: &drops
+        let snapshot = lateJoinSnapshot(
+            for: recipient.playerID, from: state, staged: &staged, stagedTables: &stagedTables,
+            stagedPerPlayerTables: &stagedPerPlayerTables, drops: &drops
         )
+        if let perPlayerTables {
+            // Today's re-stage from an `.all` extraction, on the player's boxes.
+            perPlayerTables.stageReseed(state, for: recipient.playerID, drops: &drops, into: &stagedPerPlayerTables)
+        } else {
+            staged.perPlayer[recipient.playerID] = syncEngine.extractPerPlayerSnapshot(
+                for: recipient.playerID,
+                from: state,
+                mode: .all,
+                drops: &drops
+            )
+        }
         staged.firstSyncReceived.insert(recipient.playerID)
         let patches = syncEngine.computeDiff(from: StateSnapshot(values: [:]), to: snapshot, onlyPaths: nil)
         var sent = patches
@@ -4946,6 +5016,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     // cycle's broadcast changes until they change again, as before plan + commit.
                     // Only the opcode 107 merged broadcast frame unstages the broadcast cache.
                     plan.staged.perPlayer.removeValue(forKey: playerID)
+                    plan.stagedPerPlayerTables.discard(playerID)
                     plan.staged.firstSyncReceived.remove(playerID)
                     plan.leavesKeyTablesAhead = true
                 }
@@ -5043,6 +5114,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let (broadcast, perPlayer) = modesBesideTables(
                 for: state, extractAll: extractAll, broadcastMode: broadcastMode, perPlayerMode: perPlayerMode
             )
+            if perPlayerTables != nil {
+                // The per-player fields are diffed on the per-player tables (#514), with this mode.
+                return (
+                    broadcastSnapshot: StateSnapshot(values: [:]),
+                    perPlayerByPlayer: [:],
+                    broadcastMode: broadcast,
+                    perPlayerMode: perPlayer
+                )
+            }
             var perPlayerByPlayer: [PlayerID: StateSnapshot] = [:]
             // The one-pass extraction, per-player part: every per-player field of every player,
             // and no entry at all for a state without per-player fields. It fails as a whole
@@ -5168,6 +5248,67 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ))
         }
 
+        return pendingUpdates
+    }
+
+    /// The per-recipient updates with the per-player fields diffed on the per-player tables
+    /// (#514), as `collectPerPlayerOnlyPendingUpdates` (no `broadcastDiff`) and
+    /// `collectCombinedPendingUpdates` build them from today's snapshots:
+    /// - each player is diffed once, by its first recipient in recipient order; its later
+    ///   sessions get the update built from no per-player patches, as today's diff against the
+    ///   first one's staged cache yields (#531);
+    /// - with the one-pass branch a state without per-player fields has no per-player entry, so a
+    ///   per-player-only update isn't made at all; the separate branch has one per player;
+    /// - the fields diffed are those `perPlayerMode` compares, and a player without boxes is
+    ///   seeded (every field with the one-pass branch, as its extraction).
+    private func collectPerPlayerTablePendingUpdates(
+        _ perPlayerTables: SyncTablePerPlayerDiff<State>,
+        state: State,
+        recipients: [SyncPhaseRecipient],
+        broadcastDiff: [StatePatch]?,
+        perPlayerMode: SnapshotMode,
+        onePass: Bool,
+        baseline: SyncEngine.DiffBaseline,
+        typesFirstSync: Bool,
+        skipping skippedPlayers: Set<PlayerID>,
+        drops: inout ExtractionDrops,
+        plan: inout SyncPhasePlan
+    ) -> [PendingSyncUpdate] {
+        var pendingUpdates: [PendingSyncUpdate] = []
+        pendingUpdates.reserveCapacity(recipients.count)
+        let hasEntries = !onePass || !perPlayerTables.fieldNames.isEmpty
+        let fromEmpty: Bool
+        if case .empty = baseline { fromEmpty = true } else { fromEmpty = false }
+        var diffed = Set<PlayerID>()
+
+        for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
+            var perPlayerDiff: [StatePatch] = []
+            if hasEntries, diffed.insert(recipient.playerID).inserted {
+                perPlayerDiff = perPlayerTables.planDiff(
+                    state, for: recipient.playerID, fields: perPlayerMode.fields, seedsAll: onePass,
+                    fromEmpty: fromEmpty, drops: &drops, into: &plan.stagedPerPlayerTables
+                )
+            }
+            var update: StateUpdate
+            if let broadcastDiff {
+                update = syncEngine.updateFromBroadcastDiff(
+                    for: recipient.playerID, broadcastDiff: broadcastDiff, perPlayerDiff: perPlayerDiff, staged: &plan.staged
+                )
+            } else {
+                guard hasEntries else { continue }
+                update = perPlayerDiff.isEmpty ? .noChange : .diff(perPlayerDiff)
+            }
+            if typesFirstSync {
+                update = keyScopeResetUpdate(update)
+            } else if case .noChange = update {
+                continue
+            }
+            pendingUpdates.append(makePendingSyncUpdate(
+                sessionID: recipient.sessionID,
+                playerID: recipient.playerID,
+                update: update
+            ))
+        }
         return pendingUpdates
     }
 
@@ -5773,7 +5914,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         plan.digest?.isFirstSync = true
         // Extract a complete snapshot for this player; stage the cache population.
         var drops = ExtractionDrops()
-        let snapshot = lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops)
+        let snapshot = lateJoinSnapshot(
+            for: playerID, from: state, staged: &plan.staged, stagedTables: &plan.stagedTables,
+            stagedPerPlayerTables: &plan.stagedPerPlayerTables, drops: &drops
+        )
         plan.noteExtractionDrops(drops)
 
         // Generate full patch set (assume client starts from empty state)
