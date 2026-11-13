@@ -16,7 +16,7 @@ enum TransportEnvKeys {
     static let pathIndex = "PATH_INDEX"
     /// `TransportEncodingConfig.fieldMerge` (default true).
     static let fieldMerge = "FIELD_MERGE"
-    /// `TransportEncodingConfig.rowAddressing` (default false).
+    /// `TransportEncodingConfig.rowAddressing` (default true).
     static let rowAddressing = "ROW_ADDRESSING"
     /// `TransportEncodingConfig.dynamicKeyCompression` (default true).
     static let dynamicKeyCompression = "DYNAMIC_KEY_COMPRESSION"

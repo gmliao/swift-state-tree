@@ -49,11 +49,12 @@ actor PathIndexReplyConnection: WebSocketConnection {
 
 @Suite("Path index")
 struct PathIndexTests {
-    // The path index alone: field merge (on by default, its own feature) is covered by
-    // FieldMergeTests.
-    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false).withPathIndex(false)
-    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false).withPathIndex(false)
-    static let json = TransportEncodingConfig.json.withFieldMerge(false).withPathIndex(false)
+    // The path index alone: field merge and row addressing (on by default, their own features)
+    // are covered by FieldMergeTests and RowAddressingAdapterTests. Row addressing stays off
+    // here, so these tests pin the path-entry form; a test that wants rows turns them on.
+    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false).withPathIndex(false).withRowAddressing(false)
+    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false).withPathIndex(false).withRowAddressing(false)
+    static let json = TransportEncodingConfig.json.withFieldMerge(false).withPathIndex(false).withRowAddressing(false)
 
     static let landType = "path-index"
 
@@ -237,7 +238,7 @@ struct PathIndexTests {
         #expect(Self.messagepack.withPathIndex(true).withDynamicKeyCompression(false).pathIndex)
         // On by default, in the config and from the environment; PATH_INDEX=false turns it off.
         #expect(TransportEncodingConfig().pathIndex)
-        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge"])
+        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge", "rowAddressing"])
         #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: [:]) == true)
         #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: ["PATH_INDEX": "false"]) == false)
     }

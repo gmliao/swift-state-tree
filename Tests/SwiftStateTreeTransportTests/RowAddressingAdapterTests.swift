@@ -122,9 +122,9 @@ private func rowAddressingPathHashes() throws -> [String: UInt32] {
     return try #require(schema.lands["row-addressing"]?.pathHashes)
 }
 
-private func rowAddressingEnv(tables: Bool) -> TransportEnvConfig {
+private func rowAddressingEnv(tables: Bool, dirtyTracking: Bool = true) -> TransportEnvConfig {
     var config = TransportEnvConfig(
-        enableDirtyTracking: true,
+        enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: false,
         syncStrategy: .delta,
         profilingConfig: nil
@@ -134,7 +134,10 @@ private func rowAddressingEnv(tables: Bool) -> TransportEnvConfig {
 }
 
 private let rowAddressingJoinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, slot in
-    try? JSONEncoder().encode(TransportMessage.joinResponse(
+    // Sorted keys: runs compared frame by frame get the same bytes.
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try? encoder.encode(TransportMessage.joinResponse(
         requestID: "r-\(playerID.rawValue)", success: true, playerID: playerID.rawValue, playerSlot: slot, encoding: "json"
     ))
 }
@@ -170,6 +173,7 @@ private struct RowAddressingRun {
         joinsThroughRouter: Bool = true,
         inTurnSync: Bool = true,
         tables: Bool = true,
+        dirtyTracking: Bool = true,
         recording: Bool = false,
         initial: RowAddressingState = RowAddressingState()
     ) async throws -> RowAddressingRun {
@@ -184,7 +188,7 @@ private struct RowAddressingRun {
             keeper: keeper,
             transport: frames,
             landID: "row-addressing",
-            transportEnvConfig: rowAddressingEnv(tables: tables),
+            transportEnvConfig: rowAddressingEnv(tables: tables, dirtyTracking: dirtyTracking),
             encodingConfig: encoding.config.withSyncSequence(true).withRowAddressing(rowAddressing),
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true,
@@ -360,10 +364,14 @@ struct RowAddressingAdapterTests {
         #expect(!on.withPathIndex(false).effective(pathHashes: hashes).rowAddressing)
         #expect(!on.withSyncSequence(false).effective(pathHashes: hashes).rowAddressing)
         #expect(!TransportEncodingConfig.json.withSyncSequence(true).withRowAddressing(true).effective(pathHashes: hashes).rowAddressing)
-        #expect(TransportEncodingConfig.messagepack.rowAddressing == false, "off by default")
+        #expect(TransportEncodingConfig.messagepack.rowAddressing, "on by default")
+        #expect(TransportEncodingConfig.opcode.rowAddressing && TransportEncodingConfig.jsonOpcode.rowAddressing)
+        #expect(TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack).rowAddressing, "the init's default")
+        #expect(!TransportEncodingConfig.json.effective(pathHashes: hashes).rowAddressing, "object state updates never carry it")
         #expect(StateUpdateFeature.supported.contains(StateUpdateFeature.rowAddressing))
         #expect(TransportEncodingConfig.rowAddressingFromEnvironment(environment: ["ROW_ADDRESSING": "true"]))
-        #expect(!TransportEncodingConfig.rowAddressingFromEnvironment(environment: [:]))
+        #expect(TransportEncodingConfig.rowAddressingFromEnvironment(environment: [:]), "on by default")
+        #expect(!TransportEncodingConfig.rowAddressingFromEnvironment(environment: ["ROW_ADDRESSING": "false"]), "the opt-out")
     }
 
     @Test("In effect only with in-turn sync and joins through the router; it turns the sync tables on")
@@ -439,6 +447,43 @@ struct RowAddressingAdapterTests {
         // The slot of the deleted "b" was taken again, with the next generation.
         let slots = try #require(await runs[1].adapter.rowSlotsForTesting("units"))
         #expect(slots.values.contains { $0.generation > 0 }, "a slot was reused")
+    }
+
+    @Test("On the row path, dirty tracking on and off send the same frames", arguments: RowAddressingEncoding.allCases)
+    func dirtyTrackingOnAndOff(encoding: RowAddressingEncoding) async throws {
+        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "b": RowAddressingUnit(hp: 2)])
+        var runs = [
+            try await RowAddressingRun.make(encoding: encoding, rowAddressing: true, dirtyTracking: true, initial: initial),
+            try await RowAddressingRun.make(encoding: encoding, rowAddressing: true, dirtyTracking: false, initial: initial),
+        ]
+        for (index, dirty) in [true, false].enumerated() {
+            // Each arm runs what it says: rows, the tables, and its dirty tracking.
+            #expect(runs[index].adapter.rowAddressing)
+            #expect(await runs[index].adapter.usesSyncTablesForTesting())
+            #expect(await runs[index].adapter.dirtyTrackingEnabledForTesting() == dirty)
+        }
+        let steps: [(inout RowAddressingState) -> Void] = [
+            { $0.units["a"]?.hp = 10; $0.units["c"] = RowAddressingUnit(hp: 3) },
+            { $0.units["b"] = nil; $0.units["c"]?.bag["k"] = 1 },
+            { $0.units["d"] = RowAddressingUnit(hp: 4); $0.units["a"]?.note = "x" },
+            { $0.units["a"]?.note = nil; $0.round = 2 },
+        ]
+        for index in runs.indices { try await runs[index].join("p1") }
+        for (n, step) in steps.enumerated() {
+            if n == 2 { for index in runs.indices { try await runs[index].join("p2") } }
+            for run in runs { await run.tick(step) }
+        }
+        for player in ["p1", "p2"] {
+            let on = await runs[0].frames.frames(for: SessionID("s-\(player)"))
+            let off = await runs[1].frames.frames(for: SessionID("s-\(player)"))
+            #expect(on.count > 2, "\(player) got frames")
+            #expect(on == off, "\(player): the frames differ with dirty tracking off")
+        }
+        // Row entries were sent: this is the row path, not the path-entry one.
+        #expect(try await !runs[0].rowEntryOps().isEmpty)
+        for index in runs.indices {
+            #expect(await runs[index].adapter.dirtyTrackingEnabledForTesting() == (index == 0), "dirty tracking at the end")
+        }
     }
 
     @Test("Opcode JSON: a row whose value does not encode is dropped from the plan; the rest of the table proceeds, and the row is retried")

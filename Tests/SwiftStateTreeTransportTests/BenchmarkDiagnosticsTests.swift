@@ -225,7 +225,11 @@ struct EffectiveStateUpdateFeaturesTests {
 
     @Test("Without rowAddressing requested, it is the joinResponse's echo and has no rowAddressing")
     func withoutRowAddressing() async throws {
-        let (echo, effective) = try await joined(PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true))
+        // PathIndexTests.messagepack pins row addressing off; say it here too, since it is this
+        // test's subject.
+        let (echo, effective) = try await joined(
+            PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(false)
+        )
         #expect(effective == echo)
         #expect(!effective.isEmpty)
         #expect(!effective.contains(StateUpdateFeature.rowAddressing))

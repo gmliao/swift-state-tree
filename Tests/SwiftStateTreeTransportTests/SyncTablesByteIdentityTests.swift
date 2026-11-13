@@ -81,6 +81,11 @@ struct SyncTablesByteIdentityTests {
         )
         #expect(await leaf.adapter.usesTypedLeafValuesForTesting())
         #expect(await !on.adapter.usesTypedLeafValuesForTesting())
+        // Each arm runs what it says: row addressing turns the tables on whatever the env says,
+        // so with it in effect the off arm would quietly run the tables too.
+        #expect(await on.adapter.usesSyncTablesForTesting())
+        #expect(!(await off.adapter.usesSyncTablesForTesting()), "\(cell): the off arm runs the snapshot diff")
+        #expect(!on.adapter.rowAddressing && !off.adapter.rowAddressing && !leaf.adapter.rowAddressing)
         try await on.runScript()
         try await on.runNegativeKeys()
         try await off.runScript()

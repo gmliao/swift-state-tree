@@ -482,10 +482,14 @@ struct FieldMergeTests {
     @Test("The config's features: fieldMerge (on by default) with an opcode state-update encoding")
     func configFeatures() {
         #expect(TransportEncodingConfig.messagepack.fieldMerge)
-        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge"])
-        #expect(TransportEncodingConfig.messagepack.withPathIndex(false).stateUpdateFeatures == ["fieldMerge"])
-        #expect(TransportEncodingConfig.messagepack.withFieldMerge(false).stateUpdateFeatures == ["pathIndex"])
-        #expect(TransportEncodingConfig.messagepack.withPathIndex(false).withFieldMerge(false).stateUpdateFeatures == [])
+        // The requested list; rowAddressing (on by default) is in it, and `effective(pathHashes:)`
+        // drops it where it can't take effect (RowAddressingAdapterTests).
+        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge", "rowAddressing"])
+        let rowsOff = TransportEncodingConfig.messagepack.withRowAddressing(false)
+        #expect(rowsOff.stateUpdateFeatures == ["pathIndex", "fieldMerge"])
+        #expect(rowsOff.withPathIndex(false).stateUpdateFeatures == ["fieldMerge"])
+        #expect(rowsOff.withFieldMerge(false).stateUpdateFeatures == ["pathIndex"])
+        #expect(rowsOff.withPathIndex(false).withFieldMerge(false).stateUpdateFeatures == [])
         #expect(TransportEncodingConfig.json.stateUpdateFeatures == [])
         #expect(TransportEncodingConfig.messagepack.effective(pathHashes: nil).stateUpdateFeatures == [])
         #expect(TransportEncodingConfig.fieldMergeFromEnvironment(environment: [:]))

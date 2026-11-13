@@ -42,7 +42,9 @@ public struct TransportEncodingConfig: Sendable {
     package let syncSequence: Bool
     /// Opcode state updates with path hashes: a row of a root node map is sent as row entries
     /// (`RowPatchOpcode`: create, delete, column set, column clear), named by its table slot,
-    /// instead of path entries with its key. Off by default. It requires `pathIndex` and
+    /// instead of path entries with its key. On by default; `withRowAddressing(false)` (or
+    /// `ROW_ADDRESSING=false` for a server that reads `rowAddressingFromEnvironment()`) turns it
+    /// off. It requires `pathIndex` and
     /// `syncSequence` (`effective(pathHashes:)` turns it off without them), and it takes effect
     /// only on a land where every join completes in a turn: a `.live` keeper with in-turn sync,
     /// and joins through the router. Elsewhere the land runs without it and logs that once. A
@@ -67,7 +69,7 @@ public struct TransportEncodingConfig: Sendable {
         atomicValues: AtomicValueEncoding = .positional,
         pathIndex: Bool = true,
         fieldMerge: Bool = true,
-        rowAddressing: Bool = false
+        rowAddressing: Bool = true
     ) {
         self.init(
             message: message, stateUpdate: stateUpdate, dynamicKeyCompression: dynamicKeyCompression,
@@ -84,7 +86,7 @@ public struct TransportEncodingConfig: Sendable {
         pathIndex: Bool = true,
         fieldMerge: Bool = true,
         syncSequence: Bool,
-        rowAddressing: Bool = false
+        rowAddressing: Bool = true
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
@@ -146,7 +148,7 @@ public struct TransportEncodingConfig: Sendable {
         )
     }
 
-    /// `ROW_ADDRESSING` (default false), for servers that build their config from the
+    /// `ROW_ADDRESSING` (default true; `false` opts out), for servers that build their config from the
     /// environment. It takes effect only where every join completes in a turn (in-turn sync,
     /// the default, and joins through the router).
     public static let rowAddressingEnvironmentKey = TransportEnvKeys.rowAddressing
@@ -154,7 +156,7 @@ public struct TransportEncodingConfig: Sendable {
     public static func rowAddressingFromEnvironment(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        EnvHelpers.getEnvBool(key: TransportEnvKeys.rowAddressing, defaultValue: false, environment: environment)
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.rowAddressing, defaultValue: true, environment: environment)
     }
 
     /// This config with `dynamicKeyCompression` set.
