@@ -1,6 +1,6 @@
 # A player's second session gets no per-player changes (#531): findings and fix spec
 
-**Status:** rev 3, for review. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
+**Status:** rev 4; rev 3's spec reviewed GO (2026-11-13). Q1–Q3 are with the maintainer. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
 
 - **Rev 2** answers review of rev 1 (8572647d):
   - corrected facts: recipient order is unspecified; `registerSession` doesn't touch the keeper, so which session is receive-only depends on the caller's keeper join; the seed doesn't move the first session's baseline; the starvation is scoped to cached diffs; no claim about per-player sync tables, which aren't on `main`;
@@ -12,6 +12,10 @@
   - S3 names `endJoinBeforeAdmission` and passes the router's captured generation; the guarantee is limited to transports that implement the generation-aware close;
   - tests hold where the queue is already held, and the M2 test ends the ticket without the queue;
   - Q2's reason, and the OnJoin/OnLeave count conditions.
+- **Rev 4**, after the GO:
+  - a test of the window between the keeper read and the adapter's commit;
+  - S3's generation for `endJoinBeforeAdmission` comes from the router's `joinBudgetExpired`, and covers the final frame and both fallback closes;
+  - a refused registration without a generation closes by ID, said beside the counter.
 
 **Summary.** #531's mechanism holds for cached diffs. Two adapter members of one player share one per-player baseline, so one of the two recipients in a sync gets that player's per-player changes and the other doesn't. Which one is unspecified. Only the public `TransportAdapter.registerSession(...)` creates the second member.
 
@@ -82,10 +86,11 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
   The adapter then keeps S2 and the keeper keeps S3, so S2's inputs are rejected (`LandKeeper.swift:1844-1863`), and S3 was closed. The M2 ticket can't see this: nothing ended S2. Two options:
   - **(a) Check the keeper's entry in the registration** (recommended). A package read on the keeper, `entrySession(for: PlayerID) -> (clientID: ClientID?, sessionID: SessionID?)?`, returns the entry's `clientID` and `lastSessionID` (`InternalPlayerSession`, :5344-5345); no such query exists today. The public registration reads it first, inside the queue; the rest of the registration runs after that await in one synchronous segment, re-reading the adapter's state there.
     - The entry names this session (or this client, for a session the keeper hasn't seen): register, superseding the others.
-    - The entry names another session or client: refuse. The session isn't registered; it is closed (generation-aware, S3), and a counter `staleRegistrationRefusals` counts it, with a warning. That is what the library does to a join that lost (`endJoinBeforeAdmission`).
+    - The entry names another session or client: refuse. The session isn't registered; it is closed (generation-aware, S3), and a counter `staleRegistrationRefusals` counts it, with a warning. That is what the library does to a join that lost (`endJoinBeforeAdmission`). The close uses the registration's `connectionGeneration` argument; a direct caller that passes none gets a close by ID, without the protection.
     - No entry: register, as today. The keeper's sender check has the same rule (:1850-1851), and callers that drive the adapter without a keeper join keep working.
     - `performJoinQueued` (:2320) calls the internal implementation without the check: its own keeper join just ran in the queue, and #234's `refusesResolvedJoin` already covers a stale one.
-    - Cost: one keeper hop per public registration, none for the library's joins. A host keeper join that lands after the read is that host's next registration, which the same check then admits.
+    - Cost: one keeper hop per public registration, none for the library's joins.
+    - **The window after the read.** A host keeper join can move the entry to S3 after the read and before the commit. Then the adapter commits S2 while the keeper names S3. It is transient: this registration holds the queue, so S3 isn't an adapter member yet, and when the host registers S3, its check passes and supersedes S2. The test pins both steps (§4.4).
   - **(b) Document the ordering rule.** The API docs and Q1/Q3 say: the caller must order its keeper join and its registration against the library's joins, and "newest registration" in the adapter is separate from "newest join" in the keeper. No code, and the mismatch above stays possible.
   - The test: the interleaving above, forced with holds. Under (a), the registration of S2 is refused, S2 is closed, and the adapter and the keeper both name S3, with S3's inputs accepted. Under (b), it pins the documented mismatch.
 - **M2. The connection generation under a ticket.** `connectionGenerations[sessionID] = …` is written after `await webSocketTransport.registerSession(…)` (:1656-1660). A disconnect or supersede during that await ends the session, and the write would then bring back an entry for an ended session. The fix:
@@ -95,7 +100,11 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
 - **S3. Generation-aware delayed closes.** `supersedeSessions` closes the old session by ID in a detached task (`Task { await transport.closeSession(old) }`, :1982). If the old session ID reconnects before that task runs, the new connection is closed. The fix:
   - capture `connectionGenerations[old]` before it is removed (:1972);
   - close with `closeSession(old, with: .normal, generation:)`.
-  - `endJoinBeforeAdmission` (:1833-, its close at :1844-1846) has the same pattern for a join refused before admission. That session was never admitted, so it has no `connectionGenerations` entry: its close passes the generation the router captured when it accepted the connection (`LandRouter.swift:289`, read at :840 and passed to `admitJoin` at :885-894, as `performJoinQueued`'s `connectionGeneration`). Without one (a direct caller), it passes `nil`.
+  - `endJoinBeforeAdmission` (:1833-1848) has the same pattern for a join that ran out of time before admission. The router's `joinBudgetExpired` calls it (`LandRouter.swift:1085-1115`), not `performJoinQueued`. That session was never admitted, so it has no `connectionGenerations` entry, and both its paths act by ID today:
+    - **with a final frame**, `sendFinalFrameAndClose` (`TransportAdapter+Outbound.swift:70-85`) stamps the frame with `connectionGenerations[sessionID]` (nil here, :84-85), queues the close behind it, and falls back to a close by ID when the session has ended or the writer refuses (:72-74, :78-80);
+    - **without one**, the close by ID at :1844-1846.
+
+    The fix: `joinBudgetExpired` passes the generation it already reads for the router's own close (`sessionToConnectionGeneration[sessionID]`, :1102) into `endJoinBeforeAdmission(_:finalFrame:attemptEnd:connectionGeneration:)`. That generation goes on the final frame, on the queued close (inferred: the writer's close for `closingSessions` must then take the frame's generation; checked in the fix), and on both fallback closes, as `closeSession(_:with:generation:)`. Without a generation (no router), every path closes by ID as today.
   - **Limit:** the generation-aware close is a `Transport` requirement (`Transport.swift:73`), but its default ignores the generation and closes by ID (:97-100). Only a transport that implements it, `WebSocketTransport` (`WebSocketTransport.swift:585-588`), gets the protection; others close by ID as today.
 
 ### 4.2 Direct test callers of `registerSession` (S4)
@@ -127,6 +136,8 @@ The recommended fix is that `registerSession` supersedes, as the library's own j
 - **Ticket (M2):** a hold at the registration's transport await. The registration holds the queue across it, so a public disconnect would queue behind it. The ticket is ended without the queue instead, by `endSessionTicketsForTeardown()` (:1669-1673); after the await, `connectionGenerations` has no entry for the session.
 - **A disconnect during the registration** (separately): issued during the same hold, it waits for the registration and then removes the session.
 - **The keeper check:** the rev 3 interleaving (§4.1).
+- **The window after the keeper read:** S2's registration is held after `entrySession(for:)` returns S2's entry; meanwhile the host's keeper join moves the entry to S3. Released, S2 is committed: the test asserts the transient state (adapter S2, keeper S3, S2's inputs rejected). Then the host registers S3; the test asserts that its check passes, S2 is superseded, and the adapter and the keeper both name S3, with S3's inputs accepted.
+- **Generation-aware join timeout:** a join that runs out of time before admission while its session ID reconnects; the new connection gets neither the timeout frame nor the close, with a final frame and without one.
 - **Delayed close (S3):** as §4.3.
 - **The lifecycle counts:** as §4.3.
 
