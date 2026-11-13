@@ -263,7 +263,7 @@ A:
 
 ### Q: 什麼時候應該關閉 dirty tracking？
 
-A: 除非針對你的 land 量測顯示不同，否則保持開啟。關閉時每次 sync 會讀取所有 root 欄位，但省去重設 dirty 標記；是否更快取決於每次 sync 變更的欄位多寡。adapter 不會自行切換。在 snapshot diff fallback（`USE_SYNC_TABLES=false`）上，當大部分欄位每次更新都會變更時，關閉可能更快。
+A: 除非針對你的 land 量測顯示不同，否則保持開啟。關閉時每次 sync 會讀取所有 root 欄位，但省去重設 dirty 標記；是否更快取決於每次 sync 變更的欄位多寡。adapter 不會自行切換。在 snapshot diff fallback（`USE_SYNC_TABLES=false`）上，當大部分欄位每次更新都會變更時，關閉可能更快。row addressing 開啟時（預設），`USE_SYNC_TABLES=false` 沒有作用：要跑 snapshot diff fallback，須同時設 `ROW_ADDRESSING=false`。
 
 ```swift
 // 在 TransportAdapter 初始化時設定
