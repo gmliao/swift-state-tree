@@ -231,6 +231,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     // Serial runs time the ticks and the syncs apart as well (each span inside `duration`).
     var tickDuration = Duration.zero
     var syncDuration = Duration.zero
+    // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the tick loop only (serial runs; refused otherwise).
+    let perfWindow = PerfWindowRun.current
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup (room-level parallelism)
@@ -262,9 +264,11 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             for room in rooms {
                 if ticksPerSync > 0 {
                     let tickStart = ContinuousClock.now
+                    perfWindow?.beginEither()
                     for _ in 0 ..< ticksPerSync {
                         await room.keeper.stepTickOnce()
                     }
+                    perfWindow?.endEither()
                     tickDuration += tickStart.duration(to: ContinuousClock.now)
                 }
                 let syncStart = ContinuousClock.now
@@ -335,6 +339,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         result.syncMs = ms(syncDuration)
         result.tickMs = ms(tickDuration)
     }
+    result.perfWindow = perfWindow?.report()
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
@@ -513,6 +518,9 @@ func runMultiRoomBenchmark(
     var cpuAvailable = true
     // Untimed: the first room's live monster count after each iteration.
     var peakMonsterCount = 0
+    // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the span outside syncNow() (`nonsync`) or the
+    // tick loop (`ticks`) only (serial runs; refused otherwise).
+    let perfWindow = PerfWindowRun.current
     func cpuMark() -> Double? {
         let value = ProcessUsage.cpuSeconds()
         if value == nil { cpuAvailable = false }
@@ -567,6 +575,7 @@ func runMultiRoomBenchmark(
             let cpuStart = cpuMark()
             let iterationStart = ContinuousClock.now
             for (roomIndex, room) in rooms.enumerated() {
+                perfWindow?.begin(.nonsync)
                 if activePlayers {
                     if let routerClientIDs {
                         await injectRouterMoveTargets(
@@ -579,10 +588,13 @@ func runMultiRoomBenchmark(
                     }
                 }
                 if ticksPerSync > 0 {
+                    perfWindow?.begin(.ticks)
                     for _ in 0 ..< ticksPerSync {
                         await room.keeper.stepTickOnce()
                     }
+                    perfWindow?.end(.ticks)
                 }
+                perfWindow?.end(.nonsync)
                 let syncStart = ContinuousClock.now
                 await room.adapter.syncNow()
                 syncDuration += syncStart.duration(to: ContinuousClock.now)
@@ -649,6 +661,7 @@ func runMultiRoomBenchmark(
     }
     if cpuAvailable { result.cpuMs = cpuSeconds * 1000 }
     result.peakMonsterCount = peakMonsterCount
+    result.perfWindow = perfWindow?.report()
     result.entityDelta = entityDelta?.report(iterations: iterations)
     if MergeStatsRun.enabled {
         result.fieldMergeCounts = fieldMergeCounts
@@ -1165,6 +1178,8 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     if let entityDelta = result.entityDelta { fields["entityDelta"] = entityDelta }
     // `--join-through-router on`: bytesCounted is perConnection, not comparable with the default.
     if let routerJoin = result.routerJoin { fields["routerJoin"] = routerJoin }
+    // ENCODING_BENCHMARK_PERF_CONTROL: the span perf counted and the commands sent.
+    if let perfWindow = result.perfWindow { fields["perfWindow"] = perfWindow }
     if let counts = result.fieldMergeCounts {
         fields["fieldMerge"] = [
             "patches": counts.patches,
@@ -1284,6 +1299,7 @@ struct EncodingBenchmark {
         // it only when none of those options was given; lands other than Hero Defense run only
         // through the multi-room path.
         let isMultiRoom = config.rooms > 1 || config.gameType != .heroDefense || config.heroDefenseOptionsGiven
+        PerfWindowRun.start(config: config, isMultiRoom: isMultiRoom)
         
         if config.hashCost {
             await runHashCostMatrix(config: config)

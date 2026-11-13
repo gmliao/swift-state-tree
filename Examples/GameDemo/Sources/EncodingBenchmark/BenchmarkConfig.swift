@@ -681,6 +681,18 @@ enum ArgumentParser {
     --parallel false, syncMs (time in syncNow() alone; timeMs also includes the ticks and the
     move injection). Timing and memory are only comparable between -c release builds.
 
+    Perf counter window (Linux perf, serial multi-room runs only; refused with --parallel true,
+    --all and the other multi-run modes):
+      ENCODING_BENCHMARK_PERF_CONTROL=<ctl-fifo>,<ack-fifo>
+                              The FIFOs given to perf stat/record --delay=-1 --control
+                              fifo:<ctl>,<ack>. The run enables the counters around one span per
+                              room and iteration and waits for each ack.
+      ENCODING_BENCHMARK_PERF_WINDOW=nonsync|ticks
+                              nonsync (default): the timed iteration except syncNow(), the span
+                              timeMs - syncMs measures. ticks: the stepTickOnce() loop only (the
+                              same span in the generic runner). The result JSON records
+                              perfWindow {mode, toggles}.
+
     Examples:
       swift run EncodingBenchmark --format messagepack-pathhash --players 10
       swift run EncodingBenchmark --rooms 4 --players-per-room 10
