@@ -102,7 +102,7 @@ The saving against today is the extraction of fields the mode doesn't compare. I
 - with one-pass off and only broadcast fields dirty next cycle, the mode is `.all` and the lag is re-diffed;
 - with one-pass on, the mode is `.dirtyTracking(planDirtyFields)`, and p stays behind on a clean per-player field until it is written again.
 
-The PR keeps that behavior byte for byte and pins it in both settings. Whether today's one-pass lag after a per-player encode failure is a bug is a separate question for its own issue, not changed here (§8).
+The PR keeps that behavior byte for byte and pins it in both settings, marked as a known bug citing #532 (the per-player half of the lag after a failed encode; its broadcast half is the documented limit at TA 4933-4936).
 
 **Every write to a per-player field marks it dirty.** A per-player field is a root `@Sync` field, and each mutation route goes through its wrapper:
 - the setter, which sets `_isDirty`;
@@ -323,7 +323,7 @@ This PR branches after F merges and pins `--row-addressing` in the brief.
 - **#192** (one frame per sync for per-player lands): unaffected; frame count and kinds are unchanged.
 - **#130** (an independent per-player oracle): still open. The differential test compares against today's engine.
 - **#199** (policies that read the root state): D1 relies on filter purity, as today's `.dirtyTracking` modes already do. A root-state policy needs its field dirtied by what it reads, as #199 notes.
-- **The lag after a per-player encode failure with one-pass on** (§2, M6): today's behavior, kept and pinned. Whether it gets its own issue is decided outside this PR.
+- **#532** (a player's client stays behind after its state frame fails to encode entirely): pinned, not fixed (§2, M6).
 - **#314** (hash-seed-independent patch order): frames are canonically ordered (#435).
 - **#524** (`PlayerHandle`): the boxes are keyed by `PlayerID`; a handle could key them by slot later.
 
