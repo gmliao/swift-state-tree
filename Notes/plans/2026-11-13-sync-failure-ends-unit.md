@@ -1,6 +1,9 @@
 # A sync failure ends the unit it corrupted (#535)
 
-**Status:** rev 9, decided. GO on rev 7 (c2a146fc, 2026-11-13); rev 8 (3a55d139) folded in its two shoulds. The maintainer decided D1–D11 and the drain exception on 2026-11-13 (§9); rev 9 updates the plan to match. Two decisions change the mechanism and went to review as a delta: D11 (d), a sync plan's first throw ends the land, and D8 (b), existential fields are refused at registration. Plan only; no code yet.
+**Status:** rev 10, decided. GO on rev 7 (c2a146fc, 2026-11-13); rev 8 (3a55d139) folded in its two shoulds. The maintainer decided D1–D11 and the drain exception on 2026-11-13 (§9); rev 9 updates the plan to match. Two decisions change the mechanism and went to review as a delta: D11 (d), a sync plan's first throw ends the land, and D8 (b), existential fields are refused at registration. Plan only; no code yet.
+- Rev 9 (05223505) got a no-GO on the decisions' delta: 1 must-fix, 5 should. Rev 10 answers them:
+  - Must-fix: PR 1 removes only the plan-throw paths; the follow-up limit, `noteFailedPlanForFollowUp` and `startDelayedFollowUpSync`, which the row repair and the first-view retry share, go in PR 2 (§7).
+  - Shoulds: `InTurnSyncResult.failed(repairAllowed:)` loses its payload in PR 2 (§6, D12); the legacy `landFailure` item on a draining keeper (§3.3); the alias-typed fixtures as the D8 gap's tests; D8's commitment worded as "where the syntax shows it", with `AnyHashable` and `AnyCodable` as rules by name; the tests that rely on a plan throw (§8); debug settle's plan throw; row 15's docs status.
 - Rev 9: the decisions. The per-session path (Appendix A, 4015 `viewFailed`, the rejoin bound, `allRecipients`) is dropped (D2a (a)); D11's time bound, its clock, the fixed-delay repair retries and the doubling join-sync retry are dropped (D11 (d)); `committedWithRepairPending` is removed, not deprecated (D7 (b)); existential fields are refused (D8 (b), §4); the drain is a named interim exception to the reentrancy rule, removed by #522 (§3.4).
 - Rev 6 (400b9608) got a no-GO: 2 must-fix and 4 should. Rev 7 answers them:
   - S1: §3.2 step 5. On a failure, the legacy paths' turn record goes through the ordered recorder pipeline with the terminal entry after it, both enqueued in the failing segment; nothing is written directly after an await, so a teardown save can't come first.
@@ -274,7 +277,10 @@ extension LandKeeper {
 
 - The item is internal (`PendingItem.landFailure`), not a user `HandleServerInput`, and it isn't recorded as an input.
 - **It carries two positions** (D9). The *output position* is the last committed tick or pass whose state the failing output read. **This needs a code change:** `beginSyncLocatedIfRecording` returns no position when in-turn sync is off (TA 3855-3861), so the legacy state read (TA 3301) can't capture it today. The keeper's `beginSync` returns the last committed tick and pass with the state whenever a recorder exists, in-turn or not, and the adapter keeps it with the failure. The *end position* is the turn that applies the item. Turns between the two ran live, with their inputs applied and recorded, so replay runs them; the run ends at the end position.
-- The turn that applies it re-reads the drain flag and validates the ticket, then calls `failLand`.
+- The turn that applies it re-reads the drain flag and validates the ticket, then calls `failLand`. When the flag is already set:
+  - **already failed, with the same ticket:** the item is ignored (idempotent); the first failure, its terminal entry and its teardown stand.
+  - **an admin or idle drain already started:** the first cause stays (`DrainFlag.set`). The item is dropped and logged; the sessions close with 4014, the window D10 accepts, and no terminal entry is written: the drain's own save ends the record, and replay sees a stopped land, not a failed one.
+  - **no normal turn runs once draining**, so a dropped item needs no turn: `submitLandFailure` refuses it at intake when `isDraining` is already set, as `submitServerInput` does (LK 2980), and the settle drops one queued earlier.
 - A tickless idle land schedules that turn as `submitServerInput` does.
 
 ### 3.4 The teardown (keeper-owned)
@@ -375,9 +381,12 @@ Every step of §3 was checked against the rule "keeper state is mutated only ins
 - **A class type in a synced field** (`classRefusal`). `SyncValueSemantics.validate` walks declared element and value types of collections, including empty ones (SyncValueSemantics 72-80). Plain structs, tuples and enum payloads, though, are looked into through the default instance's **values** (SyncValueSemantics 18-26). So a class is unseen behind an existential (`Any`, `any P`), inside a struct inside an empty `[Holder]`, or in an enum case the default instance doesn't take.
 - **An unsupported key type** (`SyncError.unsupportedKey`, SnapshotValue.swift:476). This check is new.
 - **A player-dependent node under a broadcast field** (#179). `SyncPolicyNesting.validate` covers it, with the same value-walk gaps (SyncPolicyNesting 29-32, 114-134).
-- **An existential field (D8 (b), decided 2026-11-13).** A synced field whose declared type is, or contains, an existential is refused: its value isn't knowable from the type, and that hides a class, an unsupported key or a player-dependent node from every check above. No `@Sync` field in `Sources/`, `Examples/` or `Tests/` is typed `any …` or `Any` today (checked 2026-11-13), and a refusal can be loosened later without breaking anyone, while tightening later would break users.
-  - **At macro expansion first (a compile error).** `@StateNodeBuilder` and `@SnapshotConvertible` read each stored property's declared type as syntax (they already emit `FieldMetadata(type: X.self)` from it). They refuse `Any`, `AnyObject`, `AnyHashable` (a box of any `Hashable`), and any `any P`, also inside a generic argument, an optional, an array, a dictionary or a tuple (`[String: Any]`, `(any P)?`).
-  - **What syntax can't see:** a protocol spelled bare (`P` instead of `any P`, still legal for a protocol without associated types), and a typealias that names an existential. Those, and every type without the macros (a hand-written conformance), go to `validateForRegistration`: it checks the field metatypes the macros emit, and the declared element and value types it already walks (SyncValueSemantics 72-80), for an existential. PR 3 finds whether the runtime offers a supported way to tell an existential metatype; if it doesn't, the bare-protocol and typealias spellings stay a named gap, and the PR body says so.
+- **An existential field (D8 (b), decided 2026-11-13).** A synced field whose declared type is, or contains, an existential is refused: its value isn't knowable from the type, and that hides a class, an unsupported key or a player-dependent node from every check above. No `@Sync` field in `Sources/`, `Examples/` or `Tests/` is spelled `any …` or `Any` today (checked 2026-11-13); three test fields reach an existential through a typealias (below). A refusal can be loosened later without breaking anyone, while tightening later would break users.
+  - **The commitment: refused where the syntax shows it; the rest is a listed gap.** `@StateNodeBuilder` and `@SnapshotConvertible` read each stored property's declared type as syntax (they already emit `FieldMetadata(type: X.self)` from it). They refuse `Any`, `AnyObject` and any `any P`, also inside a generic argument, an optional, an array, a dictionary or a tuple (`[String: Any]`, `(any P)?`).
+  - **Rules by name.** `AnyHashable` and the library's `AnyCodable` (Support/AnyCodable.swift, which holds `base: Any`) are concrete structs, not existentials, but each boxes a value of any type, with the same effect. Both are refused by name, as a stated rule, not as existential detection: at macro expansion when spelled, and `AnyCodable` also at registration through the walked element and value types, which see it by name. No `@Sync` field in the repo uses either (checked 2026-11-13).
+  - **What syntax can't see:** a protocol spelled bare (`P` instead of `any P`, still legal for a protocol without associated types), and a typealias that names an existential. Those, and every type without the macros (a hand-written conformance), are a **listed gap**: no public, supported API tells an arbitrary existential metatype apart (`Mirror` describes instances, and the metadata kind isn't public reflection). The runtime backstop applies: the land ends at the first throw. If a supported check appears, `validateForRegistration` adds it.
+  - **The gap's tests exist already.** `SyncValueSemanticsTests.swift` declares `typealias ValueCheckAnyPayload = any ValueCheckPayload` (L103), used by three `@Sync` fields (L107, 113, 115), and its tests at L205-249 rely on them. Under the gap they keep compiling; PR 3 keeps them as the gap's backstop tests (the land ends at the first throw) and names them in its body. If a runtime check is ever added, they become refusal tests.
+  - **The API docs say it too** (PR 3): the `@Sync`, `@StateNodeBuilder` and `@SnapshotConvertible` docs state the refusal ("where the declared syntax shows `any` or `Any`", plus the two names) and the gap (a bare protocol, a typealias, a hand-written conformance: the land ends at the first throw), in English and in the bilingual `docs/` page.
 
 For every gap, the runtime backstop stays: the land ends at the first throw.
 
@@ -431,6 +440,7 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 | `LandKeeper.failure` (nonisolated) | new property |
 | `LandDestructionCause.failed` | new enum case (an exhaustive switch breaks; named in the PR) |
 | `InTurnSyncResult.landFailed(LandFailure)` | new enum case on a public protocol's result (the same note) |
+| `InTurnSyncResult.failed(repairAllowed:)` (LandKeeperTransport.swift 222) | **becomes `.failed`, with no associated value** (D12), in PR 2, in the same break as `committedWithRepairPending`'s removal. After D11 (d) the payload means nothing: the keeper's handling (LK 4423-4436: the repair turn and the doubling join-sync retry) goes in PR 1. From PR 1 the library's adapter returns `.landFailed` on a plan throw, and a custom transport that returns `.failed` ends the land as `.syncPlan` (stage `.syncPhase`); between PR 1 and PR 2, `repairAllowed` is read by nothing, and its doc says so |
 | `InTurnSyncResult.committedWithRepairPending` | **removed** in PR 2 (D7 (b)), with the repair turn that handles it; a custom transport that returns it no longer compiles (named in the PR) |
 | `LandKeeperTransport.landDidFail(_:)` | new requirement with a do-nothing default |
 | `LandKeeperTransport.closeOutputs(for:)` (synchronous, `nonisolated`) | new requirement with a do-nothing default; its doc names stopping a custom transport's own output as that transport's responsibility |
@@ -456,18 +466,18 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 
 1. **PR 1, the mechanism and the total failures.**
    - §3.1–3.5, `submitLandFailure`, `landDidFail`, the epoch-conditioned detach, 4016.
-   - Rows 9, 10 (total), 12, 15, 17 and 19. Row 15 removes `syncFailedPlanFollowUpLimit`, the failed-plan follow-ups and the doubling join-sync retry, with their tests (D11 (d)).
+   - Rows 9, 10 (total), 12, 15, 17 and 19. Row 15 removes only the plan-throw paths (D11 (d)): the in-turn `.failed` return and the keeper's handling of it, the doubling join-sync retry (reached only from that branch, LK 4426-4434), and the legacy plan throw's follow-up (TA 3287-3331), which becomes `submitLandFailure`. `syncFailedPlanFollowUpLimit`, `noteFailedPlanForFollowUp` and `startDelayedFollowUpSync` stay: the row repair reads the limit (TA 2904, `consecutiveRowRepairs <= syncFailedPlanFollowUpLimit`) and the first-view and skipped-joiner retry uses all three (TA 4240-4258), and both stay until PR 2.
    - The SDK constant and the docs.
    - The reentrancy rule's text gains "the land-stop drain's post-await bookkeeping (#522)", unless a direct change lands it first.
 2. **PR 2, the conversion and per-patch paths.**
    - Rows 1, 3, 4, 6, 8 (with the leak), 10 (patches), 11, 13, the rest of 14, and 16.
    - Colliding keys in the live conversion (D8).
-   - The repair's removal, `committedWithRepairPending` included (D7 (b)).
+   - The repair's removal, `committedWithRepairPending` included (D7 (b)), and `InTurnSyncResult.failed` without its payload (D12), one break; D3's first-view retry; with their last users gone, `syncFailedPlanFollowUpLimit`, `noteFailedPlanForFollowUp` and `startDelayedFollowUpSync` are removed here, and `TransportAdapterJoinHeldEventsTests` L351-370, which depends on the limit, moves with them.
 3. **PR 3, registration.** §4, `validateForRegistration`, the existential refusal in the two macros and at registration (D8 (b)), and the backstop. It is independent of PRs 1 and 2, so it may go first.
 4. **PR 4, #87.** §3.7, after D5. It settles #87's (B) and leaves (A) open.
 
 **The failure-handling page.** `docs/core/failure-handling.md` and its `.zh-TW.md` (on `main`, 44f15d90) list each path with its status. Each PR flips its rows from "target" to "current", in both languages, in the same PR:
-- PR 1: "A server event that fails to encode" (with #521); "One player's state frame fails to encode entirely" (#532, to "the land"); and the "Close codes" section (4016).
+- PR 1: "A sync plan that throws" to "the first throw ends the land" (row 15); "A server event that fails to encode" (with #521); "One player's state frame fails to encode entirely" (#532, to "the land"); and the "Close codes" section (4016).
 - PR 2: "A resync's full view keeps failing to encode" (D3 (a)), since its per-patch part is row 11, which PR 2 converts; it stays "target" until then.
 - PR 2 also: "A field whose conversion throws at run time"; "A patch the encoding can't carry … or a path outside the schema".
 - PR 3: "Other type errors the type alone decides" (refused at registration, existential fields included), with the gaps of §4 named.
@@ -508,6 +518,11 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
   - the first throwing plan ends the land (`.syncPlan`, stage `.syncPhase`), with and without periodic sync, in-turn and legacy;
   - a throwing join-sync plan does too;
   - no follow-up or repair sync-only turn is scheduled after it, and no further plan runs.
+  - a legacy plan throw held before its `submitLandFailure` while an admin stop starts: the stop's cause stays, the item is dropped, every session closes with 4014, and no terminal entry is written; the same item submitted twice with one ticket after a failure changes nothing.
+- **Tests that rely on a plan throw today (PR 1 migrates them):**
+  - `LandKeeperInputTurnTests` L640-655 expects a repair after a throw: it now expects the land to end;
+  - the `failNextPlan()` cases in `TransportAdapterSyncPhaseTests` that expect recovery: each becomes a land-ends case, or is removed where another case covers it;
+  - `JoinPendingInboundTests`, `LandRouterJoinTimeoutTests` and `TransportAdapterJoinFlipTests` use a plan throw to hold a join for a while. They keep their purpose with a hold point at the join's sync (`HoldPoints`), not a throw.
 - **Row 17:**
   - a `pack` failure and a `.lost` event end the land;
   - a nil merged body sent alone doesn't.
@@ -523,7 +538,7 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
   - a stale ticket (the land restarted under a hold at the flush's await) is ignored.
 - **Action jobs (N1):** an action held in its resolver when the land fails gets `landClosed` at once, before the teardown's `landDidFail` returns; its resolver resuming later doesn't fill the slot again.
 - **OnLeave on a failed land (D4):** with a host, an OnLeave resolver held when the failure arrives; under D4 (a), a leave forwarded by the router after the failure runs no resolver and no handler, and the player's membership ends in the adapter and the router.
-- **Debug settle:** a failure during debug settle's state read sends nothing and still calls `endSync`.
+- **Debug settle:** a failure during debug settle's state read sends nothing and still calls `endSync`. Its own plan throw submits the land failure first, then throws to the debug caller: the test checks the land ended with `.syncPlan` and the caller got the error.
 - **A mid-batch failure (Review P1):** a batch of A (succeeds), B (throws after a write) and C (not executed), each once as an action with a tickless job slot and once with an ordinary turn waiter: A gets its response, B its handler error, C `landClosed`; each slot is filled exactly once (a slot hook that fails on a second fill). It fails if the settle moves after the publication:
   - in-turn: C's waiter gets `landClosed`, never `.success(())`, and `appliedItems` holds A and B only;
   - in-turn: `inputTurnResults` holds no entry for C after the turn;
@@ -598,7 +613,7 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 
 ## 9. Decisions (decided 2026-11-13)
 
-The maintainer decided every item on 2026-11-13. Rev 8 (3a55d139) has each one's options and arguments.
+The maintainer decided D1–D11 and the drain on 2026-11-13. D12 and D8's scope details came from review afterwards and were answered by Main from the maintainer's stated preferences. Rev 8 (3a55d139) has each one's options and arguments.
 
 - **D1, the close code: (a).** A new code, 4016 `landFailed`. An operator and a client can tell a failure from an admin stop (4014 `landStopped`).
 - **D2a, a per-session path: (a), none.** Every sync failure ends the land (§1). D2b (the rejoin bound) and D2c (the `allRecipients` policy) are moot: 4015 `viewFailed`, `viewRepeat` and `allRecipients` aren't built.
@@ -607,7 +622,7 @@ The maintainer decided every item on 2026-11-13. Rev 8 (3a55d139) has each one's
 - **D5, the #87 detector: (a).** Mutable access, a thread-local write counter installed around a handler, with the gaps of §3.7.
 - **D6, `pathNotInSchema`: (a).** It ends the land. It arises only from a server-side bug (a stale schema, a framework bug, a manual conformance), never from a client.
 - **D7, `committedWithRepairPending`: (b), removed** in PR 2, not deprecated (the same reasoning as #521 D13).
-- **D8, unknowable-type fields: (b), changed from rev 8's recommendation.** Existential fields are refused at registration, at macro expansion where the syntax shows them (§4). Colliding keys are detected in the live conversion and end the land. No `@Sync` field in `Sources/`, `Examples/` or `Tests/` is typed `any …` or `Any`; tightening later would break users, while loosening never does.
+- **D8, unknowable-type fields: (b), changed from rev 8's recommendation.** Existential fields are refused where the syntax shows them, at macro expansion, with `AnyHashable` and `AnyCodable` refused by name; a bare protocol spelling, a typealias and a hand-written conformance are a listed gap (§4). Colliding keys are detected in the live conversion and end the land. No `@Sync` field in `Sources/`, `Examples/` or `Tests/` is typed `any …` or `Any`; tightening later would break users, while loosening never does.
 - **D9, the record of a failed land: (a).** The record ends with the terminal position (§3.1). Replay applies exactly what live applied:
   - for `.input`, the inputs before the sequence, then the failing input, which must throw again (a mismatch otherwise), then nothing: no later input and no tick handler;
   - for `.syncPhase` and `.eventFlush`, the whole turn;
@@ -620,6 +635,7 @@ The maintainer decided every item on 2026-11-13. Rev 8 (3a55d139) has each one's
   - Removed: rev 8's time bound and its `SyncFailureClock`, the count and reset rules, the fixed-delay repair turns after a failed plan, `syncFailedPlanFollowUpLimit` and the failed-plan follow-ups, and the doubling join-sync retry, with their tests.
   - The terminal entry (D9) records stage `.syncPhase`. Replay doesn't run sync phases, so it computes nothing for it.
   - Row 15 is "first throw → land".
+- **D12, `InTurnSyncResult.failed(repairAllowed:)`: the payload is dropped** (`.failed`, no associated value) in PR 2, with D7's removal, as one break (§6). Raised by review after D11 (d), answered by Main from the maintainer's stated preference (public API that loses its meaning is removed, not deprecated: #521 D13 (b), D7 (b)); the maintainer may overrule.
 - **The drain: an interim named exception** to the reentrancy rule, removed by #522 (§3.4).
 
 ## 10. Out of scope
