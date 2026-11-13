@@ -62,7 +62,7 @@ Everywhere else the policy is a static computed property, which evaluates the ar
 - **Moving an expression from an instance initializer to a static changes when the value that's used is computed.**
   - In a stored static, it's computed once per type, at the first read, on whichever executor reads it.
   - In a computed static (the types the macro can't prove non-generic), it's computed on every read.
-  - Here the attribute's argument is still evaluated at each init that initializes the field through the attribute (an initial value, or `self.x = …` in an init), because the wrapper's init takes it, and that value is discarded. So a side effect in it still runs per such init; only the value that filters moved. An init that builds the wrapper by hand doesn't evaluate it.
+  - Here the attribute's argument is still evaluated at each init that initializes the field through the attribute (an initial value, or `self.x = …` in an init), because the wrapper's init takes it, and that value is discarded. So a side effect in it still runs per such init; only the value that filters moved. For a field declared without an initial value, an init that builds the wrapper by hand doesn't evaluate it.
   - Pin each branch with a fixture that captures a counter: bump the counter between inits and before the first read, and use a type no other test reads.
 - **A macro that reads an attribute's argument must pick it by label,** not by position. `@Sync(wrappedValue: 0, .broadcast)` is a legal property-wrapper spelling, and its first argument is the value. The policy is the unlabelled argument.
 

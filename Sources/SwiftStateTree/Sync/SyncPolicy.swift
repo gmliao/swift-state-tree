@@ -123,7 +123,8 @@ public extension SyncPolicy {
 /// - In any other node type (generic, or nested in one of those): on every read.
 /// - The attribute's argument is also evaluated at each init that initializes the field through
 ///   the attribute (an initial value, or `self.x = …` in an init), and that value is discarded.
-///   An init that builds the wrapper by hand doesn't evaluate it.
+///   For a field declared without an initial value, an init that builds the wrapper by hand
+///   doesn't evaluate it.
 ///
 /// So a policy expression must be pure: callable from any context (the first read runs on
 /// whichever executor syncs the land), and depending on nothing that changes after the land

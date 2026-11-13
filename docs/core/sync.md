@@ -45,7 +45,7 @@ The filter reads `visibleTo` from the value it is given, and `visibleTo` itself 
 A policy belongs to its declaration, not to each value. `@StateNodeBuilder` emits the `@Sync` argument once for the node type, and every instance filters through it:
 - In a node type that isn't generic and isn't nested in a generic type, an extension or a function, the policy that filters is evaluated once, at its first use, and every instance shares it.
 - In any other node type, it is evaluated each time it is used.
-- In both cases the attribute's argument is also evaluated at each init that initializes the field through the attribute (an initial value, or `self.x = …` in an init), and that value is discarded. A factory such as `.perPlayerSlice()` therefore still runs at every such init. An init that builds the wrapper by hand doesn't evaluate it.
+- In both cases the attribute's argument is also evaluated at each init that initializes the field through the attribute (an initial value, or `self.x = …` in an init), and that value is discarded. A factory such as `.perPlayerSlice()` therefore still runs at every such init. For a field declared without an initial value, an init that builds the wrapper by hand doesn't evaluate it.
 
 The policy is the one in the attribute. A wrapper built by hand in an init (`_x = Sync(wrappedValue: v, .serverOnly)`) doesn't change it: the policy passed there is ignored.
 
