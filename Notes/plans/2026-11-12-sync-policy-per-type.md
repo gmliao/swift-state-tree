@@ -1,6 +1,6 @@
 # Sync policy per type, not per wrapper (#520)
 
-**Status:** open, rev 2 (2026-11-12): generic contexts (§3), the evaluation contract (§4), pins and coverage (§9). The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implemented in PR #527.
+**Status:** done (merged as #527, 9bf7df61), rev 2 (2026-11-12): generic contexts (§3), the evaluation contract (§4), pins and coverage (§9). The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implemented in PR #527.
 
 **Decided (maintainer, 2026-11-12):**
 - `Sync` stores only the value and the dirty flag.
