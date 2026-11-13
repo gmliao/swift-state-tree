@@ -1913,6 +1913,12 @@ package final class SyncTablePerPlayerDiff<State: StateNodeProtocol> {
                 list.entries.removeSubrange(emitted...)
                 list.needsSort = sorts
                 drops.note(error, field: slot.name, scope: .perPlayer(playerID))
+                if fromEmpty, let kept = slot.lastSentSnapshot {
+                    // As today's extraction falls back to the cached value: a key reset sets the
+                    // field to what the client has, so the client keeps it.
+                    list.append(StatePatch(path: slot.path, operation: .set(kept)), table: 0)
+                    list.needsSort = true
+                }
             }
         }
         // A type outside the canonical order (known once its differs are built), or no typed
