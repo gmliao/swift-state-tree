@@ -1,6 +1,6 @@
 # A player's second session gets no per-player changes (#531): findings and fix spec
 
-**Status:** rev 5; rev 3's spec reviewed GO (2026-11-13). The maintainer answered Q1 (A) and Q2 (a) on 2026-11-13; Q3 is open. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
+**Status:** rev 5, decided: rev 3's spec reviewed GO, and the maintainer decided Q1 (A), Q2 (a) and Q3 (a) (all 2026-11-13). Implementation next, as a core PR. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
 
 - **Rev 2** answers review of rev 1 (8572647d):
   - corrected facts: recipient order is unspecified; `registerSession` doesn't touch the keeper, so which session is receive-only depends on the caller's keeper join; the seed doesn't move the first session's baseline; the starvation is scoped to cached diffs; no claim about per-player sync tables, which aren't on `main`;
@@ -16,9 +16,10 @@
   - a test of the window between the keeper read and the adapter's commit;
   - S3's generation for `endJoinBeforeAdmission` comes from the router's `joinBudgetExpired`, and covers the final frame and both fallback closes;
   - a refused registration without a generation closes by ID, said beside the counter.
-- **Rev 5** records the maintainer's answers to Q1 and Q2 (§5):
+- **Rev 5** records the maintainer's decisions on Q1–Q3 (§5):
   - Q1: A, scoped as the realtime adapter's rule, with a package-level policy enum that has `.replaceOld` only, read by both join paths (§4.1);
   - Q2: (a);
+  - Q3: (a), `registerSession` stays public;
   - several sessions per player is deferred to #539 (§6).
 
 **Summary.** #531's mechanism holds for cached diffs. Two adapter members of one player share one per-player baseline, so one of the two recipients in a sync gets that player's per-player changes and the other doesn't. Which one is unspecified. Only the public `TransportAdapter.registerSession(...)` creates the second member.
@@ -170,7 +171,7 @@ The fix (option A, the maintainer's answer to Q1) is that `registerSession` supe
   - (b) Make it `package`: a larger source break, and it removes the host path that #531 found.
   - (c) Deprecate it in favour of `performJoin`.
   - **Recommendation: (a), with the keeper check.** With it, a registration the keeper's entry doesn't back is refused. Without it, the docs carry the ordering rule (§4.1 (b)). (c) can follow if no host needs it.
-  - **Answer:** open (with the maintainer).
+  - **Answer (the maintainer, 2026-11-13): (a).** `registerSession` stays public. The keeper check (§4.1 (a)) refuses a registration whose session the keeper's current entry doesn't name, and its DocC states the realtime adapter's newest-wins rule.
 
 ## 6. Out of scope
 
