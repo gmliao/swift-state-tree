@@ -31,6 +31,7 @@
 - ✅ All E2E tests must pass (both encoding modes: `jsonObject`, `opcodeJsonArray`)
 - ✅ No linter errors
 - ✅ Code comments in English
+- ✅ `scripts/pre-push-checks.sh` passes before every push, to a PR branch or to `main`: CI's build-free checks (lessons, wall-clock polls, ShellCheck 0.11.0, and the deep-research tests or `test_serverenv.py` when the change reaches them). It doesn't replace the build, the tests or E2E.
 
 ---
 
