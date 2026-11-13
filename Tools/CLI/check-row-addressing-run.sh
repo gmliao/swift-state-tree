@@ -2,8 +2,9 @@
 # Checks the output of `./test-e2e-game.sh` with row addressing on (the default, CI's main step
 # on the in-turn leg), per encoding; with `--expect-off`, a run where it can't take effect or is
 # turned off (the in-turn-off leg, and `ROW_ADDRESSING=false`). Each "▶ Running … (…)" section
-# of the output belongs to the one encoding named as a word anywhere in its parentheses ("(drop one /score patch, json)" is json's). A section that
-# names none, or more than one, fails once it holds a join or a count, rather than going unchecked.
+# of the output belongs to the one encoding named as a word anywhere in its parentheses
+# ("(drop one /score patch, json)" is json's). A section that names none, or more than one,
+# fails once it holds a join or a count, rather than going unchecked.
 #
 # An opcode encoding (jsonOpcode, messagepack), where row addressing takes effect:
 #   1. every join negotiated rowAddressing, and every section of it holds a join;
