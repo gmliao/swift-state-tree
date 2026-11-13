@@ -373,11 +373,11 @@ def cpus(text):
     return out
 
 
-def intended_form(wire):
+def intended_form(wire, commit=None):
     """The form the sweep's server sends for its declared environment (run.json `wire`), by the
     server's rules (gameserver_wire: JSON-object updates have no features; otherwise each is on
     unless "false"). Each run's form is what its joins' responses named, checked against this."""
-    return gameserver_wire.intended(wire)
+    return gameserver_wire.intended(wire, commit=commit)
 
 
 def matrix_of(sweep):
@@ -477,7 +477,7 @@ def sweep_failures(sweep, reports):
         failures.append("an arm sweep that records no workload (WORKLOAD) or hold")
     phases = dict(PHASES, steady=(PHASES["steady"][0], PHASES["steady"][1] + (hold or 0), PHASES["steady"][2]))
     wire = sweep.get("wire")
-    intended = intended_form(wire) if wire is not None else None
+    intended = intended_form(wire, (sweep.get("git") or {}).get("commit")) if wire is not None else None
     forms = {}
     if wire is None:
         failures.append("the wire form (PATH_INDEX, FIELD_MERGE) wasn't recorded")
@@ -589,7 +589,7 @@ def build_sweep(directory):
         return (f"{head}\n\nControl sweep `{sweep['runId']}` (suite-1 at {CONTROL_ROOMS} rooms, arm 0): server CPU mean "
                 f"{f1(x['cpuMean'])} %, {f2(per_room(x))} % per room; RTT p99 {f2(x['rtt']['p99'])} ms; "
                 f"{x['disconnects']} disconnects.\n")
-    form = intended_form(sweep["wire"])
+    form = intended_form(sweep["wire"], (sweep.get("git") or {}).get("commit"))
     note = (f"{head}\n\nSweep `{sweep['runId']}`, "
             f"wire form {form.caption()}. Host CPU isn't sampled by run.sh (n/a)."
             + ("" if not (form.path_index or form.field_merge) else

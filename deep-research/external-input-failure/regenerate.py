@@ -25,7 +25,7 @@ def wire_failure(name, run):
     """Why the run's joins weren't in the form its server environment gives (the refreeze
     defaults, through gameserver_wire), or None. The form comes from the joins when the client
     recorded them, else from the commit's ancestry (deep-research/wireform.py)."""
-    intended = gameserver_wire.intended(run["params"]["env"])
+    intended = gameserver_wire.intended(run["params"]["env"], commit=run["meta"].get("git_sha"))
     try:
         joined = wireform.join_form(run["counts"].get("joinForms"))
         encoding, features = joined if joined else (intended.encoding, None)

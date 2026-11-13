@@ -111,9 +111,10 @@ def form(calibration: dict) -> wireform.WireForm:
     return wireform.resolve(calibration["commit"], calibration["encoding"], features=calibration.get("features"))
 
 
-def intended_form(environ: dict) -> wireform.WireForm:
-    """The sweep's form from the server's environment, by the server's rules (gameserver_wire)."""
-    return gameserver_wire.intended(environ)
+def intended_form(environ: dict, commit: str | None = None) -> wireform.WireForm:
+    """The sweep's form from the server's environment, by the server's rules (gameserver_wire).
+    `commit`: the server's, for ROW_ADDRESSING's default."""
+    return gameserver_wire.intended(environ, commit=commit)
 
 
 def overrides_from(environ: dict) -> dict:

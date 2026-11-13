@@ -541,8 +541,9 @@ COST_ORDERS = {1: ("on", "off"), 2: ("off", "on"), 3: ("off", "on"), 4: ("on", "
 # The wire form each encoding's runs must have: main's defaults since #308. The path index and
 # field merge apply to the opcode encodings only, so a JSON server gives no features.
 INTENDED_WIRE = {
-    "messagepack": wireform.WireForm("messagepack", True, True),
-    "json": wireform.WireForm("json", False, False),
+    # Row addressing off: these runs predate its default (#392).
+    "messagepack": wireform.WireForm("messagepack", True, True, False),
+    "json": wireform.WireForm("json", False, False, False),
 }
 
 

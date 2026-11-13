@@ -65,7 +65,9 @@ def partition(runs):
     for r in runs:
         try:
             form = wireform.resolve(r["meta"].get("git_sha"), r["params"]["encoding"],
-                                    path_index=r["meta"].get("path_index"), field_merge=r["meta"].get("field_merge"))
+                                    path_index=r["meta"].get("path_index"), field_merge=r["meta"].get("field_merge"),
+                                    # EncodingBenchmark's local path: rows need joins through a router.
+                                    row_addressing=False)
         except wireform.MissingWireForm as missing:
             problems.append(f"{r['meta'].get('source_file')}: wire form missing: {missing}")
             continue
