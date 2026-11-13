@@ -60,11 +60,9 @@ private func makeMergedBroadcastDefinition() -> LandDefinition<MergedBroadcastTe
 struct MergedBroadcastCase: Sendable, CustomTestStringConvertible {
     let encodingName: String
     let encoding: TransportEncodingConfig
-    let autoDirtyTracking: Bool
-    let changeObjectMetrics: Bool
 
     var testDescription: String {
-        "\(encodingName), autoDirtyTracking=\(autoDirtyTracking), changeObjectMetrics=\(changeObjectMetrics)"
+        encodingName
     }
 
     var envConfig: TransportEnvConfig {
@@ -72,13 +70,6 @@ struct MergedBroadcastCase: Sendable, CustomTestStringConvertible {
             enableDirtyTracking: true,
             useSnapshotForSync: true,
             syncStrategy: .delta,
-            enableChangeObjectMetrics: changeObjectMetrics,
-            changeObjectMetricsLogEvery: 10,
-            changeObjectMetricsEmaAlpha: 0.2,
-            enableAutoDirtyTracking: autoDirtyTracking,
-            autoDirtyOffThreshold: 0.55,
-            autoDirtyOnThreshold: 0.30,
-            autoDirtyRequiredConsecutiveSamples: 30,
             profilingConfig: nil
         )
     }
@@ -90,17 +81,8 @@ private let encodings: [(String, TransportEncodingConfig)] = [
     ("messagepack", .messagepack),
 ]
 
-/// Test 1 + 2: metrics off (`AUTO_DIRTY_TRACKING=false`, change-object metrics at their default off).
-private let metricsOffCases = encodings.map {
-    MergedBroadcastCase(encodingName: $0.0, encoding: $0.1, autoDirtyTracking: false, changeObjectMetrics: false)
-}
-
-/// Test 3: default configuration (auto dirty tracking on) and metrics on via change-object metrics.
-private let metricsOnCases = encodings.flatMap { name, encoding in
-    [
-        MergedBroadcastCase(encodingName: name, encoding: encoding, autoDirtyTracking: true, changeObjectMetrics: false),
-        MergedBroadcastCase(encodingName: name, encoding: encoding, autoDirtyTracking: false, changeObjectMetrics: true),
-    ]
+private let mergedBroadcastCases = encodings.map {
+    MergedBroadcastCase(encodingName: $0.0, encoding: $0.1)
 }
 
 // MARK: - Helpers
@@ -262,19 +244,10 @@ private func runBroadcastCycle(_ testCase: MergedBroadcastCase) async throws -> 
 @Suite("TransportAdapter merged broadcast (#67)")
 struct TransportAdapterMergedBroadcastTests {
 
-    // Tests 1 and 2: on opcodeMessagePack this failed before #67 (nothing was sent);
-    // json and opcodeJsonArray use the combined path and are covered here as well.
-    @Test("Metrics off: broadcast change and broadcast event reach the session", arguments: metricsOffCases)
-    func metricsOffDeliversBroadcast(_ testCase: MergedBroadcastCase) async throws {
-        let delivered = try await runBroadcastCycle(testCase)
-        #expect(delivered.stateChangeDelivered, "broadcast field change not sent")
-        #expect(delivered.eventDelivered, "broadcast event not sent")
-        #expect(delivered.eventFrameCount == 1, "broadcast event sent \(delivered.eventFrameCount) times")
-    }
-
-    // Test 3: default configuration and metrics-on configurations keep delivering (regression guard).
-    @Test("Metrics on: broadcast change and broadcast event reach the session", arguments: metricsOnCases)
-    func metricsOnDeliversBroadcast(_ testCase: MergedBroadcastCase) async throws {
+    // On opcodeMessagePack this failed before #67 (nothing was sent); json and opcodeJsonArray
+    // use the combined path and are covered here as well.
+    @Test("A broadcast change and a broadcast event reach the session", arguments: mergedBroadcastCases)
+    func deliversBroadcast(_ testCase: MergedBroadcastCase) async throws {
         let delivered = try await runBroadcastCycle(testCase)
         #expect(delivered.stateChangeDelivered, "broadcast field change not sent")
         #expect(delivered.eventDelivered, "broadcast event not sent")

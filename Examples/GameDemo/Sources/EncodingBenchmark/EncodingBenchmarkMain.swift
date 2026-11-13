@@ -1235,8 +1235,8 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             // `--join-through-router` / `--row-addressing` (false without them).
             "joinThroughRouter": config.joinThroughRouter,
             "rowAddressing": config.rowAddressing,
-            // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (false unset), so a same-binary A/B shows
-            // its side.
+            // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (true unset, the default), so a
+            // same-binary A/B shows its side.
             "useSyncTables": env.syncTablesEnabled,
             "typedLeafValues": env.typedLeafValuesEnabled,
             // What ran, by the adapter's rule: the tables with either switch under delta sync, typed

@@ -104,19 +104,13 @@ private struct TargetedOnceFixture {
             keeper: keeper,
             transport: transport,
             landID: "targeted-once-test",
-            // Fixed so env vars cannot change the sync path: delta, dirty tracking on,
-            // snapshot extraction on, auto-switch and metrics off.
+            // Delta, dirty tracking on and snapshot extraction on, fixed. The tables and typed
+            // leaves follow USE_SYNC_TABLES / TYPED_LEAF_VALUES on purpose, so the off job runs
+            // this on the fallback.
             transportEnvConfig: TransportEnvConfig(
                 enableDirtyTracking: true,
                 useSnapshotForSync: true,
                 syncStrategy: .delta,
-                enableChangeObjectMetrics: false,
-                changeObjectMetricsLogEvery: 10,
-                changeObjectMetricsEmaAlpha: 0.2,
-                enableAutoDirtyTracking: false,
-                autoDirtyOffThreshold: 0.55,
-                autoDirtyOnThreshold: 0.30,
-                autoDirtyRequiredConsecutiveSamples: 30,
                 profilingConfig: nil
             ),
             encodingConfig: encoding

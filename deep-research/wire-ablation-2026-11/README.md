@@ -170,3 +170,7 @@ The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-bet
 - `syncMs` includes the hand-off to the counting transport; it is the same for every form of a point except for the bytes handed over.
 - Dirty tracking's marking (a dirty key recorded on every write) is paid with dirty tracking on and off alike, so this topic measures the sync side of tracking only (see Question).
 - The capture pass's timings aren't measurements (it computes a projection per player per sync).
+
+## After the sync tables default
+
+The results here predate the commit that removed the auto dirty switch. From it on, `--dirty-tracking` takes `on` (the default) or `off`; `auto` is an error, and `on` no longer needs to turn a switch off (the benchmark no longer sets `AUTO_DIRTY_TRACKING`). The shipped default the text above calls `auto` is `on` from then on.

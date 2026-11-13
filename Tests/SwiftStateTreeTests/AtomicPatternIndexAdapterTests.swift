@@ -87,13 +87,6 @@ private func patternIndexAdapterEnv(tables: Bool) -> TransportEnvConfig {
         enableDirtyTracking: true,
         useSnapshotForSync: false,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: false,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
     config.useSyncTables = tables

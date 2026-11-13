@@ -1,5 +1,5 @@
 import Testing
-@testable import SwiftStateTree
+@_spi(Diagnostics) @testable import SwiftStateTree
 
 // These types are not Equatable on purpose, so each warns at compile time; the test is about the
 // list a land logs.
@@ -57,6 +57,14 @@ struct SyncTableFallbackFieldsTests {
         #expect(found[0].reason == "Array<FallbackListBlob> is not Equatable")
         #expect(found[1].reason == "FallbackListBox is or holds a reference type")
         #expect(found[2].reason == "FallbackListBlob is not Equatable")
+    }
+
+    @Test("The diagnostics SPI lists the same fields and reasons, as lines")
+    func descriptions() {
+        let lines = syncTableFallbackFieldDescriptions(of: FallbackListState.self)
+        #expect(lines == syncTableFallbackFields(of: FallbackListState.self).map { "\($0.field): \($0.reason)" })
+        #expect(lines.first == "FallbackListState.blobs: Array<FallbackListBlob> is not Equatable")
+        #expect(lines.count == 3)
     }
 
     @Test("A state with nothing on the fallback lists nothing")

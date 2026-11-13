@@ -60,6 +60,27 @@ class ServerEnvTests(unittest.TestCase):
                 with self.subTest(name=name, value=value):
                     self.assertIn(f"'{name}': '{value}'", serverenv.failure("x", serverenv.record({name: value})))
 
+    def test_the_removed_switch_keys_stay_unset_recorded_and_refused(self):
+        # The auto dirty switch and its change-object metric were removed with the sync tables
+        # default; the server ignores their keys (TransportRemovedEnvKeys.all, read from the source
+        # so the lists can't drift). The ones that changed the path while the switch existed stay
+        # in SERVER_ENV, so older records still parse and a record with one set is still refused.
+        # The two that only added the metric's log are classified with the metrics below.
+        source = (HERE.parent / "Sources/SwiftStateTreeTransport/TransportEnvConfig.swift").read_text()
+        block = re.search(r"static let all = \[(.*?)\]", source, re.S)
+        self.assertIsNotNone(block)
+        removed = re.findall(r'"([A-Z_]+)"', block.group(1))
+        self.assertEqual(len(removed), 8, removed)
+        metrics_only = {"ENABLE_CHANGE_OBJECT_METRICS", "CHANGE_OBJECT_METRICS_LOG_EVERY"}
+        for name in removed:
+            with self.subTest(name=name):
+                if name in metrics_only:
+                    self.assertNotIn(name, serverenv.SERVER_ENV)
+                    continue
+                self.assertIn(name, serverenv.SERVER_ENV)
+                self.assertIsNone(serverenv.record({})[name])
+                self.assertIn(f"'{name}': 'false'", serverenv.failure("x", serverenv.record({name: "false"})))
+
     def test_a_record_from_before_the_sync_tables_switch_is_accepted(self):
         # Every published record predates it: lacking the key isn't a refusal, as for ADDED.
         old = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED_LATER}
@@ -95,8 +116,9 @@ class ServerEnvTests(unittest.TestCase):
         "JOIN_TIMEOUT_MS", "JOIN_FLIP_TIMEOUT_MS", "JOIN_HELD_EVENTS_MAX", "JOIN_HELD_EVENTS_MAX_BYTES",
         "JOIN_DEFERRED_INBOUND_MAX", "JOIN_DEFERRED_INBOUND_MAX_BYTES",
         # metrics and profiling (they observe the path, they don't change it). ENABLE_CHANGE_OBJECT_METRICS
-        # only adds the collection and its log: the dirty-tracking switch is AUTO_DIRTY_TRACKING's. The
-        # EMA's alpha feeds that switch, so it's in SERVER_ENV.
+        # and its log interval are removed with the auto dirty switch and ignored; they only ever added
+        # the collection and its log. The switch's keys (AUTO_DIRTY_*, the EMA's alpha) changed the
+        # path while it existed, so they stay in SERVER_ENV.
         "ENABLE_CHANGE_OBJECT_METRICS", "CHANGE_OBJECT_METRICS_LOG_EVERY",
         "LAND_LIFECYCLE_LOG_PATH", "TRANSPORT_PROFILE_JSONL_PATH", "TRANSPORT_PROFILE_INTERVAL_MS",
         "TRANSPORT_PROFILE_SAMPLE_RATE", "TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL",

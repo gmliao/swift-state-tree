@@ -1,7 +1,7 @@
 {
   "maxDuration": 45000,
   "steps": [
-    { "type": "log", "message": "Broadcast field change and broadcast event both arrive (#80: also runs with AUTO_DIRTY_TRACKING=false)" },
+    { "type": "log", "message": "Broadcast field change and broadcast event both arrive (#80; also runs on the opt-out leg, USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false)" },
     { "type": "action", "action": "Play", "payload": {} },
     {
       "type": "waitForState",

@@ -104,7 +104,7 @@ SyncEngine 會維護：
 
 ### 同步值型別的規則
 
-typed sync diff（`USE_SYNC_TABLES`，實驗性功能，預設關閉）會把每個 broadcast 欄位上次送出的值以原生 Swift 值保存，並在產生任何 patch 之前先用 `==` 比較目前的值與它。它依賴以下規則。遵守這些規則的型別在現行路徑上行為相同。開啟 `TYPED_LEAF_VALUES`（同為實驗性）時，內建 leaf 型別的欄位變更會改以型別專屬的轉換取代通用轉換；patch 與位元組相同，使用者自訂的型別仍走通用轉換。
+typed sync diff（`USE_SYNC_TABLES`，預設路徑；設為 `false` 可退回 snapshot diff，此 fallback 之後會移除）會把每個 broadcast 欄位上次送出的值以原生 Swift 值保存，並在產生任何 patch 之前先用 `==` 比較目前的值與它。它依賴以下規則。遵守這些規則的型別在現行路徑上行為相同。`TYPED_LEAF_VALUES`（預設開啟）開啟時，內建 leaf 型別的欄位變更會改以型別專屬的轉換取代通用轉換；patch 與位元組相同，使用者自訂的型別仍走通用轉換。
 
 - **一般的值要是 `Equatable` 才會用型別化的比較。** 同步的 struct、enum 或集合若不是 `Equatable`，會沿用現行的轉換與 diff 方式。兩種方式送出的 frame 位元組相同，只有成本不同。
 - **`==` 不能蓋掉變更。** 若 `a == b`，兩個值必須轉換成相同的 snapshot。自訂的 `==` 若忽略某個會同步的屬性就違反這條：該變更永遠不會送出。Debug build 偵測到時會回報。
@@ -121,7 +121,7 @@ typed sync diff（`USE_SYNC_TABLES`，實驗性功能，預設關閉）會把每
 ## Dirty Tracking
 
 `@Sync` 會在寫入時標記 dirty，用於降低 diff 成本。
-TransportAdapter 可在執行期切換 dirty tracking：
+dirty tracking 每個 adapter 固定：由 `ENABLE_DIRTY_TRACKING`（預設開啟）設定，執行期可用 `setDirtyTrackingEnabled(_:)` 變更。adapter 不會自行切換。
 
 - 開啟：只序列化 dirty 欄位
 - 關閉：每次同步都全量 snapshot

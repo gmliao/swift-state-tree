@@ -182,24 +182,18 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 | 變數 | 型別 | 預設 | 說明 |
 |------|------|------|------|
-| `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；高更新比例場景可關閉 |
+| `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；預設開啟（`fromEnvironment`）。關閉是否更快取決於 land（見 [FAQ](../FAQ.zh-TW.md)） |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | 使用單次 snapshot 擷取；設為 `false` 使用舊版 broadcast + per-player 路徑 |
-| `USE_SYNC_TABLES` | Bool | false | 實驗性：broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略）。兩種方式送出的 frame 位元組相同。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
-| `TYPED_LEAF_VALUES` | Bool | false | 實驗性：在 typed sync tables 上，內建 leaf 型別（數值、`Bool`、`String`、各 ID 型別、DeterministicMath 的 atomic 型別及其 optional）的欄位變更時，改以型別專屬的轉換取代通用轉換。只要 tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。兩種方式送出的 frame 位元組相同 |
+| `USE_SYNC_TABLES` | Bool | true | broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略），為預設路徑。兩種方式送出的 frame 位元組相同。設為 `false` 可退回 snapshot diff，此 fallback 之後會移除；row addressing 不論此值都會開啟 tables。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
+| `TYPED_LEAF_VALUES` | Bool | true | 在 typed sync tables 上，內建 leaf 型別（數值、`Bool`、`String`、各 ID 型別、DeterministicMath 的 atomic 型別及其 optional）的欄位變更時，改以型別專屬的轉換取代通用轉換。只要 tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。兩種方式送出的 frame 位元組相同。設為 `false` 可關閉 |
 | `SYNC_STRATEGY` | String | `delta` | `delta` 只送變更欄位；`full-snapshot` 每次同步送每個接收者的完整視圖（量測用基線，非正式模式） |
-| `ENABLE_CHANGE_OBJECT_METRICS` | Bool | false | 記錄被量測的 sync 的 changed vs unchanged 物件比例（見 `AUTO_DIRTY_SAMPLE_EVERY`） |
-| `CHANGE_OBJECT_METRICS_LOG_EVERY` | Int | 10 | 變更物件 metrics 日誌之間隔幾次被量測的 sync |
-| `CHANGE_OBJECT_METRICS_EMA_ALPHA` | Double | 0.2 | 每次 sync 的變更率 EMA alpha（0.01–1.0）；依採樣間隔換算 |
-| `AUTO_DIRTY_TRACKING` | Bool | true | 依變更率遲滯曲線自動切換 dirty tracking |
-| `AUTO_DIRTY_OFF_THRESHOLD` | Double | 0.55 | 關閉 dirty tracking 的 EMA 門檻 |
-| `AUTO_DIRTY_ON_THRESHOLD` | Double | 0.30 | 開啟 dirty tracking 的 EMA 門檻 |
-| `AUTO_DIRTY_REQUIRED_SAMPLES` | Int | 30 | 模式切換前需連續越過門檻的 sync 次數（無條件進位到整數次採樣） |
-| `AUTO_DIRTY_SAMPLE_EVERY` | Int | 1 | 每 N 次 sync 量測一次變更率（限制在 1–1024）；1 表示每次都量測。大於 1 時採樣相位固定，若工作負載的忙碌 sync 以能整除 N 的週期重複，每次都會量到週期中的同一點 |
 | `TRANSPORT_PROFILE_JSONL_PATH` | String | 關閉 | 設定後啟用 transport profiling，將 JSONL 寫入此路徑 |
 | `TRANSPORT_PROFILE_INTERVAL_MS` | Int | 1000 | Profiling 寫入間隔 (ms)，最小 100 |
 | `TRANSPORT_PROFILE_SAMPLE_RATE` | Double | 0.01 | Latency 採樣率 (0.001–1.0) |
 | `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` | Int | 500 | 每間隔最大 latency 採樣數 (10–10000) |
 | `OUTBOUND_WRITER_MAX_BYTES` | Int | 67108864 (64 MiB) | 每個 land 的 outbound writer 排隊位元組上限（最小 1024）。超過上限的 frame 會被丟棄，受影響的 session 會被斷線 |
+
+已移除：`ENABLE_CHANGE_OBJECT_METRICS`、`CHANGE_OBJECT_METRICS_*` 與 `AUTO_DIRTY_*`（change-object metric 與 dirty tracking 自動切換）。設定了也會被忽略；process 中第一個 adapter 會記錄一則 warning，列出有設定的鍵。
 
 由其他地方讀取：
 
