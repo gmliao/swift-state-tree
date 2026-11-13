@@ -61,6 +61,8 @@ enum InputRun {
             (config.joinThroughRouter, "--join-through-router on"),
             (config.gameType == .cardGame, "--game-type card-game (it has no input to send)"),
             (config.gameType == .heroDefense && !config.activePlayers, "hero-defense without --active-players (the moves are its inputs)"),
+            // Hero-defense applies a MoveTo event on its next tick: with no tick, none is applied.
+            (config.gameType == .heroDefense && config.ticksPerSync == 0, "hero-defense with --ticks-per-sync 0 (moves are applied on ticks)"),
             (config.gameType == .visibilityTest && config.actionsPerPlayer == 0, "visibility-test without --actions-per-player"),
         ].filter(\.0).map(\.1)
         guard unsupported.isEmpty else {

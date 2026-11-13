@@ -723,7 +723,8 @@ enum ArgumentParser {
                               actions) to the adapter as client frames in the run's message
                               encoding, as the TypeScript SDK sends them, so they go through the
                               transport's decode; without it, moves call the keeper directly.
-                              Serial runs only (--parallel false). The result's inputs record
+                              Serial runs only (--parallel false); hero-defense needs
+                              --ticks-per-sync 1 or more. The result's inputs record
                               submitted, accepted, rejected and applied; the run fails unless
                               all equal rooms x players x iterations (x N for actions).
       --actions-per-player <n>
