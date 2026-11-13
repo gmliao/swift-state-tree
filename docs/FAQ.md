@@ -263,7 +263,7 @@ For detailed information, please refer to [Macros](macros/README.md).
 
 ### Q: When should I disable dirty tracking?
 
-A: Keep it enabled unless a measurement of your land says otherwise. Disabled, a sync reads every root field but skips resetting the dirty marks; whether that is faster depends on how many fields change per sync. The adapter doesn't switch it by itself. On the snapshot-diff fallback (`USE_SYNC_TABLES=false`), disabling it could be faster when most fields change on every update. With row addressing on (the default), `USE_SYNC_TABLES=false` has no effect: to run the snapshot-diff fallback, set `ROW_ADDRESSING=false` as well.
+A: Keep it enabled unless a measurement of your land says otherwise. Disabled, a sync reads every root field but skips resetting the dirty marks; whether that is faster depends on how many fields change per sync. The adapter doesn't switch it by itself. On the snapshot-diff fallback (`USE_SYNC_TABLES=false`), disabling it could be faster when most fields change on every update. Where row addressing is in effect (by default, an opcode encoding with path hashes, in-turn sync and joins through the router), `USE_SYNC_TABLES=false` has no effect: to run the snapshot-diff fallback there, set `ROW_ADDRESSING=false` as well.
 
 ```swift
 // Set when initializing TransportAdapter
