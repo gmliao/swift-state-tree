@@ -1,6 +1,14 @@
 # A sync failure ends the unit it corrupted (#535)
 
-**Status:** rev 2, plan only. No code before this plan is reviewed.
+**Status:** rev 3, plan only. No code before this plan is reviewed.
+- Rev 2 (131ff6d3) got a no-GO: 6 must-fix and 5 should. Rev 3 (on `main` 9755a625 merged with `origin/main`, which brings `docs/core/failure-handling.md`) answers them:
+  - N1: §3.2 step 3. `failLand` cancels the action jobs still in their resolvers, after the drain flag, as the empty-room drain does; each slot is filled once. The resolvers' delivery check citation is corrected.
+  - N2: §3.4 and D4. OnLeave resolvers on a failed land are a decision; the recommended option skips them by checking the failure before they start, and keeps the membership cleanup.
+  - N3: §3.4 and D10. Where the close code is decided is a decision; the recommended option reads it at each session's close.
+  - N4: §4. The registration gaps are restated (struct, tuple and enum-payload values the default instance doesn't hold, not only existentials), with a "default init is deterministic" contract, and the user's `init()` runs outside the cache's lock.
+  - N5: §3.1, §3.2 step 5 and D9. The terminal entry goes through the ordered recorder pipeline after the failing turn's record; the legacy path records two positions.
+  - N6: §3.3. Debug settle and the action-result output are added, action responses after a failure are specified, and `keeper.endSync()` still runs on a stale generation.
+  - Shoulds: D5's detector (where the count lives, no state byte changes, what it can't see, the cost); row 15's bound as D11; D8's promise limited to library conversion; P1 under the purity contract; §7 names the failure-handling page rows each PR flips.
 - Read at `main` 9755a625. TA = `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, SE = `Sources/SwiftStateTree/Sync/SyncEngine.swift`, ST = `Sources/SwiftStateTree/Sync/SyncTables.swift`, LK = `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, LM = `Sources/SwiftStateTreeTransport/LandManager.swift`.
 - The sweep on #535 was read at 9bf7df61; since then only TA moved (about +11 lines after TA 1420).
 - Rev 1 (28adb8e9) got a no-GO: 10 must-fix and 8 should. Rev 2 answers them:
@@ -57,7 +65,7 @@ The decision adds two notes. Closing a session must not loop: a repeat after rej
 
 #521's finding applies to every row. An event value is encoded once, before fan-out, so its failure is a fact about the value, and that is land-wide. The maintainer's direction: the per-session path keeps only failures shown to depend on the recipient. Each candidate at 9755a625:
 
-**(P1) A per-player field's value in one player's view.** This is the output of the field's filter or policy for that player (`extractPerPlayerSnapshot`, SE 1456). The input does differ per recipient: which entities a player sees, or a value the policy derives for that player. But the view is a deterministic function of the land's state and the player. A rejoin recomputes the same view from the same state and fails again, unless the state changed in between.
+**(P1) A per-player field's value in one player's view.** This is the output of the field's filter or policy for that player (`extractPerPlayerSnapshot`, SE 1456). The input does differ per recipient: which entities a player sees, or a value the policy derives for that player. But for policies that keep the documented purity contract (SyncPolicy.swift 129-131: "a policy expression must be pure … a filter closure must be a pure function of its arguments"), the view is a deterministic function of the land's state and the player. A policy that breaks the contract (a `@Sendable` closure that captures mutable state, or reads the clock or a random source) is outside this argument, as it is outside #514's byte-identity contract. A rejoin recomputes the same view from the same state and fails again, unless the state changed in between.
 - So the failure is per-recipient in *who* hits it.
 - But it isn't repaired by what the session close offers. The failing value is in the land's state, or is derived from it, and the next player to see it fails too.
 - A session close only delays the land's end by one rejoin, and meanwhile the land keeps running with a state some views can't carry.
@@ -105,7 +113,7 @@ Under D2a (b), the rows marked † are classified by Appendix A instead.
 | 12 | TA 5473-5535 broadcast-only frames | re-encode dropping per player; on nil, skip | land | 1 |
 | 13 | TA 5764-5830 `planFirstSync` | re-encode dropping; even empty fails → `unencodableFirstViews` | land†. With row addressing on, the standalone first sync is refused anyway (TA 5767-5771) | 2 |
 | 14 | TA 5652-5689 `encodeDroppingUnencodablePatches` | each patch tried alone; `pathNotInSchema` counted, others dropped (or the row) | removed. An encode that throws is a failure; nothing is retried to drop patches. The error goes into the log and `LandFailure.detail`. A diagnostic pass may find the first failing patch for the log only (D6 for `pathNotInSchema`) | 1 (callers in 1), 2 (the rest) |
-| 15 | TA 3287-3331, 3200-3205; in-turn TA 2896-2917 → LK 4423-4436 | a plan that throws commits nothing; ordinary follow-ups are bounded at `syncFailedPlanFollowUpLimit` (3) without periodic sync; past the limit, join-sync turns keep being scheduled with a doubling delay (LK 4427-4434); with periodic sync every tick retries | stays within one bound for both kinds of land. A count of consecutive failed plans, **join-sync attempts included**, ends the land at 3. A committed plan resets it: a plan that threw sent nothing, so a later success is fully correct. The doubling join-sync retry goes away | 1 |
+| 15 | TA 3287-3331, 3200-3205; in-turn TA 2896-2917 → LK 4423-4436 | a plan that throws commits nothing; ordinary follow-ups are bounded at `syncFailedPlanFollowUpLimit` (3) without periodic sync; past the limit, join-sync turns keep being scheduled with a doubling delay (LK 4427-4434); with periodic sync every tick retries | stays within one bound for both kinds of land: consecutive failed plans, **join-sync attempts included**, end the land at the bound (D11). A committed plan resets it: a plan that threw sent nothing, so a later success is fully correct. The doubling join-sync retry goes away. With periodic sync this is a behavior change: today it retries forever | 1 |
 | 16 | TA 5706-5761 `_syncStateForNewPlayer` | logged, then a follow-up. With row addressing in effect: closed with 1011 | a conversion or encode failure in the joiner's view: as row 13. A plan throw: row 15. 1011 is unchanged (an invariant, not a sync failure) | 2 |
 | 17 | TA 3127-3138 `appendEventFrames` (`try? pack`); TA 2792-2806 (merged body at enqueue) | a frame that fails `pack` is skipped. At enqueue, a nil merged body falls back to a standalone frame (`.sentAlone`) or is `.lost` | land on `pack` failure and on `.lost`. **A nil merged body that is sent alone isn't a loss** and doesn't end the land (#521 D10 removes that attempt). The same rule as #521 EV4 | 1 |
 | 18 | TA 3989-3993 `canonicalEvent` | a payload that doesn't convert makes the digest's events scope unverifiable | stays: diagnostics, not client state. The canonical snapshot conversion and the wire encode are different operations, so neither implies the other | none |
@@ -167,11 +175,11 @@ public struct LandFailurePosition: Sendable, Equatable, Codable {
    - tickless action job slots, with `LandInputRejection.landClosed`.
 
    Inputs already applied in this turn get their outcome from the turn as today. Three more waiters are added to the settle:
-   - **Action jobs in their resolvers** (abandoned resolver groups, #364): they resume after their awaits and check `isDraining` (LK 1805-1870) before mutating, and their callers get `landClosed`.
+   - **Action jobs still in their resolvers** aren't in `pendingItems`, so `dropPendingInputs` doesn't reach them. `failLand` calls `cancelAllActionJobs()` (LK 2244) right after setting the drain flag, in the same order as the empty-room drain (LK 5171-5174). `cancelActionJob` fills each caller's slot at once with the delivery check's rejection (`rejectIfLandClosed`, LK 1869-1872, which now throws `landClosed`) and cancels the job's task. It skips a job already completed or already cancelled (LK 2252), so every slot is filled exactly once, including a job whose result was delivered earlier in this turn. A job whose resolvers resume later finds its slot filled and its delivery refused (`deliverResolvedAction` checks `rejectIfLandClosed`).
    - **Server inputs in flight:** counted down by the drop.
    - **The input that failed** (for `.handlerWrite`): its caller gets the handler's error, as today.
 4. **Stops the batch and the tick** (§3.7). The input loop (`applyPendingItems`, LK 3849-3874) breaks after the failing item. `runTick` checks the failure before `handler(&state, ctx)` (LK 4472) and doesn't run it, and it runs no sync phase. Later ticks don't start: the tick loop checks `isDraining`.
-5. **Records the end:** the recorder writes `failure` (with its position) as the record's terminal entry (D9). It isn't an input.
+5. **Queues the record's end** (D9). `failLand` doesn't write to the recorder: the failing turn's own record is built and submitted after it (LK 4462-4509, and the submission at 4952-4958). It stores the terminal entry, and the turn's record submission appends it **after** that turn's record, through the same ordered recorder pipeline. A failure applied from the legacy path (§3.3) is submitted the same way, after the record of the turn that applied it. The entry isn't an input.
 6. **Starts the teardown outside the turn** (§3.4).
 
 **Callers:**
@@ -192,9 +200,15 @@ This state belongs to the adapter, not the keeper, so the keeper rule doesn't bi
 - the legacy `withSyncState`, from its state read (TA 3301) to its commit and sends (TA 3318);
 - the first-sync suspensions (TA 5722-5740);
 - the legacy event flush, per event;
-- the broadcast-only sync.
+- the broadcast-only sync;
+- **debug settle** (TA 6671-6682): it reads the state with an await (`beginSyncLocatedIfRecording`), then runs `runFullSyncPhase`; the run is skipped on a stale generation;
+- **the action-result output** (TA 5941-5993): it has its own ticket domain (the action's sequence), and is covered below.
 
 The PR lists every `await` in these paths, and a test holds at each (§8).
+
+**On a stale generation, the mandatory cleanup still runs.** A sync that read the state calls `keeper.endSync()` (TA 3327-3328, 6677-6682) whether or not it sends, so the keeper's sync bookkeeping isn't left open.
+
+**Action responses and errors after the failure.** "No output after the failure" means no state frame and no event frame. Action responses and errors still go out until the session closes: they report what the keeper decided for that request, which stays true. A response to an input applied before the failure is its real outcome. A caller whose input was dropped or cancelled gets `landClosed` (§3.2 step 3). Neither carries land state, and the 4016 close follows.
 
 **The legacy path's failure becomes a turn input.**
 
@@ -208,6 +222,7 @@ extension LandKeeper {
 ```
 
 - The item is internal (`PendingItem.landFailure`), not a user `HandleServerInput`, and it isn't recorded as an input.
+- **It carries two positions** (D9). The *output position* is the last committed tick or pass whose state the failing output read; the adapter captures it at its state read (TA 3301), before its await. The *end position* is the turn that applies the item. Turns between the two ran live, with their inputs applied and recorded, so replay runs them; the run ends at the end position.
 - The turn that applies it re-reads the drain flag and validates the ticket, then calls `failLand`.
 - A tickless idle land schedules that turn as `submitServerInput` does.
 
@@ -218,11 +233,12 @@ After `failLand`, the keeper starts one `Task` that holds no keeper state across
 1. **`await transport.landDidFail(failure)`**, a new `LandKeeperTransport` requirement whose default does nothing. A custom transport therefore compiles, and the keeper still tears the land down. `TransportAdapter` implements it:
    - **With a host hook** (`onLandFailure`, which `LandManager` installs at creation with the instance's epoch): the server's stop, with the epoch.
      - `LandManager.detachForStop(landID:epoch:)` detaches only if the stored instance has that epoch, in one synchronous segment (Review M7). The epoch check and the detach can't be split by an await. Epochs are the manager's (LM 125-126).
-     - The stop then closes the bound sessions. **The code is read from the keeper's cause in the close's segment:** `.failed` → 4016 `landFailed`, otherwise 4014.
-     - An admin `DELETE` that detached first has already chosen its code. A failure after its sessions were closed has nobody left to tell, and the destroy still sees `.failed` (step 2), because the failing turn set the cause first if it ran first. `SingleFlight` keeps the stop's work to one run. The close code follows the cause, not the order of the calls.
+     - The stop then closes the bound sessions. **Where the code is decided is D10.** Today the server picks the `SessionClose` value before `await landRouter.closeSessions` (NIOLandServer 181), and the router then awaits its snapshot (LandRouter 469), each adapter lookup (474) and the leave forwarding (482-486) before it closes anything. Under the recommended D10 (a), `closeSessions` takes a closure the router evaluates in the synchronous segment of each session's close; it reads `keeper.destructionCause` (nonisolated) and gives 4016 for `.failed`, 4014 otherwise. A failure during the router's awaits then changes the code of every session not yet closed.
+     - The destroy sees `.failed` whenever the failing turn set the drain cause first (step 2). `SingleFlight` keeps the stop's work to one run.
+     - **OnLeave on the router's leave (D4).** The router's close forwards each session's leave to the keeper (`adapter.onDisconnect` → `keeper.leave`, LandRouter 425-440, 462-487). `leave` removes the player, then runs the OnLeave resolvers (LK ~2398-2420), and checks `isDraining` only after them (LK 2439). On a failed land, under D4 (a), `leave` checks `failure` **before** the resolvers: it removes the player and ends its membership in the adapter and router as today, and skips the resolvers and the handler. The other drain causes keep today's order.
    - **Without a hook** (an adapter built directly): the adapter closes every session it holds with 4016 through `endAndCloseSession`.
 2. **The keeper's own destroy:** a private `destroyFailedLand()`.
-   - It clears `players` without OnLeave (D4).
+   - It clears `players` without OnLeave (D4 (a); under D4 (b) the router's leaves have already run them).
    - It runs the destruction that `shutdownIfIdle` runs after its guard: the destroy handlers, the save and `transport.onLandDestroyed()`. The emptiness guard is skipped because the players were just cleared, and the cause is already `.failed`.
    - Whoever reaches the drain first runs it, the host's `forceShutdown` or this task. The other waits on `drainTask`. `runForceShutdown`'s non-live branch (LK 2515-2518) sees `isDraining`, clears the players and waits. Its `.forceShutdown` cause is ignored, because the first cause stays.
 
@@ -262,34 +278,41 @@ Registration goes through one function, `LandDefinition.validateForRegistration(
 - When #87's (A) exists, a rollback restores state, and the throw goes back to rejecting the input alone.
 
 **The detector (D5).** The recommended contract is **mutable access**, not actual change.
-- `@Sync`'s `_modify` already sets `_isDirty` before its yield, "so a write made before the throw is kept" (SyncPolicy.swift 140-156). The detector uses that same point: the macro's root-field setter and `_modify` bump a per-state access count at entry.
+- `@Sync`'s `_modify` already sets `_isDirty` before its yield, "so a write made before the throw is kept" (SyncPolicy.swift 140-156). The detector uses that same point: `@Sync`'s setter and `_modify` bump an access count at entry.
+- **Where the count lives: not in the state.** It is a thread-local counter that `withMutableStateSync` installs for the handler call and reads back after it (the keeper's turn is synchronous, so the handler runs on one thread). `@Sync`'s accessors increment it when installed; otherwise they do one thread-local read. No stored property is added to any `StateNode`, so `Equatable`, `Codable`, snapshots, the state hash and the record don't change by a byte.
+- **Cost:** one thread-local read per `@Sync` write outside handlers, plus an increment inside them; the install and read-back per handler call. Wrap-around is harmless (`&+=`, only equality before and after is compared). The off-path A/B measures it.
   - So `try validateThenMutate(&state.x)` counts as a write even when the validation throws first.
   - The documented rule is: validate before taking `inout` access. This is the rule #87's (B) already states.
 - **Coverage:**
   - Root fields' setters and `_modify` count.
   - Containers and nested nodes are reached through their root field's `_modify`, so they count.
   - A nested node's own fields count through the root's access.
-- **Gaps:**
-  - **Whole-state replacement** (`state = other`) bypasses every accessor. `withMutableStateSync` detects it by comparing the count *and* a per-instance identity token that the macro stores in the state. A new value carries a different token.
-  - **Hand-written `StateNodeProtocol` conformances** have no macro accessors. They get a defaulted requirement that returns "unknown". For an unknown, a throw is treated as a write in debug builds, which run the existing snapshot compare, and as no write in release builds, which keeps today's behavior. Registration logs a warning once per such type. D5 (b) and (c) are the alternatives.
+- **What it can't see** (named in the docs, beside #87's (B) rule):
+  - **whole-state replacement** (`state = other`): no accessor runs;
+  - **a copy held from before the handler, assigned back** (the same replacement);
+  - **hand-written `StateNodeProtocol` conformances** that store state without `@Sync`.
+
+  For these, debug builds keep the existing snapshot compare and warn; release builds keep today's behavior (the input fails alone). A test covers a caught case (an in-place write through a copy of a nested node, written back through `_modify`) and pins each uncaught case as a named gap. D5 (b) and (c) are the alternatives.
 
 ## 4. Registration refusals
 
 **Knowable from the type**, checked by walking the schema and the type:
-- **A class type in a synced field** (`classRefusal`). `SyncValueSemantics.validate` already walks declared element and value types, including empty collections (SyncValueSemantics 72-80). A class is unknowable only behind an existential (`Any`, `any P`).
+- **A class type in a synced field** (`classRefusal`). `SyncValueSemantics.validate` walks declared element and value types of collections, including empty ones (SyncValueSemantics 72-80). Plain structs, tuples and enum payloads, though, are looked into through the default instance's **values** (SyncValueSemantics 18-26). So a class is unseen behind an existential (`Any`, `any P`), inside a struct inside an empty `[Holder]`, or in an enum case the default instance doesn't take.
 - **An unsupported key type** (`SyncError.unsupportedKey`, SnapshotValue.swift:476). This check is new.
-- **A player-dependent node under a broadcast field** (#179). `SyncPolicyNesting.validate` covers it except behind an existential.
+- **A player-dependent node under a broadcast field** (#179). `SyncPolicyNesting.validate` covers it, with the same value-walk gaps (SyncPolicyNesting 29-32, 114-134).
+
+For every gap, the runtime backstop stays: the land ends at the first throw.
 
 **Not knowable from the type**, so the land ends at the first throw:
-- an existential field's value;
-- an enum case not taken by the default instance;
+- a value the default instance doesn't hold: an existential field's value, a struct inside an empty collection, an enum case not taken (as above);
 - a user `toSnapshotValue` that throws;
 - a non-finite number under JSON.
 
 **Colliding keys** (D8). Today they throw only in `makeFull`, the replay-hash path. The sync `make` path overwrites silently (SnapshotValue.swift:427), so "close the land at the first throw" would never fire for a type error the maintainer listed. The recommended answer is to detect them in the live conversion:
 - `make` checks the insert's previous value (`updateValue` returns non-nil) and throws `SyncError.collidingKeys`;
 - it is a structured type cause, so the land ends;
-- the cost is a nil check per dictionary entry, which the off-path A/B checks.
+- the cost is a nil check per dictionary entry, which the off-path A/B measures on the actual code.
+- **The promise covers the library's conversion only.** A custom `toSnapshotValue` that builds its own `.object` has merged its keys before the library sees them; that stays the type's own contract, and the docs say so.
 
 **Entry points:**
 
@@ -304,7 +327,8 @@ Registration goes through one function, `LandDefinition.validateForRegistration(
 | `LandKeeper.ensureInitialized` (LK 893) | async throws; a failure tears the land down (LK 927-932) | **the backstop**: runs `validateForRegistration`. A refusal fails initialization, as an OnInitialize throw does today |
 
 **The backstop's cache.**
-- The sync-type checks depend only on the `State` type. Their result, **failures included**, is cached process-wide by `ObjectIdentifier(State.self)`, in a `Mutex`-guarded dictionary.
+- The sync-type checks call `State.init()` and inspect its values, so their result depends on a sample. It may be cached only under a stated contract: **a state type's default `init()` is deterministic** (the same values on every call, no clock, random source or global state). The docs state it next to the existing purity contract, and a type that breaks it is outside the cache's promise; the runtime backstop still ends the land at the first throw.
+- Under that contract the result, **failures included**, is cached process-wide by `ObjectIdentifier(State.self)`, in a `Mutex`-guarded dictionary. The user's `init()` and the walk run **outside** the lock: the lock is taken only to read the entry and to insert the result. Two keepers racing on a new type may both validate; the first insert wins, and both results are the same under the contract.
 - Definition-dependent checks aren't cached; tests reuse definition IDs. They run per keeper, and they are cheap: #521's checks look up the registered types.
 
 All failures are reported in one error, `SyncRegistrationError`, with one case per row, the field path and the reason. It sits beside #521's `PayloadRegistrationError` under `validateForRegistration`.
@@ -334,7 +358,7 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 | `SessionClose.Code.landFailed` (4016); `SessionClose.landFailed` (package, as `.landStopped`) | new constant |
 | `SyncError.collidingKeys` | new enum case (D8; the same switch note) |
 | `SyncRegistrationError`; `LandDefinition.validateForRegistration(context:)` | new; thrown by entry points that already throw |
-| `StateNodeProtocol`: a defaulted access-count requirement (D5) | new requirement with a default ("unknown"); the macro implements it |
+| `@Sync`'s accessors: the thread-local access count (D5) | no public API; package-level, and no stored property on any state |
 | `TransportAdapter.unmappedPathPatches` | kept; it counts `pathNotInSchema` failures (D6) |
 | TS SDK: `LAND_FAILED_CLOSE_CODE` (4016) in `protocol.ts` | new export; the docs say the instance is gone |
 
@@ -358,6 +382,13 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
    - The repair's removal (D7).
 3. **PR 3, registration.** §4, `validateForRegistration` and the backstop. It is independent of PRs 1 and 2, so it may go first.
 4. **PR 4, #87.** §3.7, after D5. It settles #87's (B) and leaves (A) open.
+
+**The failure-handling page.** `docs/core/failure-handling.md` and its `.zh-TW.md` (on `main`, 44f15d90) list each path with its status. Each PR flips its rows from "target" to "current", in both languages, in the same PR:
+- PR 1: "A server event that fails to encode" (with #521); "One player's state frame fails to encode entirely" (#532, to "the land"); "A resync's full view keeps failing to encode" (if D3 (a)); and the "Close codes" section (4016).
+- PR 2: "A field whose conversion throws at run time"; "A patch the encoding can't carry … or a path outside the schema".
+- PR 3: "Other type errors the type alone decides" (refused at registration), with the gaps of §4 named.
+- PR 4: "A handler that throws after writing state".
+- Under D2a (a), the "If a failure is confined to one player's view" row of the summary table says no such failure is known, and why (§1).
 
 **Gates.** PRs 1 and 2 touch the sync phase. Each gets:
 - the in-turn on/off and sync-tables-off CI builds;
@@ -390,7 +421,7 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
   - a join to the same land ID afterwards gets a new instance;
   - with #536's per-player tables on, the same.
 - **Row 15:**
-  - three consecutive throwing plans end the land, with and without periodic sync;
+  - throwing plans end the land at D11's bound, with and without periodic sync;
   - join-sync attempts count toward the three;
   - a committed plan in between resets the count.
 - **Row 17:**
@@ -406,8 +437,13 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - **The legacy path:**
   - a failure on the legacy sync and on the legacy event flush reaches the keeper as a turn input;
   - a stale ticket (the land restarted under a hold at the flush's await) is ignored.
+- **Action jobs (N1):** an action held in its resolver when the land fails gets `landClosed` at once, before the teardown's `landDidFail` returns; its resolver resuming later doesn't fill the slot again.
+- **OnLeave on a failed land (D4):** with a host, an OnLeave resolver held when the failure arrives; under D4 (a), a leave forwarded by the router after the failure runs no resolver and no handler, and the player's membership ends in the adapter and the router.
+- **Debug settle and action results:** a failure during debug settle's state read sends nothing and still calls `endSync`; an action response for an input applied before the failure is still sent before the 4016 close.
+- **Record order (D9):** the terminal entry comes after the failing turn's record, for a tick land, a tickless pass and a sync-only turn; on the legacy path, the record holds both positions, and the turns between them replay.
 - **The teardown:**
-  - with a host, a hold right before the manager's detach, with an admin `DELETE` racing it. The stop runs once, and the close code follows the cause: 4016 if the failure set it first, 4014 if the stop closed first.
+  - with a host, a hold right before the manager's detach, with an admin `DELETE` racing it. The stop runs once.
+  - The close code (D10): a failure arriving while the router is held after its snapshot (`stopSnapshot`) gives 4016 to every session closed after it, under D10 (a).
   - A failure for an old epoch (the land ID has a new instance) detaches nothing.
   - Without a host, and with a custom transport using the default, the land is destroyed with `.failed` while players were still in it.
   - Destroy handlers see `.failed`; OnLeave runs or doesn't, per D4.
@@ -438,7 +474,12 @@ Swift Testing. An interleaving is forced with a hold at the `await` (`HoldPoints
 - the row 8 leak restored;
 - the validation skipped in `ensureInitialized`;
 - a cached failure not cached;
-- the row 15 count not including join-sync attempts.
+- the row 15 count not including join-sync attempts;
+- `cancelAllActionJobs` left out of `failLand` (the held-resolver test);
+- the failure check in `leave` moved after the resolvers (the held-OnLeave test);
+- the close code latched before the router's awaits (the `stopSnapshot` test);
+- the terminal entry written before the turn's record (the record-order test);
+- the validation run inside the cache's lock (a test whose `init()` re-enters validation for another type).
 
 ## 9. Decisions for the maintainer
 
@@ -466,13 +507,13 @@ Each has options and a recommendation.
   - (a) Merge it: a resync or first view that fails ends the land (or, under D2a (b), Appendix A applies). 4012 is reserved and no longer sent.
   - (b) Keep the three-plan retry and 4012 for resync views.
   - **Recommend (a).** A resyncing client is already behind, and the retry recomputes the same view from the same state (§1 P1).
-- **D4, OnLeave and the destroy handlers on a failed land.**
-  - (a) No OnLeave, because a failed land applies no inputs; the destroy handlers and the save run with `.failed` visible, so a land can skip saving.
-  - (b) OnLeave and the destroy handlers run as on a stop (#512), except after `.handlerWrite`.
-  - (c) Skip every handler.
-  - **Recommend (a).** OnLeave is an input, and intake is closed. The land knows what its save means, and the cause is passed, not decided for it.
+- **D4, OnLeave on a failed land, and the destroy handlers.** Today, on a host's stop, the router's close forwards each session's leave before the destroy, and `leave` runs the OnLeave resolvers before it checks the drain (LK 2398-2439). So on a failed land, OnLeave resolvers (with their external effects) would still run, and the failure close would wait for them.
+  - (a) No OnLeave: `leave` checks the failure before the resolvers, skips the resolvers and the handler, and still ends the player's membership in the keeper, the adapter and the router. The destroy handlers and the save run with `.failed` visible, so a land can skip saving.
+  - (b) OnLeave runs as on any stop (#512), resolvers included, except after `.handlerWrite`. The destroy handlers run with `.failed`.
+  - (c) Skip every handler, the destroy handlers included.
+  - **Recommend (a).** A failed land applies no more inputs, and OnLeave is an input; its resolvers' external effects (a write to another service) would act on a state the land has given up on. The land knows what its save means, so the cause is passed to it, not decided for it.
 - **D5, the #87 write detector.**
-  - (a) Mutable access: the macro's setters and `_modify` bump a per-state count at entry, and an identity token covers whole-state replacement. Manual conformances report "unknown" and keep today's behavior in release builds (§3.7). Cost: one increment per write, checked by the A/B.
+  - (a) Mutable access: `@Sync`'s setter and `_modify` bump a thread-local count at entry, installed only around a handler; nothing is stored in the state. Whole-state replacement, a held copy assigned back and manual conformances aren't seen, and keep today's behavior in release builds (§3.7). Cost: one thread-local read per write, an increment inside handlers; the A/B measures it.
   - (b) Actual change: the debug build's snapshot compare also in release builds. That costs a copy-on-write retain per input and a container copy on each input's first write, which #87's decision rejected.
   - (c) No PR 4 until #87's (A) undo log, which restores instead of ending.
   - **Recommend (a).** It reuses the point `_modify` already marks dirty, and its rule ("validate before inout access") is #87's (B) rule. (c) leaves the partial-write row open until flat storage step 3.
@@ -492,11 +533,25 @@ Each has options and a recommendation.
 - **D9, the record of a failed land.**
   - (a) The record ends with the failure's terminal position (§3.1): tick or pass, the input sequence and the stage. Replay applies exactly what live applied:
     - for `.input`, the inputs before the sequence, then the failing input, which must throw again (a mismatch otherwise), then nothing: no later input and no tick handler;
-    - for `.syncPhase` and `.eventFlush`, the whole turn.
+    - for `.syncPhase` and `.eventFlush`, the whole turn;
+    - for a failure from the legacy path, every turn up to the end position (§3.3), since they ran live;
+    - a tickless land counts by pass, and a sync-only turn by its tick, with no inputs.
+
+    The entry is written after the last live turn's record, through the ordered pipeline (§3.2 step 5).
 
     The run reports "ended by a live failure", not a mismatch.
   - (b) Nothing is recorded, and the record just ends.
   - **Recommend (a).** Without it, a replay can't tell a failed run from a truncated one, and for `.input` it would run work the live land skipped.
+
+- **D10, where the close code is decided** (with a host).
+  - (a) At each session's close: the router evaluates a closure in the synchronous segment of the close, reading the keeper's cause. A failure during the router's awaits gives 4016 to every session closed after it.
+  - (b) Latched once when the stop starts: a stop that began as an admin stop closes every session with 4014, and a failure arriving later changes only the destroy cause.
+  - **Recommend (a).** The code then says what ended each session as of its close. (b) is simpler, but a client closed after the failure would be told "stopped" for a land that failed.
+- **D11, row 15's bound on a sync plan that keeps throwing.** Today, with periodic sync, a throwing plan retries on every tick, forever; without it, three follow-ups and then doubling join-sync retries.
+  - (a) Three consecutive failed plans (join-sync attempts included): about 150 ms at 20 Hz.
+  - (b) A time bound: failed plans for at least 1 s and at least three plans.
+  - (c) Keep retrying (no bound).
+  - **Recommend (b).** A plan that threw sent nothing and committed nothing, so a retry can still restore a fully correct state; (a) ends a land after a few ticks of a transient fault, and (c) leaves clients frozen indefinitely, which the rule rules out. One second is short against a tens-of-minutes session.
 
 ## 10. Out of scope
 
