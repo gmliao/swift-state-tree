@@ -126,7 +126,7 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告前三項，`rowAddressing` 只在 `--row-addressing on` 時宣告（預設 off）：這項宣告屬於 join metadata，會被錄製中的伺服器寫進 record，因此不加這個 flag 的執行送出的 join 與先前相同。預計在 row addressing 成為伺服器預設後，把這個 flag 的預設改為 on。它的執行摘要會記錄這個 flag（`runConfig.rowAddressing`）、每次 join 協商到的 features（`stateUpdateFeatures`）與 client 收到的 row entry 數（`rowEntries`），因此可以分辨 row addressing 有生效與沒有生效的執行。
+- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 預設在每次 join 都宣告這四項；`--row-addressing off` 不宣告 `rowAddressing`，用於以 `ROW_ADDRESSING=false` 啟動的伺服器。這項宣告屬於 join metadata，會被錄製中的伺服器寫進 record，因此預設改變之前錄的 record 在這份清單上不同。它的執行摘要會記錄這個 flag（`runConfig.rowAddressing`）、每次 join 協商到的 features（`stateUpdateFeatures`）與 client 收到的 row entry 數（`rowEntries`），因此可以分辨 row addressing 有生效與沒有生效的執行。
 
 ### Field merge
 
@@ -141,7 +141,7 @@ PlayerSession 欄位優先序：
 
 ### Row addressing
 
-開啟 `TransportEncodingConfig.rowAddressing`（預設關閉；`withRowAddressing(true)`，或在以 `TransportEncodingConfig.rowAddressingFromEnvironment()` 建立設定的 server 設 `ROW_ADDRESSING=true`）時，opcode state update 以 **slot** 而非 key 指稱 slot-addressed table 的 row。slot-addressed table 是位於 root、把 key 對應到 state node 的 broadcast 欄位（`[String: Unit]`）。
+開啟 `TransportEncodingConfig.rowAddressing`（預設開啟；`withRowAddressing(false)` 可關閉，或在以 `TransportEncodingConfig.rowAddressingFromEnvironment()` 建立設定的 server 設 `ROW_ADDRESSING=false`）時，opcode state update 以 **slot** 而非 key 指稱 slot-addressed table 的 row。slot-addressed table 是位於 root、把 key 對應到 state node 的 broadcast 欄位（`[String: Unit]`）。
 
 - **Entry**（`RowPatchOpcode`）：
   - create `[tableId, slot, 6, generation, null, key, value]`：一個完整的新 row；此後該 slot 綁定到這個 key；
@@ -153,9 +153,9 @@ PlayerSession 欄位優先序：
 - **第一份 view**（joiner 的或 resync 的）把每個 slot-addressed table 送成 `{}` 加上每個 row 一個 create，讓 client 得知所有綁定。
 - **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
 - **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
-- **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync（預設）以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉並記錄 warning。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。replay land 不使用它。
-- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 在 `--row-addressing on` 時宣告它。
-- **量測（`EncodingBenchmark`）。** row entry 只對經由 router 的 join 生效，所以 benchmark 的預設路徑（adapter 直接 join）不會有 row entry。`--join-through-router on` 讓 hero-defense multi-room 的房間成為 `LandRouter` 與 `WebSocketTransport` 後面的 land，每個玩家是一條假連線，以 `StateUpdateFeature.joinMetadata` join，並在每次量測的 sync 之後、計時區間之外，ack 它最後的 sync 序號。`--row-addressing on`（需要 `--join-through-router on` 與 `-pathhash` 格式）開啟 row entry。兩者預設 off，預設路徑的數字不變。router 路徑的位元組按連線計算，broadcast frame 依線上實際傳送的方式每個 session 各算一次，因此它的 `bytesPerSync` 與不加這個 flag 的執行**不可比較**。每筆結果的 `routerJoin` 記錄 `bytesCounted: perConnection`、land 實際生效的 features 與 row entry 是否生效；執行的 metadata 記錄兩個 flag。
+- **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync（預設）以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉，adapter 以 info 層級記錄原因（請求為預設值，因此無法使用它的 land，例如 replay land 或 `IN_TURN_SYNC=false` server 上的 land，也會記錄）。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。replay land 不使用它。
+- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 除非加上 `--row-addressing off`，否則會宣告它。
+- **量測（`EncodingBenchmark`）。** row entry 只對經由 router 的 join 生效，所以 benchmark 的預設路徑（adapter 直接 join）不會有 row entry。`--join-through-router on` 讓 hero-defense multi-room 的房間成為 `LandRouter` 與 `WebSocketTransport` 後面的 land，每個玩家是一條假連線，以 `StateUpdateFeature.joinMetadata` join，並在每次量測的 sync 之後、計時區間之外，ack 它最後的 sync 序號。`--row-addressing` 跟隨 library 的預設：未指定時，在 `--join-through-router on` 且為 `-pathhash` 格式下為 on，其他情況為 off；`off` 關閉它；明確指定 `on` 時，沒有 router 或不是 `-pathhash` 格式會被拒絕，且 row entry 未生效時整次執行失敗。`--join-through-router` 預設 off，因此預設路徑的數字不變。router 路徑的位元組按連線計算，broadcast frame 依線上實際傳送的方式每個 session 各算一次，因此它的 `bytesPerSync` 與不加這個 flag 的執行**不可比較**。每筆結果的 `routerJoin` 記錄 `bytesCounted: perConnection`、land 實際生效的 features 與 row entry 是否生效；結果的 `config` 記錄指定的 `rowAddressing`（未指定時為 null）與 `rowAddressingResolved`。
 - **違反規則會關閉連線（TypeScript SDK）。** client 拒絕的 row entry（見上），或未協商 `rowAddressing` 就收到的 row entry，表示 client 的 view 已不可信。SDK 不會丟掉該 frame 繼續，而是以 **4013**（`invalidRowEntry`，由 client 送出，reason 為 `row entry: <rule>`，最多 123 個 UTF-8 位元組）關閉連線：
   - 每個 view 的 `onError` 收到 source `'decode'`、code `INVALID_ROW_ENTRY` 與 `details.rule`；
   - 連線上仍在排隊的 frame 會被丟棄而不套用，並計入 `decodeErrorStats().droppedAfterStrictClose`；
@@ -184,7 +184,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 |------|------|------|------|
 | `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；預設開啟（`fromEnvironment`）。關閉是否更快取決於 land（見 [FAQ](../FAQ.zh-TW.md)） |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | 使用單次 snapshot 擷取；設為 `false` 使用舊版 broadcast + per-player 路徑 |
-| `USE_SYNC_TABLES` | Bool | true | broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略），為預設路徑。兩種方式送出的 frame 位元組相同。設為 `false` 可退回 snapshot diff，此 fallback 之後會移除；row addressing 不論此值都會開啟 tables。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
+| `USE_SYNC_TABLES` | Bool | true | broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略），為預設路徑。兩種方式送出的 frame 位元組相同。設為 `false` 可退回 snapshot diff，此 fallback 之後會移除。在 row addressing 實際生效之處（預設情況下，即有 path hash 的 opcode encoding、in-turn sync 與經由 router 的 join），`USE_SYNC_TABLES=false` 沒有作用，每個這樣的 land 啟動時會記錄一次警告；要在那裡跑 snapshot diff fallback，須同時設 `ROW_ADDRESSING=false`。其他情況（json、`IN_TURN_SYNC=false`、直接 join）`false` 仍會選用 fallback。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
 | `TYPED_LEAF_VALUES` | Bool | true | 在 typed sync tables 上，內建 leaf 型別（數值、`Bool`、`String`、各 ID 型別、DeterministicMath 的 atomic 型別及其 optional）的欄位變更時，改以型別專屬的轉換取代通用轉換。只要 tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。兩種方式送出的 frame 位元組相同。設為 `false` 可關閉 |
 | `SYNC_STRATEGY` | String | `delta` | `delta` 只送變更欄位；`full-snapshot` 每次同步送每個接收者的完整視圖（量測用基線，非正式模式） |
 | `TRANSPORT_PROFILE_JSONL_PATH` | String | 關閉 | 設定後啟用 transport profiling，將 JSONL 寫入此路徑 |
@@ -200,7 +200,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `PATH_INDEX`（Bool，預設 true）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
 - `FIELD_MERGE`（Bool，預設 true）：使用 path hash 的 opcode state update 把同一 parent 的欄位 patch 合併成一個 entry。見 [Field merge](#field-merge)。只有以 `TransportEncodingConfig.fieldMergeFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--field-merge on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
-- `ROW_ADDRESSING`（Bool，預設 false）：opcode state update 以 slot 指稱 root node map 的 row。見 [Row addressing](#row-addressing)。以 `TransportEncodingConfig.rowAddressingFromEnvironment()` 建立 encoding 設定的 server 會讀取，Demo 與 Game server 都是。只在有 path hash 的 land（GameServer 的）生效；CI 會在兩種 opcode encoding 下開啟它執行 GameServer E2E。`EncodingBenchmark` 不讀它，改用 `--row-addressing on`（見 [Row addressing](#row-addressing)）。
+- `ROW_ADDRESSING`（Bool，預設 true；`false` 關閉）：opcode state update 以 slot 指稱 root node map 的 row。見 [Row addressing](#row-addressing)。以 `TransportEncodingConfig.rowAddressingFromEnvironment()` 建立 encoding 設定的 server 會讀取，Demo 與 Game server 以及 `ServerLoadTest` 都是；在程式內建立的設定（`.messagepack` 等 preset）不讀它，以 `withRowAddressing(false)` 關閉。只在有 path hash 的 land（GameServer 的）生效；CI 以預設值執行 GameServer E2E，並再以 `ROW_ADDRESSING=false` 執行一次。`EncodingBenchmark` 不讀它，改用 `--row-addressing`（見 [Row addressing](#row-addressing)）。
 - `SYNC_LAG_RESYNC_MS`（預設 3000）、`SYNC_ACK_FRESHNESS_MS`（2000）、`SYNC_ACK_TIMEOUT_MS`（10000）、`SYNC_LAG_SLOW_CONSUMER_COUNT`（3）與 `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`（60000）（Int；`SyncLagPolicy.fromEnvironment()`，為 `NIOLandServerConfiguration.syncLag` 與未傳入 policy 的 `TransportAdapter` 的預設值）：同步延遲的門檻。缺少、非整數或非正數時使用預設值。
 - `SYNC_LAG_CLOSE_GRACE_MS`（Int，預設 2000；`SyncLagPolicy.closeGrace`）：4010、4011 與 4012 關閉的關閉寬限。0 表示關閉此功能；非整數或負數時使用預設值。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。

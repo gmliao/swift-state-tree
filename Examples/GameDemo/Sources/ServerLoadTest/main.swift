@@ -54,7 +54,9 @@ func runServerLoadTest() async throws {
 
     // TRANSPORT_ENCODING (default messagepack); the join handshake stays JSON.
     let encodingName = EnvHelpers.getEnvString(key: ServerLoadTestEnvKeys.transportEncoding, defaultValue: "messagepack")
+    // ROW_ADDRESSING (default true; false opts out), as GameServer reads it.
     let transportEncoding = resolveTransportEncoding(rawValue: encodingName)
+        .withRowAddressing(TransportEncodingConfig.rowAddressingFromEnvironment())
 
     // Extract pathHashes from schema
     let landDef = HeroDefense.makeLand()

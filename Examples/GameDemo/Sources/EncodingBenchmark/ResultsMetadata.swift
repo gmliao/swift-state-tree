@@ -205,6 +205,7 @@ enum ResultsManager {
             // `--join-through-router` / `--row-addressing`: with the router on, bytes are counted per
             // connection and are not comparable with a run without it (each result's routerJoin).
             "joinThroughRouter": RouterJoin.config != nil,
+            // `--row-addressing` resolved, not whether the flag was given.
             "rowAddressingRequested": RouterJoin.config?.rowAddressing ?? false,
             // Bytes counted after the outbound writer drained, with no skipped cycle (#160).
             "bytesCountedAfterDrain": true,

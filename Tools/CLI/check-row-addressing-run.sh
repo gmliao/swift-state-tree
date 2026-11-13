@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Checks the output of `ROW_ADDRESSING=true ./test-e2e-game.sh` (CI's row addressing step), per
-# encoding. Each "▶ Running … (…)" section of the output belongs to the one encoding named as a
-# word anywhere in its parentheses ("(drop one /score patch, json)" is json's). A section that
+# Checks the output of `./test-e2e-game.sh` with row addressing on (the default, CI's main step
+# on the in-turn leg), per encoding; with `--expect-off`, a run where it can't take effect or is
+# turned off (the in-turn-off leg, and `ROW_ADDRESSING=false`). Each "▶ Running … (…)" section
+# of the output belongs to the one encoding named as a word anywhere in its parentheses ("(drop one /score patch, json)" is json's). A section that
 # names none, or more than one, fails once it holds a join or a count, rather than going unchecked.
 #
 # An opcode encoding (jsonOpcode, messagepack), where row addressing takes effect:
-#   1. every join negotiated rowAddressing;
-#   2. its live hero-defense scenarios applied row-derived patches. Without it, a server that
+#   1. every join negotiated rowAddressing, and every section of it holds a join;
+#   2. each of its live hero-defense sections applied row-derived patches. Without it, a server that
 #      stopped sending row entries would pass as a copy of the normal run. Other runs (the
 #      visibility and resolver lands, whose state has no slot-addressed rows) may report 0.
 # json, where it can't (row entries need an opcode encoding, so the server drops the feature):
@@ -18,8 +19,16 @@
 #   - every join and every row patch count falls in a section that names one encoding;
 #   - each requested encoding printed at least one "Row patches applied:" line, so a renamed
 #     summary line can't pass as 0 patches.
-# Usage: check-row-addressing-run.sh <run output> <server log dir> <encoding>...
+# With --expect-off, every encoding is checked as json is above (no join negotiated it, no row
+# patch was applied), the 4013 check and the section checks stay, and the "requested but not in
+# effect" log is allowed: with in-turn sync off the default request can't take effect.
+# Usage: check-row-addressing-run.sh [--expect-off] <run output> <server log dir> <encoding>...
 set -euo pipefail
+expect_off=false
+if [ "${1:-}" = "--expect-off" ]; then
+  expect_off=true
+  shift
+fi
 out=$1
 log_dir=$2
 shift 2
@@ -39,7 +48,7 @@ if [ "${#logs[@]}" -eq 0 ]; then
   echo "❌ No GameServer log in ${log_dir}"
   exit 1
 fi
-if grep -q "Row addressing requested but not in effect" "${logs[@]}"; then
+if [ "$expect_off" = false ] && grep -q "Row addressing requested but not in effect" "${logs[@]}"; then
   echo "❌ A land ran without row addressing"
   exit 1
 fi
@@ -98,9 +107,9 @@ for encoding in "$@"; do
     echo "❌ No \"Row patches applied:\" line in the ${encoding} sections"
     exit 1
   fi
-  if [ "$encoding" = "json" ]; then
+  if [ "$encoding" = "json" ] || [ "$expect_off" = true ]; then
     if [ "$without" -ne "$joins" ] || [ "$patches" -ne 0 ]; then
-      echo "❌ json negotiated rowAddressing or applied row patches"
+      echo "❌ ${encoding} negotiated rowAddressing or applied row patches where it should be off"
       exit 1
     fi
   else
@@ -112,6 +121,19 @@ for encoding in "$@"; do
       echo "❌ The ${encoding} live scenarios applied no row-derived patch"
       exit 1
     fi
+    # Per section, so one section's joins or patches can't cover for another's.
+    if awk -v e="$encoding" '$1 == e && $2 == 0 { bad = 1 } END { exit !bad }' <<<"$sections"; then
+      echo "❌ A ${encoding} section holds row patch counts but no join"
+      exit 1
+    fi
+    if awk -v e="$encoding" '$1 == e && $5 == 1 && $4 == 0 { bad = 1 } END { exit !bad }' <<<"$sections"; then
+      echo "❌ A ${encoding} live section applied no row-derived patch"
+      exit 1
+    fi
   fi
 done
-echo "✅ Row addressing in effect where it can be"
+if [ "$expect_off" = true ]; then
+  echo "✅ Row addressing off in every encoding"
+else
+  echo "✅ Row addressing in effect where it can be"
+fi

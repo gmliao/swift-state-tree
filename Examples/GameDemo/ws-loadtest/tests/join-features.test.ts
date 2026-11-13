@@ -5,14 +5,14 @@ import { EventEmitter } from "events";
 
 // A server with a state-update feature on refuses a join that doesn't declare it, so every
 // load-test join must declare what the SDK's decoder (which this client decodes through) reads.
-// `rowAddressing` is declared only with `--row-addressing on`: the declaration is join metadata,
-// which a recording server keeps in its records, so without the flag a join must be exactly the
-// one this client sent before it decoded row entries.
+// `rowAddressing` is declared when asked (the CLI asks by default; the API only when given it): the
+// declaration is join metadata, which a recording server keeps in its records, so a join not asked
+// to declare it must be exactly the one this client sent before it decoded row entries.
 
 /**
  * The join frame a connection sent before the client decoded row entries (the client at the
- * commit before rowAddressing was declared, 618746f3), byte for byte. Without the flag, a join
- * must still be this.
+ * commit before rowAddressing was declared, 618746f3), byte for byte. Not asked to declare it, a
+ * join must still be this.
  */
 const JOIN_BEFORE_ROW_ADDRESSING =
     '{"kind":"join","payload":{"join":{"requestID":"join-1","landType":"hero-defense","landInstanceId":"room-1",' +

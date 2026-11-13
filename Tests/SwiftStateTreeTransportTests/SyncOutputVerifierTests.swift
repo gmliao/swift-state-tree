@@ -174,6 +174,8 @@ struct VerifierFixture {
     let keeper: LandKeeper<VerifierState>
     let adapter: TransportAdapter<VerifierState>
     let definition = makeVerifierLand()
+    /// Joins go through the adapter's in-turn router path (`performJoin`), as a hosted land's do.
+    var throughRouter = false
 
     /// With `encoder`, the adapter encodes json through it (it ignores `encoding`).
     ///
@@ -224,6 +226,38 @@ struct VerifierFixture {
         return VerifierFixture(keeper: keeper, adapter: adapter)
     }
 
+    /// A land as a hosted server runs it: joins through the router (`performJoin`), the sync
+    /// sequence, the schema's path hashes with the path index and field merge, in-turn sync, and
+    /// the sync tables on with the delta strategy. The env config is given, not read, so the
+    /// fixture is the same in a run with `USE_SYNC_TABLES=false`. `rowAddressing` is the only
+    /// knob: with it on, row addressing is in effect (the caller asserts it).
+    static func makeThroughRouter(encoding: InTurnEncoding, rowAddressing: Bool) async -> VerifierFixture {
+        let keeper = LandKeeper<VerifierState>(
+            definition: makeVerifierLand(),
+            initialState: VerifierState(),
+            enableLiveStateHashRecording: true,
+            autoStartLoops: false
+        )
+        var env = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: false, syncStrategy: .delta, profilingConfig: nil)
+        env.useSyncTables = true
+        let transport = VerifierTransport()
+        let adapter = TransportAdapter<VerifierState>(
+            keeper: keeper,
+            transport: transport,
+            landID: "sync-output-verifier-test",
+            transportEnvConfig: env,
+            encodingConfig: encoding.config.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(rowAddressing),
+            pathHashes: verifierSchemaPathHashes,
+            suppressMissingPathHashesWarning: true,
+            inTurnSync: true,
+            joinsThroughRouter: true
+        )
+        await transport.setDelegate(adapter)
+        await keeper.awaitInitialization()
+        await keeper.setTransport(adapter)
+        return VerifierFixture(keeper: keeper, adapter: adapter, throughRouter: true)
+    }
+
     static func player(_ n: Int) -> PlayerID { PlayerID("p\(n)") }
 
     /// Holds every failed plan's delayed follow-up cycle (`startDelayedFollowUpSync`) until the
@@ -237,6 +271,25 @@ struct VerifierFixture {
 
     func join(_ n: Int) async throws {
         await adapter.onConnect(sessionID: SessionID("s\(n)"), clientID: ClientID("c\(n)"))
+        if throughRouter {
+            // The same join metadata in every run: records keep it.
+            let result = try await adapter.performJoin(
+                playerSession: PlayerSession(playerID: Self.player(n).rawValue, deviceID: "dev", metadata: [:]),
+                clientID: ClientID("c\(n)"),
+                sessionID: SessionID("s\(n)"),
+                authInfo: nil,
+                joinResponse: { playerID, slot in
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    return try? encoder.encode(TransportMessage.joinResponse(
+                        requestID: "r-\(playerID.rawValue)", success: true, playerID: playerID.rawValue, playerSlot: slot, encoding: "json"
+                    ))
+                }
+            )
+            _ = try #require(result)
+            #expect(await adapter.waitForOutboundDrain())
+            return
+        }
         try await simulateRouterJoin(
             adapter: adapter,
             keeper: keeper,

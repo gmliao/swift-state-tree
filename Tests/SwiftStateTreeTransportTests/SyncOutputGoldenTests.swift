@@ -262,6 +262,41 @@ struct SyncOutputGoldenTests {
         #expect(result.syncOutput.summary == expected, "\(golden) with field merge")
     }
 
+    /// Row addressing changes only how the opcode encoders address a root node map's rows,
+    /// after the plan (parent plan section 6, option 1): two router-joined runs of a scenario,
+    /// identical but for the feature, record the same frames and sync stream and replay to the
+    /// same summary. They are compared with each other, not with the committed goldens: a router
+    /// join is scheduled differently from the direct join the goldens were recorded with.
+    /// The verifier land has no root node map, so no row entries are sent here: what this covers
+    /// is the scheduling rows in effect turn on (the forced full plan, resync-first ordering).
+    /// With row entries sent, RowAddressingAdapterTests' `recordStaysLogical` checks the record
+    /// and its replay.
+    @Test("With row addressing in effect (no row entries: no root node map), a golden scenario through the router records what it records with it off", arguments: SyncOutputGolden.allCases)
+    func rowAddressingKeepsTheRecord(golden: SyncOutputGolden) async throws {
+        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
+        var frames: [Data] = [], streams: [[ReevaluationSyncStreamEntry]] = [], summaries: [String] = []
+        for on in [false, true] {
+            let f = await VerifierFixture.makeThroughRouter(encoding: encoding, rowAddressing: on)
+            // Each arm runs what it says.
+            #expect(f.adapter.rowAddressing == on, "\(golden): rows \(on ? "in effect" : "off")")
+            #expect(f.adapter.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing) == on)
+            try await golden.play(f)
+            streams.append(try await f.stream())
+            let recorder = try #require(await f.keeper.getReevaluationRecorder())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            frames.append(try encoder.encode(await recorder.getAllFrames()))
+            let result = try await f.replay()
+            #expect(result.syncOutput.verdict == .passed, "\(golden), rows \(on): \(result.syncOutput.summary)")
+            summaries.append(result.syncOutput.summary)
+        }
+        #expect(streams[0].count > 0, "\(golden): the scenario syncs")
+        #expect(frames[0] == frames[1], "\(golden): frames")
+        #expect(streams[0] == streams[1], "\(golden): sync stream")
+        #expect(summaries[0] == summaries[1], "\(golden): replay summary")
+    }
+
     /// Records the scenario live into `path`.
     static func record(_ golden: SyncOutputGolden, to path: String) async throws {
         let f = await VerifierFixture.make(encoding: golden.encoding)

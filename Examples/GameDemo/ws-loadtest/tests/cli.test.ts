@@ -29,8 +29,8 @@ describe("parseArgs", () => {
         expect(() => parseArgs(["node", "cli", "--input-latency", "yes"])).toThrow(/--input-latency/);
     });
 
-    it("leaves row addressing undeclared unless --row-addressing on", () => {
-        expect(parseArgs(["node", "cli"]).rowAddressing).toBe(false);
+    it("declares row addressing by default, and not with --row-addressing off", () => {
+        expect(parseArgs(["node", "cli"]).rowAddressing).toBe(true);
         expect(parseArgs(["node", "cli", "--row-addressing", "on"]).rowAddressing).toBe(true);
         expect(parseArgs(["node", "cli", "--row-addressing", "off"]).rowAddressing).toBe(false);
         expect(() => parseArgs(["node", "cli", "--row-addressing", "yes"])).toThrow(/--row-addressing/);

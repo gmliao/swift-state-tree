@@ -78,8 +78,13 @@ jobs:
 
   # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
   # job runs the whole suite again with both opted out (USE_SYNC_TABLES=false,
-  # TYPED_LEAF_VALUES=false), so the snapshot-diff fallback keeps the coverage it had as the
-  # default until it is removed. In-turn sync is at its default.
+  # TYPED_LEAF_VALUES=false), so the snapshot-diff fallback keeps coverage until it is removed.
+  # In-turn sync is at its default. Row addressing (on by default) keeps the tables on whatever
+  # USE_SYNC_TABLES says, and in-process configs don't read ROW_ADDRESSING: a test with rows in
+  # effect (a router join with the sync sequence and path hashes) runs the tables here too. The
+  # job covers the direct-adapter tests and those without router joins, the sync sequence or path
+  # hashes; the fallback under a router join is covered by the tests that turn rows off
+  # explicitly (`withRowAddressing(false)`).
   sync-tables-off:
     name: build (sync tables off)
     runs-on: ubuntu-22.04
@@ -238,8 +243,9 @@ jobs:
       timeout-minutes: 10
 
     # EncodingBenchmark's --join-through-router / --row-addressing: the refused combinations exit 2
-    # with their reason, and a small router run (rows on and off) joins every session and records
-    # perConnection bytes and whether row entries were in effect. Reuses the tests' debug build.
+    # with their reason (row-specific ones only for an explicit `on`), and small router runs (rows
+    # by default, on and off) join every session and record perConnection bytes and whether row
+    # entries were in effect. Reuses the tests' debug build.
     - name: EncodingBenchmark router flags
       working-directory: Examples/GameDemo
       shell: bash

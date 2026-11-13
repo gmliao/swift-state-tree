@@ -243,7 +243,7 @@ while [[ $# -gt 0 ]]; do
       echo "          [--room-slots <spec>] [--start-at <epoch ms>]   (two instances sharing rooms; see README)"
       echo "          [--stale-after <s>] [--slow-read <start>:<duration>] [--samples-dir <dir>]"
       echo "          [--input-latency on|off] [--input-latency-min-seen <share>]   (0: no seen-share gate)"
-      echo "          [--row-addressing on|off]   (joins declare rowAddressing; default off)"
+      echo "          [--row-addressing on|off]   (joins declare rowAddressing; default on)"
       echo "          [--reconnect on-server-close] [--reconnect-until <s>] [--reconstruct] [--control-socket <path>]"
       echo "          [--system-metrics-out <file>]   (default monitoring/system-metrics.json)"
       echo "          [--external-server <pid> [--external-profile <transport-profile.jsonl>]]"

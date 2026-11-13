@@ -74,7 +74,8 @@ final class ViewCaptureWriter<State: StateNodeProtocol>: @unchecked Sendable {
         rooms: [ViewCaptureRoom<State>],
         playersPerRoom: Int,
         cell: [String: Any],
-        baselineFormat: String? = nil
+        baselineFormat: String? = nil,
+        negotiatedFeatures: [String]? = nil
     ) async throws -> ViewCaptureWriter? {
         guard let config else { return nil }
         let captured = Array(rooms.prefix(config.rooms))
@@ -109,8 +110,10 @@ final class ViewCaptureWriter<State: StateNodeProtocol>: @unchecked Sendable {
                 "message": baselineFormat ?? encoding.message.rawValue,
                 "stateUpdate": baselineFormat ?? encoding.stateUpdate.rawValue,
                 // The features the frames use, as a joinResponse would echo them (the capture
-                // has no join response): the decoder needs them for path indices and merged entries.
-                "stateUpdateFeatures": baselineFormat != nil || !format.usesPathHash ? [] : encoding.stateUpdateFeatures,
+                // has no join response): the decoder needs them for path indices, merged entries,
+                // the sync sequence and row entries. On the router path they are what the lands
+                // negotiated (`negotiatedFeatures`); on the local path, the format's.
+                "stateUpdateFeatures": baselineFormat != nil ? [] : negotiatedFeatures ?? (format.usesPathHash ? encoding.stateUpdateFeatures : []),
                 "syncStrategy": ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? SyncStrategy.delta.rawValue,
                 "sessions": Dictionary(uniqueKeysWithValues: roomPlayers.map { ($0.session.rawValue, $0.player.rawValue) }),
                 "schema": schemaJSON,

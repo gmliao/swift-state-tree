@@ -49,11 +49,12 @@ actor PathIndexReplyConnection: WebSocketConnection {
 
 @Suite("Path index")
 struct PathIndexTests {
-    // The path index alone: field merge (on by default, its own feature) is covered by
-    // FieldMergeTests.
-    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false).withPathIndex(false)
-    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false).withPathIndex(false)
-    static let json = TransportEncodingConfig.json.withFieldMerge(false).withPathIndex(false)
+    // The path index alone: field merge and row addressing (on by default, their own features)
+    // are covered by FieldMergeTests and RowAddressingAdapterTests. Row addressing stays off
+    // here, so these tests pin the path-entry form; a test that wants rows turns them on.
+    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false).withPathIndex(false).withRowAddressing(false)
+    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false).withPathIndex(false).withRowAddressing(false)
+    static let json = TransportEncodingConfig.json.withFieldMerge(false).withPathIndex(false).withRowAddressing(false)
 
     static let landType = "path-index"
 
@@ -237,7 +238,7 @@ struct PathIndexTests {
         #expect(Self.messagepack.withPathIndex(true).withDynamicKeyCompression(false).pathIndex)
         // On by default, in the config and from the environment; PATH_INDEX=false turns it off.
         #expect(TransportEncodingConfig().pathIndex)
-        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge"])
+        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge", "rowAddressing"])
         #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: [:]) == true)
         #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: ["PATH_INDEX": "false"]) == false)
     }
@@ -341,9 +342,13 @@ struct PathIndexTests {
         }
     }
 
-    @Test("Row addressing: the land refuses a join that doesn't declare it, after the lookup; a declaring join gets it echoed", .enabled(if: InTurnSync.isEnabled()))
-    func rowAddressingHandshake() async throws {
-        let encoding = Self.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(true)
+    @Test("Row addressing: the land refuses a join that doesn't declare it, after the lookup; a declaring join gets it echoed", .enabled(if: InTurnSync.isEnabled()), arguments: [false, true])
+    func rowAddressingHandshake(bareDefault: Bool) async throws {
+        // `bareDefault`: the plain preset with only the sync sequence a hosted land adds, so rows
+        // come from the default, not from an explicit knob.
+        let encoding = bareDefault
+            ? TransportEncodingConfig.messagepack.withSyncSequence(true)
+            : Self.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(true)
         let (transport, router, manager) = try Self.router(encoding: encoding)
         // The router's precheck runs before any land exists, so it doesn't require the feature.
         #expect(!manager.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing))
@@ -372,6 +377,9 @@ struct PathIndexTests {
         }
         #expect(response.success)
         #expect(response.stateUpdateFeatures == ["pathIndex", "fieldMerge", "rowAddressing", "syncSequence"])
+        let land = try #require(await router.getBoundLandID(for: accepted))
+        let adapter = try #require(await manager.getLand(landID: land)?.transportAdapter)
+        #expect(adapter.rowAddressing, "rows in effect on the land")
     }
 
     @Test("A router over a land manager without path hashes requires and echoes no feature, as its lands' adapters")

@@ -78,8 +78,8 @@ struct GameServer {
         // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59); PATH_INDEX=false
         // sends path hashes instead of path indices (on by default; clients declare `pathIndex`);
         // FIELD_MERGE=false turns off merged entries (on by default; clients declare `fieldMerge`).
-        // ROW_ADDRESSING=true names the rows of root node maps by slot (off by default; clients
-        // declare `rowAddressing`; the load-test client doesn't yet).
+        // ROW_ADDRESSING=false turns off row entries, which name the rows of root node maps by slot
+        // (on by default; clients declare `rowAddressing`, as the load-test client does by default).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingEnv)
             .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
             .withPathIndex(TransportEncodingConfig.pathIndexFromEnvironment())
@@ -92,6 +92,7 @@ struct GameServer {
             "dynamicKeyCompression": .stringConvertible(transportEncoding.dynamicKeyCompression),
             "pathIndex": .stringConvertible(transportEncoding.pathIndex),
             "fieldMerge": .stringConvertible(transportEncoding.fieldMerge),
+            "rowAddressing": .stringConvertible(transportEncoding.rowAddressing),
         ])
 
         let maxPlayers = heroDefenseMaxPlayers()
