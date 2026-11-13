@@ -663,7 +663,8 @@ private struct SyncPhaseFixture {
     }
 
     /// Connects and joins another session of `player`.
-    func joinAnotherSessionOfFirstPlayer(_ sessionID: SessionID, clientID: ClientID) async throws {
+    /// Joins `sessionID` as the first player: it supersedes the player's earlier session (#531).
+    func joinNewSessionOfFirstPlayer(_ sessionID: SessionID, clientID: ClientID) async throws {
         await adapter.onConnect(sessionID: sessionID, clientID: clientID)
         try await simulateRouterJoin(
             adapter: adapter,
@@ -1157,22 +1158,23 @@ struct TransportAdapterSyncPhaseTests {
     }
 
     @Test(
-        "a re-encode after an encode failure goes to every session of the player (one key table)",
+        "a re-encode after an encode failure goes to the player's session; a superseded one gets nothing (one key table)",
         arguments: [SyncPhaseEncoding.opcodeJsonArray, .json]
     )
-    func reEncodeReachesEverySessionOfThePlayer(encoding: SyncPhaseEncoding) async throws {
+    func reEncodeReachesThePlayersSession(encoding: SyncPhaseEncoding) async throws {
         let f = try await SyncPhaseFixture.make(encoding: encoding)
         let other = SessionID("sp-session-1b")
         let otherClient = ClientID("sp-client-1b")
-        // Registered directly (no admission), so both sessions stay members of the player. The
-        // keeper's entry is the newer session, so the actions are sent from it.
-        try await f.joinAnotherSessionOfFirstPlayer(other, clientID: otherClient)
+        // The new session supersedes the first one (#531): the player has one session, the
+        // keeper's entry is the new one, so the actions are sent from it.
+        try await f.joinNewSessionOfFirstPlayer(other, clientID: otherClient)
+        #expect(await f.adapter.membershipSessionIDs(for: f.player) == [other])
         let sender = (client: otherClient, session: other)
         try await f.set("bag:k1", 1, from: sender)
         await f.sync()
 
-        // The infinity fails the player's update: its sessions' updates are merged and
-        // re-encoded once (typed firstSync: one key table reset), and both get that frame.
+        // The infinity fails the player's update: it is re-encoded once (typed firstSync: one
+        // key table reset) and goes to the player's session only.
         let before = [
             f.session: await f.transport.messages(for: f.session).count,
             other: await f.transport.messages(for: other).count
@@ -1184,10 +1186,10 @@ struct TransportAdapterSyncPhaseTests {
         #expect(await f.adapter.syncDroppedUpdates == 1, "only the infinity patch")
         let firstFrames = Array(await f.transport.messages(for: f.session).dropFirst(before[f.session]!))
         let otherFrames = Array(await f.transport.messages(for: other).dropFirst(before[other]!))
-        #expect(firstFrames.count == 1 && otherFrames.count == 1, "one state frame each")
-        #expect(firstFrames == otherFrames, "the same re-encoded frame for every session of the player")
+        #expect(firstFrames.isEmpty, "the superseded session gets nothing")
+        #expect(otherFrames.count == 1, "one state frame")
         var decoded = SyncPhaseClient(encoding: encoding)
-        decoded.receive(firstFrames)
+        decoded.receive(otherFrames)
         #expect(decoded.updateTypes == [1], "typed firstSync: \(decoded.updateTypes)")
         #expect(decoded.value(at: "/bags/\(f.player.rawValue)/k2") == .int(2))
         #expect(decoded.value(at: "/items/x1") == .int(1))

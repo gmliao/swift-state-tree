@@ -377,6 +377,25 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case syncLagClose
     /// A terminal lag close's Task (#332), after the transport's close returned.
     case syncLagClosed
+    /// A public `registerSession` (#531), after it read the keeper's entry and before it acts
+    /// on what it read.
+    case registrationAfterKeeperRead
+    /// An operation in the membership queue, behind every earlier one, before it waits for them:
+    /// the event that it is queued (#531).
+    case membershipQueued
+    /// A registration (#531), before it records the session's connection generation (and, with
+    /// a `WebSocketTransport`, before that transport's await).
+    case registrationGeneration
+}
+
+/// How the realtime adapter maps sessions to a player (#531). Both join paths read it: the
+/// library's join (its admission) and `registerSession`. So the two can't drift onto different
+/// rules. Package-level: no public policy API, and no other case until several sessions per
+/// player are supported (#539).
+package enum SessionPerPlayerPolicy: Sendable, Equatable {
+    /// Newest wins: a newer session of the player replaces the older ones, which are logged out
+    /// (superseded and closed), as in typical games.
+    case replaceOld
 }
 
 /// `TransportAdapter.syncLagAckDiagnostics()`: a snapshot of one adapter's sync-lag ack state.
@@ -1675,12 +1694,108 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Register a session that has been authenticated and joined via LandRouter.
-    /// This bypasses the internal join handshake logic of TransportAdapter.
+    /// The public `registerSession` (#531): one membership change, in the membership queue like
+    /// every other, after a check of the keeper's entry for the player.
     ///
-    /// It also bypasses the admission, and with it newest wins (#92): the player's other
-    /// sessions stay members. Joins through `performJoin` (the router and the legacy path)
-    /// supersede them.
+    /// - The entry names another session or client (a newer keeper join of the player): the
+    ///   registration is refused. The session isn't registered and is closed, as a join that
+    ///   lost (`endJoinBeforeAdmission`), and `staleRegistrationRefusals` counts it.
+    /// - Otherwise (the entry names this session or client, or the player has no entry): the
+    ///   session is registered and the policy applies (`sessionPerPlayerPolicy`).
+    ///
+    /// The read is an await, and a keeper join outside this queue can move the entry after it.
+    /// Then this registration commits a session the keeper no longer names, until that newer
+    /// session is registered: its own check passes, and it supersedes this one.
+    func _registerSessionQueued(
+        sessionID: SessionID,
+        clientID: ClientID,
+        playerID: PlayerID,
+        authInfo: AuthenticatedInfo?,
+        acceptedConnectionGeneration: UInt64?
+    ) async {
+        do {
+            try await enqueueMembership {
+                await self.registerSessionCheckingKeeper(
+                    sessionID: sessionID,
+                    clientID: clientID,
+                    playerID: playerID,
+                    authInfo: authInfo,
+                    acceptedConnectionGeneration: acceptedConnectionGeneration
+                )
+            }
+        } catch {
+            logger.error("❌ Membership queue failed during registerSession", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "error": .string(String(describing: error))
+            ])
+        }
+    }
+
+    /// Registrations refused because the keeper's entry for the player named another session
+    /// or client (#531).
+    private(set) var staleRegistrationRefusals = 0
+
+    private func registerSessionCheckingKeeper(
+        sessionID: SessionID,
+        clientID: ClientID,
+        playerID: PlayerID,
+        authInfo: AuthenticatedInfo?,
+        acceptedConnectionGeneration: UInt64?
+    ) async {
+        let entry = await keeper.entrySession(for: playerID)
+        await holds.at(.registrationAfterKeeperRead)
+        if let entry {
+            // The keeper's sender check, `rejectSenderIfSuperseded`: a recorded client or
+            // session that differs is another join's.
+            let otherClient = entry.clientID.map { $0 != clientID } ?? false
+            let otherSession = entry.sessionID.map { $0 != sessionID } ?? false
+            if otherClient || otherSession {
+                staleRegistrationRefusals += 1
+                logger.warning("Registration refused: the keeper's entry for the player names another session", metadata: [
+                    "playerID": .string(playerID.rawValue),
+                    "sessionID": .string(sessionID.rawValue),
+                    "clientID": .string(clientID.rawValue),
+                    "entrySessionID": .string(entry.sessionID?.rawValue ?? "-"),
+                    "refusedTotal": .stringConvertible(staleRegistrationRefusals),
+                ])
+                endedSessions.insert(sessionID)
+                // Without a generation (a caller that passed none), the close is by ID.
+                closeSessionDetached(sessionID, generation: acceptedConnectionGeneration)
+                return
+            }
+        }
+        await _registerSessionImpl(
+            sessionID: sessionID,
+            clientID: clientID,
+            playerID: playerID,
+            authInfo: authInfo,
+            acceptedConnectionGeneration: acceptedConnectionGeneration
+        )
+    }
+
+    /// Closes `sessionID` from a detached task, only while its connection is the one with
+    /// `generation`; with nil, whatever connection has the ID. A transport that doesn't
+    /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
+    func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?) {
+        let transport = self.transport
+        Task { await transport.closeSession(sessionID, with: .normal, generation: generation) }
+    }
+
+    /// The realtime adapter's rule for a player's sessions (#531): newest wins.
+    package let sessionPerPlayerPolicy: SessionPerPlayerPolicy = .replaceOld
+
+    /// Applies `sessionPerPlayerPolicy` for `sessionID`, the player's newest session. Both join
+    /// paths call it, in the segment that makes the session a member.
+    private func applySessionPerPlayerPolicy(to playerID: PlayerID, keeping sessionID: SessionID) {
+        switch sessionPerPlayerPolicy {
+        case .replaceOld:
+            supersedeSessions(of: playerID, keeping: sessionID)
+        }
+    }
+
+    /// Registers a session in the membership queue, without the keeper check: the public
+    /// `registerSession` after its check, and `performJoinQueued` after its keeper join and
+    /// admission. The player's other sessions are superseded (`sessionPerPlayerPolicy`).
     func _registerSessionImpl(
         sessionID: SessionID,
         clientID: ClientID,
@@ -1695,6 +1810,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncLag.removeValue(forKey: sessionID)
             firstViewEncodeFailures.removeValue(forKey: sessionID)
         }
+        applySessionPerPlayerPolicy(to: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
             playerID: playerID,
@@ -1704,12 +1820,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // Record the session's connection generation (see `connectionGenerations`). Group
         // targets are expanded from this adapter's membership, not from the transport's maps.
+        // Under a ticket taken before the await: a disconnect, a supersede or a teardown during
+        // it ends the session, and the write must not bring back an entry for it (#531).
         endedSessions.remove(sessionID)
+        let ticket = sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
+        await holds.at(.registrationGeneration)
         if let webSocketTransport = transport as? WebSocketTransport {
             let current = await webSocketTransport.registerSession(sessionID, for: playerID)
-            connectionGenerations[sessionID] = acceptedConnectionGeneration ?? current
+            sessionTickets.ifCurrent(ticket) { _ in
+                connectionGenerations[sessionID] = acceptedConnectionGeneration ?? current
+            }
         } else if let acceptedConnectionGeneration {
-            connectionGenerations[sessionID] = acceptedConnectionGeneration
+            sessionTickets.ifCurrent(ticket) { _ in
+                connectionGenerations[sessionID] = acceptedConnectionGeneration
+            }
         }
 
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
@@ -1828,7 +1952,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?)? = nil
     ) -> Int32 {
-        supersedeSessions(of: playerID, keeping: sessionID)
+        applySessionPerPlayerPolicy(to: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
             playerID: playerID,
@@ -1882,7 +2006,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// done, is left alone (false): the keeper's state already changed or is changing, its
     /// resolvers are bounded by their own deadline, and an in-turn join's flip waits for what is
     /// left of the budget.
-    func endJoinBeforeAdmission(_ sessionID: SessionID, finalFrame: Data?, attemptEnd: JoinAttemptEnd) -> Bool {
+    ///
+    /// - Parameter connectionGeneration: The connection the router accepted for the session. The
+    ///   session was never admitted, so the adapter has none recorded: the final frame and every
+    ///   close carry this one, and act only on that connection (#531). Nil: by ID.
+    func endJoinBeforeAdmission(
+        _ sessionID: SessionID,
+        finalFrame: Data?,
+        attemptEnd: JoinAttemptEnd,
+        connectionGeneration: UInt64? = nil
+    ) -> Bool {
         guard expectedAdmissions[sessionID] == nil,
               joiningSessions[sessionID] == nil,
               membershipCoordinator.playerID(for: sessionID) == nil
@@ -1891,11 +2024,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // queued while thousands of the land's sessions end.
         attemptEnd.markEnded()
         if let finalFrame {
-            sendFinalFrameAndClose(finalFrame, to: sessionID)
+            sendFinalFrameAndClose(finalFrame, to: sessionID, generation: connectionGeneration)
         } else {
             endedSessions.insert(sessionID)
-            let transport = self.transport
-            Task { await transport.closeSession(sessionID) }
+            closeSessionDetached(sessionID, generation: connectionGeneration)
         }
         return true
     }
@@ -2008,8 +2140,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func supersedeSessions(of playerID: PlayerID, keeping sessionID: SessionID) {
         let superseded = membershipCoordinator.sessionIDs(for: playerID).filter { $0 != sessionID }
         guard !superseded.isEmpty else { return }
-        let transport = self.transport
         for old in superseded {
+            // The close runs later, from a task: it closes only this connection, never a later
+            // one that reuses the ID (#531).
+            let generation = connectionGenerations[old]
             // Before the membership goes: its queued targeted events still match it, and are
             // counted with its held ones.
             failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
@@ -2031,7 +2165,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "newSessionID": .string(sessionID.rawValue),
                 "supersededTotal": .stringConvertible(supersededSessionCount),
             ])
-            Task { await transport.closeSession(old) }
+            closeSessionDetached(old, generation: generation)
         }
         syncEngine.clearCacheForDisconnectedPlayer(playerID)
         perPlayerTables?.clear(playerID)
@@ -2369,13 +2503,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 await holds.at(.registerSession)
             }
 
-            // Register session
-            await registerSession(
+            // Register session. Already in the membership queue, and the keeper join just ran in
+            // it: the internal registration, without the public one's enqueue and keeper check.
+            await _registerSessionImpl(
                 sessionID: sessionID,
                 clientID: clientID,
                 playerID: playerID,
                 authInfo: authInfo,
-                connectionGeneration: connectionGeneration
+                acceptedConnectionGeneration: connectionGeneration
             )
 
             if completesInTurn {
@@ -3090,6 +3225,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) async throws -> T {
         let previous = membershipQueueTail
         let task: Task<T, Error> = Task {
+            await self.holds.at(.membershipQueued)
             if let previous { _ = await previous.result }
             return try await operation()
         }
@@ -4258,6 +4394,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             recipients.append(SyncPhaseRecipient(sessionID: sessionID, playerID: playerID))
         }
+        // One session per player (#531): both join paths supersede, so no player is a recipient
+        // twice. The per-player sync state (baseline, caches) is the player's, not the session's
+        // (#539). The multi-session branches elsewhere stay as defensive code.
+        assert(
+            Set(recipients.map(\.playerID)).count == recipients.count,
+            "a player has two sync recipients: \(recipients.map { "\($0.playerID.rawValue)/\($0.sessionID.rawValue)" })"
+        )
         return recipients
     }
 

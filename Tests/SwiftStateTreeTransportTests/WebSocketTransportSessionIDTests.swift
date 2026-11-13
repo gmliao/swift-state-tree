@@ -18,15 +18,21 @@ private actor OrderedConnection: WebSocketConnection {
 
     private(set) var entries: [Entry] = []
     private var stall: TestGate?
+    private var closeSignal: TestGate?
 
     func setStall(_ gate: TestGate?) { stall = gate }
+    /// `gate` gets an arrival for each close.
+    func setCloseSignal(_ gate: TestGate?) { closeSignal = gate }
 
     func send(_ data: Data) async throws {
         if let stall { await stall.arrive() }
         entries.append(.frame(String(decoding: data, as: UTF8.self)))
     }
 
-    func close() async throws { entries.append(.close) }
+    func close() async throws {
+        entries.append(.close)
+        if let closeSignal { await closeSignal.arrive() }
+    }
 }
 
 /// A delegate whose `onDisconnect` can be held, to keep a disconnect in progress.
@@ -167,5 +173,32 @@ struct WebSocketTransportSessionIDTests {
         // The stalled send finishes after the close; the marker's own close doesn't run again.
         #expect(await orderedPoll { await connection.entries.contains(.frame("error")) })
         #expect(await connection.entries.filter { $0 == .close }.count == 1)
+    }
+
+    @Test("A queued close for an older connection leaves the connection that reuses the ID open (#531)")
+    func queuedCloseForOlderConnectionIsDropped() async {
+        let transport = WebSocketTransport()
+        await transport.setDelegate(HoldingDelegate())
+        let id = SessionID("reused")
+        await transport.handleConnection(sessionID: id, connection: OrderedConnection())
+        let older = await transport.connectionGeneration(for: id)
+        await transport.handleDisconnection(sessionID: id)
+        let connection = OrderedConnection()
+        #expect(await transport.handleConnection(sessionID: id, connection: connection) == .accepted)
+        let current = await transport.connectionGeneration(for: id)
+        #expect(older != current)
+
+        let closed = TestGate()
+        closed.open()
+        await connection.setCloseSignal(closed)
+
+        // The older connection's close does nothing; had it queued a close marker, the frame
+        // after it would be dropped and the close would come first.
+        await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(5), generation: older)
+        await transport.sendSessionFrames([SessionFrame(data: Data("after".utf8), sessionID: id, connectionGeneration: current)])
+        await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(5), generation: current)
+        #expect(await closed.waitForArrivals(1))
+        #expect(await connection.entries == [.frame("after"), .close])
+        #expect(await transport.framesDroppedAfterCloseMarker == 0)
     }
 }
