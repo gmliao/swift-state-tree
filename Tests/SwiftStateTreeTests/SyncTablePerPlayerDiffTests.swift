@@ -196,14 +196,14 @@ private struct PerPlayerPair<State: StateNodeProtocol> {
     /// `onePass`: today's one-pass extraction (every per-player field), which falls back to the
     /// separate extraction for every player when any conversion throws (T1), and the typed seed
     /// of every field; otherwise the separate extraction of `mode`'s fields.
-    /// `resetsKeys`: the adapter's key reset, which keeps the cycle's mode and the `.cached`
-    /// baseline and only retypes the update `.firstSync`, so the patches are the cycle's.
+    /// The adapter's key reset needs no step of its own: it keeps the cycle's mode and the
+    /// `.cached` baseline and only retypes the update `.firstSync`, so its patches are a plain
+    /// step's.
     mutating func step(
         _ state: State,
         players: [PlayerID],
         fields: Set<String>?,
         onePass: Bool,
-        resetsKeys: Bool,
         commit: Bool
     ) throws -> Step {
         let mode: SnapshotMode = fields.map { .dirtyTracking($0) } ?? .all
@@ -352,13 +352,12 @@ private func runPerPlayerDifferential(
         let dirty = state.getDirtyFields().union(carried)
         state.clearDirty()
         let commit = Int.random(in: 0..<10, using: &g) != 0
-        let resetsKeys = Int.random(in: 0..<20, using: &g) == 0
         // As the adapter plans it: no dirty field diffs every field (`.all`).
         let result: PerPlayerPair<PPRoot>.Step
         do {
             result = try pair.step(
                 state, players: players, fields: allFields || dirty.isEmpty ? nil : dirty,
-                onePass: onePass, resetsKeys: resetsKeys, commit: commit
+                onePass: onePass, commit: commit
             )
         } catch {
             Issue.record("seed \(seed), step \(index): \(error)", sourceLocation: sourceLocation)
@@ -372,7 +371,7 @@ private func runPerPlayerDifferential(
                   lastSent == nil
             else {
                 Issue.record("""
-                seed \(seed), step \(index), \(player)\(resetsKeys ? " (key reset)" : ""): the typed per-player diff differs from today's
+                seed \(seed), step \(index), \(player): the typed per-player diff differs from today's
                 today (drops \(result.todayDrops.perPlayerFields[player]?.sorted() ?? [])):
                 \(ppDescribe(result.today[player]))
                 typed (drops \(result.typedDrops.perPlayerFields[player]?.sorted() ?? [])):
@@ -427,14 +426,14 @@ struct SyncTablePerPlayerDiffTests {
         let p0 = PlayerID("p0")
         state.hands[p0] = ["c"]
         var pair = PerPlayerPair<PPRoot>()
-        _ = try pair.step(state, players: [p0], fields: nil, onePass: false, resetsKeys: false, commit: true)
+        _ = try pair.step(state, players: [p0], fields: nil, onePass: false, commit: true)
         state.hands.removeValue(forKey: p0)
-        let gone = try pair.step(state, players: [p0], fields: ["hands"], onePass: false, resetsKeys: false, commit: true)
+        let gone = try pair.step(state, players: [p0], fields: ["hands"], onePass: false, commit: true)
         #expect(ppSamePatches(gone.today[p0]!, gone.typed[p0]!), "\(ppDescribe(gone.today[p0]))\n--\n\(ppDescribe(gone.typed[p0]))")
         #expect(gone.typed[p0]!.map(\.path) == ["/hands"])
         #expect(pair.lastSentDiffers(p0) == nil)
         state.hands[p0] = ["d"]
-        let back = try pair.step(state, players: [p0], fields: ["hands"], onePass: false, resetsKeys: false, commit: true)
+        let back = try pair.step(state, players: [p0], fields: ["hands"], onePass: false, commit: true)
         #expect(ppSamePatches(back.today[p0]!, back.typed[p0]!), "\(ppDescribe(back.today[p0]))\n--\n\(ppDescribe(back.typed[p0]))")
         #expect(back.typed[p0]!.map(\.path) == ["/hands"])
     }
@@ -444,10 +443,10 @@ struct SyncTablePerPlayerDiffTests {
         var state = PPRoot()
         let p0 = PlayerID("p0"), p1 = PlayerID("p1")
         var pair = PerPlayerPair<PPRoot>()
-        _ = try pair.step(state, players: [p0, p1], fields: nil, onePass: false, resetsKeys: false, commit: true)
+        _ = try pair.step(state, players: [p0, p1], fields: nil, onePass: false, commit: true)
         state.risky.n = -1
         state.ratio = 2
-        let step = try pair.step(state, players: [p0, p1], fields: ["risky", "ratio"], onePass: false, resetsKeys: false, commit: true)
+        let step = try pair.step(state, players: [p0, p1], fields: ["risky", "ratio"], onePass: false, commit: true)
         #expect(step.typedDrops.perPlayerFields == [p1: ["risky"]])
         #expect(step.todayDrops.perPlayerFields == step.typedDrops.perPlayerFields)
         #expect(step.typed[p0]!.map(\.path) == ["/ratio", "/risky/n"])
@@ -467,17 +466,17 @@ struct SyncTablePerPlayerDiffTests {
         let p0 = PlayerID("p0")
         state.byKey["good"] = PPThrowing(n: 1)
         var pair = PerPlayerPair<PPLeafRoot>()
-        _ = try pair.step(state, players: [p0], fields: nil, onePass: false, resetsKeys: false, commit: true)
+        _ = try pair.step(state, players: [p0], fields: nil, onePass: false, commit: true)
         state.byKey["bad"] = PPThrowing(n: -1)
-        let added = try pair.step(state, players: [p0], fields: ["byKey"], onePass: false, resetsKeys: false, commit: true)
+        let added = try pair.step(state, players: [p0], fields: ["byKey"], onePass: false, commit: true)
         #expect(added.typedDrops.perPlayerFields == [p0: ["byKey"]])
         #expect(added.todayDrops.perPlayerFields == added.typedDrops.perPlayerFields)
         #expect(added.typed[p0] == [] && added.today[p0] == [])
         state.byKey["good"] = PPThrowing(n: 2)
-        let still = try pair.step(state, players: [p0], fields: ["byKey"], onePass: false, resetsKeys: false, commit: true)
+        let still = try pair.step(state, players: [p0], fields: ["byKey"], onePass: false, commit: true)
         #expect(still.typedDrops.perPlayerFields == [p0: ["byKey"]] && still.typed[p0] == [])
         state.byKey.removeValue(forKey: "bad")
-        let gone = try pair.step(state, players: [p0], fields: ["byKey"], onePass: false, resetsKeys: false, commit: true)
+        let gone = try pair.step(state, players: [p0], fields: ["byKey"], onePass: false, commit: true)
         #expect(ppSamePatches(gone.today[p0]!, gone.typed[p0]!))
         #expect(gone.typed[p0]!.map(\.path) == ["/byKey/good/n"])
         #expect(pair.lastSentDiffers(p0) == nil)
@@ -505,10 +504,10 @@ struct SyncTablePerPlayerDiffTests {
         var state = PPRoot()
         let p0 = PlayerID("p0"), p1 = PlayerID("p1")
         var pair = PerPlayerPair<PPRoot>()
-        _ = try pair.step(state, players: [p0, p1], fields: nil, onePass: false, resetsKeys: false, commit: true)
+        _ = try pair.step(state, players: [p0, p1], fields: nil, onePass: false, commit: true)
         state.holder.onlyP0 = 4
         state.holder.onlyP1 = 5
-        let step = try pair.step(state, players: [p0, p1], fields: ["holder"], onePass: false, resetsKeys: false, commit: true)
+        let step = try pair.step(state, players: [p0, p1], fields: ["holder"], onePass: false, commit: true)
         #expect(step.typed[p0]!.map(\.path) == ["/holder/onlyP0"])
         #expect(step.typed[p1]!.map(\.path) == ["/holder/onlyP1"])
         for player in [p0, p1] { #expect(ppSamePatches(step.today[player]!, step.typed[player]!)) }
@@ -519,11 +518,11 @@ struct SyncTablePerPlayerDiffTests {
         var state = PPRoot()
         let p0 = PlayerID("p0")
         var pair = PerPlayerPair<PPRoot>()
-        _ = try pair.step(state, players: [p0], fields: nil, onePass: false, resetsKeys: false, commit: true)
+        _ = try pair.step(state, players: [p0], fields: nil, onePass: false, commit: true)
         state.keyed["a"] = 1
-        _ = try pair.step(state, players: [p0], fields: ["keyed"], onePass: false, resetsKeys: false, commit: false)
+        _ = try pair.step(state, players: [p0], fields: ["keyed"], onePass: false, commit: false)
         state.keyed["b"] = 2
-        let next = try pair.step(state, players: [p0], fields: ["keyed"], onePass: false, resetsKeys: false, commit: true)
+        let next = try pair.step(state, players: [p0], fields: ["keyed"], onePass: false, commit: true)
         #expect(ppSamePatches(next.today[p0]!, next.typed[p0]!))
         #expect(next.typed[p0]!.map(\.path) == ["/keyed/a", "/keyed/b"])
     }
@@ -535,11 +534,12 @@ struct SyncTablePerPlayerDiffTests {
         state.entities["e"] = PPEntity()
         state.entities["e"]!.x = 2
         var pair = PerPlayerPair<PPRoot>()
-        let seeded = try pair.step(state, players: [p2], fields: ["entities"], onePass: false, resetsKeys: false, commit: true)
+        let seeded = try pair.step(state, players: [p2], fields: ["entities"], onePass: false, commit: true)
         #expect(seeded.typed[p2] == [])
         #expect(pair.typed.playersForTesting == [p2])
         state.entities["e"]!.x = 3
-        let reset = try pair.step(state, players: [p2], fields: ["entities"], onePass: false, resetsKeys: true, commit: true)
+        // A key reset diffs as a plain plan: the adapter only retypes the update `.firstSync`.
+        let reset = try pair.step(state, players: [p2], fields: ["entities"], onePass: false, commit: true)
         #expect(ppSamePatches(reset.today[p2]!, reset.typed[p2]!), "\(ppDescribe(reset.today[p2]))\n--\n\(ppDescribe(reset.typed[p2]))")
         #expect(reset.typed[p2]!.map(\.path) == ["/entities/e/x"])
         #expect(pair.lastSentDiffers(p2) == nil)
@@ -578,13 +578,13 @@ struct SyncTablePerPlayerDiffTests {
         let players = [PlayerID("alice"), PlayerID("bob")]
         var state = initial
         var pair = PerPlayerPair<S>()
-        _ = try pair.step(state, players: players, fields: nil, onePass: onePass, resetsKeys: false, commit: true)
+        _ = try pair.step(state, players: players, fields: nil, onePass: onePass, commit: true)
         state.clearDirty()
         for (index, mutate) in steps.enumerated() {
             mutate(&state)
             let dirty = state.getDirtyFields()
             state.clearDirty()
-            let result = try pair.step(state, players: players, fields: dirty.isEmpty ? nil : dirty, onePass: onePass, resetsKeys: false, commit: true)
+            let result = try pair.step(state, players: players, fields: dirty.isEmpty ? nil : dirty, onePass: onePass, commit: true)
             for player in players {
                 #expect(
                     ppSamePatches(result.today[player]!, result.typed[player]!),
