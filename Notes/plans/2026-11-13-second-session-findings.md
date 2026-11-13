@@ -1,80 +1,129 @@
-# A player's second session gets no per-player changes (#531): findings
+# A player's second session gets no per-player changes (#531): findings and fix spec
 
-**Status:** findings for review. No code. Read at `main` 9755a625. Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
+**Status:** rev 2, for review. No code. Read at `main` d8e70bea (the Sources and Tests read are unchanged since 9755a625). Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the fix).
 
-**Summary.** #531's mechanism holds. Two adapter members of one player share one per-player baseline, so only the first recipient in the sync loop gets that player's per-player changes. The issue's reachability holds too: only the public `TransportAdapter.registerSession(...)` creates the second member.
+- **Rev 2** answers review of rev 1 (8572647d):
+  - corrected facts: recipient order is unspecified; `registerSession` doesn't touch the keeper, so which session is receive-only depends on the caller's keeper join; the seed doesn't move the first session's baseline; the starvation is scoped to cached diffs; no claim about per-player sync tables, which aren't on `main`;
+  - the fix spec: `registerSession` goes through the membership queue (M1), its connection generation is written under a ticket (M2), the supersede's delayed close is generation-aware (S3);
+  - every direct test caller of `registerSession` and what A does to it (S4); the lifecycle exceptions and exact OnJoin/OnLeave counts (S5); Q2 decided after the fixtures (S6);
+  - Q1–Q3 as the maintainer's questions, each with options and a recommendation.
 
-Two findings sharpen the issue:
-- **The order is hash order, not join order.** "The first session" is whichever comes first in a `Dictionary`'s iteration, which varies per process.
-- **The keeper allows one entry per player.** A second keeper join kicks the first, and inputs from any session but the last are rejected. So a supported second session would need keeper changes too, not only a per-session sync baseline.
+**Summary.** #531's mechanism holds for cached diffs. Two adapter members of one player share one per-player baseline, so one of the two recipients in a sync gets that player's per-player changes and the other doesn't. Which one is unspecified. Only the public `TransportAdapter.registerSession(...)` creates the second member.
 
-The recommended fix is that `registerSession` supersedes, as the library's own joins do (option A).
+The recommended fix is that `registerSession` supersedes, as the library's own joins do (option A), and runs in the adapter's membership queue like every other membership change.
 
 ## 1. The reproduction path
 
-1. **Join** a player through any library join (`performJoin`). Admission supersedes other sessions and registers the member in one synchronous segment (`admitJoining`, `TransportAdapter.swift:1773-`; `supersedeSessions`, :1956-1990). Checked.
-2. **Register a second session** for the same player with the public `registerSession(sessionID:clientID:playerID:authInfo:connectionGeneration:)` (`TransportAdapter+Membership.swift:13-33`). It calls `_registerSessionImpl` (`TransportAdapter.swift:1632-1663`), which adds the member without admission. Its DocC says so: "the player's other sessions stay members". Checked.
+1. **Join** a player through any library join (`performJoin`). Admission supersedes other sessions and registers the member in one synchronous segment (`admitJoining`, `TransportAdapter.swift:1773-`; `supersedeSessions`, :1956-1987). Checked.
+2. **Register a second session** for the same player with the public `registerSession(sessionID:clientID:playerID:authInfo:connectionGeneration:)` (`TransportAdapter+Membership.swift:13-33`). It calls `_registerSessionImpl` (`TransportAdapter.swift:1632-1663`), which adds the member without admission and outside the membership queue. Its DocC says so: "the player's other sessions stay members". It doesn't call the keeper. Checked.
 3. **Seed it**, as the tests do with `syncStateForNewPlayer(playerID:sessionID:)` (`TransportAdapterSyncLagTests.swift:366-367`, :488-489).
-4. **Change a per-player field** and run a normal sync. Both sessions are recipients (`syncPhaseRecipients`, :4199-4209, every joined member). Each recipient diffs against `staged.perPlayer[playerID] ?? lastPerPlayerSnapshots[playerID]` and stages its new snapshot under the same `playerID` (`collectPerPlayerOnlyPendingUpdates`, :5133-5172; `collectCombinedPendingUpdates`, :5174-5212). So:
-   - the first recipient gets the changes;
-   - the second diffs against what the first staged and gets `.noChange`, which is skipped (:5157-5159). In the combined frame it gets the broadcast part only. Checked.
+4. **Change a per-player field** and run a normal sync. Both sessions are recipients (`syncPhaseRecipients`, :4199-4209, every joined member). With the default cached baseline, each recipient diffs against `staged.perPlayer[playerID] ?? lastPerPlayerSnapshots[playerID]` and stages its new snapshot under the same `playerID` (`collectPerPlayerOnlyPendingUpdates`, :5133-5172; `collectCombinedPendingUpdates`, :5174-5212). So:
+   - the recipient that comes first gets the changes;
+   - the other diffs against what the first staged and gets `.noChange`, which is skipped (:5157-5159). In the combined frame it gets the broadcast part only. Checked.
 
-**Which session is "first"** (checked): recipients come from `MembershipCoordinator.allJoinedEntries()`, which maps over the `sessionToPlayer` dictionary (`MembershipCoordinator.swift:237-239`). The order is the dictionary's, which depends on the per-process hash seed. So which of the two sessions gets the changes can differ between runs and processes, unless `SWIFT_DETERMINISTIC_HASHING` is set.
+**Scope: cached diffs only** (checked). A diff with the `.empty` baseline, or a full snapshot, emits a `.set` for every field on every call, whatever is staged (`SyncEngine.swift:787-797`). So the second recipient isn't starved there; the bug is the cached path, the default sync.
 
-**In the library:** `registerSession`'s only library caller is `performJoin` (:2320), right after admission, so it never makes a second member. Hosts and tests are the remaining callers: `TransportAdapterSyncLagTests` (:366, :488, deliberately two members), and the test helper (`TransportTestHelpers.swift:51`) with a fresh player each time (inferred from its use; checked per call site in the fix).
+**Which session is first** (checked): recipients come from `MembershipCoordinator.allJoinedEntries()`, which maps over the `sessionToPlayer` dictionary (`MembershipCoordinator.swift:237-239`). Dictionary order is unspecified: it isn't join order and isn't a contract under any setting. The red test therefore asserts that exactly one of the two sessions gets the patch, not which one.
+
+**The seed doesn't move the first session's baseline** (checked). The late-join snapshot stages the player's per-player snapshot only when none is staged or cached (`SyncEngine.swift:1530-1531`). The bug stands through the shared cached diff alone.
+
+**In the library:** `registerSession`'s only library caller is `performJoin` (:2320), inside the membership queue and right after admission, so it never makes a second member. Hosts and tests are the remaining callers (§4.2).
 
 ## 2. Code that assumes one session per player
 
-**Keyed by player in the sync path (each one breaks with two members):**
+**Keyed by player in the sync path:**
 
 | State | Where (checked) | With two members |
 |---|---|---|
-| Per-player baseline `lastPerPlayerSnapshots: [PlayerID: StateSnapshot]` | `SyncEngine.swift:66`; written by `applyStaged` (:94-102) | one baseline for two views: the #531 bug |
+| Per-player baseline `lastPerPlayerSnapshots: [PlayerID: StateSnapshot]` | `SyncEngine.swift:66`; written by `applyStaged` (:94-102) | one baseline for two views: the #531 bug (cached diffs) |
 | Staged per-player caches `StagedCaches.perPlayer` | `SyncEngine.swift:85-91` | the second recipient diffs against the first's staged snapshot |
 | `hasReceivedFirstSync: Set<PlayerID>` | `SyncEngine.swift:85-108` | a second session's first diff isn't a `firstSync`, since the player already had one (inferred from the set's key) |
-| `initialSyncingPlayers[playerID]` | `TransportAdapter.swift:1756-1761`; skipped in `syncPhaseRecipients` (:4203) | while one session seeds, **every** session of the player is left out of the sync phase |
-| A seed's cache write | `syncStateForNewPlayer` (inferred: the seed commits the player's per-player snapshot) | the second session's seed moves the first session's baseline, so the first misses the changes between its last frame and that seed (inferred; to be pinned) |
+| `initialSyncingPlayers[playerID]` | `TransportAdapter.swift:1756-1761`; skipped in `syncPhaseRecipients` (:4203) | while one session seeds, every session of the player is left out of the sync phase |
 | Cache clear `clearCacheForDisconnectedPlayer(playerID)` | `SyncEngine.swift:1186-1189`; called at supersede (:1984) and at the player's last disconnect (:1604) | per player; the disconnect path already guards it by "no other session" (:1595-1610) |
 
-**Keyed by player outside the sync path:**
-- **The keeper holds one entry per player** (`players: [PlayerID: InternalPlayerSession]`, `LandKeeper.swift:280`). Checked.
-  - **A duplicate join kicks the old entry** ("Kick Old strategy"): `leave` with the old client and session, so OnLeave runs (:1619-1625). The new entry is then `isFirst`, so OnJoin runs again (:1628-1633). The game sees a leave and a join; the adapter keeps both members.
-  - **Inputs:** `rejectSenderIfSuperseded` rejects any sender whose client or session isn't the entry's last (:1844-1864, #92). With two members, only the last-joined session can send. The other still receives sync, and it may be the one that gets the per-player changes (hash order, §1).
-  - **Leave:** `leave` returns early when the session isn't the entry's last (:2366-2371), so the older session's disconnect doesn't end the player. The newer session's does, while the older stays a member without a keeper entry.
-- **Disconnect** invalidates the player's membership version, which drops the player's queued `.player` events "for every session of the player, a remaining one included" (`TransportAdapter.swift:1569-1578`). Checked.
+**The keeper, outside the adapter** (checked). `registerSession` never calls the keeper, so what a second member can do depends on whether the caller also joined the keeper for it:
+- **The keeper holds one entry per player** (`players: [PlayerID: InternalPlayerSession]`, `LandKeeper.swift:280`).
+- **No second keeper join** (the sync-lag fixtures: `simulateRouterJoin` joins the first session, :224-227, and the second is only registered, :366, :488). The entry names the first session, so the second session's inputs are the ones rejected (`rejectSenderIfSuperseded`, :1844-1864, #92). The second still receives sync.
+- **A second keeper join** (a host that joins the keeper again before `registerSession`). The kick-old path leaves with the old client and session and rejoins (:1619-1633), so the entry names the second session, and the first session's inputs are rejected.
+- **No keeper entry at all** (a caller that never joined the keeper). Nothing is rejected: the check returns when the player has no entry (:1850-1851).
+- **Leave** returns early when the session isn't the entry's last (:2366-2371), so only the entry's session ends the player.
 
-**Code that already handles several sessions** (checked):
-- `classifySyncLag` gives every session of a resyncing player the resync view (:3365-3410). Since the baseline is per player, a resync for one moves it for all.
-- `.player` targets expand to all the player's sessions (`sessionIDs(for: .player(…))`, :2985).
-- The disconnect path keeps the player's state while another session remains (:1595-1610).
+**Disconnect** invalidates the player's membership version, which drops the player's queued `.player` events "for every session of the player, a remaining one included" (`TransportAdapter.swift:1569-1578`). Checked.
 
-These are the "supported in parts" #531 mentions. They don't make two members correct, since the keeper and the baseline are per player.
+**Code that already handles several sessions** (checked): `classifySyncLag` gives every session of a resyncing player the resync view (:3365-3410); `.player` targets expand to all the player's sessions (:2985); the disconnect path keeps the player's state while another session remains (:1595-1610). They don't make two members correct, since the baseline and the keeper entry are per player.
 
 ## 3. Fix options
 
 | | What | Public API impact | Other impact |
 |---|---|---|---|
-| **A. Supersede in `registerSession`** (newest wins, as `performJoin`) | `_registerSessionImpl` calls `supersedeSessions(of:keeping:)` in the same synchronous segment as the member insert, as `admitJoining` does | no signature change. The DocC's "the player's other sessions stay members" becomes "newest wins, as a join". Behavior change: a host's older session is closed (superseded) instead of kept | matches the keeper's kick-old and #92. `TransportAdapterSyncLagTests`' two-member cases (:366, :488) become supersede cases. The multi-session branches of `classifySyncLag` and the disconnect path become unreachable from the public API; they are kept, or removed with a test that shows they can't be reached. #514's frame-identity case pinned for #531 changes deliberately |
-| **B. Refuse a second registration** | `registerSession` refuses when the player already has a member | a source break: `async` becomes `async throws` (callers add `try`), or a `@discardableResult` `Bool`/outcome return that callers can ignore silently. A new error case (e.g. `playerAlreadyHasSession`) | the host chooses what happens to the older session. The library's own `performJoin` call must not trip it (admission already superseded, so it doesn't; checked by a test). Silently ignorable if the return form is chosen |
-| **C. Support several sessions per player** | a per-session baseline: `lastPerPlayerSnapshots`, the staged per-player caches, `hasReceivedFirstSync` and the initial-sync marker keyed by session, not player. Or diff once per player and fan out, correct only when the sessions share a baseline | additive in the adapter, but the keeper's one-entry model (kick-old, `rejectSenderIfSuperseded`, `leave`'s session check) must change too, or the extra sessions stay receive-only. That is a public behavior change of joins (#92's newest wins) | per-player sync memory and diff work × sessions. #514's per-player tables are keyed by player and would be keyed by session. The largest change; no repository use needs it |
+| **A. Supersede in `registerSession`** (newest wins, as `performJoin`) | the public `registerSession` enqueues on the membership queue; inside, an internal implementation supersedes the player's other sessions in the same synchronous segment as the member insert, as `admitJoining` does (§4.1) | no signature change. The DocC's "the player's other sessions stay members" becomes "newest wins, as a join". Behavior change: a host's older session is closed (superseded) instead of kept | matches the keeper's kick-old and #92. The sync-lag two-member cases become supersede cases (§4.2). The multi-session branches become unreachable from the public API (Q2) |
+| **B. Refuse a second registration** | `registerSession` refuses when the player already has a member | a source break: `async` becomes `async throws`, or a `@discardableResult` outcome callers can ignore. A new error case | the host chooses what happens to the older session. The membership queue change (§4.1 M1) applies here too |
+| **C. Support several sessions per player** | a per-session baseline: `lastPerPlayerSnapshots`, the staged per-player caches, `hasReceivedFirstSync` and the initial-sync marker keyed by session; and the keeper's one-entry model changed (kick-old, `rejectSenderIfSuperseded`, `leave`'s session check) | additive in the adapter; a public behavior change of joins (#92's newest wins) in the keeper | per-player sync memory and diff work × sessions. The largest change; no repository use needs it |
 
-**Recommendation: A.** The library already has one session per player, end to end: admission, the keeper's entry, and the sender check. `registerSession` is the only path that breaks it, and it is documented as "for a session whose keeper join the caller already did", which the keeper has superseded anyway. A brings that path in line with no signature change. B is a weaker form of A that pushes the choice to the host at the cost of a source break or an ignorable result. C is a feature (multi-device for one player) and should be its own issue if wanted.
+## 4. The fix, under option A
 
-## 4. Tests for the fix (option A)
+### 4.1 Changes
 
-- **Red first:** two members via `registerSession`, a per-player change, a normal sync. Today one session gets the patch and the other gets nothing or the broadcast part only, and which one depends on hash order (pinned with deterministic hashing).
-- **After A:** the older session is superseded (closed, its membership and ticket ended) in the same segment. The newer one gets the changes; no sync phase has two recipients for one player.
-- **The library path:** `performJoin` → admission → `registerSession` supersedes nothing (admission already did), counted by `supersededSessionCount`.
-- **Reentrancy:** a hold at `registerSession`'s `await webSocketTransport.registerSession(…)` (:1657) shows no sync phase sees two members of one player across it. The supersede and the insert run before that await (`HoldPoints`, not timing).
-- **The rewritten sync-lag cases** cover the resync view's fan-out through a path that still exists, or are removed with the branch.
-- **#514's pinned case** flips deliberately, as its plan says.
+- **M1. `registerSession` goes through the membership queue.** Today it runs outside it, beside `performJoinQueued` and `_onDisconnectImpl`, which both enqueue (`TransportAdapter.swift:2234`, :1531). The split:
+  - the public `registerSession` calls `enqueueMembership { … }` (:3035) with an internal implementation;
+  - `performJoinQueued` calls that internal implementation directly (:2320), since it already runs inside the queue. An enqueue from inside the queue would wait on its own tail.
+  - Order-sensitive per-player work then goes through one serial queue, as the reentrancy rule requires: a host's `registerSession` can't interleave with a join's admission or a disconnect's leave.
+- **The supersede.** The internal implementation calls `supersedeSessions(of: playerID, keeping: sessionID)` in the same synchronous segment as `registerPlayer`/`registerClient` (:1646-1651), before the transport await. A rebind (the session moved from another player, :1641-1645) keeps its existing handling first.
+- **M2. The connection generation under a ticket.** `connectionGenerations[sessionID] = …` is written after `await webSocketTransport.registerSession(…)` (:1656-1660). A disconnect or supersede during that await ends the session, and the write would then bring back an entry for an ended session. The fix:
+  - capture the session's ticket before the await (`sessionTickets.ticket(for:) ?? sessionTickets.issue(_:)`, as :1748 does);
+  - write the generation inside `sessionTickets.ifCurrent(ticket) { … }` after it.
+  - The `else if` branch (no `WebSocketTransport`, :1661-1662) has no await and is unchanged.
+- **S3. Generation-aware delayed closes.** `supersedeSessions` closes the old session by ID in a detached task (`Task { await transport.closeSession(old) }`, :1982). If the old session ID reconnects before that task runs, the new connection is closed. The fix:
+  - capture `connectionGenerations[old]` before it is removed (:1972);
+  - close with `closeSession(old, with: .normal, generation:)` (`WebSocketTransport.swift:585-588`), which does nothing once the connection's generation differs.
+  - `admitJoining`'s refusal close of the joining session (:1844-1846) has the same pattern and gets the same change.
+  - The generation-aware close is a `Transport` requirement (`Transport.swift:73`, with a default at :98), as the lag close already uses it (:3748), so no transport needs a branch. A session with no recorded generation passes `nil`, which closes by ID as today.
 
-## 5. Open questions for review
+### 4.2 Direct test callers of `registerSession` (S4)
 
-- **Q1:** A, B or C. The recommendation is A.
-- **Q2 (under A):** the multi-session branches in `classifySyncLag` and the disconnect path. Keep them (defensive, harmless), or remove them with a test that two members can't exist? The recommendation is to keep them, with an assertion in `syncPhaseRecipients` that no player appears twice.
-- **Q3:** whether `registerSession` stays public at all. Its only library caller is `performJoin`. Making it `package` is a larger source break than B, and removes the host path #531 found.
+| Caller (checked) | What it does | Under A |
+|---|---|---|
+| `TransportAdapterSyncLagTests.swift:361-367` (`twoSessions`) and :480-489 (`profileCounters`) | a second member for the fixture's player, without a keeper join | the first session is superseded. Rewritten: the resync view's fan-out is tested through `.player` events (or removed with the branch, Q2), and the profile counters with two players |
+| `TransportAdapterSyncLagTests.swift:700` and :917 (rebind cases) | rebinds the fixture's session to another player | unchanged: the other player has no member, so nothing is superseded |
+| `TransportAdapterDisconnectOwnershipTests.swift:86-115` | registers S2 while S1's disconnect is held at `keeper.leave` | the disconnect holds the membership queue (:1531), so a queued `registerSession` waits behind it and the test as written can't make progress. Rewritten: the registration completes after the leave, and the test pins that order (S2's registration waits for the leave; the player's state is then cleared and rebuilt by S2's seed) |
+| `TransportAdapterJoiningAdmissionTests.swift:373-374` | rebinds S1 to p2 and back to p1 during a held initial sync | the initial-sync hold isn't in the membership queue (inferred; checked in the fix), so it still runs; nothing to supersede |
+| `TransportAdapterSyncBackPressureTests.swift:262`, `SyncStreamProducerTests.swift:276`, :430, `AtomicPatternIndexAdapterTests.swift:165`, `NFCPlayerIDJoinTests.swift:54`, `TransportTestHelpers.swift:51` | one fresh session per player, after the caller's keeper join | unchanged; each now runs through the queue |
+
+### 4.3 Lifecycle (S5)
+
+- **Exceptions today** (checked): in reevaluation mode, replay viewers skip OnJoin (`LandKeeper.swift:1434-1436`, :1657-1659), and their leave skips OnLeave (:2382-2383).
+- **A's supersede calls neither.** It is adapter-only: the keeper isn't called, so no OnJoin and no OnLeave run for the superseded session. The keeper's entry is whatever the caller's keeper joins made it.
+- **The tests assert exact counts:** a host path of keeper join + `registerSession` for S1, then keeper join + `registerSession` for S2 of the same player, runs OnJoin twice and OnLeave once (the keeper's kick-old). The same without the second keeper join runs OnJoin once and OnLeave zero times.
+- **The newer session survives the old one's delayed close:** S1's ID reconnects as a new connection before the supersede's close task runs, and that connection stays open (S3).
+
+### 4.4 Tests
+
+- **Red first:** two members via `registerSession`, a per-player change, a normal cached sync. Exactly one of the two sessions gets the patch (`.noChange` or broadcast only for the other). No assertion on which.
+- **After A:** the older session is superseded (closed, its membership and ticket ended) in the registration's segment. The newer one gets the change; no sync phase has two recipients for one player.
+- **The library path:** `performJoin` → admission → the internal registration supersedes nothing (admission already did), counted by `supersededSessionCount`.
+- **Queue order (M1):** a keeper join held at its admission (`HoldPoints`, `.admitJoinEntry`) and a disconnect held at `keeper.leave`, each while a `registerSession` for the same player is issued. The registration runs only after the held operation, and no state shows two members. Holds, not timing.
+- **Ticket (M2):** a hold at `registerSession`'s transport await; the session disconnects during it; after the await, `connectionGenerations` has no entry for the session.
+- **Delayed close (S3):** as §4.3.
+- **The lifecycle counts:** as §4.3.
+
+## 5. Questions for the maintainer
+
+- **Q1: the fix.**
+  - (a) A: `registerSession` supersedes (newest wins, no signature change).
+  - (b) B: it refuses a second registration (a source break or an ignorable result).
+  - (c) C: several sessions per player (adapter and keeper changes).
+  - **Recommendation: (a).** The library already has one session per player end to end; `registerSession` is the only path that breaks it, and A aligns it with no signature change. C is a feature for its own issue if wanted.
+- **Q2 (under A): the multi-session branches** (`classifySyncLag`'s fan-out, the disconnect path's "another session remains").
+  - (a) Keep them, and add an assertion in `syncPhaseRecipients` that no player appears twice.
+  - (b) Keep them without an assertion.
+  - (c) Remove them, with a test that two members can't exist.
+  - **Recommendation: (a).** It needs §4.2 decided first: the sync-lag two-member fixtures become supersede cases and no test-only two-member fixture remains, or the assertion would fail in them. The branches stay reachable through `.player` targets and the disconnect order, so removing them (c) needs more proof than the assertion.
+- **Q3: `registerSession`'s visibility.**
+  - (a) Keep it public with A's semantics.
+  - (b) Make it `package`: a larger source break, and it removes the host path that #531 found.
+  - (c) Deprecate it in favour of `performJoin`.
+  - **Recommendation: (a).** A makes it safe; (c) can follow if no host needs it.
 
 ## Related
 
-#92 (newest wins), #514 (per-player sync tables; pins this output), #531.
+#92 (newest wins), #514 (per-player sync tables), #531.
