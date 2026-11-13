@@ -258,31 +258,45 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-node-
 
+    # The default path: row addressing is on by default, so in the opcode encodings it is in
+    # effect on the in-turn leg. The check (check-row-addressing-run.sh), per encoding: in the
+    # opcode encodings every join negotiated rowAddressing and the live scenarios applied
+    # row-derived patches; in json (row entries need an opcode encoding) no join negotiated it and
+    # no row patch was applied. In every encoding the SDK's strict close (4013) never fired and no
+    # land fell back to today's entries. On the in-turn-off leg rows can't take effect: the check
+    # runs with --expect-off (no join negotiated it, no row patch, no 4013).
     - name: Run GameServer E2E tests (includes shape invariants)
-      run: |
-        cd Tools/CLI
-        ./test-e2e-game.sh
-
-    # Row addressing (ROW_ADDRESSING=true) in all three encodings: the whole hero-defense suite
-    # (scenarios with the convergence gate, visibility, re-evaluation, the replay stream) with the
-    # SDK decoding row entries. It needs in-turn sync, so only that leg runs it. The check
-    # (check-row-addressing-run.sh), per encoding: in the opcode encodings every join negotiated
-    # rowAddressing and the live scenarios applied row-derived patches; in json (row entries need
-    # an opcode encoding) no join negotiated it and no row patch was applied. In every encoding
-    # the SDK's strict close (4013) never fired and no land fell back to today's entries.
-    - name: Run GameServer E2E tests with row addressing (all encodings)
-      if: matrix.in_turn_sync == 'true'
       shell: bash
       env:
-        ROW_ADDRESSING: "true"
         E2E_ENCODINGS: json jsonOpcode messagepack
-        # Its own log directory: the logs the gate reads are this step's runs only.
-        E2E_TMP_DIR: /tmp/e2e-rows
+        # Its own log directory: the logs the check reads are this step's runs only.
+        E2E_TMP_DIR: /tmp/e2e-main
       run: |
         set -o pipefail
         cd Tools/CLI
-        ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-rows.out
-        ./check-row-addressing-run.sh /tmp/e2e-rows.out /tmp/e2e-rows $E2E_ENCODINGS
+        ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-main.out
+        if [ "$IN_TURN_SYNC" = "true" ]; then
+          ./check-row-addressing-run.sh /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
+        else
+          ./check-row-addressing-run.sh --expect-off /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
+        fi
+
+    # The opt-out (ROW_ADDRESSING=false) on both legs, in all three encodings: today's entries
+    # keep an E2E run while the old forms stay. This step also runs the tables-off variant
+    # (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false), the snapshot-diff fallback, which is an
+    # opt-out only with row addressing off; on the in-turn-off leg that is the legacy sync with
+    # the fallback. No join negotiates rowAddressing (--expect-off).
+    - name: Run GameServer E2E tests with row addressing off (opt-out)
+      shell: bash
+      env:
+        ROW_ADDRESSING: "false"
+        E2E_ENCODINGS: json jsonOpcode messagepack
+        E2E_TMP_DIR: /tmp/e2e-rows-off
+      run: |
+        set -o pipefail
+        cd Tools/CLI
+        ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-rows-off.out
+        ./check-row-addressing-run.sh --expect-off /tmp/e2e-rows-off.out /tmp/e2e-rows-off $E2E_ENCODINGS
 
   e2e-matchmaking-tests:
     # Temporarily disabled while paper work takes priority (job was hanging until

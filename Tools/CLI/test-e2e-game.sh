@@ -378,8 +378,8 @@ main() {
     
     # Test each encoding mode
     # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
-    # E2E_ENCODINGS narrows the list (space-separated), e.g. to the opcode encodings for a run
-    # with ROW_ADDRESSING=true, which needs one.
+    # E2E_ENCODINGS narrows the list (space-separated), e.g. to the opcode encodings, where row
+    # addressing (on by default) takes effect.
     local encodings
     read -r -a encodings <<< "${E2E_ENCODINGS:-json jsonOpcode messagepack}"
     local failed_encodings=()
@@ -434,10 +434,10 @@ main() {
     # the leg can't pass on the default path. It also sets a removed key (the auto dirty
     # switch's), which the server must ignore with exactly one warning naming it.
     #
-    # Skipped under ROW_ADDRESSING: row addressing turns the tables on whatever USE_SYNC_TABLES
-    # says, so there is no opt-out to test there. Unsetting it for this leg alone would leave a
-    # messagepack run without row addressing in a row-addressing invocation, which
-    # check-row-addressing-run.sh refuses. The other invocations run the leg.
+    # Runs only with ROW_ADDRESSING explicitly false (CI's opt-out step, both legs): row
+    # addressing, on by default, keeps the tables on whatever USE_SYNC_TABLES says, so there is
+    # no opt-out to test otherwise. Unsetting it for this leg alone would leave a messagepack run
+    # without row addressing in a run check-row-addressing-run.sh checks for rows.
     local variant="messagepack (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false)"
     echo "=========================================="
     echo "  Testing encoding: $variant"
@@ -445,10 +445,7 @@ main() {
     echo ""
     # Trimmed and lowercased, as the server's getEnvBool reads it.
     case "$(echo "${ROW_ADDRESSING:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
-        1|true|yes|y|on)
-            print_step "Skipping $variant: ROW_ADDRESSING turns the sync tables on, so there is no opt-out to test"
-            ;;
-        *)
+        0|false|no|n|off)
             export USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false AUTO_DIRTY_TRACKING=false
             if start_server "messagepack" && wait_for_server "$SERVER_NAME" "messagepack"; then
                 print_step "Running ${SERVER_NAME} E2E scenarios ($variant)..."
@@ -484,6 +481,9 @@ main() {
             fi
             stop_server "$SERVER_NAME" "messagepack"
             unset USE_SYNC_TABLES TYPED_LEAF_VALUES AUTO_DIRTY_TRACKING
+            ;;
+        *)
+            print_step "Skipping $variant: row addressing (on unless ROW_ADDRESSING=false) keeps the sync tables on, so there is no opt-out to test"
             ;;
     esac
     echo ""
