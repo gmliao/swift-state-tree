@@ -474,12 +474,15 @@ class SyncValueDiffer<V> {
     /// has a patch). Otherwise last-sent keeps `old`, which compares
     /// as `new` does.
     ///
-    /// `cursor` is `path`'s position in the encoder's path trie, when there is one: patches then
-    /// carry their split (`StatePatch.split`).
+    /// `position` is the value's path, and its position in the encoder's path trie when there
+    /// is one: patches then carry their split (`StatePatch.split`), and a lossless position's
+    /// leaf patch holds no path string (`SyncDiffPosition.patch`).
     ///
     /// `table` is the table of the row that holds this value: its patches are that row's field
     /// patches, ordered by the components below the field.
-    func diff(_ new: V, _ old: V, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+    func diff(_ new: V, _ old: V, at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+        let path = position.path
+        let cursor = position.cursor
         var patches = SyncEngine.diffSnapshotValues(from: try convert(old), to: try convert(new), basePath: path, layout: layout)
         if patches.count > 1 {
             // Inside one value the order is by the path below it, component by component.
@@ -490,6 +493,103 @@ class SyncValueDiffer<V> {
             out.append(split == nil ? patch : StatePatch(path: patch.path, operation: patch.operation, split: split), table: table)
         }
         return !patches.isEmpty
+    }
+}
+
+/// Where a diff is: a path, and its position in the encoder's path trie when there is one (#392).
+///
+/// While the trie walk is lossless (`PathHasher.Cursor.isLossless`) no path string is built:
+/// a patch is made from the cursor's split alone, and its path is rebuilt only if a reader asks.
+/// The position turns into a string where the walk can't rebuild the path byte for byte: a
+/// literal with other bytes than its trie label (from then on, below it too), or a walk off
+/// the trie (rebuilt once from the last lossless position, then concatenated as today). Without
+/// a cursor (no hasher, the per-player diff) it is the string, built as today.
+struct SyncDiffPosition {
+    /// The path, once the position is a string; nil while the cursor alone is lossless.
+    private let stored: String?
+    let cursor: PathHasher.Cursor?
+    #if DEBUG
+    /// Today's path, by today's concatenation, independent of the cursor: the oracle every
+    /// emit is checked against, byte for byte.
+    private let oracle: String
+    #endif
+
+    /// A root field's position: `path` is its path as today builds it, `cursor` its trie
+    /// position.
+    init(path: String, cursor: PathHasher.Cursor?) {
+        self.stored = cursor?.isLossless == true ? nil : path
+        self.cursor = cursor
+        #if DEBUG
+        self.oracle = path
+        #endif
+    }
+
+    private init(stored: String?, cursor: PathHasher.Cursor?, oracle: @autoclosure () -> String) {
+        self.stored = stored
+        self.cursor = cursor
+        #if DEBUG
+        self.oracle = oracle()
+        #endif
+    }
+
+    /// The path. Built from the templates for a lossless position, on each call.
+    var path: String {
+        if let stored { return stored }
+        // A position without a string has a lossless cursor.
+        return cursor!.rebuiltPath
+    }
+
+    #if DEBUG
+    /// Today's path, for DEBUG checks and messages beside the production readers.
+    var debugPath: String { oracle }
+    #endif
+
+    /// The position below this one at `escaped`, a component as the path spells it. `component`
+    /// is `"/" + escaped` when the caller keeps it, so a string position appends it at once.
+    func descending(_ escaped: String, component: String? = nil) -> SyncDiffPosition {
+        let next = cursor?.descending(escaped)
+        #if DEBUG
+        let oracle = self.oracle + "/" + escaped
+        #else
+        let oracle = ""
+        #endif
+        if stored == nil, let next, next.isLossless {
+            return SyncDiffPosition(stored: nil, cursor: next, oracle: oracle)
+        }
+        let path = component.map { self.path + $0 } ?? self.path + "/" + escaped
+        return SyncDiffPosition(stored: path, cursor: next, oracle: oracle)
+    }
+
+    /// This position, a row's own, as the row at `slot` (`PathHasher.Cursor.asRow`).
+    func asRow(_ slot: Int32) -> SyncDiffPosition {
+        SyncDiffPosition(stored: stored, cursor: cursor?.asRow(slot), oracle: debugOracle)
+    }
+
+    private var debugOracle: String {
+        #if DEBUG
+        return oracle
+        #else
+        return ""
+        #endif
+    }
+
+    /// A patch here: the split alone while the position is lossless and the cursor has a split;
+    /// otherwise the path string, with the split when the cursor has one. DEBUG builds check the
+    /// patch's path against today's, byte for byte.
+    func patch(_ operation: PatchOperation) -> StatePatch {
+        let patch: StatePatch
+        if stored == nil, let split = cursor?.split {
+            patch = StatePatch(split: split, operation: operation)
+        } else {
+            patch = StatePatch(path: path, operation: operation, split: cursor?.split)
+        }
+        #if DEBUG
+        assert(
+            patch.debugRebuiltPath.utf8.elementsEqual(oracle.utf8),
+            "the patch's path \(patch.debugRebuiltPath) isn't today's \(oracle)"
+        )
+        #endif
+        return patch
     }
 }
 
@@ -523,8 +623,8 @@ private func syncTableSortedBelow(_ base: String, _ patches: [StatePatch]) -> [S
 /// A fallback field inside a row: today's diff of its two snapshots. Its patches may address rows
 /// of other tables (a node type the typed diff doesn't walk), so the list is sorted as today.
 final class SyncFallbackDiffer<V>: SyncValueDiffer<V> {
-    override func diff(_ new: V, _ old: V, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
-        let wrote = try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
+    override func diff(_ new: V, _ old: V, at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+        let wrote = try super.diff(new, old, at: position, layout: layout, table: table, into: &out)
         if wrote { out.needsSort = true }
         return wrote
     }
@@ -556,16 +656,16 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
         super.init(convert: convert)
     }
 
-    override func diff(_ new: V, _ old: V, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+    override func diff(_ new: V, _ old: V, at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
         if equal(new, old) {
             if checksContract, !SnapshotValue.sameValue(try convert(new), try convert(old)) {
-                SyncTableContract.report("\(V.self) at \(path): == says equal, but the snapshots differ")
+                SyncTableContract.report("\(V.self) at \(position.path): == says equal, but the snapshots differ")
             }
             return false
         }
         // Without an atomic layout node today's diff recurses into an atomic type's components.
         guard let leaf, !leaf.needsAtomicLayout || layout?.isAtomic == true else {
-            return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
+            return try super.diff(new, old, at: position, layout: layout, table: table, into: &out)
         }
         if !leafChecked {
             // A standard registration is a promise this checks once per field, in every build:
@@ -576,25 +676,25 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
             do {
                 expected = try convert(new)
             } catch {
-                SyncTableContract.reportRelease("\(V.self) at \(path): registered with the standard conversion, but its convert throws (\(error)); the field takes the snapshot diff", logger: logger)
+                SyncTableContract.reportRelease("\(V.self) at \(position.path): registered with the standard conversion, but its convert throws (\(error)); the field takes the snapshot diff", logger: logger)
                 self.leaf = nil
-                return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
+                return try super.diff(new, old, at: position, layout: layout, table: table, into: &out)
             }
             leafChecked = true
             if !syncLeafIdentical(leaf.snapshot(new), expected) {
-                SyncTableContract.reportRelease("\(V.self) at \(path): registered with the standard conversion, but its convert writes \(expected), not \(leaf.snapshot(new)); the field takes the snapshot diff", logger: logger)
+                SyncTableContract.reportRelease("\(V.self) at \(position.path): registered with the standard conversion, but its convert writes \(expected), not \(leaf.snapshot(new)); the field takes the snapshot diff", logger: logger)
                 self.leaf = nil
-                return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
+                return try super.diff(new, old, at: position, layout: layout, table: table, into: &out)
             }
         }
         #if DEBUG
         var shadow = SyncPatchList()
-        _ = try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &shadow)
+        _ = try super.diff(new, old, at: position, layout: layout, table: table, into: &shadow)
         let start = out.entries.count
-        defer { checkLeafShadow(shadow, against: out.entries[start...], path: path) }
+        defer { checkLeafShadow(shadow, against: out.entries[start...], path: position.debugPath) }
         #endif
         if leaf.same(new, old) { return false }
-        out.append(StatePatch(path: path, operation: .set(leaf.snapshot(new)), split: cursor?.split), table: table)
+        out.append(position.patch(.set(leaf.snapshot(new))), table: table)
         return true
     }
 
@@ -602,7 +702,8 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
     /// Debug builds: every leaf decision equals today's diff of the two snapshots.
     private func checkLeafShadow(_ shadow: SyncPatchList, against written: ArraySlice<SyncTablePatch>, path: String) {
         let matches = shadow.entries.count == written.count && zip(shadow.entries, written).allSatisfy { expected, actual in
-            expected.table == actual.table && expected.patch.path == actual.patch.path
+            expected.table == actual.table
+                && expected.patch.debugRebuiltPath.utf8.elementsEqual(actual.patch.debugRebuiltPath.utf8)
                 && expected.patch.split?.pathHash == actual.patch.split?.pathHash
                 && expected.patch.split?.dynamicKeys == actual.patch.split?.dynamicKeys
                 && expected.patch.split?.rowSlot == actual.patch.split?.rowSlot
@@ -646,20 +747,20 @@ private func syncLeafIdentical(_ lhs: PatchOperation, _ rhs: PatchOperation) -> 
 struct SyncNodeFieldDiff<Node> {
     let name: String
     let component: String
-    /// (new row, old row, row path, row cursor, row layout, the row's table, out)
-    let diff: (Node, Node, String, PathHasher.Cursor?, AtomicLayoutTable.Node?, Int, inout SyncPatchList) throws -> Bool
+    /// (new row, old row, row position, row layout, the row's table, out)
+    let diff: (Node, Node, SyncDiffPosition, AtomicLayoutTable.Node?, Int, inout SyncPatchList) throws -> Bool
 
     init<V>(name: String, read: @escaping (Node) -> V?, differ: SyncValueDiffer<V>) {
         self.name = name
         self.component = "/" + SyncEngine.escapedPathComponent(name)
         let component = self.component
         let escaped = String(component.dropFirst())
-        self.diff = { new, old, rowPath, rowCursor, rowLayout, rowTable, out in
+        self.diff = { new, old, rowPosition, rowLayout, rowTable, out in
             // A field its policy hides from a view without a player is absent on both sides.
             guard let newValue = read(new), let oldValue = read(old) else { return false }
             return try differ.diff(
                 newValue, oldValue,
-                path: rowPath + component, cursor: rowCursor?.descending(escaped),
+                at: rowPosition.descending(escaped, component: component),
                 layout: rowLayout?.child(name), table: rowTable, into: &out
             )
         }
@@ -680,9 +781,9 @@ final class SyncNodeDiffer<N: StateNodeProtocol>: SyncValueDiffer<N> {
 
     override var ownTable: Int? { table }
 
-    override func diff(_ new: N, _ old: N, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
+    override func diff(_ new: N, _ old: N, at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
         var write = false
-        for field in fields where try field.diff(new, old, path, cursor, layout, table, &out) {
+        for field in fields where try field.diff(new, old, position, layout, table, &out) {
             write = true
         }
         return write
@@ -701,15 +802,15 @@ final class SyncOptionalNodeDiffer<N: StateNodeProtocol>: SyncValueDiffer<N?> {
 
     override var ownTable: Int? { node.table }
 
-    override func diff(_ new: N?, _ old: N?, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+    override func diff(_ new: N?, _ old: N?, at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
         switch (new, old) {
         case (let new?, let old?):
-            return try node.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
+            return try node.diff(new, old, at: position, layout: layout, table: table, into: &out)
         case (nil, nil):
             return false
         default:
             // The row appears or goes: a patch at the row's own path, in the row's table.
-            return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: node.table, into: &out)
+            return try super.diff(new, old, at: position, layout: layout, table: node.table, into: &out)
         }
     }
 }
@@ -726,10 +827,10 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
         super.init(convert: convert)
     }
 
-    override func diff(_ new: [K: N], _ old: [K: N], path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
+    override func diff(_ new: [K: N], _ old: [K: N], at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
         var changed: [(key: K, row: N)] = []
         var removed: [K] = []
-        try diffRows(new, old, path: path, cursor: cursor, layout: layout, into: &out, changed: &changed, removed: &removed)
+        try diffRows(new, old, at: position, layout: layout, into: &out, changed: &changed, removed: &removed)
         return !changed.isEmpty || !removed.isEmpty
     }
 
@@ -741,8 +842,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
     func diffRows(
         _ new: [K: N],
         _ old: [K: N],
-        path: String,
-        cursor: PathHasher.Cursor?,
+        at position: SyncDiffPosition,
         layout: AtomicLayoutTable.Node?,
         into out: inout SyncPatchList,
         changed: inout [(key: K, row: N)],
@@ -762,17 +862,12 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 let oldRow = old[index].value
                 let component = keyString(key)
                 escaped = SyncEngine.escapedPathComponent(component)
-                let rowPath = path + "/" + escaped
-                if try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped), layout: layout?.child(component), table: node.table, into: &out) {
+                if try node.diff(row, oldRow, at: position.descending(escaped), layout: layout?.child(component), table: node.table, into: &out) {
                     changed.append((key, row))
                 }
             } else {
                 escaped = SyncEngine.escapedPathComponent(keyString(key))
-                out.append(StatePatch(
-                    path: path + "/" + escaped,
-                    operation: .set(try node.convert(row)),
-                    split: cursor?.descending(escaped)?.split
-                ), table: node.table)
+                out.append(position.descending(escaped).patch(.set(try node.convert(row))), table: node.table)
                 changed.append((key, row))
             }
             if out.entries.count > start { segments.append((escaped, start, out.entries.count)) }
@@ -781,7 +876,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
             for key in old.keys where new[key] == nil {
                 let escaped = SyncEngine.escapedPathComponent(keyString(key))
                 let start = out.entries.count
-                out.append(StatePatch(path: path + "/" + escaped, operation: .delete, split: cursor?.descending(escaped)?.split), table: node.table)
+                out.append(position.descending(escaped).patch(.delete), table: node.table)
                 segments.append((escaped, start, out.entries.count))
                 removed.append(key)
             }
@@ -820,8 +915,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
     func diffRows(
         _ new: [K: N],
         against table: SyncSlottedTable<K, N>,
-        path: String,
-        cursor: PathHasher.Cursor?,
+        at position: SyncDiffPosition,
         layout: AtomicLayoutTable.Node?,
         into out: inout SyncPatchList,
         plan: inout SyncRowPlan<K, N>
@@ -837,17 +931,12 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 matched += 1
                 let component = keyString(key)
                 escaped = SyncEngine.escapedPathComponent(component)
-                let rowPath = path + "/" + escaped
-                if try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped)?.asRow(slot), layout: layout?.child(component), table: node.table, into: &out) {
+                if try node.diff(row, oldRow, at: position.descending(escaped).asRow(slot), layout: layout?.child(component), table: node.table, into: &out) {
                     plan.updates.append((slot, row))
                 }
             } else {
                 escaped = SyncEngine.escapedPathComponent(keyString(key))
-                out.append(StatePatch(
-                    path: path + "/" + escaped,
-                    operation: .set(try node.convert(row)),
-                    split: cursor?.descending(escaped)?.split
-                ), table: node.table)
+                out.append(position.descending(escaped).patch(.set(try node.convert(row))), table: node.table)
                 created.append((escaped, start, key, row))
             }
             if out.entries.count > start { segments.append((escaped, start, out.entries.count)) }
@@ -858,7 +947,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 let slot = Int32(index)
                 let escaped = SyncEngine.escapedPathComponent(keyString(key))
                 let start = out.entries.count
-                out.append(StatePatch(path: path + "/" + escaped, operation: .delete, split: cursor?.descending(escaped)?.asRow(slot).split), table: node.table)
+                out.append(position.descending(escaped).asRow(slot).patch(.delete), table: node.table)
                 segments.append((escaped, start, out.entries.count))
                 plan.deletes.append(slot)
             }
@@ -877,7 +966,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 if let split = patch.split {
                     out.entries[row.entry] = SyncTablePatch(
                         table: node.table,
-                        patch: StatePatch(path: patch.path, operation: patch.operation, split: split.asRow(slot, generation: table.plannedGeneration(of: slot)))
+                        patch: patch.retagged(split.asRow(slot, generation: table.plannedGeneration(of: slot)))
                     )
                 }
             }
@@ -1070,6 +1159,9 @@ class SyncRootSlot<State> {
     /// encoder splits as today.
     var cursor: PathHasher.Cursor?
 
+    /// The field's diff position: on its cursor alone while the cursor is lossless (#392).
+    var position: SyncDiffPosition { SyncDiffPosition(path: path, cursor: cursor) }
+
     init(name: String) {
         self.name = name
         self.path = "/" + SyncEngine.escapedPathComponent(name)
@@ -1176,7 +1268,7 @@ final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
             out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: differ.ownTable ?? 0)
             return SyncStagedWrite { self.last = syncTableOwnedCopy(value) }
         }
-        guard try differ.diff(value, old, path: path, cursor: cursor, layout: layout, table: 0, into: &out) else { return nil }
+        guard try differ.diff(value, old, at: position, layout: layout, table: 0, into: &out) else { return nil }
         return SyncStagedWrite { self.last = syncTableOwnedCopy(value) }
     }
 
@@ -1247,7 +1339,7 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
             out.append(StatePatch(path: path, operation: .set(.object([:])), split: cursor?.split), table: 0)
             let empty = SyncSlottedTable<K, N>()
             var plan = SyncRowPlan<K, N>()
-            try differ.diffRows(value, against: empty, path: path, cursor: cursor, layout: layout, into: &out, plan: &plan)
+            try differ.diffRows(value, against: empty, at: position, layout: layout, into: &out, plan: &plan)
             let rows = SyncStagedNodeMapRows<K, N>(plan: plan, base: empty)
             rows.liveValue = try differ.convert(value)
             return SyncStagedWrite(rows: rows) {
@@ -1258,7 +1350,7 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
             }
         }
         var plan = SyncRowPlan<K, N>()
-        try differ.diffRows(value, against: last, path: path, cursor: cursor, layout: layout, into: &out, plan: &plan)
+        try differ.diffRows(value, against: last, at: position, layout: layout, into: &out, plan: &plan)
         guard !plan.isEmpty else { return nil }
         guard emitsRowCreates else {
             // Without row entries no view or drop reads the staged rows.
