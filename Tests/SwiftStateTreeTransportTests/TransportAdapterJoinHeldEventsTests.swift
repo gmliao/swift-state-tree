@@ -306,8 +306,10 @@ struct TransportAdapterJoinHeldEventsTests {
         await fixture.adapter.setJoinFlipLimitsForTesting(timeout: nil, budget: 1)
         let s1 = SessionID("s1"), s2 = SessionID("s2")
         let first = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        // wall-clock: no registration event to await; the file's join tests wait the same way (#458)
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
         let second = Task { try? await joinInTurn(fixture, session: s2, player: PlayerID("p2")) }
+        // wall-clock: no registration event to await; the file's join tests wait the same way (#458)
         await eventually("s2 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s2) }
         // One tick consumes both OnJoins; the budget flips s1 only, so s2 holds its events.
         await fixture.keeper.stepTickOnce()
@@ -322,7 +324,7 @@ struct TransportAdapterJoinHeldEventsTests {
         await fixture.keeper.stepTickOnce()
         try #require(await fixture.keeper.waitForFailureForTesting(), "the land failed")
         #expect(fixture.keeper.failure?.kind == .eventEncode)
-        #expect(await fixture.adapter.waitForOutboundDrain())
+        // No drain wait: the held event is never enqueued, before the failure or after it (the gate).
         #expect(!(await fixture.sent.kinds(for: s2)).contains("event:note-late"), "the event went nowhere, and the land ended for it")
         _ = await second.value
     }
