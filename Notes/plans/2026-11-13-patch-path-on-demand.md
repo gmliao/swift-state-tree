@@ -1,7 +1,12 @@
 # A patch's path built on demand from its split (#392, the remaining step)
 
-**Status:** rev 3, for review. No code. Read at `main` 746fe207. Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the PR). Scope and gate: #392's comment of 2026-11-13 ("Next step (decided)").
+**Status:** rev 3, accepted 2026-11-14 (GO, with the review's should items folded in). No code. Read at `main` 746fe207. Each fact is marked **checked** (read in the code) or **inferred** (reasoned, to be pinned by a test in the PR). Scope and gate: #392's comment of 2026-11-13 ("Next step (decided)").
 
+- **Accepted** on review of rev 3 (44853066), with these folded in:
+  - the prefix cache's counters get an SPI accessor, summed per run outside warm-up and joins; their release-mode lock increment is named as a hot-path cost (§2.3, §4);
+  - a combined fixture: an NFD ancestor, an unhashed intermediate, a walk-off (§4);
+  - §2.3 names the `.split` case, so a `.pathAndSplit` patch uses its string's bytes;
+  - `debugRebuiltPath` and the rebuild counter are `#if DEBUG` only (§2.5).
 - **Rev 3** answers review of rev 2 (d12abe7e):
   - a lossy literal keeps today's stored pair (string plus split), so row metadata and the wire stay (§2.1);
   - the lazy path reaches through `AtomicPositionalForm`'s recursion (§1.3, §2.5);
@@ -128,12 +133,15 @@
 ### 2.3 Field merge compares splits, byte for byte
 
 The frame cache's contract is UTF-8 bytes (§1.4), so the identity it uses is too.
-- **`PatchPathIdentity`** is `(owner, pathHash, dynamicKeys)` for a split-form patch of the frame's hasher, and the string otherwise.
+- **`PatchPathIdentity`** is `(owner, pathHash, dynamicKeys)` for a `.split` patch of the frame's hasher, and the string otherwise: a `.pathAndSplit` or `.path` patch is identified by its stored string's bytes.
   - Two split identities are equal when the owners and `pathHash` are the same and each dynamic key's `utf8` bytes are equal (not `String ==`).
   - Two string identities compare bytes.
   - A split against a string compares the split's rebuilt bytes, which only happens when a frame mixes forms.
 - **`FramePrefixCache.Reference`** stores identities instead of `rawPaths`. `commonPathPrefix` and `PatchShape` compare them.
-- **`FieldMergePlanner.add`'s `cut(patch.path)` (Q1 (a)):** it computes the path once per planned patch; resumed patches skip it. This stays hot work while field merge applies. The A/B reports the prefix cache's hits with the cache on, from the counters it already keeps (`FramePrefixCache.resumes` and `reusedSplits`, `FieldMergePlan.swift:190`), and runs rows off, where more patches are planned. `--merge-stats` can't serve: it skips the cache (:85) and counts no hits.
+- **`FieldMergePlanner.add`'s `cut(patch.path)` (Q1 (a)):** it computes the path once per planned patch; resumed patches skip it. This stays hot work while field merge applies. The A/B reports the prefix cache's hits with the cache on, from the counters it already keeps (`FramePrefixCache.resumes` and `reusedSplits`, `FieldMergePlan.swift:190`–:193), and runs rows off, where more patches are planned. `--merge-stats` can't serve: it skips the cache (:85) and counts no hits.
+  - **The way out.** The counters are internal ("(tests)") and EncodingBenchmark is another package. An `@_spi(Diagnostics)` accessor, as `syncTableFallbackFieldDescriptions` (`SyncTables.swift:243`) and `LandManager`'s diagnostics init (`LandManager.swift:254`) already use, returns `(resumes, reusedSplits)` for the opcode encoders' caches (`OpcodeJSONStateUpdateEncoder.swift:45`, `OpcodeMessagePackStateUpdateEncoder.swift:43`) of one adapter. Its exact home (the adapter, or the encoder through the adapter) is settled in the PR (inferred: the benchmark reaches each room's adapter). The PR lists it in its Public API section.
+  - **Summing.** The benchmark sums the counters over every room's adapter, and over both encoders where a run has both. It takes a snapshot after warm-up and after the joins, and reports the difference at the end of the timed iterations, so warm-up and joins are excluded.
+  - **Cost.** `recordResume` and `recordSplitReuse` take an `NSLock` in release builds on every resume (:192–:193). That is hot-path work today, unchanged by this plan, and the same on both sides of the A/B. The accessor only reads.
 
 ### 2.4 `mergePatches`: a String-keyed broadcast index, once per sync
 
@@ -152,7 +160,7 @@ The frame cache's contract is UTF-8 bytes (§1.4), so the identity it uses is to
 - **SyncTables :1287–:1304** (full view, live digest) and **:1634–:1635** (digest roots, recording only) call `path` once per patch into a local.
 - **The json encoding, the patch applier, `CanonicalPatchList`, `CanonicalPatchOrder`** (string form only, §1.2), the verifier and the rare readers call `path`. A reader that needs it more than once per patch takes it once into a local: `SyncRowRef`, `replacingRows`, dedup.
 - The dead re-split helpers are removed.
-- **The rebuild counter** (§4.4), DEBUG only, counts rebuilds through `path`'s public getter on `.split` patches. The DEBUG readers (the oracle of §2.2 and `split(of:)`'s re-split check) read through a package `debugRebuiltPath` that doesn't count, so the counter sees production readers only.
+- **The rebuild counter** (§4.4), `#if DEBUG` only, counts rebuilds through `path`'s public getter on `.split` patches. The DEBUG readers (the oracle of §2.2 and `split(of:)`'s re-split check) read through a package `debugRebuiltPath`, also `#if DEBUG` only, that doesn't count, so the counter sees production readers only. Release builds have neither.
 
 ## 3. Out of scope
 
@@ -169,7 +177,7 @@ The frame cache's contract is UTF-8 bytes (§1.4), so the identity it uses is to
    - EncodingBenchmark's bytes per cell, equal between base and head (item 3).
 2. **The computed path equals the old string, UTF-8 byte for byte, for every patch:**
    - the DEBUG oracle of §2.2, on every split-made emit in every debug test;
-   - a differential test: the typed diff and the snapshot diff of the same changes give the same path bytes in the same canonical order. Fixtures include keys with `~`, `/`, `~1`, empty (`/m/`, `/m//v`), NFD and NFC, a row create, retag and delete, a walk-off after several unhashed nodes, and a walk-off under a wildcard. It builds on `CarriedPatchSplitTests` and `EmptyMapKeyTests`;
+   - a differential test: the typed diff and the snapshot diff of the same changes give the same path bytes in the same canonical order. Fixtures include keys with `~`, `/`, `~1`, empty (`/m/`, `/m//v`), NFD and NFC, a row create, retag and delete, a walk-off after several unhashed nodes, a walk-off under a wildcard, and the combined case rev 3 adds: an NFD-named ancestor (stored pair), then an unhashed intermediate, then a walk-off, whose path keeps the ancestor's emitted bytes. It builds on `CarriedPatchSplitTests` and `EmptyMapKeyTests`;
    - a lossless-rule test: a field named with NFD bytes against its NFC label emits the stored pair, with the path byte-identical to today's and the split, row slot and generation carried; a field named `a/b` (emitting `a~1b`) emits the split form;
    - wire bytes of a row create, update and delete under that NFD name, in opcodeJsonArray and messagepack with rows on, equal to today's (row entries, not plain patches);
    - a template test: for every pattern and trie node of the test schemas, `rebuilt(split(path)).utf8 == path.utf8`;
@@ -197,7 +205,7 @@ The frame cache's contract is UTF-8 bytes (§1.4), so the identity it uses is to
    - Checked per result:
      - the resolved metadata: `routerJoin` with rows as asked, the encoding, `USE_SYNC_TABLES`;
      - split-backed paths exercised: the run's patch counts, plus the DEBUG oracle's coverage in the test suite;
-     - for rows-json, router-json and rows-json-100, the prefix cache's `resumes` and `reusedSplits` with the cache on, from an untimed run of the same cell (reported, not judged);
+     - for rows-json, router-json and rows-json-100, the prefix cache's `resumes` and `reusedSplits` with the cache on, through the SPI accessor, summed as §2.3 says (reported, not judged);
      - bytes equal to the other side's;
      - the pinned image digest on both sides, recorded beside `swift --version`.
    - Release builds, both sides in one container from the pinned image. ABAB, at least 5 runs per side. Run by the measurement host through a brief.
