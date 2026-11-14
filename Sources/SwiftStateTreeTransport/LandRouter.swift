@@ -1106,13 +1106,18 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 lookupTimeoutFramesForTesting += 1
                 await transport.sendSessionFrames([SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)])
             }
-            await transport.closeSessionAfterQueuedFrames(sessionID)
+            await transport.closeSessionAfterQueuedFrames(sessionID, generation: generation)
             return
         }
         let landID = sessionToBound[sessionID]?.landID
         current.expiring = true
         sessionHandshakePhase[sessionID] = .joining(current)
-        let ended = await adapter.endJoinBeforeAdmission(sessionID, finalFrame: errorData(.admission), attemptEnd: current.end)
+        let ended = await adapter.endJoinBeforeAdmission(
+            sessionID,
+            finalFrame: errorData(.admission),
+            attemptEnd: current.end,
+            connectionGeneration: sessionToConnectionGeneration[sessionID]
+        )
         guard case .joining(var after) = sessionHandshakePhase[sessionID], after.number == attempt else {
             // Ended meanwhile (a disconnect): its own cleanup reached the adapter.
             if ended { noteJoinTimedOut(.admission, sessionID: sessionID, landID: landID) }
