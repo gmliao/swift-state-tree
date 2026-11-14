@@ -50,6 +50,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case legacyShutdownPass
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
+    /// The start of a failed land's teardown task (#535), before it tells the transport: the
+    /// failing segment has already cleared the players and installed `drainTask`.
+    case landFailedTeardown
     /// Both `join` variants, after their checks and before the player insert.
     case join
     /// The start of `leave(playerID:clientID:sessionID:)`.
@@ -438,6 +441,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Why this land's destruction started, once it has (`nil` before). Set in the same
     /// synchronous segment as `isDraining`, by the first caller only, and never changed.
     public nonisolated var destructionCause: LandDestructionCause? { drainFlag.cause }
+
+    /// The failure that ended this land (#535), once one has (`nil` otherwise). Set in the same
+    /// synchronous segment as `destructionCause` becomes `.failed`, and never changed: the first
+    /// failure wins.
+    public nonisolated var failure: LandFailure? { drainFlag.failure }
 
     /// Waits until this keeper's destruction has finished, handlers and the transport's
     /// `onLandDestroyed` included. Returns at once when no destruction started.
@@ -4409,7 +4417,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 state.clearDirty()
             }
             inTurnSyncDue = false
-            joinSyncRetryFailures = 0
             joinSyncWaitsForCommit = false
             inTurnProbeForTesting?("sync-committed")
             // Joins left over a commit's budget: the next sync-only turn completes them.
@@ -4428,19 +4435,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if !hasPeriodicSync {
                 retrySyncOnlyTurnAfterWriterDrain(transport: transport)
             }
-        case let .failed(repairAllowed):
+        case .failed:
+            // A transport that still reports a thrown plan this way (`repairAllowed` is read by
+            // nothing since #535): the first throw ends the land, as `.landFailed` does.
             inTurnSyncDue = false
-            if repairAllowed && !hasPeriodicSync {
-                scheduleRepairSyncOnlyTurn()
-            } else if !hasPeriodicSync && transportHasJoinsAwaitingSync {
-                // Past the repair limit, joins still wait: retry with a doubling delay, so a plan
-                // that keeps failing gives a bounded number of turns before the joins time out.
-                joinSyncRetryFailures += 1
-                let doublings = min(joinSyncRetryFailures - 1, 16)
-                let delay = Self.inTurnRepairDelay * (1 << doublings)
-                joinSyncRetryDelaysForTesting.append(delay)
-                scheduleJoinSyncTurn(after: delay)
-            }
+            failLand(LandFailure(
+                kind: .syncPlan,
+                detail: "the transport reported a failed sync plan",
+                position: LandFailurePosition(stage: .syncPhase)
+            ))
+        case let .landFailed(reported):
+            inTurnSyncDue = false
+            failLand(reported)
         case .notRequested, .unsupported:
             break
         }
@@ -4728,6 +4734,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// with the dirty-flag clear in the same turn. While a legacy cycle holds the sync flag, it
     /// runs again after that cycle's `endSync` instead.
     private func runSyncOnlyTurn(transport: any LandKeeperTransport, joinSyncOnly: Bool = false) {
+        // A failed land sends nothing more (#535): a scheduled repair, writer-drain retry or
+        // join-sync turn that runs after the failure returns here.
+        guard failure == nil else { return }
         guard !isSyncing else {
             syncOnlyTurnAfterLegacyCycle = true
             return
@@ -4766,14 +4775,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         runSyncOnlyTurnIfInTurn()
     }
 
-    /// Failed sync phases in a row that left joins waiting, past the repair limit (backoff).
-    private var joinSyncRetryFailures = 0
     /// A sync-only turn for waiting joins is scheduled.
     private var joinSyncTurnPending = false
     /// Sync-only turns run for waiting joins (tests).
     private(set) var joinSyncTurnsForTesting = 0
-    /// The retry delays scheduled past the repair limit, in order (tests).
-    private(set) var joinSyncRetryDelaysForTesting: [Duration] = []
 
     /// One sync-only turn for joins waiting on a committed sync phase, after `delay` (at most one
     /// pending). It runs only if joins still wait then.
@@ -4867,6 +4872,68 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         drainFlag.set(cause: .forceShutdown)
         releaseHeldInputsForDrain()
         resumeShutdownTurnWaiters()
+    }
+
+    /// Ends the land on a failure it can't recover from (#535). Synchronous, and called only
+    /// inside a turn, in the segment where the failure is seen, so no await separates any of
+    /// this from the failure:
+    /// - the mark: the drain flag is set with cause `.failed` and the failure stored (the first
+    ///   failure wins; a land already draining for another cause keeps that cause), so every
+    ///   `isDraining` check refuses from here and no tick starts;
+    /// - the settle: every queued input is dropped (its caller gets `.landClosed`), action jobs
+    ///   in their resolvers are cancelled, held intake is released to be rejected, and
+    ///   `forceShutdown` waiters are resumed;
+    /// - the teardown's synchronous part: the players are cleared without OnLeave (decision D4),
+    ///   and `drainTask` is installed, so a later `forceShutdown` or `shutdownIfIdle` joins it.
+    ///   The task tells the transport (`landDidFail`, which returns once the sessions are
+    ///   closed) and then runs the existing drain: destroy handlers and save see `.failed`.
+    ///
+    /// The position's tick is filled here when the reporter didn't know it.
+    /// Test hook: reports `failure` as a further producer would (part A has one producer, the
+    /// in-turn plan throw), so a test can drive a second failure or one after a stop began.
+    package func failLandForTesting(_ failure: LandFailure) {
+        failLand(failure)
+    }
+
+    private func failLand(_ reported: LandFailure) {
+        let position = reported.position.tickId == nil && reported.position.pass == nil
+            ? LandFailurePosition(
+                tickId: lastCommittedTickId >= 0 ? lastCommittedTickId : nil,
+                sequence: reported.position.sequence,
+                stage: reported.position.stage
+            )
+            : reported.position
+        let failure = LandFailure(kind: reported.kind, field: reported.field, detail: reported.detail, position: position)
+        guard mode == .live else {
+            logger.error("A land failure in re-evaluation; replay doesn't end the land", metadata: [
+                "failure": .string(failure.description),
+            ])
+            return
+        }
+        guard drainFlag.setFailed(failure) else {
+            logger.debug("A further land failure after the land started ending; the first cause stays", metadata: [
+                "failure": .string(failure.description),
+            ])
+            return
+        }
+        logger.error("Land failed; ending it", metadata: [
+            "landID": .string(actualLandID ?? "-"),
+            "kind": .string(failure.kind.rawValue),
+            "field": .string(failure.field ?? "-"),
+            "position": .string(failure.position.description),
+            "error": .string(failure.detail),
+        ])
+        dropPendingInputs(reason: "landFailed")
+        cancelAllActionJobs()
+        releaseHeldInputsForDrain()
+        resumeShutdownTurnWaiters()
+        players.removeAll()
+        let transport = self.transport
+        drainTask = Task {
+            await holds.at(.landFailedTeardown)
+            if let transport { await transport.landDidFail(failure) }
+            await self.drainAfterIdleCheck()
+        }
     }
 
     /// `forceShutdown` on a tickless land, waiting for its shutdown input's turn, or for the
@@ -5321,6 +5388,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 private final class DrainFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var setCause: LandDestructionCause?
+    private var setFailure: LandFailure?
 
     var isSet: Bool { cause != nil }
 
@@ -5330,11 +5398,28 @@ private final class DrainFlag: @unchecked Sendable {
         return setCause
     }
 
+    var failure: LandFailure? {
+        lock.lock()
+        defer { lock.unlock() }
+        return setFailure
+    }
+
     /// Sets the flag; the first cause stays.
     func set(cause: LandDestructionCause) {
         lock.lock()
         if setCause == nil { setCause = cause }
         lock.unlock()
+    }
+
+    /// Sets the flag with cause `.failed` and stores `failure`, if no cause was set yet.
+    /// Returns whether this call set it.
+    func setFailed(_ failure: LandFailure) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard setCause == nil else { return false }
+        setCause = .failed
+        setFailure = failure
+        return true
     }
 }
 
@@ -5346,6 +5431,9 @@ public enum LandDestructionCause: String, Codable, Sendable, Hashable {
     case forceShutdown
     /// Its initialization failed (#104): torn down without the destroy handlers.
     case initializationFailed
+    /// A failure it couldn't recover from ended it (#535, `LandKeeper.failure`): its sessions
+    /// closed with 4016, and no OnLeave ran.
+    case failed
 }
 
 private struct InternalPlayerSession: Sendable {

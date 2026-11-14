@@ -226,6 +226,9 @@ public struct SessionClose: Sendable, Equatable {
     /// 4014: the session's land was stopped (#102). The same short close grace as `goingAway`.
     package static let landStopped = SessionClose(code: Code.landStopped, reason: "land stopped", closeGrace: .milliseconds(500))
 
+    /// 4016: the session's land failed (#535). The same short close grace as `landStopped`.
+    package static let landFailed = SessionClose(code: Code.landFailed, reason: "land failed", closeGrace: .milliseconds(500))
+
     /// Application close codes (4000–4999). 4008 is `SendBacklogBound`'s, written by the NIO
     /// handler itself; the sync-lag codes (#332) are sent through `closeSession(_:with:)`.
     public enum Code {
@@ -247,6 +250,11 @@ public struct SessionClose: Sendable, Equatable {
         /// `LandServerProtocol.stopLand`, #102). Unlike 1001, it says this land is gone, not the
         /// server: a client doesn't retry it. A join for the same land ID gets a new instance.
         public static let landStopped: UInt16 = 4014
+        // 4015 is unassigned: no sync failure is confined to one session (#535).
+        /// The land the session was in failed: a sync value or frame didn't convert or encode,
+        /// or a handler threw after writing synced state (#535), and the land was ended. A
+        /// client doesn't retry it; a join for the same land ID gets a new instance.
+        public static let landFailed: UInt16 = 4016
     }
 
     private static func truncated(_ reason: String) -> String {

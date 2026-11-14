@@ -1508,3 +1508,145 @@ struct LandStopTests {
         try await f.host.shutdown()
     }
 }
+
+/// A string probe log, readable from the test.
+private final class ProbeLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [String] = []
+    private var waiters: [Int: (entry: String, continuation: CheckedContinuation<Bool, Never>)] = [:]
+    private var nextWaiterID = 0
+
+    func append(_ entry: String) {
+        let resumed: [CheckedContinuation<Bool, Never>] = lock.withLock {
+            list.append(entry)
+            let ids = waiters.filter { $0.value.entry == entry }.map(\.key)
+            return ids.compactMap { waiters.removeValue(forKey: $0)?.continuation }
+        }
+        resumed.forEach { $0.resume(returning: true) }
+    }
+
+    /// Returns `true` once `entry` was appended; resumed by `append`, not by polling. `false`
+    /// after `hangBound`: a suite's time limit doesn't resume a continuation, so without this a
+    /// probe that never comes hangs the test process.
+    func waitFor(_ entry: String) async -> Bool {
+        let id = lock.withLock { () -> Int in
+            defer { nextWaiterID += 1 }
+            return nextWaiterID
+        }
+        let hangGuard = Task { [weak self] in
+            try? await safeTaskSleep(for: hangBound)
+            self?.expire(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let now: Bool = lock.withLock {
+                if list.contains(entry) { return true }
+                waiters[id] = (entry, continuation)
+                return false
+            }
+            if now { continuation.resume(returning: true) }
+        }
+    }
+
+    private func expire(_ id: Int) {
+        let waiter = lock.withLock { waiters.removeValue(forKey: id) }
+        waiter?.continuation.resume(returning: false)
+    }
+}
+
+@Suite(
+    "A hosted land that fails (#535), without the host's stop hook",
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the legacy plan throw keeps its follow-up until #535 PR 1 part B"),
+    .timeLimit(.minutes(1))
+)
+struct HostedLandFailureTests {
+    private struct PlanFault: Error {}
+
+    /// Makes the land's next in-turn sync plan throw, then joins `player`, whose join's sync
+    /// phase is that plan: the first throw ends the land (#535 row 15).
+    private func failTheLandThroughAJoin(_ f: Fixture, player: String) async throws {
+        let container = try #require(await f.server.landManager.getLand(landID: f.landID))
+        await container.transportAdapter.setSyncPlanFaultForTesting { throw PlanFault() }
+        let session = SessionID("s-\(player)")
+        _ = await f.connect(session)
+        let frame = try f.joinFrame(player: player)
+        let router = f.server.landRouter
+        Task { await router.onMessage(frame, from: session) }
+    }
+
+    @Test("its sessions close with 4016, no OnLeave runs, the land is dropped, and a rejoin gets a new instance by epoch")
+    func failedLandClosesAndIsReplaced() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (_, c1) = try await f.join("p1")
+        let (_, c2) = try await f.join("p2")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        let keeper = old.keeper
+        // An open gate at the teardown's hold: its arrival is the event that the land failed.
+        let teardown = Gate()
+        teardown.open()
+        await keeper.installHolds(HoldRegistry.at(.landFailedTeardown) { await teardown.arrive() })
+
+        try await failTheLandThroughAJoin(f, player: "p3")
+        #expect(await teardown.waitForArrivals(1), "the land failed")
+        #expect(keeper.failure?.kind == .syncPlan)
+        #expect(keeper.destructionCause == .failed)
+        await keeper.waitUntilDrained()
+
+        #expect(await c1.closeCode == SessionClose.Code.landFailed)
+        #expect(await c2.closeCode == SessionClose.Code.landFailed)
+        #expect(!events.all.contains { $0.hasPrefix("leave:") }, "no OnLeave on a failed land: \(events.all)")
+        #expect(events.count("finalize") == 1)
+        // The drain awaited `onLandDestroyed`, which dropped the land by its epoch.
+        #expect(await f.server.listLands().contains(f.landID) == false, "the manager dropped the land")
+
+        // A rejoin builds a new instance: a different epoch, not the failed keeper.
+        let session = SessionID("s-p1-again")
+        let connection = await f.connect(session)
+        await f.server.landRouter.onMessage(try f.joinFrame(player: "p1"), from: session)
+        #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } }, "rejoined")
+        let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(fresh.epoch != old.epoch)
+        #expect(fresh.keeper !== keeper)
+        #expect(fresh.keeper.failure == nil)
+        try await f.host.shutdown()
+    }
+
+    @Test("an admin stop racing the teardown joins it: one destroy, the cause stays .failed")
+    func adminStopJoinsTheFailedTeardown() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (_, c1) = try await f.join("p1")
+        let keeper = try await f.keeper()
+        let teardown = Gate()
+        await keeper.installHolds(HoldRegistry.at(.landFailedTeardown) { await teardown.arrive() })
+        let probes = ProbeLog()
+        await keeper.setInTurnProbeForTesting { probes.append($0) }
+
+        try await failTheLandThroughAJoin(f, player: "p2")
+        #expect(await teardown.waitForArrivals(1), "the failed land's teardown is held")
+        #expect(keeper.destructionCause == .failed)
+
+        // The stop runs while the teardown is held; its forceShutdown joins the teardown's task.
+        let stopped = StopResultRecorder()
+        let server = f.server, landID = f.landID
+        let stop = Task { stopped.set(await server.stopLand(landID: landID)) }
+        let joined = await probes.waitFor("force-shutdown-joined")
+        // On a regression, release the teardown so the stop and the test end instead of hanging.
+        if !joined { teardown.open() }
+        #expect(joined, "the stop reached forceShutdown")
+        #expect(stopped.value == nil, "the stop waits for the held teardown")
+        #expect(events.count("finalize") == 0)
+
+        teardown.open()
+        await stop.value
+        #expect(stopped.value == .stopped(timedOut: false))
+        #expect(events.count("finalize") == 1, "one destroy: \(events.all)")
+        #expect(keeper.destructionCause == .failed, "the first cause stays")
+        #expect(!events.all.contains { $0.hasPrefix("leave:") }, "no OnLeave on a failed land")
+        // The stop's close came first here: the close code is decided per path until the host
+        // hook (#535 part B) reads the cause at each close.
+        #expect([SessionClose.Code.landStopped, SessionClose.Code.landFailed].contains(await c1.closeCode ?? 0))
+        try await f.host.shutdown()
+    }
+}

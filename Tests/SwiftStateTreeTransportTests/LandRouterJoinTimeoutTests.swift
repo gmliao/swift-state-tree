@@ -441,7 +441,7 @@ struct LandRouterJoinTimeoutTests {
         let adapter = h.adapter
         await adapter.setJoinFlipLimitsForTesting(timeout: generous, budget: nil)
         // In-turn: no sync phase commits until released, so the join stays admitted, unflipped.
-        await adapter.setSyncPlanFaultForTesting { throw JoinTimeoutTestFault() }
+        await adapter.setJoinFlipHeldForTesting(true)
         let timer = TestGate(), admission = TestGate()
         defer { timer.open(); admission.open() }
         let registry = HoldRegistry<LandRouterHoldPoint>()
@@ -465,7 +465,7 @@ struct LandRouterJoinTimeoutTests {
         #expect(!(await connection.closed))
         #expect(h.metrics.snapshot.values.allSatisfy { $0 == 0 })
 
-        await adapter.setSyncPlanFaultForTesting(nil)
+        await adapter.setJoinFlipHeldForTesting(false)
         #expect(await timeoutPoll { await connection.joinResponses == 1 }, "the join completes")
         #expect(await connection.errors.isEmpty)
     }
@@ -478,7 +478,7 @@ struct LandRouterJoinTimeoutTests {
         let h = try await TimeoutHarness.make(budget: short)
         let adapter = h.adapter
         // No sync phase commits, so the join can't flip before its flip waiter times out.
-        await adapter.setSyncPlanFaultForTesting { throw JoinTimeoutTestFault() }
+        await adapter.setJoinFlipHeldForTesting(true)
         let timer = TestGate(), admission = TestGate()
         defer { timer.open(); admission.open() }
         let registry = HoldRegistry<LandRouterHoldPoint>()
@@ -496,7 +496,7 @@ struct LandRouterJoinTimeoutTests {
         await join.value
         await h.expectTimedOut(connection, .flip)
         #expect(await adapter.inTurnJoinFailures[.timeout] == 1)
-        await adapter.setSyncPlanFaultForTesting(nil)
+        await adapter.setJoinFlipHeldForTesting(false)
     }
 
     @Test("JOIN_TIMEOUT_MS and the deprecated JOIN_FLIP_TIMEOUT_MS")
@@ -521,4 +521,3 @@ struct LandRouterJoinTimeoutTests {
     }
 }
 
-struct JoinTimeoutTestFault: Error {}
