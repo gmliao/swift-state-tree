@@ -81,7 +81,7 @@ public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
 ///     let count: Int
 /// }
 /// ```
-@attached(member, names: named(getFieldMetadata), named(getResponseType), named(encodeAsArray))
+@attached(member, names: named(getFieldMetadata), named(getResponseType), named(_writePayloadFields), named(_payloadHasTypedWriter), named(_payloadFieldForms), named(_payloadWireName))
 public macro Payload() = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "PayloadMacro"

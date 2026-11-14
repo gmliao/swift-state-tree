@@ -17,6 +17,9 @@ public protocol ActionPayload: Codable, Sendable, SchemaMetadataProvider, Payloa
 }
 
 public extension ActionPayload {
+    /// The action rule, for a type whose name `@Payload` couldn't fix at expansion (#521).
+    static var _payloadWireName: String { payloadActionName(for: Self.self) }
+
     static func getResponseType() -> Any.Type {
         fatalError("getResponseType() must be implemented by @Payload macro for ActionPayload types")
     }

@@ -208,50 +208,14 @@ public struct SchemaExtractor {
     /// 1. Require actions to have a static actionID property
     /// 2. Or use a more sophisticated naming convention
     private static func generateActionID(from actionType: Any.Type) -> String {
-        let typeName = String(describing: actionType)
-        
-        // Remove module prefix if present (e.g., "Module.AddGoldAction" -> "AddGoldAction")
-        let baseTypeName: String
-        if let lastComponent = typeName.split(separator: ".").last {
-            baseTypeName = String(lastComponent)
-        } else {
-            baseTypeName = typeName
-        }
-        
-        // Remove "Action" suffix if present, keep camelCase format
-        // Example: "AddGoldAction" -> "AddGold"
-        var actionID = baseTypeName
-        if actionID.hasSuffix("Action") {
-            actionID = String(actionID.dropLast(6))
-        }
-        
-        // Return camelCase format (e.g., "AddGold")
-        return actionID
+        payloadActionName(for: actionType)
     }
     
     /// Generate event ID from server event type.
     ///
     /// Mirrors the behavior of `generateActionID` but uses the "Event" suffix.
     private static func generateEventID(from eventType: Any.Type) -> String {
-        let typeName = String(describing: eventType)
-        
-        // Extract base type name (handle module prefixes)
-        var baseTypeName: String
-        if let lastComponent = typeName.split(separator: ".").last {
-            baseTypeName = String(lastComponent)
-        } else {
-            baseTypeName = typeName
-        }
-        
-        // Remove "Event" suffix if present, keep camelCase format
-        // Example: "ChatEvent" -> "Chat", "PingEvent" -> "Ping"
-        var eventID = baseTypeName
-        if eventID.hasSuffix("Event") {
-            eventID = String(eventID.dropLast(5))
-        }
-        
-        // Return camelCase format (e.g., "Chat", "Ping", "ChatMessage")
-        return eventID
+        payloadEventName(for: eventType)
     }
     
     /// Create a diff schema placeholder.
