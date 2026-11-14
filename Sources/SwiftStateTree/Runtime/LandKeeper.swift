@@ -4952,6 +4952,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         kickServerInputTurn(upTo: sequence)
     }
 
+    /// Callers of `waitForFailureForTesting`, resumed when the land fails.
+    private var failureWaitersForTesting: [CheckedContinuation<Void, Never>] = []
+
+    /// Test hook: returns once the land has failed (at once if it already has). Event-driven:
+    /// a submitted failure is applied by a turn that runs after the submitter returns.
+    package func waitForFailureForTesting() async {
+        guard failure == nil else { return }
+        await withCheckedContinuation { failureWaitersForTesting.append($0) }
+    }
+
     /// Test hook: reports `failure` as a further producer would (part A has one producer, the
     /// in-turn plan throw), so a test can drive a second failure or one after a stop began.
     package func failLandForTesting(_ failure: LandFailure) {
@@ -4997,6 +5007,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if let transport { await transport.landDidFail(failure) }
             await self.drainAfterIdleCheck()
         }
+        let waiters = failureWaitersForTesting
+        failureWaitersForTesting.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     /// `forceShutdown` on a tickless land, waiting for its shutdown input's turn, or for the
