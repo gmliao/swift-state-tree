@@ -3194,7 +3194,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)")
             ])
             // The first throw ends the land (#535 row 15): the plan committed and sent nothing.
-            return .landFailed(LandFailure(
+            // A frame that didn't encode (rows 9, 10, 12) arrives as its own `LandFailure`.
+            return .landFailed(error as? LandFailure ?? LandFailure(
                 kind: .syncPlan,
                 detail: String(describing: error),
                 position: LandFailurePosition(stage: .syncPhase)
@@ -3611,7 +3612,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)")
             ])
             // Row 15 (#535, D11 (d)): a plan's first throw ends the land, with no follow-up.
-            let failure = LandFailure(
+            let failure = error as? LandFailure ?? LandFailure(
                 kind: .syncPlan,
                 detail: String(describing: error),
                 position: LandFailurePosition(stage: .syncPhase)
@@ -4937,7 +4938,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // After the full views: their drops are this plan's extraction drops too.
         plan.digest?.noteDrops(drops)
         plan.noteExtractionDrops(drops)
-        planPerPlayerFrames(
+        try planPerPlayerFrames(
             pendingUpdates,
             recipients: recipients,
             events: events,
@@ -5148,21 +5149,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             : (broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff))
         let eventBodies = events.pendingBroadcastBodies()
         plan.consumedEvents.broadcast = events.broadcastEventCount
-        guard let data = encodeMergedBroadcastFrameDropping(
+        let data = try encodeMergedBroadcastFrameOrFail(
             broadcastUpdate,
             playerID: first.playerID,
             eventBodies: eventBodies,
             into: &plan
-        ) else {
-            // No state frame: the broadcast cache keeps what clients have.
-            plan.staged.broadcast = nil
-            plan.stagedTables = SyncTableStaged()
-            plan.leavesKeyTablesAhead = true
-            for recipient in recipients {
-                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
-            }
-            return
-        }
+        )
         for recipient in recipients {
             plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
         }
@@ -5171,25 +5163,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// `encodeMergedBroadcastFrame`; on failure, the update without the patches that do not encode,
     /// typed `.firstSync` (see `encodeDroppingUnencodablePatches`). `nil` if even that fails.
-    private func encodeMergedBroadcastFrameDropping(
+    /// The merged broadcast frame, or the land's failure (#535 rows 9 and 12): a broadcast frame
+    /// that doesn't encode is never re-encoded with patches dropped, and nothing is staged for it.
+    private func encodeMergedBroadcastFrameOrFail(
         _ update: StateUpdate,
         playerID: PlayerID,
         eventBodies: [MessagePackValue],
         into plan: inout SyncPhasePlan
-    ) -> Data? {
+    ) throws -> Data {
         if !update.patchesForDroppingEncode.isEmpty {
             plan.encodesBroadcastPatches = true
         }
         do {
             return try encodeMergedBroadcastFrame(update: update, playerID: playerID, eventBodies: eventBodies)
         } catch {
-            plan.dropReason = plan.dropReason ?? "broadcast frame: \(error)"
-            let (data, dropped) = encodeDroppingUnencodablePatches(update.patchesForDroppingEncode) { patches in
-                try self.encodeMergedBroadcastFrame(update: .firstSync(patches), playerID: playerID, eventBodies: eventBodies)
-            }
-            plan.droppedUpdates += dropped
-            plan.digest?.encodeDropScopes.insert(SyncOutputDigestInput.broadcastScope)
-            return data
+            throw LandFailure(
+                kind: .syncEncode,
+                detail: "broadcast frame: \(error)",
+                position: LandFailurePosition(stage: .syncPhase)
+            )
         }
     }
 
@@ -5260,7 +5252,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // `planFirstSync`: the commit requests the same key scope reset (#90).
         plan.needsBroadcastKeyReset = usesBroadcastKeyTable
         let start = plan.frames.count
-        planPerPlayerFrames(updates, recipients: joiners.map(\.recipient), events: events, includesEvents: false, into: &plan)
+        // A joiner's first view keeps its retry (`skippedJoiner`, D3) until #535 PR 2, so this
+        // call never ends the land and can't throw.
+        try? planPerPlayerFrames(updates, recipients: joiners.map(\.recipient), events: events, includesEvents: false, endsLandOnUnencodable: false, into: &plan)
         let firstSyncFrames = Array(plan.frames[start...])
         plan.frames.removeSubrange(start...)
         for joiner in joiners {
@@ -5282,8 +5276,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         recipients: [SyncPhaseRecipient],
         events: PendingEventManager,
         includesEvents: Bool = true,
+        endsLandOnUnencodable: Bool = true,
         into plan: inout SyncPhasePlan
-    ) {
+    ) throws {
         var payloadBySession: [SessionID: Data] = [:]
         let (encoded, failures) = encodeUpdatesSerially(pendingUpdates)
         for update in encoded {
@@ -5318,6 +5313,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
                 if data == nil, plan.syncLag.resyncPlayers.contains(playerID) {
                     plan.syncLag.failedSnapshots.insert(playerID)
+                }
+                // Row 10, total (#535): a player's frame that doesn't encode even with patches
+                // dropped ends the land. A resync's snapshot is row 11 (its retry stays until
+                // #535 PR 2), and a frame sent with patches dropped is row 10's patch part (PR 2).
+                if endsLandOnUnencodable, encoded == nil, !plan.syncLag.resyncPlayers.contains(playerID) {
+                    throw LandFailure(
+                        kind: .syncEncode,
+                        detail: "state frame for player \(playerID.rawValue): \(plan.dropReason ?? "did not encode")",
+                        position: LandFailurePosition(stage: .syncPhase)
+                    )
                 }
                 plan.digest?.noteEncodeDrop(playerID: playerID, committed: data != nil)
                 if data == nil {
@@ -5799,7 +5804,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
         } else {
-            updateSize = planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
+            updateSize = try planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
         }
         plan.broadcastOnlyLog = SyncPhaseBroadcastLog(patchCount: broadcastDiff.count, bytes: updateSize, mode: broadcastMode)
 
@@ -5927,21 +5932,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         let eventBodies = events.pendingBroadcastBodies()
         plan.consumedEvents.broadcast = events.broadcastEventCount
-        guard let data = encodeMergedBroadcastFrameDropping(
+        let data = try encodeMergedBroadcastFrameOrFail(
             update,
             playerID: first.playerID,
             eventBodies: eventBodies,
             into: &plan
-        ) else {
-            // No state frame: the broadcast cache keeps what clients have.
-            plan.staged.broadcast = nil
-            plan.stagedTables = SyncTableStaged()
-            plan.leavesKeyTablesAhead = true
-            for recipient in recipients {
-                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
-            }
-            return nil
-        }
+        )
         for recipient in recipients {
             plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
         }
@@ -5958,7 +5954,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         update: StateUpdate,
         recipients: [SyncPhaseRecipient],
         into plan: inout SyncPhasePlan
-    ) -> Int? {
+    ) throws -> Int? {
         var lastUpdateSize: Int?
         var dataByPlayer: [PlayerID: Data?] = [:]
         for recipient in recipients {
@@ -5971,16 +5967,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 do {
                     updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
                 } catch {
-                    plan.dropReason = plan.dropReason ?? "\(error)"
-                    let (data, dropped) = encodeDroppingUnencodablePatches(update.patchesForDroppingEncode) { kept in
-                        try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
-                    }
-                    plan.droppedUpdates += dropped
-                    plan.digest?.encodeDropScopes.insert(playerID.rawValue)
-                    if data == nil {
-                        plan.leavesKeyTablesAhead = true
-                    }
-                    updateData = data
+                    // Row 12 (#535): a broadcast-only frame that doesn't encode ends the land; it
+                    // is never re-encoded with patches dropped.
+                    throw LandFailure(
+                        kind: .syncEncode,
+                        detail: "broadcast-only frame for player \(playerID.rawValue): \(error)",
+                        position: LandFailurePosition(stage: .syncPhase)
+                    )
                 }
                 dataByPlayer[playerID] = updateData
             }
