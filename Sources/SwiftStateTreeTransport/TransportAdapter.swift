@@ -6200,7 +6200,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // moved the broadcast cache past the read, and the next diff starts from the cache, so a
         // firstSync from the read would leave this client behind on the fields that changed in
         // between (#564). The player stays unmarked, so the next cycle sends its whole view from
-        // that cycle's own state; without periodic sync a follow-up runs that cycle.
+        // that cycle's own state; without periodic sync a follow-up runs that cycle. One drop is
+        // enough: that view and the broadcast cache it leaves come from the same plan and commit,
+        // so they can't diverge. Every commit counts, another player's firstSync too, which may
+        // drop a read that was still current: conservative, the view only comes a cycle later.
         guard syncPhaseCommits == commitsBeforeRead else {
             initialSyncsDroppedBehindCommit += 1
             logger.info("Initial sync dropped: a sync committed during its state read; the next cycle sends the whole view", metadata: [
