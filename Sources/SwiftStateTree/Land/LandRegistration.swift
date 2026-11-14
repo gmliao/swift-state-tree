@@ -67,7 +67,7 @@ extension LandDefinition {
 
     /// The payload types the server writes and their fields written through `Codable` rather than
     /// a typed form, for the registration log: `[(type, [field])]`, types with such fields only.
-    public func payloadFallbackFields() -> [(type: String, fields: [String])] {
+    package func payloadFallbackFields() -> [(type: String, fields: [String])] {
         var types: [Any.Type] = serverEventRegistry.registered.map(\.type)
         types += actionHandlers.compactMap { $0.getResponseType() }
         return types.compactMap { type in
