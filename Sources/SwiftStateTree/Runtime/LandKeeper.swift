@@ -2814,25 +2814,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Converts type name to camelCase action ID format (without "Action" suffix).
     /// Example: "AddGoldAction" -> "AddGold"
     private func generateActionIDForMatching(from actionType: Any.Type) -> String {
-        let typeName = String(describing: actionType)
-
-        // Remove module prefix if present (e.g., "Module.AddGoldAction" -> "AddGoldAction")
-        let baseTypeName: String
-        if let lastComponent = typeName.split(separator: ".").last {
-            baseTypeName = String(lastComponent)
-        } else {
-            baseTypeName = typeName
-        }
-
-        // Remove "Action" suffix if present, keep camelCase format
-        // Example: "AddGoldAction" -> "AddGold"
-        var actionID = baseTypeName
-        if actionID.hasSuffix("Action") {
-            actionID = String(actionID.dropLast(6))
-        }
-
-        // Return camelCase format (e.g., "AddGold")
-        return actionID
+        // The schema's action rule (#521): one definition, so the IDs can't drift apart.
+        payloadActionName(for: actionType)
     }
 
     /// Handles a client event from a player.

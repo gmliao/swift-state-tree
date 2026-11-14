@@ -242,7 +242,8 @@ public struct PayloadMacro: MemberMacro {
     /// The positional writer (#521): each field, in name order, handed to the encoder's writer,
     /// whose two `field(_:)` overloads pick the typed form or the `Codable` fallback from the
     /// field's declared type. `_payloadFieldForms` lists the same choice through the same
-    /// overloads.
+    /// overloads. The writer's generic parameter has a reserved name, so it can't shadow one of
+    /// the payload's own.
     private static func generateWriterMembers(properties: [PropertyInfo]) -> [DeclSyntax] {
         let writes = properties.map { "    try writer.field(self.\($0.name))" }.joined(separator: "\n")
         let forms = properties
@@ -250,7 +251,7 @@ public struct PayloadMacro: MemberMacro {
             .joined(separator: ", ")
         return [
             """
-            public func _writePayloadFields<W: _PayloadFieldWriter>(into writer: inout W) throws {
+            public func _writePayloadFields<__PayloadWriter: _PayloadFieldWriter>(into writer: inout __PayloadWriter) throws {
             \(raw: writes)
             }
             """,

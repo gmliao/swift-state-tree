@@ -47,7 +47,7 @@ final class PayloadMacroSortingTests: XCTestCase {
                         )]
                 }
             
-                public func _writePayloadFields<W: _PayloadFieldWriter>(into writer: inout W) throws {
+                public func _writePayloadFields<__PayloadWriter: _PayloadFieldWriter>(into writer: inout __PayloadWriter) throws {
                     try writer.field(self.a)
                     try writer.field(self.m)
                     try writer.field(self.z)

@@ -51,8 +51,9 @@ extension LandDefinition {
         }
     }
 
-    /// EV1: the types the server writes positionally (its events, and each action's response)
-    /// that have no positional writer, which would throw at their first send.
+    /// EV1: the types the server writes positionally (its events, and each action's declared
+    /// `Response` type) that have no positional writer, which would throw at their first send. A
+    /// handler body that returns some other type isn't seen here.
     func payloadsWithoutWriter() -> PayloadRegistrationError? {
         var problems: [String] = []
         for descriptor in serverEventRegistry.registered where !hasWriter(descriptor.type) {
