@@ -36,9 +36,11 @@ extension ClientID: CodingKeyRepresentable {
 
 /// Session identifier (connection level)
 ///
-/// Identifies one connection, and is never reused (#552): a result keyed by a reused ID could be
-/// taken for the new connection's. Transports get each connection's ID from `mint()`; decoding
-/// (replay rebuilds recorded IDs) and `LandContext.systemSessionID` are the other sources.
+/// Identifies one connection, and must not be reused (#552): a result keyed by a reused ID could
+/// be taken for the new connection's. Transports get each connection's ID from `mint()`; decoding
+/// (replay rebuilds recorded IDs) and `LandContext.systemSessionID` are the other sources. The
+/// type steers new connections to `mint()` but can't rule reuse out: the public `Decodable` and
+/// `CodingKeyRepresentable` inits still build an ID from any string.
 public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }
@@ -49,7 +51,8 @@ public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
     }
 
     /// An ID from a known string: the framework's own (`systemSessionID`, recorded IDs in
-    /// replay) and this package's tests and benchmarks. Not public, so an app can't reuse IDs.
+    /// replay) and this package's tests and benchmarks. Package-only, so app code building a
+    /// session's ID reaches for `mint()`.
     package init(_ rawValue: String) {
         self.rawValue = rawValue
     }
