@@ -201,6 +201,29 @@ extension TransportAdapter {
     }
 }
 
+/// An encoder's frame prefix cache counts (`TransportAdapter.framePrefixCacheCounts()`).
+/// Diagnostics; not a supported API.
+@_spi(Diagnostics) public struct FramePrefixCacheCounts: Sendable, Equatable, Codable {
+    /// Field merge plans resumed from the cache's checkpoint.
+    public var resumes = 0
+    /// Patch splits taken from the cache's reference frame instead of split again.
+    public var reusedSplits = 0
+
+    public init(resumes: Int = 0, reusedSplits: Int = 0) {
+        self.resumes = resumes
+        self.reusedSplits = reusedSplits
+    }
+
+    /// The counts since `earlier` (a window between two reads).
+    public func since(_ earlier: FramePrefixCacheCounts) -> FramePrefixCacheCounts {
+        FramePrefixCacheCounts(resumes: resumes - earlier.resumes, reusedSplits: reusedSplits - earlier.reusedSplits)
+    }
+
+    public static func + (lhs: FramePrefixCacheCounts, rhs: FramePrefixCacheCounts) -> FramePrefixCacheCounts {
+        FramePrefixCacheCounts(resumes: lhs.resumes + rhs.resumes, reusedSplits: lhs.reusedSplits + rhs.reusedSplits)
+    }
+}
+
 /// Sync cycles an adapter skipped before `beginSync`.
 public struct SyncSkipCounts: Sendable, Equatable {
     /// Another cycle was in flight (`LandKeeper.beginSync` rejected the request).

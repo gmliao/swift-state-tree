@@ -309,18 +309,23 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     }
 
     /// `wireValue(_:path:)` for a path with this split (by `pathHasher`): the position comes
-    /// from `atomicPatterns` when it has one.
+    /// from `atomicPatterns` when it has one. `path` is built only where the split doesn't
+    /// decide (an error, a key-dependent pattern) or without `atomicPatterns` (#392).
     @inline(__always)
-    private func wireValue(_ value: SnapshotValue, path: String, pathHash: UInt32, inSchema: Bool) throws -> MessagePackValue {
-        guard let atomicPatterns else { return try wireValue(value, path: path) }
+    private func wireValue(
+        _ value: SnapshotValue, path: @autoclosure () -> String, pathHash: UInt32, inSchema: Bool
+    ) throws -> MessagePackValue {
+        guard let atomicPatterns else { return try wireValue(value, path: path()) }
         return encodeSnapshotValueToMessagePack(
-            try atomicPatterns.positional(value, pathHash: pathHash, inSchema: inSchema, path: path)
+            try atomicPatterns.positional(value, pathHash: pathHash, inSchema: inSchema, path: path())
         )
     }
 
     @inline(__always)
-    private func wireValue(_ value: SnapshotValue, path: String, split: FieldMergeSplit) throws -> MessagePackValue {
-        try wireValue(value, path: path, pathHash: split.pathHash, inSchema: split.inSchema)
+    private func wireValue(
+        _ value: SnapshotValue, path: @autoclosure () -> String, split: FieldMergeSplit
+    ) throws -> MessagePackValue {
+        try wireValue(value, path: path(), pathHash: split.pathHash, inSchema: split.inSchema)
     }
 
     /// Direct encoding of patch without AnyCodable - returns MessagePackValue array
@@ -426,11 +431,15 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     }
 
     /// The path id: the path index, or the pattern's hash.
-    private func pathID(_ pathHash: UInt32, inSchema: Bool, path: String, hasher: PathHasher) throws -> MessagePackValue {
+    private func pathID(
+        _ pathHash: UInt32, inSchema: Bool, path: @autoclosure () -> String, hasher: PathHasher
+    ) throws -> MessagePackValue {
         guard pathIndex else { return .uint(UInt64(pathHash)) }
         // A path outside the schema has no index, even if its fallback hash equals a schema
-        // hash. (A merged entry's parent comes from the schema.)
+        // hash. (A merged entry's parent comes from the schema.) The path is built only for the
+        // error (#392).
         guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
+            let path = path()
             unmappedPaths?.noteUnmapped(path: path, hash: pathHash)
             throw StateUpdateEncodingError.pathNotInSchema(path)
         }
