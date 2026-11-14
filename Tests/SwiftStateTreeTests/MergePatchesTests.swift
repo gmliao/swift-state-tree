@@ -96,6 +96,47 @@ struct MergePatchesTests {
         }
     }
 
+    /// Paths in one hasher for the identity cases: two maps (`m`, `n`) whose entries have the same
+    /// keys, and a nested pattern with two fields under one key.
+    static let identityHashes: [String: UInt32] = ["m": 1, "m.*": 2, "n": 3, "n.*": 4, "m.*.x": 5, "m.*.y": 6]
+
+    @Test(
+        "Split identity is String equality on the paths: the node counts, keys compare as Strings",
+        arguments: [
+            // Two nodes, the same keys: two paths.
+            (["/m/a", "/n/a", "/m/a"], [false, false, true]),
+            (["/m/k/x", "/m/k/y", "/m/k/x"], [false, false, true]),
+            // NFC and NFD of one key: one path (keys compared bytewise would keep both).
+            (["/m/caf\u{E9}", "/m/cafe\u{301}", "/n/cafe\u{301}"], [false, true, false]),
+            (["/m/caf\u{E9}/x", "/m/cafe\u{301}/x", "/m/cafe\u{301}/y"], [false, true, false]),
+            // A '/' inside a key, escaped as the path spells it: one component, its own path.
+            (["/m/a~1b", "/m/a", "/m/a~1b", "/m/b"], [false, false, true, false]),
+            (["/m/a~1b/x", "/m/a~0b/x", "/m/a~1b/x"], [false, false, true]),
+            // The empty key: the entry `/m/` is not the map `/m`.
+            (["/m/", "/m", "/m/", "/m//x"], [false, false, true, false]),
+        ]
+    )
+    func splitIdentityIsStringEquality(paths: [String], duplicate: [Bool]) throws {
+        let hasher = PathHasher(pathHashes: Self.identityHashes)
+        let broadcast = try paths.enumerated().map { try splitOnly(hasher, $0.element, $0.offset) }
+        // The identity itself, pair by pair, against String equality on the rebuilt paths.
+        let identities = try broadcast.map { try #require($0.split).pathIdentity }
+        for i in broadcast.indices {
+            for j in 0..<i {
+                let samePath = broadcast[i].path == broadcast[j].path
+                #expect((identities[i] == identities[j]) == samePath, "\(paths[i]) vs \(paths[j])")
+            }
+        }
+        // The index keeps the first at each path, as the old merge does.
+        let index = SyncEngine.BroadcastMergeIndex(broadcast)
+        let expected = oldMerge(broadcast, [])
+        #expect(expected.count == duplicate.filter { !$0 }.count, "the case's own duplicates")
+        #expect(index.patches.map { $0.operation } == expected.map { $0.operation })
+        // A string-form per-player patch at each path replaces the kept one in place.
+        let perPlayer = paths.enumerated().map { patch($0.element, 100 + $0.offset) }
+        #expect(engine.mergePatches(index, perPlayer).map { $0.operation } == oldMerge(broadcast, perPlayer).map { $0.operation })
+    }
+
     @Test("A broadcast list mixing split and string patches, or two hashers' splits, keeps String equality's duplicates")
     func mixedBroadcastKeepsStringEquality() throws {
         let hasher = PathHasher(pathHashes: ["m": 1, "m.*": 2])
