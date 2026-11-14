@@ -207,15 +207,34 @@ struct LandFailureKeeperTests {
         #expect(finalized.all == ["finalize:join,resolved"])
     }
 
-    @Test("a further failure after the first keeps the first")
+    @Test("a second failure keeps the first: the stored failure, one teardown, one destroy")
     func firstFailureWins() async throws {
-        let (keeper, transport, _) = await make()
+        let (keeper, transport, finalized) = await make()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
         _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
-        let first = keeper.failure
+        let first = try #require(keeper.failure)
+        let second = LandFailure(kind: .eventEncode, detail: "second", position: LandFailurePosition(stage: .eventFlush))
+        await keeper.failLandForTesting(second)
+        #expect(keeper.failure == first)
         await keeper.waitUntilDrained()
         #expect(keeper.failure == first)
+        #expect(keeper.destructionCause == .failed)
+        #expect(transport.destroyed == 1)
+        #expect(finalized.all.count == 1)
+    }
+
+    @Test("a failure after a shutdown began doesn't replace its cause")
+    func failureAfterAShutdownKeepsTheShutdown() async throws {
+        let (keeper, transport, finalized) = await make()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        await keeper.forceShutdown()
+        await keeper.failLandForTesting(
+            LandFailure(kind: .syncPlan, detail: "late", position: LandFailurePosition(stage: .syncPhase)))
+        #expect(keeper.destructionCause == .forceShutdown)
+        #expect(keeper.failure == nil)
+        #expect(transport.destroyed == 1)
+        #expect(finalized.all.count == 1)
     }
 }
 

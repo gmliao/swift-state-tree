@@ -4889,6 +4889,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   closed) and then runs the existing drain: destroy handlers and save see `.failed`.
     ///
     /// The position's tick is filled here when the reporter didn't know it.
+    /// Test hook: reports `failure` as a further producer would (part A has one producer, the
+    /// in-turn plan throw), so a test can drive a second failure or one after a stop began.
+    package func failLandForTesting(_ failure: LandFailure) {
+        failLand(failure)
+    }
+
     private func failLand(_ reported: LandFailure) {
         let position = reported.position.tickId == nil && reported.position.pass == nil
             ? LandFailurePosition(

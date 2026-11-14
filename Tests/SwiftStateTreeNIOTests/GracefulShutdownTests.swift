@@ -1513,29 +1513,44 @@ struct LandStopTests {
 private final class ProbeLog: @unchecked Sendable {
     private let lock = NSLock()
     private var list: [String] = []
-    private var waiters: [(entry: String, continuation: CheckedContinuation<Void, Never>)] = []
+    private var waiters: [Int: (entry: String, continuation: CheckedContinuation<Bool, Never>)] = [:]
+    private var nextWaiterID = 0
 
     func append(_ entry: String) {
-        let resumed: [CheckedContinuation<Void, Never>] = lock.withLock {
+        let resumed: [CheckedContinuation<Bool, Never>] = lock.withLock {
             list.append(entry)
-            let matching = waiters.filter { $0.entry == entry }.map(\.continuation)
-            waiters.removeAll { $0.entry == entry }
-            return matching
+            let ids = waiters.filter { $0.value.entry == entry }.map(\.key)
+            return ids.compactMap { waiters.removeValue(forKey: $0)?.continuation }
         }
-        resumed.forEach { $0.resume() }
+        resumed.forEach { $0.resume(returning: true) }
     }
 
-    /// Returns once `entry` was appended; resumed by `append`, not by polling (the suite's time
-    /// limit bounds a probe that never comes).
-    func waitFor(_ entry: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    /// Returns `true` once `entry` was appended; resumed by `append`, not by polling. `false`
+    /// after `hangBound`: a suite's time limit doesn't resume a continuation, so without this a
+    /// probe that never comes hangs the test process.
+    func waitFor(_ entry: String) async -> Bool {
+        let id = lock.withLock { () -> Int in
+            defer { nextWaiterID += 1 }
+            return nextWaiterID
+        }
+        let hangGuard = Task { [weak self] in
+            try? await safeTaskSleep(for: hangBound)
+            self?.expire(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let now: Bool = lock.withLock {
                 if list.contains(entry) { return true }
-                waiters.append((entry, continuation))
+                waiters[id] = (entry, continuation)
                 return false
             }
-            if now { continuation.resume() }
+            if now { continuation.resume(returning: true) }
         }
+    }
+
+    private func expire(_ id: Int) {
+        let waiter = lock.withLock { waiters.removeValue(forKey: id) }
+        waiter?.continuation.resume(returning: false)
     }
 }
 
@@ -1616,7 +1631,10 @@ struct HostedLandFailureTests {
         let stopped = StopResultRecorder()
         let server = f.server, landID = f.landID
         let stop = Task { stopped.set(await server.stopLand(landID: landID)) }
-        await probes.waitFor("force-shutdown-joined")
+        let joined = await probes.waitFor("force-shutdown-joined")
+        // On a regression, release the teardown so the stop and the test end instead of hanging.
+        if !joined { teardown.open() }
+        #expect(joined, "the stop reached forceShutdown")
         #expect(stopped.value == nil, "the stop waits for the held teardown")
         #expect(events.count("finalize") == 0)
 
