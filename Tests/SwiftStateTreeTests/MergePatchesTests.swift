@@ -62,4 +62,33 @@ struct MergePatchesTests {
         #expect(engine.mergePatches(index, []) == oldMerge(b, []))
         #expect(engine.mergePatches(b, p) == expected)
     }
+
+    /// A split-only patch at `path` (#392): it holds no path string.
+    func splitOnly(_ hasher: PathHasher, _ path: String, _ value: Int) throws -> StatePatch {
+        var cursor = hasher.rootCursor
+        for component in PathHasher.components(of: path) {
+            cursor = try #require(cursor.descending(component))
+        }
+        let patch = StatePatch(split: try #require(cursor.split), operation: .set(.int(value)))
+        #expect(patch.isSplitOnly)
+        return patch
+    }
+
+    @Test("A split-only patch and a string-form patch at one path are one path, on either side")
+    func splitAndStringFormsAreOnePath() throws {
+        let hasher = PathHasher(pathHashes: ["m": 1, "m.*": 2])
+        let splitBroadcast = [try splitOnly(hasher, "/m/a", 1), try splitOnly(hasher, "/m/b", 2), try splitOnly(hasher, "/m/a", 3)]
+        let stringPerPlayer = [patch("/m/b", 4), patch("/m/c", 5), patch("/m/a", 6)]
+        let stringBroadcast = [patch("/m/a", 1), patch("/m/b", 2)]
+        let splitPerPlayer = [try splitOnly(hasher, "/m/b", 4), try splitOnly(hasher, "/m/c", 5), try splitOnly(hasher, "/m/c", 6)]
+        for (b, p) in [(splitBroadcast, stringPerPlayer), (stringBroadcast, splitPerPlayer)] {
+            let expected = oldMerge(b, p)
+            let merged = engine.mergePatches(SyncEngine.BroadcastMergeIndex(b), p)
+            #expect(merged == expected)
+            let paths = merged.map { $0.path }
+            #expect(paths == ["/m/a", "/m/b", "/m/c"])
+            let values = merged.map { $0.operation }
+            #expect(values == expected.map { $0.operation })
+        }
+    }
 }
