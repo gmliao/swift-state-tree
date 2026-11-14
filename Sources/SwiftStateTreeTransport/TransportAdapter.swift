@@ -1695,6 +1695,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
                 logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
             } else {
+                // Not reached since #531: a newer session of the player supersedes the older one
+                // at its registration, so the older one has left the membership and its
+                // disconnect runs no leave. Kept for several sessions per player (#539).
                 logger.info("Client disconnected; player still has another session, its state is kept", metadata: [
                     "sessionID": .string(sessionID.rawValue),
                     "playerID": .string(playerID.rawValue),
