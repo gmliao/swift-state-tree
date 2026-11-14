@@ -253,31 +253,52 @@ package final class PathHasherIdentity: Sendable {
     /// The path of the node at `index` with `keys` in its wildcards, in order: each literal as
     /// its label spells it, each key as given, `/`-joined. The keys are escaped already.
     fileprivate func path(atNode index: Int32, keys: [String]) -> String {
-        var parts: [String] = []
+        // Two walks up the parent chain: the length, then the bytes, written from the end. One
+        // allocation and no array of parts: a rebuild runs for each reader that needs a string.
         var length = 0
         var node = index
         var key = keys.count
         while node > 0 {
             let entry = entries[Int(node)]
-            let part: String
             if let label = entry.label {
-                part = label
+                length += label.utf8.count + 1
             } else {
                 key -= 1
-                part = keys[key]
+                length += keys[key].utf8.count + 1
             }
-            parts.append(part)
-            length += part.utf8.count + 1
             node = entry.parent
         }
         assert(key == 0, "a split's keys must fill its pattern's wildcards")
-        var path = ""
-        path.reserveCapacity(length)
-        for part in parts.reversed() {
-            path += "/"
-            path += part
+        guard length > 0 else { return "" }
+        return String(unsafeUninitializedCapacity: length) { buffer in
+            var end = length
+            var node = index
+            var key = keys.count
+            while node > 0 {
+                let entry = entries[Int(node)]
+                let part: String
+                if let label = entry.label {
+                    part = label
+                } else {
+                    key -= 1
+                    part = keys[key]
+                }
+                let start = end - part.utf8.count
+                let copied = part.utf8.withContiguousStorageIfAvailable { bytes -> Bool in
+                    if let source = bytes.baseAddress {
+                        (buffer.baseAddress! + start).initialize(from: source, count: bytes.count)
+                    }
+                    return true
+                }
+                if copied == nil {
+                    _ = UnsafeMutableBufferPointer(rebasing: buffer[start ..< end]).initialize(from: part.utf8)
+                }
+                buffer[start - 1] = UInt8(ascii: "/")
+                end = start - 1
+                node = entry.parent
+            }
+            return length
         }
-        return path
     }
 }
 
