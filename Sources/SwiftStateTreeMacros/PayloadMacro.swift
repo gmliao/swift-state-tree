@@ -58,10 +58,11 @@ public struct PayloadMacro: MemberMacro {
         
         var members: [DeclSyntax] = [DeclSyntax(getFieldMetadataMethod)]
         
-        // Generate encodeAsArray() method for PayloadCompression protocol
-        // This ensures correct field order for opcode-based compression
-        let encodeAsArrayMethod = try generateEncodeAsArray(properties: properties, structName: structDecl.name.text)
-        members.append(DeclSyntax(encodeAsArrayMethod))
+        // The positional writer, its field forms and the wire name (#521), fields in name order
+        members.append(contentsOf: generateWriterMembers(properties: properties))
+        if let wireName = wireName(of: structDecl, in: context) {
+            members.append("public static var _payloadWireName: String { \(literal: wireName) }")
+        }
         
         // Always generate getResponseType() for ActionPayload types
         // This ensures the macro declaration covers it
@@ -177,12 +178,12 @@ public struct PayloadMacro: MemberMacro {
                 """
             )
         } else {
-            // Generate a fallback that throws an error
-            // This ensures the method is always generated for ActionPayload types
+            // No `typealias Response` in the struct (a nested type or an extension declares it):
+            // the associated type itself, which the conformance always has.
             return try FunctionDeclSyntax(
                 """
                 public static func getResponseType() -> Any.Type {
-                    fatalError("getResponseType() must have a typealias Response = ... in \(raw: structDecl.name.text)")
+                    return Response.self
                 }
                 """
             )
@@ -238,35 +239,54 @@ public struct PayloadMacro: MemberMacro {
         )
     }
     
-    /// Generate encodeAsArray() method for PayloadCompression protocol
-    /// This method encodes the payload as an array using the exact field order from the struct declaration
-    private static func generateEncodeAsArray(properties: [PropertyInfo], structName: String) throws -> FunctionDeclSyntax {
-        guard !properties.isEmpty else {
-            // Empty struct - return empty array
-            return try FunctionDeclSyntax(
-                """
-                public func encodeAsArray() -> [AnyCodable] {
-                    return []
-                }
-                """
-            )
-        }
-        
-        // Generate array elements in declaration order
-        var arrayElements: [String] = []
-        for property in properties {
-            arrayElements.append("AnyCodable(self.\(property.name))")
-        }
-        
-        let arrayBody = arrayElements.joined(separator: ", ")
-        
-        return try FunctionDeclSyntax(
+    /// The positional writer (#521): each field, in name order, handed to the encoder's writer,
+    /// whose two `field(_:)` overloads pick the typed form or the `Codable` fallback from the
+    /// field's declared type. `_payloadFieldForms` lists the same choice through the same
+    /// overloads.
+    private static func generateWriterMembers(properties: [PropertyInfo]) -> [DeclSyntax] {
+        let writes = properties.map { "    try writer.field(self.\($0.name))" }.joined(separator: "\n")
+        let forms = properties
+            .map { "_PayloadFieldFormEntry(\"\($0.name)\", _payloadFieldForm(of: \\Self.\($0.name)))" }
+            .joined(separator: ", ")
+        return [
             """
-            public func encodeAsArray() -> [AnyCodable] {
-                return [\(raw: arrayBody)]
+            public func _writePayloadFields<W: _PayloadFieldWriter>(into writer: inout W) throws {
+            \(raw: writes)
             }
-            """
-        )
+            """,
+            "public static var _payloadHasTypedWriter: Bool { true }",
+            "public static var _payloadFieldForms: [_PayloadFieldFormEntry] { [\(raw: forms)] }",
+        ]
+    }
+
+    /// The schema's name for the type, fixed at expansion: an event's name without an `Event`
+    /// suffix, an action's without `Action`. Nil (the protocol's runtime rule applies) when the
+    /// conformance isn't in the struct's own inheritance clause, or when the type may be generic:
+    /// its own parameters, or any enclosing context that isn't a plain non-generic type.
+    private static func wireName(of structDecl: StructDeclSyntax, in context: some MacroExpansionContext) -> String? {
+        guard structDecl.genericParameterClause == nil else { return nil }
+        for enclosing in context.lexicalContext {
+            if let decl = enclosing.as(StructDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return nil }
+            } else if let decl = enclosing.as(ClassDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return nil }
+            } else if let decl = enclosing.as(EnumDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return nil }
+            } else if let decl = enclosing.as(ActorDeclSyntax.self) {
+                if decl.genericParameterClause != nil { return nil }
+            } else {
+                return nil
+            }
+        }
+        let name = structDecl.name.text
+        let inherited = Set(structDecl.inheritanceClause?.inheritedTypes.compactMap {
+            $0.type.trimmedDescription.split(separator: ".").last.map(String.init)
+        } ?? [])
+        let isEvent = inherited.contains("ServerEventPayload") || inherited.contains("ClientEventPayload")
+        let isAction = inherited.contains("ActionPayload")
+        if isEvent == isAction { return nil }
+        let suffix = isAction ? "Action" : "Event"
+        return name.hasSuffix(suffix) ? String(name.dropLast(suffix.count)) : name
     }
 }
 

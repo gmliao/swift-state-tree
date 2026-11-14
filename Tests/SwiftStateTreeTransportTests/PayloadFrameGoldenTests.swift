@@ -417,14 +417,13 @@ struct PayloadFrameGoldenTests {
         #expect(kinds == ["serverEvent", "actionResponse", "action", "clientEvent"])
         for c in cases {
             let name = c["name"] as? String ?? "?"
-            let refusesJSON = ["leaves-nan", "leaves-infinity", "fallbacks-decimal-nan"].contains(name)
+            // A Decimal NaN isn't refused today: every JSON encoding writes a bare `NaN` (#557).
+            let refusesJSON = ["leaves-nan", "leaves-infinity"].contains(name)
             for key in ["messagePack", "messagePackPlain"] {
                 #expect(c[key] as? String != "error", "\(name): \(key)")
             }
-            if name != "fallbacks-decimal-nan" {
-                for key in ["opcodeJSON", "opcodeJSONPlain", "jsonObject"] {
-                    #expect((c[key] as? String == "error") == refusesJSON, "\(name): \(key)")
-                }
+            for key in ["opcodeJSON", "opcodeJSONPlain", "jsonObject"] {
+                #expect((c[key] as? String == "error") == refusesJSON, "\(name): \(key)")
             }
         }
     }
