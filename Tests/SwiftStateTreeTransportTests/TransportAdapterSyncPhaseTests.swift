@@ -952,6 +952,26 @@ struct TransportAdapterSyncPhaseTests {
         }
     }
 
+    @Test("an event sent outside a turn that reaches no frame ends the land; one sent alone doesn't (#535 row 17)", arguments: [true, false])
+    func lostEventOutsideATurnEndsTheLand(lost: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack)
+        await f.keeper.setTransport(f.adapter)
+        await f.sync()
+        let fault: TransportAdapter<SyncPhaseTestState>.EventEncodingFault = lost ? .all : .mergedBody
+        await f.adapter.setEventEncodingFaultForTesting { _ in fault }
+        await f.queueEvent("unencodable", to: .all)
+        if lost {
+            try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+            #expect(f.keeper.failure?.kind == .eventEncode)
+            #expect(f.keeper.failure?.position.stage == .eventFlush)
+            #expect(f.adapter.outputGate.isClosed)
+        } else {
+            await f.adapter.waitForOutboundIdleForTesting()
+            #expect(f.keeper.failure == nil, "sent alone is not a loss")
+            #expect(count("unencodable", in: await f.transport.messages(for: f.session)) == 1)
+        }
+    }
+
     @Test("a broadcast-only cycle with a value that does not encode (NaN, json) ends the land (#535 row 12)")
     func unencodableBroadcastOnlyPatchEndsTheLand() async throws {
         let f = try await SyncPhaseFixture.make(encoding: .json)

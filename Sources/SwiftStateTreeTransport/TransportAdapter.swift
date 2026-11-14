@@ -3050,7 +3050,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// then tries `unpack(JSON bytes)` as MessagePack, which fails → returns nil. Without fallback, the event would
     /// be dropped silently. We therefore fall through to the normal send path and send the event as a separate frame.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
-        enqueueEventSynchronously(event, to: target)
+        guard enqueueEventSynchronously(event, to: target) == .lost else { return }
+        // An event that reached no frame ends the land (#535 row 17).
+        let failure = LandFailure(
+            kind: .eventEncode,
+            detail: "event \(event.type) did not encode",
+            position: LandFailurePosition(stage: .eventFlush)
+        )
+        outputGate.close(failure)
+        await keeper.submitLandFailure(failure)
     }
 
     /// The synchronous core of `sendEvent`: opcode 107 queues the event body for the next merged
@@ -3134,6 +3142,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for item in events {
             let digest = digestsEvents ? Self.canonicalEvent(item) : nil
             let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
+            if outcome == .lost {
+                // An event that reached no frame ends the land (#535 row 17). One sent alone
+                // after its merged body failed isn't a loss.
+                let failure = LandFailure(
+                    kind: .eventEncode,
+                    detail: "event \(item.event.type) did not encode",
+                    position: LandFailurePosition(stage: .syncPhase)
+                )
+                outputGate.close(failure)
+                return .landFailed(failure)
+            }
             if digestsEvents, let sequence = item.sequence {
                 switch outcome {
                 case .noRecipient: syncStreamUnqueuedEvents.append(sequence)
@@ -3411,17 +3430,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    /// Appends one event frame (opcode 103) per body for `sessionID`.
+    /// Appends one event frame (opcode 103) per body for `sessionID`. A frame that doesn't
+    /// pack ends the land (#535 row 17): the event would be lost.
     private func appendEventFrames(
         _ eventBodies: [MessagePackValue],
         to sessionID: SessionID,
         into frames: inout [SyncPhaseFrame]
-    ) {
+    ) throws {
         for body in eventBodies {
             guard case .array(let bodyArray) = body else { continue }
             let frame: MessagePackValue = .array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray)
-            if let data = try? pack(frame) {
-                frames.append(SyncPhaseFrame(data: data, sessionID: sessionID))
+            do {
+                frames.append(SyncPhaseFrame(data: try pack(frame), sessionID: sessionID))
+            } catch {
+                throw LandFailure(
+                    kind: .eventEncode,
+                    detail: "event frame: \(error)",
+                    position: LandFailurePosition(stage: .syncPhase)
+                )
             }
         }
     }
@@ -4497,7 +4523,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Opcode 107: the event frames of the first `end` queued targeted events for each session
     /// that holds events, with the stamp checks a joined recipient's events get. In-turn
     /// joiners past the flip budget are included: they keep their events to their own flip.
-    private func heldEventFrames(events: PendingEventManager, endingBefore end: Int) -> [SessionID: [Data]] {
+    private func heldEventFrames(events: PendingEventManager, endingBefore end: Int) throws -> [SessionID: [Data]] {
         guard end > 0 else { return [:] }
         var held: [SessionID: [Data]] = [:]
         for (sessionID, joining) in joiningSessions where holdsEvents(sessionID) {
@@ -4508,7 +4534,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 endingBefore: end
             )
             var frames: [SyncPhaseFrame] = []
-            appendEventFrames(bodies, to: sessionID, into: &frames)
+            try appendEventFrames(bodies, to: sessionID, into: &frames)
             if !frames.isEmpty {
                 held[sessionID] = frames.map(\.data)
             }
@@ -4602,7 +4628,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Before the flips end their joining: what this plan consumes for joining sessions is
         // held for those that hold events (#69), and not delivered to the others.
         let held = plan.heldEvents.flatMap { plan.heldEventsEnd == plan.consumedEvents.targeted ? $0 : nil }
-            ?? heldEventFrames(events: pendingEventManager, endingBefore: plan.consumedEvents.targeted)
+            // The plan packed these bodies already (it throws on a failure, row 17), and packing
+            // is deterministic, so this recount can't fail.
+            ?? ((try? heldEventFrames(events: pendingEventManager, endingBefore: plan.consumedEvents.targeted)) ?? [:])
         var overflowed: [SessionID] = []
         for (sessionID, frames) in held where !holdEvents(frames, for: sessionID) {
             overflowed.append(sessionID)
@@ -4734,7 +4762,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // commit fails it with `eventOverflow` instead, so it never flips a join it also fails.
         var joiners = joiners
         if useStateUpdateWithEvents {
-            let held = heldEventFrames(events: events, endingBefore: events.targetedEventCount)
+            let held = try heldEventFrames(events: events, endingBefore: events.targetedEventCount)
             plan.heldEvents = held
             plan.heldEventsEnd = events.targetedEventCount
             joiners.removeAll { joiner in
@@ -5365,7 +5393,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     playerID: recipient.playerID,
                     endingBefore: targetedEnd
                 )
-                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+                try appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
             if let payload = payloadBySession[recipient.sessionID] {
                 plan.frames.append(SyncPhaseFrame(
@@ -5808,7 +5836,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         playerID: recipient.playerID,
                         endingBefore: plan.consumedEvents.targeted
                     )
-                    appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+                    try appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
                 }
             }
         } else {

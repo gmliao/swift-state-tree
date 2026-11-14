@@ -1270,37 +1270,47 @@ struct SyncOutputVerifierTests {
         #expect(sync.tailEventsNotSynced > 0, "\(sync.summary)")
     }
 
-    @Test(
-        "Opcode 107: an event sent outside the merged frame (alone, or lost) makes that output's events unverifiable",
-        arguments: [TransportAdapter<VerifierState>.EventEncodingFault.mergedBody, .all]
-    )
-    func unmergedEventIsUnverifiable(fault: TransportAdapter<VerifierState>.EventEncodingFault) async throws {
+    @Test("Opcode 107: an event sent alone, outside the merged frame, makes that output's events unverifiable")
+    func unmergedEventIsUnverifiable() async throws {
         guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         let fails = VerifierSwitch()
-        await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? fault : nil }
+        await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? .mergedBody : nil }
         try await f.join(1)
         await f.tick()
         fails.set(true)
-        await f.tick()      // its three events do not reach a merged frame
+        await f.tick()      // its three events do not reach a merged frame; each goes alone
         fails.set(false)
         await f.tick()
         let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+        try #require(ticks.count == 3)
         let unmerged = ticks.map { $0.eventsNotMerged ?? ReevaluationUnmergedEvents() }
         #expect(unmerged.map { $0.all.count } == [0, 3, 0])
-        if fault == .all {
-            #expect(unmerged[1].lost.count == 3 && unmerged[1].sentAlone.isEmpty)
-        } else {
-            #expect(unmerged[1].sentAlone.count == 3 && unmerged[1].lost.isEmpty)
-        }
+        #expect(unmerged[1].sentAlone.count == 3 && unmerged[1].lost.isEmpty)
         #expect(ticks[1].eventsNotQueued == nil, "an event to nobody that did not encode is not merged either")
         let sync = try await f.replay().syncOutput
         #expect(sync.verdict == .partial, "\(sync.summary)")
         #expect(sync.events.compared == 2)
         #expect(sync.events.unverifiable == 1)
         #expect(sync.eventsAfterLastOutput == 0)
-        #expect(fault == .all ? (sync.eventsLost, sync.eventsSentAlone) == (3, 0) : (sync.eventsLost, sync.eventsSentAlone) == (0, 3))
-        #expect(sync.summary.contains(fault == .all ? "3 events lost" : "3 events sent outside the merged frame"))
+        #expect((sync.eventsLost, sync.eventsSentAlone) == (0, 3))
+        #expect(sync.summary.contains("3 events sent outside the merged frame"))
+    }
+
+    @Test("Opcode 107: an event that reaches no frame at all ends the land (#535 row 17)")
+    func lostEventEndsTheLand() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        let fails = VerifierSwitch()
+        await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? .all : nil }
+        try await f.join(1)
+        await f.tick()
+        fails.set(true)
+        await f.tick()      // the first event's body and its own frame both fail
+        #expect(f.keeper.failure?.kind == .eventEncode)
+        #expect(f.adapter.outputGate.isClosed)
+        let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+        #expect(ticks.count == 1, "the failing tick commits no sync output")
     }
 
     @Test("Opcode 107: an unsent per-player update is a benign skip once a later comparison sees the resend")
