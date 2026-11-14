@@ -4281,7 +4281,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                             kind: kind,
                             playerID: recordedLifecycleEvent.playerID.map(PlayerID.init),
                             clientID: recordedLifecycleEvent.clientID.map(ClientID.init),
-                            sessionID: recordedLifecycleEvent.sessionID.map(SessionID.init),
+                            sessionID: recordedLifecycleEvent.sessionID.map { SessionID($0) },
                             deviceID: recordedLifecycleEvent.deviceID,
                             isGuest: recordedLifecycleEvent.isGuest,
                             metadata: recordedLifecycleEvent.metadata,

@@ -128,3 +128,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-13 | [A stacked branch carries a stale plan](2026-11-13-a-stacked-branch-carries-a-stale-plan.md) | git, stacked-prs, plans, review |
 | 2026-11-13 | [An input that takes effect only in a later phase, measured without that phase](2026-11-13-an-input-applied-in-a-later-phase-measured-without-it.md) | measurement, benchmark, methodology, inputs, tick |
 | 2026-11-13 | [An E2E leg named for a path it doesn't run](2026-11-13-an-e2e-leg-named-for-a-path-it-does-not-run.md) | encoding, opcode-json, payload-compression, e2e, coverage, crash |
+| 2026-11-14 | [A verdict never checked on one land kind](2026-11-14-a-verdict-never-checked-on-one-land-kind.md) | replay, tickless, sync-output, verifier, testing |
