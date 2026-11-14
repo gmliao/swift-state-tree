@@ -359,6 +359,11 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
     /// cycle runs instead of racing its 100 ms delay.
     case failedPlanFollowUp
+    /// The debug freeze's auto-resume timer has fired, before it checks its generation, so a
+    /// test decides when each timer acts instead of racing its timeout (#502).
+    case debugFreezeAutoResumeFired
+    /// A fired auto-resume timer that a newer freeze call or a resume replaced: it does nothing.
+    case debugFreezeAutoResumeStale
     /// A pending action's answer (`finishActionResponse`), before it checks its ticket.
     case actionResponse
     /// A sync cycle after its frames were enqueued and before its `endSync` hop, while the cycle
@@ -960,6 +965,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Initial syncs dropped after their state read because the session's ticket ended or its
     /// membership changed during the read (#98): nothing was committed for them (diagnostics).
     private(set) var initialSyncsDroppedStale = 0
+    /// Initial syncs dropped after their state read because a sync phase committed during the
+    /// read (#564): the shared broadcast cache may already be past the read, so the next cycle
+    /// sends the player its whole view instead (diagnostics).
+    private(set) var initialSyncsDroppedBehindCommit = 0
+    /// Counts sync phase commits. A standalone firstSync captures it before its state read and
+    /// commits only if it is unchanged after (#564): a commit in between may have moved the
+    /// shared broadcast cache past the read, which the next diff would then start from.
+    private var syncPhaseCommits: UInt64 = 0
     /// Targeted events held for an in-turn join and sent after its firstSync at its flip (#69).
     private(set) var eventsHeldForJoiningSessions = 0
     /// In-turn joins whose held events went over the bound in a target resolution
@@ -4538,6 +4551,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// ends the carry of failed plans' dirty fields, and one that reset the key scopes ends a
     /// pending reset.
     private func commitSyncPhase(_ plan: SyncPhasePlan, isSyncCycle: Bool) {
+        syncPhaseCommits &+= 1
         if var digest = plan.digest, let read = syncOutputRead {
             if useStateUpdateWithEvents {
                 let consumed = pendingEventManager.consumedEventDigests(
@@ -6156,6 +6170,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
         await holds.at(.initialSync)
+        let commitsBeforeRead = syncPhaseCommits
         let state: State
         var read: SyncOutputRead?
         if inTurnSyncEnabled {
@@ -6179,6 +6194,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
             ])
+            return
+        }
+        // A sync phase committed during the read: a cycle that skipped this player may have
+        // moved the broadcast cache past the read, and the next diff starts from the cache, so a
+        // firstSync from the read would leave this client behind on the fields that changed in
+        // between (#564). The player stays unmarked, so the next cycle sends its whole view from
+        // that cycle's own state; without periodic sync a follow-up runs that cycle. One drop is
+        // enough: that view and the broadcast cache it leaves come from the same plan and commit,
+        // so they can't diverge. Every commit counts, another player's firstSync too, which may
+        // drop a read that was still current: conservative, the view only comes a cycle later.
+        guard syncPhaseCommits == commitsBeforeRead else {
+            initialSyncsDroppedBehindCommit += 1
+            logger.info("Initial sync dropped: a sync committed during its state read; the next cycle sends the whole view", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "playerID": .string(playerID.rawValue),
+            ])
+            // The failed-plan follow-up, not counted as a failed plan: nothing failed, and one
+            // drop happens per join at most.
+            if !keeper.hasPeriodicSync { startDelayedFollowUpSync() }
             return
         }
         do {
@@ -7193,8 +7227,12 @@ extension TransportAdapter {
     }
 
     private func debugAutoResume(timerGeneration: UInt64) async {
+        await holds.at(.debugFreezeAutoResumeFired)
         guard debugFreezeState.count > 0,
-              debugFreezeState.autoResumeGeneration == timerGeneration else { return }
+              debugFreezeState.autoResumeGeneration == timerGeneration else {
+            await holds.at(.debugFreezeAutoResumeStale)
+            return
+        }
         logger.warning("Debug freeze auto-resumed after timeout", metadata: [
             "landID": .string(landID),
             "freezeCount": .stringConvertible(debugFreezeState.count),
