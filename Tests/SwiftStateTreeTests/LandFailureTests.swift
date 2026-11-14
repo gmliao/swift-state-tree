@@ -183,7 +183,7 @@ struct LandFailureKeeperTests {
         _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
         // Without a failure the teardown never reaches the hold: stop here rather than wait.
         try #require(keeper.failure != nil, "the action's sync phase failed the land")
-        await gate.waitUntilArrived()
+        try #require(await gate.waitUntilArrived(), "the teardown reached its hold")
         #expect(await keeper.playerCount() == 0, "players cleared in the failing segment")
         let shutdown = Task { await keeper.forceShutdown() }
         #expect(finalized.all.isEmpty, "no destroy while the teardown is held")
@@ -225,16 +225,17 @@ private final class TestHoldGate: @unchecked Sendable {
     private var opened = false
     private var arrived = false
     private var openWaiters: [CheckedContinuation<Void, Never>] = []
-    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var arrivalWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
+    private var nextWaiterID = 0
 
     func arrive() async {
-        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+        let waiters: [CheckedContinuation<Bool, Never>] = lock.withLock {
             arrived = true
-            let w = arrivalWaiters
+            let w = Array(arrivalWaiters.values)
             arrivalWaiters.removeAll()
             return w
         }
-        waiters.forEach { $0.resume() }
+        waiters.forEach { $0.resume(returning: true) }
         await withCheckedContinuation { continuation in
             let resumeNow: Bool = lock.withLock {
                 if opened { return true }
@@ -245,15 +246,32 @@ private final class TestHoldGate: @unchecked Sendable {
         }
     }
 
-    func waitUntilArrived() async {
-        await withCheckedContinuation { continuation in
+    /// Resumed by the arrival, not by polling. `false` after a 60 s hang guard: a suite's time
+    /// limit cancels the test's task, but a continuation that is never resumed ignores the
+    /// cancellation, so without this bound a missing arrival hangs the whole test process.
+    func waitUntilArrived() async -> Bool {
+        let id = lock.withLock { () -> Int in
+            defer { nextWaiterID += 1 }
+            return nextWaiterID
+        }
+        let hangGuard = Task { [weak self] in
+            try? await safeTaskSleep(for: .seconds(60))
+            self?.expire(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let resumeNow: Bool = lock.withLock {
                 if arrived { return true }
-                arrivalWaiters.append(continuation)
+                arrivalWaiters[id] = continuation
                 return false
             }
-            if resumeNow { continuation.resume() }
+            if resumeNow { continuation.resume(returning: true) }
         }
+    }
+
+    private func expire(_ id: Int) {
+        let waiter = lock.withLock { arrivalWaiters.removeValue(forKey: id) }
+        waiter?.resume(returning: false)
     }
 
     func open() {
