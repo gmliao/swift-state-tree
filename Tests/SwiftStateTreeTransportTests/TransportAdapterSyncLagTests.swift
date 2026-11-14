@@ -863,31 +863,6 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
     }
 
-    @Test("A plan fault with a resync due commits nothing; the next plan resyncs (legacy sync)")
-    func planFaultWithResyncDue() async throws {
-        // Legacy sync: an in-turn plan's first throw ends the land (#535 row 15); the legacy
-        // path keeps its follow-up until #535's second part.
-        let f = try await makeFixture(inTurnSync: false)
-        let firstSync = try #require(try await f.stateFrames().first)
-        await f.ack(firstSync.seq)
-        try await f.bump()
-        _ = try await f.stateFrames()
-        f.clock.advance(3.3)
-        await f.ack(firstSync.seq)
-        let once = FailOnce()
-        await f.adapter.setSyncPlanFaultForTesting { try once.fire() }
-        try await f.bump()
-        #expect(once.didFire)
-        #expect(try await f.stateFrames().isEmpty, "the faulted plan sent nothing")
-        #expect(await f.adapter.syncLagResyncs == 0, "no resync recorded")
-        // The next plan decides again: had the faulted plan recorded its resync, the lag would
-        // have restarted and no op 3 follow.
-        await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain())
-        #expect(try await f.stateFrames().map(\.op) == [3])
-        #expect(await f.adapter.syncLagResyncs == 1)
-    }
-
     @Test("A newer join of the player supersedes the tracked session: its lag state goes, the new one is tracked")
     func supersedeRemovesLagState() async throws {
         let f = try await makeFixture()

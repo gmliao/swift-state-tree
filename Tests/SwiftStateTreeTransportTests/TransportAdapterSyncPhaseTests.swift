@@ -781,23 +781,23 @@ struct TransportAdapterSyncPhaseTests {
         #expect(engine.hasReceivedFirstSyncForTesting(f.player) == false)
     }
 
-    @Test("a broadcast-only cycle after a failed plan runs a full cycle", arguments: SyncPhaseEncoding.allCases)
-    func broadcastOnlyCycleAfterFailedPlanRunsFullCycle(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding)
+    @Test("after a legacy plan's failure, no state or event frame is sent: the output gate (#535)", arguments: SyncPhaseEncoding.allCases)
+    func failedLandSendsNoFurtherOutput(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, periodicSync: false)
         await f.sync()
-
-        try await f.set("score", 9)
+        try await f.set("a", 1)
         await f.failNextPlan()
-        await f.sync()
-        #expect(await f.adapter.isKeyScopeResetPending())
+        await f.adapter.syncNow()
+        #expect(f.adapter.outputGate.isClosed, "the adapter closed its gate where it saw the throw")
+        let before = await f.frameCount()
 
+        // A further change, an event and sync requests: nothing new is enqueued.
+        try? await f.set("a", 2)
+        await f.queueEvent("after-failure", to: .all)
+        await f.adapter.syncNow()
         await f.adapter.syncBroadcastOnly()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-
-        let client = try await f.expectConverged("after the broadcast-only cycle")
-        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(9), "a per-player change must arrive too")
-        #expect(await f.adapter.isKeyScopeResetPending() == false)
-        #expect(await f.adapter.carriedDirtyFieldsForTesting().isEmpty)
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await f.frameCount() == before, "no frame after the failure")
     }
 
     @Test("an update that fails to encode is re-encoded typed firstSync in the same cycle", arguments: SyncPhaseEncoding.allCases)
@@ -1341,30 +1341,6 @@ struct TransportAdapterSyncPhaseTests {
         #expect(await f.adapter.waitForOutboundDrain())
         let client = try await f.expectConverged("after the follow-up")
         #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(0))
-    }
-
-    @Test("a failed plan keeps queued events; the next cycle delivers each once (opcode 107)")
-    func throwingPlanKeepsQueuedEvents() async throws {
-        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true)
-        await f.sync()
-
-        try await f.set("a", 1)
-        await f.queueEvent("bc-kept", to: .all)
-        await f.queueEvent("tg-kept", to: .player(f.player))
-        let before = await f.adapter.pendingEventCounts()
-        #expect(before.targeted == 1 && before.broadcast == 1, "precondition: both events queued")
-        await f.failNextPlan()
-        await f.sync()
-        let after = await f.adapter.pendingEventCounts()
-        #expect(after.targeted == 1 && after.broadcast == 1, "a failed plan removes no event")
-
-        await f.sync()
-        let frames = await f.transport.messages(for: f.session)
-        #expect(count("bc-kept", in: frames) == 1, "broadcast event exactly once")
-        #expect(count("tg-kept", in: frames) == 1, "targeted event exactly once")
-        let drained = await f.adapter.pendingEventCounts()
-        #expect(drained.targeted == 0 && drained.broadcast == 0)
-        _ = try await f.expectConverged("after the next cycle")
     }
 
     @Test("per session: merged frame, then targeted event frames, then the per-player frame (opcode 107)")
