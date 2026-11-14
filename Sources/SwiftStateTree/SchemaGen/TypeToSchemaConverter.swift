@@ -311,8 +311,11 @@ public struct TypeToSchemaConverter {
         }
 
         // Check if type conforms to SchemaMetadataProvider (has getFieldMetadata)
-        if let metadataProvider = type as? any SchemaMetadataProvider.Type {
-            let fieldMetadata = metadataProvider.getFieldMetadata()
+        // A hand-written `SchemaMetadataProvider` wins; else a let-only `@SnapshotConvertible`
+        // type's generated field list (#566).
+        let declaredFields = (type as? any SchemaMetadataProvider.Type)?.getFieldMetadata()
+            ?? (type as? any SnapshotFieldListProvider.Type)?.snapshotFieldMetadata
+        if let fieldMetadata = declaredFields {
             
             var properties: [String: JSONSchema] = [:]
             var required: [String] = []

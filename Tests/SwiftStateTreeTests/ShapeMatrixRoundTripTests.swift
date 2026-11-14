@@ -6,10 +6,10 @@
 // `a/b`, `t~x`, a decomposed accent). A recursive state type has no case: schema generation
 // refuses it (#286, `RecursiveStateSchemaTests`).
 //
-// Known issues are marked per case and flag their own fix (a marked case that passes fails):
-// #288, a non-atomic `let`-only struct's atomic values stay keyed. The fixture carries a decode
-// marker (`knownIssue`), so `sdk/ts` and `Tools/CLI` expect the same failures; no case has one
-// since #289 (a dynamic key slot shared by canonically equivalent keys) was fixed.
+// Known issues are marked per case and flag their own fix (a marked case that passes fails). The
+// fixture carries a decode marker (`knownIssue`), so `sdk/ts` and `Tools/CLI` expect the same
+// failures; no case has one since #289 (a dynamic key slot shared by canonically equivalent keys)
+// was fixed, and no wire issue since #288 (a let-only struct had no schema properties, #566).
 //
 // Each case is one patch. Swift encodes it in both opcode formats with the production settings
 // (path hashes from the schema, dynamic key compression, the atomic layout table) and checks the
@@ -144,7 +144,7 @@ struct ShapeMatrixRoundTripTests {
         /// The frame doesn't decode to this patch until the issue is fixed: #289 (a dynamic key
         /// slot shared by canonically equivalent keys).
         var decodeIssue: Int? = nil
-        /// #288: the value goes out keyed.
+        /// The value goes out in another shape until the issue is fixed (none open).
         var wireIssue: Int? = nil
     }
 
@@ -173,8 +173,7 @@ struct ShapeMatrixRoundTripTests {
                 name: "let-only struct",
                 path: "/fixed",
                 logical: try v(ShapeFixed(at: p(13, 14), label: "f")),
-                wire: #"{"at":[13000,14000],"label":"f"}"#,
-                wireIssue: 288
+                wire: #"{"at":[13000,14000],"label":"f"}"#
             ),
             Case(name: "array of atomic", path: "/points", logical: try v([p(1, 1), p(2, 2)]), wire: "[[1000,1000],[2000,2000]]"),
             Case(name: "array element", path: "/points/1", logical: try v(p(3, 3)), wire: "[3000,3000]"),
@@ -283,14 +282,10 @@ struct ShapeMatrixRoundTripTests {
     }
 
     /// The one failure each open issue causes here:
-    /// - #288: the value at a let-only struct's atomic path isn't positional (an expectation
-    ///   commented "wire value");
     /// - #289: the decoded path keeps the first-defined key's bytes ("path bytes").
     static func isExpected(_ issue: Int, error: (any Error)?, comments: [String]) -> Bool {
         let commented = { (suffix: String) in comments.contains { $0.hasSuffix(suffix) } }
         switch issue {
-        case 288:
-            return error == nil && (commented(": wire value") || commented("fixed.at is positional"))
         case 289:
             return error == nil && commented(": path bytes")
         default:
@@ -308,8 +303,11 @@ struct ShapeMatrixRoundTripTests {
         for pattern in ["pos", "maybePos", "holder.inner.at", "wrapper.at", "points.*", "maybePoints.*", "byKey.*", "maybeByKey.*", "wrappers.*.at"] {
             #expect(Self.table.patterns[pattern] == leaves, "atomic pattern \(pattern)")
         }
-        try Self.known(288) { () throws -> Void in
-            #expect(Self.table.patterns["fixed.at"] == leaves, "fixed.at is positional")
+        // #288, #566: the schema lists a let-only struct's properties, so its atomic value is
+        // positional and the paths below it have hashes.
+        #expect(Self.table.patterns["fixed.at"] == leaves, "fixed.at is positional")
+        for pattern in ["fixed", "fixed.at", "fixed.at.v", "fixed.at.v.x", "fixed.label"] {
+            #expect(hashes[pattern] != nil, "\(pattern) has a path hash")
         }
         #expect(Self.table.patterns["angle"] == [["degrees"]])
         #expect(Self.table.patterns["angles.*"] == [["degrees"]])
@@ -373,7 +371,6 @@ struct ShapeMatrixRoundTripTests {
         #expect(!Self.isExpected(289, error: nil, comments: ["c: MessagePack frame equals the JSON frame"]))
         #expect(Self.isExpected(289, error: nil, comments: ["c: path bytes"]))
         #expect(!Self.isExpected(289, error: nil, comments: ["c: wire value"]))
-        #expect(!Self.isExpected(288, error: StateUpdateDecodingError.invalidPayload("Unknown pathHash: 1"), comments: []))
         // A mutant: a different failure inside a #289 case escapes it. The outer known issue
         // fails this test if the inner one swallowed it.
         try withKnownIssue("a different failure isn't absorbed by #289") {

@@ -221,7 +221,7 @@ public struct ActionEnvelope: Codable, Sendable {
 
 1. Action payload 直接使用 JSON 對象格式（與 Event payload 一致）
 2. 在 opcode array 格式中：`[101, requestID, typeIdentifier, payload(object)]`
-3. 支援 payload 壓縮（使用 `@Payload` macro 的 `encodeAsArray()`）
+3. 支援 payload 壓縮（使用 `@Payload` macro 產生的 `_writePayloadFields(into:)`；沒有 `@Payload` 的型別在壓縮編碼下於註冊時被拒絕）
 
 **範例：**
 

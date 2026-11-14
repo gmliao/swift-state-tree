@@ -382,6 +382,18 @@ private struct HostClassFieldState: StateNodeProtocol {
     init() {}
 }
 
+/// A server event without `@Payload`: no positional writer (#521 EV1).
+private struct HostHandWrittenEvent: ServerEventPayload {
+    let n: Int
+}
+
+@StateNodeBuilder
+private struct HostPayloadState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var value: Int = 0
+    init() {}
+}
+
 @Suite("NIOLandHost policy nesting rule")
 struct NIOLandHostPolicyNestingTests {
     @Test("register rejects a state whose synced field holds a class, and registers nothing (#464)")
@@ -416,5 +428,35 @@ struct NIOLandHostPolicyNestingTests {
             )
         }
         #expect(await host.realm.isRegistered(landType: "nested-per-player") == false)
+    }
+
+    @Test("register refuses a server event without @Payload where payloads are compressed, and registers nothing (#521)")
+    func rejectsPayloadWithoutWriter() async throws {
+        let logger = Logger(label: "test")
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, logger: logger, adminAPIKey: nil))
+        let land = Land("hand-written", using: HostPayloadState.self) {
+            ServerEvents { Register(HostHandWrittenEvent.self) }
+            Rules {}
+        }
+        await #expect(throws: LandRegistrationError.self) {
+            try await host.register(
+                landType: "hand-written",
+                land: land,
+                initialState: HostPayloadState(),
+                webSocketPath: "/game/hand-written",
+                configuration: NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .messagepack)
+            )
+        }
+        #expect(await host.realm.isRegistered(landType: "hand-written") == false)
+
+        // Uncompressed, the event goes out by its Codable form.
+        try await host.register(
+            landType: "hand-written",
+            land: land,
+            initialState: HostPayloadState(),
+            webSocketPath: "/game/hand-written",
+            configuration: NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
+        )
+        #expect(await host.realm.isRegistered(landType: "hand-written"))
     }
 }
