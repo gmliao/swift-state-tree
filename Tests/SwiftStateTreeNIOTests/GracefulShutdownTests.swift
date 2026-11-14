@@ -1513,11 +1513,33 @@ struct LandStopTests {
 private final class ProbeLog: @unchecked Sendable {
     private let lock = NSLock()
     private var list: [String] = []
-    func append(_ entry: String) { lock.lock(); list.append(entry); lock.unlock() }
-    func contains(_ entry: String) -> Bool { lock.lock(); defer { lock.unlock() }; return list.contains(entry) }
+    private var waiters: [(entry: String, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func append(_ entry: String) {
+        let resumed: [CheckedContinuation<Void, Never>] = lock.withLock {
+            list.append(entry)
+            let matching = waiters.filter { $0.entry == entry }.map(\.continuation)
+            waiters.removeAll { $0.entry == entry }
+            return matching
+        }
+        resumed.forEach { $0.resume() }
+    }
+
+    /// Returns once `entry` was appended; resumed by `append`, not by polling (the suite's time
+    /// limit bounds a probe that never comes).
+    func waitFor(_ entry: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if list.contains(entry) { return true }
+                waiters.append((entry, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
 }
 
-@Suite("A hosted land that fails (#535), without the host's stop hook")
+@Suite("A hosted land that fails (#535), without the host's stop hook", .timeLimit(.minutes(1)))
 struct HostedLandFailureTests {
     private struct PlanFault: Error {}
 
@@ -1541,9 +1563,13 @@ struct HostedLandFailureTests {
         let (_, c2) = try await f.join("p2")
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
         let keeper = old.keeper
+        // An open gate at the teardown's hold: its arrival is the event that the land failed.
+        let teardown = Gate()
+        teardown.open()
+        await keeper.installHolds(HoldRegistry.at(.landFailedTeardown) { await teardown.arrive() })
 
         try await failTheLandThroughAJoin(f, player: "p3")
-        #expect(await poll { keeper.failure != nil }, "the land failed")
+        #expect(await teardown.waitForArrivals(1), "the land failed")
         #expect(keeper.failure?.kind == .syncPlan)
         #expect(keeper.destructionCause == .failed)
         await keeper.waitUntilDrained()
@@ -1552,7 +1578,8 @@ struct HostedLandFailureTests {
         #expect(await c2.closeCode == SessionClose.Code.landFailed)
         #expect(!events.all.contains { $0.hasPrefix("leave:") }, "no OnLeave on a failed land: \(events.all)")
         #expect(events.count("finalize") == 1)
-        #expect(await poll { await f.server.listLands().contains(f.landID) == false }, "the manager dropped the land")
+        // The drain awaited `onLandDestroyed`, which dropped the land by its epoch.
+        #expect(await f.server.listLands().contains(f.landID) == false, "the manager dropped the land")
 
         // A rejoin builds a new instance: a different epoch, not the failed keeper.
         let session = SessionID("s-p1-again")
@@ -1585,7 +1612,7 @@ struct HostedLandFailureTests {
         let stopped = StopResultRecorder()
         let server = f.server, landID = f.landID
         let stop = Task { stopped.set(await server.stopLand(landID: landID)) }
-        #expect(await poll { probes.contains("force-shutdown-joined") }, "the stop reached forceShutdown")
+        await probes.waitFor("force-shutdown-joined")
         #expect(stopped.value == nil, "the stop waits for the held teardown")
         #expect(events.count("finalize") == 0)
 
