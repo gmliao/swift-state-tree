@@ -1,0 +1,142 @@
+{
+  "cases" : [
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromServer\":{\"payload\":{\"from\":{\"v\":{\"x\":70500,\"y\":-80250}},\"playerID\":\"p1\",\"to\":{\"v\":{\"x\":-1000000,\"y\":1000000}}},\"type\":\"PlayerShoot\"}}}",
+      "messagePack" : "lGcBAJOBoXaCoXjOAAETZKF50v\/+xoaicDGBoXaCoXjS\/\/C9wKF5zgAPQkA=",
+      "messagePackBody" : "kwEAk4GhdoKheM4AARNkoXnS\/\/7GhqJwMYGhdoKheNL\/8L3AoXnOAA9CQA==",
+      "messagePackPlain" : "lGcBAIOkZnJvbYGhdoKheM4AARNkoXnS\/\/7GhqhwbGF5ZXJJRKJwMaJ0b4GhdoKheNL\/8L3AoXnOAA9CQA==",
+      "name" : "player-shoot",
+      "opcodeJSON" : "[103,1,0,[{\"v\":{\"x\":70500,\"y\":-80250}},\"p1\",{\"v\":{\"x\":-1000000,\"y\":1000000}}]]",
+      "opcodeJSONPlain" : "[103,1,0,{\"from\":{\"v\":{\"x\":70500,\"y\":-80250}},\"playerID\":\"p1\",\"to\":{\"v\":{\"x\":-1000000,\"y\":1000000}}}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromServer\":{\"payload\":{\"from\":{\"v\":{\"x\":-1000000,\"y\":1000000}},\"to\":{\"v\":{\"x\":70500,\"y\":-80250}},\"turretID\":3},\"type\":\"TurretFire\"}}}",
+      "messagePack" : "lGcBAZOBoXaCoXjS\/\/C9wKF5zgAPQkCBoXaCoXjOAAETZKF50v\/+xoYD",
+      "messagePackBody" : "kwEBk4GhdoKheNL\/8L3AoXnOAA9CQIGhdoKheM4AARNkoXnS\/\/7GhgM=",
+      "messagePackPlain" : "lGcBAYOkZnJvbYGhdoKheNL\/8L3AoXnOAA9CQKJ0b4GhdoKheM4AARNkoXnS\/\/7Ghqh0dXJyZXRJRAM=",
+      "name" : "turret-fire",
+      "opcodeJSON" : "[103,1,1,[{\"v\":{\"x\":-1000000,\"y\":1000000}},{\"v\":{\"x\":70500,\"y\":-80250}},3]]",
+      "opcodeJSONPlain" : "[103,1,1,{\"from\":{\"v\":{\"x\":-1000000,\"y\":1000000}},\"to\":{\"v\":{\"x\":70500,\"y\":-80250}},\"turretID\":3}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"target\":{\"v\":{\"x\":70500,\"y\":-80250}}},\"type\":\"MoveTo\"}}}",
+      "messagePack" : "lGcAAJGBoXaCoXjOAAETZKF50v\/+xoY=",
+      "messagePackPlain" : "lGcAAIGmdGFyZ2V0gaF2gqF4zgABE2ShedL\/\/saG",
+      "name" : "move-to",
+      "opcodeJSON" : "[103,0,0,[{\"v\":{\"x\":70500,\"y\":-80250}}]]",
+      "opcodeJSONPlain" : "[103,0,0,{\"target\":{\"v\":{\"x\":70500,\"y\":-80250}}}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{},\"type\":\"Shoot\"}}}",
+      "messagePack" : "lGcAA5A=",
+      "messagePackPlain" : "lGcAA4A=",
+      "name" : "shoot",
+      "opcodeJSON" : "[103,0,3,[]]",
+      "opcodeJSONPlain" : "[103,0,3,{}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"rotation\":{\"degrees\":-45250}},\"type\":\"UpdateRotation\"}}}",
+      "messagePack" : "lGcABJGBp2RlZ3JlZXPS\/\/9PPg==",
+      "messagePackPlain" : "lGcABIGocm90YXRpb26Bp2RlZ3JlZXPS\/\/9PPg==",
+      "name" : "update-rotation",
+      "opcodeJSON" : "[103,0,4,[{\"degrees\":-45250}]]",
+      "opcodeJSONPlain" : "[103,0,4,{\"rotation\":{\"degrees\":-45250}}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"position\":{\"v\":{\"x\":-1000000,\"y\":1000000}}},\"type\":\"PlaceTurret\"}}}",
+      "messagePack" : "lGcAApGBoXaCoXjS\/\/C9wKF5zgAPQkA=",
+      "messagePackPlain" : "lGcAAoGocG9zaXRpb26BoXaCoXjS\/\/C9wKF5zgAPQkA=",
+      "name" : "place-turret",
+      "opcodeJSON" : "[103,0,2,[{\"v\":{\"x\":-1000000,\"y\":1000000}}]]",
+      "opcodeJSONPlain" : "[103,0,2,{\"position\":{\"v\":{\"x\":-1000000,\"y\":1000000}}}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{},\"type\":\"UpgradeWeapon\"}}}",
+      "messagePack" : "lGcABpA=",
+      "messagePackPlain" : "lGcABoA=",
+      "name" : "upgrade-weapon",
+      "opcodeJSON" : "[103,0,6,[]]",
+      "opcodeJSONPlain" : "[103,0,6,{}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"turretID\":7},\"type\":\"UpgradeTurret\"}}}",
+      "messagePack" : "lGcABZEH",
+      "messagePackPlain" : "lGcABYGodHVycmV0SUQH",
+      "name" : "upgrade-turret",
+      "opcodeJSON" : "[103,0,5,[7]]",
+      "opcodeJSONPlain" : "[103,0,5,{\"turretID\":7}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{},\"requestID\":\"a-play\",\"typeIdentifier\":\"PlayAction\"}}",
+      "messagePack" : "lGWmYS1wbGF5qlBsYXlBY3Rpb26Q",
+      "messagePackPlain" : "lGWmYS1wbGF5qlBsYXlBY3Rpb26A",
+      "name" : "play",
+      "opcodeJSON" : "[101,\"a-play\",\"PlayAction\",[]]",
+      "opcodeJSONPlain" : "[101,\"a-play\",\"PlayAction\",{}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"actionResponse\",\"payload\":{\"actionResponse\":{\"requestID\":\"r-play-response\",\"response\":{\"newScore\":12}}}}",
+      "messagePack" : "k2avci1wbGF5LXJlc3BvbnNlkQw=",
+      "messagePackPlain" : "k2avci1wbGF5LXJlc3BvbnNlgahuZXdTY29yZQw=",
+      "name" : "play-response",
+      "opcodeJSON" : "[102,\"r-play-response\",[12]]",
+      "opcodeJSONPlain" : "[102,\"r-play-response\",{\"newScore\":12}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{\"enabled\":true},\"requestID\":\"a-set-motion\",\"typeIdentifier\":\"SetMotionAction\"}}",
+      "messagePack" : "lGWsYS1zZXQtbW90aW9ur1NldE1vdGlvbkFjdGlvbpHD",
+      "messagePackPlain" : "lGWsYS1zZXQtbW90aW9ur1NldE1vdGlvbkFjdGlvboGnZW5hYmxlZMM=",
+      "name" : "set-motion",
+      "opcodeJSON" : "[101,\"a-set-motion\",\"SetMotionAction\",[true]]",
+      "opcodeJSONPlain" : "[101,\"a-set-motion\",\"SetMotionAction\",{\"enabled\":true}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{},\"requestID\":\"a-park-entities\",\"typeIdentifier\":\"ParkEntitiesAction\"}}",
+      "messagePack" : "lGWvYS1wYXJrLWVudGl0aWVzslBhcmtFbnRpdGllc0FjdGlvbpA=",
+      "messagePackPlain" : "lGWvYS1wYXJrLWVudGl0aWVzslBhcmtFbnRpdGllc0FjdGlvboA=",
+      "name" : "park-entities",
+      "opcodeJSON" : "[101,\"a-park-entities\",\"ParkEntitiesAction\",[]]",
+      "opcodeJSONPlain" : "[101,\"a-park-entities\",\"ParkEntitiesAction\",{}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{\"id\":\"e1\",\"positions\":[{\"v\":{\"x\":70500,\"y\":-80250}},{\"v\":{\"x\":-1000000,\"y\":1000000}}]},\"requestID\":\"a-place-entity\",\"typeIdentifier\":\"PlaceEntityAction\"}}",
+      "messagePack" : "lGWuYS1wbGFjZS1lbnRpdHmxUGxhY2VFbnRpdHlBY3Rpb26SomUxkoGhdoKheM4AARNkoXnS\/\/7GhoGhdoKheNL\/8L3AoXnOAA9CQA==",
+      "messagePackPlain" : "lGWuYS1wbGFjZS1lbnRpdHmxUGxhY2VFbnRpdHlBY3Rpb26ComlkomUxqXBvc2l0aW9uc5KBoXaCoXjOAAETZKF50v\/+xoaBoXaCoXjS\/\/C9wKF5zgAPQkA=",
+      "name" : "place-entity",
+      "opcodeJSON" : "[101,\"a-place-entity\",\"PlaceEntityAction\",[\"e1\",[{\"v\":{\"x\":70500,\"y\":-80250}},{\"v\":{\"x\":-1000000,\"y\":1000000}}]]]",
+      "opcodeJSONPlain" : "[101,\"a-place-entity\",\"PlaceEntityAction\",{\"id\":\"e1\",\"positions\":[{\"v\":{\"x\":70500,\"y\":-80250}},{\"v\":{\"x\":-1000000,\"y\":1000000}}]}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"actionResponse\",\"payload\":{\"actionResponse\":{\"requestID\":\"r-visibility-response\",\"response\":{\"viewEntries\":2,\"viewExits\":1}}}}",
+      "messagePack" : "k2a1ci12aXNpYmlsaXR5LXJlc3BvbnNlkgIB",
+      "messagePackPlain" : "k2a1ci12aXNpYmlsaXR5LXJlc3BvbnNlgqt2aWV3RW50cmllcwKpdmlld0V4aXRzAQ==",
+      "name" : "visibility-response",
+      "opcodeJSON" : "[102,\"r-visibility-response\",[2,1]]",
+      "opcodeJSONPlain" : "[102,\"r-visibility-response\",{\"viewEntries\":2,\"viewExits\":1}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"position\":{\"v\":{\"x\":70500,\"y\":-80250}}},\"type\":\"MoveViewer\"}}}",
+      "messagePack" : "lGcAAZGBoXaCoXjOAAETZKF50v\/+xoY=",
+      "messagePackPlain" : "lGcAAYGocG9zaXRpb26BoXaCoXjOAAETZKF50v\/+xoY=",
+      "name" : "move-viewer",
+      "opcodeJSON" : "[103,0,1,[{\"v\":{\"x\":70500,\"y\":-80250}}]]",
+      "opcodeJSONPlain" : "[103,0,1,{\"position\":{\"v\":{\"x\":70500,\"y\":-80250}}}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{\"deadlineMs\":50,\"delayMs\":5,\"outcome\":\"fail\",\"tag\":\"t\"},\"requestID\":\"a-call-service\",\"typeIdentifier\":\"CallServiceAction\"}}",
+      "messagePack" : "lGWuYS1jYWxsLXNlcnZpY2WxQ2FsbFNlcnZpY2VBY3Rpb26UMgWkZmFpbKF0",
+      "messagePackPlain" : "lGWuYS1jYWxsLXNlcnZpY2WxQ2FsbFNlcnZpY2VBY3Rpb26EqmRlYWRsaW5lTXMyp2RlbGF5TXMFp291dGNvbWWkZmFpbKN0YWehdA==",
+      "name" : "call-service",
+      "opcodeJSON" : "[101,\"a-call-service\",\"CallServiceAction\",[50,5,\"fail\",\"t\"]]",
+      "opcodeJSONPlain" : "[101,\"a-call-service\",\"CallServiceAction\",{\"deadlineMs\":50,\"delayMs\":5,\"outcome\":\"fail\",\"tag\":\"t\"}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"actionResponse\",\"payload\":{\"actionResponse\":{\"requestID\":\"r-call-service-response\",\"response\":{\"applied\":1,\"tickAdvance\":2}}}}",
+      "messagePack" : "k2a3ci1jYWxsLXNlcnZpY2UtcmVzcG9uc2WSAQI=",
+      "messagePackPlain" : "k2a3ci1jYWxsLXNlcnZpY2UtcmVzcG9uc2WCp2FwcGxpZWQBq3RpY2tBZHZhbmNlAg==",
+      "name" : "call-service-response",
+      "opcodeJSON" : "[102,\"r-call-service-response\",[1,2]]",
+      "opcodeJSONPlain" : "[102,\"r-call-service-response\",{\"applied\":1,\"tickAdvance\":2}]"
+    }
+  ]
+}

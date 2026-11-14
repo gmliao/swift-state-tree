@@ -107,10 +107,14 @@ let package = Package(
             dependencies: [
                 "GameContent",
                 "LoadTestPacing",
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
             ],
-            path: "Tests"
+            path: "Tests",
+            // Golden recordings, read from the source tree by GameDemoPayloadFrameGoldenTests.
+            exclude: ["Fixtures"]
         ),
     ]
 )
