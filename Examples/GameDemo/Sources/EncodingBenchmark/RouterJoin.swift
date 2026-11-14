@@ -20,7 +20,7 @@ import Foundation
 import GameContent
 import LoadTestPacing
 import Logging
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 @_spi(Diagnostics) import SwiftStateTreeTransport
 
 /// The router path's options, set once from the command line.
@@ -219,7 +219,7 @@ struct RouterRooms: Sendable {
             let counting = CountingTransport(capturing: captures(roomIndex))
             var roomConnections: [BenchmarkConnection] = []
             for playerIndex in 0 ..< playersPerRoom {
-                let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+                let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
                 let connection = BenchmarkConnection(sessionID: sessionID, room: counting)
                 await transport.handleConnection(sessionID: sessionID, connection: connection)
                 let join = TransportMessage.join(

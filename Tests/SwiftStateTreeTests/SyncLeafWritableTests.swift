@@ -295,7 +295,7 @@ struct SyncLeafWritableTests {
         try checkWriter(strings, direct: { .string($0) })
         try checkWriter(strings.map(PlayerID.init), direct: { .string($0.rawValue) })
         try checkWriter(strings.map(ClientID.init), direct: nil)
-        try checkWriter(strings.map(SessionID.init), direct: nil)
+        try checkWriter(strings.map { SessionID($0) }, direct: nil)
     }
 
     @Test("LandID compares its converted form: two different IDs that write one string are the same")

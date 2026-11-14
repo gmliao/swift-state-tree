@@ -21,7 +21,7 @@
 import Foundation
 import GameContent
 import LoadTestPacing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 
 // MARK: - Model
 
@@ -462,7 +462,7 @@ final class EntityDeltaCell: @unchecked Sendable {
     init(roomCount: Int, playersPerRoom: Int) {
         rooms = Array(repeating: EntityDeltaRoom(clients: playersPerRoom), count: roomCount)
         players = (0 ..< roomCount).map { r in (0 ..< playersPerRoom).map { PlayerID("room\(r)-player-\($0)") } }
-        sessions = (0 ..< roomCount).map { r in (0 ..< playersPerRoom).map { SessionID("room\(r)-session-\($0)") } }
+        sessions = (0 ..< roomCount).map { r in (0 ..< playersPerRoom).map { SessionID(fixed: "room\(r)-session-\($0)") } }
     }
 
     /// Encodes every room's frames for this sync. `measured` is false for the first frame
