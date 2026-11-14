@@ -61,7 +61,7 @@ public macro StateNodeBuilder() = #externalMacro(
 /// metadata (`SchemaMetadataProvider`) is generated from the same properties. Every stored property
 /// must have a type annotation and be a scalar (`AtomicScalarLeaf`) or an atomic value; the
 /// compiler rejects anything else (optionals, collections).
-@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata))
+@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata))
 public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "SnapshotConvertibleMacro"

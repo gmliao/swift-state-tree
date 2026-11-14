@@ -53,6 +53,18 @@ import SwiftSyntaxMacros
 /// Those types must provide `SnapshotValueDecodable` conformance manually if needed.
 /// The type must also have a no-argument `init()` for the generated decoder to compile.
 public struct SnapshotConvertibleMacro: ExtensionMacro {
+
+    /// Whether the type declares a static `snapshotFieldMetadata` itself (#566): the generated
+    /// `SnapshotFieldListProvider` conformance is skipped, so the two don't clash.
+    private static func declaresSnapshotFieldMetadata(_ declaration: some DeclGroupSyntax) -> Bool {
+        declaration.memberBlock.members.contains { member in
+            guard let variable = member.decl.as(VariableDeclSyntax.self) else { return false }
+            return variable.bindings.contains {
+                $0.pattern.as(IdentifierPatternSyntax.self)?.identifier.text == "snapshotFieldMetadata"
+            }
+        }
+    }
+
     public static func expansion(
         of node: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
@@ -136,7 +148,31 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         let allPropertiesAreMutable = properties.allSatisfy { $0.isMutable }
 
         guard allPropertiesAreMutable else {
-            // Skip SnapshotValueDecodable generation for immutable structs.
+            // Skip SnapshotValueDecodable generation for immutable structs. Without a decoder the
+            // schema has no sample instance to read its properties from, so they are declared
+            // here (#566): otherwise the schema lists none, and the paths the diff produces
+            // below the value have no path hash. An atomic value declares its own (above); a
+            // property without a type annotation can't be named, and keeps the old schema. A type
+            // that declares its own `snapshotFieldMetadata` keeps it: nothing is generated.
+            // The type name is parenthesized before `.self`: `any P.self` doesn't parse as the
+            // existential's metatype, `(any P).self` does.
+            if !isAtomicRequested(node), properties.allSatisfy({ $0.typeName != nil }),
+               !declaresSnapshotFieldMetadata(declaration) {
+                let entries = properties.map { property in
+                    let typeName = property.typeName!
+                    return "FieldMetadata(name: \"\(property.name)\", type: (\(typeName)).self, policy: nil, nodeKind: SchemaHelper.determineNodeKind(from: (\(typeName)).self), defaultValue: nil)"
+                }
+                let body = entries.isEmpty ? "[]" : "[\n        " + entries.joined(separator: ",\n        ") + "\n    ]"
+                extensions.append(try ExtensionDeclSyntax(
+                    """
+                    extension \(type.trimmed): SnapshotFieldListProvider {
+                        public static var snapshotFieldMetadata: [FieldMetadata] {
+                            \(raw: body)
+                        }
+                    }
+                    """
+                ))
+            }
             return extensions
         }
 
@@ -228,7 +264,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 // Extract type information
                 var typeName: String? = nil
                 if let typeAnnotation = binding.typeAnnotation {
-                    typeName = typeAnnotation.type.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                    typeName = typeAnnotation.type.trimmedDescription  // without trivia: a trailing comment would land in generated code
                 }
 
                 properties.append(
