@@ -50,7 +50,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 轉成相同字串的 dictionary key | 後一筆默默覆蓋前一筆（`SnapshotValue.swift:424`） | 目標：關閉 land（#535） |
 | 編碼無法承載的 patch（例如 JSON 中的非有限數） | 在 opcode 107 合併廣播 frame 中：land 結束，其 session 以 4016 關閉（`encodeMergedBroadcastFrameOrFail`）。在 per-player 或合併式 frame 中：去掉該 patch 重新編碼後送出；該欄位在 client 上維持過期，直到它再次改變（`encodeDroppingUnencodablePatches`） | 合併廣播 frame 已符合；per-player 與合併式 frame 的目標：關閉 land（#535 PR 2） |
 | 路徑在 schema 之外的 patch | 同上一列，並計入 `unmappedPathPatches`（一次失敗計一次） | 同上一列（#535 D6）。目前全為 `let` 的 `@SnapshotConvertible` struct 在 schema 中沒有其下的路徑（#566） |
-| 拋出錯誤的同步 plan | in-turn sync：第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試（`LandKeeper.swift:4447`、`:4892`）。legacy sync（未啟用 in-turn）：不送任何東西並重試，有週期同步時每個 tick 重試，沒有時做有限次數的 follow-up | in-turn sync 已符合；legacy sync 相同，失敗在 keeper 的下一個 turn 套用（#535 PR 1 part B） |
+| 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。in-turn sync：keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。legacy sync（未啟用 in-turn）：adapter 不再送出任何東西並提交失敗，keeper 在下一個 turn 套用（`submitLandFailure`）。加入者獨立的 firstSync plan 拋出錯誤時，在 #535 PR 2（第 16 列）之前仍會排一次 follow-up | 已符合 |
 | 單一玩家的狀態 frame 或 broadcast-only frame 完全無法編碼 | land 結束；失敗的 cycle 不送任何東西，其 session 以 4016 關閉（`planPerPlayerFrames`、`planBroadcastOnlySeparateFrames`） | 已符合（#535 第 10、12 列） |
 | resync 或第一次 view 的完整 view 無法編碼 | 重試；超過上限後以 4012 `unencodableView` 關閉 session（`commitFirstViewEncodeFailures`） | 目標：第一次失敗就關閉 land，不重試；不再送出 4012（#535 PR 2） |
 | 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event，或 event frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`）。未使用 opcode 107：記錄錯誤，event 不送出 | opcode 107 已符合（#535 第 17 列）；未使用時的目標：關閉 land（#521） |

@@ -299,6 +299,34 @@ struct TransportAdapterJoinHeldEventsTests {
         #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 0)
     }
 
+    @Test("A joiner's held event that fails to pack ends the land; nothing is dropped silently (#535 row 17)")
+    func heldEventPackFailureInABroadcastOnlyPlanEndsTheLand() async throws {
+        let fixture = await makeFixture(.messagepack)
+        try await joinMember(fixture)
+        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: nil, budget: 1)
+        let s1 = SessionID("s1"), s2 = SessionID("s2")
+        let first = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
+        let second = Task { try? await joinInTurn(fixture, session: s2, player: PlayerID("p2")) }
+        await eventually("s2 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s2) }
+        // One tick consumes both OnJoins; the budget flips s1 only, so s2 holds its events.
+        await fixture.keeper.stepTickOnce()
+        try await first.value
+        #expect(await fixture.adapter.isJoiningInTurn(s2))
+        await fixture.adapter.sendEvent(AnyServerEvent(HeldEventsTestEvent(note: "note-late")), to: .session(s2))
+
+        // The next tick's plan packs s2's held events (`heldEventFrames`) and the pack fails. A
+        // broadcast-only plan packs them the same way when it consumes targeted events; the
+        // commit only takes what the plan packed (`heldEventFramesPacked`).
+        await fixture.adapter.setEventFramePackFaultForTesting { $0 == s2 }
+        await fixture.keeper.stepTickOnce()
+        try #require(await fixture.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(fixture.keeper.failure?.kind == .eventEncode)
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        #expect(!(await fixture.sent.kinds(for: s2)).contains("event:note-late"), "the event went nowhere, and the land ended for it")
+        _ = await second.value
+    }
+
     @Test("Over the held-event count or byte bound: the join fails with eventOverflow and is never flipped; another joiner of that commit flips", arguments: HeldEncoding.allCases, [true, false])
     func overflowFailsTheJoin(encoding: HeldEncoding, byCount: Bool) async throws {
         let fixture = await makeFixture(encoding)

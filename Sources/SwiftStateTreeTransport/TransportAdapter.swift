@@ -495,7 +495,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Closed once when the land fails (#535): no new state or event frame is enqueued after it.
     /// Lock-protected and set once, so the keeper closes it from its own isolation without an
-    /// await, and every send point reads it in the segment that enqueues.
+    /// await, and every send point reads it in the segment that enqueues. Best effort against a
+    /// close from another executor: the read and the enqueue aren't one atomic step, so a frame
+    /// whose check passed just before the close still goes out; none is enqueued after.
     package nonisolated let outputGate = LandOutputGate()
 
     /// Tests only: replaces `endedSessions` with an empty set of `capacity`.
@@ -661,6 +663,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Installs `syncEncodeFaultForTesting` (tests only).
     func setSyncEncodeFaultForTesting(_ fault: (@Sendable (PlayerID) -> Bool)?) {
         syncEncodeFaultForTesting = fault
+    }
+
+    /// Installs `eventFramePackFaultForTesting` (tests only).
+    package func setEventFramePackFaultForTesting(_ fault: (@Sendable (SessionID) -> Bool)?) {
+        eventFramePackFaultForTesting = fault
     }
 
     /// Installs `mergedBroadcastFrameFaultForTesting` (tests only).
@@ -1122,6 +1129,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: while this returns `true`, the opcode 107 merged broadcast frame fails to
     /// encode, its re-encode included.
     private var mergedBroadcastFrameFaultForTesting: (@Sendable () -> Bool)?
+    /// Fails the pack of an opcode 103 event frame for a session (tests only, #535 row 17).
+    private var eventFramePackFaultForTesting: (@Sendable (SessionID) -> Bool)?
     /// The phase times of the last committed full plan; nil while profiling is off.
     private(set) var lastSyncPhaseTimesForTesting: SyncPhaseTimes?
 
@@ -3429,6 +3438,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
+    /// The held event frames a plan packed for the targeted events it consumed. Every plan that
+    /// consumes targeted events packs them while planning (the full and the broadcast-only plan),
+    /// so a pack failure ends the land there; the commit never packs. A plan that consumed none
+    /// holds none.
+    private func heldEventFramesPacked(by plan: SyncPhasePlan) -> [SessionID: [Data]] {
+        guard plan.consumedEvents.targeted > 0 else { return [:] }
+        assert(plan.heldEvents != nil && plan.heldEventsEnd == plan.consumedEvents.targeted,
+               "a plan that consumes targeted events packs their held frames")
+        return plan.heldEvents ?? [:]
+    }
+
     /// Appends one event frame (opcode 103) per body for `sessionID`. A frame that doesn't
     /// pack ends the land (#535 row 17): the event would be lost.
     private func appendEventFrames(
@@ -3440,6 +3460,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             guard case .array(let bodyArray) = body else { continue }
             let frame: MessagePackValue = .array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray)
             do {
+                if let fault = eventFramePackFaultForTesting, fault(sessionID) {
+                    throw SyncPhaseInjectedEncodeFault()
+                }
                 frames.append(SyncPhaseFrame(data: try pack(frame), sessionID: sessionID))
             } catch {
                 throw LandFailure(
@@ -4627,9 +4650,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Before the flips end their joining: what this plan consumes for joining sessions is
         // held for those that hold events (#69), and not delivered to the others.
         let held = plan.heldEvents.flatMap { plan.heldEventsEnd == plan.consumedEvents.targeted ? $0 : nil }
-            // The plan packed these bodies already (it throws on a failure, row 17), and packing
-            // is deterministic, so this recount can't fail.
-            ?? ((try? heldEventFrames(events: pendingEventManager, endingBefore: plan.consumedEvents.targeted)) ?? [:])
+            ?? heldEventFramesPacked(by: plan)
         var overflowed: [SessionID] = []
         for (sessionID, frames) in held where !holdEvents(frames, for: sessionID) {
             overflowed.append(sessionID)
@@ -4700,16 +4721,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             profilerCounters?.incrementSyncCycles()
         }
         applySyncLag(plan)
-        // A failed land sends no new state or event frame (#535 output gate).
-        guard !outputGate.isClosed else { return }
-        enqueueFrames(frames, isSyncCycle: isSyncCycle)
-        // After the whole flip element (JoinResponse, firstSync, held events) is enqueued: the
-        // flipped sessions' deferred frames, each from a Task of its own, never inline here.
-        for sessionID in drainsToStart {
-            let drain = Task { await self.drainInbound(sessionID) }
-            #if DEBUG
-            inboundDrainTasksForTesting[sessionID] = drain
-            #endif
+        // A failed land sends no new state or event frame (#535 output gate), and starts no
+        // inbound drain; the join failures below still run.
+        if !outputGate.isClosed {
+            enqueueFrames(frames, isSyncCycle: isSyncCycle)
+            // After the whole flip element (JoinResponse, firstSync, held events) is enqueued: the
+            // flipped sessions' deferred frames, each from a Task of its own, never inline here.
+            for sessionID in drainsToStart {
+                let drain = Task { await self.drainInbound(sessionID) }
+                #if DEBUG
+                inboundDrainTasksForTesting[sessionID] = drain
+                #endif
+            }
         }
         // After the commit: the joins this plan's events took over the held-event bound. A full
         // plan left them out of its flips.
@@ -5829,6 +5852,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if useStateUpdateWithEvents {
             updateSize = try planBroadcastOnlyMergedFrame(update: update, recipients: recipients, events: events, into: &plan)
             plan.consumedEvents.targeted = events.targetedEventCount
+            // The joining sessions' held events are packed here, where a failure ends the land
+            // (#535 row 17), never in the commit.
+            plan.heldEvents = try heldEventFrames(events: events, endingBefore: events.targetedEventCount)
+            plan.heldEventsEnd = events.targetedEventCount
             if events.hasTargetedEvents {
                 for recipient in recipients {
                     let eventBodies = pendingTargetedEventBodies(

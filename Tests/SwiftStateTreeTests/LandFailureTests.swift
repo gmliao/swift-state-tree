@@ -303,3 +303,42 @@ private final class TestHoldGate: @unchecked Sendable {
         waiters.forEach { $0.resume() }
     }
 }
+
+private func makeTickFailureDefinition() -> LandDefinition<LandFailureTestState> {
+    Land("land-failure-tick-test", using: LandFailureTestState.self) {
+        Rules {}
+        Lifetime {
+            Tick(every: .seconds(3600)) { (state: inout LandFailureTestState, _: LandContext) in
+                state.log.append("tick")
+            }
+        }
+    }
+}
+
+@Suite("Land failure: the legacy tick path (#535 B1)", .timeLimit(.minutes(1)))
+struct LandFailureLegacyTickTests {
+    @Test("a failure submitted from the legacy path applies with the next tick's inputs; that tick's handler doesn't run")
+    func submittedFailureSkipsTheTickHandler() async throws {
+        // No transport: the tick runs the legacy path (`processPendingActions`, then the handler).
+        let keeper = LandKeeper<LandFailureTestState>(
+            definition: makeTickFailureDefinition(),
+            initialState: LandFailureTestState(),
+            autoStartLoops: false
+        )
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().log == ["tick"])
+        let committedBefore = await keeper.debugLastCommittedTickId()
+
+        await keeper.submitLandFailure(LandFailure(
+            kind: .syncPlan,
+            detail: "legacy plan threw",
+            position: LandFailurePosition(stage: .syncPhase)
+        ))
+        #expect(keeper.failure == nil, "a tick land applies it on its next tick")
+        await keeper.stepTickOnce()
+        try #require(await keeper.waitForFailureForTesting(), "the land failed")
+        #expect(keeper.failure?.kind == .syncPlan)
+        #expect(await keeper.currentState().log == ["tick"], "no tick handler after the failure")
+        #expect(await keeper.debugLastCommittedTickId() == committedBefore + 1, "the failing tick's inputs are committed")
+    }
+}

@@ -4313,6 +4313,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else if await replayRecordedPasses(replayPasses, tickId: tickId) {
             await transport?.syncBroadcastOnlyFromTransport()
         }
+        if failure != nil {
+            // The land failed in this tick's inputs (#535, a legacy failure arrives here as a
+            // `landFailure` item): no tick handler, no state hash, no W2 and no outputs, as the
+            // in-turn tick (`runTickTurn`). The inputs applied before it were recorded.
+            lastCommittedTickId = tickId
+            _ = takeEmittedEvents(forTick: tickId)
+            _ = outputCollector.syncRequestsByTick.removeValue(forKey: tickId)
+            return
+        }
 
         let ctx = makeContext(
             playerID: systemPlayerID,
