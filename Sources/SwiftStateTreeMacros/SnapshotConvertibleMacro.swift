@@ -136,7 +136,27 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         let allPropertiesAreMutable = properties.allSatisfy { $0.isMutable }
 
         guard allPropertiesAreMutable else {
-            // Skip SnapshotValueDecodable generation for immutable structs.
+            // Skip SnapshotValueDecodable generation for immutable structs. Without a decoder the
+            // schema has no sample instance to read its properties from, so they are declared
+            // here (#566): otherwise the schema lists none, and the paths the diff produces
+            // below the value have no path hash. An atomic value declares its own (above); a
+            // property without a type annotation can't be named, and keeps the old schema.
+            if !isAtomicRequested(node), properties.allSatisfy({ $0.typeName != nil }) {
+                let entries = properties.map { property in
+                    let typeName = property.typeName!
+                    return "FieldMetadata(name: \"\(property.name)\", type: \(typeName).self, policy: nil, nodeKind: SchemaHelper.determineNodeKind(from: \(typeName).self), defaultValue: nil)"
+                }
+                let body = entries.isEmpty ? "[]" : "[\n        " + entries.joined(separator: ",\n        ") + "\n    ]"
+                extensions.append(try ExtensionDeclSyntax(
+                    """
+                    extension \(type.trimmed): SnapshotFieldListProvider {
+                        public static var snapshotFieldMetadata: [FieldMetadata] {
+                            \(raw: body)
+                        }
+                    }
+                    """
+                ))
+            }
             return extensions
         }
 
@@ -228,7 +248,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 // Extract type information
                 var typeName: String? = nil
                 if let typeAnnotation = binding.typeAnnotation {
-                    typeName = typeAnnotation.type.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                    typeName = typeAnnotation.type.trimmedDescription  // without trivia: a trailing comment would land in generated code
                 }
 
                 properties.append(
