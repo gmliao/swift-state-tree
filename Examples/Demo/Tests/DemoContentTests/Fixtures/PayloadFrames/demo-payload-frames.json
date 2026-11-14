@@ -1,0 +1,52 @@
+{
+  "cases" : [
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"amount\":3},\"type\":\"ClickCookie\"}}}",
+      "messagePack" : "lGcAAJED",
+      "messagePackPlain" : "lGcAAIGmYW1vdW50Aw==",
+      "name" : "click-cookie",
+      "opcodeJSON" : "[103,0,0,[3]]",
+      "opcodeJSONPlain" : "[103,0,0,{\"amount\":3}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"event\",\"payload\":{\"fromClient\":{\"payload\":{\"amount\":1},\"type\":\"ClickCookie\"}}}",
+      "messagePack" : "lGcAAJEB",
+      "messagePackPlain" : "lGcAAIGmYW1vdW50AQ==",
+      "name" : "click-cookie-default",
+      "opcodeJSON" : "[103,0,0,[1]]",
+      "opcodeJSONPlain" : "[103,0,0,{\"amount\":1}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{\"upgradeID\":\"grandma\"},\"requestID\":\"a-buy-upgrade\",\"typeIdentifier\":\"BuyUpgradeAction\"}}",
+      "messagePack" : "lGWtYS1idXktdXBncmFkZbBCdXlVcGdyYWRlQWN0aW9ukadncmFuZG1h",
+      "messagePackPlain" : "lGWtYS1idXktdXBncmFkZbBCdXlVcGdyYWRlQWN0aW9ugal1cGdyYWRlSUSnZ3JhbmRtYQ==",
+      "name" : "buy-upgrade",
+      "opcodeJSON" : "[101,\"a-buy-upgrade\",\"BuyUpgradeAction\",[\"grandma\"]]",
+      "opcodeJSONPlain" : "[101,\"a-buy-upgrade\",\"BuyUpgradeAction\",{\"upgradeID\":\"grandma\"}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"actionResponse\",\"payload\":{\"actionResponse\":{\"requestID\":\"r-buy-upgrade-response\",\"response\":{\"newCookies\":-5,\"newCookiesPerSecond\":12,\"success\":true,\"upgradeLevel\":9223372036854775807}}}}",
+      "messagePack" : "k2a2ci1idXktdXBncmFkZS1yZXNwb25zZZT7DMPPf\/\/\/\/\/\/\/\/\/8=",
+      "messagePackPlain" : "k2a2ci1idXktdXBncmFkZS1yZXNwb25zZYSqbmV3Q29va2llc\/uzbmV3Q29va2llc1BlclNlY29uZAync3VjY2Vzc8OsdXBncmFkZUxldmVsz3\/\/\/\/\/\/\/\/\/\/",
+      "name" : "buy-upgrade-response",
+      "opcodeJSON" : "[102,\"r-buy-upgrade-response\",[-5,12,true,9223372036854775807]]",
+      "opcodeJSONPlain" : "[102,\"r-buy-upgrade-response\",{\"newCookies\":-5,\"newCookiesPerSecond\":12,\"success\":true,\"upgradeLevel\":9223372036854775807}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"action\",\"payload\":{\"payload\":{},\"requestID\":\"a-increment\",\"typeIdentifier\":\"IncrementAction\"}}",
+      "messagePack" : "lGWrYS1pbmNyZW1lbnSvSW5jcmVtZW50QWN0aW9ukA==",
+      "messagePackPlain" : "lGWrYS1pbmNyZW1lbnSvSW5jcmVtZW50QWN0aW9ugA==",
+      "name" : "increment",
+      "opcodeJSON" : "[101,\"a-increment\",\"IncrementAction\",[]]",
+      "opcodeJSONPlain" : "[101,\"a-increment\",\"IncrementAction\",{}]"
+    },
+    {
+      "jsonObject" : "{\"kind\":\"actionResponse\",\"payload\":{\"actionResponse\":{\"requestID\":\"r-increment-response\",\"response\":{\"newCount\":42}}}}",
+      "messagePack" : "k2a0ci1pbmNyZW1lbnQtcmVzcG9uc2WRKg==",
+      "messagePackPlain" : "k2a0ci1pbmNyZW1lbnQtcmVzcG9uc2WBqG5ld0NvdW50Kg==",
+      "name" : "increment-response",
+      "opcodeJSON" : "[102,\"r-increment-response\",[42]]",
+      "opcodeJSONPlain" : "[102,\"r-increment-response\",{\"newCount\":42}]"
+    }
+  ]
+}
