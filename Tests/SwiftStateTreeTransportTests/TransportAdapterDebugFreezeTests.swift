@@ -359,25 +359,36 @@ struct TransportAdapterDebugFreezeTests {
     @Test("Auto-resume after the timeout; each freeze call restarts the timer")
     func autoResumeTimeoutResetsOnFreeze() async throws {
         let f = try await Fixture()
-        await f.adapter.setDebugFreezeAutoResumeTimeout(.milliseconds(400))
+        // Each timer fires at once and is held where it fired, so the test decides when each one
+        // acts instead of racing its timeout against sleeps (#502).
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
+        let first = TestGate(), second = TestGate(), stale = TestGate()
+        stale.open()
+        let holds = HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.debugFreezeAutoResumeFired, arrival: 1) { await first.arrive() }
+            .on(.debugFreezeAutoResumeFired, arrival: 2) { await second.arrive() }
+            .on(.debugFreezeAutoResumeStale) { await stale.arrive() }
+        await f.adapter.installHolds(holds.hook)
 
         _ = try await f.adapter.debugFreeze()
-        try await Task.sleep(for: .milliseconds(250))
+        #expect(await first.waitForArrivals(1), "the first timer did not fire")
+        // The second freeze call restarts the timer: the first one is replaced.
         _ = try await f.adapter.debugFreeze()
-        try await Task.sleep(for: .milliseconds(250))
-        // 500 ms after the first call, 250 ms after the second: the restarted timer has not fired.
+        #expect(await second.waitForArrivals(1), "the restarted timer did not fire")
+
+        first.open()
+        #expect(await stale.waitForArrivals(1), "the replaced timer did not stand down")
+        // Only the restarted timer, still held, could have resumed.
         #expect(await f.adapter.isDebugFrozen())
 
-        var resumed = false
-        for _ in 0..<200 {
-            if await f.adapter.isDebugFrozen() == false {
-                resumed = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(resumed, "freeze did not auto-resume")
+        // The restarted timer's task, taken before it runs: its resume clears the field.
+        let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
+        second.open()
+        await timer.value
+        #expect(await f.adapter.isDebugFrozen() == false, "freeze did not auto-resume")
         #expect(await f.keeper.isDebugFrozen() == false)
+        #expect(holds.arrivalCount(at: .debugFreezeAutoResumeStale) == 1)
+        await f.adapter.installHolds(nil)
     }
 
     @Test("Auto-resume timeout reads DEBUG_FREEZE_TIMEOUT_SECONDS")

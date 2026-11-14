@@ -359,6 +359,11 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
     /// cycle runs instead of racing its 100 ms delay.
     case failedPlanFollowUp
+    /// The debug freeze's auto-resume timer has fired, before it checks its generation, so a
+    /// test decides when each timer acts instead of racing its timeout (#502).
+    case debugFreezeAutoResumeFired
+    /// A fired auto-resume timer that a newer freeze call or a resume replaced: it does nothing.
+    case debugFreezeAutoResumeStale
     /// A pending action's answer (`finishActionResponse`), before it checks its ticket.
     case actionResponse
     /// A sync cycle after its frames were enqueued and before its `endSync` hop, while the cycle
@@ -7219,8 +7224,12 @@ extension TransportAdapter {
     }
 
     private func debugAutoResume(timerGeneration: UInt64) async {
+        await holds.at(.debugFreezeAutoResumeFired)
         guard debugFreezeState.count > 0,
-              debugFreezeState.autoResumeGeneration == timerGeneration else { return }
+              debugFreezeState.autoResumeGeneration == timerGeneration else {
+            await holds.at(.debugFreezeAutoResumeStale)
+            return
+        }
         logger.warning("Debug freeze auto-resumed after timeout", metadata: [
             "landID": .string(landID),
             "freezeCount": .stringConvertible(debugFreezeState.count),
