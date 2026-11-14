@@ -522,6 +522,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Logger for the outbound extension.
     var outboundLogger: Logger { logger }
 
+    /// Holds every in-turn join before its flip while set (tests only): the sync phase plans and
+    /// commits without them, so a join stays admitted and unflipped without a plan that throws
+    /// (a throw ends the land since #535).
+    func setJoinFlipHeldForTesting(_ held: Bool) {
+        joinFlipHeldForTesting = held
+    }
+
     /// Installs `syncPlanFaultForTesting` (tests only).
     func setSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
         syncPlanFaultForTesting = fault
@@ -1123,6 +1130,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: called at the end of every sync plan, after its diffs were staged and its
     /// frames encoded. A throw fails the plan there.
     private var syncPlanFaultForTesting: (@Sendable () throws -> Void)?
+    /// `setJoinFlipHeldForTesting`.
+    private var joinFlipHeldForTesting = false
     /// Thrown by a joiner's firstSync plan (`planFirstSync`) when set (tests only).
     private var firstSyncPlanFaultForTesting: (@Sendable () throws -> Void)?
 
@@ -2150,7 +2159,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Ready in-turn joins (consumed, registered, current), first in first out, at most `limit`.
     private func readyInTurnJoins(limit: Int) -> [(sessionID: SessionID, joining: JoiningSession)] {
-        joiningSessions
+        guard !joinFlipHeldForTesting else { return [] }
+        return joiningSessions
             .filter { entry in
                 guard let inTurn = entry.value.inTurn, inTurn.isReadyToFlip else { return false }
                 return sessionTickets.isCurrent(entry.value.ticket)
@@ -3107,9 +3117,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// emit order holds within each frame kind; a targeted event emitted before a broadcast event
     /// of the same turn reaches its client after it.
     ///
-    /// Failure bookkeeping is as in `withSyncState` (`consecutiveFailedPlans`, follow-up limit),
-    /// but the repair is the keeper's: `.failed(repairAllowed:)` tells a keeper without periodic
-    /// sync whether to schedule a repair sync-only turn.
+    /// A plan that throws ends the land (#535 row 15): `.landFailed`, and the keeper ends it in
+    /// the same turn. The row repair (`committedWithRepairPending`) is unchanged until #535's
+    /// second PR.
     func runSyncPhaseInTurnIsolated<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
@@ -3178,8 +3188,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "message": .string("❌ In-turn sync phase failed"),
                 "error": .string("\(error)")
             ])
-            consecutiveFailedPlans += 1
-            return .failed(repairAllowed: consecutiveFailedPlans <= Self.syncFailedPlanFollowUpLimit)
+            // The first throw ends the land (#535 row 15): the plan committed and sent nothing.
+            return .landFailed(LandFailure(
+                kind: .syncPlan,
+                detail: String(describing: error),
+                position: LandFailurePosition(stage: .syncPhase)
+            ))
         }
     }
     
@@ -3993,6 +4007,41 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Every terminal close ends here (a lag close, and a never-synced session's 4012), so the
     /// decision line is written here, once per decision: each caller counts the close, and the
     /// counters and the lines agree.
+    /// A failed land (#535): every session this adapter holds, joined or not, is ended in this
+    /// segment (no frame to it, nothing from it reaches the keeper) and closed with 4016
+    /// (`SessionClose.landFailed`). Returns once every close returned.
+    ///
+    /// This is the close without a host's stop path: the router's bindings end through each
+    /// session's disconnect, and the manager drops the land by its epoch when the keeper's
+    /// destroy calls `onLandDestroyed`.
+    func closeSessionsForLandFailure(_ failure: LandFailure) async {
+        let sessions = membershipCoordinator.connectedSessions
+            .union(membershipCoordinator.joinedSessions)
+            .sorted { $0.rawValue < $1.rawValue }
+        var closes: [(SessionID, UInt64?)] = []
+        for sessionID in sessions {
+            closes.append((sessionID, connectionGenerations[sessionID]))
+            endedSessions.insert(sessionID)
+            inboundClosedSessions.insert(sessionID)
+            if let drain = inboundAfterFlip.removeValue(forKey: sessionID) {
+                inboundDroppedForJoiningSessions += drain.frames.count
+            }
+        }
+        logger.error("Land failed; closing its sessions with 4016", metadata: [
+            "landID": .string(landID),
+            "sessions": .stringConvertible(closes.count),
+            "failure": .string(failure.description),
+        ])
+        let transport = self.transport
+        await withTaskGroup(of: Void.self) { group in
+            for (sessionID, generation) in closes {
+                group.addTask {
+                    await transport.closeSession(sessionID, with: .landFailed, generation: generation)
+                }
+            }
+        }
+    }
+
     private func endAndCloseSession(_ sessionID: SessionID, code: UInt16, reason: String) {
         // The decision, per session: the caller's counters count it; the session's
         // `sessionClosed` line says whether this close or another cause ended the connection.

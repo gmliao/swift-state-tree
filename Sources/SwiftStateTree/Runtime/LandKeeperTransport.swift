@@ -92,6 +92,15 @@ public protocol LandKeeperTransport: Sendable {
     /// from LandManager's registry.
     func onLandDestroyed() async
 
+    /// The land failed (#535): a failure it can't recover from ended it, and its teardown has
+    /// started. Called once, from the teardown's task, before the destroy handlers run.
+    ///
+    /// Close the land's sessions with 4016 (`landFailed`) and return once they are closed;
+    /// never wait for the destroy here: the keeper runs its destroy after this returns, so a
+    /// wait for the destroy would never end. The default does nothing, and the keeper still
+    /// tears the land down; a transport that holds sessions must close them itself.
+    func landDidFail(_ failure: LandFailure) async
+
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
     /// `true` only when in-turn sync is on for this transport and it is attached to that keeper
@@ -216,15 +225,23 @@ public enum InTurnSyncResult: Sendable, Equatable {
     /// without periodic sync schedules one repair sync-only turn, as after a failed plan within
     /// its limit; a land with periodic sync relies on its next one.
     case committedWithRepairPending(clearDirtyFlags: Bool)
-    /// The sync plan threw and committed nothing; the dirty flags stay set. `repairAllowed`: the
-    /// failure count is still within the follow-up limit, so a land without periodic sync may
-    /// schedule one repair sync-only turn (a land with periodic sync relies on its next one).
+    /// The sync plan threw and committed nothing. Since #535 the keeper ends the land on it,
+    /// as on `landFailed` with kind `.syncPlan`; `repairAllowed` is read by nothing, and the
+    /// payload is to be removed (#535 decision D12).
     case failed(repairAllowed: Bool)
+    /// The sync phase failed in a way that can't be brought back to a fully correct state
+    /// (#535): a plan that threw, or a value or frame that didn't convert or encode. Nothing of
+    /// it was committed or sent. The keeper ends the land in the same turn (`LandKeeper.failure`);
+    /// a position without a tick or pass gets the keeper's.
+    case landFailed(LandFailure)
 }
 
 extension LandKeeperTransport {
     /// Default: in-turn sync is not supported for any keeper.
     public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+
+    /// Default: nothing; the keeper still tears the land down.
+    public func landDidFail(_ failure: LandFailure) async {}
 
     /// Default: nothing is admitted; the join's caller admits after the join returns.
     public func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission { .notAdmitted }
@@ -319,4 +336,5 @@ final class ReleasedLandTransport: LandKeeperTransport, @unchecked Sendable {
     func syncNowFromTransport() async { drop("syncNow") }
     func syncBroadcastOnlyFromTransport() async { drop("syncBroadcastOnly") }
     func onLandDestroyed() async { drop("onLandDestroyed") }
+    func landDidFail(_ failure: LandFailure) async { drop("landDidFail") }
 }
