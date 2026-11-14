@@ -265,9 +265,12 @@ public enum ReevaluationEngine {
             hashDefinition: hashDefinition,
             hashIncomparability: hashIncomparability
         )
+        // A tickless land records its inputs as passes of tick 0 (3.1 on).
+        let tickless = maxTickId == 0 ? !(try await source.getPasses(for: 0)).isEmpty : false
         var syncOutputDriver = SyncOutputReplayDriver<State>(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
-            incomparability: nfcIncomparability
+            incomparability: nfcIncomparability,
+            tickless: tickless
         )
         syncOutputDriver.begin(
             beforeInitialize: initialState,

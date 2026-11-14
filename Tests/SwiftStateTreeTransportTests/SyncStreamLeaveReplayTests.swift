@@ -197,10 +197,10 @@ struct SyncStreamLeaveReplayTests {
         let sync = result.syncOutput
         guard tick else {
             #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
-            // The replay locates a sync output by its observed tick only, and every output of
-            // a tickless land observes tick -1: an output after a pass that changed the state
-            // is compared with the state before it (#563).
-            withKnownIssue("a tickless land's sync outputs are compared with the state before its passes (#563)") {
+            // Nothing recorded orders a tickless entry against the passes unambiguously, so the
+            // check reports the record as not verified, never as a mismatch (#563).
+            #expect(sync.verdict == .skipped(reason: "a tickless land's sync outputs are not located among its passes (#563)"), "\(sync.summary)")
+            withKnownIssue("a tickless land's sync outputs aren't verified (#563)") {
                 #expect(sync.verdict == .passed, "\(sync.summary)")
             }
             return
