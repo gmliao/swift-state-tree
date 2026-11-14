@@ -3539,6 +3539,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncSkips
     }
 
+    /// The frame prefix cache's counts so far, for this adapter's opcode encoder (zero for
+    /// another encoder): diagnostics, such as a benchmark reporting cache hits with the cache on
+    /// (#392). The counts include every frame, warm-up and joins too; a caller that wants a
+    /// window takes the difference of two reads. Not a supported API.
+    @_spi(Diagnostics) public func framePrefixCacheCounts() -> FramePrefixCacheCounts {
+        let cache: FramePrefixCache?
+        if let encoder = stateUpdateEncoder as? OpcodeJSONStateUpdateEncoder {
+            cache = encoder.framePrefixCache
+        } else if let encoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+            cache = encoder.framePrefixCache
+        } else {
+            cache = nil
+        }
+        guard let cache else { return FramePrefixCacheCounts() }
+        return FramePrefixCacheCounts(resumes: cache.resumes, reusedSplits: cache.reusedSplits)
+    }
+
     /// Runs `phase` (a sync phase: plan + commit) on a state copy taken by
     /// `LandKeeper.beginSync(clearDirtyFlags:)`.
     ///
@@ -5575,6 +5592,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // retypes the update); `.empty` is the full-snapshot strategy's.
         if case .empty = baseline { assertionFailure("the per-player tables diffed against the .empty baseline") }
         var diffed = Set<PlayerID>()
+        // Once per sync, not per recipient (#392).
+        let broadcastIndex = broadcastDiff.map(SyncEngine.BroadcastMergeIndex.init)
 
         for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
             var perPlayerDiff: [StatePatch] = []
@@ -5585,9 +5604,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 )
             }
             var update: StateUpdate
-            if let broadcastDiff {
+            if let broadcastIndex {
                 update = syncEngine.updateFromBroadcastDiff(
-                    for: recipient.playerID, broadcastDiff: broadcastDiff, perPlayerDiff: perPlayerDiff, staged: &plan.staged
+                    for: recipient.playerID, broadcastDiff: broadcastIndex, perPlayerDiff: perPlayerDiff, staged: &plan.staged
                 )
             } else {
                 guard hasEntries else { continue }

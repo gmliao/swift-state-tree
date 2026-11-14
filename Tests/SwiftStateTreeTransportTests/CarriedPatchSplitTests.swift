@@ -133,6 +133,42 @@ struct CarriedPatchSplitTests {
         }
     }
 
+    @Test("With a cursor, leaf changes and row creates and deletes hold no path string; every path's bytes are the hasher-less diff's (#392)")
+    func typedDiffSplitOnlyPatches() throws {
+        let hasher = PathHasher(pathHashes: [
+            "round": 1, "title": 2, "monsters": 3, "monsters.*": 4, "positions": 5, "positions.*": 6,
+            "units": 7, "units.*": 8, "units.*.hp": 9, "units.*.x": 10, "boss": 11, "boss.hp": 12, "boss.x": 13,
+        ])
+        var state = DirtyIdentityState()
+        state.units[1] = DirtyIdentityUnit()
+        state.units[-2] = DirtyIdentityUnit()
+        state.monsters[5] = 50
+        var changed = state
+        changed.round = 3
+        changed.units[1]?.hp = 9
+        changed.units[-2] = nil
+        changed.units[7] = DirtyIdentityUnit()
+        changed.monsters[5] = 51
+        changed.boss.x = 4
+
+        func diff(_ cursor: PathHasher.Cursor?) -> [StatePatch] {
+            let tables = SyncTableBroadcastDiff<DirtyIdentityState>(pathCursor: cursor, typedLeafValues: true)
+            var drops = ExtractionDrops()
+            tables.seed(state, drops: &drops)
+            return tables.diff(changed, fields: nil, drops: &drops).patches
+        }
+        let withCursor = diff(hasher.rootCursor)
+        let without = diff(nil)
+        #expect(withCursor.map { Array($0.path.utf8) } == without.map { Array($0.path.utf8) })
+        #expect(withCursor == without)
+        #expect(without.allSatisfy { !$0.isSplitOnly && $0.split == nil })
+        let splitOnly = Set(withCursor.filter(\.isSplitOnly).map(\.path))
+        #expect(splitOnly.isSuperset(of: ["/units/1/hp", "/units/-2", "/units/7", "/boss/x"]), "\(splitOnly)")
+        for patch in withCursor where patch.isSplitOnly {
+            #expect(patch.split?.belongs(to: hasher) == true)
+        }
+    }
+
     @Test("The split is not part of a patch's value")
     func equalityAndCodingIgnoreTheSplit() throws {
         let hasher = PathHasher(pathHashes: splitPatterns)

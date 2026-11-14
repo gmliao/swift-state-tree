@@ -85,7 +85,7 @@ enum FieldMergePlan {
         guard let cache, patches.count > 1, !FieldMergeStatistics.isEnabled else {
             return (order, splits, entries(patches: sorted, splits: splits, table: table))
         }
-        let rawPaths = patches.map(\.path)
+        let rawPaths = patches.map(PatchPathIdentity.init)
         guard let table else {
             cache.reference = FramePrefixCache.Reference(
                 rawPaths: rawPaths, rawSplits: rawSplits,
@@ -128,20 +128,22 @@ enum FieldMergePlan {
             return hasher.splitReportingMatch(patch.path)
         }
         #if DEBUG
-        let own = hasher.splitReportingMatch(patch.path)
+        // The DEBUG reader of the path, apart from the production ones (`pathRebuilds`).
+        let path = patch.debugRebuiltPath
+        let own = hasher.splitReportingMatch(path)
         assert(
             own.inSchema && own.pathHash == carried.pathHash && own.dynamicKeys == carried.dynamicKeys,
-            "carried split of \(patch.path) differs from the hasher's"
+            "carried split of \(path) differs from the hasher's"
         )
         #endif
         return (carried.pathHash, carried.dynamicKeys, true)
     }
 
     /// How many leading patches have the same path (byte for byte) in both frames.
-    private static func commonPathPrefix(_ lhs: [String], _ rhs: [StatePatch]) -> Int {
+    private static func commonPathPrefix(_ lhs: [PatchPathIdentity], _ rhs: [StatePatch]) -> Int {
         let count = min(lhs.count, rhs.count)
         var index = 0
-        while index < count, lhs[index].utf8.elementsEqual(rhs[index].path.utf8) { index += 1 }
+        while index < count, lhs[index].matches(rhs[index]) { index += 1 }
         return index
     }
 
@@ -171,7 +173,7 @@ enum FieldMergePlan {
 final class FramePrefixCache: @unchecked Sendable {
     struct Reference {
         /// The frame's paths and their splits, in the order the frame was given (split reuse).
-        let rawPaths: [String]
+        let rawPaths: [PatchPathIdentity]
         let rawSplits: [FieldMergeSplit]
         /// The frame's paths and op kinds in canonical order: what the plan reads, without the
         /// values.
@@ -198,13 +200,46 @@ final class FramePrefixCache: @unchecked Sendable {
     }
 }
 
+/// A patch's path as the frame cache compares it, byte for byte (#392): a split-only patch by
+/// its split, so a frame of them is compared without building their paths; any other patch
+/// (`.path`, or the stored pair of a lossy literal) by its string's bytes.
+enum PatchPathIdentity {
+    case split(PatchSplit)
+    case path(String)
+
+    init(_ patch: StatePatch) {
+        if patch.isSplitOnly, let split = patch.split {
+            self = .split(split)
+        } else {
+            self = .path(patch.path)
+        }
+    }
+
+    /// Whether `patch`'s path has the same bytes. Two split-only patches of one hasher: the
+    /// same pattern (the same literals, spelled as the trie spells them) and each key's bytes
+    /// equal, not merely `String`-equal. A frame that mixes the forms compares bytes.
+    func matches(_ patch: StatePatch) -> Bool {
+        switch self {
+        case .split(let split):
+            if patch.isSplitOnly, let other = patch.split, split.hasOwner(of: other) {
+                return split.pathHash == other.pathHash
+                    && split.dynamicKeys.count == other.dynamicKeys.count
+                    && zip(split.dynamicKeys, other.dynamicKeys).allSatisfy { $0.utf8.elementsEqual($1.utf8) }
+            }
+            return split.rebuiltPath().utf8.elementsEqual(patch.path.utf8)
+        case .path(let path):
+            return path.utf8.elementsEqual(patch.path.utf8)
+        }
+    }
+}
+
 /// A patch's path and op kind.
 struct PatchShape {
-    let path: String
+    let path: PatchPathIdentity
     let op: UInt8
 
     init(_ patch: StatePatch) {
-        path = patch.path
+        path = PatchPathIdentity(patch)
         op = Self.op(patch.operation)
     }
 
@@ -219,7 +254,7 @@ struct PatchShape {
     /// The same bytes, not just canonically equivalent: the plan keys paths by their UTF-8 bytes,
     /// and a resumed plan reuses the reference's splits (dynamic keys included).
     func matches(_ patch: StatePatch) -> Bool {
-        op == Self.op(patch.operation) && path.utf8.elementsEqual(patch.path.utf8)
+        op == Self.op(patch.operation) && path.matches(patch)
     }
 }
 

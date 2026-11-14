@@ -32,6 +32,15 @@ enum MeasuredSync {
         return total
     }
 
+    /// The adapters' frame prefix cache counts so far, summed (`FramePrefixCacheCounts`).
+    static func prefixCacheCounts<State: StateNodeProtocol>(_ adapters: [TransportAdapter<State>]) async -> FramePrefixCacheCounts {
+        var total = FramePrefixCacheCounts()
+        for adapter in adapters {
+            total = total + (await adapter.framePrefixCacheCounts())
+        }
+        return total
+    }
+
     /// Exits the run when a measured sync was skipped: its changes went out in a later cycle, so
     /// bytes per sync would not describe one sync each.
     static func requireNoSkips(_ skips: Int, label: String) {

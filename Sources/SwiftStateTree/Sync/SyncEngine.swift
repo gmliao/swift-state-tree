@@ -653,35 +653,98 @@ public struct SyncEngine: Sendable {
         )
     }
     
+    /// The broadcast patches of one sync, ready to be merged with each recipient's per-player
+    /// patches (`mergePatches(_:_:)`): built once per sync, not once per recipient (#392).
+    ///
+    /// No path is built until a recipient has per-player patches. When every broadcast patch
+    /// carries a split of one hasher, the duplicates are found by split identity
+    /// (`PatchSplit.pathIdentity`), which for the splits of one hasher is `String` equality on
+    /// the paths; otherwise by the paths. The path index is built on the first merge with
+    /// per-player patches and shared by the recipients after it. Used by one sync, on one task.
+    package final class BroadcastMergeIndex {
+        /// A patch's identity for the duplicate check: all of one list are of one case.
+        private enum Key: Hashable {
+            case split(PatchSplit.PathIdentity)
+            case path(String)
+        }
+
+        /// The broadcast patches, the first at each path kept (`String` equality).
+        package let patches: [StatePatch]
+        /// Each kept patch's path → its position in `patches`, once a merge has needed it.
+        private var pathPositions: [String: Int]?
+
+        package init(_ broadcast: [StatePatch]) {
+            var patches: [StatePatch] = []
+            var seen = Set<Key>(minimumCapacity: broadcast.count)
+            patches.reserveCapacity(broadcast.count)
+            // A string-only patch, or splits of two hashers, could share a path across the two
+            // kinds of key: then every patch is keyed by its path.
+            let first = broadcast.first?.split
+            let bySplit = first.map { first in
+                broadcast.allSatisfy { patch in patch.split.map(first.hasOwner(of:)) ?? false }
+            } ?? false
+            for patch in broadcast {
+                let key: Key = bySplit ? .split(patch.split!.pathIdentity) : .path(patch.path)
+                if seen.insert(key).inserted { patches.append(patch) }
+            }
+            self.patches = patches
+            #if DEBUG
+            // The split identity keeps the patches `String` equality on the paths keeps.
+            var seenPaths = Set<String>()
+            let byPath = broadcast.filter { seenPaths.insert($0.debugRebuiltPath).inserted }
+            assert(
+                byPath.count == patches.count
+                    && zip(byPath, patches).allSatisfy { $0.debugRebuiltPath.utf8.elementsEqual($1.debugRebuiltPath.utf8) },
+                "the broadcast merge index's duplicates aren't String equality's"
+            )
+            #endif
+        }
+
+        /// Each kept patch's path → its position in `patches`, built on first use.
+        fileprivate var positions: [String: Int] {
+            if let pathPositions { return pathPositions }
+            var built = [String: Int](minimumCapacity: patches.count)
+            for (index, patch) in patches.enumerated() {
+                let path = patch.path
+                if built[path] == nil { built[path] = index }
+            }
+            pathPositions = built
+            return built
+        }
+
+        /// Whether a merge has built the path index (tests).
+        package var hasPathPositionsForTesting: Bool { pathPositions != nil }
+    }
+
     /// Merge broadcast and per-player patches (per-player takes precedence).
     package func mergePatches(
         _ broadcast: [StatePatch],
         _ perPlayer: [StatePatch]
     ) -> [StatePatch] {
-        var merged: [StatePatch] = []
-        var seenPaths: Set<String> = []
-        
-        // Add broadcast patches first
-        for patch in broadcast {
-            if !seenPaths.contains(patch.path) {
-                merged.append(patch)
-                seenPaths.insert(patch.path)
-            }
-        }
-        
-        // Add per-player patches (may override broadcast)
+        mergePatches(BroadcastMergeIndex(broadcast), perPlayer)
+    }
+
+    /// Merge one sync's broadcast patches with a recipient's per-player patches, with `String`
+    /// equality on paths: broadcast duplicates keep the first; a per-player patch replaces the
+    /// first patch at its path, broadcast or an earlier per-player one, in place; a new path is
+    /// appended in order.
+    package func mergePatches(
+        _ broadcast: BroadcastMergeIndex,
+        _ perPlayer: [StatePatch]
+    ) -> [StatePatch] {
+        guard !perPlayer.isEmpty else { return broadcast.patches }
+        var merged = broadcast.patches
+        // This recipient's per-player paths added so far → their positions in `merged`.
+        var added: [String: Int] = [:]
         for patch in perPlayer {
-            if !seenPaths.contains(patch.path) {
-                merged.append(patch)
-                seenPaths.insert(patch.path)
+            let path = patch.path
+            if let index = broadcast.positions[path] ?? added[path] {
+                merged[index] = patch
             } else {
-                // Per-player takes precedence - replace existing patch
-                if let index = merged.firstIndex(where: { $0.path == patch.path }) {
-                    merged[index] = patch
-                }
+                added[path] = merged.count
+                merged.append(patch)
             }
         }
-        
         return merged
     }
     
@@ -1007,7 +1070,7 @@ public struct SyncEngine: Sendable {
     /// (the per-player tables, #514): the firstSync mark and the merge as there.
     package func updateFromBroadcastDiff(
         for playerID: PlayerID,
-        broadcastDiff: [StatePatch],
+        broadcastDiff: BroadcastMergeIndex,
         perPlayerDiff: [StatePatch],
         staged: inout StagedCaches
     ) -> StateUpdate {

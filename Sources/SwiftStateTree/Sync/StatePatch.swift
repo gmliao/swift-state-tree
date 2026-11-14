@@ -69,31 +69,111 @@ public enum PatchOperation: Equatable, Sendable, Codable {
 /// }
 /// ```
 public struct StatePatch: Equatable, Sendable, Codable {
-    /// JSON Pointer path to the changed field
-    public let path: String
+    /// Where the patch is: a path string, a split whose path is rebuilt on demand, or both.
+    private enum Location: Sendable {
+        /// No split (the json encoding, the snapshot diff, a decoded patch).
+        case path(String)
+        /// A lossless split (`PathHasher.Cursor.isLossless`): `path` is rebuilt from it, and is
+        /// the emit's own path byte for byte.
+        case split(PatchSplit)
+        /// A split whose path the templates can't rebuild byte for byte (a literal spelled
+        /// differently from its trie label but `String`-equal to it): the path is kept as the
+        /// emit spelled it, and the split still names the pattern, row slot and generation.
+        case pathAndSplit(String, PatchSplit)
+    }
+
+    private let location: Location
+
+    /// JSON Pointer path to the changed field. For a patch made from a lossless split, built
+    /// from the split on each call: a reader that needs it more than once takes it once.
+    public var path: String {
+        switch location {
+        case .path(let path), .pathAndSplit(let path, _):
+            return path
+        case .split(let split):
+            #if DEBUG
+            StatePatch.pathRebuilds?.record()
+            #endif
+            return split.rebuiltPath()
+        }
+    }
+
     /// Operation to perform at this path
     public let operation: PatchOperation
+
     /// The path's split (pattern hash and dynamic keys), when the diff that made the patch
     /// already knew it: an encoder with the same `PathHasher` takes it instead of splitting the
     /// path again. Not part of the patch's value: `==` and `Codable` ignore it, and a patch built
     /// from another one doesn't carry it.
-    package let split: PatchSplit?
-    
+    package var split: PatchSplit? {
+        switch location {
+        case .path: return nil
+        case .split(let split), .pathAndSplit(_, let split): return split
+        }
+    }
+
+    /// Whether the patch holds no path string (`path` is rebuilt from its split on each call).
+    package var isSplitOnly: Bool {
+        if case .split = location { return true }
+        return false
+    }
+
     public init(path: String, operation: PatchOperation) {
-        self.path = path
+        self.location = .path(path)
         self.operation = operation
-        self.split = nil
     }
 
+    /// A patch at `path` with the split the diff already knew, kept beside the string.
     package init(path: String, operation: PatchOperation, split: PatchSplit?) {
-        self.path = path
+        self.location = split.map { .pathAndSplit(path, $0) } ?? .path(path)
         self.operation = operation
-        self.split = split
     }
 
-    public static func == (lhs: StatePatch, rhs: StatePatch) -> Bool {
-        lhs.path == rhs.path && lhs.operation == rhs.operation
+    /// A patch at a lossless split's path (`PathHasher.Cursor.isLossless`), which isn't built
+    /// until a reader asks for it.
+    package init(split: PatchSplit, operation: PatchOperation) {
+        self.location = .split(split)
+        self.operation = operation
     }
+
+    /// This patch with `split` in place of its split (a row create's generation), in the same
+    /// form, without reading its path.
+    package func retagged(_ split: PatchSplit) -> StatePatch {
+        switch location {
+        case .split:
+            return StatePatch(split: split, operation: operation)
+        case .path(let path), .pathAndSplit(let path, _):
+            return StatePatch(path: path, operation: operation, split: split)
+        }
+    }
+
+    /// Same path (`String` equality) and same operation. Two split-only patches of one hasher
+    /// compare their splits: the same pattern and `String`-equal keys are exactly a
+    /// `String`-equal path, since both spell the pattern's literals the same and `/` separates
+    /// the components in both.
+    public static func == (lhs: StatePatch, rhs: StatePatch) -> Bool {
+        guard lhs.operation == rhs.operation else { return false }
+        if case .split(let a) = lhs.location, case .split(let b) = rhs.location, a.hasOwner(of: b) {
+            return a.pathHash == b.pathHash && a.dynamicKeys == b.dynamicKeys
+        }
+        return lhs.path == rhs.path
+    }
+
+    #if DEBUG
+    /// Counts `path` rebuilds of split-only patches, in DEBUG builds, for the task that sets it
+    /// (`$pathRebuilds.withValue`): a test that a reader on the success path takes the split
+    /// and builds no path. `debugRebuiltPath` doesn't count.
+    @TaskLocal package static var pathRebuilds: PathRebuildCounter?
+
+    /// `path`, without counting a rebuild (`pathRebuilds`): for DEBUG checks that read the path
+    /// beside the production readers.
+    package var debugRebuiltPath: String {
+        switch location {
+        case .path(let path), .pathAndSplit(let path, _): return path
+        case .split(let split): return split.rebuiltPath()
+        }
+    }
+    #endif
     
     /// Encode as JSON Patch format (RFC 6902)
     public func encode(to encoder: Encoder) throws {
@@ -115,8 +195,7 @@ public struct StatePatch: Equatable, Sendable, Codable {
     
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        path = try container.decode(String.self, forKey: .path)
-        split = nil
+        location = .path(try container.decode(String.self, forKey: .path))
         let op = try container.decode(String.self, forKey: .op)
         
         switch op {
@@ -141,3 +220,17 @@ public struct StatePatch: Equatable, Sendable, Codable {
     }
 }
 
+#if DEBUG
+/// The `path` rebuilds of split-only patches seen by the task that set
+/// `StatePatch.pathRebuilds` (DEBUG builds only).
+package final class PathRebuildCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var total = 0
+
+    package init() {}
+
+    package var count: Int { lock.withLock { total } }
+
+    func record() { lock.withLock { total += 1 } }
+}
+#endif
