@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 @testable import GameContent
 
@@ -126,12 +126,12 @@ struct VisibilityTestLandTests {
                 autoStartLoops: false
             )
             for i in 0..<4 {
-                try await keeper.join(playerID: PlayerID("p\(i)"), clientID: ClientID("c\(i)"), sessionID: SessionID("s\(i)"))
+                try await keeper.join(playerID: PlayerID("p\(i)"), clientID: ClientID("c\(i)"), sessionID: SessionID(fixed: "s\(i)"))
             }
             for _ in 0..<60 { await keeper.stepTickOnce() }
             let place = PlaceEntityAction(id: "e3", positions: [Position2(x: 20, y: 20), Position2(x: 50, y: 50)])
             let envelope = ActionEnvelope(typeIdentifier: String(describing: PlaceEntityAction.self), payload: AnyCodable(place))
-            _ = try await keeper.handleActionEnvelope(envelope, playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID("s0"))
+            _ = try await keeper.handleActionEnvelope(envelope, playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID(fixed: "s0"))
             for _ in 0..<5 { await keeper.stepTickOnce() }
             try await keeper.leave(playerID: PlayerID("p3"), clientID: ClientID("c3"))
             await keeper.stepTickOnce()

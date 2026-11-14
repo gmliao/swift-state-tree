@@ -8,7 +8,7 @@
 
 import Foundation
 import GameContent
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 import SwiftStateTreeMessagePack
 import SwiftStateTreeTransport
 
@@ -134,7 +134,7 @@ struct WireInputs {
         self.encoding = encoding
         self.actionsPerPlayer = actionsPerPlayer
         sessions = (0 ..< roomCount).map { roomIndex in
-            (0 ..< playersPerRoom).map { SessionID("room\(roomIndex)-session-\($0)") }
+            (0 ..< playersPerRoom).map { SessionID(fixed: "room\(roomIndex)-session-\($0)") }
         }
     }
 

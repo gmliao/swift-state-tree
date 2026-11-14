@@ -7,7 +7,7 @@
 import Foundation
 import GameContent
 import LoadTestPacing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeMessagePack
 @_spi(Diagnostics) import SwiftStateTreeTransport
@@ -162,7 +162,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+            let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
@@ -475,7 +475,7 @@ func runMultiRoomBenchmark(
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+            let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
@@ -861,7 +861,7 @@ func runBenchmark(
     // Connect players
     let playerIDs = (0 ..< playerCount).map { PlayerID("player-\($0)") }
     for (index, playerID) in playerIDs.enumerated() {
-        let sessionID = SessionID("session-\(index)")
+        let sessionID = SessionID(fixed: "session-\(index)")
         let clientID = ClientID("client-\(index)")
         await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
 
@@ -887,7 +887,7 @@ func runBenchmark(
     let warmupIterations = min(5, iterations / 10)
     let actionPlayerID = playerIDs.first ?? PlayerID("player-0")
     let actionClientID = ClientID("client-0")
-    let actionSessionID = SessionID("session-0")
+    let actionSessionID = SessionID(fixed: "session-0")
 
     for i in 0 ..< warmupIterations {
         let action = BenchmarkMutateAction(iteration: i)

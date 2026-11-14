@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 @testable import GameContent
 
 @Suite("Resolver-test tick probe")
@@ -45,7 +45,7 @@ struct TickProbeTests {
                 services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0), tickRecorder: recorder),
                 autoStartLoops: false
             )
-            let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID("s1")
+            let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID(fixed: "s1")
             try await keeper.join(playerID: player, clientID: client, sessionID: session)
             await keeper.stepTickOnce()
             for tag in ["a", "b"] {

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SwiftStateTree
+@_spi(Testing) @testable import SwiftStateTree
 @testable import GameContent
 
 /// A debug freeze must be a pure pause: the convergence check freezes each land, reads its
@@ -47,7 +47,7 @@ struct HeroDefenseFreezeResumeTests {
         )
         let landID = "hero-defense:freeze-resume"
         await keeper.setLandID(landID)
-        let ids = (0..<players).map { (PlayerID("p\($0)"), ClientID("c\($0)"), SessionID("s\($0)")) }
+        let ids = (0..<players).map { (PlayerID("p\($0)"), ClientID("c\($0)"), SessionID(fixed: "s\($0)")) }
         for (player, client, session) in ids {
             try await keeper.join(playerID: player, clientID: client, sessionID: session)
         }
