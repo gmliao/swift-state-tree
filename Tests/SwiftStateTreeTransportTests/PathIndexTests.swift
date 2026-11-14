@@ -209,15 +209,25 @@ struct PathIndexTests {
         }
     }
 
-    @Test("The adapter drops each patch outside the schema, sends the rest of the update and counts each dropped patch")
+    @Test("Per-player frames drop each patch outside the schema, send the rest and count each dropped patch (until #535 PR 2)")
     func adapterDropsUnmappedPatches() async throws {
-        for encoding in [InTurnEncoding.opcodeJsonArray, .messagepack] {
-            // Top-level hashes only: each tick's `/board/t<n>` has no pattern, `/ticks` has one.
-            let f = await VerifierFixture.make(encoding: encoding, pathIndex: true, pathHashes: verifierPathHashes)
-            try await f.join(1)
-            await f.tick(2)
-            #expect(await f.adapter.unmappedPathPatches == 2, "\(encoding): one board entry per tick, counted once")
-        }
+        // Top-level hashes only: each tick's `/board/t<n>` has no pattern, `/ticks` has one.
+        let f = await VerifierFixture.make(encoding: .opcodeJsonArray, pathIndex: true, pathHashes: verifierPathHashes)
+        try await f.join(1)
+        await f.tick(2)
+        #expect(await f.adapter.unmappedPathPatches == 2, "one board entry per tick, counted once")
+    }
+
+    @Test("A merged broadcast frame with a patch outside the schema ends the land (#535 row 9, D6)")
+    func adapterUnmappedBroadcastPatchEndsTheLand() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack, pathIndex: true, pathHashes: verifierPathHashes)
+        try await f.join(1)
+        await f.tick()
+        let failure = f.keeper.failure
+        #expect(failure?.kind == .syncEncode)
+        #expect(failure?.detail.contains("/board/") == true, "the error names the path: \(String(describing: failure))")
+        #expect(await f.adapter.unmappedPathPatches == 1, "counted once, as the failure (D6)")
     }
 
     @Test("Without path hashes, pathIndex is off in effect and no client must declare it")

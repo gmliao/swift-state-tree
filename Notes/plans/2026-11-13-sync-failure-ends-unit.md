@@ -135,6 +135,8 @@ Verdicts:
 | 18 | TA 3989-3993 `canonicalEvent` | a payload that doesn't convert makes the digest's events scope unverifiable | stays: diagnostics, not client state. The canonical snapshot conversion and the wire encode are different operations, so neither implies the other | none |
 | 19 | TA 202-209 `leavesKeyTablesAhead`, set at 4780, 4950, 5482, 5524 | the key scopes are reset in the next plan | removed in PR 1. Its four setters are rows 9, 10 (total) and 12, which PR 1 converts | 1 |
 
+Row 19, as built in PR 1: one setter stays with the full-view retry (`planPerPlayerFrames`, a retried first view or resync snapshot that doesn't encode even empty); removed in PR 2 with rows 11 and 13. `unencodableJoinerIsSkippedAndRetried` pins it until then.
+
 **Row 8's leak.** The path is TA 4689 → 5678 → 4603 → 4453, for patches that carry row metadata. `encodeDroppingUnencodablePatches` adds a row to `planFailedRows` whatever frame it encodes. A joiner's or unsynced recipient's full view carries broadcast row patches, so a per-recipient encode failure drops broadcast rows for every recipient. Under this plan the failure ends the land, so no broadcast state is changed on its behalf.
 
 **Replay loading.** LK 4126-4139 and 4251-4256 go to #521's A5 staged batch, per Main. This plan has no PR for them.

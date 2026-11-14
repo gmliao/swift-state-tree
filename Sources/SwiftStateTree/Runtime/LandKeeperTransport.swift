@@ -101,6 +101,14 @@ public protocol LandKeeperTransport: Sendable {
     /// tears the land down; a transport that holds sessions must close them itself.
     func landDidFail(_ failure: LandFailure) async
 
+    /// The land failed (#535): from now on, enqueue no new state or event frame. Called by the
+    /// keeper synchronously, in the segment that marks the failure, before any await, so a send
+    /// already past its own checks (a legacy cycle resuming) stops too. Frames already handed to
+    /// the writer still go out; action responses and errors are exempt. The default blocks
+    /// nothing: a transport that sends on its own schedule must stop its state and event output
+    /// when this is called.
+    nonisolated func closeOutputs(for failure: LandFailure)
+
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
     /// `true` only when in-turn sync is on for this transport and it is attached to that keeper
@@ -242,6 +250,9 @@ extension LandKeeperTransport {
 
     /// Default: nothing; the keeper still tears the land down.
     public func landDidFail(_ failure: LandFailure) async {}
+
+    /// Default: nothing is blocked.
+    public nonisolated func closeOutputs(for failure: LandFailure) {}
 
     /// Default: nothing is admitted; the join's caller admits after the join returns.
     public func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission { .notAdmitted }

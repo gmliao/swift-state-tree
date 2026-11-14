@@ -181,6 +181,15 @@ private actor SyncPhaseTransport: Transport {
         }
     }
 
+    private var closes: [SessionID: [UInt16]] = [:]
+
+    /// Records the close codes; the connection itself isn't modeled.
+    func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        closes[sessionID, default: []].append(close.code)
+    }
+
+    func closeCodes(for sessionID: SessionID) -> [UInt16] { closes[sessionID] ?? [] }
+
     func messages(for sessionID: SessionID) -> [Data] {
         sent.compactMap { entry in
             if case .session(let id) = entry.target, id == sessionID { return entry.data }
@@ -716,39 +725,23 @@ private func count(_ message: String, in frames: [Data]) -> Int {
 @Suite("TransportAdapter sync phase: plan + commit", .timeLimit(.minutes(1)))
 struct TransportAdapterSyncPhaseTests {
 
-    @Test(
-        "a plan that throws after the dirty flags were cleared: its dirty fields carry over, the next cycle delivers the change typed firstSync",
-        arguments: SyncPhaseEncoding.allCases, [true, false]
-    )
-    func throwingPlanAfterClearIsDeliveredNextCycle(encoding: SyncPhaseEncoding, useSnapshotForSync: Bool) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding, useSnapshotForSync: useSnapshotForSync)
+    @Test("a legacy plan that throws ends the land at its first throw, with no follow-up (#535 row 15)", arguments: SyncPhaseEncoding.allCases)
+    func legacyPlanThrowEndsTheLand(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, periodicSync: false)
+        // The keeper's teardown reaches the adapter's `landDidFail` only through its transport.
+        await f.keeper.setTransport(f.adapter)
         await f.sync()
 
         try await f.set("a", 1)
-        try await f.set("score", 5)
-        let framesBefore = await f.frameCount()
         await f.failNextPlan()
-        await f.sync()
-        #expect(await f.frameCount() == framesBefore, "a failed plan enqueues nothing")
-        #expect(await f.keeper.currentState().isDirty() == false, "precondition: beginSync cleared the dirty flags")
-        #expect(await f.adapter.isKeyScopeResetPending(), "a failed plan requests a key scope reset")
-        #expect(await f.adapter.carriedDirtyFieldsForTesting().isSuperset(of: ["a", "scores"]), "its dirty fields carry over")
-
-        // Another field of each category is dirty, so without the carried fields the next cycle
-        // would be a dirty-tracking cycle that misses a and score.
-        try await f.set("b", 2)
-        try await f.set("bonus", 3)
-        let updatesBefore = await f.clientState().updateTypes.count
-        await f.sync()
-
-        let client = try await f.expectConverged("after the next cycle")
-        #expect(client.value(at: "/a") == .int(1), "broadcast change of the failed cycle must arrive")
-        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(5), "per-player change of the failed cycle must arrive")
-        let resetTypes = Array(client.updateTypes.dropFirst(updatesBefore))
-        #expect(!resetTypes.isEmpty && resetTypes.allSatisfy { $0 == 1 }, "the next updates are typed firstSync: \(resetTypes)")
-        #expect(await f.adapter.isKeyScopeResetPending() == false, "the commit ends the pending reset")
-        #expect(await f.adapter.carriedDirtyFieldsForTesting().isEmpty, "the commit ends the carry")
-        #expect(await f.adapter.syncFailedPlans == 1)
+        await f.adapter.syncNow()
+        // The failure is applied by a keeper turn of its own, after `syncNow` returned.
+        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        await f.keeper.waitUntilDrained()
+        #expect(f.keeper.failure?.kind == .syncPlan)
+        #expect(f.keeper.destructionCause == .failed)
+        let codes = await f.transport.closeCodes(for: f.session)
+        #expect(codes == [SessionClose.Code.landFailed], "closes: \(codes)")
     }
 
     @Test(
@@ -788,106 +781,23 @@ struct TransportAdapterSyncPhaseTests {
         #expect(engine.hasReceivedFirstSyncForTesting(f.player) == false)
     }
 
-    @Test(
-        "keys removed in a failed cycle (top-level and nested, broadcast and per-player) are removed by the next cycle",
-        arguments: SyncPhaseEncoding.allCases, [true, false]
-    )
-    func removalsOfAFailedCycleAreDeliveredNextCycle(encoding: SyncPhaseEncoding, useSnapshotForSync: Bool) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding, useSnapshotForSync: useSnapshotForSync)
-        try await f.set("item:x", 1)
-        try await f.set("item:y", 2)
-        try await f.set("bag:sword", 1)
-        try await f.set("bag:shield", 2)
-        try await f.set("score", 5)
+    @Test("after a legacy plan's failure, no state or event frame is sent: the output gate (#535)", arguments: SyncPhaseEncoding.allCases)
+    func failedLandSendsNoFurtherOutput(encoding: SyncPhaseEncoding) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding, periodicSync: false)
         await f.sync()
-        let seeded = try await f.expectConverged("seeded")
-        let me = f.player.rawValue
-        #expect(seeded.value(at: "/items/x") == .int(1), "precondition")
-        #expect(seeded.value(at: "/bags/\(me)/sword") == .int(1), "precondition")
-        #expect(seeded.value(at: "/scores/\(me)") == .int(5), "precondition")
-
-        try await f.set("unitem:x")       // broadcast, nested key
-        try await f.set("unbag:sword")    // per-player, nested key
-        try await f.set("unscore")        // per-player, the slice's top-level entry
+        try await f.set("a", 1)
         await f.failNextPlan()
-        await f.sync()
+        await f.adapter.syncNow()
+        #expect(f.adapter.outputGate.isClosed, "the adapter closed its gate where it saw the throw")
+        let before = await f.frameCount()
 
-        try await f.set("b", 1)
-        await f.sync()
-
-        let client = try await f.expectConverged("after the next cycle")
-        #expect(client.value(at: "/items/x") == nil, "broadcast nested key must be removed")
-        #expect(client.value(at: "/items/y") == .int(2))
-        #expect(client.value(at: "/bags/\(me)/sword") == nil, "per-player nested key must be removed")
-        #expect(client.value(at: "/bags/\(me)/shield") == .int(2))
-        #expect(client.value(at: "/scores/\(me)") == nil, "per-player top-level entry must be removed")
-    }
-
-    @Test(
-        "a dynamic-key slot allocated by a plan that failed after encoding is redefined by the next committed plan",
-        arguments: [SyncPhaseEncoding.opcodeJsonArray, .messagepack]
-    )
-    func slotAllocatedByFailedEncodeIsRedefined(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding)
-        await f.sync()
-
-        // First use of "k1": the failed plan's encode allocates its slot; the frame never leaves.
-        try await f.set("item:k1", 1)
-        await f.failNextPlan()
-        await f.sync()
-        #expect(await f.adapter.isKeyScopeResetPending(), "precondition: the plan failed after its encodes")
-
-        // A normal, dirty-only cycle (b, plus the carried items): typed firstSync, it resets the
-        // key tables and defines k1.
-        try await f.set("b", 1)
-        await f.sync()
-        #expect(await f.adapter.isKeyScopeResetPending() == false)
-        // A plain diff now refers to "k1" by slot only; the client must know the slot.
-        try await f.set("item:k1", 3)
-        await f.sync()
-
-        let client = try await f.expectConverged("after the reset and a later diff")
-        #expect(client.value(at: "/items/k1") == .int(3))
-    }
-
-    @Test("a failed broadcast-only plan: the next cycle delivers its changes", arguments: SyncPhaseEncoding.allCases)
-    func throwingBroadcastOnlyPlanIsDeliveredNextCycle(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding)
-        await f.sync()
-
-        try await f.set("a", 4)
-        try await f.set("item:z", 1)
-        await f.failNextPlan()
+        // A further change, an event and sync requests: nothing new is enqueued.
+        try? await f.set("a", 2)
+        await f.queueEvent("after-failure", to: .all)
+        await f.adapter.syncNow()
         await f.adapter.syncBroadcastOnly()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        #expect(await f.adapter.isKeyScopeResetPending())
-
-        try await f.set("b", 1)
-        await f.sync()
-
-        let client = try await f.expectConverged("after the next cycle")
-        #expect(client.value(at: "/a") == .int(4))
-        #expect(client.value(at: "/items/z") == .int(1))
-        #expect(await f.adapter.isKeyScopeResetPending() == false)
-    }
-
-    @Test("a broadcast-only cycle after a failed plan runs a full cycle", arguments: SyncPhaseEncoding.allCases)
-    func broadcastOnlyCycleAfterFailedPlanRunsFullCycle(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding)
-        await f.sync()
-
-        try await f.set("score", 9)
-        await f.failNextPlan()
-        await f.sync()
-        #expect(await f.adapter.isKeyScopeResetPending())
-
-        await f.adapter.syncBroadcastOnly()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-
-        let client = try await f.expectConverged("after the broadcast-only cycle")
-        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(9), "a per-player change must arrive too")
-        #expect(await f.adapter.isKeyScopeResetPending() == false)
-        #expect(await f.adapter.carriedDirtyFieldsForTesting().isEmpty)
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await f.frameCount() == before, "no frame after the failure")
     }
 
     @Test("an update that fails to encode is re-encoded typed firstSync in the same cycle", arguments: SyncPhaseEncoding.allCases)
@@ -976,49 +886,26 @@ struct TransportAdapterSyncPhaseTests {
     }
 
     @Test(
-        "a player whose per-player update never encodes loses only that update; the room and its events go on",
+        "a player whose per-player frames never encode ends the land; the failing cycle sends nothing (#535 row 10)",
         arguments: SyncPhaseEncoding.allCases
     )
-    func failingPlayerUpdateIsDroppedNotRoomWide(encoding: SyncPhaseEncoding) async throws {
+    func failingPlayerUpdateEndsTheLand(encoding: SyncPhaseEncoding) async throws {
         let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.keeper.setTransport(f.adapter)
         try await f.joinSecond()
         await f.sync()
+        let before = await f.frameCount()
 
         f.failingPlayer.set(f.player2)
         try await f.set("a", 1)
-        try await f.set("score", 5)
         try await f.set("score", 6, second: true)
         await f.queueEvent("tg-failing", to: .player(f.player2))
         await f.sync()
-        #expect(await f.adapter.syncFailedPlans == 0, "the plan commits")
-        #expect(await f.adapter.syncDroppedUpdates > 0, "the drop is counted")
-        let first = try await f.expectConverged("the other player")
-        #expect(first.value(at: "/a") == .int(1))
-
-        // The failing player keeps its events and, with opcode 107, the broadcast frames (with
-        // json / opcodeJsonArray its per-player frame carries the broadcast: lost, as before).
-        try await f.set("b", 2)
-        await f.sync()
-        let failing = await f.clientState(second: true)
-        #expect(failing.decodeErrors.isEmpty, "decode errors \(failing.decodeErrors)")
-        #expect(count("tg-failing", in: await f.transport.messages(for: f.session2)) == 1, "its targeted event")
-        if encoding == .messagepack {
-            #expect(failing.value(at: "/b") == .int(2), "broadcast changes still reach it")
-        }
-        _ = try await f.expectConverged("the other player, later")
-
-        // Once it encodes again, its next changes reach it and decode.
-        f.failingPlayer.set(nil)
-        try await f.set("a", 3)
-        try await f.set("score", 8, second: true)
-        await f.sync()
-        let fixed = await f.clientState(second: true)
-        #expect(fixed.decodeErrors.isEmpty, "decode errors \(fixed.decodeErrors)")
-        #expect(fixed.value(at: "/a") == .int(3))
-        #expect(fixed.value(at: "/scores/\(f.player2.rawValue)") == .int(8))
-        if encoding == .messagepack {
-            _ = try await f.expectConverged("the failing player, after", second: true)
-        }
+        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(f.keeper.failure?.kind == .syncEncode)
+        #expect(f.keeper.failure?.detail.contains(f.player2.rawValue) == true, "the failure names the player")
+        #expect(f.adapter.outputGate.isClosed)
+        #expect(await f.frameCount() == before, "neither player got a frame of the failing cycle")
     }
 
     @Test("a broadcast value that does not encode (NaN, json) is dropped and the cycle commits; other fields flow")
@@ -1065,76 +952,41 @@ struct TransportAdapterSyncPhaseTests {
         }
     }
 
-    @Test("a broadcast-only cycle drops a value that does not encode (NaN, json) and commits")
-    func unencodableBroadcastOnlyPatchIsDropped() async throws {
+    @Test("an event sent outside a turn that reaches no frame ends the land; one sent alone doesn't (#535 row 17)", arguments: [true, false])
+    func lostEventOutsideATurnEndsTheLand(lost: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack)
+        await f.keeper.setTransport(f.adapter)
+        await f.sync()
+        let fault: TransportAdapter<SyncPhaseTestState>.EventEncodingFault = lost ? .all : .mergedBody
+        await f.adapter.setEventEncodingFaultForTesting { _ in fault }
+        await f.queueEvent("unencodable", to: .all)
+        if lost {
+            try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+            #expect(f.keeper.failure?.kind == .eventEncode)
+            #expect(f.keeper.failure?.position.stage == .eventFlush)
+            #expect(f.adapter.outputGate.isClosed)
+        } else {
+            await f.adapter.waitForOutboundIdleForTesting()
+            #expect(f.keeper.failure == nil, "sent alone is not a loss")
+            #expect(count("unencodable", in: await f.transport.messages(for: f.session)) == 1)
+        }
+    }
+
+    @Test("a broadcast-only cycle with a value that does not encode (NaN, json) ends the land (#535 row 12)")
+    func unencodableBroadcastOnlyPatchEndsTheLand() async throws {
         let f = try await SyncPhaseFixture.make(encoding: .json)
+        await f.keeper.setTransport(f.adapter)
         try await f.joinSecond()
         await f.sync()
+        let before = await f.frameCount()
 
         try await f.set("nanratio:k", 0)
         try await f.set("a", 1)
         await f.adapter.syncBroadcastOnly()
+        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(f.keeper.failure?.kind == .syncEncode)
         #expect(await f.adapter.waitForOutboundDrain())
-        #expect(await f.adapter.syncFailedPlans == 0)
-        #expect(await f.adapter.syncDroppedUpdates > 0)
-        for second in [false, true] {
-            let client = await f.clientState(second: second)
-            #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
-            #expect(client.value(at: "/a") == .int(1))
-            #expect(client.value(at: "/ratios/k") == nil)
-        }
-        try await f.set("b", 2)
-        await f.sync()
-        for second in [false, true] {
-            let client = await f.clientState(second: second)
-            #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
-            #expect(client.value(at: "/b") == .int(2))
-        }
-    }
-
-    @Test(
-        "a 1-player room whose per-player frames never encode commits every cycle",
-        arguments: SyncPhaseEncoding.allCases
-    )
-    func onePlayerRoomFailureCommits(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding)
-        await f.sync()
-
-        f.failingPlayer.set(f.player)
-        try await f.set("a", 1)
-        try await f.set("score", 5)
-        await f.sync()
-        #expect(await f.adapter.syncFailedPlans == 0, "an encode failure does not fail the plan")
-        let dropped = await f.adapter.syncDroppedUpdates
-        #expect(dropped > 0)
-
-        // Every cycle commits while the failure lasts (the caches advance as before this change).
-        try await f.set("b", 2)
-        try await f.set("score", 6)
-        await f.sync()
-        #expect(await f.adapter.syncFailedPlans == 0)
-        #expect(await f.adapter.syncDroppedUpdates > dropped)
-        let degraded = await f.clientState()
-        #expect(degraded.decodeErrors.isEmpty, "decode errors \(degraded.decodeErrors)")
-        if encoding == .messagepack {
-            #expect(degraded.value(at: "/b") == .int(2), "opcode 107: the broadcast frame still flows")
-        }
-
-        // Once it encodes again, the next changes reach the client. With opcode 107 only
-        // per-player frames were dropped and the client converges; with json / opcodeJsonArray
-        // the dropped frames carried the broadcast too, and as before this change those values
-        // stay stale until they change again.
-        f.failingPlayer.set(nil)
-        try await f.set("a", 3)
-        try await f.set("score", 7)
-        await f.sync()
-        let client = await f.clientState()
-        #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
-        #expect(client.value(at: "/a") == .int(3))
-        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(7))
-        if encoding == .messagepack {
-            _ = try await f.expectConverged("after the failure ends")
-        }
+        #expect(await f.frameCount() == before, "no frame of the failing cycle")
     }
 
     @Test("a cycle whose per-player frame does not encode still drains the event queue (opcode 107, 1-player room)")
@@ -1291,58 +1143,6 @@ struct TransportAdapterSyncPhaseTests {
     }
 
     @Test(
-        "the typed tables on and off: a failed plan, a key scope reset and an encode drop give the same frames and last-sent",
-        arguments: [true, false], [true, false]
-    )
-    func failedPlanAndKeyResetMatchAcrossTheTablesSwitch(useSnapshotForSync: Bool, pathIndex: Bool) async throws {
-        /// A failed plan whose dirty fields carry over (the next cycle resets the key scopes), a
-        /// join after it, a cycle whose updates don't encode, and the cycles that recover.
-        func run(syncTables: Bool) async throws -> SyncPhaseFixture {
-            let f = try await SyncPhaseFixture.make(
-                encoding: .messagepack, useSnapshotForSync: useSnapshotForSync, realMessagePack: true,
-                pathIndex: pathIndex, syncTables: syncTables
-            )
-            await f.sync()
-            try await f.set("a", 1)
-            try await f.set("item:x", 1)
-            await f.sync()
-            await f.failNextPlan()
-            try await f.set("a", 2)
-            try await f.set("item:y", 2)
-            try await f.set("score", 3)
-            await f.sync()
-            await f.sync()
-            try await f.joinSecond()
-            await f.sync()
-            await f.adapter.setSyncEncodeFaultForTesting { _ in true }
-            try await f.set("b", 5)
-            try await f.set("item:z", 3)
-            await f.sync()
-            await f.adapter.setSyncEncodeFaultForTesting(nil)
-            try await f.set("b", 6)
-            try await f.set("item:x", 4)
-            await f.sync()
-            await f.sync()
-            return f
-        }
-        let on = try await run(syncTables: true)
-        let off = try await run(syncTables: false)
-        for session in [on.session, on.session2] {
-            let mine = await on.transport.messages(for: session)
-            let theirs = await off.transport.messages(for: session)
-            #expect(mine.count > 2, "\(session): frames were sent")
-            #expect(mine == theirs, "\(session): the same frames, in order")
-        }
-        #expect(await on.adapter.syncFailedPlans > 0, "the plan failed")
-        #expect(await on.adapter.syncFailedPlans == off.adapter.syncFailedPlans)
-        #expect(await on.adapter.syncDroppedUpdates == off.adapter.syncDroppedUpdates)
-        #expect(await on.adapter.isKeyScopeResetPending() == off.adapter.isKeyScopeResetPending())
-        #expect(await on.adapter.lastSentBroadcastSnapshotForTesting() == off.adapter.lastSentBroadcastSnapshotForTesting())
-        _ = try await on.expectConverged("tables on")
-        _ = try await off.expectConverged("tables off")
-    }
-
-    @Test(
         "full snapshot: a dropped field sends nothing, so a joiner with a newer value keeps it",
         arguments: SyncPhaseEncoding.allCases, [true, false]
     )
@@ -1483,55 +1283,6 @@ struct TransportAdapterSyncPhaseTests {
         #expect(await f.adapter.waitForOutboundDrain())
         let client = try await f.expectConverged("after the follow-up")
         #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(0))
-    }
-
-    @Test("without periodic sync, a failed plan schedules a delayed follow-up that delivers its changes", arguments: SyncPhaseEncoding.allCases)
-    func failedPlanSchedulesFollowUpWithoutPeriodicSync(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding, periodicSync: false)
-        await f.sync()
-
-        try await f.set("a", 1)
-        await f.failNextPlan()
-        await f.adapter.syncNow()
-        #expect(await f.adapter.isKeyScopeResetPending(), "precondition: the plan failed")
-
-        // No further sync request: the delayed follow-up commits the carried changes.
-        var committed = false
-        for _ in 0..<100 {
-            if await f.adapter.isKeyScopeResetPending() == false {
-                committed = true
-                break
-            }
-            try await safeTaskSleep(for: .milliseconds(20))
-        }
-        #expect(committed, "the follow-up committed without another sync request")
-        #expect(await f.adapter.waitForOutboundDrain())
-        let client = try await f.expectConverged("after the follow-up")
-        #expect(client.value(at: "/a") == .int(1))
-    }
-
-    @Test("a failed plan keeps queued events; the next cycle delivers each once (opcode 107)")
-    func throwingPlanKeepsQueuedEvents() async throws {
-        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true)
-        await f.sync()
-
-        try await f.set("a", 1)
-        await f.queueEvent("bc-kept", to: .all)
-        await f.queueEvent("tg-kept", to: .player(f.player))
-        let before = await f.adapter.pendingEventCounts()
-        #expect(before.targeted == 1 && before.broadcast == 1, "precondition: both events queued")
-        await f.failNextPlan()
-        await f.sync()
-        let after = await f.adapter.pendingEventCounts()
-        #expect(after.targeted == 1 && after.broadcast == 1, "a failed plan removes no event")
-
-        await f.sync()
-        let frames = await f.transport.messages(for: f.session)
-        #expect(count("bc-kept", in: frames) == 1, "broadcast event exactly once")
-        #expect(count("tg-kept", in: frames) == 1, "targeted event exactly once")
-        let drained = await f.adapter.pendingEventCounts()
-        #expect(drained.targeted == 0 && drained.broadcast == 0)
-        _ = try await f.expectConverged("after the next cycle")
     }
 
     @Test("per session: merged frame, then targeted event frames, then the per-player frame (opcode 107)")

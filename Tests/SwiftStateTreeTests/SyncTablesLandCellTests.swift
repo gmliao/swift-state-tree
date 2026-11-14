@@ -356,6 +356,8 @@ struct SyncTablesLandCellTests {
 
     @Test("The shape matrix land", arguments: landCells)
     func shapeMatrix(cell: String) async throws {
+        // Every cell, the path index included: the schema lists the let-only `ShapeFixed`'s
+        // fields (#566), so a change to `fixed.at` maps.
         try await compare(cell: cell, landID: "shape-matrix-cell", definition: makeShapeMatrixCellLand, opCount: 18)
     }
 
