@@ -654,29 +654,66 @@ public struct SyncEngine: Sendable {
     }
     
     /// The broadcast patches of one sync, ready to be merged with each recipient's per-player
-    /// patches (`mergePatches(_:_:)`): built once per sync, so each patch's path is built once,
-    /// not once per recipient (#392).
-    package struct BroadcastMergeIndex: Sendable {
+    /// patches (`mergePatches(_:_:)`): built once per sync, not once per recipient (#392).
+    ///
+    /// No path is built until a recipient has per-player patches. When every broadcast patch
+    /// carries a split of one hasher, the duplicates are found by split identity
+    /// (`PatchSplit.pathIdentity`), which for the splits of one hasher is `String` equality on
+    /// the paths; otherwise by the paths. The path index is built on the first merge with
+    /// per-player patches and shared by the recipients after it. Used by one sync, on one task.
+    package final class BroadcastMergeIndex {
+        /// A patch's identity for the duplicate check: all of one list are of one case.
+        private enum Key: Hashable {
+            case split(PatchSplit.PathIdentity)
+            case path(String)
+        }
+
         /// The broadcast patches, the first at each path kept (`String` equality).
         package let patches: [StatePatch]
-        /// Each kept patch's path → its position in `patches`.
-        fileprivate let positions: [String: Int]
+        /// Each kept patch's path → its position in `patches`, once a merge has needed it.
+        private var pathPositions: [String: Int]?
 
         package init(_ broadcast: [StatePatch]) {
             var patches: [StatePatch] = []
-            var positions: [String: Int] = [:]
+            var seen = Set<Key>(minimumCapacity: broadcast.count)
             patches.reserveCapacity(broadcast.count)
-            positions.reserveCapacity(broadcast.count)
+            // A string-only patch, or splits of two hashers, could share a path across the two
+            // kinds of key: then every patch is keyed by its path.
+            let first = broadcast.first?.split
+            let bySplit = first.map { first in
+                broadcast.allSatisfy { patch in patch.split.map(first.hasOwner(of:)) ?? false }
+            } ?? false
             for patch in broadcast {
-                let path = patch.path
-                if positions[path] == nil {
-                    positions[path] = patches.count
-                    patches.append(patch)
-                }
+                let key: Key = bySplit ? .split(patch.split!.pathIdentity) : .path(patch.path)
+                if seen.insert(key).inserted { patches.append(patch) }
             }
             self.patches = patches
-            self.positions = positions
+            #if DEBUG
+            // The split identity keeps the patches `String` equality on the paths keeps.
+            var seenPaths = Set<String>()
+            let byPath = broadcast.filter { seenPaths.insert($0.debugRebuiltPath).inserted }
+            assert(
+                byPath.count == patches.count
+                    && zip(byPath, patches).allSatisfy { $0.debugRebuiltPath.utf8.elementsEqual($1.debugRebuiltPath.utf8) },
+                "the broadcast merge index's duplicates aren't String equality's"
+            )
+            #endif
         }
+
+        /// Each kept patch's path → its position in `patches`, built on first use.
+        fileprivate var positions: [String: Int] {
+            if let pathPositions { return pathPositions }
+            var built = [String: Int](minimumCapacity: patches.count)
+            for (index, patch) in patches.enumerated() {
+                let path = patch.path
+                if built[path] == nil { built[path] = index }
+            }
+            pathPositions = built
+            return built
+        }
+
+        /// Whether a merge has built the path index (tests).
+        package var hasPathPositionsForTesting: Bool { pathPositions != nil }
     }
 
     /// Merge broadcast and per-player patches (per-player takes precedence).

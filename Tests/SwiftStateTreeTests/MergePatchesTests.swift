@@ -74,6 +74,47 @@ struct MergePatchesTests {
         return patch
     }
 
+    @Test("The path index waits for a recipient with per-player patches; the recipients after it still merge")
+    func pathIndexOnFirstPerPlayerMerge() throws {
+        let hasher = PathHasher(pathHashes: ["m": 1, "m.*": 2])
+        let broadcast = [try splitOnly(hasher, "/m/a", 1), try splitOnly(hasher, "/m/b", 2), try splitOnly(hasher, "/m/a", 3)]
+        let index = SyncEngine.BroadcastMergeIndex(broadcast)
+        let recipients: [[StatePatch]] = [
+            [],
+            [patch("/m/b", 4), patch("/m/c", 5)],
+            [],
+            [patch("/m/a", 6)],
+            [patch("/m/c", 7), patch("/m/c", 8)],
+        ]
+        for (number, perPlayer) in recipients.enumerated() {
+            let expected = oldMerge(broadcast, perPlayer)
+            let merged = engine.mergePatches(index, perPlayer)
+            #expect(merged == expected, "recipient \(number)")
+            let operations = merged.map { $0.operation }
+            #expect(operations == expected.map { $0.operation }, "recipient \(number)")
+            #expect(index.hasPathPositionsForTesting == (number >= 1), "recipient \(number)")
+        }
+    }
+
+    @Test("A broadcast list mixing split and string patches, or two hashers' splits, keeps String equality's duplicates")
+    func mixedBroadcastKeepsStringEquality() throws {
+        let hasher = PathHasher(pathHashes: ["m": 1, "m.*": 2])
+        let other = PathHasher(pathHashes: ["m": 1, "m.*": 2])
+        let lists: [[StatePatch]] = [
+            [try splitOnly(hasher, "/m/a", 1), patch("/m/a", 2), try splitOnly(hasher, "/m/b", 3)],
+            [patch("/m/a", 1), try splitOnly(hasher, "/m/a", 2)],
+            [try splitOnly(hasher, "/m/a", 1), try splitOnly(other, "/m/a", 2), try splitOnly(other, "/m/b", 3)],
+        ]
+        for (number, broadcast) in lists.enumerated() {
+            let index = SyncEngine.BroadcastMergeIndex(broadcast)
+            let expected = oldMerge(broadcast, [])
+            #expect(index.patches == expected, "list \(number)")
+            #expect(index.patches.map { $0.operation } == expected.map { $0.operation }, "list \(number)")
+            let perPlayer = [patch("/m/a", 9)]
+            #expect(engine.mergePatches(index, perPlayer).map { $0.operation } == oldMerge(broadcast, perPlayer).map { $0.operation }, "list \(number)")
+        }
+    }
+
     @Test("A split-only patch and a string-form patch at one path are one path, on either side")
     func splitAndStringFormsAreOnePath() throws {
         let hasher = PathHasher(pathHashes: ["m": 1, "m.*": 2])

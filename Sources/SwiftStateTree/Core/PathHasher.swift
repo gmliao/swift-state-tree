@@ -337,6 +337,21 @@ package struct PatchSplit: Sendable {
         owner === other.owner
     }
 
+    /// The path's identity among the splits of one hasher, without building the path: the
+    /// hasher, the trie node and the keys. Two splits of one hasher name `String`-equal paths
+    /// exactly when their nodes are the same and their keys are `String`-equal, since the walk
+    /// that made them matched every component by `String` equality (`PathTrieNode.children`).
+    package struct PathIdentity: Hashable {
+        let owner: ObjectIdentifier
+        let node: Int32
+        let keys: [String]
+    }
+
+    /// See `PathIdentity`.
+    package var pathIdentity: PathIdentity {
+        PathIdentity(owner: ObjectIdentifier(owner), node: node, keys: dynamicKeys)
+    }
+
     /// The path this split names: the pattern's labels as the trie spells them, with the keys
     /// in its wildcards. The emit's own path, byte for byte, when every literal the emit wrote
     /// had its label's bytes (`Cursor.isLossless`).
