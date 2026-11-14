@@ -5002,6 +5002,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         resumeShutdownTurnWaiters()
         players.removeAll()
         let transport = self.transport
+        // The output gate closes in the mark: no new state or event frame from here (§3.2 step 4).
+        transport?.closeOutputs(for: failure)
         drainTask = Task {
             await holds.at(.landFailedTeardown)
             if let transport { await transport.landDidFail(failure) }

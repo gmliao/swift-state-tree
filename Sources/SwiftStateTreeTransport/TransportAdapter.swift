@@ -494,6 +494,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// drop). Frames for them are dropped before the writer, also unstamped ones.
     var endedSessions = EndedSessionSet()
 
+    /// Closed once when the land fails (#535): no new state or event frame is enqueued after it.
+    /// Lock-protected and set once, so the keeper closes it from its own isolation without an
+    /// await, and every send point reads it in the segment that enqueues.
+    nonisolated let outputGate = LandOutputGate()
+
     /// Tests only: replaces `endedSessions` with an empty set of `capacity`.
     func setEndedSessionCapacityForTesting(_ capacity: Int) {
         endedSessions = EndedSessionSet(capacity: capacity)
@@ -3261,6 +3266,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         continue
                     }
                     // The filtered expansion: a joining session gets no `.players` event either.
+                    guard !outputGate.isClosed else { continue }
                     enqueueOutbound(data, toSessions: withoutPendingSyncLag(sessionIDs(for: .player(playerID), holding: data)))
                 }
                 return true
@@ -3300,6 +3306,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Expanded to this land's sessions (#84): the transport is shared by every land
             // of the type, so its `.broadcast` and player map reach other lands' sessions.
+            guard !outputGate.isClosed else { return true }
             enqueueOutbound(data, toSessions: withoutPendingSyncLag(sessionIDs(for: transportTarget, holding: data)))
             return true
         } catch {
@@ -3604,11 +3611,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)")
             ])
             // Row 15 (#535, D11 (d)): a plan's first throw ends the land, with no follow-up.
-            planFailure = LandFailure(
+            let failure = LandFailure(
                 kind: .syncPlan,
                 detail: String(describing: error),
                 position: LandFailurePosition(stage: .syncPhase)
             )
+            // Stop this adapter's output now, before the keeper's turn applies the failure.
+            outputGate.close(failure)
+            planFailure = failure
         }
 
         await holds.at(.cycleBeforeEndSync)
@@ -4662,6 +4672,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             profilerCounters?.incrementSyncCycles()
         }
         applySyncLag(plan)
+        // A failed land sends no new state or event frame (#535 output gate).
+        guard !outputGate.isClosed else { return }
         enqueueFrames(frames, isSyncCycle: isSyncCycle)
         // After the whole flip element (JoinResponse, firstSync, held events) is enqueued: the
         // flipped sessions' deferred frames, each from a Task of its own, never inline here.

@@ -95,6 +95,10 @@ extension TransportAdapter: LandKeeperTransport {
     
     /// The land failed (#535): closes every session with 4016 and returns once they are closed.
     /// The keeper's destroy follows, then `onLandDestroyed`.
+    public nonisolated func closeOutputs(for failure: LandFailure) {
+        outputGate.close(failure)
+    }
+
     public func landDidFail(_ failure: LandFailure) async {
         await closeSessionsForLandFailure(failure)
     }
