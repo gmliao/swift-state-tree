@@ -302,7 +302,8 @@ enum BenchmarkRunner {
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash
+            suppressMissingPathHashesWarning: !format.usesPathHash,
+            logger: benchmarkLogger
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
@@ -495,7 +496,8 @@ enum BenchmarkRunner {
                 createGuestSession: nil,
                 enableDirtyTracking: true,
                 encodingConfig: format.transportEncodingConfig,
-                pathHashes: pathHashes
+                pathHashes: pathHashes,
+                logger: benchmarkLogger
             )
             
             rooms.append(HeroDefenseRoomContext(
@@ -687,7 +689,8 @@ enum BenchmarkRunner {
                 createGuestSession: nil,
                 enableDirtyTracking: true,
                 encodingConfig: format.transportEncodingConfig,
-                pathHashes: pathHashes
+                pathHashes: pathHashes,
+                logger: benchmarkLogger
             )
             
             rooms.append(HeroDefenseRoomContext(
@@ -885,7 +888,8 @@ enum BenchmarkRunner {
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash
+            suppressMissingPathHashesWarning: !format.usesPathHash,
+            logger: benchmarkLogger
         )
         
         await keeper.setTransport(adapter)
@@ -1114,7 +1118,8 @@ enum BenchmarkRunner {
         enableDirtyTracking: true,
         encodingConfig: format.transportEncodingConfig,
         pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash
+            suppressMissingPathHashesWarning: !format.usesPathHash,
+            logger: benchmarkLogger
         )
     
     await keeper.setTransport(adapter)
