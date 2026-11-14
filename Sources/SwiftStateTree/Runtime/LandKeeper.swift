@@ -3982,9 +3982,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // No await between the restore and the turn: the turn numbers from the watermark.
             restoreSequenceWatermark(pass.sequenceBefore, tickId: tickId, point: "pass")
             let outcome = runInputTurn(batch, removingFromQueue: false)
-            if replayPassStatesNeeded.contains(index) {
-                replayPassStates[index] = state
-            }
             if outcome.syncBroadcastOnly { syncBroadcastOnly = true }
             if !outcome.record.isEmpty {
                 await submitTurnRecord(outcome.record)
@@ -4007,22 +4004,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Re-evaluation: why each replayed tick's record can't be reproduced: its passes don't match
     /// its inputs (`replayRecordedPasses`), or it holds a server input the land doesn't declare.
     private var recordedPassMismatches: [Int64: String] = [:]
-
-    /// Re-evaluation: the tickless passes whose resulting state the sync-output check reads
-    /// (#563), by index in the tick's recorded passes, and the states kept after them.
-    private var replayPassStatesNeeded: Set<Int> = []
-    private var replayPassStates: [Int: State] = [:]
-
-    /// Re-evaluation: keep the state after each of these recorded passes (by index).
-    package func setReplayPassStatesNeeded(_ indices: Set<Int>) {
-        replayPassStatesNeeded = indices
-    }
-
-    /// Re-evaluation: takes the states kept after the needed passes.
-    package func takeReplayPassStates() -> [Int: State] {
-        defer { replayPassStates = [:] }
-        return replayPassStates
-    }
 
     /// Re-evaluation: takes why `tickId`'s recorded passes didn't match its inputs, if they didn't.
     package func takeRecordedPassMismatch(for tickId: Int64) -> String? {

@@ -265,13 +265,10 @@ public enum ReevaluationEngine {
             hashDefinition: hashDefinition,
             hashIncomparability: hashIncomparability
         )
-        // A tickless land's passes are all in tick 0; its sync entries are located among them.
         var syncOutputDriver = SyncOutputReplayDriver<State>(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
-            incomparability: nfcIncomparability,
-            ticklessPasses: maxTickId == 0 ? try await source.getPasses(for: 0) : []
+            incomparability: nfcIncomparability
         )
-        await keeper.setReplayPassStatesNeeded(syncOutputDriver.neededPassIndices())
         syncOutputDriver.begin(
             beforeInitialize: initialState,
             afterInitialize: stateAfterInitialize,
@@ -335,7 +332,7 @@ public enum ReevaluationEngine {
                 }
 
                 let emittedEvents = await capturingSink.takeEmittedEvents(for: tickId)
-                syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedEvents, passStates: await keeper.takeReplayPassStates())
+                syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedEvents)
                 let recordedEvents = try await source.getServerEvents(for: tickId)
                 // Every record this build reads (2.5 on) stores a tick's server events whenever
                 // the live run emitted any, so an empty recorded list means none were emitted and
