@@ -300,7 +300,7 @@ struct TransportAdapterJoinHeldEventsTests {
     }
 
     @Test("A joiner's held event that fails to pack ends the land; nothing is dropped silently (#535 row 17)")
-    func heldEventPackFailureInABroadcastOnlyPlanEndsTheLand() async throws {
+    func heldEventPackFailureEndsTheLand() async throws {
         let fixture = await makeFixture(.messagepack)
         try await joinMember(fixture)
         await fixture.adapter.setJoinFlipLimitsForTesting(timeout: nil, budget: 1)
