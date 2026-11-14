@@ -153,6 +153,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var drainWaitTimeout: Duration = landDrainWaitTimeout
     /// Forced-interleaving hold points (tests only; a no-op unless installed).
     private var holds = HoldPoints<LandManagerHoldPoint>()
+    /// Each land type's registration verdict in this manager's encoding (EV1, #521), by
+    /// definition ID: nil when it passed, else the refusal.
+    private var registrationVerdicts: [String: LandRegistrationError?] = [:]
+    /// Tests only: how many definitions `checkRegistration(of:)` validated.
+    private(set) var registrationValidations = 0
     /// Calls that joined a creation already in flight (tests: proves the calls shared it).
     private var creationJoins = 0
     private let landFactory: (LandID) -> LandDefinition<State>
@@ -394,6 +399,38 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// One creation flight. Ends with the insert and `creations.finish` in one synchronous
     /// segment, or with `creations.finish` when it throws.
+    /// Validates a land definition for this manager's encoding the first time its type is created,
+    /// and logs its payload fields written through `Codable` once per land type per process.
+    /// Synchronous: the lookup, the check and the cache write are one turn of the actor.
+    private func checkRegistration(of definition: LandDefinition<State>) throws {
+        let verdict: LandRegistrationError?
+        if let cached = registrationVerdicts[definition.id] {
+            verdict = cached
+        } else {
+            registrationValidations += 1
+            do {
+                try definition.validateForRegistration(
+                    context: LandRegistrationContext(payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray)
+                )
+                verdict = nil
+            } catch let error as LandRegistrationError {
+                verdict = error
+            }
+            registrationVerdicts[definition.id] = verdict
+            if verdict == nil, PayloadFallbackLog.shouldLog(landType: definition.id) {
+                for (type, fields) in definition.payloadFallbackFields() {
+                    logger.info(
+                        "Payload fields written through Codable, not a typed form",
+                        metadata: ["landType": .string(definition.id), "payload": .string(type), "fields": .string(fields.joined(separator: ", "))]
+                    )
+                }
+            }
+        }
+        if let verdict {
+            throw verdict
+        }
+    }
+
     private func createLand(
         landID: LandID,
         definition: LandDefinition<State>,
@@ -402,6 +439,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         token: SingleFlight<LandID, Container>.Token
     ) async throws -> Container {
         do {
+            // The land's payload types can be written in this manager's encoding (EV1, #521):
+            // checked once per land type, before any await, and a refusal rethrown on every
+            // create of that type.
+            try checkRegistration(of: definition)
             // A previous instance is draining (stored, or removed by ID): let its destruction
             // finish first, so its finalize (OnFinalize, AfterFinalize, persistence) never
             // overlaps the new instance's initialize for the same LandID. Epoch removal alone
@@ -1162,5 +1203,17 @@ private final class DrainWaitOutcome: @unchecked Sendable {
         lock.unlock()
         timer?.cancel()
         continuation?.resume(returning: value)
+    }
+}
+
+/// The land types whose payload fallback fields were logged, once per process (#521).
+enum PayloadFallbackLog {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var logged: Set<String> = []
+
+    static func shouldLog(landType: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return logged.insert(landType).inserted
     }
 }
