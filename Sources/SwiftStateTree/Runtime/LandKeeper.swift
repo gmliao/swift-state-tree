@@ -1220,15 +1220,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return snapshot
     }
 
-    /// `beginSync`, with where its copy was taken (`SyncReadPosition`), from the same job.
-    package func beginSyncLocated(clearDirtyFlags: Bool) -> (state: State, position: SyncReadPosition)? {
+    /// `beginSync`, with where its copy was taken (`SyncReadPosition`) and whether the sync
+    /// stream is recorded, from the same job (#553).
+    package func beginSyncLocated(clearDirtyFlags: Bool) -> (state: State, position: SyncReadPosition, recordsSyncStream: Bool)? {
         let position = syncReadPosition()
-        return beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, position) }
+        let records = recordsSyncStream
+        return beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, position, records) }
     }
 
-    /// `currentState()`, with where it was read, from the same job.
-    package func currentStateLocated() -> (state: State, position: SyncReadPosition) {
-        (state, syncReadPosition())
+    /// `currentState()`, with where it was read and whether the sync stream is recorded, from
+    /// the same job.
+    package func currentStateLocated() -> (state: State, position: SyncReadPosition, recordsSyncStream: Bool) {
+        (state, syncReadPosition(), recordsSyncStream)
     }
 
     /// End a sync operation, releasing the sync flag.
@@ -4391,12 +4394,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             inTurnSyncDue = false
             syncOnlyTurnAfterLegacyCycle = true
         }
-        let result = transport.runSyncPhaseInTurn(
+        let output = transport.runSyncPhaseInTurn(
             state: state,
             events: events.map { InTurnServerEvent(event: $0.event, target: $0.target, sequence: $0.sequence) },
-            includeSync: includeSync
+            includeSync: includeSync,
+            recording: inTurnSyncRecording()
         )
-        applyInTurnSyncResult(result, transport: transport, joinSyncOnly: joinSyncOnly)
+        submitSyncStream(output.syncStream)
+        applyInTurnSyncResult(output.result, transport: transport, joinSyncOnly: joinSyncOnly)
     }
 
     /// Applies what an in-turn sync phase did, in the same turn.
@@ -4634,15 +4639,35 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         SyncReadPosition(observedTickId: lastCommittedTickId, sequence: outputCollector.nextSequence)
     }
 
-    /// The kind of the turn whose sync phase is running (`tick` or `syncOnly`).
-    package var currentSyncTurnKind: ReevaluationRecordedSyncOutput.TurnKind {
-        inTurnSyncTurnKind
+    /// What the sync stream records of the current turn's sync phase, nil when it isn't
+    /// recorded: the turn's kind (`tick` or `syncOnly`) and where the phase reads the state.
+    private func inTurnSyncRecording() -> InTurnSyncRecording? {
+        guard recordsSyncStream else { return nil }
+        return InTurnSyncRecording(turnKind: inTurnSyncTurnKind, position: syncReadPosition())
+    }
+
+    /// Numbers and submits sync-stream drafts in order: an in-turn phase's (returned from
+    /// `runSyncPhaseInTurn`, in the same turn), and those the adapter makes outside a phase in
+    /// turn: a legacy cycle's or an initial sync's commit, a disconnect's or a superseded
+    /// session's clear, each in the synchronous segment of what it describes. `outsideTurn`: as
+    /// `recordSyncMarker`'s.
+    package func submitSyncStream(_ drafts: [SyncStreamDraft], outsideTurn: Bool = false) {
+        guard reevaluationRecorder != nil else { return }
+        for draft in drafts {
+            switch draft.entry {
+            case let .output(observedTickId, make):
+                recordSyncOutput(observedTickId: observedTickId, make)
+            case let .marker(make):
+                let sequence = syncReadPosition().sequence
+                recordSyncMarker(outsideTurn: outsideTurn) { make($0, sequence) }
+            }
+        }
     }
 
     /// Numbers and records one sync output: `make` gets its `streamIndex` and `index`. Called in
     /// the same synchronous segment as the commit it describes; the record is submitted after
     /// every earlier submission without waiting.
-    package func recordSyncOutput(
+    private func recordSyncOutput(
         observedTickId: Int64?,
         _ make: (_ streamIndex: UInt64, _ index: Int) -> ReevaluationRecordedSyncOutput
     ) {
@@ -4667,7 +4692,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// `outsideTurn`: the marker is recorded outside any keeper turn (a disconnect's or a
     /// superseded session's clear). On a tickless land it is then its own turn record, so no
     /// later turn has to close it (#327).
-    package func recordSyncMarker(
+    private func recordSyncMarker(
         outsideTurn: Bool = false,
         _ make: (_ streamIndex: UInt64) -> ReevaluationRecordedSyncMarker
     ) {
@@ -4745,8 +4770,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
         let mark = recorderSubmissionCount
-        let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
-        applyInTurnSyncResult(result, transport: transport, joinSyncOnly: joinSyncOnly)
+        let output = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true, recording: inTurnSyncRecording())
+        submitSyncStream(output.syncStream)
+        applyInTurnSyncResult(output.result, transport: transport, joinSyncOnly: joinSyncOnly)
         // A tickless land's sync-only turn is its own turn record (#327); a tick land's sync
         // outputs stay with the current tick's.
         enqueueTicklessTurnEnd(since: mark)

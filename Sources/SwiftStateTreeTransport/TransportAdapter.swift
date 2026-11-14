@@ -3120,12 +3120,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// A plan that throws ends the land (#535 row 15): `.landFailed`, and the keeper ends it in
     /// the same turn. The row repair (`committedWithRepairPending`) is unchanged until #535's
     /// second PR.
+    ///
+    /// `recording` is the keeper's (#553): with it, the phase's sync-stream entries (the
+    /// resync clears, the output, the seeds) are returned as drafts, in order, whatever the
+    /// result; the keeper numbers and submits them.
     func runSyncPhaseInTurnIsolated<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
-        includeSync: Bool
+        includeSync: Bool,
+        recording: InTurnSyncRecording? = nil
+    ) -> InTurnSyncOutput {
+        assert(inTurnSyncStreamDrafts.isEmpty, "sync-stream drafts left from an earlier phase")
+        let result = runSyncPhaseInTurnResult(state: state, events: events, includeSync: includeSync, recording: recording)
+        let drafts = inTurnSyncStreamDrafts
+        inTurnSyncStreamDrafts = []
+        return InTurnSyncOutput(result, syncStream: drafts)
+    }
+
+    private func runSyncPhaseInTurnResult<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
     ) -> InTurnSyncResult {
-        let digestsEvents = useStateUpdateWithEvents && !events.isEmpty && keeperRecordsSyncStream()
+        let digestsEvents = useStateUpdateWithEvents && !events.isEmpty && recording != nil
         for item in events {
             let digest = digestsEvents ? Self.canonicalEvent(item) : nil
             let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
@@ -3169,7 +3187,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Only this call's commit may set it: a plan committed elsewhere (`syncNow`, a
             // broadcast-only cycle, the debug settle) doesn't make a later turn a repair.
             lastCommitDroppedRows = false
-            try runFullSyncPhase(state: state, read: inTurnSyncOutputRead(), joiners: joiners)
+            let read = recording.map { SyncOutputRead(turnKind: $0.turnKind, position: $0.position) }
+            try runFullSyncPhase(state: state, read: read, joiners: joiners)
             consecutiveFailedPlans = 0
             if lastCommitDroppedRows {
                 // Row addressing: a row was dropped. Its field is in the retry set; a land without
@@ -4150,6 +4169,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The read of the legacy cycle running its phase (`withSyncState`), for its plan.
     private var legacyCycleRead: SyncOutputRead?
 
+    /// The sync-stream drafts the running in-turn phase made, returned with its output (#553).
+    private var inTurnSyncStreamDrafts: [SyncStreamDraft] = []
+
     /// Whether the keeper records its sync stream. Only asked with in-turn sync on, where this
     /// adapter runs on the keeper's executor; with it off nothing is recorded.
     private func keeperRecordsSyncStream() -> Bool {
@@ -4157,22 +4179,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return keeper.assumeIsolated { $0.recordsSyncStream }
     }
 
-    /// The read of an in-turn plan: the turn's own state, so its position is the keeper's now.
-    private func inTurnSyncOutputRead() -> SyncOutputRead? {
-        guard inTurnSyncEnabled else { return nil }
-        return keeper.assumeIsolated { keeper in
-            guard keeper.recordsSyncStream else { return nil }
-            return SyncOutputRead(turnKind: keeper.currentSyncTurnKind, position: keeper.syncReadPosition())
-        }
-    }
-
-    /// `keeper.beginSync`, located in the same keeper job when the sync stream is recorded.
+    /// `keeper.beginSync`, located in the same keeper job when the sync stream is recorded; the
+    /// keeper says whether it is in that job too, not after the `await` (#553).
     private func beginSyncLocatedIfRecording(clearDirtyFlags: Bool) async -> (State, SyncOutputRead?)? {
         guard inTurnSyncEnabled else {
             return await keeper.beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, nil) }
         }
         guard let located = await keeper.beginSyncLocated(clearDirtyFlags: clearDirtyFlags) else { return nil }
-        let read = keeperRecordsSyncStream() ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
+        let read = located.recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
         return (located.state, read)
     }
 
@@ -4194,15 +4208,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Records a committed plan's output (or a firstSync's seed) in the keeper's sync stream.
-    /// Runs in the commit's synchronous segment, so commit order is stream order.
+    /// Runs in the commit's synchronous segment, so commit order is stream order. An in-turn
+    /// phase's entries go back to the keeper as drafts with the phase's output (#553); a legacy
+    /// cycle's or an initial sync's, outside a turn, are submitted now.
     private func recordSyncStream(_ digest: SyncOutputDigestInput, broadcastCommitted: Bool, read: SyncOutputRead) {
+        var drafts: [SyncStreamDraft] = []
+        defer {
+            if read.turnKind == .legacyCycle {
+                keeper.assumeIsolated { $0.submitSyncStream(drafts) }
+            } else {
+                inTurnSyncStreamDrafts.append(contentsOf: drafts)
+            }
+        }
         let observedTickId = read.position?.observedTickId
         let sequence = read.position?.sequence ?? -1
         // A resynced player's view restarts: a clear before this plan's output, for the players
         // whose snapshot committed (a seed follows). One whose snapshot didn't encode keeps its
         // view, live and in the stream.
         for playerID in digest.resyncPlayers.filter({ digest.seeds[$0] != nil }).sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
-            recordSyncStreamClear(playerID)
+            syncStreamUnverifiedPlayers.remove(playerID)
+            drafts.append(Self.clearDraft(playerID))
         }
         if !digest.isFirstSync {
             let broadcastHash = broadcastCommitted
@@ -4246,30 +4271,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let extractionDrops = digest.extractionDrops
             let encodeDropScopes = digest.encodeDropScopes.sorted { SnapshotValue.utf8Less($0, $1) }
             let turnKind = read.turnKind
-            keeper.assumeIsolated { keeper in
-                keeper.recordSyncOutput(observedTickId: observedTickId) { streamIndex, index in
-                    ReevaluationRecordedSyncOutput(
-                        index: index,
-                        turnKind: turnKind,
-                        observedTickId: observedTickId,
-                        streamIndex: streamIndex,
-                        sequence: sequence,
-                        broadcastHash: broadcastHash,
-                        perPlayerHash: perPlayerHash,
-                        perPlayerUnverified: perPlayerUnverified,
-                        perPlayerUncommitted: perPlayerUncommitted,
-                        perPlayerHashes: perPlayerHashes,
-                        eventsHash: eventsHash,
-                        eventsThroughSequence: eventsThroughSequence,
-                        eventsNotQueued: eventsNotQueued,
-                        eventsNotMerged: eventsNotMerged,
-                        resetsKeyScopes: digest.resetsKeyScopes ? true : nil,
-                        extractionDrops: extractionDrops,
-                        encodeDropScopes: encodeDropScopes,
-                        patches: patches
-                    )
-                }
-            }
+            let resetsKeyScopes = digest.resetsKeyScopes
+            drafts.append(SyncStreamDraft(.output(observedTickId: observedTickId) { [perPlayerHash, perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, patches] streamIndex, index in
+                ReevaluationRecordedSyncOutput(
+                    index: index,
+                    turnKind: turnKind,
+                    observedTickId: observedTickId,
+                    streamIndex: streamIndex,
+                    sequence: sequence,
+                    broadcastHash: broadcastHash,
+                    perPlayerHash: perPlayerHash,
+                    perPlayerUnverified: perPlayerUnverified,
+                    perPlayerUncommitted: perPlayerUncommitted,
+                    perPlayerHashes: perPlayerHashes,
+                    eventsHash: eventsHash,
+                    eventsThroughSequence: eventsThroughSequence,
+                    eventsNotQueued: eventsNotQueued,
+                    eventsNotMerged: eventsNotMerged,
+                    resetsKeyScopes: resetsKeyScopes ? true : nil,
+                    extractionDrops: extractionDrops,
+                    encodeDropScopes: encodeDropScopes,
+                    patches: patches
+                )
+            }))
         }
         for (playerID, seed) in digest.seeds.sorted(by: { SnapshotValue.utf8Less($0.key.rawValue, $1.key.rawValue) }) {
             let rejoin = !syncStreamSeededPlayers.insert(playerID).inserted
@@ -4281,21 +4305,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             let viewHash = viewDrops.isEmpty ? Self.scopeHash(seed.patches, scope: playerID.rawValue) : nil
             let dropFields = Array(Set(seed.dropFields)).sorted { SnapshotValue.utf8Less($0, $1) }
-            keeper.assumeIsolated { keeper in
-                keeper.recordSyncMarker { streamIndex in
-                    ReevaluationRecordedSyncMarker(
-                        kind: .seed,
-                        playerID: playerID.rawValue,
-                        observedTickId: observedTickId,
-                        streamIndex: streamIndex,
-                        sequence: sequence,
-                        rejoin: rejoin,
-                        viewHash: viewHash,
-                        viewDrops: viewDrops,
-                        viewDropFields: dropFields.isEmpty ? nil : dropFields
-                    )
-                }
-            }
+            drafts.append(SyncStreamDraft(.marker { streamIndex, _ in
+                ReevaluationRecordedSyncMarker(
+                    kind: .seed,
+                    playerID: playerID.rawValue,
+                    observedTickId: observedTickId,
+                    streamIndex: streamIndex,
+                    sequence: sequence,
+                    rejoin: rejoin,
+                    viewHash: viewHash,
+                    viewDrops: viewDrops,
+                    viewDropFields: dropFields.isEmpty ? nil : dropFields
+                )
+            }))
         }
     }
 
@@ -4314,12 +4336,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func recordSyncStreamClear(_ playerID: PlayerID, outsideTurn: Bool = false) {
         guard keeperRecordsSyncStream() else { return }
         syncStreamUnverifiedPlayers.remove(playerID)
-        keeper.assumeIsolated { keeper in
-            let sequence = keeper.syncReadPosition().sequence
-            keeper.recordSyncMarker(outsideTurn: outsideTurn) { streamIndex in
-                ReevaluationRecordedSyncMarker(kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex, sequence: sequence)
-            }
-        }
+        let draft = Self.clearDraft(playerID)
+        keeper.assumeIsolated { $0.submitSyncStream([draft], outsideTurn: outsideTurn) }
+    }
+
+    /// A clear marker's draft; the keeper's output sequence at numbering is its sequence.
+    private static func clearDraft(_ playerID: PlayerID) -> SyncStreamDraft {
+        SyncStreamDraft(.marker { streamIndex, sequence in
+            ReevaluationRecordedSyncMarker(kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex, sequence: sequence)
+        })
     }
 
     /// The canonical hash of one scope's patches. The diff never puts a path and one of its
@@ -6162,7 +6187,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // One keeper job for the state and where it was read (`currentStateLocated`).
             let located = await keeper.currentStateLocated()
             state = located.state
-            read = keeperRecordsSyncStream() ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
+            read = located.recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
         } else {
             state = await keeper.currentState()
         }

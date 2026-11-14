@@ -178,12 +178,18 @@ public protocol LandKeeperTransport: Sendable {
     /// suspend in it. An implementation that is an actor runs on the keeper's executor and enters
     /// its own isolation with `assumeIsolated`.
     ///
+    /// `recording`: what the keeper's sync stream records of this turn (its kind and where the
+    /// phase reads the state), nil when the keeper doesn't record it. The phase writes nothing
+    /// into the keeper: it returns its sync-stream entries as drafts, in order, and the keeper
+    /// numbers and submits them in the same turn (#553).
+    ///
     /// Only called when `runsSyncPhaseInTurn(of:)` returned `true` for the caller.
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
-        includeSync: Bool
-    ) -> InTurnSyncResult
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput
 }
 
 // MARK: - In-turn sync
@@ -199,6 +205,54 @@ public struct InTurnServerEvent: Sendable {
         self.event = event
         self.target = target
         self.sequence = sequence
+    }
+}
+
+/// What the keeper's sync stream records of a turn whose sync phase runs in it: the turn's kind
+/// and where the phase reads the state, taken by the keeper in the turn (#553).
+public struct InTurnSyncRecording: Sendable, Equatable {
+    package let turnKind: ReevaluationRecordedSyncOutput.TurnKind
+    package let position: SyncReadPosition
+
+    package init(turnKind: ReevaluationRecordedSyncOutput.TurnKind, position: SyncReadPosition) {
+        self.turnKind = turnKind
+        self.position = position
+    }
+}
+
+/// A sync-stream entry a sync phase made, not yet numbered: the keeper gives it its stream
+/// index (and an output its index within the tick) and submits it (#553).
+public struct SyncStreamDraft: Sendable {
+    package enum Entry: Sendable {
+        /// A committed plan's output; `make` gets its stream index and its index in the tick.
+        case output(observedTickId: Int64?, make: @Sendable (_ streamIndex: UInt64, _ index: Int) -> ReevaluationRecordedSyncOutput)
+        /// A seed or clear marker; `make` gets its stream index and the keeper's output
+        /// sequence at numbering (a clear records it).
+        case marker(make: @Sendable (_ streamIndex: UInt64, _ sequence: Int64) -> ReevaluationRecordedSyncMarker)
+    }
+
+    package let entry: Entry
+
+    package init(_ entry: Entry) {
+        self.entry = entry
+    }
+}
+
+/// What `LandKeeperTransport.runSyncPhaseInTurn` returns: what it did, and the sync-stream
+/// entries it made, for the keeper to number and submit (#553).
+public struct InTurnSyncOutput: Sendable {
+    public let result: InTurnSyncResult
+    package let syncStream: [SyncStreamDraft]
+
+    /// A phase that made no sync-stream entries.
+    public init(_ result: InTurnSyncResult) {
+        self.result = result
+        self.syncStream = []
+    }
+
+    package init(_ result: InTurnSyncResult, syncStream: [SyncStreamDraft]) {
+        self.result = result
+        self.syncStream = syncStream
     }
 }
 
@@ -270,9 +324,10 @@ extension LandKeeperTransport {
     public func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
-        includeSync: Bool
-    ) -> InTurnSyncResult {
-        .unsupported
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(.unsupported)
     }
 }
 

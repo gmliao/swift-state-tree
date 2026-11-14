@@ -153,6 +153,15 @@ private final class PerSequenceInTurnTransport: LandKeeperTransport, @unchecked 
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
+    }
+
+    private func syncPhaseResult<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
         includeSync: Bool
     ) -> InTurnSyncResult {
         includeSync ? .committed(clearDirtyFlags: true) : .notRequested
@@ -171,6 +180,15 @@ private final class InTurnSyncSpyTransport: LandKeeperTransport, @unchecked Send
     func onLandDestroyed() async {}
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
+    }
+
+    private func syncPhaseResult<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
         includeSync: Bool
