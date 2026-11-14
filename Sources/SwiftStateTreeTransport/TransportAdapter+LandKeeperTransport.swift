@@ -85,11 +85,12 @@ extension TransportAdapter: LandKeeperTransport {
     public nonisolated func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
-        includeSync: Bool
-    ) -> InTurnSyncResult {
-        guard inTurnSyncEnabled else { return .unsupported }
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        guard inTurnSyncEnabled else { return InTurnSyncOutput(.unsupported) }
         return assumeIsolated { adapter in
-            adapter.runSyncPhaseInTurnIsolated(state: state, events: events, includeSync: includeSync)
+            adapter.runSyncPhaseInTurnIsolated(state: state, events: events, includeSync: includeSync, recording: recording)
         }
     }
     
