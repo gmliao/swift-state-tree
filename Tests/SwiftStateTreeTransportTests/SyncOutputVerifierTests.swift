@@ -1113,8 +1113,8 @@ struct SyncOutputVerifierTests {
         #expect(sync.broadcast.unverifiable == 0)
     }
 
-    @Test("Combined mode: an update that was not sent is a divergence (unverifiable), not a skip")
-    func combinedUncommittedIsUnverifiable() async throws {
+    @Test("Combined mode: a player's update that doesn't encode at all ends the land; no later tick is recorded (#535 row 10)")
+    func combinedUnencodableEndsTheLand() async throws {
         guard InTurnSync.isEnabled() else { return }
         let fails = VerifierSwitch()
         let f = await VerifierFixture.make(encoding: .json, encoder: VerifierFailingEncoder(fails: fails))
@@ -1123,16 +1123,12 @@ struct SyncOutputVerifierTests {
         try await f.join(1)
         await f.tick()
         fails.set(true)
-        await f.tick()      // no player gets its combined update; the broadcast cache is committed
+        await f.tick()      // no player's combined update encodes: the land fails
+        #expect(f.keeper.failure?.kind == .syncEncode)
         fails.set(false)
-        await f.tick()
+        await f.tick()      // a failed land runs no further tick
         let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-        #expect(ticks[1].perPlayerUncommitted == [VerifierFixture.player(1).rawValue])
-        let sync = try await f.replay().syncOutput
-        #expect(sync.verdict == .partial, "\(sync.summary)")
-        #expect(sync.perPlayer.compared == 1)
-        #expect(sync.perPlayer.unverifiable == 2, "the unsent tick and the one after it")
-        #expect(sync.perPlayer.skipped == 0)
+        #expect(ticks.count == 1, "only the tick before the failure committed sync output")
     }
 
     @Test("A gap in the stream indices is malformed")

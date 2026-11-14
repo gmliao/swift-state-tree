@@ -886,49 +886,26 @@ struct TransportAdapterSyncPhaseTests {
     }
 
     @Test(
-        "a player whose per-player update never encodes loses only that update; the room and its events go on",
+        "a player whose per-player frames never encode ends the land; the failing cycle sends nothing (#535 row 10)",
         arguments: SyncPhaseEncoding.allCases
     )
-    func failingPlayerUpdateIsDroppedNotRoomWide(encoding: SyncPhaseEncoding) async throws {
+    func failingPlayerUpdateEndsTheLand(encoding: SyncPhaseEncoding) async throws {
         let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.keeper.setTransport(f.adapter)
         try await f.joinSecond()
         await f.sync()
+        let before = await f.frameCount()
 
         f.failingPlayer.set(f.player2)
         try await f.set("a", 1)
-        try await f.set("score", 5)
         try await f.set("score", 6, second: true)
         await f.queueEvent("tg-failing", to: .player(f.player2))
         await f.sync()
-        #expect(await f.adapter.syncFailedPlans == 0, "the plan commits")
-        #expect(await f.adapter.syncDroppedUpdates > 0, "the drop is counted")
-        let first = try await f.expectConverged("the other player")
-        #expect(first.value(at: "/a") == .int(1))
-
-        // The failing player keeps its events and, with opcode 107, the broadcast frames (with
-        // json / opcodeJsonArray its per-player frame carries the broadcast: lost, as before).
-        try await f.set("b", 2)
-        await f.sync()
-        let failing = await f.clientState(second: true)
-        #expect(failing.decodeErrors.isEmpty, "decode errors \(failing.decodeErrors)")
-        #expect(count("tg-failing", in: await f.transport.messages(for: f.session2)) == 1, "its targeted event")
-        if encoding == .messagepack {
-            #expect(failing.value(at: "/b") == .int(2), "broadcast changes still reach it")
-        }
-        _ = try await f.expectConverged("the other player, later")
-
-        // Once it encodes again, its next changes reach it and decode.
-        f.failingPlayer.set(nil)
-        try await f.set("a", 3)
-        try await f.set("score", 8, second: true)
-        await f.sync()
-        let fixed = await f.clientState(second: true)
-        #expect(fixed.decodeErrors.isEmpty, "decode errors \(fixed.decodeErrors)")
-        #expect(fixed.value(at: "/a") == .int(3))
-        #expect(fixed.value(at: "/scores/\(f.player2.rawValue)") == .int(8))
-        if encoding == .messagepack {
-            _ = try await f.expectConverged("the failing player, after", second: true)
-        }
+        await f.keeper.waitForFailureForTesting()
+        #expect(f.keeper.failure?.kind == .syncEncode)
+        #expect(f.keeper.failure?.detail.contains(f.player2.rawValue) == true, "the failure names the player")
+        #expect(f.adapter.outputGate.isClosed)
+        #expect(await f.frameCount() == before, "neither player got a frame of the failing cycle")
     }
 
     @Test("a broadcast value that does not encode (NaN, json) is dropped and the cycle commits; other fields flow")
@@ -975,76 +952,21 @@ struct TransportAdapterSyncPhaseTests {
         }
     }
 
-    @Test("a broadcast-only cycle drops a value that does not encode (NaN, json) and commits")
-    func unencodableBroadcastOnlyPatchIsDropped() async throws {
+    @Test("a broadcast-only cycle with a value that does not encode (NaN, json) ends the land (#535 row 12)")
+    func unencodableBroadcastOnlyPatchEndsTheLand() async throws {
         let f = try await SyncPhaseFixture.make(encoding: .json)
+        await f.keeper.setTransport(f.adapter)
         try await f.joinSecond()
         await f.sync()
+        let before = await f.frameCount()
 
         try await f.set("nanratio:k", 0)
         try await f.set("a", 1)
         await f.adapter.syncBroadcastOnly()
+        await f.keeper.waitForFailureForTesting()
+        #expect(f.keeper.failure?.kind == .syncEncode)
         #expect(await f.adapter.waitForOutboundDrain())
-        #expect(await f.adapter.syncFailedPlans == 0)
-        #expect(await f.adapter.syncDroppedUpdates > 0)
-        for second in [false, true] {
-            let client = await f.clientState(second: second)
-            #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
-            #expect(client.value(at: "/a") == .int(1))
-            #expect(client.value(at: "/ratios/k") == nil)
-        }
-        try await f.set("b", 2)
-        await f.sync()
-        for second in [false, true] {
-            let client = await f.clientState(second: second)
-            #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
-            #expect(client.value(at: "/b") == .int(2))
-        }
-    }
-
-    @Test(
-        "a 1-player room whose per-player frames never encode commits every cycle",
-        arguments: SyncPhaseEncoding.allCases
-    )
-    func onePlayerRoomFailureCommits(encoding: SyncPhaseEncoding) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: encoding)
-        await f.sync()
-
-        f.failingPlayer.set(f.player)
-        try await f.set("a", 1)
-        try await f.set("score", 5)
-        await f.sync()
-        #expect(await f.adapter.syncFailedPlans == 0, "an encode failure does not fail the plan")
-        let dropped = await f.adapter.syncDroppedUpdates
-        #expect(dropped > 0)
-
-        // Every cycle commits while the failure lasts (the caches advance as before this change).
-        try await f.set("b", 2)
-        try await f.set("score", 6)
-        await f.sync()
-        #expect(await f.adapter.syncFailedPlans == 0)
-        #expect(await f.adapter.syncDroppedUpdates > dropped)
-        let degraded = await f.clientState()
-        #expect(degraded.decodeErrors.isEmpty, "decode errors \(degraded.decodeErrors)")
-        if encoding == .messagepack {
-            #expect(degraded.value(at: "/b") == .int(2), "opcode 107: the broadcast frame still flows")
-        }
-
-        // Once it encodes again, the next changes reach the client. With opcode 107 only
-        // per-player frames were dropped and the client converges; with json / opcodeJsonArray
-        // the dropped frames carried the broadcast too, and as before this change those values
-        // stay stale until they change again.
-        f.failingPlayer.set(nil)
-        try await f.set("a", 3)
-        try await f.set("score", 7)
-        await f.sync()
-        let client = await f.clientState()
-        #expect(client.decodeErrors.isEmpty, "decode errors \(client.decodeErrors)")
-        #expect(client.value(at: "/a") == .int(3))
-        #expect(client.value(at: "/scores/\(f.player.rawValue)") == .int(7))
-        if encoding == .messagepack {
-            _ = try await f.expectConverged("after the failure ends")
-        }
+        #expect(await f.frameCount() == before, "no frame of the failing cycle")
     }
 
     @Test("a cycle whose per-player frame does not encode still drains the event queue (opcode 107, 1-player room)")

@@ -4942,6 +4942,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             pendingUpdates,
             recipients: recipients,
             events: events,
+            keepsRetryFor: skippedPlayers,
             into: &plan
         )
         // An unsynced recipient whose whole view didn't encode, not even empty, had its staged
@@ -5177,6 +5178,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         do {
             return try encodeMergedBroadcastFrame(update: update, playerID: playerID, eventBodies: eventBodies)
         } catch {
+            // `unmappedPathPatches` counts a path outside the schema as a failure (D6).
+            if case StateUpdateEncodingError.pathNotInSchema = error {
+                unmappedPathCounter.recordDroppedPatch()
+            }
             throw LandFailure(
                 kind: .syncEncode,
                 detail: "broadcast frame: \(error)",
@@ -5277,6 +5282,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         events: PendingEventManager,
         includesEvents: Bool = true,
         endsLandOnUnencodable: Bool = true,
+        keepsRetryFor retriedPlayers: Set<PlayerID> = [],
         into plan: inout SyncPhasePlan
     ) throws {
         var payloadBySession: [SessionID: Data] = [:]
@@ -5315,9 +5321,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     plan.syncLag.failedSnapshots.insert(playerID)
                 }
                 // Row 10, total (#535): a player's frame that doesn't encode even with patches
-                // dropped ends the land. A resync's snapshot is row 11 (its retry stays until
-                // #535 PR 2), and a frame sent with patches dropped is row 10's patch part (PR 2).
-                if endsLandOnUnencodable, encoded == nil, !plan.syncLag.resyncPlayers.contains(playerID) {
+                // dropped ends the land. Until #535 PR 2 a full view keeps its retry: a resync's
+                // snapshot (row 11) and an unsynced player's first view (`retriedPlayers`, 4012
+                // at the bound, D3); a frame sent with patches dropped is row 10's patch part.
+                if endsLandOnUnencodable, encoded == nil,
+                   !plan.syncLag.resyncPlayers.contains(playerID), !retriedPlayers.contains(playerID) {
                     throw LandFailure(
                         kind: .syncEncode,
                         detail: "state frame for player \(playerID.rawValue): \(plan.dropReason ?? "did not encode")",
