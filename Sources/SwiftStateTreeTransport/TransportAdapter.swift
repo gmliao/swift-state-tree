@@ -200,12 +200,11 @@ struct SyncPhasePlan {
     /// The plan typed every recipient's update `.firstSync` (key scopes reset): its commit ends a
     /// pending key scope reset.
     var resetsKeyScopes = false
-    /// A frame the plan encoded for was not produced (not even an empty update encoded), so the
-    /// encoders' key tables may hold slots no client learned: the next full plan resets them.
-    /// A nil per-player frame also drops that player's staged per-player cache and mark, and a nil
-    /// opcode 107 merged frame the staged broadcast cache. A nil combined or broadcast-only
-    /// separate frame leaves the shared broadcast cache advanced for every other player, so that
-    /// player misses those broadcast changes until they change again, as before plan + commit.
+    /// A full view the plan encoded for was not produced (not even an empty update encoded), so
+    /// the encoders' key tables may hold slots no client learned: the next full plan resets them.
+    /// Only a retried full view (an unsynced player's first view, a resync snapshot) is left
+    /// unsent; every other frame that doesn't encode ends the land (#535 rows 9, 10, 12). Goes
+    /// with that retry in #535 PR 2.
     var leavesKeyTablesAhead = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
@@ -5372,6 +5371,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     plan.staged.perPlayer.removeValue(forKey: playerID)
                     plan.stagedPerPlayerTables.discard(playerID)
                     plan.staged.firstSyncReceived.remove(playerID)
+                    // The one setter left (#535 row 19): only a retried full view reaches here.
+                    // Removed in #535 PR 2 with that retry (rows 11 and 13).
                     plan.leavesKeyTablesAhead = true
                 }
                 for recipient in recipients where recipient.playerID == playerID {
