@@ -326,7 +326,13 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         } else {
             actualPayload = payload
         }
-        
+
+        // An empty payload, `Void`, is an empty array, as in the MessagePack encoder: the
+        // immediate ACK of an action queued for a tick is `.completed(AnyCodable(()))` (#541).
+        if actualPayload is Void {
+            return AnyCodable([AnyCodable]())
+        }
+
         // All payload types (ActionPayload, ResponsePayload, ClientEventPayload, ServerEventPayload)
         // must use @Payload macro which generates encodeAsArray() with correct field order.
         // The default PayloadCompression.encodeAsArray() implementation is fatalError,
