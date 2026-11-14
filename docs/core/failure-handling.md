@@ -51,7 +51,7 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 | Dictionary keys that convert to the same string | the later entry silently overwrites the earlier one (`SnapshotValue.swift:424`) | target: close the land (#535) |
 | A patch the encoding can't carry (for example a non-finite number in JSON) | the frame is re-encoded without that patch and sent; the field stays stale on clients until it changes (`TransportAdapter.swift:5663`) | target: close the land (#535) |
 | A patch whose path is outside the schema | dropped as the row above, and counted (`TransportAdapter.swift:719-723`) | target: close the land (#535) |
-| A sync plan that throws | nothing is sent and the plan is retried: on every tick with periodic sync; without it, a bounded number of follow-ups, then, while joins wait, join-sync turns with a doubling delay (`TransportAdapter.swift:3320`, `LandKeeper.swift:4423-4435`) | target: close the land at the first throw, with no retry (#535) |
+| A sync plan that throws | in-turn sync: the first throw ends the land, its sessions close with 4016, no retry (`LandKeeper.swift:4447`, `:4892`). Legacy sync (off in-turn): nothing is sent and the plan is retried, on every tick with periodic sync, without it a bounded number of follow-ups | current for in-turn sync; target for legacy sync: the same (#535 PR 1 part B) |
 | One player's state frame fails to encode entirely | nothing is sent to that player that cycle, and its client can stay behind on fields until they change again (`TransportAdapter.swift:4940-4951`) | target: close the land (#535, #532) |
 | A resync's or first view's full view fails to encode | retried; after a bound, the session is closed with 4012 `unencodableView` (`TransportAdapter.swift:3634`) | target: close the land at the first failure, with no retry; 4012 is no longer sent (#535) |
 | A server event that fails to encode | logged, and the event isn't sent (`TransportAdapter.swift:3026-3031`, `:3135`) | target: close the land (#521) |
@@ -76,11 +76,11 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 
 | Path | Today | Status |
 |---|---|---|
-| OnLeave and the destroy handlers | no failure ends a land today. On a host's stop, each session's leave runs the OnLeave resolvers before the land's drain is checked (`LandKeeper.swift:2397-2439`) | target: a failed land runs no OnLeave (resolvers and handler skipped; the player's membership still ends), and its destroy handlers and save run with the failure visible (#535) |
+| OnLeave and the destroy handlers | a failed land clears its players without OnLeave in the failing turn, and its destroy handlers and save run with `LandDestructionCause.failed` and `LandKeeper.failure` (`LandKeeper.swift:4892`). A host's stop that closes a session before the failure's teardown still runs that session's leave (`LandKeeper.swift:2397-2439`) | current for the failure's own teardown; target: the host's stop path also skips OnLeave on a failed land (#535 PR 1 part B) |
 
 ## Close codes
 
-- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it (target, #535).
+- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it (current for an in-turn sync plan's throw; the other rows are the target, #535). Until #535 PR 1 part B, a host's stop that closes a session first gives it 4014.
 - **4012 `unencodableView`:** sent today when a resync's or first view's frame keeps failing to encode. Once #535 lands it is reserved and no longer sent.
 - **4014 `landStopped`:** an admin stop, unchanged.
 

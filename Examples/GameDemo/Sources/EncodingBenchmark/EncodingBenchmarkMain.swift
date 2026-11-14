@@ -139,7 +139,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash
+            suppressMissingPathHashesWarning: !format.usesPathHash,
+            logger: benchmarkLogger
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
@@ -466,7 +467,8 @@ func runMultiRoomBenchmark(
             enableDirtyTracking: true,
             encodingConfig: format.transportEncodingConfig,
             pathHashes: pathHashes,
-            suppressMissingPathHashesWarning: !format.usesPathHash
+            suppressMissingPathHashesWarning: !format.usesPathHash,
+            logger: benchmarkLogger
         )
         
         await keeper.setTransport(adapter)

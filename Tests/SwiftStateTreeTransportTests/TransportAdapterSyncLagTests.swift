@@ -863,9 +863,11 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
     }
 
-    @Test("A plan fault with a resync due commits nothing; the next plan resyncs")
+    @Test("A plan fault with a resync due commits nothing; the next plan resyncs (legacy sync)")
     func planFaultWithResyncDue() async throws {
-        let f = try await makeFixture()
+        // Legacy sync: an in-turn plan's first throw ends the land (#535 row 15); the legacy
+        // path keeps its follow-up until #535's second part.
+        let f = try await makeFixture(inTurnSync: false)
         let firstSync = try #require(try await f.stateFrames().first)
         await f.ack(firstSync.seq)
         try await f.bump()

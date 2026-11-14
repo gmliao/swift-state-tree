@@ -463,7 +463,6 @@ struct InboundBacklogLandState: StateNodeProtocol {
     var joined: Int = 0
 }
 
-private struct FlipBlocked: Error {}
 
 @Suite(
     "Inbound backlog bound and the pending-join bound (#113, 4c)",
@@ -502,7 +501,7 @@ struct InboundBacklogPendingJoinTests {
         await transport.setDelegate(router)
         let landID = LandID(landType: "inbound-backlog", instanceId: "one")
         let container = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: InboundBacklogLandState(), metadata: [:])
-        await container.transportAdapter.setSyncPlanFaultForTesting { throw FlipBlocked() }
+        await container.transportAdapter.setJoinFlipHeldForTesting(true)
         await container.transportAdapter.setJoinFlipLimitsForTesting(timeout: .seconds(3600), budget: nil)
 
         let reads = ReadCounter()

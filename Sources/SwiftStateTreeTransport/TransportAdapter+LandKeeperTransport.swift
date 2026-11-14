@@ -93,6 +93,12 @@ extension TransportAdapter: LandKeeperTransport {
         }
     }
     
+    /// The land failed (#535): closes every session with 4016 and returns once they are closed.
+    /// The keeper's destroy follows, then `onLandDestroyed`.
+    public func landDidFail(_ failure: LandFailure) async {
+        await closeSessionsForLandFailure(failure)
+    }
+
     /// Called by the keeper after its destroy handlers ran (no more sync cycles). Stops the
     /// outbound writer, waits (bounded) for queued frames to reach the transport, then runs the
     /// land-destroyed callback. Frames issued after this are dropped and counted.

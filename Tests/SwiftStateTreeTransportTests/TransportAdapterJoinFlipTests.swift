@@ -352,42 +352,30 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.inTurnJoinFlips == 4)
     }
 
-    @Test("A failed flip commit commits nothing for the joiner; the next committed sync flips it")
-    func failedPlanRetriesTheFlip() async throws {
+    @Test("A failed flip commit ends the land (#535 row 15): nothing reaches the joiner, and its join fails")
+    func failedFlipPlanEndsTheLand() async throws {
         let fixture = await makeFixture(tick: true)
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
-        // The tick's sync phase (run for the ready join) fails: the join stays joining.
+        // The tick's sync phase (run for the ready join) throws: the first throw ends the land.
         await fixture.adapter.setSyncPlanFaultForTesting { throw OnJoinFailure() }
         await fixture.keeper.stepTickOnce()
-        #expect(await fixture.keeper.currentState().joins == 1)
-        #expect(await fixture.adapter.isJoiningInTurn(s1))
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == [])
-        await fixture.adapter.setSyncPlanFaultForTesting(nil)
-        await fixture.keeper.runSyncLoopIterationForTesting()
-        _ = try await join.value
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
+        #expect(fixture.keeper.failure?.kind == .syncPlan)
+        #expect(fixture.keeper.destructionCause == .failed)
+        await fixture.keeper.waitUntilDrained()
+        await #expect(throws: (any Error).self) { _ = try await join.value }
+        #expect(await fixture.sent.kinds(for: s1) == [], "no joinResponse or firstSync from the failed plan")
     }
 
-    @Test("Tickless land whose plan keeps failing: the join retries back off, doubling, and it flips once a plan commits")
-    func failingPlanRetriesBackOff() async throws {
+    @Test("Tickless land: a plan that throws while a join waits ends the land at once, with no retry (#535 row 15)")
+    func failingPlanOnTicklessJoinEndsTheLand() async throws {
         let fixture = await makeFixture(tick: false)
         await fixture.adapter.setSyncPlanFaultForTesting { throw OnJoinFailure() }
         let join = Task { try await joinInTurn(fixture, session: SessionID("s1"), player: PlayerID("p1")) }
-        // Past the repair limit the retries back off, doubling from 100 ms, so a plan that keeps
-        // failing gives a bounded number of turns before the join's timeout.
-        await eventually("three retries scheduled") {
-            await fixture.keeper.joinSyncRetryDelaysForTesting.count >= 3
-        }
-        let delays = await fixture.keeper.joinSyncRetryDelaysForTesting
-        #expect(Array(delays.prefix(3)) == [.milliseconds(100), .milliseconds(200), .milliseconds(400)])
-        // Once a plan commits again, the next retry flips the join.
-        await fixture.adapter.setSyncPlanFaultForTesting(nil)
-        let result = try await join.value
-        #expect(result.completedInTurn)
+        await #expect(throws: (any Error).self) { _ = try await join.value }
+        #expect(fixture.keeper.failure?.kind == .syncPlan)
+        #expect(await fixture.keeper.joinSyncTurnsForTesting == 0, "no join-sync retry turn")
     }
 
     @Test("Not registered with the transport yet: a consumed join doesn't flip until it is; its registration then flips it in a sync-only turn")

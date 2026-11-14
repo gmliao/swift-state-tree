@@ -51,7 +51,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 轉成相同字串的 dictionary key | 後一筆默默覆蓋前一筆（`SnapshotValue.swift:424`） | 目標：關閉 land（#535） |
 | 編碼無法承載的 patch（例如 JSON 中的非有限數） | 去掉該 patch 重新編碼後送出；該欄位在 client 上維持過期，直到它再次改變（`TransportAdapter.swift:5663`） | 目標：關閉 land（#535） |
 | 路徑在 schema 之外的 patch | 同上一列被丟棄，並計數（`TransportAdapter.swift:719-723`） | 目標：關閉 land（#535） |
-| 拋出錯誤的同步 plan | 不送任何東西並重試：有週期同步時每個 tick 重試；沒有時先做有限次數的 follow-up，之後在有 join 等待時，透過延遲加倍的 join-sync turn 重試（`TransportAdapter.swift:3320`、`LandKeeper.swift:4423-4435`） | 目標：第一次拋出錯誤就關閉 land，不重試（#535） |
+| 拋出錯誤的同步 plan | in-turn sync：第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試（`LandKeeper.swift:4447`、`:4892`）。legacy sync（未啟用 in-turn）：不送任何東西並重試，有週期同步時每個 tick 重試，沒有時做有限次數的 follow-up | in-turn sync 已符合；legacy sync 的目標相同（#535 PR 1 part B） |
 | 單一玩家的狀態 frame 完全無法編碼 | 該 cycle 不送任何東西給這位玩家，它的 client 可能在某些欄位上落後，直到這些欄位再次改變（`TransportAdapter.swift:4940-4951`） | 目標：關閉 land（#535、#532） |
 | resync 或第一次 view 的完整 view 無法編碼 | 重試；超過上限後以 4012 `unencodableView` 關閉 session（`TransportAdapter.swift:3634`） | 目標：第一次失敗就關閉 land，不重試；不再送出 4012（#535） |
 | 編碼失敗的 server event | 記錄錯誤，event 不送出（`TransportAdapter.swift:3026-3031`、`:3135`） | 目標：關閉 land（#521） |
@@ -76,11 +76,11 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
-| OnLeave 與 destroy handler | 目前沒有任何失敗會結束 land。host 停止 land 時，每個 session 的 leave 會在檢查 land 的 drain 之前執行 OnLeave resolver（`LandKeeper.swift:2397-2439`） | 目標：失敗的 land 不執行 OnLeave（略過 resolver 與 handler；玩家的成員關係照常結束），destroy handler 與存檔執行時看得到這個失敗（#535） |
+| OnLeave 與 destroy handler | 失敗的 land 在失敗的 turn 內清除玩家，不執行 OnLeave；destroy handler 與存檔執行時看得到 `LandDestructionCause.failed` 與 `LandKeeper.failure`（`LandKeeper.swift:4892`）。host 停止時若在失敗的拆除之前先關閉某個 session，該 session 的 leave 仍會執行（`LandKeeper.swift:2397-2439`） | 失敗本身的拆除已符合；目標：host 的停止路徑在失敗的 land 上同樣略過 OnLeave（#535 PR 1 part B） |
 
 ## Close code
 
-- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session（目標，#535）。
+- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session（in-turn sync plan 拋出錯誤時已符合；其他列為目標，#535）。在 #535 PR 1 part B 之前，host 停止時先關閉的 session 收到的是 4014。
 - **4012 `unencodableView`：** 目前在 resync 或第一次 view 的 frame 持續無法編碼時送出。#535 落地後保留不用，不再送出。
 - **4014 `landStopped`：** 管理端停止，不變。
 
