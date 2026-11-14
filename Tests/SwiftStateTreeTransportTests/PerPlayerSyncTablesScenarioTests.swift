@@ -539,7 +539,7 @@ struct PerPlayerSyncTablesScenarioTests {
                     }
                     let before = await run.transport.sent.count
                     await run.sync()
-                    await run.keeper.waitForFailureForTesting()
+                    try #require(await run.keeper.waitForFailureForTesting(), "the land failed")
                     #expect(run.keeper.failure?.position.stage == .syncPhase, "\(label): the land failed in the sync phase")
                     #expect(await run.transport.sent.count == before, "\(label): the failing cycle sent nothing")
                     run.finish()

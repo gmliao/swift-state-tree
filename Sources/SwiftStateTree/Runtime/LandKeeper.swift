@@ -4953,13 +4953,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Callers of `waitForFailureForTesting`, resumed when the land fails.
-    private var failureWaitersForTesting: [CheckedContinuation<Void, Never>] = []
+    private var failureWaitersForTesting: [UInt64: CheckedContinuation<Bool, Never>] = [:]
+    private var nextFailureWaiterForTesting: UInt64 = 0
 
-    /// Test hook: returns once the land has failed (at once if it already has). Event-driven:
-    /// a submitted failure is applied by a turn that runs after the submitter returns.
-    package func waitForFailureForTesting() async {
-        guard failure == nil else { return }
-        await withCheckedContinuation { failureWaitersForTesting.append($0) }
+    /// Test hook: returns true once the land has failed (at once if it already has), or false
+    /// after `hangBound` if it never does, so a test of a failure that doesn't happen fails
+    /// instead of hanging. Event-driven: a submitted failure is applied by a turn that runs
+    /// after the submitter returns; the bound is only a hang guard.
+    @discardableResult
+    package func waitForFailureForTesting(hangBound: Duration = .seconds(30)) async -> Bool {
+        guard failure == nil else { return true }
+        nextFailureWaiterForTesting += 1
+        let id = nextFailureWaiterForTesting
+        let expiry = Task { [weak self] in
+            try? await safeTaskSleep(for: hangBound)
+            await self?.expireFailureWaiterForTesting(id)
+        }
+        defer { expiry.cancel() }
+        return await withCheckedContinuation { failureWaitersForTesting[id] = $0 }
+    }
+
+    private func expireFailureWaiterForTesting(_ id: UInt64) {
+        failureWaitersForTesting.removeValue(forKey: id)?.resume(returning: false)
     }
 
     /// Test hook: reports `failure` as a further producer would (part A has one producer, the
@@ -5009,9 +5024,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if let transport { await transport.landDidFail(failure) }
             await self.drainAfterIdleCheck()
         }
-        let waiters = failureWaitersForTesting
+        let waiters = failureWaitersForTesting.values
         failureWaitersForTesting.removeAll()
-        waiters.forEach { $0.resume() }
+        waiters.forEach { $0.resume(returning: true) }
     }
 
     /// `forceShutdown` on a tickless land, waiting for its shutdown input's turn, or for the
