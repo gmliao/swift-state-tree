@@ -7,6 +7,17 @@
 #   format-s    a `%s` specifier (not `%%s`) in a `String(format:` call in Sources/ or Examples/:
 #               `%s` reads a C string pointer, and a Swift String there crashes release builds. Use
 #               `%@` or interpolation.
+#   ticket-after-await
+#               a generation ticket issued (`.issue(`, `?? <table>.issue(` included) after an `await`
+#               in the same function in Sources/SwiftStateTreeTransport/: a teardown or another
+#               turn can end the key during the await, and a ticket issued then is current for a
+#               key that is gone (#531). Take the ticket before the first `await` and pass it on;
+#               to move a held ticket to a new generation, `renew(_:)` (it checks the ticket is
+#               still current). A hint, not a proof: it reads lines in order, and every line that
+#               declares a `func` or an `init` starts a new scope, a nested one too (an `await`
+#               before it no longer counts after it); a closure isn't a scope (an `await` in it
+#               counts for the rest of the function). It can't see an `issue` inside a helper
+#               called after an `await`: there the ticket has to be a parameter.
 #
 # A line that must keep the pattern carries `// lint-allow: <rule>` on the same line.
 # Comment-only lines are skipped. The check is per line: a format string on a later line than
@@ -38,6 +49,30 @@ scan() {
     }'
 }
 
+# Prints `rel:line: [ticket-after-await] text` for each `.issue(` after an `await` in the same
+# function, in the files on stdin (NUL-separated).
+scan_ticket_after_await() {
+  local root=$1
+  # shellcheck disable=SC2016 # awk program, not shell
+  { xargs -0 awk -v root="$root/" '
+    FNR == 1 { awaited = 0 }
+    {
+      text = $0
+      if (text ~ /^[ \t]*\/\//) next
+      code = text; sub(/\/\/.*/, "", code)
+      if (code ~ /^[ \t]*((@[A-Za-z_]+(\([^)]*\))?|public|private|fileprivate|internal|package|static|class|override|nonisolated|mutating|final|convenience|required|isolated)[ \t]+)*(func[ \t]|init[ \t]*[(<?])/) awaited = 0
+      at = match(code, /\.issue\(/)
+      if (at > 0 && text !~ /\/\/.*lint-allow: ticket-after-await/) {
+        before = substr(code, 1, at - 1)
+        if (awaited || before ~ /(^|[^A-Za-z0-9_])await([ \t(]|$)/) {
+          line = text; sub(/^[ \t]+/, "", line)
+          print substr(FILENAME, length(root) + 1) ":" FNR ": [ticket-after-await] " line
+        }
+      }
+      if (code ~ /(^|[^A-Za-z0-9_])await([ \t(]|$)/) awaited = 1
+    }' 2>/dev/null || true; }
+}
+
 lint() {
   local root=$1 out
   out=$(
@@ -45,6 +80,8 @@ lint() {
       | scan "$root" task-sleep "$TASK_SLEEP"
     find "$root/Sources" "$root/Examples" -name '*.swift' -not -path '*/.build/*' -print0 2>/dev/null \
       | scan "$root" format-s "$FORMAT_S"
+    find "$root/Sources/SwiftStateTreeTransport" -name '*.swift' -not -path '*/.build/*' -print0 2>/dev/null \
+      | scan_ticket_after_await "$root"
   )
   local findings=0
   if [[ -n $out ]]; then
@@ -76,6 +113,37 @@ SWIFT
   echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/seeded/Sources/SwiftStateTree/Support/SafeTaskSleep.swift"
   echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/seeded/Sources/A/Support/SafeTaskSleep.swift"
   printf '%s\n' 'try await Task.sleep(for: .seconds(1))' 'print(String(format: "%5s", s))' > "$tmp/seeded/Examples/B/Sources/main.swift"
+  mkdir -p "$tmp/seeded/Sources/SwiftStateTreeTransport"
+  cat > "$tmp/seeded/Sources/SwiftStateTreeTransport/Tickets.swift" <<'SWIFT'
+func before(_ k: Int) async {
+    let t = tickets.ticket(for: k) ?? tickets.issue(k)
+    await work(t)
+}
+private func after(_ k: Int) async {
+    let entry = await read(k)
+    let t = tickets.ticket(for: k) ?? tickets.issue(k)
+}
+func sameLine(_ k: Int) async {
+    let e = await read(k); let t = tickets.issue(k)
+}
+func renews(_ t: Ticket) async {
+    await work(t)
+    let next = tickets.renew(t)
+}
+func allowed(_ k: Int) async {
+    await work(k)
+    // tickets.issue(k) in a comment
+    let t = tickets.issue(k) // lint-allow: ticket-after-await
+}
+    init(k: Int) {
+        let t = tickets.issue(k)
+    }
+func closure(_ k: Int) {
+    Task { await work(k) }
+    let t = tickets.issue(k)
+}
+SWIFT
+  echo 'func f() async { await g(); let t = tickets.issue(1) }' > "$tmp/seeded/Sources/A/OtherModule.swift"
   local expected
   expected=$(cat <<'OUT'
 Examples/B/Sources/main.swift:2: [format-s] print(String(format: "%5s", s))
@@ -86,7 +154,10 @@ Sources/A/Bad.swift:8: [task-sleep] try await Task<Never, Never>.sleep(for: .sec
 Sources/A/Bad.swift:9: [task-sleep] print("lint-allow: task-sleep"); try await Task.sleep(for: .seconds(1))
 Sources/A/Bad.swift:11: [format-s] let f = String(format: "%%%s", name)
 Sources/A/Support/SafeTaskSleep.swift:1: [task-sleep] try await Task.sleep(for: .seconds(1))
-lint-lessons: 8 finding(s)
+Sources/SwiftStateTreeTransport/Tickets.swift:7: [ticket-after-await] let t = tickets.ticket(for: k) ?? tickets.issue(k)
+Sources/SwiftStateTreeTransport/Tickets.swift:10: [ticket-after-await] let e = await read(k); let t = tickets.issue(k)
+Sources/SwiftStateTreeTransport/Tickets.swift:26: [ticket-after-await] let t = tickets.issue(k)
+lint-lessons: 11 finding(s)
 OUT
 )
   set +e; out=$(lint "$tmp/seeded"); status=$?; set -e

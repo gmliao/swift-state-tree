@@ -141,20 +141,23 @@ struct TransportAdapterSyncLagTests {
         }
 
         /// Changes the state (an action the keeper has applied when this returns), then syncs.
-        func bump() async throws {
-            try await change()
+        /// `session`/`client`: the sender, when it isn't the fixture's own session.
+        func bump(session: SessionID? = nil, client: ClientID? = nil) async throws {
+            try await change(session: session, client: client)
             await adapter.syncNow()
             #expect(await adapter.waitForOutboundDrain())
         }
 
         /// Changes the state without a sync of its own (an in-turn sync may still run in the
         /// action's turn).
-        func change() async throws {
+        func change(session: SessionID? = nil, client: ClientID? = nil) async throws {
             let envelope = ActionEnvelope(
                 typeIdentifier: String(describing: SyncLagIncrementAction.self),
                 payload: AnyCodable(SyncLagIncrementAction())
             )
-            _ = try await keeper.handleActionEnvelope(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID)
+            _ = try await keeper.handleActionEnvelope(
+                envelope, playerID: playerID, clientID: client ?? clientID, sessionID: session ?? sessionID
+            )
         }
 
         /// Sets `speeds["p"]` to NaN (JSON can't encode it) or removes it, then syncs.
@@ -358,29 +361,27 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagDroppedEvents == droppedBefore + 2)
     }
 
-        @Test("A player with two sessions, one lagging: both get the snapshot, one resync counted")
-    func twoSessions() async throws {
+    @Test("A player's second session supersedes the first (#531): lag tracking and the resync follow the survivor alone")
+    func secondSessionSupersedesForLag() async throws {
         let f = try await makeFixture()
-        let second = SessionID("sess-lag-2")
-        await f.adapter.onConnect(sessionID: second, clientID: ClientID("cli-lag-2"))
-        await f.adapter.registerSession(sessionID: second, clientID: ClientID("cli-lag-2"), playerID: f.playerID, authInfo: nil)
-        await f.adapter.syncStateForNewPlayer(playerID: f.playerID, sessionID: second)
-        #expect(await f.adapter.waitForOutboundDrain())
-        let firstSyncs = try await f.stateFrames()
-        let firstSeq = try #require(firstSyncs.first).seq
-        await f.ack(.max >> 1, from: second)
-        await f.ack(firstSeq)
-        try await f.bump()
+        let second = SessionID("sess-lag-2"), secondClient = ClientID("cli-lag-2")
+        await f.adapter.onConnect(sessionID: second, clientID: secondClient)
+        try await simulateRouterJoin(
+            adapter: f.adapter, keeper: f.keeper, sessionID: second, clientID: secondClient, playerID: f.playerID
+        )
+        #expect(await f.adapter.membershipSessionIDs(for: f.playerID) == [second])
+        let firstSeq = try #require(try await f.stateFrames().last).seq
+        await f.ack(firstSeq, from: second)
+        try await f.bump(session: second, client: secondClient)
         _ = try await f.stateFrames()
         f.clock.advance(1.5)
-        await f.ack(firstSeq)
-        await f.ack(.max >> 1, from: second)
+        await f.ack(firstSeq, from: second)
         f.clock.advance(1.8)
-        await f.ack(firstSeq)
-        await f.ack(.max >> 1, from: second)
-        try await f.bump()
-        #expect(try await f.stateFrames().map(\.op) == [3, 3])
+        await f.ack(firstSeq, from: second)
+        try await f.bump(session: second, client: secondClient)
+        #expect(try await f.stateFrames().map(\.op) == [3])
         #expect(await f.adapter.syncLagResyncs == 1)
+        #expect(await f.adapter.syncLagResyncsAlongside == 0)
     }
 
     @Test("The session disconnects while the timer's sync is held: nothing is recreated, no resync")
@@ -483,29 +484,24 @@ struct TransportAdapterSyncLagTests {
         let f = try await makeFixture(binary: binary)
         let counters = TransportProfilerCounters()
         await f.adapter.setSyncLagProfilerCountersForTesting(counters)
-        let second = SessionID("sess-lag-2")
-        await f.adapter.onConnect(sessionID: second, clientID: ClientID("cli-lag-2"))
-        await f.adapter.registerSession(sessionID: second, clientID: ClientID("cli-lag-2"), playerID: f.playerID, authInfo: nil)
-        await f.adapter.syncStateForNewPlayer(playerID: f.playerID, sessionID: second)
-        #expect(await f.adapter.waitForOutboundDrain())
+        // One session per player (#531): a resync never has a second session of the player to
+        // go to, so `resyncsAlongside` stays 0.
         let firstSeq = try #require(try await f.stateFrames().first).seq
-        await f.ack(.max >> 1, from: second)
         await f.ack(firstSeq)
         try await f.bump()
         _ = try await f.stateFrames()
         f.clock.advance(3.3)
         await f.ack(firstSeq)
-        await f.ack(.max >> 1, from: second)
         try await f.bump()
         let resyncFrames = try await f.stateFrames().map(\.op)
-        // MessagePack merges the broadcast part into an opcode 107 frame for every recipient,
-        // ahead of the snapshots; the key-scope reset types it as a firstSync (op 1).
-        #expect(binary ? resyncFrames.sorted() == [1, 1, 3, 3] : resyncFrames == [3, 3])
+        // MessagePack merges the broadcast part into an opcode 107 frame, ahead of the snapshot;
+        // the key-scope reset types it as a firstSync (op 1).
+        #expect(binary ? resyncFrames.sorted() == [1, 3] : resyncFrames == [3], "\(resyncFrames)")
 
         let resync = counters.takeAndResetSyncLag()
         #expect(resync.resyncs == 1)
-        #expect(resync.resyncsAlongside == 1, "the second session got the snapshot too")
-        #expect(await f.adapter.syncLagResyncsAlongside == 1)
+        #expect(resync.resyncsAlongside == 0)
+        #expect(await f.adapter.syncLagResyncsAlongside == 0)
         #expect(resync.keyScopeResets == (await f.adapter.syncLagKeyScopeResets))
         #expect(resync.keyScopeResetBytes == (await f.adapter.syncLagKeyScopeResetBytes))
         if binary {
@@ -515,7 +511,7 @@ struct TransportAdapterSyncLagTests {
         }
         #expect(counters.takeAndResetSyncLag() == TransportProfilerCounters.SyncLagWindow(), "reset per window")
 
-        // Both sessions silent past the ack timeout: unresponsive closes, then their acks drop.
+        // The session silent past the ack timeout: an unresponsive close, then its ack drops.
         f.clock.advance(10.5)
         try await f.bump()
         await f.ack(99)

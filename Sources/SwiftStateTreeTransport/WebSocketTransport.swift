@@ -532,19 +532,26 @@ public actor WebSocketTransport: Transport {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout)
     }
 
+    /// Only while the session's connection is the one with `generation` (nil: any); its delayed
+    /// close (the bound) checks the generation again.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?) async {
+        closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, generation: generation)
+    }
+
     /// `closeSessionAfterQueuedFrames(_:)` with an explicit bound (tests).
-    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, timeout: Duration) {
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, timeout: Duration, generation: UInt64? = nil) {
+        if let generation, sessionQueues[sessionID]?.generation != generation { return }
         guard var queue = sessionQueues[sessionID], !queue.closeMarkerYielded else { return }
         queue.closeMarkerYielded = true
         sessionQueues[sessionID] = queue
         if case .terminated = queue.continuation.yield(.close) {
             // The drain already ended (a failed send): nothing more can be written.
-            Task { [weak self] in await self?.closeSession(sessionID) }
+            Task { [weak self] in await self?.closeSession(sessionID, with: .normal, generation: generation) }
             return
         }
         Task { [weak self] in
             try? await safeTaskSleep(for: timeout)
-            await self?.closeSession(sessionID)
+            await self?.closeSession(sessionID, with: .normal, generation: generation)
         }
     }
 

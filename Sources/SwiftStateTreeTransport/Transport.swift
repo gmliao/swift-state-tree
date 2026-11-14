@@ -81,6 +81,11 @@ public protocol Transport: Actor {
     /// frame isn't overtaken by the close. The default closes at once (`closeSession`), which
     /// may drop frames still queued.
     func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async
+
+    /// `closeSessionAfterQueuedFrames(_:)` only while the session's connection is the one with
+    /// `generation` (nil: any), so a close decided about one connection never closes the next one
+    /// that reuses the session ID. The default ignores the generation.
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?) async
 }
 
 extension Transport {
@@ -106,6 +111,11 @@ extension Transport {
 
     /// Default: `closeSession` is a no-op.
     public nonisolated var supportsCloseSession: Bool { false }
+
+    /// Default: the generation is ignored; `closeSessionAfterQueuedFrames(_:)`.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?) async {
+        await closeSessionAfterQueuedFrames(sessionID)
+    }
 
     /// Default: close at once.
     public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async {

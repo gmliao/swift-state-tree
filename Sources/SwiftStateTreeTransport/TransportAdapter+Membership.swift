@@ -11,8 +11,13 @@ extension TransportAdapter {
     }
 
     /// Registers a joined session directly, without the admission (`performJoin` does both).
-    /// It bypasses newest wins (#92): the player's other sessions stay members. Use it only for
-    /// a session whose keeper join the caller already did.
+    /// Use it only for a session whose keeper join the caller already did.
+    ///
+    /// The realtime adapter's rule applies, as for a join: newest wins, and the player's older
+    /// sessions are logged out (superseded and closed, #92, #531). It runs in the adapter's
+    /// membership queue, ordered with joins and disconnects. When the keeper's entry for the
+    /// player names another session or client (a newer keeper join), the registration is
+    /// refused and the session closed.
     ///
     /// - Parameter connectionGeneration: The transport connection generation read when the
     ///   session's connection was accepted; `nil` reads the current one.
@@ -23,7 +28,7 @@ extension TransportAdapter {
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64? = nil
     ) async {
-        await _registerSessionImpl(
+        await _registerSessionQueued(
             sessionID: sessionID,
             clientID: clientID,
             playerID: playerID,
