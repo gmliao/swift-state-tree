@@ -119,6 +119,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case serverInput(PendingServerInputItem)
         /// `forceShutdown`'s turn (#382): recorded as the lifecycle event kind `"shutdown"`.
         case shutdown(PendingShutdownItem)
+        /// A failure the transport reported from outside a turn (`submitLandFailure`, #535): the
+        /// turn that applies it ends the land. Not an input: it isn't recorded as one.
+        case landFailure(PendingLandFailureItem)
+    }
+
+    /// A transport-reported failure (#535), queued as a turn input so it is applied in a turn.
+    package struct PendingLandFailureItem: Sendable {
+        package let sequence: Int64
+        package let resolvedAtTick: Int64
+        package let failure: LandFailure
     }
 
     /// A server input (#387), taken at submit: the system identity applies it.
@@ -3553,6 +3563,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
             }
 
+        case .landFailure:
+            // Not an input: nothing is applied or recorded. The batch ends at it, and the
+            // failure ends the land after the loop (`applyInputs`).
+            return .other
+
         case let .shutdown(shutdownItem):
             // Recorded like any input. No handler runs: a forced shutdown runs no OnLeave (#382).
             let recorded = ReevaluationRecordedLifecycleEvent(
@@ -3839,6 +3854,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// Every input's outcome, by sequence: its response (empty for non-actions) or its error.
         var outcomes: [Int64: Result<AnyCodable, any Error>]
         var failureCount: Int
+        /// How many of the batch's items were consumed: the batch ends at a shutdown or a land
+        /// failure (#535), and the items after it were dropped by the settle, not applied.
+        var consumed: Int
     }
 
     /// Applies `items` in order (synchronous), on every path (legacy pass, in-turn input turn,
@@ -3862,7 +3880,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // The shutdown is the last input a land applies (#382): the batch ends at it.
         var consumed = items.count
         var appliedShutdown = false
+        // A transport-reported failure (#535) ends the batch too: the inputs behind it are
+        // dropped with `landClosed` by the settle.
+        var appliedFailure: LandFailure?
         for (index, item) in items.enumerated() {
+            if case let .landFailure(failureItem) = item {
+                consumed = index + 1
+                appliedFailure = failureItem.failure
+                break
+            }
             let sequenceBefore = outputCollector.nextSequence
             let isJoin: Bool
             if case let .lifecycle(lifecycle) = item, lifecycle.kind == .join { isJoin = true } else { isJoin = false }
@@ -3892,7 +3918,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if removingFromQueue { removePendingItems(Array(items.prefix(consumed))) }
         noteJoinInputsConsumed(joinResults)
         if appliedShutdown { completeShutdownTurn() }
-        return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount)
+        if let appliedFailure { failLand(appliedFailure) }
+        return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount, consumed: consumed)
     }
 
     /// Re-evaluation only: replays a tickless frame's inputs pass by pass, in recorded order,
@@ -4474,6 +4501,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
         let applied = applyInputs(readyPendingItemsInOrder(), executingTickId: tickId).applied
+        if failure != nil {
+            // The land failed in this batch (#535): no tick handler, no events, no sync. The
+            // inputs applied before it are recorded; no state hash and no W2 (it never ran).
+            lastCommittedTickId = tickId
+            // The prefix's events and sync requests are taken and not sent: no output after a
+            // failure (§3.2 step 4).
+            _ = takeEmittedEvents(forTick: tickId)
+            _ = takeSyncRequest(forTick: tickId, applied: applied)
+            var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: [])
+            record.sequenceBeforeInputs = sequenceBeforeInputs
+            return TickTurnOutput(record: record)
+        }
 
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -4889,6 +4928,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   closed) and then runs the existing drain: destroy handlers and save see `.failed`.
     ///
     /// The position's tick is filled here when the reporter didn't know it.
+    /// The transport reports a failure that ends the land (#535), from outside a turn: the legacy
+    /// sync path's plan throw, or an output it couldn't encode. The failure is queued as a turn
+    /// input; the turn that applies it ends the land (`failLand`), so keeper state changes only in
+    /// a turn. Dropped when the land is already draining: the first cause stays.
+    ///
+    /// The plan's lifecycle ticket isn't needed: a transport serves one keeper instance, and a
+    /// further failure of the same instance is a no-op (the first failure wins).
+    package func submitLandFailure(_ failure: LandFailure) {
+        guard mode == .live else { return }
+        guard !isDraining else {
+            logger.debug("A land failure after the land started ending; the first cause stays", metadata: [
+                "failure": .string(failure.description),
+            ])
+            return
+        }
+        let sequence = outputCollector.takeNextSequence()
+        pendingItems.append(.landFailure(PendingLandFailureItem(
+            sequence: sequence,
+            resolvedAtTick: lastCommittedTickId,
+            failure: failure
+        )))
+        kickServerInputTurn(upTo: sequence)
+    }
+
     /// Test hook: reports `failure` as a further producer would (part A has one producer, the
     /// in-turn plan throw), so a test can drive a second failure or one after a stop began.
     package func failLandForTesting(_ failure: LandFailure) {
@@ -5067,14 +5130,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // on (`applyInputs`). Its events were dropped there.
         let application = applyInputs(batch, executingTickId: executingTickId, removingFromQueue: removingFromQueue)
         let applied = application.applied
+        // Only the consumed prefix is this turn's: the suffix was dropped (`landClosed`) by a
+        // failure's settle, and its callers must not be resumed again with a success (#535).
+        let consumedItems = Array(batch.prefix(application.consumed))
         var emitted: [EmittedEvent] = []
-        if !batch.isEmpty, let transport, usesInTurnSync {
+        if failure != nil {
+            // The land failed in this turn: no events and no sync (§3.2 step 4).
+            _ = takeEmittedEvents(forTick: executingTickId)
+            _ = takeSyncRequest(forTick: executingTickId, applied: applied)
+        } else if !batch.isEmpty, let transport, usesInTurnSync {
             emitted = takeEmittedEvents(forTick: executingTickId)
             let wantsSync = takeSyncRequest(forTick: executingTickId, applied: applied)
             runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
         }
         inTurnProbeForTesting?("turn-end")
-        for item in batch {
+        for item in consumedItems {
             inputTurnResults[item.sequence] = application.outcomes[item.sequence]
         }
         var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
@@ -5082,7 +5152,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if !applied.appliedOrder.isEmpty {
             record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder)]
         }
-        return InputTurnOutcome(record: record, appliedItems: batch, syncBroadcastOnly: applied.shouldSyncBroadcastOnly)
+        return InputTurnOutcome(record: record, appliedItems: consumedItems, syncBroadcastOnly: applied.shouldSyncBroadcastOnly)
     }
 
     /// Resumes the callers of `batch` with their outcomes, after the turn was recorded (as the
@@ -5470,6 +5540,7 @@ extension LandKeeper.PendingItem {
         case let .lifecycle(item): return item.sequence
         case let .serverInput(item): return item.sequence
         case let .shutdown(item): return item.sequence
+        case let .landFailure(item): return item.sequence
         }
     }
 
@@ -5487,6 +5558,7 @@ extension LandKeeper.PendingItem {
         case let .lifecycle(item): return item.resolvedAtTick
         case let .serverInput(item): return item.resolvedAtTick
         case let .shutdown(item): return item.resolvedAtTick
+        case let .landFailure(item): return item.resolvedAtTick
         }
     }
 }

@@ -3592,24 +3592,33 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         var completed = false
+        var planFailure: LandFailure?
         do {
             legacyCycleRead = read
             defer { legacyCycleRead = nil }
             try phase(state)
             completed = true
         } catch {
-            logger.error("Sync operation failed", metadata: [
+            logger.error("Sync operation failed: the land ends", metadata: [
                 "message": .string(errorLogMessage),
                 "error": .string("\(error)")
             ])
+            // Row 15 (#535, D11 (d)): a plan's first throw ends the land, with no follow-up.
+            planFailure = LandFailure(
+                kind: .syncPlan,
+                detail: String(describing: error),
+                position: LandFailurePosition(stage: .syncPhase)
+            )
         }
 
         await holds.at(.cycleBeforeEndSync)
+        // The keeper's sync bookkeeping is closed whatever the outcome.
         await keeper.endSync()
         if completed {
             consecutiveFailedPlans = 0
-        } else {
-            noteFailedPlanForFollowUp()
+        } else if let planFailure {
+            // Applied in a keeper turn of its own (`submitLandFailure`), not here.
+            await keeper.submitLandFailure(planFailure)
         }
         return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
     }
