@@ -39,6 +39,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | 以參考型別（class）作為同步狀態（#464） | 註冊時拒絕：`SyncValueSemantics.validate`（`LandTypeRegistry.swift:38`、`NIOLandHost.swift:363`、`SchemaExtractor.swift:20`） | 已符合 |
+| 壓縮編碼（`messagepack`、`opcodeJsonArray`）下，沒有 `@Payload` 的 server event 或宣告的 action response 型別（#521） | 註冊時拒絕：`LandDefinition.validateForRegistration`（`NIOLandHost.swift:366`、`LandManager.swift:406`）；`json` 下以其 `Codable` 形式寫出 | 已符合 |
 | 其他僅由型別就能決定的型別錯誤：不支援的值或 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 同步時才發現；處理方式同「結束 land」第一列 | 目標：註冊時拒絕（#535） |
 | existential 型別的同步欄位（`Any`、`any P`） | 允許；無法轉換的值在同步時才發現，處理方式同「結束 land」第一列 | 目標：宣告的型別寫出 `any` 或 `Any` 時在編譯期拒絕，`AnyHashable` 與 `AnyCodable` 依名稱拒絕。未加 `any` 的 protocol 名稱、指向 existential 的 typealias，以及手寫的 conformance 在編譯期抓不到：這類欄位在第一次轉換失敗時結束 land（#535） |
 
@@ -55,7 +56,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | resync 或第一次 view 的完整 view 無法編碼 | 重試；超過上限後以 4012 `unencodableView` 關閉 session（`TransportAdapter.swift:3634`） | 目標：第一次失敗就關閉 land，不重試；不再送出 4012（#535） |
 | 編碼失敗的 server event | 記錄錯誤，event 不送出（`TransportAdapter.swift:3026-3031`、`:3135`） | 目標：關閉 land（#521） |
 | 寫入狀態後才拋出錯誤的 handler | 該輸入單獨失敗，之後的輸入繼續；它的寫入保留並同步出去，debug build 會發出警告（`LandKeeper.swift:3836-3837`、`:3189`） | 目標：關閉 land（#535）；部分寫入由 #87 追蹤 |
-| replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:273`、`TransportMessageEncoder.swift:336`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
+| replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:277`、`TransportMessageEncoder.swift:346`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
 | replay 無法載入或對應錄製的輸入 | 以警告略過該輸入，該 tick 在沒有它的情況下執行（`LandKeeper.swift:4126-4139`、`:4250-4256`） | 目標：驗證執行失敗，並附上 tick 與原因（#521；規則由 #535 追蹤） |
 
 ### 結束 session

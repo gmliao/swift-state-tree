@@ -857,9 +857,9 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ body:
         @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
 ) -> AnyActionHandler<State> {
-    // Extract Response type from ActionPayload using macro-generated method
-    // The @Payload macro generates getResponseType() for ActionPayload types
-    let responseType = A.getResponseType()
+    // The associated type, which every conformance has: `getResponseType()`'s default ends the
+    // process for a type without `@Payload` (#521).
+    let responseType: Any.Type = A.Response.self
     
     return AnyActionHandler(
         type: type,
@@ -902,7 +902,7 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: Context
     _ body:
         @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
 ) -> AnyActionHandler<State> {
-    let responseType = A.getResponseType()
+    let responseType: Any.Type = A.Response.self
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
     
     return AnyActionHandler(
@@ -926,7 +926,7 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: Context
     _ body:
         @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
 ) -> AnyActionHandler<State> {
-    let responseType = A.getResponseType()
+    let responseType: Any.Type = A.Response.self
     let executors = [
         ResolverExecutor.createExecutor(for: resolvers.0),
         ResolverExecutor.createExecutor(for: resolvers.1)

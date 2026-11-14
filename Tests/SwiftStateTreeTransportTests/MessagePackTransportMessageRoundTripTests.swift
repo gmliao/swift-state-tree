@@ -83,6 +83,8 @@ private func nilFieldNames(_ value: Any) -> [String] {
     Mirror(reflecting: value).children.compactMap { child in
         let mirror = Mirror(reflecting: child.value)
         guard mirror.displayStyle == .optional, mirror.children.isEmpty else { return nil }
+        // `AnyServerEvent.wireForm` is the typed value an encoder may use, not a wire field (#521).
+        guard child.label != "wireForm" else { return nil }
         return child.label ?? "?"
     }
 }

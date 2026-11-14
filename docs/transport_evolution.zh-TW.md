@@ -273,9 +273,10 @@
 - **實作**：`@Payload` Macro 在編譯期會解析 Struct 的語法樹 (AST)。
 - **規則**：它會先將 `Stored Properties` 依照欄位名稱進行 **ASCII 排序 (Deterministic ASCII Sorting)**，再產生對應的序列化程式碼。這確保了即使重構原始碼（改變宣告行號），只要欄位名稱不變，協議就能保持穩定。
 - **雙重保證 (同步性)**：
-  1.  **Runtime (`encodeAsArray`)**: Macro 排序後生成此函數供 Server 序列化使用。
+  1.  **Runtime (`_writePayloadFields(into:)`)**: Macro 排序後生成此 writer 供 Server 序列化使用。宣告型別有 typed 形式的欄位（純量、ID 型別與 deterministic-math 型別）直接寫出；其他欄位走它的 `Codable` 形式。
   2.  **Schema (`getFieldMetadata`)**: Macro 排序後生成此元數據供 `SchemaExtractor` 寫入 `schema.json`。
 - **關鍵限制**：這兩個函數必須使用相同的排序邏輯。我們選擇 ASCII 排序是因為它以此確保了**跨平台、跨語言的決定性**，且不受開發者重構程式碼的習慣影響。
+- **沒有 `@Payload` 的型別**：手寫 conformance 的 server event 或 action response 沒有 positional writer。在 payload 壓縮的編碼（`messagepack`、`opcodeJsonArray`）下，註冊會送出這類型別的 land 會以 `LandRegistrationError` 失敗，錯誤列出每個這類型別；不壓縮的 `json` 編碼則以其 `Codable` 形式寫出。
 - **Schema 對應**：雖然 JSON Object 的 `properties` 是無序的，但在生成的 `schema.json` 中，`required` 陣列會嚴格保留此順序，作為客戶端解碼 Tuple Array 的依據。
 - **相關程式碼**：[PayloadMacro.swift](../Sources/SwiftStateTreeMacros/PayloadMacro.swift)
 - **範例**：
