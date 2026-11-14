@@ -496,7 +496,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closed once when the land fails (#535): no new state or event frame is enqueued after it.
     /// Lock-protected and set once, so the keeper closes it from its own isolation without an
     /// await, and every send point reads it in the segment that enqueues.
-    nonisolated let outputGate = LandOutputGate()
+    package nonisolated let outputGate = LandOutputGate()
 
     /// Tests only: replaces `endedSessions` with an empty set of `capacity`.
     func setEndedSessionCapacityForTesting(_ capacity: Int) {
