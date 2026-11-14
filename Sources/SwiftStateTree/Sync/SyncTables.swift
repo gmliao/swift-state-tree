@@ -482,6 +482,14 @@ class SyncValueDiffer<V> {
     /// patches, ordered by the components below the field.
     func diff(_ new: V, _ old: V, at position: SyncDiffPosition, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
         let path = position.path
+        #if DEBUG
+        // The snapshot diff's patches are built on this path and never pass through
+        // `SyncDiffPosition.patch`'s oracle: check the rebuilt path against today's here.
+        assert(
+            path.utf8.elementsEqual(position.debugPath.utf8),
+            "the rebuilt path \(path) isn't today's \(position.debugPath)"
+        )
+        #endif
         let cursor = position.cursor
         var patches = SyncEngine.diffSnapshotValues(from: try convert(old), to: try convert(new), basePath: path, layout: layout)
         if patches.count > 1 {

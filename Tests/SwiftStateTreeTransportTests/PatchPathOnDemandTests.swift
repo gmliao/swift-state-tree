@@ -225,6 +225,17 @@ struct PatchPathOnDemandTests {
         var drops = ExtractionDrops()
         tables.seed(state, drops: &drops)
         let typed = tables.diff(changed, fields: nil, drops: &drops).patches
+        // The order: the cursor changes no patch's place. The typed diff's order itself (the
+        // canonical one) is pinned on the wire by the goldens (SyncOutputGoldenTests,
+        // SyncTablesByteIdentityTests); the snapshot diff isn't in that order, so the comparison
+        // with it below sorts both sides by path bytes.
+        let plain = SyncTableBroadcastDiff<PathDiffState>(pathCursor: nil, typedLeafValues: true)
+        plain.emitsRowCreates = rowCreates
+        var plainDrops = ExtractionDrops()
+        plain.seed(state, drops: &plainDrops)
+        let withoutCursor = plain.diff(changed, fields: nil, drops: &plainDrops).patches
+        #expect(typed.map { Array($0.path.utf8) } == withoutCursor.map { Array($0.path.utf8) })
+        #expect(typed.map { $0.operation } == withoutCursor.map { $0.operation })
         let snapshot = SyncEngine.diffSnapshotValues(
             from: try SnapshotValue.broadcastView(of: state),
             to: try SnapshotValue.broadcastView(of: changed),
