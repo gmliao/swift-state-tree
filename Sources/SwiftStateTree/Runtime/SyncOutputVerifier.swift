@@ -711,6 +711,11 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     /// Why a mismatch in this record is not a replay difference
     /// (`ReevaluationRecordVersion.hashIncomparability(recorded:holdsNonNFCText:)`), if it is not.
     private let incomparability: String?
+    /// A tickless land's recorded passes (all in tick 0), in order. Its entries all observe tick
+    /// -1, so each is located by its read sequence among the passes instead (#563).
+    private let ticklessPasses: [ReevaluationRecordedPass]
+    /// The replayed state after each needed tickless pass, by pass index.
+    private var passStates: [Int: State] = [:]
 
     /// `completeness` is the record's (`ActionSource.getRecordCompleteness()`): in an incomplete
     /// record, events emitted after the newest recorded output read state are a tail the record
@@ -720,9 +725,11 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         metadata: ReevaluationRecordMetadata,
         stream: [ReevaluationSyncStreamEntry],
         completeness: ReevaluationRecordCompleteness = .complete,
-        incomparability: String? = nil
+        incomparability: String? = nil,
+        ticklessPasses: [ReevaluationRecordedPass] = []
     ) {
         self.incomparability = incomparability
+        self.ticklessPasses = ticklessPasses
         recordIsComplete = completeness.isComplete
         lastOutputSequence = stream.compactMap { if case .output(let output) = $0 { return output.sequence } else { return nil } }.max()
         let presence = ReevaluationSyncStreamPresence.of(metadata: metadata, stream: stream)
@@ -771,8 +778,35 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     }
 
     /// The replay stepped `tickId`: its state and the server events it emitted.
-    package mutating func stepped(tickId: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
+    /// The tickless passes whose resulting state an entry reads, by pass index: the replay keeps
+    /// the state after each (`passStates` in `stepped`).
+    package func neededPassIndices() -> Set<Int> {
+        guard !ticklessPasses.isEmpty else { return [] }
+        return Set(entries.compactMap { entry in
+            guard Self.neededTick(entry) == -1 else { return nil }
+            let count = passesBefore(Self.readSequence(entry))
+            return count > 0 ? count - 1 : nil
+        })
+    }
+
+    /// How many tickless passes ran before a read at keeper sequence `sequence`. A pass numbers
+    /// at least one input from its `sequenceBefore` on, so a read at `sequence` follows exactly
+    /// the passes that started below it.
+    private func passesBefore(_ sequence: Int64) -> Int {
+        ticklessPasses.prefix { $0.sequenceBefore < sequence }.count
+    }
+
+    private static func readSequence(_ entry: ReevaluationSyncStreamEntry) -> Int64 {
+        switch entry {
+        case .output(let output): return output.sequence
+        case .marker(let marker): return marker.sequence
+        }
+    }
+
+    /// `passStates`: on a tickless land, the state after each needed pass of the tick.
+    package mutating func stepped(tickId: Int64, state: State, events: [ReevaluationRecordedServerEvent], passStates: [Int: State] = [:]) {
         guard skipReason == nil, malformed == nil, shadow.mismatch == nil else { return }
+        self.passStates.merge(passStates) { _, new in new }
         lastSteppedTick = tickId
         if neededCounts[tickId] != nil {
             window[tickId] = state
@@ -843,7 +877,12 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             let needed = Self.neededTick(entry)
             if let needed, needed > lastSteppedTick { return }
             let state: State?
-            if let needed {
+            let passes = needed == -1 ? passesBefore(Self.readSequence(entry)) : 0
+            if passes > 0 {
+                // A tickless entry read after a pass: its state is there once tick 0 is stepped.
+                guard lastSteppedTick >= 0 else { return }
+                state = passStates[passes - 1]
+            } else if let needed {
                 state = needed == -1 ? (initializeApplied ? afterInitialize : beforeInitialize) : window[needed]
             } else {
                 state = nil
