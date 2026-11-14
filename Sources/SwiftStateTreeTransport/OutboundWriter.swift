@@ -66,7 +66,13 @@ struct OutboundElement: Sendable {
     /// Sessions to close once `frames` are queued in the transport, behind them
     /// (`Transport.closeSessionAfterQueuedFrames`): a closing error frame reaches the
     /// connection before the close.
-    var closingSessions: [SessionID] = []
+    var closingSessions: [ClosingSession] = []
+}
+
+/// A session a writer element closes behind its frames, and the connection it means (nil: any).
+struct ClosingSession: Sendable, Equatable {
+    let sessionID: SessionID
+    let generation: UInt64?
 }
 
 /// Lock-protected counters shared by the writer and its consumer task (which must not retain
@@ -182,8 +188,8 @@ final class OutboundWriter: @unchecked Sendable {
                 if Task.isCancelled { break }
                 let start = ContinuousClock.now
                 await transport.sendSessionFrames(element.frames)
-                for sessionID in element.closingSessions {
-                    await transport.closeSessionAfterQueuedFrames(sessionID)
+                for closing in element.closingSessions {
+                    await transport.closeSessionAfterQueuedFrames(closing.sessionID, generation: closing.generation)
                 }
                 onSent?(ContinuousClock.now - start, element.frames.count)
                 counters.sent(bytes: element.frames.reduce(0) { $0 + $1.data.count }, isSyncCycle: element.isSyncCycle)
@@ -199,7 +205,7 @@ final class OutboundWriter: @unchecked Sendable {
     /// Enqueues one element (frames in send order). Synchronous. `isSyncCycle` marks a sync
     /// cycle's frames, counted in `OutboundBacklog.syncCycleElements` (sync back-pressure).
     @discardableResult
-    func enqueue(_ frames: [SessionFrame], isSyncCycle: Bool = false, closingSessions: [SessionID] = []) -> OutboundEnqueueResult {
+    func enqueue(_ frames: [SessionFrame], isSyncCycle: Bool = false, closingSessions: [ClosingSession] = []) -> OutboundEnqueueResult {
         guard !frames.isEmpty else { return .accepted }
         let bytes = frames.reduce(0) { $0 + $1.data.count }
 

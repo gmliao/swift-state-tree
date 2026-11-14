@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SwiftStateTree
+@_spi(Testing) @testable import SwiftStateTree
 @testable import GameContent
 
 /// What stopping the players' MoveTo does to a land (#469). network-impairment's load clients send
@@ -59,7 +59,7 @@ struct HeroDefenseMoveToStopTests {
         )
         let landID = "hero-defense:moveto-\(land)"
         await keeper.setLandID(landID)
-        let ids = (0..<players).map { (PlayerID("p\($0)"), ClientID("c\($0)"), SessionID("s\($0)")) }
+        let ids = (0..<players).map { (PlayerID("p\($0)"), ClientID("c\($0)"), SessionID(fixed: "s\($0)")) }
         for (player, client, session) in ids {
             try await keeper.join(playerID: player, clientID: client, sessionID: session)
         }

@@ -59,7 +59,7 @@ Server 必須提供 conform `WebSocketConnection` 的型別（send/receive 與 c
 | 步驟 | 動作 |
 |------|------|
 | 1 | 建立 `WebSocketTransport`，並將 `delegate` 設為你的 `TransportAdapter`（或對應物）。 |
-| 2 | WebSocket upgrade 時：建立 `SessionID`，取得 path 與完整 URI，呼叫你的 `AuthInfoResolverProtocol.resolve(path:uri:)`（或略過 auth 傳 `nil`）。 |
+| 2 | WebSocket upgrade 時：以 `SessionID.mint()` 產生此連線的 ID，取得 path 與完整 URI，呼叫你的 `AuthInfoResolverProtocol.resolve(path:uri:)`（或略過 auth 傳 `nil`）。 |
 | 3 | 呼叫 `transport.handleConnection(sessionID: sessionID, connection: yourConnection, authInfo: resolvedAuthInfo)`。 |
 | 4 | （可選）用框架的 router 提供 `/schema` 與 admin 路由。 |
 | 5 | （可選）若需要 JWT，在 auth resolver 內使用 `TokenValidatorProtocol`（例如 SwiftStateTreeNIO 的 `DefaultJWTAuthValidator`）。 |

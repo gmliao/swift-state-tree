@@ -477,12 +477,21 @@ public actor WebSocketTransport: Transport {
     }
 
     /// Maps a player to a session for `.player` targets, and returns the session's current
-    /// connection generation (`nil` when the session is not connected).
+    /// connection generation. A session that is not connected (never was, or its disconnect
+    /// cleanup already ran) is not mapped and gets `nil` (#549): the cleanup that would remove
+    /// the mapping has passed, so the mapping would never be removed. The check is the live
+    /// queue, not `isHeld`, which also counts a session whose disconnect is still running.
     @discardableResult
     public func registerSession(_ sessionID: SessionID, for playerID: PlayerID) -> UInt64? {
+        guard let queue = sessionQueues[sessionID] else { return nil }
         playerSessions[playerID, default: []].insert(sessionID)
         lastMissingPlayerLogAt.removeValue(forKey: playerID)
-        return sessionQueues[sessionID]?.generation
+        return queue.generation
+    }
+
+    /// Test hook: the sessions mapped to `playerID`.
+    func playerSessionsForTesting(_ playerID: PlayerID) -> Set<SessionID> {
+        playerSessions[playerID] ?? []
     }
 
     /// Returns once every current session's drain has handed its connection the frames queued
@@ -532,19 +541,26 @@ public actor WebSocketTransport: Transport {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout)
     }
 
+    /// Only while the session's connection is the one with `generation` (nil: any); its delayed
+    /// close (the bound) checks the generation again.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?) async {
+        closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, generation: generation)
+    }
+
     /// `closeSessionAfterQueuedFrames(_:)` with an explicit bound (tests).
-    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, timeout: Duration) {
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, timeout: Duration, generation: UInt64? = nil) {
+        if let generation, sessionQueues[sessionID]?.generation != generation { return }
         guard var queue = sessionQueues[sessionID], !queue.closeMarkerYielded else { return }
         queue.closeMarkerYielded = true
         sessionQueues[sessionID] = queue
         if case .terminated = queue.continuation.yield(.close) {
             // The drain already ended (a failed send): nothing more can be written.
-            Task { [weak self] in await self?.closeSession(sessionID) }
+            Task { [weak self] in await self?.closeSession(sessionID, with: .normal, generation: generation) }
             return
         }
         Task { [weak self] in
             try? await safeTaskSleep(for: timeout)
-            await self?.closeSession(sessionID)
+            await self?.closeSession(sessionID, with: .normal, generation: generation)
         }
     }
 

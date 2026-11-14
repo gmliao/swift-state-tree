@@ -67,16 +67,23 @@ extension TransportAdapter {
     /// the close can't overtake the frame. Later frames for the session are dropped. On NIO the
     /// frame is handed to the channel before the close; a client that stopped reading may still
     /// not receive it.
-    func sendFinalFrameAndClose(_ data: Data, to sessionID: SessionID) {
-        let transport = self.transport
+    ///
+    /// The frame and every close carry the session's connection generation, `generation` or else
+    /// the one recorded for it, so none of them reaches a later connection that reuses the ID
+    /// (#531). With neither, they act by ID.
+    func sendFinalFrameAndClose(_ data: Data, to sessionID: SessionID, generation: UInt64? = nil) {
+        let generation = generation ?? connectionGenerations[sessionID]
         guard !endedSessions.contains(sessionID) else {
-            Task { await transport.closeSession(sessionID) }
+            closeSessionDetached(sessionID, generation: generation)
             return
         }
-        let result = outboundWriter.enqueue([sessionFrame(data, to: sessionID)], closingSessions: [sessionID])
+        let frame = SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)
+        let result = outboundWriter.enqueue(
+            [frame], closingSessions: [ClosingSession(sessionID: sessionID, generation: generation)]
+        )
         endedSessions.insert(sessionID)
         if result != .accepted {
-            Task { await transport.closeSession(sessionID) }
+            closeSessionDetached(sessionID, generation: generation)
         }
     }
 

@@ -366,6 +366,14 @@ export class RowEntryProtocolError extends Error {
  */
 export const INVALID_ROW_ENTRY_CLOSE_CODE = 4013
 
+/**
+ * The close code the server sends when the land failed (#535): a sync value or frame didn't
+ * convert or encode, or a handler threw after writing synced state, and the land instance was
+ * ended. The instance is gone; a join for the same land ID gets a new one. Don't retry the old
+ * instance. 4015 is unassigned.
+ */
+export const LAND_FAILED_CLOSE_CODE = 4016
+
 /** The longest close reason a WebSocket close frame carries, in UTF-8 bytes. */
 const MAX_CLOSE_REASON_BYTES = 123
 

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 @testable import GameContent
 
 @Suite("Resolver test land (#65)")
@@ -53,7 +53,7 @@ struct ResolverTestLandTests {
             services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0, deadlineMs: 1000)),
             autoStartLoops: false
         )
-        let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID("s1")
+        let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID(fixed: "s1")
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
         func message(_ action: CallServiceAction) async -> String? {
             let envelope = ActionEnvelope(typeIdentifier: String(describing: CallServiceAction.self), payload: AnyCodable(action))
@@ -133,7 +133,7 @@ struct ResolverTestLandTests {
         )
         let player = PlayerID("p1")
         let client = ClientID("c1")
-        let session = SessionID("s1")
+        let session = SessionID(fixed: "s1")
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
 
         func send(_ action: CallServiceAction) async throws -> AnyCodable {
@@ -172,7 +172,7 @@ struct ResolverTestLandTests {
                 autoStartLoops: false
             )
         }
-        let p = PlayerID("p1"), c = ClientID("c1"), s = SessionID("s1")
+        let p = PlayerID("p1"), c = ClientID("c1"), s = SessionID(fixed: "s1")
 
         let ok = keeper(join: 0, leave: 0)
         try await ok.join(playerID: p, clientID: c, sessionID: s)
@@ -205,7 +205,7 @@ struct ResolverTestLandTests {
         let leaveState = await failingLeave.currentState()
         #expect(leaveState.joins == 1 && leaveState.leaves == 0)
         // The player is gone anyway: a new join is a first join again.
-        try await failingLeave.join(playerID: p, clientID: c, sessionID: SessionID("s2"))
+        try await failingLeave.join(playerID: p, clientID: c, sessionID: SessionID(fixed: "s2"))
         await failingLeave.stepTickOnce()
         #expect(await failingLeave.currentState().joins == 2)
     }
