@@ -116,7 +116,7 @@ struct InitialSyncBehindCommitTests {
             let message = TransportMessage.action(requestID: "set-\(total)", action: envelope)
             await adapter.onMessage(try JSONEncoder().encode(message), from: observer.session)
             await adapter.syncNow()
-            #expect(await adapter.waitForOutboundDrain())
+            #expect(await adapter.waitForSyncQuiescenceForTesting())
         }
 
         try await connect(observer)
