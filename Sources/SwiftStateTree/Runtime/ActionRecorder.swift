@@ -205,7 +205,12 @@ public enum ReevaluationRecordVersion {
     /// already (all ASCII is), so a 3.2 record is still read; one that holds text in another
     /// form can hash differently on replay, and a state hash mismatch there is reported as not
     /// comparable (`hashIncomparability(recorded:holdsNonNFCText:)`).
-    public static let current = "3.3"
+    /// 3.4 numbers a tickless land's passes (`ReevaluationRecordedPass.ordinal`), records the
+    /// pass a sync output or marker read the state after (`afterPass`, #563), and records the
+    /// failure that ended the land (`ReevaluationTickFrame.landFailure`, #535 D9). A 3.3 record
+    /// is still read: its tickless sync outputs can't be located among the passes, and are
+    /// reported as not verified.
+    public static let current = "3.4"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as
@@ -252,6 +257,10 @@ public enum ReevaluationRecordVersion {
 
     /// The first 3.x minor whose map keys and `PlayerID`s are NFC on the wire and in hashes (#446).
     public static let nfcKeysMinor = 3
+
+    /// The first 3.x minor that numbers a tickless land's passes and records the pass each sync
+    /// output and marker read after (#563), and the failure that ended the land (#535 D9).
+    public static let passOrdinalMinor = 4
 
     /// Why a state hash mismatch in a record written as `recorded` does not mean a replay
     /// difference, or nil when it does: the record is older than 3.3 and holds text that is not
@@ -326,6 +335,13 @@ public enum ReevaluationRecordVersion {
 
     /// Whether `recorded` is a 2.x version before `2.<minor>` (3.x has every 2.x change).
     /// A missing or malformed version is not.
+    /// Whether `recorded` is older than 3.`minor` (any 2.x is). A missing or malformed version
+    /// is not.
+    static func isBefore3(_ recorded: String?, minor: Int) -> Bool {
+        guard let parsed = recorded.flatMap(parse) else { return false }
+        return parsed.major < 3 || (parsed.major == 3 && parsed.minor < minor)
+    }
+
     static func isBefore(_ recorded: String?, minor: Int) -> Bool {
         guard let parsed = recorded.flatMap(parse) else { return false }
         return parsed.major < 2 || (parsed.major == 2 && parsed.minor < minor)
@@ -417,10 +433,14 @@ public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
     /// The applied inputs' sequence numbers, in apply order, across actions, client events and
     /// lifecycle events: one counter numbers all three, so a sequence names one input.
     public let inputs: [Int64]
+    /// The pass's number on its land, from 1 (record format 3.4, #563): the number a sync output
+    /// read after it records as `afterPass`. Nil in an older record.
+    public let ordinal: Int64?
 
-    public init(sequenceBefore: Int64, inputs: [Int64]) {
+    public init(sequenceBefore: Int64, inputs: [Int64], ordinal: Int64? = nil) {
         self.sequenceBefore = sequenceBefore
         self.inputs = inputs
+        self.ordinal = ordinal
     }
 }
 
@@ -450,6 +470,9 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     public let passes: [ReevaluationRecordedPass]
     /// Server inputs applied in this tick (3.2 on, #387; empty in older records).
     public let serverInputs: [ReevaluationRecordedServerInput]
+    /// The failure that ended the land (3.4 on, #535 D9), in the frame of its tick (frame 0 on
+    /// a tickless land, with its pass). Replay stops at its position. Nil otherwise.
+    public let landFailure: LandFailure?
 
     public init(
         tickId: Int64,
@@ -464,7 +487,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         syncMarkers: [ReevaluationRecordedSyncMarker] = [],
         initialize: ReevaluationRecordedInitialize? = nil,
         passes: [ReevaluationRecordedPass] = [],
-        serverInputs: [ReevaluationRecordedServerInput] = []
+        serverInputs: [ReevaluationRecordedServerInput] = [],
+        landFailure: LandFailure? = nil
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -479,6 +503,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         self.initialize = initialize
         self.passes = passes
         self.serverInputs = serverInputs
+        self.landFailure = landFailure
     }
 
     public init(from decoder: Decoder) throws {
@@ -496,6 +521,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         initialize = try container.decodeIfPresent(ReevaluationRecordedInitialize.self, forKey: .initialize)
         passes = try container.decodeIfPresent([ReevaluationRecordedPass].self, forKey: .passes) ?? []
         serverInputs = try container.decodeIfPresent([ReevaluationRecordedServerInput].self, forKey: .serverInputs) ?? []
+        landFailure = try container.decodeIfPresent(LandFailure.self, forKey: .landFailure)
     }
 
     /// The frame's sequence watermarks, or nil when the frame carries none (older records, tickless lands).
@@ -520,7 +546,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         syncMarkers: [ReevaluationRecordedSyncMarker]? = nil,
         initialize: ReevaluationRecordedInitialize? = nil,
         passes: [ReevaluationRecordedPass]? = nil,
-        serverInputs: [ReevaluationRecordedServerInput]? = nil
+        serverInputs: [ReevaluationRecordedServerInput]? = nil,
+        landFailure: LandFailure? = nil
     ) -> ReevaluationTickFrame {
         ReevaluationTickFrame(
             tickId: tickId,
@@ -535,14 +562,15 @@ public struct ReevaluationTickFrame: Codable, Sendable {
             syncMarkers: syncMarkers ?? self.syncMarkers,
             initialize: initialize ?? self.initialize,
             passes: passes ?? self.passes,
-            serverInputs: serverInputs ?? self.serverInputs
+            serverInputs: serverInputs ?? self.serverInputs,
+            landFailure: landFailure ?? self.landFailure
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
         case sequenceBeforeInputs, sequenceBeforeTickHandler
-        case syncOutputs, syncMarkers, initialize, passes, serverInputs
+        case syncOutputs, syncMarkers, initialize, passes, serverInputs, landFailure
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -563,6 +591,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         if !passes.isEmpty { try container.encode(passes, forKey: .passes) }
         // Omitted when empty, so frames without server inputs stay as before.
         if !serverInputs.isEmpty { try container.encode(serverInputs, forKey: .serverInputs) }
+        try container.encodeIfPresent(landFailure, forKey: .landFailure)
     }
 }
 
@@ -585,6 +614,8 @@ public struct ReevaluationTickRecord: Sendable {
     public var passes: [ReevaluationRecordedPass]
     /// Server inputs applied in this record's turn (#387).
     public var serverInputs: [ReevaluationRecordedServerInput]
+    /// The failure that ended the land (#535 D9), recorded once, in the failing segment.
+    public var landFailure: LandFailure?
 
     public init(
         tickId: Int64,
@@ -600,7 +631,8 @@ public struct ReevaluationTickRecord: Sendable {
         syncMarkers: [ReevaluationRecordedSyncMarker] = [],
         initialize: ReevaluationRecordedInitialize? = nil,
         passes: [ReevaluationRecordedPass] = [],
-        serverInputs: [ReevaluationRecordedServerInput] = []
+        serverInputs: [ReevaluationRecordedServerInput] = [],
+        landFailure: LandFailure? = nil
     ) {
         self.tickId = tickId
         self.actions = actions
@@ -616,6 +648,7 @@ public struct ReevaluationTickRecord: Sendable {
         self.initialize = initialize
         self.passes = passes
         self.serverInputs = serverInputs
+        self.landFailure = landFailure
     }
 }
 
@@ -625,7 +658,7 @@ extension ReevaluationTickRecord {
         actions.isEmpty && clientEvents.isEmpty && lifecycleEvents.isEmpty && serverEvents.isEmpty
             && stateHash == nil && sequenceBeforeInputs == nil && sequenceBeforeTickHandler == nil
             && syncOutputs.isEmpty && syncMarkers.isEmpty && initialize == nil && passes.isEmpty
-            && serverInputs.isEmpty
+            && serverInputs.isEmpty && landFailure == nil
     }
 }
 
@@ -645,7 +678,8 @@ extension ReevaluationTickFrame {
             syncMarkers: syncMarkers + record.syncMarkers,
             initialize: record.initialize,
             passes: passes + record.passes,
-            serverInputs: serverInputs + record.serverInputs
+            serverInputs: serverInputs + record.serverInputs,
+            landFailure: record.landFailure
         )
     }
 }

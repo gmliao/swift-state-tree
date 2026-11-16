@@ -4266,6 +4266,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func recordSyncStream(_ digest: SyncOutputDigestInput, broadcastCommitted: Bool, read: SyncOutputRead) {
         let observedTickId = read.position?.observedTickId
         let sequence = read.position?.sequence ?? -1
+        let afterPass = read.position?.afterPass
         // A resynced player's view restarts: a clear before this plan's output, for the players
         // whose snapshot committed (a seed follows). One whose snapshot didn't encode keeps its
         // view, live and in the stream.
@@ -4322,6 +4323,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         observedTickId: observedTickId,
                         streamIndex: streamIndex,
                         sequence: sequence,
+                        afterPass: afterPass,
                         broadcastHash: broadcastHash,
                         perPlayerHash: perPlayerHash,
                         perPlayerUnverified: perPlayerUnverified,
@@ -4357,6 +4359,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         observedTickId: observedTickId,
                         streamIndex: streamIndex,
                         sequence: sequence,
+                        afterPass: afterPass,
                         rejoin: rejoin,
                         viewHash: viewHash,
                         viewDrops: viewDrops,
@@ -4383,9 +4386,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard keeperRecordsSyncStream() else { return }
         syncStreamUnverifiedPlayers.remove(playerID)
         keeper.assumeIsolated { keeper in
-            let sequence = keeper.syncReadPosition().sequence
+            let position = keeper.syncReadPosition()
             keeper.recordSyncMarker(outsideTurn: outsideTurn) { streamIndex in
-                ReevaluationRecordedSyncMarker(kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex, sequence: sequence)
+                ReevaluationRecordedSyncMarker(
+                    kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex,
+                    sequence: position.sequence, afterPass: position.afterPass
+                )
             }
         }
     }

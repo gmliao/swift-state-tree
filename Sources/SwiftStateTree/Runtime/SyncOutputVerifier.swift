@@ -702,6 +702,9 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     private let hasInitializeMarker: Bool
     private var lastSteppedTick: Int64 = -1
     private let skipReason: String?
+    /// A tickless land's record from 3.4 on: entries are located by the pass they read after
+    /// (`afterPass`, #563), stepped per pass (`steppedPass`), not by tick.
+    private let locatesByPass: Bool
     private let eventsApplicable: Bool
     private var malformed: String?
     private let recordIsComplete: Bool
@@ -720,7 +723,8 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         metadata: ReevaluationRecordMetadata,
         stream: [ReevaluationSyncStreamEntry],
         completeness: ReevaluationRecordCompleteness = .complete,
-        incomparability: String? = nil
+        incomparability: String? = nil,
+        tickless: Bool = false
     ) {
         self.incomparability = incomparability
         recordIsComplete = completeness.isComplete
@@ -733,9 +737,12 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             skipReason = "record \(metadata.version ?? "unknown") predates syncConfig"
         } else if config?.fullSnapshot == true {
             skipReason = "full-snapshot strategy is not verified"
+        } else if tickless, ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor) {
+            skipReason = "record \(metadata.version ?? "unknown") predates pass ordinals: a tickless land's sync outputs are not located among its passes (#563)"
         } else {
             skipReason = nil
         }
+        locatesByPass = tickless
         let merged = config?.mergedBroadcastFrame ?? false
         shadow = SyncOutputShadow(mergedBroadcastFrame: merged)
         eventsApplicable = merged
@@ -753,7 +760,7 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         }
         initializeApplied = !hasInitializeMarker
         for entry in entries {
-            if let tick = Self.neededTick(entry), tick >= 0 {
+            if let tick = Self.neededTick(entry, byPass: locatesByPass), tick >= 0 {
                 neededCounts[tick, default: 0] += 1
             }
         }
@@ -772,6 +779,22 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
 
     /// The replay stepped `tickId`: its state and the server events it emitted.
     package mutating func stepped(tickId: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
+        // A record located by pass is stepped per pass (`steppedPass`).
+        guard !locatesByPass else { return }
+        step(key: tickId, state: state, events: events)
+    }
+
+    /// The replay applied a tickless land's pass `ordinal` (from 1): the state after it and the
+    /// server events it emitted (#563).
+    package mutating func steppedPass(ordinal: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
+        guard locatesByPass else { return }
+        step(key: ordinal - 1, state: state, events: events)
+    }
+
+    /// The state an entry needs is keyed by tick, or, located by pass, by ordinal - 1: an entry
+    /// read after pass k needs key k - 1, and one read before any pass needs -1, the state
+    /// around OnInitialize, as a tick land's entry read before tick 0.
+    private mutating func step(key tickId: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
         guard skipReason == nil, malformed == nil, shadow.mismatch == nil else { return }
         lastSteppedTick = tickId
         if neededCounts[tickId] != nil {
@@ -840,7 +863,11 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     private mutating func drain() {
         while next < entries.count, malformed == nil, shadow.mismatch == nil {
             let entry = entries[next]
-            let needed = Self.neededTick(entry)
+            if locatesByPass, Self.lacksPass(entry) {
+                malformed = "sync stream entry \(entry.streamIndex) of a tickless record has no afterPass"
+                return
+            }
+            let needed = Self.neededTick(entry, byPass: locatesByPass)
             if let needed, needed > lastSteppedTick { return }
             let state: State?
             if let needed {
@@ -894,12 +921,23 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         }
     }
 
-    /// The tick whose state the entry reads; nil when it reads none (clear, initialize).
-    private static func neededTick(_ entry: ReevaluationSyncStreamEntry) -> Int64? {
+    /// The key of the state the entry reads (`step`); nil when it reads none (clear,
+    /// initialize). By pass: the pass it read after, minus one.
+    private static func neededTick(_ entry: ReevaluationSyncStreamEntry, byPass: Bool) -> Int64? {
         switch entry {
-        case .output(let output): return output.observedTickId ?? -1
+        case .output(let output):
+            return byPass ? (output.afterPass ?? 0) - 1 : (output.observedTickId ?? -1)
         case .marker(let marker):
-            return marker.kind == .seed ? (marker.observedTickId ?? -1) : nil
+            guard marker.kind == .seed else { return nil }
+            return byPass ? (marker.afterPass ?? 0) - 1 : (marker.observedTickId ?? -1)
+        }
+    }
+
+    /// An entry that reads state but records no pass (malformed in a record located by pass).
+    private static func lacksPass(_ entry: ReevaluationSyncStreamEntry) -> Bool {
+        switch entry {
+        case .output(let output): return output.afterPass == nil
+        case .marker(let marker): return marker.kind == .seed && marker.afterPass == nil
         }
     }
 }

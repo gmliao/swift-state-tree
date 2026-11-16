@@ -165,7 +165,11 @@ func ticklessRecordKeepsEveryPassEvents() async throws {
     let actionPasses = try await source.getPasses(for: 0).filter { pass in
         pass.inputs.allSatisfy(actionSequences.contains)
     }
-    #expect(actionPasses == actionSequences.map { ReevaluationRecordedPass(sequenceBefore: $0 + 1, inputs: [$0]) })
+    #expect(actionPasses.map { ReevaluationRecordedPass(sequenceBefore: $0.sequenceBefore, inputs: $0.inputs) }
+        == actionSequences.map { ReevaluationRecordedPass(sequenceBefore: $0 + 1, inputs: [$0]) })
+    // Every pass is numbered, from 1, in record order (3.4, #563).
+    let ordinals = try await source.getPasses(for: 0).map(\.ordinal)
+    #expect(ordinals == (1 ... Int64(ordinals.count)).map { Optional($0) })
 
     // Replay applies the passes in order and restores the counter before each, so the events
     // match exactly, sequences included (#268, #321).

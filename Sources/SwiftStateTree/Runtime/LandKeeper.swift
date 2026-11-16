@@ -366,6 +366,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The last recorded output's `observedTickId` and how many outputs were recorded after it
     /// (`ReevaluationRecordedSyncOutput.index`).
     private var syncOutputIndexCursor: (observedTickId: Int64?, count: Int) = (nil, 0)
+    /// The ordinal of a tickless land's last pass, 0 before its first (#563). Replay counts the
+    /// same passes; a sync output records the value it read after (`afterPass`).
+    private var passOrdinal: Int64 = 0
+    /// The ordinal the pass applying now will take, between `beginPass` and `takePassOrdinal`
+    /// (one synchronous segment); nil otherwise.
+    private var passInProgress: Int64?
 
     /// Source for reading recorded inputs during re-evaluation (only in .reevaluation mode).
     private var reevaluationSource: (any ReevaluationSource)?
@@ -1086,7 +1092,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: ctx.tickId ?? lastCommittedTickId
             )
             let initializeMarker = initializeIsTurn && reevaluationRecorder != nil
-                ? ReevaluationRecordedSyncMarker(kind: .initialize, streamIndex: takeSyncStreamIndex(), sequence: sequence)
+                ? ReevaluationRecordedSyncMarker(
+                    kind: .initialize, streamIndex: takeSyncStreamIndex(), sequence: sequence,
+                    afterPass: isTickless ? passOrdinal : nil
+                )
                 : nil
             // In-turn sync: OnInitialize is a turn; its events and sync request go out in it.
             if initializeIsTurn, let transport {
@@ -3674,8 +3683,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         legacyPassOwner = nil
         let executingTickId = executingTickIdForPendingItems()
         let sequenceBefore = outputCollector.nextSequence
+        beginPass()
         let application = applyInputs(readyPendingItemsInOrder(), executingTickId: executingTickId)
         let applied = application.applied
+        // Numbered in the apply segment, before any read after it (#563).
+        let passOrdinal = takePassOrdinal(applied: applied)
         for (sequence, outcome) in application.outcomes where legacyPassCallers.contains(sequence) {
             legacyPassResults[sequence] = outcome
             if let owner { legacyPassAppliedBy[sequence] = owner }
@@ -3687,6 +3699,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await finishTicklessLegacyPass(
                 applied: applied,
                 sequenceBefore: sequenceBefore,
+                passOrdinal: passOrdinal,
                 executingTickId: executingTickId
             )
             for (sequence, outcome) in jobOutcomes {
@@ -3751,6 +3764,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func finishTicklessLegacyPass(
         applied: AppliedInputs,
         sequenceBefore: Int64,
+        passOrdinal: Int64?,
         executingTickId: Int64
     ) async {
         // All tickless passes share one tick id, so the events and sync requests are taken
@@ -3765,7 +3779,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if !applied.isEmpty || !events.isEmpty {
                 var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: events)
                 if !applied.appliedOrder.isEmpty {
-                    record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder)]
+                    record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal)]
                 }
                 submission = enqueueRecorderSubmission(record, endsTurn: true)
             } else {
@@ -3946,7 +3960,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         var named: Set<Int64> = []
         var previousWatermark = Int64.min
+        // From record format 3.4 each pass carries its ordinal (#563); they must continue this
+        // land's count with no gap, as the live land numbered them.
+        let ordinalBase = passOrdinal
         for (index, pass) in passes.enumerated() where mismatch == nil {
+            if let ordinal = pass.ordinal, ordinal != ordinalBase + Int64(index) + 1 {
+                mismatch = "pass \(index) is numbered \(ordinal), expected \(ordinalBase + Int64(index) + 1)"
+            }
             if pass.sequenceBefore < previousWatermark {
                 mismatch = "pass \(index) starts at sequence \(pass.sequenceBefore), before the previous pass's \(previousWatermark)"
             }
@@ -3995,6 +4015,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             // Replay has no callers; this clears the turn's outcomes (`inputTurnResults`).
             resumeInputTurnWaiters(for: outcome.appliedItems)
+            // The state after the pass, for what the record read after it (`afterPass`, #563).
+            if let observer = replayPassObserver {
+                await observer(passOrdinal, state)
+            }
         }
         if let mismatch {
             recordedPassMismatches[tickId] = mismatch
@@ -4006,6 +4030,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Every input loaded for the frame, applied or (after a mismatch) not, in one scan.
         removePendingItems(inputs)
         return syncBroadcastOnly
+    }
+
+    /// Re-evaluation: called after each replayed tickless pass with its ordinal and the state after
+    /// it (#563), so the sync-output check locates what the record read after that pass.
+    private var replayPassObserver: (@Sendable (Int64, State) async -> Void)?
+
+    /// Installs `replayPassObserver` (re-evaluation only).
+    package func setReplayPassObserver(_ observer: (@Sendable (Int64, State) async -> Void)?) {
+        replayPassObserver = observer
     }
 
     /// Re-evaluation: why each replayed tick's record can't be reproduced: its passes don't match
@@ -4662,7 +4695,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Where a plan reading the state now reads it.
     package func syncReadPosition() -> SyncReadPosition {
-        SyncReadPosition(observedTickId: lastCommittedTickId, sequence: outputCollector.nextSequence)
+        SyncReadPosition(
+            observedTickId: lastCommittedTickId,
+            sequence: outputCollector.nextSequence,
+            afterPass: isTickless ? passOrdinal : nil
+        )
+    }
+
+    /// Numbers a tickless land's pass (#563): called in the synchronous segment that applied
+    /// `applied`, before anything reads the state after it, never after an await. Nil for a pass
+    /// that applied nothing (no pass is recorded) and on a tick land (no passes).
+    private func takePassOrdinal(applied: AppliedInputs) -> Int64? {
+        passInProgress = nil
+        guard isTickless, !applied.appliedOrder.isEmpty else { return nil }
+        passOrdinal += 1
+        return passOrdinal
+    }
+
+    /// Marks a tickless pass as applying, so a failure while it applies names it (`failLand`).
+    /// `takePassOrdinal` ends it in the same segment.
+    private func beginPass() {
+        passInProgress = isTickless ? passOrdinal + 1 : nil
     }
 
     /// The kind of the turn whose sync phase is running (`tick` or `syncOnly`).
@@ -4976,10 +5029,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func failLand(_ reported: LandFailure) {
+        // A tickless land counts by pass (#535 D9): the pass applying now, or the last one.
+        let pass: Int? = isTickless ? (passInProgress ?? (passOrdinal > 0 ? passOrdinal : nil)).map(Int.init) : nil
         let position = reported.position.tickId == nil && reported.position.pass == nil
             ? LandFailurePosition(
                 tickId: lastCommittedTickId >= 0 ? lastCommittedTickId : nil,
-                sequence: reported.position.sequence,
+                pass: pass,
+                sequence: reported.position.sequence ?? outputCollector.nextSequence,
                 stage: reported.position.stage
             )
             : reported.position
@@ -5003,6 +5059,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             "position": .string(failure.position.description),
             "error": .string(failure.detail),
         ])
+        // The terminal entry (#535 D9), in the failing segment: before every teardown entry. It
+        // goes into the frame of the executing tick (frame 0 on a tickless land), where replay
+        // stops.
+        enqueueRecorderSubmission(ReevaluationTickRecord(
+            tickId: isTickless ? 0 : max(nextTickId - 1, 0),
+            landFailure: failure
+        ))
         dropPendingInputs(reason: "landFailed")
         cancelAllActionJobs()
         releaseHeldInputsForDrain()
@@ -5148,10 +5211,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnProbeForTesting?("input-batch-\(batch.count)")
         let executingTickId = executingTickIdForPendingItems()
         let sequenceBefore = outputCollector.nextSequence
+        beginPass()
         // A failing input fails alone (its caller gets its error); the rest of the batch goes
         // on (`applyInputs`). Its events were dropped there.
         let application = applyInputs(batch, executingTickId: executingTickId, removingFromQueue: removingFromQueue)
         let applied = application.applied
+        // Numbered in the segment that applied it, before this turn's sync phase reads (#563).
+        let passOrdinal = takePassOrdinal(applied: applied)
         // Only the consumed prefix is this turn's: the suffix was dropped (`landClosed`) by a
         // failure's settle, and its callers must not be resumed again with a success (#535).
         let consumedItems = Array(batch.prefix(application.consumed))
@@ -5172,7 +5238,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
         // A tickless land's turn is one pass (#325, #321).
         if !applied.appliedOrder.isEmpty {
-            record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder)]
+            record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal)]
         }
         return InputTurnOutcome(record: record, appliedItems: consumedItems, syncBroadcastOnly: applied.shouldSyncBroadcastOnly)
     }

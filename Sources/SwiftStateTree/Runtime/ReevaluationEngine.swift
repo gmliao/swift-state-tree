@@ -67,6 +67,9 @@ public enum ReevaluationEngine {
         /// applied (it is found before any, unless an input left the queue between passes):
         /// each such tick fails server-event verification.
         public var recordedPassMismatches: [Int64: String] = [:]
+        /// The failure that ended the live land (record format 3.4, #535 D9): the replay ended at
+        /// its tick, as the live run did. Nil when the land didn't fail or the record is older.
+        public var liveFailure: LandFailure?
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`),
         /// with every tick of `recordedPassMismatches` failed.
@@ -265,15 +268,29 @@ public enum ReevaluationEngine {
             hashDefinition: hashDefinition,
             hashIncomparability: hashIncomparability
         )
-        var syncOutputDriver = SyncOutputReplayDriver<State>(
+        // A tickless land's record holds its passes in frame 0; from 3.4 its sync stream is
+        // located by pass, stepped after each replayed pass (#563).
+        let tickless = maxTickId == 0 ? !(try await source.getPasses(for: 0)).isEmpty : false
+        let syncOutputs = SyncOutputDriverBox(SyncOutputReplayDriver<State>(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
-            incomparability: nfcIncomparability
-        )
-        syncOutputDriver.begin(
+            incomparability: nfcIncomparability, tickless: tickless
+        ))
+        syncOutputs.driver.begin(
             beforeInitialize: initialState,
             afterInitialize: stateAfterInitialize,
             initializeEvents: initializeEvents
         )
+        if tickless {
+            await keeper.setReplayPassObserver { ordinal, state in
+                let events = await capturingSink.takeEmittedEvents(for: 0)
+                syncOutputs.passEvents += events
+                syncOutputs.driver.steppedPass(ordinal: ordinal, state: state, events: events)
+            }
+        }
+        // A land that failed live ends at its failure (#535 D9): replay stops at that tick (a
+        // tickless land's passes end there too: nothing was applied after it).
+        let landFailure = try await source.getLandFailure()
+        let lastTickId = landFailure.map { min(maxTickId, $0.tickId) } ?? maxTickId
         
         let snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -293,8 +310,8 @@ public enum ReevaluationEngine {
         var serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])] = []
         var watermarkedTicks: Set<Int64> = []
         var recordedPassMismatches: [Int64: String] = [:]
-        if maxTickId >= 0 {
-            for tickId in 0...maxTickId {
+        if lastTickId >= 0 {
+            for tickId in 0...lastTickId {
                 await keeper.stepTickOnce()
                 let state = await keeper.currentState()
 
@@ -331,8 +348,9 @@ public enum ReevaluationEngine {
                     }
                 }
 
-                let emittedEvents = await capturingSink.takeEmittedEvents(for: tickId)
-                syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedEvents)
+                // A tickless pass's events were taken after it (`setReplayPassObserver`).
+                let emittedEvents = syncOutputs.takePassEvents() + (await capturingSink.takeEmittedEvents(for: tickId))
+                syncOutputs.driver.stepped(tickId: tickId, state: state, events: emittedEvents)
                 let recordedEvents = try await source.getServerEvents(for: tickId)
                 // Every record this build reads (2.5 on) stores a tick's server events whenever
                 // the live run emitted any, so an empty recorded list means none were emitted and
@@ -374,7 +392,7 @@ public enum ReevaluationEngine {
             serverEventMismatches: serverEventMismatches,
             watermarkedTicks: watermarkedTicks,
             syncStreamPresence: try await source.getSyncStreamPresence(),
-            syncOutput: syncOutputDriver.finish(),
+            syncOutput: syncOutputs.driver.finish(),
             initialize: initialize,
             hashIncomparability: hashIncomparability,
             hashDefinition: hashDefinition,
@@ -382,6 +400,7 @@ public enum ReevaluationEngine {
         )
         result.recordCompleteness = try await source.getRecordCompleteness()
         result.recordedPassMismatches = recordedPassMismatches
+        result.liveFailure = landFailure?.failure
         return result
     }
     
@@ -483,3 +502,18 @@ public enum ReevaluationEngine {
     }
 }
 
+/// The sync-output driver and the events taken after each replayed tickless pass, shared with
+/// the keeper's pass observer. Used by one replay at a time, from the replay's own awaits only.
+private final class SyncOutputDriverBox<State: StateNodeProtocol>: @unchecked Sendable {
+    var driver: SyncOutputReplayDriver<State>
+    var passEvents: [ReevaluationRecordedServerEvent] = []
+
+    init(_ driver: SyncOutputReplayDriver<State>) {
+        self.driver = driver
+    }
+
+    func takePassEvents() -> [ReevaluationRecordedServerEvent] {
+        defer { passEvents.removeAll() }
+        return passEvents
+    }
+}

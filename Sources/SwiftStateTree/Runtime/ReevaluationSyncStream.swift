@@ -28,6 +28,10 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     public let streamIndex: UInt64
     /// Keeper output sequence when the plan read state (cross-check only).
     public let sequence: Int64
+    /// Tickless land: the ordinal of the last pass applied when the state was read, 0 before
+    /// any pass (record format 3.4, #563). Replay locates the entry by it. Nil on a tick land
+    /// and in an older record.
+    public let afterPass: Int64?
     /// Nil when the broadcast scope was not committed.
     public let broadcastHash: UInt64?
     /// One hash over (playerID, hash) pairs sorted by player ID, for the committed players with
@@ -74,6 +78,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         observedTickId: Int64?,
         streamIndex: UInt64,
         sequence: Int64,
+        afterPass: Int64? = nil,
         broadcastHash: UInt64? = nil,
         perPlayerHash: UInt64? = nil,
         perPlayerUnverified: [String]? = nil,
@@ -93,6 +98,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         self.observedTickId = observedTickId
         self.streamIndex = streamIndex
         self.sequence = sequence
+        self.afterPass = afterPass
         self.broadcastHash = broadcastHash
         self.perPlayerHash = perPlayerHash
         self.perPlayerUnverified = perPlayerUnverified
@@ -109,7 +115,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case index, turnKind, observedTickId, streamIndex, sequence, broadcastHash, perPlayerHash
+        case index, turnKind, observedTickId, streamIndex, sequence, afterPass, broadcastHash, perPlayerHash
         case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence, eventsNotQueued, eventsNotMerged
         case resetsKeyScopes, extractionDrops, encodeDropScopes, patches
     }
@@ -121,6 +127,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         observedTickId = try container.decodeIfPresent(Int64.self, forKey: .observedTickId)
         streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
         sequence = try container.decode(Int64.self, forKey: .sequence)
+        afterPass = try container.decodeIfPresent(Int64.self, forKey: .afterPass)
         broadcastHash = try container.decodeSyncHashIfPresent(forKey: .broadcastHash)
         perPlayerHash = try container.decodeSyncHashIfPresent(forKey: .perPlayerHash)
         perPlayerUnverified = try container.decodeIfPresent([String].self, forKey: .perPlayerUnverified)
@@ -144,6 +151,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         try container.encodeIfPresent(observedTickId, forKey: .observedTickId)
         try container.encode(streamIndex, forKey: .streamIndex)
         try container.encode(sequence, forKey: .sequence)
+        try container.encodeIfPresent(afterPass, forKey: .afterPass)
         try container.encodeSyncHashIfPresent(broadcastHash, forKey: .broadcastHash)
         try container.encodeSyncHashIfPresent(perPlayerHash, forKey: .perPlayerHash)
         try container.encodeIfPresent(perPlayerUnverified, forKey: .perPlayerUnverified)
@@ -247,6 +255,10 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
     public let observedTickId: Int64?
     public let streamIndex: UInt64
     public let sequence: Int64
+    /// Tickless land: the ordinal of the last pass applied when the state was read, 0 before
+    /// any pass (record format 3.4, #563). Replay locates the entry by it. Nil on a tick land
+    /// and in an older record.
+    public let afterPass: Int64?
     /// Seed only: a rejoin (reconnection) rather than a first join.
     public let rejoin: Bool
     /// Seed only: the per-player hash of the firstSync view; nil when `viewDrops` is not empty.
@@ -263,6 +275,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         observedTickId: Int64? = nil,
         streamIndex: UInt64,
         sequence: Int64,
+        afterPass: Int64? = nil,
         rejoin: Bool = false,
         viewHash: UInt64? = nil,
         viewDrops: [ViewDrop] = [],
@@ -273,6 +286,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         self.observedTickId = observedTickId
         self.streamIndex = streamIndex
         self.sequence = sequence
+        self.afterPass = afterPass
         self.rejoin = rejoin
         self.viewHash = viewHash
         self.viewDrops = viewDrops
@@ -280,7 +294,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, playerID, observedTickId, streamIndex, sequence, rejoin, viewHash, viewDrops, viewDropFields
+        case kind, playerID, observedTickId, streamIndex, sequence, afterPass, rejoin, viewHash, viewDrops, viewDropFields
     }
 
     public init(from decoder: Decoder) throws {
@@ -290,6 +304,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         observedTickId = try container.decodeIfPresent(Int64.self, forKey: .observedTickId)
         streamIndex = try container.decode(UInt64.self, forKey: .streamIndex)
         sequence = try container.decode(Int64.self, forKey: .sequence)
+        afterPass = try container.decodeIfPresent(Int64.self, forKey: .afterPass)
         rejoin = try container.decode(Bool.self, forKey: .rejoin)
         viewHash = try container.decodeSyncHashIfPresent(forKey: .viewHash)
         viewDrops = try container.decodeIfPresent([ViewDrop].self, forKey: .viewDrops) ?? []
@@ -303,6 +318,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         try container.encodeIfPresent(observedTickId, forKey: .observedTickId)
         try container.encode(streamIndex, forKey: .streamIndex)
         try container.encode(sequence, forKey: .sequence)
+        try container.encodeIfPresent(afterPass, forKey: .afterPass)
         try container.encode(rejoin, forKey: .rejoin)
         try container.encodeSyncHashIfPresent(viewHash, forKey: .viewHash)
         if !viewDrops.isEmpty {
@@ -415,14 +431,17 @@ public struct ReevaluationRecordedInitialize: Codable, Sendable {
     }
 }
 
-/// Where a sync plan read state: the keeper's `lastCommittedTickId` and output sequence, taken
-/// in the same job as the state.
+/// Where a sync plan read state: the keeper's `lastCommittedTickId` and output sequence, and on
+/// a tickless land the ordinal of the last pass applied (`afterPass`, #563), taken in the same
+/// job as the state.
 package struct SyncReadPosition: Sendable, Equatable {
     package let observedTickId: Int64
     package let sequence: Int64
+    package let afterPass: Int64?
 
-    package init(observedTickId: Int64, sequence: Int64) {
+    package init(observedTickId: Int64, sequence: Int64, afterPass: Int64? = nil) {
         self.observedTickId = observedTickId
         self.sequence = sequence
+        self.afterPass = afterPass
     }
 }
