@@ -167,7 +167,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[182446790,null,1,{\"at\":{\"v\":{\"x\":13000,\"y\":14000}},\"label\":\"f\"}]]",
+      "jsonFrame" : "[2,[182446790,null,1,{\"at\":[13000,14000],\"label\":\"f\"}]]",
       "logical" : {
         "at" : {
           "v" : {
@@ -177,16 +177,14 @@
         },
         "label" : "f"
       },
-      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSBoXaCoXjNMsihec02sKVsYWJlbKFm",
+      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSSzTLIzTawpWxhYmVsoWY=",
       "name" : "let-only struct",
       "path" : "/fixed",
       "wire" : {
-        "at" : {
-          "v" : {
-            "x" : 13000,
-            "y" : 14000
-          }
-        },
+        "at" : [
+          13000,
+          14000
+        ],
         "label" : "f"
       }
     },
@@ -727,6 +725,18 @@
         }
       },
       "ShapeFixed" : {
+        "properties" : {
+          "at" : {
+            "$ref" : "#/defs/Position2"
+          },
+          "label" : {
+            "type" : "string"
+          }
+        },
+        "required" : [
+          "at",
+          "label"
+        ],
         "type" : "object",
         "x-stateTree" : {
           "nodeKind" : "leaf",
@@ -1097,6 +1107,11 @@
           "byKey.*.v.x" : 778497866,
           "byKey.*.v.y" : 778498485,
           "fixed" : 182446790,
+          "fixed.at" : 597953670,
+          "fixed.at.v" : 4241795048,
+          "fixed.at.v.x" : 409913664,
+          "fixed.at.v.y" : 409913527,
+          "fixed.label" : 3690365494,
           "holder" : 1064988410,
           "holder.inner" : 227510565,
           "holder.inner.at" : 4249840644,
@@ -1153,7 +1168,7 @@
         }
       }
     },
-    "schemaHash" : "053956c48fba3714",
+    "schemaHash" : "584188f42bbb8fd5",
     "version" : "0.1.0",
     "x-stateTree" : {
       "atomicEncoding" : "positional"
