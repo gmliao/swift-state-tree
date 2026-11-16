@@ -77,6 +77,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | OnLeave 與 destroy handler | 失敗的 land 在失敗的 turn 內清除玩家，不執行 OnLeave；destroy handler 與存檔執行時看得到 `LandDestructionCause.failed` 與 `LandKeeper.failure`（`LandKeeper.swift:4892`）。host 停止時若在失敗的拆除之前先關閉某個 session，該 session 的 leave 仍會執行（`LandKeeper.swift:2397-2439`） | 失敗本身的拆除已符合；目標：host 的停止路徑在失敗的 land 上同樣略過 OnLeave（#535 PR 1 part B） |
+| 重新評估的錄製 | 失敗只錄一次，錄在其 tick 的 frame 中，就在結束 land 的 turn 片段內（`ReevaluationTickFrame.landFailure`，錄製格式 3.4）。Replay 停在該 tick 並回報它（`RunResult.liveFailure`）；見 [Reevaluation](reevaluation.zh-TW.md#pass-序號與-land-失敗34) | 已符合 |
 
 ## Close code
 

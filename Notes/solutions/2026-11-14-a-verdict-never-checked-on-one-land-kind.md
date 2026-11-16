@@ -32,7 +32,7 @@ The replay's sync-output check failed every tickless record. The first output af
 
 ## Fix
 
-The first fix placed a tick `-1` entry by its read sequence among tick 0's passes. It was wrong, and it was reverted before merge. An input takes its sequence at intake, while a pass's `sequenceBefore` is the counter when its turn starts. An event-free action's output therefore reads at its own pass's `sequenceBefore`, and the next pass can start at the same value, so the sequence can't break the tie. The current fix (#565) reports a tickless record's sync outputs as `skipped`, with the reason, instead of a false `failed`. An unambiguous placement (turn-record order, or a recorded pass index) is #563.
+The first fix placed a tick `-1` entry by its read sequence among tick 0's passes. It was wrong, and it was reverted before merge. An input takes its sequence at intake, while a pass's `sequenceBefore` is the counter when its turn starts. An event-free action's output therefore reads at its own pass's `sequenceBefore`, and the next pass can start at the same value, so the sequence can't break the tie. #565 reported a tickless record's sync outputs as `skipped`, with the reason, instead of a false `failed`. Record format 3.4 (#563) places them unambiguously: the live land numbers each tickless pass in the segment that applies it, and every output and seed records the pass it read after (`afterPass`). Replay steps the driver after each pass and locates entries by that number, so a 3.4 tickless record's sync outputs are verified. A tickless record older than 3.4 stays `skipped`, with the reason.
 
 ## Prevention
 
@@ -40,4 +40,4 @@ The first fix placed a tick `-1` entry by its read sequence among tick 0's passe
 - A position that is constant on one land kind can't locate anything there. When an entry's locator (here `observedTickId`) never changes on a land kind, the check needs a finer one (the read sequence) or must report the record as unverified.
 - A locator has to be checked for ties, not only for order: two values that are equal can stand for entries on both sides of a pass. Test the tie on purpose, with an input that emits nothing.
 - When no recorded value locates an entry, report it as not verified, never as a mismatch.
-- Pinned by `SyncStreamLeaveReplayTests` (tick: `passed`; tickless: `skipped` with the reason, three leave cases each).
+- Pinned by `SyncStreamLeaveReplayTests` (tick: `passed`; tickless before 3.4: `skipped` with the reason, three leave cases each) and `TicklessPassOrdinalTests` (the tie itself, a 3.4 tickless record `passed`, a freeze settle's output located by its pass, a 3.3 tickless record `skipped`; a driver that locates by tick fails three of them).

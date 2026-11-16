@@ -77,6 +77,7 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 | Path | Today | Status |
 |---|---|---|
 | OnLeave and the destroy handlers | a failed land clears its players without OnLeave in the failing turn, and its destroy handlers and save run with `LandDestructionCause.failed` and `LandKeeper.failure` (`LandKeeper.swift:4892`). A host's stop that closes a session before the failure's teardown still runs that session's leave (`LandKeeper.swift:2397-2439`) | current for the failure's own teardown; target: the host's stop path also skips OnLeave on a failed land (#535 PR 1 part B) |
+| The re-evaluation record | the failure is recorded once, in the frame of its tick, in the turn segment that ends the land (`ReevaluationTickFrame.landFailure`, record format 3.4). Replay stops at that tick and reports it (`RunResult.liveFailure`); see [Reevaluation](reevaluation.md#pass-ordinals-and-the-land-failure-34) | current |
 
 ## Close codes
 

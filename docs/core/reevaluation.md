@@ -81,8 +81,8 @@ Recordings are saved as JSONL (JSON Lines) format:
 | `RecordedClientEvent`    | `sequence`, `typeIdentifier`, `payload`, `playerID`, `clientID`, `sessionID`, `resolvedAtTick`                    |
 | `RecordedLifecycleEvent` | `kind`, `sequence`, `tickId`, `playerID`, `resolverOutputs`, `resolvedAtTick`                                     |
 | `RecordedServerEvent`    | `sequence`, `tickId`, `typeIdentifier`, `payload`, `target`                                                       |
-| `ReevaluationTickFrame`  | `tickId`, `stateHash`, `actions`, `clientEvents`, `lifecycleEvents`, `serverEvents`, optional `sequenceBeforeInputs` / `sequenceBeforeTickHandler` |
-| `ReevaluationRecordedPass` | `sequenceBefore`, `inputs` (sequences in apply order); in a tickless frame's optional `passes` (3.1) |
+| `ReevaluationTickFrame`  | `tickId`, `stateHash`, `actions`, `clientEvents`, `lifecycleEvents`, `serverEvents`, optional `sequenceBeforeInputs` / `sequenceBeforeTickHandler`, optional `landFailure` (3.4) |
+| `ReevaluationRecordedPass` | `sequenceBefore`, `inputs` (sequences in apply order), optional `ordinal` (3.4); in a tickless frame's optional `passes` (3.1) |
 | `ReevaluationRecordedServerInput` | `sequence`, `typeIdentifier`, `payload`, `resolvedAtTick`; in a frame's optional `serverInputs` (3.2) |
 
 ## Using ReevaluationMonitor
@@ -164,6 +164,12 @@ From record format 3.3 (#446), map keys and `PlayerID`s are in Unicode normaliza
 
 A record older than 3.3 that holds a string or a key in another form (NFD, for example) can hash differently on replay, because this build reads its IDs and writes its keys in NFC. The reader checks the record's text while it loads it (`ReevaluationSource.getHoldsNonNFCText()`); for such a record a state hash mismatch is reported as not comparable (`RunResult.hashIncomparability`), not as a failure. The sync-output digests hash path strings and values, which hold the same keys, so a sync-output mismatch in such a record is reported as skipped with that reason. A record that matches is verified as usual. Re-record the run with the current server to verify it. A 3.2 build refuses a 3.3 record (a newer minor).
 
+### Pass Ordinals and the Land Failure (3.4)
+
+Record format 3.4 (#563, #535) adds three optional keys. A tickless land numbers its passes from 1 (`ReevaluationRecordedPass.ordinal`), and each sync output and sync marker records the pass it read after (`afterPass`; 0 is before any pass). The number is taken in the turn segment that applies the pass, before the sync phase reads, so an output committed outside a turn (a debug freeze's settle, the resume after it) names the pass whose state it read. A read sequence can't place an output: an output of a pass that emitted no event reads at the sequence its own pass started at, so the same value stands for before and after that pass. Replay checks that the ordinals continue its own count with no gap (a mismatch fails the tick, as other pass mismatches do), and locates each tickless output and seed by its `afterPass`, so a tickless land's sync outputs are verified. A tickless record older than 3.4 has no ordinals: its sync-output verdict is `skipped`, with the reason. Tick lands locate outputs by tick, as before.
+
+A land that ends on a failure (#535) records it in the frame of its tick (`ReevaluationTickFrame.landFailure`, a `LandFailure`: kind, field, detail, and the position: tick, pass, sequence and stage). It is recorded once, in the same turn segment that ends the land. Replay stops at that tick, as the live run did, and reports the failure (`RunResult.liveFailure`, `ReevaluationSource.getLandFailure()`); what came before it is verified as usual. A 3.3 build refuses a 3.4 record (a newer minor).
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |
@@ -194,7 +200,7 @@ Actions, client events, lifecycle events and server events share one `sequence` 
 
 ### Sync-Output Verification
 
-Each committed sync plan records, per scope (the broadcast scope and each player's), a hash of its canonical patch list, plus the events that rode with it. Encoded bytes are not compared: dynamic-key slots, frame order and the wire encoding are not canonical. Replay re-plans every recorded sync output with a shadow sync engine fed the replay state, and compares the hashes (`ReevaluationRunner --verify` exits with code 8 on a mismatch).
+Each committed sync plan records, per scope (the broadcast scope and each player's), a hash of its canonical patch list, plus the events that rode with it. Encoded bytes are not compared: dynamic-key slots, frame order and the wire encoding are not canonical. Replay re-plans every recorded sync output with a shadow sync engine fed the replay state, and compares the hashes (`ReevaluationRunner --verify` exits with code 8 on a mismatch). A tick land's output is compared with the state of the tick it read; a tickless land's, from 3.4, with the state after the pass it read after (see Pass Ordinals and the Land Failure).
 
 What it catches:
 
