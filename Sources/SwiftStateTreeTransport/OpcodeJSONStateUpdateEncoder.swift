@@ -259,16 +259,21 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         }
 
         /// `wireValue(_:path:)` for a path with this split (by `pathHasher`): the position
-        /// comes from `atomicPatterns` when it has one.
+        /// comes from `atomicPatterns` when it has one. `path` is built only where the split
+        /// doesn't decide (an error, a key-dependent pattern) or without `atomicPatterns` (#392).
         @inline(__always)
-        private func wireValue(_ value: SnapshotValue, path: String, pathHash: UInt32, inSchema: Bool) throws -> SnapshotValue {
-            guard let atomicPatterns else { return try wireValue(value, path: path) }
-            return try atomicPatterns.positional(value, pathHash: pathHash, inSchema: inSchema, path: path)
+        private func wireValue(
+            _ value: SnapshotValue, path: @autoclosure () -> String, pathHash: UInt32, inSchema: Bool
+        ) throws -> SnapshotValue {
+            guard let atomicPatterns else { return try wireValue(value, path: path()) }
+            return try atomicPatterns.positional(value, pathHash: pathHash, inSchema: inSchema, path: path())
         }
 
         @inline(__always)
-        private func wireValue(_ value: SnapshotValue, path: String, split: FieldMergeSplit) throws -> SnapshotValue {
-            try wireValue(value, path: path, pathHash: split.pathHash, inSchema: split.inSchema)
+        private func wireValue(
+            _ value: SnapshotValue, path: @autoclosure () -> String, split: FieldMergeSplit
+        ) throws -> SnapshotValue {
+            try wireValue(value, path: path(), pathHash: split.pathHash, inSchema: split.inSchema)
         }
         
         func encode(to encoder: Encoder) throws {
@@ -411,14 +416,16 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         private func encodePathID(
             _ pathHash: UInt32,
             inSchema: Bool,
-            path: String,
+            path: @autoclosure () -> String,
             hasher: PathHasher,
             into container: inout UnkeyedEncodingContainer
         ) throws {
             if pathIndex {
                 // A path outside the schema has no index, even if its fallback hash equals a
-                // schema hash. (A merged entry's parent comes from the schema.)
+                // schema hash. (A merged entry's parent comes from the schema.) The path is
+                // built only for the error (#392).
                 guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
+                    let path = path()
                     unmappedPaths?.noteUnmapped(path: path, hash: pathHash)
                     throw StateUpdateEncodingError.pathNotInSchema(path)
                 }
