@@ -8,7 +8,10 @@ import SwiftStateTreeDeterministicMath
 /// See Notes/plans/2026-08-31-replay-scale-fp-perturbation-experiment-design.md.
 public enum MovementPerturbationEnvKeys {
     public static let tick = "HERO_PERTURB_TICK"
-    public static let mode = "HERO_PERTURB_MODE"  // "float" | "fixed"
+    /// "float" | "fixed": player movement, a broadcast field. "serveronly": adds eps (an integer)
+    /// to `nextTurretID`, a server-only counter no client receives; it is read only when a turret
+    /// is placed, which the recorded batch runs never do.
+    public static let mode = "HERO_PERTURB_MODE"
     public static let eps = "HERO_PERTURB_EPS"
 }
 

@@ -41,6 +41,12 @@ public enum HeroDefense {
                     }
                     let config = configService.provider
 
+                    // Experiment hook (replay-scale-fp-perturbation, server-only cell): change a
+                    // field no client receives, so only the full-state hash can see it.
+                    if let p = MovementPerturbation.current, p.mode == "serveronly", tickId == p.tick {
+                        state.nextTurretID += Int(p.eps)
+                    }
+
                     // Update all player systems (sorted keys: dictionary iteration order is
                     // not deterministic across runs, and firing order affects combat outcomes)
                     for playerID in state.players.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
