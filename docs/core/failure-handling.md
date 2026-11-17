@@ -38,10 +38,10 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 
 | Path | Today | Status |
 |---|---|---|
-| A reference type (class) as synced state (#464) | refused at registration: `SyncValueSemantics.validate` (`LandTypeRegistry.swift:38`, `NIOLandHost.swift:363`, `SchemaExtractor.swift:20`) | current |
+| A reference type (class) as synced state (#464) | refused at registration: `LandDefinition.validateForRegistration`, `LandRegistrationError.sync` `.valueSemantics` ([Sync](sync.md#what-registration-refuses)) | current |
 | A server event or a declared action response type without `@Payload` on a compressed encoding (`messagepack`, `opcodeJsonArray`) (#521) | refused at registration: `LandDefinition.validateForRegistration` (`NIOLandHost.swift:366`, `LandManager.swift:406`); on `json` it's written by its `Codable` form | current |
-| Other type errors the type alone decides: an unsupported value or dictionary key type, a node with player-dependent fields under a broadcast field | found at sync time; handled as the first row under "The land ends" | target: refuse at registration (#535) |
-| An existential synced field (`Any`, `any P`) | allowed; a value that doesn't convert is found at sync time and handled as the first row under "The land ends" | target: refused at compile time where the declared type spells `any` or `Any`, and `AnyHashable` and `AnyCodable` by name. A protocol spelled bare, a typealias to an existential and a hand-written conformance aren't caught there: such a field ends the land at its first failing conversion (#535) |
+| Other type errors the type alone decides: an unsupported dictionary key type, a node with player-dependent fields under a broadcast field | refused at registration: `LandRegistrationError.sync` `.unsupportedKey`, `.policyNesting` (#535). A value only a later instance holds (an element of a collection empty by default, an enum case the default doesn't take) is found at sync time and handled as the first row under "The land ends"; so is a keeper built directly, whose initialization runs the same check | current |
+| An existential synced field (`Any`, `any P`) | refused at compile time where the declared type spells `any`, `Any`, `AnyObject` or `P & Q`, and `AnyHashable` and `AnyCodable` by name; at registration, `.existentialField` for those types reached through a nested or hand-written type. A protocol spelled bare, a typealias to an existential and a hand-written conformance aren't caught: such a field ends the land at its first failing conversion (#535) | current |
 
 ### The land ends
 

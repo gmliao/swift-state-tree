@@ -38,10 +38,10 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
-| 以參考型別（class）作為同步狀態（#464） | 註冊時拒絕：`SyncValueSemantics.validate`（`LandTypeRegistry.swift:38`、`NIOLandHost.swift:363`、`SchemaExtractor.swift:20`） | 已符合 |
+| 以參考型別（class）作為同步狀態（#464） | 註冊時拒絕：`LandDefinition.validateForRegistration`，`LandRegistrationError.sync` 的 `.valueSemantics`（[同步](sync.zh-TW.md#註冊時拒絕的型別)） | 已符合 |
 | 壓縮編碼（`messagepack`、`opcodeJsonArray`）下，沒有 `@Payload` 的 server event 或宣告的 action response 型別（#521） | 註冊時拒絕：`LandDefinition.validateForRegistration`（`NIOLandHost.swift:366`、`LandManager.swift:406`）；`json` 下以其 `Codable` 形式寫出 | 已符合 |
-| 其他僅由型別就能決定的型別錯誤：不支援的值或 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 同步時才發現；處理方式同「結束 land」第一列 | 目標：註冊時拒絕（#535） |
-| existential 型別的同步欄位（`Any`、`any P`） | 允許；無法轉換的值在同步時才發現，處理方式同「結束 land」第一列 | 目標：宣告的型別寫出 `any` 或 `Any` 時在編譯期拒絕，`AnyHashable` 與 `AnyCodable` 依名稱拒絕。未加 `any` 的 protocol 名稱、指向 existential 的 typealias，以及手寫的 conformance 在編譯期抓不到：這類欄位在第一次轉換失敗時結束 land（#535） |
+| 其他僅由型別就能決定的型別錯誤：不支援的 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 註冊時拒絕：`LandRegistrationError.sync` 的 `.unsupportedKey`、`.policyNesting`（#535）。只有之後的實例才有的值（預設為空的集合中的元素、預設實例沒有採用的 enum case）在同步時才發現，處理方式同「結束 land」第一列；直接建立的 keeper 則在初始化時執行同一個檢查 | 已符合 |
+| existential 型別的同步欄位（`Any`、`any P`） | 宣告的型別寫出 `any`、`Any`、`AnyObject` 或 `P & Q` 時在編譯期拒絕，`AnyHashable` 與 `AnyCodable` 依名稱拒絕；經由巢狀或手寫型別帶進的這些型別，在註冊時以 `.existentialField` 拒絕。未加 `any` 的 protocol 名稱、指向 existential 的 typealias，以及手寫的 conformance 抓不到：這類欄位在第一次轉換失敗時結束 land（#535） | 已符合 |
 
 ### 結束 land
 
