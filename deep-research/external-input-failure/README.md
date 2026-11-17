@@ -223,6 +223,27 @@ Join and leave checks against the seeded draws (counts over the run):
 | 10% of leaves fail (2 of 4 leave per room) | 150 | 204,126 | 805,692 | 204,126 | 600 | 1,010,268 |
 | **All cells** | 1,950 | 2,675,690 | 10,669,493 | 2,675,690 | 7,800 | 13,351,033 |
 
+### Full views and partial outputs in the replayed records
+
+The records aren't kept, so these counts come from each replayed record's "Sync Output:" line (`sync-marks.json`, from each run's records.json). A full view sent to a player is a `seed` (its first view, a rejoin, or a resync in place). Each player has exactly one first seed, so later seeds are derived: a record's seeds minus its players. A key scope reset is an output that types every recipient's update `.firstSync`; it carries a diff, not a full view. Skipped and unverifiable are the comparisons of partial outputs the record marks (not committed, not sent, dropped, or a view that isn't verifiable), over every scope. The format writes nothing for a sync phase that planned nothing (skipped or deferred in the live run), so those aren't in any record. Summed over the repeats:
+
+| Cell | Replayed records | Seeds | Later seeds (derived) | Records with seeds ≠ players | Key scope resets | Skipped | Unverifiable |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline (delay 0, always succeeds) | 150 | 600 | 0 | 0 | 1 | 0 | 0 |
+| rate 0 | 150 | 600 | 0 | 0 | 5 | 0 | 0 |
+| rate 0.1 | 150 | 600 | 0 | 0 | 3 | 0 | 0 |
+| rate 0.5 | 150 | 600 | 0 | 0 | 1 | 0 | 0 |
+| rate 0.1, jitter 200 ms | 150 | 600 | 0 | 0 | 0 | 0 | 0 |
+| service deadline (delay 1500, deadline 1000) | 150 | 600 | 0 | 0 | 1 | 0 | 0 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 150 | 600 | 0 | 0 | 0 | 0 | 0 |
+| framework deadline, cancellation ignored | 150 | 600 | 0 | 0 | 1 | 0 | 0 |
+| rate 0.1, 200 rooms | 150 | 600 | 0 | 0 | 0 | 0 | 0 |
+| framework deadline, cooperative, 200 rooms | 150 | 600 | 0 | 0 | 1 | 0 | 0 |
+| framework deadline, cancellation ignored, 200 rooms | 150 | 600 | 0 | 0 | 1 | 0 | 0 |
+| 10% of joins fail | 150 | 600 | 0 | 0 | 151 | 0 | 0 |
+| 10% of leaves fail (2 of 4 leave per room) | 150 | 600 | 0 | 0 | 7 | 0 | 0 |
+| **All cells** | 1,950 | 7,800 | 0 | 0 | 172 | 0 | 0 |
+
 ## Conclusion
 
 From the Results at `022d8fdb` (3 repeats per cell, each figure the median [min–max]; every cell passed every gate in every repeat):

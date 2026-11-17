@@ -147,6 +147,12 @@ Sync output: all 36 verify runs (12 replayed records of the sizes runs, the firs
 | cost | 24 | 8,349 | 47,266 | 8,349 | 136 | 55,727 |
 | all | 36 | 12,482 | 70,564 | 12,482 | 204 | 83,214 |
 
+Sync stream markers in the 130 records the sizes runs kept (the cost runs' records aren't kept; `sync-marks.json`, from each record file). A full view sent to a player is a `seed` marker: its first view (firstSync), a rejoin, or, after a `clear` for that player, a resync in place. An output that resets the dynamic key scopes types every recipient's update `.firstSync`; it carries a diff, not a full view. Partial outputs are those the format marks as not committed, not sent, not verifiable or dropped in encoding or extraction, and seeds whose view isn't verifiable. The format writes nothing for a sync phase that planned nothing (skipped or deferred in the live run), so those aren't in any record.
+
+| records | players | first seeds | later seeds | rejoin | after a clear | other | clears | outputs | key scope resets | partial outputs and seeds |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 130 | 780 | 780 | 0 | 0 | 0 | 0 | 780 | 45,564 | 340 | 0 |
+
 Recording cost, 200 rooms, recording on against off, 4 repeats in ABBA order (on-off, off-on, off-on, on-off). ServerLoadTest runs the simulated clients in the same process, so CPU is the server's and the clients' together: the on − off difference is the recording's cost, and the on ÷ off ratio understates it (its denominator includes the clients). CPU % is of one core; core-ms per room-tick is CPU over rooms × ticks. The paired ratio is each repeat's on ÷ off, its median and [min–max] over the repeats.
 
 | players | cadence | actions/s on / off | CPU % on / off | on − off, CPU points | on − off, core-ms / room-tick | CPU on ÷ off, median [min–max] |

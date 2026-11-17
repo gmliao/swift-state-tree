@@ -217,6 +217,8 @@ struct BenchmarkResult {
     /// `--inputs-from-wire`: submitted, accepted, rejected, applied and expected (`InputCounts`).
     /// nil without it.
     var inputs: [String: Any]? = nil
+    /// `--rejoin-every`: `every` and the rejoins `done` (Rejoin.swift). nil without it.
+    var rejoin: [String: Any]? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any
