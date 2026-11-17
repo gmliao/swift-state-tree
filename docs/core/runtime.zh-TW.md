@@ -174,16 +174,19 @@ sequenceDiagram
 
 Handler（action、client event、lifecycle、`Tick`）都是同步的：`(inout State, …, LandContext) throws`。狀態只在 handler 內改變，一次一個 input，依 keeper 套用的順序，而 reevaluation 錄製保留的正是這個順序。Handler 不能 await。非同步工作（讀資料庫、呼叫其他服務）請放在 resolver：resolver 在 handler 之前、turn 之外執行，其輸出透過 `ctx` 交給 handler 並被錄製，因此 replay 會重用輸出，而不是再呼叫一次服務。見 [Resolver 機制](resolver.zh-TW.md)。
 
-Handler 拋出錯誤的 input 單獨失敗：
+Handler **在以可變方式存取任何 `@Sync` 欄位之前**就拋出錯誤的 input 單獨失敗：
 
 - 其後的 input 在同一輪照常套用；
 - 在 tickless land 上，呼叫者收到錯誤。在 tick land 上，呼叫者在 action 排入佇列時就已收到確認（handler 在之後的 tick 執行），所以失敗只會記錄在 log（`Input failed: its handler threw`），不會傳回呼叫者。在收件階段發生的錯誤（未註冊的 action、解碼失敗、resolver 的錯誤、遞送被拒）在兩種 land 上都會傳回呼叫者；
 - 它發出的 server event 會被丟棄；
 - `OnJoin` 拋出錯誤的 join 會被捨棄；
-- handler 在拋出前寫入狀態的內容會保留，下一次同步會送出（沒有逐 input 的 rollback，#87）；
 - 它和其他 input 一樣被錄製，因此 replay 會再執行它，並以相同方式失敗。
 
-**先驗證再修改。** 在 handler 第一次寫入狀態之前，先檢查所有可能拋出錯誤的條件，失敗的 input 就不會改變任何東西。Debug build 的 keeper 會檢查這件事：handler 拋出錯誤時，keeper 拿 handler 執行前的狀態副本比對同步狀態；若 handler 有寫入，就記錄一則警告，標明是哪個 input（`action <type>`、`event <type>`、`serverInput <type>`、`OnJoin`、`OnLeave`、`OnInitialize`），每個 land 的每種 input 只記一次。Destroy handler（`OnDestroyWhenEmpty`、`OnFinalize`）只在之後還有 destroy 階段的 handler 會讀取狀態時（`OnFinalize`、`AfterFinalize`、`OnShutdown`）才檢查。Re-evaluation 不檢查。`@Internal` 欄位不在比對範圍內，寫入它們不會被回報。另有一個盲點：`Float` 或 `Double` 的 NaN 與自身比較不相等，所以沒有寫入就拋出錯誤的 handler 也可能發出警告，並用掉該 input 類型唯一的一次警告。這份副本讓大型 debug 遊戲每個 input 多付一次「第一次寫入各容器時的複製」；設 `DEBUG_WARN_THROWING_INPUT_WRITES=false` 可關閉檢查。Release build 不檢查，也不複製。
+Handler 在以可變方式存取 `@Sync` 欄位**之後**才拋出錯誤的 input（action、client event、server input、`OnJoin` 或 `OnLeave`）會結束 land（#535）：目前還沒有逐 input 的 rollback（#87），它寫入的內容無法復原。呼叫者收到錯誤，同一批次中排在它後面的 input 收到 `LandInputRejection.landClosed`，tick handler 不執行，land 以 `LandFailure.Kind.handlerWrite` 結束，位置是 `.input` 階段與該 input 的 sequence；其 session 以 4016 關閉（[失敗處理](failure-handling.zh-TW.md)）。該 input 有被錄製，所以 replay 會套用它、再次看到它在存取後拋出錯誤（若沒有，該 tick 判定為不一致），並在那裡結束。
+
+Keeper 計的是**可變存取**，不是實際的改變：`@Sync` 的 setter 與 `_modify` 一進入就計數，計在 handler 所在的執行緒上。因此即使 `validate` 在改動任何東西前就拋出錯誤，`try validate(&state.x)` 也算一次存取；handler 內建立的暫時 `@Sync` 值被寫入也會計數。不經過 `@Sync` accessor 的寫入看不到：整個狀態替換（`state = …`）、寫入 `@Internal` 儲存，或手寫的 `StateNodeProtocol` conformance。這類 input 仍單獨失敗並保留寫入的內容，下一次同步會送出。`OnInitialize` 不計數，它有自己的初始化失敗路徑。
+
+**先驗證再修改。** 在 handler 第一次存取狀態之前，先檢查所有可能拋出錯誤的條件，失敗的 input 就不會改變任何東西，land 也會繼續。Debug build 的 keeper 另外檢查計數看不到的寫入：handler 拋出錯誤時，keeper 拿 handler 執行前的狀態副本比對同步狀態；若 handler 有寫入，就記錄一則警告，標明是哪個 input（`action <type>`、`event <type>`、`serverInput <type>`、`OnJoin`、`OnLeave`、`OnInitialize`），每個 land 的每種 input 只記一次。Destroy handler（`OnDestroyWhenEmpty`、`OnFinalize`）只在之後還有 destroy 階段的 handler 會讀取狀態時（`OnFinalize`、`AfterFinalize`、`OnShutdown`）才檢查。Re-evaluation 不檢查。`@Internal` 欄位不在比對範圍內，寫入它們不會被回報。另有一個盲點：`Float` 或 `Double` 的 NaN 與自身比較不相等，所以沒有寫入就拋出錯誤的 handler 也可能發出警告，並用掉該 input 類型唯一的一次警告。這份副本讓大型 debug 遊戲每個 input 多付一次「第一次寫入各容器時的複製」；設 `DEBUG_WARN_THROWING_INPUT_WRITES=false` 可關閉檢查。Release build 不檢查，也不複製。
 
 ### Event Handler 流程
 
@@ -434,7 +437,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 已知限制：
 
 - Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。
-- Handler 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄，同一 turn 的其他 input 照常套用。狀態保留 handler 在拋出前寫入的內容，下一次同步會送出（[先驗證再修改](#input-與-turn)）。
+- Handler 在存取任何 `@Sync` 欄位之前就拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄，同一 turn 的其他 input 照常套用。存取之後才拋出錯誤的 input 會在該 turn 結束 land，與 legacy 路徑相同（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
 `IN_TURN_SYNC=false` 是 kill switch：adapter 保留自己的 executor，透過 `beginSync` / `endSync` 同步（[同步流程](#同步流程)）。Adapter 在 init 時決定一次，keeper 跟隨它。
