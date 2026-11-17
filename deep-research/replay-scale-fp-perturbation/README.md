@@ -153,7 +153,7 @@ On 2026-11-17 the 3.1 batch was recorded again on an Apple M2 (arm64, macOS 27.2
 - **Bytes.** 41/41 recordings are byte-identical across the two machines. The arm64 batch's SHA256SUMS list is byte-identical to `results/batch-3.1-SHA256SUMS.txt`, so both batches name that one file.
 - **Content.** 41/41 recordings are identical (the sha256 of the `--convert` JSON view). No recording on either machine has a tick split into several turn records (#327), the reason two recordings can differ in bytes with the same content.
 - **The same machine twice.** Each machine's second recording is byte-identical to its first, 41/41 on each (the table above).
-- **Scope.** The comparison crosses the architecture, the OS (macOS against Linux) and the compiler version (Apple Swift 6.4.2 against Swift 6.2.4) together. The match holds across all three at once; it doesn't separate them. Sync outputs aren't compared: a 3.1 record has no sync stream, and the runner reports "Sync Output: skipped".
+- **Scope.** The comparison crosses the architecture, the OS (macOS against Linux) and the compiler version (Apple Swift 6.4.2 against Swift 6.2.4) together. The match holds across all three at once; it doesn't separate them. Sync outputs aren't compared. These recordings come from `ReevaluationRunner --record`, which runs the land without a transport, so they carry no sync stream and the runner reports "Sync Output: skipped". A 3.1 record made through a transport does carry one.
 
 `regenerate.py` writes the three tables below and `--check` gates them. Both 3.1 batches must be at one commit, and the cross-verify must replay the other machine's batch recordings, matched by seed and sha256.
 
