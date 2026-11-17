@@ -313,32 +313,11 @@ struct PerPlayerSyncTablesScenarioTests {
             try await run.step("p2", hand: "b", board: 1)
             await run.sync()
 
-            // A failed plan: nothing commits, and the next plan resets the key scopes.
+            // A failed plan, a frame that doesn't encode at all and a failed merged broadcast
+            // frame end the land (#535 rows 9, 10, 12, 15): `totalFailureEndsTheLand` covers them.
             try await run.step("p1", hand: "c", mark: 2)
-            run.faults.armPlan()
             await run.sync()
             try await run.step("p2", mark: 3)
-            await run.sync()
-
-            if !onePass {
-                // One player's frames fail to encode entirely (a combined frame with json and
-                // opcodeJsonArray; the per-player frame with opcode 107), then encode again. With
-                // the one-pass extraction the lag that follows differs by design (M7, D5):
-                // `encodeFailureLagOnePass` pins it.
-                try await run.step("p2", hand: "d", mark: 4, board: 2)
-                run.faults.setPlayer(PlayerID("p2"))
-                await run.sync()
-                run.faults.setPlayer(nil)
-                try await run.step("p1", mark: 5)
-                await run.sync()
-            }
-
-            // The opcode 107 merged broadcast frame fails while the per-player frames go out.
-            try await run.step("p1", hand: "e", board: 3)
-            run.faults.setMergedFrame(true)
-            await run.sync()
-            run.faults.setMergedFrame(false)
-            try await run.step("p2", mark: 6)
             await run.sync()
 
             // Broadcast-only syncs: per-player changes wait for the next full sync.
@@ -379,7 +358,7 @@ struct PerPlayerSyncTablesScenarioTests {
             try await run.step("p1", suffix: "-b", hand: "j")
             await run.sync()
             await run.sync()
-            #expect(await run.adapter.syncFailedPlans == 1, "\(cell): only the armed plan failed")
+            #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
         }
     }
 
@@ -445,16 +424,13 @@ struct PerPlayerSyncTablesScenarioTests {
             #expect(two.drops == 2, "two failing roots")
             #expect(await lastSent("p1", "vault") == .object(["p1.v": .object(["n": .int(1)])]))
 
-            // A failed plan, then a key reset, while both still throw: the boxes stay.
-            run.faults.armPlan()
-            _ = try await cycle { try await run.step("p2", board: 1) }
-            let reset = try await cycle()
-            // The roots aren't dirty (their writes committed in the cycle before): with one-pass on
-            // the mode is the plan's dirty fields, so they aren't converted; off, it is `.all`.
-            #expect(reset.drops == (onePass && dirtyTracking ? 0 : 2), "the reset converts the throwing roots only under `.all`")
+            // A cycle while both still throw: the boxes stay. (A failed plan's key reset is gone:
+            // a failed plan ends the land, #535 row 19.)
+            let still = try await cycle { try await run.step("p2", board: 1) }
+            #expect(still.drops == (onePass && dirtyTracking ? 0 : 2), "the throwing roots are converted only under `.all`")
             #expect(await lastSent("p1", "secrets") == committed)
             if textual {
-                #expect(!mentions(reset.frames[p1], "secrets") && !mentions(reset.frames[p1], "vault"))
+                #expect(!mentions(still.frames[p1], "secrets") && !mentions(still.frames[p1], "vault"))
             }
 
             // Both convert again: the missed values go out.
@@ -531,48 +507,48 @@ struct PerPlayerSyncTablesScenarioTests {
         }
     }
 
-    /// M6, M7 (D5): after a total per-player encode failure with the one-pass extraction, a clean
-    /// per-player field lags. Its box stays at what the client has, so the field's next write
-    /// sends the missed change too; today's cache was advanced silently, so the client stays
-    /// behind until that value changes again. Known bug #532; interim until #535 closes the land
-    /// on the failure.
-    @Test("One-pass, after an encode failure: the next write of the lagging field sends the missed change (#532, #535)", arguments: dirtyIdentityEncodings.map(\.0))
-    func encodeFailureLagOnePass(encodingName: String) async throws {
+    /// A frame that doesn't encode at all ends the land in every configuration (#535 rows 9, 10
+    /// total, 12, 15), so no later frame can lag behind it (#532 is gone with the land): a failed
+    /// plan, one player's frames, and the opcode 107 merged broadcast frame.
+    @Test("A total failure ends the land in every configuration (#535)", arguments: dirtyIdentityEncodings.map(\.0))
+    func totalFailureEndsTheLand(encodingName: String) async throws {
         let encoding = try #require(dirtyIdentityEncodings.first { $0.0 == encodingName }?.1)
-        let p2Session = "session(s-p2)"
-        for config in ppScenarioConfigs {
-            let run = await PPScenarioRun<PPScenarioState>(
-                definition: makePPScenarioLand(landID: "pp-scenario-lag"), tables: config.tables,
-                perPlayerTables: config.perPlayerTables, onePass: true, encoding: encoding
-            )
-            try await run.join("p1")
-            try await run.join("p2")
-            await run.sync()
-            try await run.step("p2", hand: "b")
-            await run.sync()
-            // p2's frames fail entirely while its hand changes.
-            try await run.step("p2", hand: "d")
-            run.faults.setPlayer(PlayerID("p2"))
-            await run.sync()
-            run.faults.setPlayer(nil)
-            // A broadcast-only mutation: `hands` is clean, so no mode compares it.
-            try await run.step("p1", board: 1)
-            await run.sync()
-            // A write to `hands` (p1's entry): p2's own entry is unchanged since the failure.
-            try await run.step("p1", hand: "e")
-            let before = await run.transport.sent.filter { $0.target == p2Session }.count
-            await run.sync()
-            let sent = await run.transport.sent.filter { $0.target == p2Session }.count - before
-            let label = "\(encodingName), tables \(config.tables), per-player tables \(config.perPlayerTables)"
-            // The per-player tables send p2 its missed hand; today's path sends nothing.
-            #expect(sent == (config.perPlayerTables ? 1 : 0), "\(label): frames to p2 on the write")
-            let hand = await run.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID("p2"))?.values["hands"]
-            #expect(hand == .object(["p2": .array([.string("b"), .string("d")])]), "\(label): last-sent")
-            run.finish()
+        enum Fault: CaseIterable { case plan, player, mergedFrame }
+        for fault in Fault.allCases {
+            for onePass in [true, false] {
+                for config in ppScenarioConfigs {
+                    let run = await PPScenarioRun<PPScenarioState>(
+                        definition: makePPScenarioLand(landID: "pp-scenario-total"), tables: config.tables,
+                        perPlayerTables: config.perPlayerTables, onePass: onePass, encoding: encoding
+                    )
+                    let label = "\(encodingName), \(fault), one-pass \(onePass), tables \(config.tables), per-player tables \(config.perPlayerTables)"
+                    try await run.join("p1")
+                    try await run.join("p2")
+                    await run.sync()
+                    try await run.step("p2", hand: "d", board: 1)
+                    switch fault {
+                    case .plan: run.faults.armPlan()
+                    case .player: run.faults.setPlayer(PlayerID("p2"))
+                    case .mergedFrame: run.faults.setMergedFrame(true)
+                    }
+                    // The merged broadcast frame exists with opcode 107 (messagepack) only.
+                    guard fault != .mergedFrame || encodingName == "messagepack" else {
+                        run.faults.setMergedFrame(false)
+                        run.finish()
+                        continue
+                    }
+                    let before = await run.transport.sent.count
+                    await run.sync()
+                    try #require(await run.keeper.waitForFailureForTesting(), "the land failed")
+                    #expect(run.keeper.failure?.position.stage == .syncPhase, "\(label): the land failed in the sync phase")
+                    #expect(await run.transport.sent.count == before, "\(label): the failing cycle sent nothing")
+                    run.finish()
+                }
+            }
         }
     }
 
-    @Test("A state without per-player fields: key resets after a failed plan and after a broadcast throw", arguments: ppScenarioCells)
+    @Test("A state without per-player fields: a broadcast throw and the cycles after it", arguments: ppScenarioCells)
     func noPerPlayerFields(cell: String) async throws {
         let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
         try await comparePPScenario(cell, definition: { makePPScenarioBroadcastLand(landID: "pp-scenario-broadcast") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
@@ -581,19 +557,13 @@ struct PerPlayerSyncTablesScenarioTests {
             await run.sync()
             try await run.step("p1", board: 1)
             await run.sync()
-            // A key reset: with B2 (one-pass off) a `.firstSync([])` per-player frame per player;
-            // with B1 none.
-            try await run.step("p1", board: 2)
-            run.faults.armPlan()
-            await run.sync()
-            await run.sync()
-            // A broadcast conversion throws (B2 for this plan whatever the one-pass switch), then
-            // a key reset.
+            // A broadcast conversion throws (B2 for this plan whatever the one-pass switch). A
+            // failed plan's key reset is gone: a failed plan ends the land (#535 row 19).
             try await run.step("p2", risky: -1, board: 3)
             await run.sync()
-            run.faults.armPlan()
             try await run.step("p2", board: 4)
             await run.sync()
+            try await run.step("p1", board: 5)
             await run.sync()
             try await run.step("p2", risky: 1)
             await run.sync()
