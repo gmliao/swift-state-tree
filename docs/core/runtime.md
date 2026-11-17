@@ -430,9 +430,10 @@ With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial execu
 
 The sync phase plans every frame of the cycle from the state at that point of the turn, then commits: it enqueues the frames to the adapter's outbound writer and clears the dirty flags. Nothing runs between the plan and the commit, so no change is cleared unsent. A plan that fails commits nothing, and its dirty flags stay for the next cycle.
 
+A join completes in the sync phase of the turn it flips in (#69, #194). The joiner's whole view is planned from that turn's end state, in the same plan as the other recipients' diffs, and its frames follow theirs: its JoinResponse, its firstSync, then the targeted events its `OnJoin` addressed to it, held until then. With in-turn sync off, a join doesn't complete in a turn: the firstSync is sent on its own after the JoinResponse, from a separate state read, and targeted events addressed to the session while it is joining aren't delivered to it.
+
 Stated limits:
 
-- A joiner's first sync and the delivery of its `OnJoin` effects to the joiner still run outside the turn. <!-- TODO(#194): describe in-turn joins once #194 is merged. -->
 - The debug freeze settle still runs a `beginSync` / `endSync` cycle.
 - An input whose handler throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it ([validate before you mutate](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
