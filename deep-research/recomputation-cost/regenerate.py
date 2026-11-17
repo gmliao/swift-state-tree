@@ -33,6 +33,12 @@ The sync stream markers come from sync-marks.json (sync_marks.py, deep-research/
 the sizes runs' raw records): one entry per record, as many as the run's rooms, each with the run's
 players and one first seed per player.
 
+The fields each sync round sends come from stream-fields.json (stream_fields.py, from the sizes runs'
+stream dumps and records): every stream file of the run read and decoded; per room, the record's
+outputs equal its rounds with frames plus the outputs that sent nothing (all of them one empty
+hash pair, and no diff round carrying it but a key scope reset of empty updates); recipients never
+above the run's players; each record the one sync-marks.json counted.
+
 Usage: regenerate.py [--check | --markdown | --self-test | --record-check <process dir>]
 """
 import argparse
@@ -859,6 +865,135 @@ def sync_marks_lines(entries: list) -> list:
             f"{s('key_scope_resets'):,} | {partial:,} |", ""]
 
 
+STREAM_FIELDS = HERE / "stream-fields.json"
+FRAME_KINDS = {"joinResponse", "event", "full_view", "diff", "key_scope_reset", "no_change", "resync"}
+DIFF_KINDS = ("diff", "key_scope_reset", "no_change", "resync")
+
+
+def stream_fields(runs: list, path: pathlib.Path = STREAM_FIELDS, marks: pathlib.Path = SYNC_MARKS) -> dict:
+    """{process: entry} from stream-fields.json for the sizes runs, after its gate; exits naming every failure."""
+    processes = json.loads(path.read_text(encoding="utf-8"))["processes"]
+    marked = {}
+    for key, e in json.loads(marks.read_text(encoding="utf-8"))["records"].items():
+        marked.setdefault(key.rsplit("/", 1)[0], set()).add(e["sha256"])
+    sizes = {r["name"]: r["params"] for r in runs if r["params"]["kind"] == "sizes"}
+    failures, silent = [], set()
+    if set(processes) != set(sizes):
+        failures.append(f"stream-fields.json lists {sorted(set(processes) ^ set(sizes))} unlike the sizes runs")
+    for name, e in processes.items():
+        p = sizes.get(name)
+        if p is None:
+            continue
+        sessions = p["players"] * p["rooms"]
+        frames, d = e["frames"], e["diff"]
+        if e["files"] != sessions or frames.get("full_view") != sessions:
+            failures.append(f"{name}: {e['files']} stream files, {frames.get('full_view')} full views; the run has {sessions} sessions")
+        if set(frames) - FRAME_KINDS:
+            failures.append(f"{name}: frames of unknown kinds {sorted(set(frames) - FRAME_KINDS)}")
+        if sum(frames.get(k, 0) for k in DIFF_KINDS) != d["frames"] or d["frames"] != d["recipients"]:
+            failures.append(f"{name}: diff frames don't add up")
+        if d["bytes"] != d["entry_bytes"] + d["overhead"]:
+            failures.append(f"{name}: bytes aren't entries plus overhead")
+        if d["fields"] != sum(int(k) * v for k, v in d["hist"]["fields"].items()) \
+                or d["broadcast_fields"] != sum(int(k) * v for k, v in d["hist"]["broadcast_fields"].items()) \
+                or sum(d["hist"]["fields"].values()) != d["rounds"] or sum(d["hist"]["broadcast_fields"].values()) != d["rounds"]:
+            failures.append(f"{name}: per-round histograms don't match the totals")
+        if len(e["rooms"]) != p["rooms"]:
+            failures.append(f"{name}: {len(e['rooms'])} rooms, the run has {p['rooms']}")
+        if {r["record_sha256"] for r in e["rooms"].values()} != marked.get(name, set()):
+            failures.append(f"{name}: its records aren't the ones sync-marks.json counted")
+        for room, r in e["rooms"].items():
+            if r["outputs"] != r["rounds_with_frames"] + r["rounds_without_frames"] or r["seqs_beyond_outputs"]:
+                failures.append(f"{name} {room}: {r['outputs']} outputs, {r['rounds_with_frames']} rounds with frames, "
+                                f"{r['rounds_without_frames']} without, {r['seqs_beyond_outputs']} beyond")
+            if r["unexplained_rounds"]:
+                failures.append(f"{name} {room}: {r['unexplained_rounds']} rounds carry a frameless output's hashes")
+            if r["max_recipients"] > p["players"]:
+                failures.append(f"{name} {room}: {r['max_recipients']} recipients, the run has {p['players']} players")
+            silent |= set(r["silent_hashes"])
+    if len(silent) > 1:
+        failures.append(f"frameless outputs carry {len(silent)} different hash pairs")
+    if failures:
+        sys.exit("stream fields not usable:\n  " + "\n  ".join(failures))
+    return {name: {**e, "params": sizes[name]} for name, e in processes.items()}
+
+
+def hist_median(hist: dict) -> float:
+    values = sorted((int(k), n) for k, n in hist.items())
+    total, seen = sum(n for _, n in values), 0
+    lo = hi = None
+    for v, n in values:
+        if lo is None and seen + n > (total - 1) // 2:
+            lo = v
+        if hi is None and seen + n > total // 2:
+            hi = v
+        seen += n
+    return (lo + hi) / 2
+
+
+def stream_field_lines(processes: dict) -> list:
+    key = lambda name: (processes[name]["params"]["encoding"], processes[name]["params"]["players"],
+                        processes[name]["params"]["cadence"], processes[name]["params"]["repeat"])
+    names = sorted(processes, key=key)
+    pooled = lambda pred, part, k: sum(processes[n][part][k] for n in names if pred(processes[n]["params"]))
+    size = lambda enc, pred: pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "entry_bytes") / \
+        pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "fields")
+    full = {enc: pooled(lambda p: p["encoding"] == enc, "full_view", "entry_bytes") /
+            pooled(lambda p: p["encoding"] == enc, "full_view", "fields") for enc in INTENDED_WIRE}
+    label = lambda p: f"{p['encoding']} p{p['players']} c{p['cadence']} r{p['repeat']}"
+    lines = ["### Sync bytes against the fields sent", "",
+             "Each sizes run's stream dump (`--stream-dir`) holds every frame each session received; `stream-fields.json` "
+             "(`stream_fields.py`) decodes all of them. A round is one sync output of one room (its seq, the same in every "
+             "session's frames). A patch is one entry of a frame as sent; a field is one value it sets or removes: 1 for a "
+             "plain entry, the mask's bit count for a merged entry (`[parent, keys, op, mask, v1, …]`, one value per bit). "
+             "Each session's first state frame is its full view and isn't counted here; the later ones, key scope resets "
+             "included, are. Measured bytes are a frame's bytes without the events merged into it: its entries plus a fixed "
+             "overhead (wrapper, opcode, seq, array headers, json keys and commas). The join response and event frames are "
+             "left out, and so are WebSocket framing and compression. An entry carried, identical, by every recipient's "
+             "frame of a round counts as broadcast, the rest as per-player.", "",
+             "| run | rounds | recipients | broadcast fields per round (mean / median) | per-player fields per round | "
+             "patches per round | fields per round (mean / median) | measured bytes per round |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for n in names:
+        e, p = processes[n]["diff"], processes[n]["params"]
+        r = e["rounds"]
+        lines.append(f"| {label(p)} | {r:,} | {e['recipients'] / r:.2f} | {e['broadcast_fields'] / r:.2f} / "
+                     f"{hist_median(e['hist']['broadcast_fields']):g} | {e['per_player_fields'] / r:.2f} | {e['patches'] / r:.1f} | "
+                     f"{e['fields'] / r:.1f} / {hist_median(e['hist']['fields']):g} | {e['bytes'] / r:,.1f} |")
+    rooms = [r for n in names for r in processes[n]["rooms"].values()]
+    per_player = sum(processes[n]["diff"]["per_player_fields"] for n in names)
+    lines += ["", f"Rounds are the records' sync outputs: {sum(r['outputs'] for r in rooms):,} in {len(rooms)} rooms, of which "
+              f"{sum(r['rounds_without_frames'] for r in rooms)} sent no frame (all with the same broadcast and per-player "
+              "hashes, those of an empty update). "
+              + ("No round sent a per-player field: every entry was in every recipient's frame." if per_player == 0 else
+                 f"{per_player:,} fields were per-player.")]
+    lines += ["", "The model: bytes per round ≈ fields per round × s, where fields per round is the broadcast fields times "
+              "the recipients plus the per-player fields, and s a mean size per field. s is the entries' bytes over their "
+              "fields, per encoding, from the runs at the other cadence, so no row is predicted from its own bytes. A second "
+              "s comes from the full views (their entries' bytes over their fields, a map of objects counting its objects' "
+              "members): those fields are entity properties set at once, not the fields a diff sets, so that column is shown "
+              "only for comparison. The fixed overhead isn't in the model.", "",
+              "| run | s, other cadence (B) | predicted bytes per round | measured bytes per round | measured / predicted | "
+              "s, full views (B) | predicted from full views |",
+              "|---|---:|---:|---:|---:|---:|---:|"]
+    for n in names:
+        e, p = processes[n]["diff"], processes[n]["params"]
+        s = size(p["encoding"], lambda q, c=p["cadence"]: q["cadence"] != c)
+        r = e["rounds"]
+        predicted = s * e["fields"] / r
+        lines.append(f"| {label(p)} | {s:.2f} | {predicted:,.1f} | {e['bytes'] / r:,.1f} | {e['bytes'] / (s * e['fields']):.3f} | "
+                     f"{full[p['encoding']]:.2f} | {full[p['encoding']] * e['fields'] / r:,.1f} |")
+    for enc in sorted(INTENDED_WIRE):
+        mine = [processes[n]["diff"] for n in names if processes[n]["params"]["encoding"] == enc]
+        frames, overhead = sum(e["frames"] for e in mine), sum(e["overhead"] for e in mine)
+        lines += ["", f"Fixed overhead per frame, {enc}: {overhead / frames:.1f} B on average "
+                  f"({min(e['overhead_min'] for e in mine)}–{max(e['overhead_max'] for e in mine)} B), "
+                  f"{overhead / sum(e['bytes'] for e in mine) * 100:.1f} % of the measured bytes."]
+    lines += ["", "Only this topic's sizes runs kept every frame; the EncodingBenchmark and ws-loadtest data sets record bytes "
+              "per sync or per update but no fields per round, so this check covers this topic only.", ""]
+    return lines
+
+
 def sync_output_lines(groups: dict) -> list:
     every = syncoutput.total(groups["sizes"] + groups["cost"])
     lines = [f"Sync output: all {every['records']} verify runs ({len(groups['sizes'])} replayed records of the sizes runs, "
@@ -871,9 +1006,9 @@ def sync_output_lines(groups: dict) -> list:
     return lines + [""]
 
 
-def results_markdown(runs: list, sync: dict | None = None, marks: list | None = None) -> str:
+def results_markdown(runs: list, sync: dict | None = None, marks: list | None = None, fields: dict | None = None) -> str:
     """The Results section; `sync` (sync_outputs) adds the verify runs' sync-output lines, `marks`
-    (sync_marks) the sync stream markers of the kept records."""
+    (sync_marks) the sync stream markers of the kept records, `fields` (stream_fields) the fields per round."""
     lines = [RESULTS_HEADING, ""]
     if not runs:
         return "\n".join(lines + ["No runs yet.", "", RESULTS_END])
@@ -882,12 +1017,13 @@ def results_markdown(runs: list, sync: dict | None = None, marks: list | None = 
     replayed = [r for r in sizes if r["replay"]]
     forms = "; ".join(f"{enc} runs: {form.caption()}" for enc, form in INTENDED_WIRE.items())
     lines += [provenance.line(provenance.from_results(runs), node=False), "", f"Wire form (checked per run): {forms}.", ""]
-    lines += size_tables(sizes) + replay_table(replayed) + (sync_output_lines(sync) if sync is not None else []) + (sync_marks_lines(marks) if marks is not None else []) + cost_tables(runs) + [RESULTS_END]
+    lines += size_tables(sizes) + replay_table(replayed) + (sync_output_lines(sync) if sync is not None else []) + (sync_marks_lines(marks) if marks is not None else []) + (stream_field_lines(fields) if fields is not None else []) + cost_tables(runs) + [RESULTS_END]
     return "\n".join(lines)
 
 
 def render(readme_path: pathlib.Path, runs: list, check_only: bool) -> bool:
-    generated = results_markdown(runs, sync_outputs(runs) if runs else None, sync_marks(runs) if runs else None)
+    generated = results_markdown(runs, sync_outputs(runs) if runs else None, sync_marks(runs) if runs else None,
+                            stream_fields(runs) if runs else None)
     readme = readme_path.read_text(encoding="utf-8")
     start, end = readme.index(RESULTS_HEADING), readme.index(RESULTS_END) + len(RESULTS_END)
     if check_only:
@@ -917,7 +1053,8 @@ def main():
     if runs:
         check(runs)
     if args.markdown:
-        print(results_markdown(runs, sync_outputs(runs) if runs else None, sync_marks(runs) if runs else None))
+        print(results_markdown(runs, sync_outputs(runs) if runs else None, sync_marks(runs) if runs else None,
+                            stream_fields(runs) if runs else None))
         return
     readme = HERE / "README.md"
     if args.check:

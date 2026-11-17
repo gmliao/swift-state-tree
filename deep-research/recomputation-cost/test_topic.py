@@ -335,5 +335,110 @@ class FirstRecordsTests(unittest.TestCase):
             self.assertEqual(done.stdout + done.stderr, "")
 
 
+
+class StreamFieldsTests(unittest.TestCase):
+    """stream_fields.py's frame reading, and regenerate.py's gate on the committed stream-fields.json."""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, str(TOPIC.parent))
+        global stream_fields, pack
+        import stream_fields
+        from test_syncmarks import pack
+
+    def test_merged_frame(self):
+        plain = [12, None, 1, [3, 4]]
+        merged = [27, [0, "1"], 4, 0b101, [5, 6], 7]
+        events = [[1, 2, "e"]]
+        frame = pack([107, [2, 7, plain, merged], events])
+        f = stream_fields.read_msgpack(frame)
+        self.assertEqual((f["opcode"], f["seq"]), (2, 7))
+        self.assertEqual([e[1] for e in f["entries"]], [1, 2])
+        self.assertEqual(f["events"], len(pack(events)))
+        self.assertEqual(sum(e[2] for e in f["entries"]), len(pack(plain)) + len(pack(merged)))
+        self.assertEqual(f["overhead"], len(frame) - f["events"] - sum(e[2] for e in f["entries"]))
+
+    def test_bare_update_and_other_frames(self):
+        f = stream_fields.read_msgpack(pack([1, 1, [9, None, 2]]))
+        self.assertEqual((f["opcode"], f["events"], [e[1] for e in f["entries"]]), (1, 0, [1]))
+        self.assertEqual(stream_fields.read_msgpack(b'{"kind": "joinResponse"}'), {"kind": "joinResponse"})
+
+    def test_refused_frames(self):
+        cases = {
+            "mask with a missing value": pack([107, [2, 1, [27, None, 4, 0b11, 5]], []]),
+            "plain set without a value": pack([107, [2, 1, [12, None, 1]], []]),
+            "bytes after the frame": pack([107, [2, 1], []]) + b"\x00",
+            "107 without events": pack([107, [2, 1]]),
+        }
+        for name, frame in cases.items():
+            with self.subTest(name), self.assertRaises(ValueError):
+                stream_fields.read_msgpack(frame)
+
+    def test_json_frame_spans(self):
+        text = '{"seq": 4, "patches": [ {"path": "/a", "op": "replace", "value": 1} , {"op": "remove", "path": "/b"}], "type": "diff"}'
+        f = stream_fields.read_json(text.encode())
+        self.assertEqual((f["opcode"], f["seq"], len(f["entries"])), (2, 4, 2))
+        spans = [len('{"path": "/a", "op": "replace", "value": 1}'), len('{"op": "remove", "path": "/b"}')]
+        self.assertEqual([e[2] for e in f["entries"]], spans)
+        self.assertEqual(f["overhead"], len(text) - sum(spans))
+        self.assertEqual(stream_fields.read_json(b'{"kind": "event", "payload": {}}'), {"kind": "event"})
+
+    def test_view_fields(self):
+        self.assertEqual(stream_fields.view_fields({"1": {"a": 1, "b": 2}, "2": {"a": 3}}), 3)
+        self.assertEqual(stream_fields.view_fields({"position": {"v": 1}, "health": 3}), 2)
+        self.assertEqual(stream_fields.view_fields({}), 0)
+        self.assertEqual(stream_fields.view_fields(5), 1)
+
+    def mutated(self, change):
+        data = json.loads(regenerate.STREAM_FIELDS.read_text(encoding="utf-8"))
+        change(data["processes"])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name) / "stream-fields.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def test_gate(self):
+        runs = regenerate.load(TOPIC / "results")
+        processes = regenerate.stream_fields(runs)
+        self.assertEqual(sum(r["outputs"] for e in processes.values() for r in e["rooms"].values()), 45564)
+        lines = "\n".join(regenerate.stream_field_lines(processes))
+        self.assertIn("| messagepack p10 c5 r2 |", lines)
+        first = lambda d: d[sorted(d)[0]]
+        room = lambda d: first(first(d)["rooms"])
+
+        def file_missing(d):
+            first(d)["files"] -= 1
+
+        def unexplained(d):
+            room(d)["unexplained_rounds"] = 1
+
+        def too_many_recipients(d):
+            room(d)["max_recipients"] = 99
+
+        def rounds_short(d):
+            room(d)["rounds_without_frames"] -= 1
+
+        def second_silent_hash(d):
+            room(d)["silent_hashes"] = ["x/y"]
+            first(d)["rooms"][sorted(first(d)["rooms"])[1]]["silent_hashes"] = ["a/b"]
+
+        def other_record(d):
+            room(d)["record_sha256"] = "0" * 64
+
+        def unknown_frame(d):
+            first(d)["frames"]["opcode-9"] = 1
+
+        def bytes_unbalanced(d):
+            first(d)["diff"]["bytes"] += 1
+
+        def process_missing(d):
+            del d[sorted(d)[0]]
+
+        for change in (file_missing, unexplained, too_many_recipients, rounds_short, second_silent_hash,
+                       other_record, unknown_frame, bytes_unbalanced, process_missing):
+            with self.subTest(change.__name__), self.assertRaises(SystemExit):
+                regenerate.stream_fields(runs, self.mutated(change))
+
 if __name__ == "__main__":
     unittest.main()

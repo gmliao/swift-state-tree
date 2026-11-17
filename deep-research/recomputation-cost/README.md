@@ -153,6 +153,52 @@ Sync stream markers in the 130 records the sizes runs kept (the cost runs' recor
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 130 | 780 | 780 | 0 | 0 | 0 | 0 | 780 | 45,564 | 340 | 0 |
 
+### Sync bytes against the fields sent
+
+Each sizes run's stream dump (`--stream-dir`) holds every frame each session received; `stream-fields.json` (`stream_fields.py`) decodes all of them. A round is one sync output of one room (its seq, the same in every session's frames). A patch is one entry of a frame as sent; a field is one value it sets or removes: 1 for a plain entry, the mask's bit count for a merged entry (`[parent, keys, op, mask, v1, …]`, one value per bit). Each session's first state frame is its full view and isn't counted here; the later ones, key scope resets included, are. Measured bytes are a frame's bytes without the events merged into it: its entries plus a fixed overhead (wrapper, opcode, seq, array headers, json keys and commas). The join response and event frames are left out, and so are WebSocket framing and compression. An entry carried, identical, by every recipient's frame of a round counts as broadcast, the rest as per-player.
+
+| run | rounds | recipients | broadcast fields per round (mean / median) | per-player fields per round | patches per round | fields per round (mean / median) | measured bytes per round |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| json p2 c5 r1 | 3,471 | 1.99 | 5.56 / 6 | 0.00 | 11.1 | 11.1 / 12 | 1,004.8 |
+| json p2 c20 r1 | 3,471 | 1.99 | 5.56 / 6 | 0.00 | 11.1 | 11.1 / 12 | 1,004.7 |
+| json p5 c5 r1 | 3,481 | 4.96 | 6.19 / 6 | 0.00 | 30.9 | 30.9 / 30 | 2,785.8 |
+| json p5 c20 r1 | 3,481 | 4.96 | 6.11 / 6 | 0.00 | 30.5 | 30.5 / 30 | 2,751.0 |
+| json p10 c5 r1 | 3,504 | 9.90 | 7.31 / 6 | 0.00 | 72.8 | 72.8 / 60 | 6,542.1 |
+| json p10 c20 r1 | 3,504 | 9.90 | 7.29 / 6 | 0.00 | 72.6 | 72.6 / 60 | 6,526.2 |
+| messagepack p2 c5 r1 | 3,472 | 1.99 | 5.56 / 6 | 0.00 | 7.6 | 11.1 / 12 | 130.8 |
+| messagepack p2 c20 r1 | 3,471 | 1.99 | 5.55 / 6 | 0.00 | 7.6 | 11.1 / 12 | 130.6 |
+| messagepack p5 c5 r1 | 3,491 | 4.96 | 6.14 / 6 | 0.00 | 21.2 | 30.6 / 30 | 363.1 |
+| messagepack p5 c20 r1 | 3,492 | 4.96 | 6.07 / 6 | 0.00 | 21.0 | 30.3 / 30 | 359.3 |
+| messagepack p10 c5 r1 | 3,511 | 9.89 | 7.29 / 6 | 0.00 | 50.5 | 72.7 / 60 | 867.9 |
+| messagepack p10 c5 r2 | 3,517 | 9.88 | 7.31 / 6 | 0.00 | 50.7 | 72.8 / 60 | 868.6 |
+| messagepack p10 c20 r1 | 3,511 | 9.89 | 7.26 / 6 | 0.00 | 50.4 | 72.4 / 60 | 864.4 |
+
+Rounds are the records' sync outputs: 45,564 in 130 rooms, of which 57 sent no frame (all with the same broadcast and per-player hashes, those of an empty update). No round sent a per-player field: every entry was in every recipient's frame.
+
+The model: bytes per round ≈ fields per round × s, where fields per round is the broadcast fields times the recipients plus the per-player fields, and s a mean size per field. s is the entries' bytes over their fields, per encoding, from the runs at the other cadence, so no row is predicted from its own bytes. A second s comes from the full views (their entries' bytes over their fields, a map of objects counting its objects' members): those fields are entity properties set at once, not the fields a diff sets, so that column is shown only for comparison. The fixed overhead isn't in the model.
+
+| run | s, other cadence (B) | predicted bytes per round | measured bytes per round | measured / predicted | s, full views (B) | predicted from full views |
+|---|---:|---:|---:|---:|---:|---:|
+| json p2 c5 r1 | 83.62 | 928.6 | 1,004.8 | 1.082 | 26.80 | 297.6 |
+| json p2 c20 r1 | 83.61 | 928.2 | 1,004.7 | 1.082 | 26.80 | 297.5 |
+| json p5 c5 r1 | 83.62 | 2,582.2 | 2,785.8 | 1.079 | 26.80 | 827.4 |
+| json p5 c20 r1 | 83.61 | 2,546.5 | 2,751.0 | 1.080 | 26.80 | 816.1 |
+| json p10 c5 r1 | 83.62 | 6,089.7 | 6,542.1 | 1.074 | 26.80 | 1,951.4 |
+| json p10 c20 r1 | 83.61 | 6,073.1 | 6,526.2 | 1.075 | 26.80 | 1,946.4 |
+| messagepack p2 c5 r1 | 11.03 | 122.5 | 130.8 | 1.068 | 13.51 | 150.0 |
+| messagepack p2 c20 r1 | 11.07 | 122.6 | 130.6 | 1.065 | 13.51 | 149.6 |
+| messagepack p5 c5 r1 | 11.03 | 337.8 | 363.1 | 1.075 | 13.51 | 413.5 |
+| messagepack p5 c20 r1 | 11.07 | 334.8 | 359.3 | 1.073 | 13.51 | 408.7 |
+| messagepack p10 c5 r1 | 11.03 | 801.4 | 867.9 | 1.083 | 13.51 | 981.2 |
+| messagepack p10 c5 r2 | 11.03 | 803.3 | 868.6 | 1.081 | 13.51 | 983.6 |
+| messagepack p10 c20 r1 | 11.07 | 800.8 | 864.4 | 1.079 | 13.51 | 977.4 |
+
+Fixed overhead per frame, json: 43.5 B on average (36–68 B), 7.1 % of the measured bytes.
+
+Fixed overhead per frame, messagepack: 5.9 B on average (5–7 B), 7.2 % of the measured bytes.
+
+Only this topic's sizes runs kept every frame; the EncodingBenchmark and ws-loadtest data sets record bytes per sync or per update but no fields per round, so this check covers this topic only.
+
 Recording cost, 200 rooms, recording on against off, 4 repeats in ABBA order (on-off, off-on, off-on, on-off). ServerLoadTest runs the simulated clients in the same process, so CPU is the server's and the clients' together: the on − off difference is the recording's cost, and the on ÷ off ratio understates it (its denominator includes the clients). CPU % is of one core; core-ms per room-tick is CPU over rooms × ticks. The paired ratio is each repeat's on ÷ off, its median and [min–max] over the repeats.
 
 | players | cadence | actions/s on / off | CPU % on / off | on − off, CPU points | on − off, core-ms / room-tick | CPU on ÷ off, median [min–max] |
