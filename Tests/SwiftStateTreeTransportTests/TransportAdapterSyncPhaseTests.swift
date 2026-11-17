@@ -878,7 +878,7 @@ struct TransportAdapterSyncPhaseTests {
             await f.keeper.waitUntilDrained()
             #expect(await f.transport.closeCodes(for: f.session) == [SessionClose.Code.landFailed])
         } else {
-            #expect(await f.adapter.waitForOutboundDrain())
+            await f.adapter.waitForOutboundIdleForTesting()
             #expect(f.keeper.failure == nil, "no events: the state-only frame says the same")
             #expect(await f.frameCount() > before)
         }
