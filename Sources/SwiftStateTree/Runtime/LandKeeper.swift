@@ -3174,7 +3174,33 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// compares the synced state with it and warns once per key when the handler wrote
     /// (`warnIfThrowWrote`). `nil` skips the check (replay, or a handler whose state nothing
     /// reads afterwards). Release builds never copy, and never build the input's name.
+    ///
+    /// `detectsAccess` (an input's handler, #535 §3.7): the handler runs with the `@Sync` access
+    /// count installed (`SyncWriteAccess`), and a throw after mutable access sets
+    /// `handlerThrewAfterAccess` before the error is rethrown; `applyInputs` then ends the land.
     private func withMutableStateSync<R>(
+        throwWriteInput: @autoclosure () -> ThrowWriteInput?,
+        detectsAccess: Bool = false,
+        _ body: (inout State) throws -> R
+    ) throws -> R {
+        guard detectsAccess else {
+            return try runHandlerBody(throwWriteInput: throwWriteInput(), body)
+        }
+        do throws(SyncWriteAccess.AccessedThrow) {
+            return try SyncWriteAccess.counting {
+                try runHandlerBody(throwWriteInput: throwWriteInput(), body)
+            }
+        } catch {
+            if error.accessed { handlerThrewAfterAccess = true }
+            throw error.error
+        }
+    }
+
+    /// Set by `withMutableStateSync(detectsAccess: true)` when the handler threw after mutable
+    /// access to synced state; read and cleared by `applyInputs` for the item it is applying.
+    private var handlerThrewAfterAccess = false
+
+    private func runHandlerBody<R>(
         throwWriteInput: @autoclosure () -> ThrowWriteInput?,
         _ body: (inout State) throws -> R
     ) rethrows -> R {
@@ -3483,7 +3509,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Execute handler and capture response
             let response = try withMutableStateSync(
-                throwWriteInput: ThrowWriteInput("action \(String(describing: actionItem.actionType))", sequence: actionItem.sequence)
+                throwWriteInput: ThrowWriteInput("action \(String(describing: actionItem.actionType))", sequence: actionItem.sequence),
+                detectsAccess: true
             ) { state in
                 try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
             }
@@ -3535,7 +3562,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedClientEvent.sequence)
 
             // Execute handlers
-            try withMutableStateSync(throwWriteInput: ThrowWriteInput("event \(eventItem.event.type)", sequence: eventItem.sequence)) { state in
+            try withMutableStateSync(throwWriteInput: ThrowWriteInput("event \(eventItem.event.type)", sequence: eventItem.sequence), detectsAccess: true) { state in
                 for handler in matchingHandlers {
                     try handler.invoke(&state, event: eventItem.event, ctx: ctx)
                 }
@@ -3566,7 +3593,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
             try withMutableStateSync(
-                throwWriteInput: ThrowWriteInput("serverInput \(inputItem.typeIdentifier)", sequence: inputItem.sequence)
+                throwWriteInput: ThrowWriteInput("serverInput \(inputItem.typeIdentifier)", sequence: inputItem.sequence),
+                detectsAccess: true
             ) { state in
                 for handler in handlers {
                     try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
@@ -3657,7 +3685,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
                 // A discarded join's writes stay and reach the other players: checked.
-                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnJoin", sequence: lifecycleItem.sequence)) { state in
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnJoin", sequence: lifecycleItem.sequence), detectsAccess: true) { state in
                     try handler(&state, ctx)
                 }
             case .leave:
@@ -3680,7 +3708,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // The player is gone whether OnLeave succeeds or throws: the broadcast-only sync
                 // follows the pass either way. Deferred until after the pending items' removal.
                 applied.shouldSyncBroadcastOnly = true
-                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnLeave", sequence: lifecycleItem.sequence)) { state in
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnLeave", sequence: lifecycleItem.sequence), detectsAccess: true) { state in
                     try handler(&state, ctx)
                 }
             }
@@ -3882,16 +3910,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Applies `items` in order (synchronous), on every path (legacy pass, in-turn input turn,
     /// in-turn tick turn), and removes them all from the queue in the same segment.
     ///
-    /// An input P whose handler throws fails alone: its outcome is its error (its caller gets
-    /// it), the events it emitted are dropped, a failed join is discarded
-    /// (`discardIfFailedJoin`), and the inputs after it continue in the same pass with their own
-    /// outcomes. P is not run again and blocks nothing. P is recorded like the others, in order
-    /// (`applyPendingItem` records before the handler runs), so replay runs it again and it
-    /// fails the same way. What P wrote to the state before it threw stays and goes out with the
-    /// next sync like any other change (undoing it needs a per-input savepoint, #87). A throwing
-    /// OnLeave is such a case: the keeper has already removed the player and the broadcast-only
-    /// sync still runs, but whatever OnLeave would have cleaned up after the throw (say, the
-    /// player's entry in the state) stays in the state and is broadcast as it is.
+    /// An input P whose handler throws **before any mutable access to synced state** fails alone:
+    /// its outcome is its error (its caller gets it), the events it emitted are dropped, a
+    /// failed join is discarded (`discardIfFailedJoin`), and the inputs after it continue in the
+    /// same pass with their own outcomes. P is not run again and blocks nothing. P is recorded
+    /// like the others, in order (`applyPendingItem` records before the handler runs), so replay
+    /// runs it again and it fails the same way.
+    ///
+    /// A handler that throws **after** mutable access to a `@Sync` field (`SyncWriteAccess`, an
+    /// action, client event, server input, OnJoin or OnLeave) ends the land (#535 §3.7, #87):
+    /// what it wrote can't be undone yet (#87's undo log), so its caller gets its error, the
+    /// batch ends at it (the inputs behind it get `landClosed`), the tick handler doesn't run,
+    /// and the land fails with `.handlerWrite` at stage `.input` and P's sequence. P was recorded,
+    /// so replay applies it, sees it throw after access again, and ends the tick there. Not seen
+    /// (the input fails alone, as before): a whole-state replacement, a copy assigned back, and
+    /// storage without `@Sync`.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
@@ -3903,12 +3936,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A transport-reported failure (#535) ends the batch too: the inputs behind it are
         // dropped with `landClosed` by the settle.
         var appliedFailure: LandFailure?
+        // A handler that threw after mutable access (#535 §3.7): the land ends at it.
+        var handlerWriteFailure: LandFailure?
         for (index, item) in items.enumerated() {
             if case let .landFailure(failureItem) = item {
                 consumed = index + 1
                 appliedFailure = failureItem.failure
                 break
             }
+            handlerThrewAfterAccess = false
             let sequenceBefore = outputCollector.nextSequence
             let isJoin: Bool
             if case let .lifecycle(lifecycle) = item, lifecycle.kind == .join { isJoin = true } else { isJoin = false }
@@ -3924,6 +3960,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 outcomes[item.sequence] = .failure(error)
                 outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
                 discardIfFailedJoin(item)
+                if handlerThrewAfterAccess {
+                    handlerThrewAfterAccess = false
+                    noteReplayHandlerWrite(at: item.sequence)
+                    consumed = index + 1
+                    handlerWriteFailure = LandFailure(
+                        kind: .handlerWrite,
+                        detail: "\(item.handlerWriteName) threw after mutable access to synced state: \(error)",
+                        position: LandFailurePosition(sequence: item.sequence, stage: .input)
+                    )
+                    break
+                }
                 logger.error("Input failed: its handler threw; the inputs after it continue", metadata: [
                     "sequence": .stringConvertible(item.sequence),
                     "error": .string(String(describing: error)),
@@ -3939,6 +3986,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         noteJoinInputsConsumed(joinResults)
         if appliedShutdown { completeShutdownTurn() }
         if let appliedFailure { failLand(appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty) }
+        // The failing input itself was applied and recorded, so its pass applied inputs.
+        if let handlerWriteFailure { failLand(handlerWriteFailure, endsInputs: true, appliedInputs: true) }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount, consumed: consumed)
     }
 
@@ -4085,6 +4134,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Sets `replayRecordsPassOrdinals` from the record's version (re-evaluation only).
     package func setReplayRecordsPassOrdinals(_ value: Bool) {
         replayRecordsPassOrdinals = value
+    }
+
+    /// Re-evaluation: the sequences whose handler threw after mutable access (#535 §3.7). The
+    /// engine checks that a recorded `.handlerWrite` failure's input did so again.
+    private var replayHandlerWrites: Set<Int64> = []
+
+    private func noteReplayHandlerWrite(at sequence: Int64) {
+        if mode == .reevaluation { replayHandlerWrites.insert(sequence) }
+    }
+
+    /// Whether the replayed input `sequence` threw after mutable access (re-evaluation only).
+    package func replayHandlerWrote(at sequence: Int64) -> Bool {
+        replayHandlerWrites.contains(sequence)
     }
 
     /// Installs `replayFailureEnd` (re-evaluation only).
@@ -4379,7 +4441,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Process pending actions before tick handler
         // Don't flush outputs yet - defer until after tick handler to ensure
         // outputs include state changes from the tick handler
-        // A failing input fails alone; the others and the tick handler still run.
+        // A failing input fails alone; the others and the tick handler still run, unless it threw
+        // after writing synced state (#535 §3.7), which ends the land below.
         if replayPasses.isEmpty {
             await processPendingActions(flushOutputsImmediately: false)
         } else if await replayRecordedPasses(replayPasses, tickId: tickId) {
@@ -4580,7 +4643,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         takePendingFold(transport: transport)
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
-        // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
+        // A failing input fails alone; the others and the tick handler still run (`applyInputs`),
+        // unless it threw after writing synced state (#535 §3.7), which ends the land below.
         let applied = applyInputs(readyPendingItemsInOrder(), executingTickId: tickId).applied
         if failure != nil {
             // The land failed in this batch (#535): no tick handler, no events, no sync. The
@@ -5712,6 +5776,23 @@ extension LandKeeper.PendingItem {
         case let .serverInput(item): return item.sequence
         case let .shutdown(item): return item.sequence
         case let .landFailure(item): return item.sequence
+        }
+    }
+
+    /// The input's handler, as `LandFailure.detail` names it (#535 §3.7).
+    var handlerWriteName: String {
+        switch self {
+        case let .action(item): return "action \(item.actionType)"
+        case let .clientEvent(item): return "event \(item.event.type)"
+        case let .lifecycle(item):
+            switch item.kind {
+            case .join: return "OnJoin"
+            case .leave: return "OnLeave"
+            case .initialize: return "OnInitialize"
+            }
+        case let .serverInput(item): return "serverInput \(item.typeIdentifier)"
+        case .shutdown: return "shutdown"
+        case .landFailure: return "landFailure"
         }
     }
 

@@ -141,6 +141,12 @@ public extension SyncPolicy {
 /// typed `Any` or `any P`, and a hand-written conversion aren't seen: a value there that can't
 /// be converted ends the land at its first sync. See
 /// `docs/core/sync.md#what-registration-refuses`.
+///
+/// **A handler that throws after mutable access ends the land (#535 §3.7).** The setter and
+/// `_modify` count each mutable access on the current thread while an input handler runs
+/// (`SyncWriteAccess`); a throw after one ends the land with `LandFailure.Kind.handlerWrite`.
+/// Access counts, not change: validate before taking `inout` access. A whole-state replacement
+/// and storage without `@Sync` aren't counted. See `docs/core/runtime.md#inputs-and-turns`.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     private var _wrappedValue: Value
@@ -149,6 +155,8 @@ public struct Sync<Value: Sendable>: Sendable {
     public var wrappedValue: Value {
         get { _wrappedValue }
         set {
+            // A handler's mutable access, for the #87 detector (#535 §3.7).
+            SyncWriteAccess.noteAccess()
             // Mark as dirty whenever value is set (no comparison needed)
             _wrappedValue = newValue
             _isDirty = true
@@ -161,6 +169,7 @@ public struct Sync<Value: Sendable>: Sendable {
         // doesn't run the code after the yield, and a write made before the throw is kept (#87),
         // so it must be synced.
         _modify {
+            SyncWriteAccess.noteAccess()
             _isDirty = true
             yield &_wrappedValue
         }
