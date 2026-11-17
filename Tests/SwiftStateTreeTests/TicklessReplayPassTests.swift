@@ -290,7 +290,7 @@ private func makePassReplayKeeper(_ path: String, sink: PassReplaySink) async th
     return keeper
 }
 
-@Suite("Tickless replay in recorded apply order (#325, #321)", .timeLimit(.minutes(1)))
+@Suite("Tickless replay in recorded apply order (#325, #321)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TicklessReplayPassTests {
     @Test("An input overtaking a pending action replays in live order, across sessions and kinds", arguments: [false, true])
     func overtakingInputsReplayInLiveOrder(inTurn: Bool) async throws {

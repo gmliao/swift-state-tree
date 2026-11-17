@@ -192,7 +192,7 @@ private func expectCancellation(
     }
 }
 
-@Suite("Action jobs: resolvers off the caller's wait", .timeLimit(.minutes(1)))
+@Suite("Action jobs: resolvers off the caller's wait", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct ActionJobTests {
     @Test("A tick land's action with resolvers is submitted without waiting for them")
     func submitReturnsBeforeResolvers() async throws {

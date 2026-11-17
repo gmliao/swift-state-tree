@@ -364,7 +364,7 @@ private func serverEvents(in frames: [ReevaluationTickFrame]) -> [ReevaluationRe
 
 // MARK: - Tests
 
-@Suite("Replay sequence watermark")
+@Suite("Replay sequence watermark", .resolverDeadlinesOff)
 struct ReplaySequenceWatermarkTests {
 
     // Test 1

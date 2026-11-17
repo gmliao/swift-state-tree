@@ -285,7 +285,7 @@ private func outcome(
     }
 }
 
-@Suite("Each input's own outcome; a throwing input fails alone", .timeLimit(.minutes(1)))
+@Suite("Each input's own outcome; a throwing input fails alone", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct PerSequenceResultTests {
     @Test("A caller gets its own response, not that of an input run after it (#88)", arguments: [false, true])
     func ownResponse(inTurn: Bool) async throws {

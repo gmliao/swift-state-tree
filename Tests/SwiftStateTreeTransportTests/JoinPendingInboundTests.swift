@@ -232,7 +232,8 @@ private struct PendingHarness {
 
 @Suite(
     "Frames of a session whose join waits for its flip (#69)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: joins don't complete in a turn")
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: joins don't complete in a turn"),
+    .resolverDeadlinesOff
 )
 struct JoinPendingInboundTests {
     @Test("Frames sent during the join are applied after OnJoin, in order, after the JoinResponse")

@@ -222,7 +222,7 @@ private func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
 
 // MARK: - Tests
 
-@Suite("TransportAdapter debug freeze (#79)", .timeLimit(.minutes(1)))
+@Suite("TransportAdapter debug freeze (#79)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TransportAdapterDebugFreezeTests {
 
     @Test("Freeze sends a settle cycle with pending changes; projection equals the snapshot of that state")
