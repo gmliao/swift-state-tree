@@ -257,7 +257,7 @@ This state belongs to the adapter, not the keeper, so the keeper rule doesn't bi
 - the first-sync suspensions (TA 5722-5740);
 - the legacy event flush, per event;
 - the broadcast-only sync;
-- **debug settle** (TA 6671-6682): it reads the state with an await (`beginSyncLocatedIfRecording`), then runs `runFullSyncPhase`; the run is skipped on a stale generation;
+- **debug settle** (TA 6671-6682): it reads the state with an await (`beginSyncLocatedIfRecording`), then runs `runFullSyncPhase`. A settle whose freeze generation went stale during that await still runs its plan: the plan syncs the current state, which is harmless, and the result isn't published, because the generation is checked after the cycle's last await;
 - **the action-result output** (TA 5941-5993): it has its own ticket domain (the action's sequence), and is covered below.
 
 The PR lists every `await` in these paths, and a test holds at each (§8).
