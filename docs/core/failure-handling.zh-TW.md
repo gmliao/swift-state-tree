@@ -47,13 +47,13 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
-| 執行時 conversion 拋出錯誤的欄位 | 該次同步捨棄這個欄位（client 保留舊值），計數並記錄，frame 的其餘部分照常送出（`SyncEngine.swift:1405-1428`、`TransportAdapter.swift:4190`） | 目標：關閉 land（#535） |
+| 執行時 conversion 拋出錯誤的欄位 | land 以 `syncConversion` 結束，並指出該欄位；plan 不提交也不送出任何東西，其 session 以 4016 關閉（`SyncPhasePlan.noteExtractionDrops`）。加入者的 view、resync 的 view 與 seed 也一樣 | 已符合（#535 第 1、3、4、6 列） |
 | 轉成相同字串的 dictionary key | 後一筆默默覆蓋前一筆（`SnapshotValue.swift:424`） | 目標：關閉 land（#535） |
-| 編碼無法承載的 patch（例如 JSON 中的非有限數） | 在 opcode 107 合併廣播 frame 中：land 結束，其 session 以 4016 關閉（`encodeMergedBroadcastFrameOrFail`）。在 per-player 或合併式 frame 中：去掉該 patch 重新編碼後送出；該欄位在 client 上維持過期，直到它再次改變（`encodeDroppingUnencodablePatches`） | 合併廣播 frame 已符合；per-player 與合併式 frame 的目標：關閉 land（#535 PR 2） |
-| 路徑在 schema 之外的 patch | 同上一列，並計入 `unmappedPathPatches`（一次失敗計一次） | 同上一列（#535 D6）。目前全為 `let` 的 `@SnapshotConvertible` struct 在 schema 中沒有其下的路徑（#566） |
-| 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。in-turn sync：keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。legacy sync（未啟用 in-turn）：adapter 不再送出任何東西並提交失敗，keeper 在下一個 turn 套用（`submitLandFailure`）。加入者獨立的 firstSync plan 拋出錯誤時，在 #535 PR 2（第 16 列）之前仍會排一次 follow-up | 已符合 |
+| 編碼無法承載的 patch（例如 JSON 中的非有限數） | 不論在哪種 frame，land 都以 `syncEncode` 結束：合併廣播 frame（`encodeMergedBroadcastFrameOrFail`）、per-player 或合併式 frame、row addressing 表格的 row（`planPerPlayerFrames`、`stateFrameEncodeFailure`）。不會去掉它重新編碼，失敗的 cycle 不送出任何東西 | 已符合（#535 第 8、9、10 列） |
+| 路徑在 schema 之外的 patch | 同上一列，並計入 `unmappedPathPatches`（一次失敗計一次） | 已符合（#535 D6）。目前全為 `let` 的 `@SnapshotConvertible` struct 在 schema 中沒有其下的路徑（#566） |
+| 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。in-turn sync：keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。legacy sync（未啟用 in-turn）：adapter 不再送出任何東西並提交失敗，keeper 在下一個 turn 套用（`submitLandFailure`）。加入者獨立的 firstSync plan 拋出錯誤時，同樣結束 land，不排 follow-up（第 16 列） | 已符合 |
 | 單一玩家的狀態 frame 或 broadcast-only frame 完全無法編碼 | land 結束；失敗的 cycle 不送任何東西，其 session 以 4016 關閉（`planPerPlayerFrames`、`planBroadcastOnlySeparateFrames`） | 已符合（#535 第 10、12 列） |
-| resync 或第一次 view 的完整 view 無法編碼 | 重試；超過上限後以 4012 `unencodableView` 關閉 session（`commitFirstViewEncodeFailures`） | 目標：第一次失敗就關閉 land，不重試；不再送出 4012（#535 PR 2） |
+| resync 或第一次 view 的完整 view 無法編碼 | 第一次失敗就結束 land，不重試；不再送出 4012（`planPerPlayerFrames`、`planFirstSync`） | 已符合（#535 第 11、13 列） |
 | 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event，或 event frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`）。未使用 opcode 107：記錄錯誤，event 不送出 | opcode 107 已符合（#535 第 17 列）；未使用時的目標：關閉 land（#521） |
 | 寫入狀態後才拋出錯誤的 handler | 該輸入單獨失敗，之後的輸入繼續；它的寫入保留並同步出去，debug build 會發出警告（`LandKeeper.swift:3836-3837`、`:3189`） | 目標：關閉 land（#535）；部分寫入由 #87 追蹤 |
 | replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:277`、`TransportMessageEncoder.swift:346`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
@@ -82,7 +82,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 ## Close code
 
 - **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session，不論是直接建立還是由 host 管理。有 host 時，失敗的拆除與管理端停止一樣停止 land（detach、每個 session 的 leave、關閉），而 close code 在每個 session 的關閉請求發出時才讀取：管理端停止進行中 land 失敗時，關閉請求在失敗之後發出的每個 session 都收到 4016。已關閉、或關閉請求在失敗之前就發出的 session 維持 4014；請求送往 transport 的最後一段途中才失敗的也一樣。host 關機流程一旦接手 session 自行關閉（`closeSessionsForShutdown`），之後才失敗的 land，其 session 以關機的 1001 關閉。
-- **4012 `unencodableView`：** 目前在 resync 或第一次 view 的 frame 持續無法編碼時送出。#535 落地後保留不用，不再送出。
+- **4012 `unencodableView`：** 保留不用，不再送出（#535）。在此之前，resync 或第一次 view 的 frame 持續無法編碼時會以它關閉 session；現在這類失敗以 4016 結束 land。
 - **4014 `landStopped`：** 管理端停止一個沒有失敗的 land。
 
 ## 其他系統的做法
