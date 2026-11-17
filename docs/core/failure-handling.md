@@ -81,7 +81,7 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 
 ## Close codes
 
-- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it, built directly or hosted. With a host, the failure's teardown stops the land as an admin stop does (detach, each session's leave, the close), and the code is read per session when its close request is issued: a land that fails while an admin stop runs gives 4016 to every session whose close request comes after the failure. A session already closed, or whose close request was issued before the failure, keeps 4014; so does a failure during the request's last hop to the transport.
+- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it, built directly or hosted. With a host, the failure's teardown stops the land as an admin stop does (detach, each session's leave, the close), and the code is read per session when its close request is issued: a land that fails while an admin stop runs gives 4016 to every session whose close request comes after the failure. A session already closed, or whose close request was issued before the failure, keeps 4014; so does a failure during the request's last hop to the transport. During a host shutdown, the shutdown has already taken every session for its own close, so a land that fails then closes them with the shutdown's 1001.
 - **4012 `unencodableView`:** sent today when a resync's or first view's frame keeps failing to encode. Once #535 lands it is reserved and no longer sent.
 - **4014 `landStopped`:** an admin stop of a land that hasn't failed.
 

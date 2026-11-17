@@ -1243,7 +1243,8 @@ enum PayloadFallbackLog {
 /// The host's stop for a failed land (#535 B2): set once by the server that owns the manager,
 /// read at each instance's creation. A lock, so the server's synchronous init can set it.
 package final class LandFailureStopSlot: @unchecked Sendable {
-    package typealias Stop = @Sendable (LandID, Epoch) async -> Void
+    /// Returns false when no host stopped the land (its server is gone).
+    package typealias Stop = @Sendable (LandID, Epoch) async -> Bool
 
     private let lock = NSLock()
     private var stop: Stop?

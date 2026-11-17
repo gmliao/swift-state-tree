@@ -1851,6 +1851,41 @@ struct FailedLandStopTests {
         try await f.host.shutdown()
     }
 
+    @Test("a failure that shares another instance's stop still in flight waits for its end, then stops its own instance: 4016")
+    func failureSharingAnotherEpochsStop() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let first = try #require(await f.server.landManager.getLand(landID: f.landID))
+        // The first instance's admin stop is held after its destroy: its flight is still open.
+        let destroyed = Gate()
+        f.server.stopFlightsForTesting.onAfterDestroyForTesting { _ in await destroyed.arrive() }
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await destroyed.waitForArrivals(1), "the first instance's stop is past its destroy")
+        f.server.stopFlightsForTesting.onAfterDestroyForTesting(nil)
+
+        // A second instance under the ID, which fails while the first stop's flight is open.
+        let (_, connection) = try await f.join("p2")
+        let second = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(second.epoch != first.epoch)
+        await second.keeper.failLandForTesting(testFailure())
+        #expect(await second.keeper.waitForFailureForTesting())
+        destroyed.open()
+
+        guard await bounded({ await second.keeper.forceShutdown() }) != nil else {
+            Issue.record("the teardown hung"); return
+        }
+        #expect(await stop.value == .stopped(timedOut: false))
+        #expect(await connection.closeCode == SessionClose.Code.landFailed, "the second instance's own stop closed its session")
+        #expect(second.keeper.destructionCause == .failed)
+        #expect(await f.server.listLands().contains(f.landID) == false)
+        _ = await f.server.stopLand(landID: f.landID)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
     @Test("stop and failure cycles of one land ID leave no latch behind")
     func cyclesLeaveNoLatch() async throws {
         let events = Events()

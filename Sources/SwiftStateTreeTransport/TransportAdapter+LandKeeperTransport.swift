@@ -107,11 +107,8 @@ extension TransportAdapter: LandKeeperTransport {
     /// the hook returns once that is done. The stop's destroy joins this land's teardown. Built
     /// directly, without a hook, the adapter closes every session it holds.
     public func landDidFail(_ failure: LandFailure) async {
-        if let landFailureHook {
-            await landFailureHook()
-        } else {
-            await closeSessionsForLandFailure(failure)
-        }
+        if let landFailureHook, await landFailureHook() { return }
+        await closeSessionsForLandFailure(failure)
     }
 
     /// Called by the keeper after its destroy handlers ran (no more sync cycles). Stops the

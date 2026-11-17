@@ -92,11 +92,16 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         let stops = self.stops
         let logger = self.logger
         let stopTimeout = self.stopTimeout
-        landManager.landFailureStop.set { landID, epoch in
+        // Weak: the manager holds the slot, and the slot this closure (no cycle). A land's
+        // failure after its server is gone has no host to stop it: its adapter closes its
+        // sessions itself (`landDidFail`'s fallback).
+        landManager.landFailureStop.set { [weak landManager, weak landRouter] landID, epoch in
+            guard let landManager, let landRouter else { return false }
             await Self.stopForFailure(
                 landID: landID, epoch: epoch, landManager: landManager, landRouter: landRouter,
                 stops: stops, timeout: stopTimeout, logger: logger
             )
+            return true
         }
     }
     
@@ -145,7 +150,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         let landManager = self.landManager
         let landRouter = self.landRouter
         let logger = self.logger
-        let flight = stops.flight(for: landID, timeout: stopTimeout) { [stops] detached in
+        let flight = stops.flight(for: landID, epoch: nil, timeout: stopTimeout) { [stops] detached in
             await Self.runStop(
                 landID: landID, epoch: nil, landManager: landManager, landRouter: landRouter,
                 stops: stops, detached: detached, logger: logger
@@ -196,13 +201,13 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         landManager: LandManager<State>,
         landRouter: LandRouter<State>,
         stops: LandStopFlights,
-        detached: StopLatch,
+        detached: StopDetach,
         logger: Logger
     ) async -> StopLandResult {
         let instance = await landManager.detachForStop(landID: landID, epoch: epoch) { detachedEpoch in
             stops.createLatch(for: detachedEpoch)
         }
-        detached.set()
+        detached.set(instance?.epoch)
         guard let instance else { return .notFound }
         logger.info("Stopping land", metadata: [
             "landID": .string(landID.stringValue),
@@ -219,6 +224,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         await instance.keeper.forceShutdown()
         await landRouter.endClosing(epoch: instance.epoch)
         if let latch { stops.removeLatch(for: instance.epoch, ifIdenticalTo: latch) }
+        await stops.afterDestroyForTesting(instance.epoch)
         withExtendedLifetime(instance.adapter) {}
         logger.info("Stopped land", metadata: ["landID": .string(landID.stringValue)])
         return .stopped(timedOut: false)
@@ -230,12 +236,18 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///
     /// - A stop that already detached the epoch (an admin `DELETE`) has its latch: wait for it,
     ///   set at once if that stop is past its sessions.
-    /// - Otherwise it starts the stop, or shares the one in flight for the ID, and waits for its
-    ///   detach step; then for the epoch's latch, if that stop detached the epoch.
-    /// - No latch then: no stop will close this epoch's sessions (the instance isn't stored any
-    ///   more), and it returns at once.
+    /// - Otherwise it starts the stop for the epoch, or shares the one in flight for the ID, and
+    ///   waits for its detach step. If that stop detached this epoch, it waits for the latch.
+    /// - A shared stop that detached another instance of the ID (or none) isn't this epoch's: it
+    ///   waits for that stop's end, which doesn't depend on this land, then runs its own.
+    /// - Its own stop finding no instance: nothing will close this epoch's sessions (the
+    ///   instance isn't stored any more), and it returns at once.
     ///
-    /// None of these waits depend on the destroy, so the teardown can't wait on itself.
+    /// None of these waits depend on this land's destroy, so the teardown can't wait on itself.
+    ///
+    /// During a host shutdown, the router has already taken every session for its own close
+    /// (1001, `closeSessionsForShutdown`), so this stop finds none bound and its sessions close
+    /// with 1001, not 4016: the shutdown's code.
     private static func stopForFailure(
         landID: LandID,
         epoch: Epoch,
@@ -253,14 +265,23 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             "landID": .string(landID.stringValue),
             "epoch": .stringConvertible(epoch),
         ])
-        let flight = stops.flight(for: landID, timeout: timeout) { [stops] detached in
-            await Self.runStop(
-                landID: landID, epoch: epoch, landManager: landManager, landRouter: landRouter,
-                stops: stops, detached: detached, logger: logger
-            )
+        while true {
+            let flight = stops.flight(for: landID, epoch: epoch, timeout: timeout) { [stops] detached in
+                await Self.runStop(
+                    landID: landID, epoch: epoch, landManager: landManager, landRouter: landRouter,
+                    stops: stops, detached: detached, logger: logger
+                )
+            }
+            let detachedEpoch = await flight.detached.wait()
+            // This epoch's latch: the shared stop, or another one meanwhile, detached it.
+            if let latch = stops.latch(for: epoch) {
+                await latch.wait()
+                return
+            }
+            if detachedEpoch == epoch || flight.epoch == epoch { return }
+            // Another instance's stop: its end doesn't wait on this land.
+            _ = await flight.task.value
         }
-        await flight.detached.wait()
-        await stops.latch(for: epoch)?.wait()
     }
     
     public func getReevaluationRecord(landID: LandID) async throws -> Data? {
@@ -375,8 +396,10 @@ final class LandStopFlights: @unchecked Sendable {
         let task: Task<StopLandResult, Never>
         /// The stop's bound, counted from its start.
         let deadline: ContinuousClock.Instant
-        /// Set once the stop's detach step ended, whatever it detached.
-        let detached: StopLatch
+        /// The epoch this stop was started for (a failed land's), or nil (an admin stop).
+        let epoch: Epoch?
+        /// Set once the stop's detach step ended, with the epoch it detached (nil: none).
+        let detached: StopDetach
     }
 
     private let lock = NSLock()
@@ -385,6 +408,21 @@ final class LandStopFlights: @unchecked Sendable {
     private var nextID: UInt64 = 0
     private var onSharedHook: (@Sendable (LandID) -> Void)?
     private var afterSessionsClosedHook: (@Sendable (Epoch) async -> Void)?
+    private var afterDestroyHook: (@Sendable (Epoch) async -> Void)?
+
+    /// Called by a stop after its destroy, before its flight ends (tests).
+    func onAfterDestroyForTesting(_ hook: (@Sendable (Epoch) async -> Void)?) {
+        lock.lock(); defer { lock.unlock() }
+        afterDestroyHook = hook
+    }
+
+    func afterDestroyForTesting(_ epoch: Epoch) async {
+        let hook: (@Sendable (Epoch) async -> Void)? = {
+            lock.lock(); defer { lock.unlock() }
+            return afterDestroyHook
+        }()
+        await hook?(epoch)
+    }
 
     /// Creates the epoch's sessions-closed latch (in the detach's segment), or returns it.
     @discardableResult
@@ -437,8 +475,9 @@ final class LandStopFlights: @unchecked Sendable {
     /// The stop in flight for `landID`, or a new one running `body`.
     func flight(
         for landID: LandID,
+        epoch: Epoch?,
         timeout: Duration,
-        _ body: @escaping @Sendable (StopLatch) async -> StopLandResult
+        _ body: @escaping @Sendable (StopDetach) async -> StopLandResult
     ) -> Flight {
         lock.lock()
         if let existing = flights[landID] {
@@ -451,15 +490,15 @@ final class LandStopFlights: @unchecked Sendable {
         nextID += 1
         let id = nextID
         // The task's end takes the lock, so it removes the entry only after it is stored.
-        let detached = StopLatch()
+        let detached = StopDetach()
         let task = Task {
             let result = await body(detached)
             // A body that returned early still ends its detach step.
-            detached.set()
+            detached.set(nil)
             self.finish(landID, id: id)
             return result
         }
-        let flight = Flight(task: task, deadline: .now + timeout, detached: detached)
+        let flight = Flight(task: task, deadline: .now + timeout, epoch: epoch, detached: detached)
         flights[landID] = (id, flight)
         return flight
     }
@@ -554,5 +593,36 @@ final class StopLatch: @unchecked Sendable {
     var isSetForTesting: Bool {
         lock.lock(); defer { lock.unlock() }
         return isSet
+    }
+}
+
+/// A stop's detach step (#535 B2): set once, with the epoch it detached (nil: none); `wait`
+/// returns that epoch once it is set.
+final class StopDetach: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: Epoch??
+    private var waiters: [CheckedContinuation<Epoch?, Never>] = []
+
+    func set(_ epoch: Epoch?) {
+        lock.lock()
+        guard outcome == nil else { lock.unlock(); return }
+        outcome = .some(epoch)
+        let waiting = waiters
+        waiters.removeAll()
+        lock.unlock()
+        waiting.forEach { $0.resume(returning: epoch) }
+    }
+
+    func wait() async -> Epoch? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Epoch?, Never>) in
+            lock.lock()
+            if let outcome {
+                lock.unlock()
+                continuation.resume(returning: outcome)
+                return
+            }
+            waiters.append(continuation)
+            lock.unlock()
+        }
     }
 }
