@@ -36,6 +36,11 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// Optional RNG seed used for deterministic random number generation.
     /// This is critical for deterministic re-evaluation when RNG is used in game logic.
     public var rngSeed: UInt64? { rngSeedCoding?.value }
+    /// The seed a replay of this record uses: the recorded seed, which is the one the live land
+    /// used, or the seed derived from `landID` when the record has none. A configured RNG
+    /// service's seed is the live seed, unless it equals the `definition.id`-derived seed, which
+    /// `LandKeeper.setLandID` replaces.
+    public var replayRngSeed: UInt64 { rngSeed ?? DeterministicSeed.fromLandID(landID) }
     /// Written as 16 hex digits (a JSON number above 2^53 does not survive JavaScript readers);
     /// a number, as older records wrote it, is still read.
     private let rngSeedCoding: SyncHashCoding?
