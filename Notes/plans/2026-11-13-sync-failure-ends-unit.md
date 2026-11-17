@@ -400,7 +400,7 @@ For every gap, the runtime backstop stays: the land ends at the first throw.
 **Colliding keys** (D8 (b)). Today they throw only in `makeFull`, the replay-hash path. The sync `make` path overwrites silently (SnapshotValue.swift:427), so "close the land at the first throw" would never fire for a type error the maintainer listed. They are detected in the live conversion:
 - `make` checks the insert's previous value (`updateValue` returns non-nil) and throws `SyncError.collidingKeys`;
 - it is a structured type cause, so the land ends;
-- the cost is a nil check per dictionary entry, on the Mirror path only; typed sync tables don't reach it (§7).
+- the cost is a nil check per dictionary entry on the Mirror path, which full views and seeds take even with typed sync tables; the off-path A/B measures it (§7).
 - **The promise covers the library's conversion only.** A custom `toSnapshotValue` that builds its own `.object` has merged its keys before the library sees them; that stays the type's own contract, and the docs say so.
 
 **Entry points:**
@@ -492,7 +492,7 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 
 PR 4 gets the same A/B, for the access count on every write. PR 2 gets it for the collision check.
 
-**PR 2b's collision check (2026-11-17):** a probe replaced the off-path A/B, because the default path doesn't execute the change. With typed sync tables on (the default), the benchmark's lands never reach `make`'s Mirror dictionary branch: 0 hits in the cap100, cap100-moves and vis-tick cells. They hit it only with `USE_SYNC_TABLES=false`, at one `updateValue` result check per entry. `makeFull` is replay-hash only. The method and counts are on #581.
+**PR 2b's collision check (2026-11-17):** the A/B stands. With typed sync tables on, a map field that the tables don't cover (`[Int: MonsterState]`, `[Int: TurretState]` in hero-defense) still goes through `make`'s Mirror dictionary branch whenever a full view or a table seed is planned with entries in it: an in-turn joiner's firstSync, the standalone firstSync, a sync-lag resync and `SyncNodeMapRootSlot.stageSeed`. A first probe saw no hits only because every benchmark join happens before monsters spawn and no cell resyncs. The A/B therefore needs a cell whose window holds populated full views, beside the steady-state cells.
 
 ## 8. Tests
 
