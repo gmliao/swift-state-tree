@@ -110,12 +110,23 @@ struct RegistrationBackstopRoot: StateNodeProtocol {
     init() {}
 }
 
+/// Records the land's destruction and wakes whoever waits for it.
 private actor RegistrationDestroyFlag: LandKeeperTransport {
-    private(set) var destroyed = false
+    private var destroyed = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async { destroyed = true }
+    func onLandDestroyed() async {
+        destroyed = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+
+    func waitUntilDestroyed() async {
+        if destroyed { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
 }
 
 private func isUnsupportedKey(_ problem: SyncRegistrationError.Problem) -> Bool {
@@ -237,7 +248,7 @@ struct SyncRegistrationTests {
         #expect(registration.sync?.problems == [
             .unsupportedKey(path: "RegistrationBackstopRoot.keyed", keyType: "RegistrationOpaqueKey"),
         ])
-        while !(await transport.destroyed) { await Task.yield() }
+        await transport.waitUntilDestroyed()
         #expect(await keeper.currentState().initialized == false, "OnInitialize didn't run")
     }
 
