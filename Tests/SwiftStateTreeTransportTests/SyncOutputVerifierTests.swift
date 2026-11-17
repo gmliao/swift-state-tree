@@ -1226,20 +1226,24 @@ struct SyncOutputVerifierTests {
         #expect(sync.summary.contains("3 events sent outside the merged frame"))
     }
 
-    @Test("Opcode 107: an event that reaches no frame at all ends the land (#535 row 17)")
-    func lostEventEndsTheLand() async throws {
+    @Test(
+        "An event emitted in a turn that reaches no frame ends the land: with opcode 107 (body and own frame fail) and without it (immediate mode) (#535 row 17)",
+        arguments: InTurnEncoding.allCases
+    )
+    func lostEventEndsTheLand(encoding: InTurnEncoding) async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .messagepack)
+        let f = await VerifierFixture.make(encoding: encoding)
         let fails = VerifierSwitch()
         await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? .all : nil }
         try await f.join(1)
         await f.tick()
         fails.set(true)
-        await f.tick()      // the first event's body and its own frame both fail
-        #expect(f.keeper.failure?.kind == .eventEncode)
-        #expect(f.adapter.outputGate.isClosed)
+        await f.tick()      // the first event's frame fails (opcode 107: its body too)
+        #expect(f.keeper.failure?.kind == .eventEncode, "\(encoding)")
+        #expect(f.keeper.failure?.position.stage == .syncPhase, "\(encoding): the in-turn flush")
+        #expect(f.adapter.outputGate.isClosed, "\(encoding)")
         let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-        #expect(ticks.count == 1, "the failing tick commits no sync output")
+        #expect(ticks.count == 1, "\(encoding): the failing tick commits no sync output")
     }
 
     @Test("Opcode 107: an unsent per-player update is a benign skip once a later comparison sees the resend")
@@ -1517,8 +1521,13 @@ struct DebugFreezeSettleFailureTests {
         try await f.set(1, "break")
         await f.tick()
         #expect(f.keeper.failure == nil, "no plan has met the throw yet")
-        await #expect(throws: (any Error).self) { _ = try await f.adapter.debugFreeze() }
-        #expect(f.adapter.outputGate.isClosed)
+        do {
+            _ = try await f.adapter.debugFreeze()
+            Issue.record("the freeze succeeded")
+        } catch {
+            // The settle closed the gate before its error reached the caller.
+            #expect(f.adapter.outputGate.isClosed, "closed when the freeze throws")
+        }
         // A submitted failure is applied by the keeper's next turn: on a tick land, its next tick.
         await f.keeper.stepTickOnce()
         try #require(await f.keeper.waitForFailureForTesting(), "the land failed")

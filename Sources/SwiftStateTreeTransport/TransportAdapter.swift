@@ -3338,7 +3338,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    /// Build MessagePack frame [107, stateUpdatePayload, eventsArray]. Returns nil on failure (caller should send state only).
+    /// Build MessagePack frame [107, stateUpdatePayload, eventsArray]. Returns nil on failure; with
+    /// events, the caller ends the land (`refuseLosingMergedEvents`, #535 row 17).
     private func buildStateUpdateWithEventBodies(
         stateUpdateData: Data,
         eventBodies: [MessagePackValue],
@@ -5080,7 +5081,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// The merged frame didn't pack. Without events the state-only frame says the same; with
-    /// events, the plan already consumed them, so sending the state alone would lose them: the
+    /// events, the plan has already staged them, so sending the state alone would lose them: the
     /// land ends (#535 row 17).
     private func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue]) throws {
         guard !eventBodies.isEmpty else { return }
