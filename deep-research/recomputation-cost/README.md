@@ -175,7 +175,7 @@ Each sizes run's stream dump (`--stream-dir`) holds every frame each session rec
 | messagepack p10 c5 r2 | 3,517 | 9.88 | 7.31 / 6 | 0.00 | 50.7 | 72.8 / 60 | 868.6 |
 | messagepack p10 c20 r1 | 3,511 | 9.89 | 7.26 / 6 | 0.00 | 50.4 | 72.4 / 60 | 864.4 |
 
-Rounds are the records' sync outputs: 45,564 in 130 rooms, of which 57 sent no frame (all with the same broadcast and per-player hashes, those of an empty update). No round in any run sent a per-player field: every entry was in every recipient's frame. This check therefore covers the model's broadcast term only; this workload doesn't exercise its per-player term.
+Rounds are the records' sync outputs: 45,564 in 130 rooms, of which 57 sent no frame (all with the same broadcast and per-player hashes, those of an empty update). In this workload every changed field was broadcast (per-player fields: 0 in every run): every entry was in every recipient's frame.
 
 The model: bytes per round ≈ (broadcast fields × recipients + per-player fields) × s, with s a mean size per field. s is the entries' bytes over their fields, per encoding, from the runs at the other cadence, so no row is predicted from its own bytes. That model leaves out the fixed overhead each frame carries, and the measured / predicted ratio's excess over 1 is that overhead. The variant adds it: predicted bytes per round ≈ fields × s + frames × c, with c the mean overhead per frame, also per encoding from the runs at the other cadence.
 
@@ -249,6 +249,6 @@ Noise floor: two recording-off processes at 10 players, cadence 5: CPU 236.5 % a
 
 - B_minimal is not a format the runtime reads; it bounds what an input-only record could weigh.
 - A counts encoded frames handed to the in-process transport, not bytes on a socket (no WebSocket or TCP framing).
-- Sync bytes against fields: no round in these runs sent a per-player field, so the check covers the broadcast term (fields × recipients × s) only; the per-player term isn't exercised by this workload.
+- Sync bytes against fields: in this workload every changed field was broadcast (per-player fields: 0 in every run).
 - Sync bytes against fields: the fields × s model leaves out the fixed per-frame overhead, about 7 % of the measured bytes, and that is why the measured bytes exceed its prediction; the table also shows the prediction with a per-frame constant.
 - Sync bytes against fields: the s from the full views is a different population (entity properties set at once when a session starts) and doesn't predict steady-state bytes; it is shown only for comparison.

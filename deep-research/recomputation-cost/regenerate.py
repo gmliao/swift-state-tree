@@ -967,8 +967,8 @@ def stream_field_lines(processes: dict) -> list:
     lines += ["", f"Rounds are the records' sync outputs: {sum(r['outputs'] for r in rooms):,} in {len(rooms)} rooms, of which "
               f"{sum(r['rounds_without_frames'] for r in rooms)} sent no frame (all with the same broadcast and per-player "
               "hashes, those of an empty update). "
-              + ("No round in any run sent a per-player field: every entry was in every recipient's frame. This check "
-                 "therefore covers the model's broadcast term only; this workload doesn't exercise its per-player term."
+              + ("In this workload every changed field was broadcast (per-player fields: 0 in every run): every entry "
+                 "was in every recipient's frame."
                  if per_player == 0 else f"{per_player:,} fields were per-player.")]
     overhead = lambda enc, pred: pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "overhead") / \
         pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "frames")
