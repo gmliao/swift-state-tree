@@ -179,6 +179,54 @@ final class SnapshotConvertibleMacroTests {
         )
     }
     
+    @Test("SnapshotConvertible macro spells an implicitly unwrapped optional as its optional type in the generated lists")
+    func testSnapshotConvertibleMacro_ImplicitlyUnwrapped() throws {
+        expectMacroExpansion(
+            """
+            @SnapshotConvertible
+            struct Frozen {
+                let count: Int!
+            }
+            """,
+            expandedSource: """
+            struct Frozen {
+                let count: Int!
+            }
+
+            extension Frozen: SnapshotValueConvertible, FullSnapshotValueConvertible {
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    return .object([
+                    "count": try SnapshotValue.make(from: count)
+                ])
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    return .object([
+                    "count": try SnapshotValue.makeFull(from: self.count as Any)
+                ])
+                }
+            }
+
+            extension Frozen: SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    [
+                    ("count", (Int?).self)
+                ]
+                }
+            }
+
+            extension Frozen: SnapshotFieldListProvider {
+                public static var snapshotFieldMetadata: [FieldMetadata] {
+                    [
+                    FieldMetadata(name: "count", type: (Int?).self, policy: nil, nodeKind: SchemaHelper.determineNodeKind(from: (Int?).self), defaultValue: nil)
+                ]
+                }
+            }
+            """,
+            macros: testMacros
+        )
+    }
+
     @Test("SnapshotConvertible macro handles optional types")
     func testSnapshotConvertibleMacro_OptionalTypes() throws {
         expectMacroExpansion(

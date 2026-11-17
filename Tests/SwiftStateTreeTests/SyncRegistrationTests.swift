@@ -195,6 +195,8 @@ struct RegistrationConvertibleRoot: StateNodeProtocol {
     @Sync(.broadcast) var tree: RegistrationTree = RegistrationTree()
     @Sync(.broadcast) var fullOnly: RegistrationFullOnly = RegistrationFullOnly()
     @Sync(.broadcast) var loadouts: [RegistrationLoadout] = []
+    /// Untyped, inside an empty collection: no value to take the type from, so not seen.
+    @Sync(.broadcast) var untypedLoadouts: [RegistrationUntypedLoadout] = []
     @Sync(.broadcast) var handWritten: RegistrationHandWritten = RegistrationHandWritten()
     @Sync(.broadcast) var plainAny: RegistrationPlainAny = RegistrationPlainAny()
     init() {}
@@ -337,6 +339,7 @@ struct SyncRegistrationTests {
         #expect(problems == [
             ("loadout.byKey", decodable), ("frozen.byKey", opaque), ("untyped.byKey", decodable), ("tree.byKey", decodable),
             ("fullOnly.byKey", opaque), ("loadouts[*].byKey", decodable),
+            // Not `untypedLoadouts[*].byKey`: the untyped property is seen only through a value.
         ].map { .unsupportedKey(path: "RegistrationConvertibleRoot.\($0.0)", keyType: $0.1) }, "\(problems)")
         // The macro lists the stored properties with their declared types; untyped ones as Any.
         #expect(RegistrationLoadout._snapshotStoredFields.map(\.name) == ["byKey", "tag"])

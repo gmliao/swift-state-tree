@@ -19,6 +19,18 @@ struct SnapshotFieldListForms {
     let generic: Optional<String>
 }
 
+/// Implicitly unwrapped optionals: the generated `(T).self` lists are spelled `(Int?).self`, since
+/// `(Int!).self` doesn't compile. A let-only one gets the schema field list too.
+@SnapshotConvertible
+struct SnapshotFieldListUnwrapped {
+    let count: Int!
+}
+
+@SnapshotConvertible
+struct SnapshotStoredFieldsUnwrapped {
+    var count: Int! = nil
+}
+
 /// A type that declares its own field list keeps it: the macro generates none, so the two don't
 /// clash.
 @SnapshotConvertible
@@ -47,5 +59,12 @@ struct SnapshotFieldListProviderTests {
     @Test("a type's own snapshotFieldMetadata is kept, not generated over")
     func declaredListIsKept() {
         #expect(SnapshotFieldListDeclared.snapshotFieldMetadata.map(\.name) == ["a"])
+    }
+
+    @Test("an implicitly unwrapped optional is listed as its optional type")
+    func unwrappedIsOptional() {
+        #expect(ObjectIdentifier(SnapshotFieldListUnwrapped.snapshotFieldMetadata[0].type) == ObjectIdentifier(Int?.self))
+        #expect(ObjectIdentifier(SnapshotFieldListUnwrapped._snapshotStoredFields[0].type) == ObjectIdentifier(Int?.self))
+        #expect(ObjectIdentifier(SnapshotStoredFieldsUnwrapped._snapshotStoredFields[0].type) == ObjectIdentifier(Int?.self))
     }
 }
