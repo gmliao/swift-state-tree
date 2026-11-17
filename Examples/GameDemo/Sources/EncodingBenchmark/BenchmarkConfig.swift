@@ -268,6 +268,9 @@ struct BenchmarkConfig {
     var inputsFromWire: Bool = false
     /// `--actions-per-player <n>`: visibility test, `SetMotionAction`s per player per iteration.
     var actionsPerPlayer: Int = 0
+    /// `--rejoin-every <k>`: hero-defense, player 0 of each room leaves and rejoins every k-th
+    /// measured iteration (Rejoin.swift). 0: never.
+    var rejoinEvery: Int = 0
     /// `--message-encoding <e>`: the run's message encoding in place of the format's; nil keeps it.
     var messageEncoding: TransportEncoding? = nil
     /// `--merge-stats`: count field merge with and without its order rule (hero-defense multi-room runs).
@@ -553,6 +556,14 @@ enum ArgumentParser {
             }
             config.actionsPerPlayer = value
             i += 1
+        case "--rejoin-every":
+            guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
+                try? FileHandle.standardError.write(contentsOf: Data("--rejoin-every needs a positive integer\n".utf8))
+                exit(2)
+            }
+            config.rejoinEvery = value
+            config.heroDefenseOptionsGiven = true
+            i += 1
         case "--message-encoding":
             guard i + 1 < args.count, let value = MessageEncodingOverride.byName[args[i + 1]] else {
                 let names = MessageEncodingOverride.byName.keys.sorted().joined(separator: "|")
@@ -582,6 +593,10 @@ enum ArgumentParser {
         // --message-encoding with --hash-cost, and the --inputs-from-wire and
         // --actions-per-player combinations that can't run.
         if let refusal = InputRun.refusal(config) {
+            try? FileHandle.standardError.write(contentsOf: Data("\(refusal)\n".utf8))
+            exit(2)
+        }
+        if let refusal = RejoinRun.refusal(config) {
             try? FileHandle.standardError.write(contentsOf: Data("\(refusal)\n".utf8))
             exit(2)
         }
@@ -733,6 +748,14 @@ enum ArgumentParser {
                               Visibility-test with --inputs-from-wire: n SetMotionAction(enabled:
                               true) per player per iteration, before the ticks. Motion is on
                               from the start, so the state is unchanged.
+      --rejoin-every <k>      Hero-defense: every k-th measured iteration, player 0 of each room
+                              leaves and joins again with a new session. The leave and the
+                              admission run before the timed span; the joiner's firstSync, a
+                              full view of the populated room, runs inside it, before the
+                              room's sync. Serial runs only (--parallel false), rooms joined
+                              directly; not with --inputs-from-wire, --capture-views or
+                              --baseline. The result's rejoin records every and done; the run
+                              fails unless done = rooms x (iterations / k).
       --message-encoding <e>  json, opcode-json-array or messagepack: the run's message encoding
                               (events, action responses, client frames) in place of the
                               format's. Default: json for json-object and the opcode-json

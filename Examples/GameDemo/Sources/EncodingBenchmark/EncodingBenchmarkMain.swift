@@ -588,6 +588,8 @@ func runMultiRoomBenchmark(
     var cpuAvailable = true
     // Untimed: the first room's live monster count after each iteration.
     var peakMonsterCount = 0
+    // `--rejoin-every`: each room's player 0 (serial, direct joins only; refused otherwise).
+    var rejoining = RejoinRun.every > 0 ? (0 ..< roomCount).map { RejoiningPlayer(roomIndex: $0) } : []
     // ENCODING_BENCHMARK_PERF_CONTROL: perf counts the span outside syncNow() (`nonsync`), the
     // tick loop (`ticks`) or the whole iteration (`iteration`) only (serial runs; refused otherwise).
     let perfWindow = PerfWindowRun.current
@@ -644,6 +646,12 @@ func runMultiRoomBenchmark(
         for iterationIndex in 0 ..< iterations {
             // `--inputs-from-wire`: this iteration's frames, built before the timed span.
             let moveFrames = wire?.moveFrames(iteration: iterationIndex)
+            // `--rejoin-every`: the leaves and admissions, before the timed span.
+            if !rejoining.isEmpty, (iterationIndex + 1) % RejoinRun.every == 0 {
+                for roomIndex in rooms.indices {
+                    await rejoining[roomIndex].leaveAndAdmit(room: rooms[roomIndex], playersPerRoom: playersPerRoom)
+                }
+            }
             let cpuStart = cpuMark()
             let iterationStart = ContinuousClock.now
             perfWindow?.begin(.iteration)
@@ -691,6 +699,10 @@ func runMultiRoomBenchmark(
                 }
                 perfWindow?.end(.nonsync)
                 let syncStart = ContinuousClock.now
+                if !rejoining.isEmpty {
+                    // `--rejoin-every`: the joiner's firstSync, timed with the room's sync.
+                    await rejoining[roomIndex].sendFirstSync(room: room)
+                }
                 await room.adapter.syncNow()
                 syncDuration += syncStart.duration(to: ContinuousClock.now)
             }
@@ -781,6 +793,15 @@ func runMultiRoomBenchmark(
     result.framePrefixCache = framePrefixCache
     result.inputs = inputCounts?.json
     inputCounts?.requireComplete(label: "\(format.displayName)")
+    if RejoinRun.every > 0 {
+        let done = rejoining.reduce(0) { $0 + $1.rejoins }
+        let expected = roomCount * (iterations / RejoinRun.every)
+        result.rejoin = ["every": RejoinRun.every, "done": done, "expected": expected]
+        guard done == expected else {
+            try? FileHandle.standardError.write(contentsOf: Data("error: --rejoin-every: \(done) rejoins, expected \(expected)\n".utf8))
+            exit(1)
+        }
+    }
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     if let routerRooms, let routerConfig = RouterJoin.config {
         result.routerJoin = await routerRooms.metadata(rowAddressingRequested: routerConfig.rowAddressing, syncLag: routerConfig.syncLag)
@@ -1296,6 +1317,8 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     fields["messageEncoding"] = MessageEncodingOverride.name(result.format.messageEncoding)
     // `--inputs-from-wire`: the run's input counts (InputCounts).
     if let inputs = result.inputs { fields["inputs"] = inputs }
+    // `--rejoin-every`: the interval and the rejoins done.
+    if let rejoin = result.rejoin { fields["rejoin"] = rejoin }
     // The frame prefix caches' hits over the measured iterations (zero without the cache).
     fields["framePrefixCache"] = [
         "resumes": result.framePrefixCache.resumes,
@@ -1407,6 +1430,7 @@ struct EncodingBenchmark {
         MessageEncodingOverride.current = config.messageEncoding
         InputRun.fromWire = config.inputsFromWire
         InputRun.actionsPerPlayer = config.actionsPerPlayer
+        RejoinRun.every = config.rejoinEvery
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
