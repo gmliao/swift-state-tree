@@ -1071,7 +1071,7 @@ private struct InitOrderGatedResolver: ContextResolver {
     }
 }
 
-@Test("OnInitialize completes before tick starts")
+@Test("OnInitialize completes before tick starts", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 func testOnInitializeBeforeTick() async throws {
     let definition = Land(
         "init-tick-order-test",

@@ -233,6 +233,7 @@ private struct PendingHarness {
 @Suite(
     "Frames of a session whose join waits for its flip (#69)",
     .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: joins don't complete in a turn"),
+    .timeLimit(.minutes(1)),
     .resolverDeadlinesOff
 )
 struct JoinPendingInboundTests {
