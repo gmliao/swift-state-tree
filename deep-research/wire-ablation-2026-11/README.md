@@ -13,7 +13,7 @@ The 2026-11 rerun keeps two of the server's wire optimizations fixed at their sh
 
 ## Environment
 
-The measurement host: release build of EncodingBenchmark, CPUs 0-7 pinned (`taskset`), Swift 6.2.4. Serial sync (`--parallel false`), the delta strategy, the shipped sync path: run.sh unsets every `serverenv.py` variable, and the knobs are set by the benchmark's own flags (`--dirty-tracking on|off`, `--dynamic-key-compression on|off`, `--path-index on --field-merge on`), which apply them inside the process before any adapter exists and record them in the result's metadata (`dirtyTracking`, `dirtyTrackingEffective`, `dynamicKeyCompression`, `pathIndex`, `fieldMerge`).
+The measurement host (an AMD Ryzen 5 7600X; the results don't record the CPU model): release build of EncodingBenchmark, CPUs 0-7 pinned (`taskset`), Swift 6.2.4. Serial sync (`--parallel false`), the delta strategy, the shipped sync path: run.sh unsets every `serverenv.py` variable, and the knobs are set by the benchmark's own flags (`--dirty-tracking on|off`, `--dynamic-key-compression on|off`, `--path-index on --field-merge on`), which apply them inside the process before any adapter exists and record them in the result's metadata (`dirtyTracking`, `dirtyTrackingEffective`, `dynamicKeyCompression`, `pathIndex`, `fieldMerge`).
 
 **Same Sources as the rerun.** The run records the git tree IDs of `Sources/` and `Package.swift` at its commit (`git rev-parse HEAD:Sources`, `HEAD:Package.swift`). `regenerate.py` refuses any other than those of `75222b87`, the rerun's commit, so these numbers sit beside the rerun's even though the run is at a later commit (scripts only).
 

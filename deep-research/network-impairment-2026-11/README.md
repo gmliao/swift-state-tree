@@ -173,6 +173,20 @@ Planned: 300 rooms (1500 connections), three repeats per cell.
 | M (one impaired player in each of half the rooms) | P0, COMBO, BO75 |
 | SR (slow readers in M's layout; control: M's P0) | SR |
 
+The profiles, as `Examples/GameDemo/ws-loadtest/scripts/impair.sh` applies them with netem (its sha256 at `48962fae` is every run's `meta.impairSha256`), and the published set's window, rates and queue limits from each run's `params`. Upstream is client → server, downstream server → client; "±" is netem jitter.
+
+| Profile | Upstream | Downstream | Impaired for | netem limit (down/up, packets) |
+|---|---|---|---:|---|
+| P0 | none | none | 60 s, at P0's own parameters | 10000/10000 |
+| D50J10 | delay 50 ms ± 10 ms | delay 50 ms ± 10 ms | 60 s | 10000/10000 |
+| L5 | delay 25 ms, 5 % loss | delay 25 ms, 5 % loss | 60 s | 10000/10000 |
+| RATE | none | rate 0.5 × P0's downstream: `49257701bit` | 60 s | 2052/10000 |
+| COMBO | delay 40 ms ± 10 ms, 1 % loss | delay 40 ms ± 10 ms, 1 % loss, rate 0.8 × P0's downstream: `7867910bit` | 60 s | 327/10000 |
+| BO75 | 100 % loss | 100 % loss | 75 s | 10000/10000 |
+| SR | none (P0) | none (P0); the impaired players stop reading | 24 s (`slowReadS`) | 10000/10000 |
+
+The rates and limits come from the calibration `imp-20261110-noramp-cal` at `48962fae` (`params.calibration`), not from the 2026-11-07 table in `calibration.py` (Command(s)). D50J10 and COMBO ran as jitter with reordering ([Jitter with reordering](#jitter-with-reordering)). The design behind the profiles is `Notes/plans/2026-11-07-network-impairment-experiment-design.md` § 3.
+
 ## Results
 
 Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e77c1`, clean tree; Swift 6.2.4; Node v24.22.2; build release.

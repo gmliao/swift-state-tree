@@ -147,12 +147,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // Actually LandDefinition doesn't provide init state.
         // We should pass initialState to the init of this class.
 
-        let services = LandServices()
-        // Ensure RNG seed
-        let expectedSeedFromLandID = DeterministicSeed.fromLandID(metadata.landID)
-        var resolvedServices = services
+        // The record decides the RNG seed (`replayRngSeed`), as in `ReevaluationEngine.run`.
+        var resolvedServices = LandServices()
         resolvedServices.register(
-            DeterministicRngService(seed: expectedSeedFromLandID),
+            DeterministicRngService(seed: metadata.replayRngSeed),
             as: DeterministicRngService.self
         )
 
@@ -210,12 +208,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         let recordedMaxTickId = try await source.getMaxTickId()
         maxTickId = landFailure.map { min(recordedMaxTickId, $0.tickId) } ?? recordedMaxTickId
 
-        // Use provided services as base
+        // Use provided services as base. The record decides the RNG seed (`replayRngSeed`), as
+        // in `ReevaluationEngine.run`: a provided RNG service is replaced.
         var resolvedServices = services
-        // Ensure RNG seed
-        let expectedSeedFromLandID = DeterministicSeed.fromLandID(metadata.landID)
         resolvedServices.register(
-            DeterministicRngService(seed: expectedSeedFromLandID),
+            DeterministicRngService(seed: metadata.replayRngSeed),
             as: DeterministicRngService.self
         )
 

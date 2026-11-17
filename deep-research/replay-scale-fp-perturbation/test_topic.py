@@ -157,7 +157,7 @@ class RunBatch(unittest.TestCase):
         self.assertEqual(list(batches), ["3.0"])
         self.assertEqual(regenerate.check_batches("3.0", batches["3.0"], results), [])
         # The 3.0 row names the batch's own commit, from source.json through summarize.py, and its clean tree.
-        self.assertIn(f"| host | x86_64 | `{head[:8]}` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 |",
+        self.assertIn(f"| host | x86_64 | `{head[:8]}` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 41/41 | 0 |",
                       regenerate.batch_table(batches["3.0"]))
         # The same batch again over an existing out-dir is refused.
         self.assertNotEqual(run_batch(self.tmp, out).returncode, 0)
@@ -391,6 +391,119 @@ class CheckBatches(unittest.TestCase):
         for fmt, batch in batches.items():
             with self.subTest(fmt):
                 self.assertEqual(regenerate.check_batches(fmt, batch), [])
+
+
+import perturb_collect  # noqa: E402
+
+DETECTED_LOG = """📼 Record: 3.1, complete
+❌ Verification failed: mismatched ticks vs recorded=46
+  tick 600: computed=aa recorded=bb
+  tick 601: computed=cc recorded=dd
+"""
+VERIFIED_LOG = """📼 Record: 3.1, complete
+✅ Verified state hashes: computed hashes match recorded ground truth
+✅ Verified state hashes: identical across two re-evaluation runs
+"""
+
+
+class PerturbCollect(unittest.TestCase):
+    """scripts/perturb_collect.py's reading rule, on logs in the runner's format."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        (self.dir / "logs").mkdir()
+
+    def log(self, name, text, code):
+        (self.dir / "logs" / f"{name}.log").write_text(text, encoding="utf-8")
+        (self.dir / "logs" / f"{name}.exit").write_text(f"{code}\n", encoding="utf-8")
+
+    def test_detected_verified_and_other_exits(self):
+        self.log("a", DETECTED_LOG, 5)
+        self.log("b", VERIFIED_LOG, 0)
+        self.log("c", "❌ something else\n", 3)
+        self.log("d", DETECTED_LOG.replace("  tick", "  no"), 5)
+        logs = self.dir / "logs"
+        self.assertEqual(perturb_collect.read(logs, "a"), {"exit": 5, "detected": True, "first_mismatch_tick": 600,
+                                                           "detection_latency_ticks": 0, "mismatch_ticks": 46, "verified_lines": 0})
+        self.assertEqual(perturb_collect.read(logs, "b")["verified_lines"], 2)
+        self.assertFalse(perturb_collect.read(logs, "b")["detected"])
+        self.assertEqual(perturb_collect.read(logs, "c")["exit"], 3)
+        self.assertFalse(perturb_collect.read(logs, "c")["detected"])
+        self.assertFalse(perturb_collect.read(logs, "d")["detected"])  # no tick line: not read as detected
+
+    def test_runners_lines_must_agree(self):
+        line = "runners: rr(022d8fdb) {}; rr2(dc6f85e7) {}\n"
+        one = line.format("a" * 64, "b" * 64)
+        self.assertEqual(perturb_collect.runners(one + one)["rr2"], ("dc6f85e7", "b" * 64))
+        with self.assertRaises(SystemExit):
+            perturb_collect.runners(one + line.format("a" * 64, "c" * 64))
+
+
+class CheckPerturb31(unittest.TestCase):
+    """regenerate.check_perturb31 on the committed set and on one mutant per rule."""
+
+    def setUp(self):
+        self.runs, self.controls = regenerate.load_perturb31()
+        self.sums = regenerate.recorded_sums()
+        self.batch_sha = regenerate.load_batches()["3.1"][0]["meta"]["git_sha"]
+
+    def errors(self, runs=None, controls=None):
+        return regenerate.check_perturb31(runs or self.runs, controls or self.controls, self.sums, self.batch_sha)
+
+    def mutant(self, change, cell=("fixed", "1.0"), seed=3):
+        runs = copy.deepcopy(self.runs)
+        r = next(r for r in runs if (r["params"]["mode"], r["params"]["eps"]) == cell and r["params"]["seed"] == seed)
+        change(r)
+        return self.errors(runs=runs)
+
+    def test_the_committed_set_passes(self):
+        self.assertEqual(self.errors(), [])
+        self.assertEqual(len(self.runs), 40)
+
+    def test_refusals(self):
+        def other_exit(r):
+            r["metrics"].update(exit=3, detected=False)
+
+        def wrong_latency(r):
+            r["metrics"]["detection_latency_ticks"] = 1
+
+        def foreign_recording(r):
+            r["params"]["recording_sha256"] = "0" * 64
+
+        def other_runner(r):
+            r["meta"]["runner_sha256"] = "0" * 64
+
+        def silent_exit_0(r):
+            r["metrics"].update(exit=0, detected=False, verified_lines=1)
+
+        for change in (other_exit, wrong_latency, foreign_recording, other_runner, silent_exit_0):
+            with self.subTest(change.__name__):
+                self.assertNotEqual(self.mutant(change), [])
+        missing = [r for r in self.runs if not (r["params"]["mode"] == "float" and r["params"]["seed"] == 7)]
+        self.assertTrue(any("seeds" in e for e in self.errors(runs=missing)))
+
+    def test_cells_on_the_wrong_runner_are_refused(self):
+        runs = copy.deepcopy(self.runs)
+        rr2 = next(r for r in self.controls["runners"] if r["git_sha"] != self.batch_sha)
+        for r in runs:
+            if r["params"]["mode"] == "fixed":
+                r["meta"].update(git_sha=rr2["git_sha"], runner_sha256=rr2["runner_sha256"])
+        self.assertTrue(any("the matrix ran at" in e for e in self.errors(runs=runs)))
+
+    def test_a_failed_control_is_refused(self):
+        controls = copy.deepcopy(self.controls)
+        controls["runners"][1]["runs"][4]["exit"] = 1
+        self.assertTrue(any(e.startswith("control") for e in self.errors(controls=controls)))
+
+    def test_the_readme_tables_are_the_regenerated_ones(self):
+        readme = (TOPIC / "README.md").read_text(encoding="utf-8")
+        tables = regenerate.section_tables(readme, regenerate.PERTURB31_HEADING)
+        self.assertEqual([t.strip() for t in tables],
+                         [t.strip() for t in regenerate.perturb31_tables(self.runs, self.controls)])
+        edited = readme.replace("| 46 / 46 |", "| 45 / 46 |")
+        self.assertNotEqual([t.strip() for t in regenerate.section_tables(edited, regenerate.PERTURB31_HEADING)],
+                            [t.strip() for t in regenerate.perturb31_tables(self.runs, self.controls)])
 
 
 if __name__ == "__main__":

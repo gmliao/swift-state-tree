@@ -607,10 +607,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                         required: ReevaluationRecordVersion.current
                     )
                 }
-                let rngSeed = recordedMetadata.rngSeed
-                    ?? DeterministicSeed.fromLandID(recordedMetadata.landID)
                 reevalServices.register(
-                    DeterministicRngService(seed: rngSeed),
+                    DeterministicRngService(seed: recordedMetadata.replayRngSeed),
                     as: DeterministicRngService.self
                 )
 

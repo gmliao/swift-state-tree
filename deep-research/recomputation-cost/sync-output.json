@@ -1,0 +1,1120 @@
+{
+  "outputs": {
+    "20261109T110631Z-75222b87/cost-p10-c20-r1-on/verify.txt": {
+      "counts": {
+        "apply": [
+          3739,
+          0,
+          0
+        ],
+        "broadcast": [
+          340,
+          0,
+          0
+        ],
+        "events": [
+          340,
+          0,
+          0
+        ],
+        "per-player": [
+          3390,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "e5e04bc5b057a8c0c8f7790ab9372acb16caad5471c4afdc75f6a5d6e83d1819",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c20-r2-on/verify.txt": {
+      "counts": {
+        "apply": [
+          3343,
+          0,
+          0
+        ],
+        "broadcast": [
+          304,
+          0,
+          0
+        ],
+        "events": [
+          304,
+          0,
+          0
+        ],
+        "per-player": [
+          3030,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "00db73e207cda1e5de74072e5971d9e0f1ba34801d020d65f893be0ff90feaec",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c20-r3-on/verify.txt": {
+      "counts": {
+        "apply": [
+          3398,
+          0,
+          0
+        ],
+        "broadcast": [
+          309,
+          0,
+          0
+        ],
+        "events": [
+          309,
+          0,
+          0
+        ],
+        "per-player": [
+          3080,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "10c280fd411082bf3679e1ea081f80bd81aaa1a659a103f2e2b65a1a09344dc0",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c20-r4-on/verify.txt": {
+      "counts": {
+        "apply": [
+          4146,
+          0,
+          0
+        ],
+        "broadcast": [
+          377,
+          0,
+          0
+        ],
+        "events": [
+          377,
+          0,
+          0
+        ],
+        "per-player": [
+          3760,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "cd88015c726a4063975d22450353ce058eebdabb5d2c04635f1ca72404b2d409",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c5-r1-on/verify.txt": {
+      "counts": {
+        "apply": [
+          3948,
+          0,
+          0
+        ],
+        "broadcast": [
+          359,
+          0,
+          0
+        ],
+        "events": [
+          359,
+          0,
+          0
+        ],
+        "per-player": [
+          3580,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "4e386151fe4535c3803e4e1988b22400da958830ba6cf8968104f531a17224cd",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c5-r2-on/verify.txt": {
+      "counts": {
+        "apply": [
+          3937,
+          0,
+          0
+        ],
+        "broadcast": [
+          358,
+          0,
+          0
+        ],
+        "events": [
+          358,
+          0,
+          0
+        ],
+        "per-player": [
+          3570,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "1c3e29e769ff40277bbfb771b8dfaf9d05b272636bb97abbc0ace6692df1b867",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c5-r3-on/verify.txt": {
+      "counts": {
+        "apply": [
+          4102,
+          0,
+          0
+        ],
+        "broadcast": [
+          373,
+          0,
+          0
+        ],
+        "events": [
+          373,
+          0,
+          0
+        ],
+        "per-player": [
+          3720,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "9f18a29db046d4c2632d1f8446e763600a2590515111c35e17ee096baaeaafba",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p10-c5-r4-on/verify.txt": {
+      "counts": {
+        "apply": [
+          3882,
+          0,
+          0
+        ],
+        "broadcast": [
+          353,
+          0,
+          0
+        ],
+        "events": [
+          353,
+          0,
+          0
+        ],
+        "per-player": [
+          3520,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "30b6e9901aa816e477f5168b5a3015c77ac5cc10655332e13a805a962e6d34a5",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c20-r1-on/verify.txt": {
+      "counts": {
+        "apply": [
+          1091,
+          0,
+          0
+        ],
+        "broadcast": [
+          364,
+          0,
+          0
+        ],
+        "events": [
+          364,
+          0,
+          0
+        ],
+        "per-player": [
+          726,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "05e5b8661eefc174c1367d574c2e1d3375d9ec8e4bb41db1d01e4e2ac38839bb",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c20-r2-on/verify.txt": {
+      "counts": {
+        "apply": [
+          1034,
+          0,
+          0
+        ],
+        "broadcast": [
+          345,
+          0,
+          0
+        ],
+        "events": [
+          345,
+          0,
+          0
+        ],
+        "per-player": [
+          688,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "70cf7b0f44f556e58b4f9af4f69734d2cec7a5c1faf27fb00b53d7b4361abc4e",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c20-r3-on/verify.txt": {
+      "counts": {
+        "apply": [
+          1145,
+          0,
+          0
+        ],
+        "broadcast": [
+          382,
+          0,
+          0
+        ],
+        "events": [
+          382,
+          0,
+          0
+        ],
+        "per-player": [
+          762,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "0afab9a985b82e988542119e0b85a4e82abaae92c053ad0ee036d2d54e824141",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c20-r4-on/verify.txt": {
+      "counts": {
+        "apply": [
+          989,
+          0,
+          0
+        ],
+        "broadcast": [
+          330,
+          0,
+          0
+        ],
+        "events": [
+          330,
+          0,
+          0
+        ],
+        "per-player": [
+          658,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "bb3d078b1ae4ba3588efd496cf376ae679f4fc40a3d604a01a5a2b857d950a7e",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c5-r1-on/verify.txt": {
+      "counts": {
+        "apply": [
+          986,
+          0,
+          0
+        ],
+        "broadcast": [
+          329,
+          0,
+          0
+        ],
+        "events": [
+          329,
+          0,
+          0
+        ],
+        "per-player": [
+          656,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "8492a531196a07cac70e7b7bf19015b2494f35b0b94b0c2e9d1622e0e9cbf562",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c5-r2-on/verify.txt": {
+      "counts": {
+        "apply": [
+          974,
+          0,
+          0
+        ],
+        "broadcast": [
+          325,
+          0,
+          0
+        ],
+        "events": [
+          325,
+          0,
+          0
+        ],
+        "per-player": [
+          648,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "943a5a35ca93074de606661f125589aee4bfd4f07f9b1fb652f7bbe5de038ff6",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c5-r3-on/verify.txt": {
+      "counts": {
+        "apply": [
+          917,
+          0,
+          0
+        ],
+        "broadcast": [
+          306,
+          0,
+          0
+        ],
+        "events": [
+          306,
+          0,
+          0
+        ],
+        "per-player": [
+          610,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "221f6c91b2fb5e69012982334525e6dd27ab9cea92a96c1a4e3a350a89f1afb7",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p2-c5-r4-on/verify.txt": {
+      "counts": {
+        "apply": [
+          1064,
+          0,
+          0
+        ],
+        "broadcast": [
+          355,
+          0,
+          0
+        ],
+        "events": [
+          355,
+          0,
+          0
+        ],
+        "per-player": [
+          708,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "ac57861fff8888c0cf69fcab493743c81a4571b3f74564ec5782acd52181f167",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c20-r1-on/verify.txt": {
+      "counts": {
+        "apply": [
+          2147,
+          0,
+          0
+        ],
+        "broadcast": [
+          358,
+          0,
+          0
+        ],
+        "events": [
+          358,
+          0,
+          0
+        ],
+        "per-player": [
+          1785,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "d58b245d976bb0ac2b8318a4e3a9b363cd9da71a375ac3c3d7077b05dccaf21e",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c20-r2-on/verify.txt": {
+      "counts": {
+        "apply": [
+          1907,
+          0,
+          0
+        ],
+        "broadcast": [
+          318,
+          0,
+          0
+        ],
+        "events": [
+          318,
+          0,
+          0
+        ],
+        "per-player": [
+          1585,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "8369b4cf53f5d823104db1bacb55f06053f1f3bfc45e915742c19be65a11ba02",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c20-r3-on/verify.txt": {
+      "counts": {
+        "apply": [
+          2159,
+          0,
+          0
+        ],
+        "broadcast": [
+          360,
+          0,
+          0
+        ],
+        "events": [
+          360,
+          0,
+          0
+        ],
+        "per-player": [
+          1795,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "f740c6c443123ea3b1139c27d85802628585ffecaa6e18bb79539dd8e7b045c6",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c20-r4-on/verify.txt": {
+      "counts": {
+        "apply": [
+          2165,
+          0,
+          0
+        ],
+        "broadcast": [
+          361,
+          0,
+          0
+        ],
+        "events": [
+          361,
+          0,
+          0
+        ],
+        "per-player": [
+          1800,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "503178487e90f551aff9f09367de95148eca8c132d57da918b6eeb55282f7ed7",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c5-r1-on/verify.txt": {
+      "counts": {
+        "apply": [
+          2273,
+          0,
+          0
+        ],
+        "broadcast": [
+          379,
+          0,
+          0
+        ],
+        "events": [
+          379,
+          0,
+          0
+        ],
+        "per-player": [
+          1890,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "18a71ae86b50f7d9439eaedc34fcd6d599cf9d57cd7b9c42352a3f7a11c0545c",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c5-r2-on/verify.txt": {
+      "counts": {
+        "apply": [
+          2225,
+          0,
+          0
+        ],
+        "broadcast": [
+          371,
+          0,
+          0
+        ],
+        "events": [
+          371,
+          0,
+          0
+        ],
+        "per-player": [
+          1850,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "1c6b6598340d968062ad88c5c5c055b45144b2207a18b29a766c294cf86296de",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c5-r3-on/verify.txt": {
+      "counts": {
+        "apply": [
+          1937,
+          0,
+          0
+        ],
+        "broadcast": [
+          323,
+          0,
+          0
+        ],
+        "events": [
+          323,
+          0,
+          0
+        ],
+        "per-player": [
+          1610,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "e0dcf373f97767ac36448d65683955621b94d6bee8ed7de0236251e2e8feb005",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/cost-p5-c5-r4-on/verify.txt": {
+      "counts": {
+        "apply": [
+          2219,
+          0,
+          0
+        ],
+        "broadcast": [
+          370,
+          0,
+          0
+        ],
+        "events": [
+          370,
+          0,
+          0
+        ],
+        "per-player": [
+          1845,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "b0984f44323c7e2f31f4d26977401e7a1706d93a526af114335d1148a19c6ef4",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/verify-hero-defense-2026-11-09T11-12-16Z-1C1F7241.txt": {
+      "counts": {
+        "apply": [
+          3421,
+          0,
+          0
+        ],
+        "broadcast": [
+          315,
+          0,
+          0
+        ],
+        "events": [
+          315,
+          0,
+          0
+        ],
+        "per-player": [
+          3097,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "f8bcaac08c387bbc8e22da22cb123ee89877ecd4092810f12e5cf6dd697558b9",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/verify-hero-defense-2026-11-09T11-12-16Z-35FB1029.txt": {
+      "counts": {
+        "apply": [
+          3918,
+          0,
+          0
+        ],
+        "broadcast": [
+          360,
+          0,
+          0
+        ],
+        "events": [
+          360,
+          0,
+          0
+        ],
+        "per-player": [
+          3549,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "be6ab25f5e61f988008a004d809058154201ed91ec5bb78e72cb2ee7141334a4",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/verify-hero-defense-2026-11-09T11-11-22Z-0C6EF62D.txt": {
+      "counts": {
+        "apply": [
+          4077,
+          0,
+          0
+        ],
+        "broadcast": [
+          374,
+          0,
+          0
+        ],
+        "events": [
+          374,
+          0,
+          0
+        ],
+        "per-player": [
+          3694,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "01fee964ba0774db53fde55d43f6e28f3917788824c3c3f067c68b34c43327c2",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/verify-hero-defense-2026-11-09T11-11-22Z-24E7171B.txt": {
+      "counts": {
+        "apply": [
+          3871,
+          0,
+          0
+        ],
+        "broadcast": [
+          356,
+          0,
+          0
+        ],
+        "events": [
+          356,
+          0,
+          0
+        ],
+        "per-player": [
+          3506,
+          0,
+          0
+        ],
+        "seed": [
+          10,
+          0,
+          0
+        ]
+      },
+      "sha256": "14db30cc0f98b6cb8a306d1349e227d08c4b99d4c045e5e6a6390025363fe387",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/verify-hero-defense-2026-11-09T11-09-00Z-0CBE355B.txt": {
+      "counts": {
+        "apply": [
+          1064,
+          0,
+          0
+        ],
+        "broadcast": [
+          356,
+          0,
+          0
+        ],
+        "events": [
+          356,
+          0,
+          0
+        ],
+        "per-player": [
+          707,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "c0761d199bc7cb7ef51cbcd752d8acfb2ca13ffd677e37cbf39f23d9a0b59c48",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/verify-hero-defense-2026-11-09T11-09-00Z-28ADAA3C.txt": {
+      "counts": {
+        "apply": [
+          987,
+          0,
+          0
+        ],
+        "broadcast": [
+          330,
+          0,
+          0
+        ],
+        "events": [
+          330,
+          0,
+          0
+        ],
+        "per-player": [
+          656,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "9e23fba8eead0ba57a18ed39c7ced1a14ec5ebcbe9f7ea6690b0e652ba89c958",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/verify-hero-defense-2026-11-09T11-08-13Z-1CD85A01.txt": {
+      "counts": {
+        "apply": [
+          972,
+          0,
+          0
+        ],
+        "broadcast": [
+          325,
+          0,
+          0
+        ],
+        "events": [
+          325,
+          0,
+          0
+        ],
+        "per-player": [
+          646,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "74d377252d1a3772740b63e5f37a5729bfab6b30363fa79bc1274a2721b46e31",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/verify-hero-defense-2026-11-09T11-08-13Z-307670BE.txt": {
+      "counts": {
+        "apply": [
+          1049,
+          0,
+          0
+        ],
+        "broadcast": [
+          351,
+          0,
+          0
+        ],
+        "events": [
+          351,
+          0,
+          0
+        ],
+        "per-player": [
+          697,
+          0,
+          0
+        ],
+        "seed": [
+          2,
+          0,
+          0
+        ]
+      },
+      "sha256": "ffd6a8f78a5ae750722fc7bcc6f00dd84af1fcd8967446bfb0a68dfb923f3f64",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/verify-hero-defense-2026-11-09T11-10-35Z-0309C479.txt": {
+      "counts": {
+        "apply": [
+          2227,
+          0,
+          0
+        ],
+        "broadcast": [
+          374,
+          0,
+          0
+        ],
+        "events": [
+          374,
+          0,
+          0
+        ],
+        "per-player": [
+          1849,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "0bca6b5f864a482daf5e44e3a5b5d68f78db3779e1b8b02415fb2e0da9b2d8a0",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/verify-hero-defense-2026-11-09T11-10-35Z-2DCE97A5.txt": {
+      "counts": {
+        "apply": [
+          1927,
+          0,
+          0
+        ],
+        "broadcast": [
+          324,
+          0,
+          0
+        ],
+        "events": [
+          324,
+          0,
+          0
+        ],
+        "per-player": [
+          1599,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "8a9230520cbc933bc98dd3e8c224a0b801529136d90910c2671ebe9d4cd230bd",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/verify-hero-defense-2026-11-09T11-09-45Z-02209B45.txt": {
+      "counts": {
+        "apply": [
+          1957,
+          0,
+          0
+        ],
+        "broadcast": [
+          329,
+          0,
+          0
+        ],
+        "events": [
+          329,
+          0,
+          0
+        ],
+        "per-player": [
+          1624,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "f5f9361fc5fc03885a45573368bc5979eb764b2f74b3220954ff1114a46ce17c",
+      "verdict": "passed"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/verify-hero-defense-2026-11-09T11-09-45Z-041B9BA1.txt": {
+      "counts": {
+        "apply": [
+          2017,
+          0,
+          0
+        ],
+        "broadcast": [
+          339,
+          0,
+          0
+        ],
+        "events": [
+          339,
+          0,
+          0
+        ],
+        "per-player": [
+          1674,
+          0,
+          0
+        ],
+        "seed": [
+          5,
+          0,
+          0
+        ]
+      },
+      "sha256": "395a6106c2bfe8feb3cc0ae710c45b69d9d53a5e1a13d0d3c332e914c486055c",
+      "verdict": "passed"
+    }
+  }
+}

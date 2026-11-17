@@ -222,21 +222,23 @@ public enum ReevaluationEngine {
         let maxTickId = try await source.getMaxTickId()
         let capturingSink = CapturingSink(downstream: sink)
 
-        // Ensure RNG seed matches the recorded run (critical for deterministic re-evaluation).
+        // The record decides the RNG seed (`replayRngSeed`): the live land's seed, or the
+        // landID-derived one for a record without a seed. A caller's RNG service is replaced, as
+        // the hosted replay land does, since any other seed draws other numbers than the live run.
         var resolvedServices = services
-        let expectedSeedFromLandID = DeterministicSeed.fromLandID(metadata.landID)
-        if let recordedSeed = metadata.rngSeed, recordedSeed != expectedSeedFromLandID {
+        let replaySeed = metadata.replayRngSeed
+        if let callerSeed = services.get(DeterministicRngService.self)?.seed, callerSeed != replaySeed {
             logger?.warning(
-                "Recorded rngSeed does not match landID-derived seed; using landID-derived seed for deterministic re-evaluation.",
+                "The caller's RNG seed differs from the record's; replaying with the record's seed.",
                 metadata: [
                     "landID": .string(metadata.landID),
-                    "recordedSeed": .stringConvertible(recordedSeed),
-                    "expectedSeed": .stringConvertible(expectedSeedFromLandID),
+                    "callerSeed": .stringConvertible(callerSeed),
+                    "replaySeed": .stringConvertible(replaySeed),
                 ]
             )
         }
         resolvedServices.register(
-            DeterministicRngService(seed: expectedSeedFromLandID),
+            DeterministicRngService(seed: replaySeed),
             as: DeterministicRngService.self
         )
         

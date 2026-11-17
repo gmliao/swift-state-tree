@@ -32,9 +32,14 @@ Standard library only. Inputs:
   data/rerun/<run>/report.json.gz   the 2026-11-06 runs (ws-loadtest reports)
   data/host-cpu.json                host CPU summary per run (from summarize_host.py)
   data/b0/<run>/report.json.gz      the 2026-11-05 comparison runs
+  data/input-latency/runs.json, data/input-latency/<run>/report.json.gz
+                                    the input-to-visible set (collect_input_latency.py), tabled after
+                                    the arms; ../multiroom-load-2026-11-server-ab/data/runs/latency-{A,B}-1000/
+                                    for its reference rows
   ../multiroom-load-2026-02/evidence-2026-02-06-nio-stage3-100-300-500/scalability-2026-02-06T14-24-28/
 """
 import gzip
+import hashlib
 import json
 import statistics
 import sys
@@ -754,8 +759,226 @@ def record_section():
             "Its own comparisons (2026-11-05, 2026-02-06) are kept as published.\n\n" + demote(build()))
 
 
+INPUT_LATENCY = HERE / "data" / "input-latency"
+SERVER_AB = HERE.parent / "multiroom-load-2026-11-server-ab"
+IL_RATES = (1, 2)
+IL_ROOMS = (100, 300, 500, 1000)
+IL_WORKERS = 12
+IL_NODE = "v24.22.2"
+IL_CAPTION = "### Input-to-visible latency (MoveTo 1/s and 2/s)"
+
+
+def il_matrix():
+    return [f"lat-s{s}-m{rate}-{rooms}" for s in SUITES for rate in IL_RATES for rooms in IL_ROOMS]
+
+
+def il_row(report):
+    """One run's steady row for the input-to-visible tables. Disconnects and join failures are over
+    all phases (a lost connection anywhere is a result); the rest is the steady phase."""
+    p = phase(report)
+    m = p.get("measurement") or {}
+    itv = m.get("inputToVisible") or {}
+    lat = itv.get("latencyMs") or {}
+    cpu = by_phase(report, "serverCpu") or {}
+    disconnects = sum((q.get("phaseTotals") or {}).get("disconnectCount") or 0 for q in report["phases"])
+    joins = sum(((q.get("connectionLifecycle") or {}).get("joinFailures") or {}).get("phase") or 0 for q in report["phases"])
+    return {
+        "joined": (m.get("joined") or {}).get("atMeasuredStart"), "connections": p["connections"],
+        "i2v": tuple(lat.get(k) for k in ("p50", "p95", "p99", "max")),
+        "counts": tuple(itv.get(k) for k in ("sent", "seen", "superseded", "timedOut")),
+        "rtt": p["rtt"], "update": p["update"], "cpuMean": cpu.get("meanPct"), "cpuP95": cpu.get("p95Pct"),
+        "clientTotal": (m.get("clientCpu") or {}).get("totalPct"),
+        "loopP99Max": ((m.get("clientLoopDelay") or {}).get("p99Ms") or {}).get("max"),
+        "disconnects": disconnects, "joinFailures": joins, "passed": p["passed"],
+        # The steady bars a failed run broke, by name ("rttP95 225.68 > 100" -> "rttP95").
+        "failedBars": sorted({f.split()[0] for f in p.get("failures") or []}),
+    }
+
+
+def il_failures(runs, reports):
+    """Why the set can't be tabled: a missing or extra run, a report that isn't the collected one,
+    or a run off its cell (input latency, MoveTo rate, event seed, workers, rooms, connections), off
+    the arms' commit, toolchain, pinning or spawn ramp, or one the client-load check refused."""
+    failures = []
+    names = [r["name"] for r in runs]
+    matrix = [r["name"] for r in runs if r["suite"] != "smoke"]
+    if sorted(matrix) != sorted(il_matrix()):
+        failures.append(f"matrix runs {sorted(set(il_matrix()) ^ set(matrix))} missing or extra")
+    if len(names) != len(set(names)):
+        failures.append("a run is listed twice")
+    for r in runs:
+        name, report = r["name"], reports[r["name"]]
+        cfg = (report.get("meta") or {}).get("runConfig") or {}
+        moves = [e.get("ratePerSecond") for e in cfg.get("events") or [] if e.get("name") == "MoveTo"]
+        steady = phase(report)
+        checks = [
+            (cfg.get("inputLatency") is True, "input latency off"),
+            (moves == [r["moveToPerS"]], f"MoveTo {moves}, the cell is {r['moveToPerS']}/s"),
+            (cfg.get("eventSeed") == 1, f"event seed {cfg.get('eventSeed')!r}"),
+            (cfg.get("workers") == IL_WORKERS, f"{cfg.get('workers')!r} workers"),
+            ((steady.get("layout") or {}).get("lands") == r["rooms"], "lands aren't the room count"),
+            (steady["connections"] == 5 * r["rooms"], "connections aren't 5 per room"),
+            (((steady.get("measurement") or {}).get("inputToVisible") or {}).get("sent"), "no input-to-visible block"),
+            (r["summaryRoomCounts"] == [r["rooms"]], f"the summary names rooms {r['summaryRoomCounts']}"),
+            (r["sourceSha"] == runs[0]["sourceSha"], "another server commit"),
+            (r["swift"] == PINNED_SWIFT, f"Swift {r['swift']!r}"),
+            (r["node"] == IL_NODE, f"Node {r['node']!r}"),
+            (r["serverCpusAllowed"] == "0-7" and "taskset -c 0-7" in r["stdbufShim"] and "taskset -c 8-11" in r["nodeShim"],
+             "pinning isn't server 0-7, client 8-11"),
+            (r["spawnRampTicks"] == 3000, f"spawnRampTicks {r['spawnRampTicks']}"),
+            (r["clientLoadRc"] == 0, f"clientload.py exit {r['clientLoadRc']}"),
+        ]
+        failures += [f"{name}: {text}" for ok, text in checks if not ok]
+    return failures
+
+
+def il_load(directory=INPUT_LATENCY):
+    meta = json.loads((directory / "runs.json").read_text(encoding="utf-8"))
+    runs, reports, failures = meta["runs"], {}, []
+    for r in runs:
+        path = directory / r["report"]
+        with gzip.open(path, "rb") as f:
+            data = f.read()
+        if hashlib.sha256(data).hexdigest() != r["reportSha256"]:
+            failures.append(f"{r['name']}: report isn't the collected one (sha256)")
+        reports[r["name"]] = json.loads(data)
+    if meta.get("buildPorcelain") != [0, 0]:
+        failures.append(f"build porcelain {meta.get('buildPorcelain')}, expected clean before and after")
+    failures += il_failures(runs, reports)
+    if failures:
+        sys.exit("input-to-visible set not usable:\n  " + "\n  ".join(failures))
+    return meta, runs, {n: il_row(rep) for n, rep in reports.items()}
+
+
+def il_counts(c):
+    return " / ".join(fi(v) for v in c)
+
+
+def il_ms(values):
+    return " / ".join(fi(v) for v in values)
+
+
+def il_run_table(runs, rows):
+    header = ["run", "MoveTo /s", "rooms", "joined / connections", "input-to-visible p50 / p95 / p99 / max (ms)",
+              "sent / seen / superseded / timed out", "RTT p50 / p95 / p99 (ms)", "update p95 / p99 (ms)",
+              "server CPU mean / p95 (%)", "client CPU total (%) / worst loop delay p99 (ms)",
+              "disconnects / join failures", "steady"]
+    order = {"smoke": 0, 1: 1, 2: 2, 3: 3}
+    out = []
+    for r in sorted(runs, key=lambda r: (order[r["suite"]], r["moveToPerS"], r["rooms"])):
+        x = rows[r["name"]]
+        out.append([r["name"], r["moveToPerS"], r["rooms"], f"{fi(x['joined'])} / {fi(x['connections'])}", il_ms(x["i2v"]),
+                    il_counts(x["counts"]), f"{f2(x['rtt']['p50'])} / {f2(x['rtt']['p95'])} / {f2(x['rtt']['p99'])}",
+                    f"{x['update']['p95']} / {x['update']['p99']}", f"{f1(x['cpuMean'])} / {f1(x['cpuP95'])}",
+                    f"{f1(x['clientTotal'])} / {f2(x['loopP99Max'])}", f"{x['disconnects']:,} / {x['joinFailures']:,}",
+                    "pass" if x["passed"] else "FAIL"])
+    return table(header, out)
+
+
+def il_over_capacity(runs, rows):
+    """Room counts at which every run, at either rate, failed the steady phase's bars."""
+    matrix = [r for r in runs if r["suite"] != "smoke"]
+    return {n for n in IL_ROOMS if all(not rows[r["name"]]["passed"] for r in matrix if r["rooms"] == n)}
+
+
+def il_cell_table(runs, rows):
+    over = il_over_capacity(runs, rows)
+    header = ["rooms", "MoveTo /s", "input-to-visible p50 (ms)", "p95 (ms)", "p99 (ms)", "max (ms)", "RTT p99 (ms)",
+              "update p95 (ms)", "server CPU mean (%)", "timed out (sum)", "disconnects (sum)", "steady passed"]
+    out = []
+    for rate in IL_RATES:
+        for n in IL_ROOMS:
+            xs = [rows[f"lat-s{s}-m{rate}-{n}"] for s in SUITES]
+            out.append([f"{n} (over capacity)" if n in over else n, rate]
+                       + [rng([x["i2v"][i] for x in xs], fi) for i in range(4)]
+                       + [rng([x["rtt"]["p99"] for x in xs], f2), rng([x["update"]["p95"] for x in xs], fi),
+                          rng([x["cpuMean"] for x in xs], f1), f"{sum(x['counts'][3] for x in xs):,}",
+                          f"{sum(x['disconnects'] for x in xs):,}", f"{sum(1 for x in xs if x['passed'])}/{len(xs)}"])
+    return table(header, out)
+
+
+def il_server_ab_rows():
+    """server-ab step 4's 1000-room runs (MoveTo 2/s, unprofiled), read from that topic's reports."""
+    shas = dict(line.split() for line in (SERVER_AB / "data" / "provenance" / "SHA.txt").read_text(encoding="utf-8").splitlines()
+                if line.strip())
+    return [(f"server-ab {b}, `{shas[b][:8]}` (2026-11-06)",
+             il_row(load_gz(SERVER_AB / "data" / "runs" / f"latency-{b}-1000" / "report.json.gz"))) for b in ("A", "B")]
+
+
+def il_compare_table(rows):
+    header = ["server", "input-to-visible p50 / p95 / p99 / max (ms)", "sent / seen / superseded / timed out",
+              "RTT p50 / p95 / p99 (ms)", "update p95 / p99 (ms)", "server CPU mean / p95 (%)",
+              "disconnects / join failures (all phases)"]
+    entries = il_server_ab_rows() + [(f"`695fe86c` suite {s} (2026-11-17)", rows[f"lat-s{s}-m2-1000"]) for s in SUITES]
+    out = [[label, il_ms(x["i2v"]), il_counts(x["counts"]),
+            f"{f2(x['rtt']['p50'])} / {f2(x['rtt']['p95'])} / {f2(x['rtt']['p99'])}",
+            f"{x['update']['p95']} / {x['update']['p99']}", f"{f1(x['cpuMean'])} / {f1(x['cpuP95'])}",
+            f"{x['disconnects']:,} / {x['joinFailures']:,}"] for label, x in entries]
+    return table(header, out)
+
+
+def input_latency_section(directory=INPUT_LATENCY):
+    meta, runs, rows = il_load(directory)
+    r0 = runs[0]
+    matrix = [r for r in runs if r["suite"] != "smoke"]
+    under = [rows[r["name"]] for r in matrix if r["rooms"] < 1000]
+    at1000 = [rows[r["name"]] for r in matrix if r["rooms"] == 1000]
+    over = sorted(il_over_capacity(runs, rows))
+    clients = [rows[r["name"]] for r in runs]
+    m2 = [(s, rows[f"lat-s{s}-m2-1000"]) for s in SUITES]
+    lost = [(s, x["disconnects"]) for s, x in m2 if x["disconnects"]]
+    span = lambda vs, fmt: f"{fmt(min(vs))}–{fmt(max(vs))}"  # noqa: E731
+    common = sorted(set.intersection(*(set(x["failedBars"]) for x in at1000))) if at1000 else []
+    named = [f"`{b}`" for b in common]
+    bars = ((", ".join(named[:-1]) + " and " + named[-1] if len(named) > 1 else named[0]) + " (steady-phase bars)"
+            if named else "a different steady bar")
+    intro = (
+        f"Server and client at `{r0['sourceSha']}`, the MoveTo arms' commit; release GameServer; {r0['swift']}; Node {r0['node']}; "
+        f"kernel `{r0['kernel']}`; 2026-11-17. Same image, sysctls, Node and pinning as the arms (server CPUs 0–7, client 8–11), "
+        "in a separate container. The workload is the arms' `refreeze` rules (every server reported `spawnRampTicks=3000`; "
+        "ws-loadtest's default warm-up), **unprofiled** (the arms' tables are profiled, so compare server CPU with them only "
+        "with that in mind), with `--input-latency on --move-to-rate <1|2> --event-seed 1`, 5 players per room. "
+        "run.sh has no input-latency option, so each run is one invocation of the scalability script with run.sh's per-run "
+        "checks applied by the driver (TIME_WAIT drained to at most 200, the server's CPU list, the spawn ramp, one summary "
+        "naming the room count, `clientload.py`), recorded in `data/input-latency/runs.json`. Order: one smoke run "
+        "(1000 rooms, 2/s), then three suites, rooms ascending within each rate; suite 1 ran 1/s then 2/s, suite 2 2/s then "
+        "1/s, suite 3 1/s then 2/s. Input-to-visible is the time from sending a MoveTo to the first state update that shows "
+        "its effect ([`METRICS.md`](../../Examples/GameDemo/ws-loadtest/METRICS.md)).")
+    findings = [
+        f"At 100–500 rooms all {len(under)} runs passed steady with {sum(x['disconnects'] for x in under)} disconnects and "
+        f"{sum(x['counts'][3] for x in under)} inputs timed out; input-to-visible p99 {span([x['i2v'][2] for x in under], fi)} ms, "
+        f"max {span([x['i2v'][3] for x in under], fi)} ms.",
+        f"\"Over capacity\" marks a room count at which every run failed the steady phase's bars: "
+        f"{', '.join(map(str, over)) or 'none'}. At 1000 rooms the server ran at {span([x['cpuMean'] for x in at1000], f1)} % "
+        f"mean CPU of its 8 CPUs, and every run broke {bars}.",
+        "At 1000 rooms and 2/s the three suites differ widely: input-to-visible p50 "
+        + ", ".join(f"{fi(x['i2v'][0])}" for _, x in m2) + " ms (suites 1, 2, 3)"
+        + ("; " + "; ".join(f"suite {s} lost {n:,} of {rows[f'lat-s{s}-m2-1000']['connections']:,} connections" for s, n in lost)
+           if lost else "") + ".",
+        f"The client wasn't the bottleneck: `clientload.py` passed every run; client CPU at most "
+        f"{f1(max(x['clientTotal'] for x in clients))} % of its 4 CPUs (400 %), worst event-loop delay p99 "
+        f"{f2(max(x['loopP99Max'] for x in clients))} ms.",
+    ]
+    compare_caption = (
+        "server-ab's step 4 ran the same workload (refreeze rules, unprofiled, MoveTo 2/s, `--event-seed 1`) on 2026-11-06, "
+        "on an earlier host configuration: before the host's memory configuration changed (2026-11-07) and its kernel "
+        "changed (2026-11-10), with the client at `9b41c5a9`. Between that client and `695fe86c` the input-to-visible "
+        "matcher was changed to match positional points and gate its hit rate (`4e8861dc`), and a frame's arrival is timed "
+        "before the client's own work on it (`ee313cf3`). **Not directly comparable**; the rows are read from "
+        "`../multiroom-load-2026-11-server-ab/data/runs/latency-{A,B}-1000/` and shown for reference only. Join failures "
+        "here are over all phases; server-ab's own step 4 table counts the steady phase's (40 for A, whose postflight "
+        "joins went unanswered).")
+    return "\n\n".join([
+        IL_CAPTION, intro,
+        "#### Steady phase, each run (disconnects and join failures over all phases)", il_run_table(runs, rows),
+        "#### Per room count and rate: median [min–max] over the 3 suites (the smoke excluded)", il_cell_table(runs, rows),
+        "#### 1000 rooms, MoveTo 2/s, beside server-ab step 4", compare_caption, il_compare_table(rows),
+        "#### Findings", "\n".join(f"- {b}" for b in findings),
+    ]) + "\n"
+
+
 def results_markdown(results):
-    return sweep_section(results) + "\n" + record_section()
+    return sweep_section(results) + "\n" + input_latency_section() + "\n" + record_section()
 
 
 def main():

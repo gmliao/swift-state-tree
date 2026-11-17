@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "date": "2026-11-17",
+    "git_sha": "022d8fdb",
+    "runner_sha256": "ccff7d190b437a84009f3ffc986f1e7b52663e8fd0bd5fa775758dcf33fbb306",
+    "swift_version": "6.2.4",
+    "build_config": "release",
+    "host": "AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble)",
+    "record_format": "3.1",
+    "command": "HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=fixed HERO_PERTURB_EPS=1.0 ReevaluationRunner --input s9.sstr --verify",
+    "source_log": "perturb-s9-fixed1.log"
+  },
+  "params": {
+    "seed": 9,
+    "perturb_tick": 600,
+    "mode": "fixed",
+    "eps": "1.0",
+    "recording_sha256": "55e7cb21b1f770cd4363932e0205ec2d71a97a269f5175ce49b6eca52c19c88d",
+    "workload": "perturbed-replay"
+  },
+  "metrics": {
+    "exit": 5,
+    "detected": true,
+    "first_mismatch_tick": 600,
+    "detection_latency_ticks": 0,
+    "mismatch_ticks": 46,
+    "verified_lines": 0
+  }
+}

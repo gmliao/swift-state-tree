@@ -10,7 +10,7 @@ Both are measured with the same encoders and the same compressor, per input cade
 
 ## Environment
 
-Measured at `75222b87` (the Results' provenance line). Every run uses the pinned toolchain (`swift:6.2.4-noble`) on the measurement host, release builds, every process pinned to the server CPUs (`taskset -c 0-7`) with the client CPUs idle. `run.sh` records the git commit, whether the tree was clean and `swift --version` in `raw/<RUN_ID>/run.json`; The Results section opens with the measured commit, dirty flag, Swift version and build, which `regenerate.py` writes from the results' `meta` (`--check` verifies the line). `regenerate.py` refuses results from more than one commit, a debug build, a dirty tree, a Swift version other than 6.2.4 and a smoke sweep.
+Measured at `75222b87` (the Results' provenance line). Every run uses the pinned toolchain (`swift:6.2.4-noble`) on the measurement host (an AMD Ryzen 5 7600X; the results don't record the CPU model), release builds, every process pinned to the server CPUs (`taskset -c 0-7`) with the client CPUs idle. `run.sh` records the git commit, whether the tree was clean and `swift --version` in `raw/<RUN_ID>/run.json`; The Results section opens with the measured commit, dirty flag, Swift version and build, which `regenerate.py` writes from the results' `meta` (`--check` verifies the line). `regenerate.py` refuses results from more than one commit, a debug build, a dirty tree, a Swift version other than 6.2.4 and a smoke sweep.
 
 ## Command(s)
 
@@ -138,6 +138,14 @@ Replay, per replayed record (the first two of each messagepack sizes run): run 1
 | 10 | 5 | hero-defense-2026-11-09T11-11-22Z-24E7171B | 739 | 482.9 | 653.5 | 77 | 20.020 |
 | 10 | 20 | hero-defense-2026-11-09T11-12-16Z-1C1F7241 | 719 | 378.6 | 526.6 | 95 | 8.219 |
 | 10 | 20 | hero-defense-2026-11-09T11-12-16Z-35FB1029 | 789 | 445.2 | 564.2 | 89 | 8.818 |
+
+Sync output: all 36 verify runs (12 replayed records of the sizes runs, the first record of each of the 24 recording-on cost runs) report "Sync Output: passed" with 0 unverifiable and 0 skipped (`sync-output.json`, from each run's verify output). Compared:
+
+| verify runs | runs | broadcast | per-player | events | seed | apply |
+|---|---|---|---|---|---|---|
+| sizes | 12 | 4,133 | 23,298 | 4,133 | 68 | 27,487 |
+| cost | 24 | 8,349 | 47,266 | 8,349 | 136 | 55,727 |
+| all | 36 | 12,482 | 70,564 | 12,482 | 204 | 83,214 |
 
 Recording cost, 200 rooms, recording on against off, 4 repeats in ABBA order (on-off, off-on, off-on, on-off). ServerLoadTest runs the simulated clients in the same process, so CPU is the server's and the clients' together: the on − off difference is the recording's cost, and the on ÷ off ratio understates it (its denominator includes the clients). CPU % is of one core; core-ms per room-tick is CPU over rooms × ticks. The paired ratio is each repeat's on ÷ off, its median and [min–max] over the repeats.
 

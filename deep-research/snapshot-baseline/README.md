@@ -21,7 +21,7 @@ below is purely transmitted volume.
 
 The rerun's provenance (its commit, dirty flag, Swift version and build) opens the Results section: `regenerate.py` writes it from the results' `meta` and refuses results with no commit or from more than one, measured on a dirty tree, or without a dirty flag at a commit outside `GRANDFATHERED_COMMITS` (the commits of the tracked results collected before the flag was recorded; `collect.py` refuses a sweep whose run.json lacks it) (`--check` verifies the line).
 
-The list below is the pre-refreeze record's; the current record ran on the measurement host (Measurement note).
+The list below is the pre-refreeze record's; the current record ran on the measurement host, an AMD Ryzen 5 7600X (every current result's `meta.host`; Measurement note).
 
 - git_sha: `d2c647b` (main; includes PR #53 and `EncodingBenchmark --sync-strategy`)
 - swift_version: Apple Swift 6.3.2, build_config: release
@@ -32,6 +32,8 @@ The list below is the pre-refreeze record's; the current record ran on the measu
   sweep takes the shipped sync path (below)
 - `bytesPerSync` convention: room-level aggregate — the sum over recipients of each
   recipient's merged update at one sync event (the room-level aggregate convention used by the archived 2026-02 tables)
+
+Every byte figure of this topic is EncodingBenchmark's `bytesPerSync`, which is `totalBytes / iterations` in integer division (`collect.py`), so it is truncated to whole bytes. single-room-entity-scaling, entity-delta-baseline and wire-ablation-2026-11 record the unrounded quotient and round it, so the same cell can read 1 B lower here (425 here, 426 there, for 5 players at monster cap 4). The results keep only the truncated value, and the drift table's identity with single-room-entity-scaling is its floor.
 
 ## Command(s)
 

@@ -8,7 +8,7 @@ the field merge each save at every point?
 
 ## Environment
 
-The measurement host, release build of EncodingBenchmark, CPUs 0-7 pinned. Each result records the
+The measurement host (an AMD Ryzen 5 7600X; the results don't record the CPU model), release build of EncodingBenchmark, CPUs 0-7 pinned. Each result records the
 git commit, whether the tree was clean, `swift --version`, the wire knobs the benchmark ran with
 (`pathIndex`, `fieldMerge`, `dynamicKeyCompression` in its metadata) and the server environment
 run.sh left unset (`run.json` `serverEnv`: every variable that changes what the server sends or how
