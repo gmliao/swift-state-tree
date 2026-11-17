@@ -177,7 +177,8 @@ Handlers (actions, client events, lifecycle, `Tick`) are synchronous: `(inout St
 
 An input whose handler throws fails alone:
 
-- its caller gets the error, and the inputs after it are applied in the same pass;
+- the inputs after it are applied in the same pass;
+- on a tickless land its caller gets the error. On a tick land the caller already got its acknowledgement when the action was queued (the handler runs in a later tick), so the failure is logged (`Input failed: its handler threw`) and doesn't reach the caller. Errors at intake (an unknown action, a decode failure, a resolver's error, a rejected delivery) reach the caller on both;
 - the server events it emitted are dropped;
 - a join whose `OnJoin` throws is discarded;
 - what the handler wrote to the state before the throw stays, and the next sync sends it (there is no per-input rollback, #87);
@@ -433,7 +434,7 @@ Stated limits:
 
 - A joiner's first sync and the delivery of its `OnJoin` effects to the joiner still run outside the turn. <!-- TODO(#194): describe in-turn joins once #194 is merged. -->
 - The debug freeze settle still runs a `beginSync` / `endSync` cycle.
-- An input whose handler throws fails alone, as on the legacy path: its caller gets the error, it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it ([validate before you mutate](#inputs-and-turns)).
+- An input whose handler throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it ([validate before you mutate](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
 `IN_TURN_SYNC=false` is the kill switch: the adapter keeps its own executor and syncs through `beginSync` / `endSync` ([Sync Flow](#sync-flow)). The adapter decides once, at init, and the keeper follows it.

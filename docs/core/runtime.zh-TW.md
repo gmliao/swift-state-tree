@@ -176,7 +176,8 @@ Handler（action、client event、lifecycle、`Tick`）都是同步的：`(inout
 
 Handler 拋出錯誤的 input 單獨失敗：
 
-- 呼叫者收到錯誤，其後的 input 在同一輪照常套用；
+- 其後的 input 在同一輪照常套用；
+- 在 tickless land 上，呼叫者收到錯誤。在 tick land 上，呼叫者在 action 排入佇列時就已收到確認（handler 在之後的 tick 執行），所以失敗只會記錄在 log（`Input failed: its handler threw`），不會傳回呼叫者。在收件階段發生的錯誤（未註冊的 action、解碼失敗、resolver 的錯誤、遞送被拒）在兩種 land 上都會傳回呼叫者；
 - 它發出的 server event 會被丟棄；
 - `OnJoin` 拋出錯誤的 join 會被捨棄；
 - handler 在拋出前寫入狀態的內容會保留，下一次同步會送出（沒有逐 input 的 rollback，#87）；
@@ -432,7 +433,7 @@ Sync phase 以 turn 中該時點的狀態規劃（plan）本次 cycle 的所有 
 
 - Joiner 的第一次同步，以及其 `OnJoin` 效果送給該 joiner 的部分，仍在 turn 之外執行。<!-- TODO(#194): #194 合併後描述 in-turn join。 -->
 - Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。
-- Handler 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：呼叫者收到錯誤，該 input 被移除並記錄，同一 turn 的其他 input 照常套用。狀態保留 handler 在拋出前寫入的內容，下一次同步會送出（[先驗證再修改](#input-與-turn)）。
+- Handler 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄，同一 turn 的其他 input 照常套用。狀態保留 handler 在拋出前寫入的內容，下一次同步會送出（[先驗證再修改](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
 `IN_TURN_SYNC=false` 是 kill switch：adapter 保留自己的 executor，透過 `beginSync` / `endSync` 同步（[同步流程](#同步流程)）。Adapter 在 init 時決定一次，keeper 跟隨它。
