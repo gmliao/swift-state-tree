@@ -1,0 +1,3384 @@
+{
+  "records": {
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-1A1A5969.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 375,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "625eb8e464a2b076cdd371f27818e541b903cb765a614fb9cecaf8187af4babe"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-2D7681E7.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 379,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "acc95ea272a560418651a86fc92bc4e1e2e0b7a4a32e4103fae3f829d17af82c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-2F24F090.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 327,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "0da129be7fabb15769ae501acb89deecaa644083080ccfa74c955c5d338ccc7c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-3C02BA4F.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 366,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "35563178d48072a39409ce0ecaaae318a31c335bf1b96431d17c4901ba306fdb"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-89CA7ED9.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 340,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "3d63cb37a9bfc1861ceed0abb13bf99fe5b24428a940f50bbc5595163931d210"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-9C543936.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 332,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "57919875e11c546366f139acac622a9e853ee1cd8fb3a1914c0219313ee7a00a"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-A604FC3F.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 359,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "f9967a242bb537c98218165497079eab1a1944b3655614fddae60c8581db16d1"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-A8ABF97C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 374,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "ba97400268256a076c46a26f7e4127520639bf003d35e160b4be442ad15819a2"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-B81DEDEB.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 349,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "59e2428e08934b57e5e34f1f37a4b094cddda9252c62604602cc7e867210a4b2"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c20-r1/hero-defense-2026-11-09T11-16-36Z-C453F23C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 324,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2050c89c3b7a7adc11f71ab7c76420ada1a82344d51077aa0f24070698372d20"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-252D2E61.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 347,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "460d204908e9ac7ac0d68a4960362a505aacc2052ff489bb301fbd89144d63c4"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-29FFAB6D.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 323,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "28842440d035d726eacc845a02c997122d4ec4b79cda9c266218d3b91faecd1f"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-51E3266A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 377,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "3ed1f8706338229649cc2598ebaadfedcf45b8c49c2736755558afe7bcdd827f"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-574DD1B0.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 371,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8c8cc463d8d3ef6c702baa5943f0d60107ad13e4ee6a626a5be9f383cd632cbf"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-5E1B02C6.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 371,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2f664897f3a89b89b5a1a9807d7bbb0435a263904e891d76835d3ddb7072ea7d"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-73BE1BE7.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 350,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "85e098e8c1ab81b4fb372d4fbe88bf754ae485bb9f6d3276da67c2c25fc95a3c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-A06A2391.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 345,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "62859d5709753df3ed83ae770030ef8108fe6036d98daac37e67693c9106f37e"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-B99605BE.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 364,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "72ba49e7053f57dc1d27e1ed69da1159f045f7a0aacf0eacb5d27d7356fc9efd"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-BE4589EA.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 335,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c745335abb891ff8254cfcf8e0a07ea382dd87b9a8508f7ca286f62d9ba28b3f"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p10-c5-r1/hero-defense-2026-11-09T11-15-54Z-EFEFF87E.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 351,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "b7842fafb5f9db0734a82cba8208a10e086acc9343c10d6fe26e484d610176b2"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-0AA08B97.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 351,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2478f022c92681c619908fe113b8fd99c16ec40bdacbbed85be4705c0f2f4461"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-43E161FF.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 326,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "53f3cba24563d943e78476b8369fc0e1a35332c3f1662b9d5e35fd3d88432995"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-450A0797.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 316,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "9ecf6d90c3dffafa501635207de287bbc6f5f3da7ffc2d45793a14ebcd189678"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-539B8432.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 311,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "b4b8b5e9189b4f5829a15638743332e51ba9c45ce58ab3728587ee5eef7107da"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-79D4F28E.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 375,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8d6cad3f186aad3f27ed2b2bb8c6e73733747424a2710baf176e8724fc47a014"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-86A162C1.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 351,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2a8377e1629858d2db1107e07e001defb7913c81a18891aa45cf6e485ef7f705"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-99B11D2A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 376,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "64eef0bc67f2675f2f3386a77be7819564ab56cb2378d54f45bf9e2a0aeae2e1"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-C2B73326.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 360,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "887133126ada77dc9118a7fe410172e88c5d90150a4315a3c8a89927598ee254"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-C8ED6363.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 361,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "a247ff612eae71fe74c08769e43318c506a65b8459da2df25a01e0fde7e39b47"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c20-r1/hero-defense-2026-11-09T11-13-47Z-EFD2D7FE.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 355,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "7e2ae0676f70e7d6c30c25450ac9a88ea8a07980b597bf56cbe2cb9f4c34cb8c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-17E4FBB3.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 335,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "5da59ed32aec0f628a4aef39c37f7220e97870021b0cf6c6d390d37edaf84cfb"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-2AA01B38.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 346,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "04a859eda68da34c786f25ba8cab93d607a6a46fc30eb6ebff54e2ae2dc5fe37"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-389DBD9E.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 340,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "a4672ba6df08863994489d1735d030ffc533d5ee1c97ad67d161868dda4eb612"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-4D45594D.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 336,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c18b5ea275f781e5bdbc41c4b9aada9fe038f1c4841879015ee2005826191b94"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-7CD45B59.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 311,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "bbcdaa669131c23bc6e5bcdcdaeca3cbe79610b4f6949ba6616b781d725190ef"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-7D308419.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 361,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "49567dabad59256aefd14b1bb4fc982dfa4d368a4e2eec6a54562ea957b49296"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-B009684F.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 341,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "b7954b149e7ca21449363dc9fe14b87ff65f43571613112e520aa2ddaa0f5875"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-D97895D1.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 375,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "84ff874c9d98f356cae9cd4d0b7affc2ad21ad52b94b7c73fa6f4ea25dd854d2"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-DB107EB2.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 370,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "3e822090115091ca69ee8012f7e4d10d61f728c80c72f16a4161b203ff7d91ed"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p2-c5-r1/hero-defense-2026-11-09T11-13-05Z-ECA5A4A5.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 366,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "0848b04191622562aa06c9c9f2ca89160ad945aa81ed2041ece01b7f6fc89a52"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-06BEF736.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 336,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "b85bc07c5cc7a8c3da53ae2f1b75cf043c0a086317e0fadd8ecf6348269fb07f"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-1C0342E5.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 318,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "0f1df1cf65a2a1eab2a4028a77ed02cc2109878c84138c6276350a4655cb5618"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-291D4A28.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 334,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "fe2115549f6c8c6a51c0ee9810e5c3840a8dcea74c4375fdf32d7e045b53ca86"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-5548AA6A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 350,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "7824108735385bc351a343bdd82b351b6b94fe27ebec5b4dc0ea35547ff1bbe3"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-6B00F58E.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 322,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "7b4210e50669b17ceca75cf5bc224626a9f10e919cc83a8eb20fae260ede234e"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-7B551438.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 369,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2c4be80a8d72a4504bebbaec867d89e439e1f7b0c78be99de61a5e274b10b33a"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-7C8D0933.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 363,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "057ddac4f28843954d04bc52ea7325d51e2b5463ac79985eb8930435abb7c5e7"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-9EB5FAC7.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 354,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "b18e8d9c8cae17d741d3bfac29175c8c71688596aae15568f31a2334c0826149"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-B9EA2AFD.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 387,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8ebb20a80bea7fc36c9b781bab06a31888e80993a3a7d906c03188a89026a08c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c20-r1/hero-defense-2026-11-09T11-15-11Z-FA142E83.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 369,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "d8281eec74d359ac3935da83e862bb9db9a0fa909ac50683b223c94f44f253ff"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-06750F04.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 348,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "589263214870854525d3dff9a8c532e4ada621212d85dbf0de4f0d52b6046e0c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-2621489E.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 338,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "232792e6d01d8301b8cf3893c5e88f65ac277c3e16b7f05a23f40755dd109ee8"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-3BD26B71.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 364,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "6bec9f3f2da1cb15aa51fcf7d45a6b8136abecdc08b045581dab0d3f45a1c1bf"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-4DF9C145.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 334,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "ef7c452616c5865827dd88308d0f7ab274fbbf4f91cfaed93b218945d7f952ce"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-5A02F934.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 390,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "5acbbb389b0957038d0f4c8de52e81a8023c614df9d8ef143f4aeda5da3f4908"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-71E72D7E.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 336,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "68d45a55a96f86f20a86f6a770feae9a99b15e9d7e67754503175e02632c34a5"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-94F83382.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 342,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "96fbc0f41413352ec77963ea5bb40a5c26efc94689921b9b61c52fcc1402e24f"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-AF4E7EF0.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 332,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "7f4363cff81a70118fda55893dfc6b51dbdbc45b557bdc05ccea732dd20c031c"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-D546C5D1.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 369,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "4261f83879458308ab64a0df0af0d961ad92eb65a770dcf86982e0ac9a451586"
+    },
+    "20261109T110631Z-75222b87/sizes-json-p5-c5-r1/hero-defense-2026-11-09T11-14-29Z-FC72F173.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 0,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 349,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "41154d9e6d0a027a8323d82e14efe3aa4667c2fa5fca1338438130ca319d5fae"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-1C1F7241.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 315,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8f1bdfdce5fef080a5c8c47789ee099afef60d77bd4118d0dcaa42fcd4fc5af0"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-35FB1029.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 360,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "e412edf1401830466bd96c66712a2b4d4c456f56bdeb0b47dcca642535e2f506"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-500B4C42.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 395,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8a8367516d13adb13a2e6a06e1358621c4ff0d096ccc73af9c6da37e4fbb5052"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-54223C4F.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 364,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "746ee94ab3ac0ca1e67b655fb4cefe54ffc116295f01d211f39b6b3eb2859db7"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-597369E7.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 349,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "52ebef3b770e2decd8e7cf2186f6877bd5234ae2ff87ebf8f4b05811998d97ef"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-61C65694.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 320,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8e178d9eccc35aa996f7f6229b99ba8ebe9b31bd854becdb7c782df5e025e8ea"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-A8619899.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 374,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "e1037bae22c24fc8764094555a19bfb82c7a309fcc30b0bb409033184f838c9e"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-E481A479.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 361,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2249f895b3671d62455c77088f973adf84ba05d7cb481d957c0d74bcf9c6c114"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-EBBA7090.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 320,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "901d2a0e7bb20f4c3efb05fe7416b50ba8c6b19276e2a59875c56bcec24b3373"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c20-r1/hero-defense-2026-11-09T11-12-16Z-FAB52A51.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 364,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "728c3ada32ebfb07432987bbe593def802933b0723b7b930644f97034a1e6f30"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-0C6EF62D.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 374,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "5e4a47ea2fc0788d84bf0329cb5739be220af768a6dafb58e4576985ade57319"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-24E7171B.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 356,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "770fc355f18e7f43ee259635b026f1a267c01acca73bed0e24f167999cf2f6d7"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-339372AE.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 329,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "6990a0a0d6df91a6518ff568b7ad63cb3751a2b3ff61eeb4b387c892b33e9ad6"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-376C838C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 360,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "e94b835f4df3275dd4e637a42643c89eab838893ce9c86e439d6d961bcb4b41d"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-525730C8.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 310,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "55e8ae2eb423b8b945e0436f7856831e2e50ab0061fb9a2b26f709455c06e9f2"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-64DA5A35.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 350,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "f602d3ba821b5e84dbd11e6cecdfbca91e5a8dd28370c8ded3577a9415c2c9f5"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-AC711401.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 355,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "8cd7ef744214f0b4da3f8fad6fa43f78447bfa1834dd827f62d4b3abde359100"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-D09AADAB.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 364,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "59cf886fa9345e97529fce7029cc9b4919741286b1f4f74993f13e90054bce5b"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-DCEEBFF7.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 380,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "51f2b3adc87b798dede3371ed59642dd51184f884346d6b4c0cc9f0841b308c1"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r1/hero-defense-2026-11-09T11-11-22Z-FE989797.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 344,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "6e4bc1cca2fd98f4f9ffec6a7110433b2ee16f6d598ea87ecf2d5bb76e689a14"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-1F6CEF2D.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 381,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "f6e7e6b008e5dec387d6f4fd39dd055b881785685f61aea6366e3ab006138cc8"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-2AC41A30.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 356,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "bc7e6807a188a611915bfa6815fcd2aff686917ebbe4c1d84f915aedb29d0087"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-64B6A125.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 324,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "1e56c51ff59e210e798215cce18e28973a270c3b2c9a86d1ac0d992b311d7ef8"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-8EFB3066.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 331,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "9b925e81702287c5a5b601df6fbf6db2d0878ff812ae98ef46486e08be3918cc"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-A6F01EE6.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 332,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "0cd84d2d4794c1e75a9d4cb9f45133a0fdefb6735a925a5e41ab619b72f7e1bf"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-ABD9BB2C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 386,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "a4b0a6add0fc26855bd35e9366a2d1f88150c0c996380533b90342fb8ca73332"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-B692B1AB.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 365,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "bc6eef8899221aec586e655059fba8ee9b1f795c550f7abf088d8a1df979e5f0"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-CB84E827.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 335,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "adeb49112e1b27fafdadbf92cceb9819fe27342a98caa37b685b3e93dc979bda"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-D5932C67.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 339,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "f5f59b91789ff4b1289c447dff829163a37681d5b3347efb7f5b921d7406b1f0"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/hero-defense-2026-11-09T11-17-18Z-EF7A9213.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 8,
+      "markers": {
+        "clear": 10,
+        "initialize": 0,
+        "seed": 10
+      },
+      "outputs": 379,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 10,
+      "seeds_first": 10,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "3921da50069c63d749e267693dd3fcc608204b9684d9fce85e76abaf6fc0d043"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-0CBE355B.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 356,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "dd72108a7a3f82d94ec07f67a9407bfdf54614d197b81eb9772ac4891d324521"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-28ADAA3C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 330,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "d3271b7e953b7403def298b12b10e1089f8e4a3b97622489ed4be0892ad84895"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-312E03AC.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 375,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "bba550c191f3955445230e97490be3fbc3dc0cd03467fc795d693033808e9292"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-732A4458.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 341,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "ea334a221bdcb4effa7f32f6e00e938278a7395eebe53c27285dca65602780d2"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-90A95F72.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 340,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "86ccc8b21220ab187073a4019c69d3341881d511063be7de22fcc89519766147"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-A1B32A0A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 326,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c09c8e2f62c069e03a0254b5d8b9b824ce7f103163eb09903040ec2052894598"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-A20EDFEE.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 335,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c690114225e53d5aba25655d50bc85380912502ac206be90d842df713f71fd85"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-B82DEC93.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 351,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "1268d1316984fe0e46d2a4cafd83f400ae69f8b7ae665a72bf3e9fc5b95b26eb"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-DB1DBD8D.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 371,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "f72108dc9c2233b174762d5e818c984cedf574dcbe3d912bc60b03e98aa7d6f5"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/hero-defense-2026-11-09T11-09-00Z-FD91154A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 356,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "b7e5ed8f967436da5d5e7472001562e3dcba55bc8e69994c6132df2130bc6565"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-1CD85A01.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 325,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "84b1257508845d3a155ebc3c07e116ddd0e804a4da5d3b24ff5c3e007874b6bf"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-307670BE.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 351,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "1fcd05aa970641ef795e6504b558fd00ec898a92709b673b679c39042e23b551"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-48677C8C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 340,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c956faabd3af6a44f37d6d23698c856cb0b6e55b53da34fd23361ca36ce9c966"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-4AF1A270.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 371,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "4ba27529842e85bdf9bf11d09d6b2dbefd1163abd4ffca17e102cfded0d63f56"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-51EAA6AE.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 356,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "130d0571818bc546313ccd9951c745299d6186cde1a89be44b5df680d646baf7"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-5E87BFB2.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 346,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "89679d61fed8c37479e77668b6142587e6c4be349ef906c28a683348c4b0a847"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-7F2DC894.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 361,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "4dcbc03529d0e03f532241c06eac6a9f1fc88a968ee55c1e9ccfc16c59a88ab3"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-BDDFFC22.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 340,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "933c4b4e835432066297842b8f9f0bbfaa28c8b79ab8ed7facaaed47a83a3420"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-C616A321.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 346,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "823490b2a0c04115ccc2298ae9060cd12bfaa6754548fe062da6a7764b736d7f"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p2-c5-r1/hero-defense-2026-11-09T11-08-13Z-C710795A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 1,
+      "markers": {
+        "clear": 2,
+        "initialize": 0,
+        "seed": 2
+      },
+      "outputs": 346,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 2,
+      "seeds_first": 2,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2e63827d70c24265566b3e0ee37cbc48c9730fc3c4d0fcf52f53fe448f51bb1e"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-0309C479.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 374,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "a0184c3502d55b347dc8cc3553ae64c298c12ede4360fcb874a7873db41667db"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-2DCE97A5.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 324,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "786a0bb31a16f3b41d49ab83ff26349bc345df83c95c96e27ae554b618080503"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-5D68587B.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 358,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "5a3ea796c50ebaddf8a851512be2e30020d19cd2b11a29070d5e0987439cd480"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-710954A5.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 370,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "1891a0e07424f6080f981b5403331467e7dc6df0e9748c632347e27916cf984b"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-726AD1C8.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 349,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "1692732f918a699cb7cbb5254dd35ce8bbc5bdb2e9c302a80f05e42afb81a036"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-797BFEB1.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 307,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "bcaa983040edbec8b47e8b0e166f64ab921cbae81eea5fd752d1c3c245921607"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-AAFE9170.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 371,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "e87bce57dc65bef40bb1628a54b64999a7c0649a78e2baf51e4afff0c20c4064"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-D71B6F83.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 349,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c941231f1726527579c169a2ec2fcf1a5e0c98b7a5ff8920baaf7b0ff37202e6"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-DC2FD571.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 357,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "2181fc632b30c4b6bb424bac6e8f933db3dd6d3209b5ce254ab4c11b9e194229"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c20-r1/hero-defense-2026-11-09T11-10-35Z-E749919F.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 343,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "7b6fe5ffa0d23044dd66385d70dcbd7297813ff02fe85e4b09c105030f215b89"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-02209B45.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 329,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "69d1a1015ef04111b7516b9c81342840e6d561f290e25fdc98dcfefdbd204f8c"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-041B9BA1.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 339,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "a7942a0ea60e27cbc54ba474cf7e4c6612919183ebc0d35fcb037034679de45a"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-0AC6FEB7.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 361,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "940a0fdff0b177290be1727d38c0a64d00c08d873bfa0ef208ebb177195b992d"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-6F62AAAA.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 344,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "5bb0c98797d40ae51f5229f6a284651b71256755e69703ebf0a1436f4abc5142"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-875DA0C4.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 358,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "a81c930139395d840275df94bf1d5588a0c7825893699d9c7d970b59c18dc5d0"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-9197170A.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 316,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "f4ee2ce0ae90863b426b0b4231cd8317f4cab7bded7fdfeac59475cf1f08e5c6"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-ABA2DA4B.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 371,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "7c884c99694042a6100732295993a77e253131462d037bbf56808d8d4165016f"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-AEE882B4.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 376,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "c6c621b7f45fba31f6d0ec7fb9110fdf06078eedf2bf87d42485ad2923ebef59"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-C8900F19.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 343,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "af8c30ca74e75f59489fe612fc04674ab933f038f3c135962a5c4e5d1041d9f5"
+    },
+    "20261109T110631Z-75222b87/sizes-messagepack-p5-c5-r1/hero-defense-2026-11-09T11-09-45Z-DC81D53C.sstr": {
+      "format": "3.1",
+      "key_scope_resets": 4,
+      "markers": {
+        "clear": 5,
+        "initialize": 0,
+        "seed": 5
+      },
+      "outputs": 364,
+      "partial": {
+        "broadcast_not_committed": 0,
+        "encode_drops": 0,
+        "events_not_merged": 0,
+        "extraction_drops": 0,
+        "per_player_uncommitted": 0,
+        "per_player_unverified": 0,
+        "seed_view_drops": 0
+      },
+      "players": 5,
+      "seeds_first": 5,
+      "seeds_later": 0,
+      "seeds_later_after_clear": 0,
+      "seeds_later_other": 0,
+      "seeds_later_rejoin": 0,
+      "sha256": "5c22384df9748ef1e575cbc7fd892c6837e2400d22411de8e22ea669a8b7a936"
+    }
+  }
+}

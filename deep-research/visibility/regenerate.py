@@ -12,6 +12,10 @@ and every cell must have both variants in every repeat and at least one captured
 both variants passed the gate (verify-views) and the replay (`ReevaluationRunner --verify`), the
 cell passed the radius/all consistency check, and the decode figures come from a verified
 time-decode run.
+
+The full views and partial outputs come from sync-marks.json (sync_marks.py, deep-research/syncmarks.py,
+from the captured runs' replay reports): one entry per result with replayed rooms, with its rooms
+and players per room.
 """
 import argparse, json, pathlib, statistics, sys
 
@@ -216,6 +220,58 @@ def tables(runs):
     return "\n".join(out)
 
 
+SYNC_MARKS = TOPIC / "sync-marks.json"
+
+
+def sync_marks(runs, path=SYNC_MARKS):
+    """{result name: summary} from sync-marks.json, after its gate; exits naming every failure.
+    Expected: one entry per result with replayed rooms."""
+    entries = json.loads(path.read_text(encoding="utf-8"))["runs"]
+    names = {f"{r['params']['cell']}-{r['params']['variant']}-rep{r['params']['repeat']}": r
+             for r in runs if r["metrics"].get("replay_rooms")}
+    failures = []
+    if set(entries) != set(names):
+        failures.append(f"sync-marks.json lists {sorted(set(entries) ^ set(names))} unlike the results with replayed rooms")
+    for name, r in names.items():
+        e = entries.get(name)
+        if e is None:
+            continue
+        if e["rooms"] != r["metrics"]["replay_rooms"] or e["players_per_room"] != r["params"]["players"]:
+            failures.append(f"{name}: {e['rooms']} rooms of {e['players_per_room']} players; the run replayed "
+                            f"{r['metrics']['replay_rooms']} of {r['params']['players']}")
+        if e["source"].split("/")[0] != r["meta"]["source_file"].split("/")[0]:
+            failures.append(f"{name}: sync marks from {e['source']}, the result from {r['meta']['source_file']}")
+        if e["seeds"] != e["rooms"] * e["players_per_room"] + e["seeds_later_derived"]:
+            failures.append(f"{name}: seeds don't add up")
+    if failures:
+        sys.exit("sync marks not usable:\n  " + "\n  ".join(failures))
+    return entries
+
+
+def sync_marks_table(runs, entries):
+    keys = ("rooms", "seeds", "seeds_later_derived", "rooms_seeds_not_players", "key_scope_resets", "skipped", "unverifiable")
+    total = lambda es: {k: sum(e[k] for e in es) for k in keys}
+    variant = {name: r["params"]["variant"] for r in runs for name in
+               [f"{r['params']['cell']}-{r['params']['variant']}-rep{r['params']['repeat']}"]}
+    out = ["\n### Full views and partial outputs in the replayed rooms\n",
+           "The records aren't kept, so these counts come from each replayed room's \"Sync Output:\" line "
+           "(`sync-marks.json`, from each captured run's replay report). A full view sent to a player is a `seed` "
+           "(its first view, a rejoin, or a resync in place). Each player has exactly one first seed, so later "
+           "seeds are derived: a room's seeds minus its players. A key scope reset is an output that types every "
+           "recipient's update `.firstSync`; it carries a diff, not a full view. Skipped and unverifiable are the "
+           "comparisons of partial outputs the record marks (not committed, not sent, dropped, or a view that isn't "
+           "verifiable), over every scope. The format writes nothing for a sync phase that planned nothing (skipped or "
+           "deferred in the live run), so those aren't in any record. Summed over the cells:\n",
+           "| Variant | Replayed rooms | Seeds | Later seeds (derived) | Rooms with seeds ≠ players | Key scope resets | Skipped | Unverifiable |",
+           "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for v in VARIANTS:
+        s = total([e for name, e in entries.items() if variant.get(name) == v])
+        out.append(f"| {v} | " + " | ".join(f"{s[k]:,}" for k in keys) + " |")
+    s = total(list(entries.values()))
+    out.append("| **All** | " + " | ".join(f"{s[k]:,}" for k in keys) + " |")
+    return "\n".join(out)
+
+
 def results_section(readme):
     marker = "## Results"
     if marker not in readme:
@@ -234,6 +290,8 @@ def main():
     runs = load(args.results)
     check(runs)
     md = tables(runs)
+    if runs:
+        md += "\n" + sync_marks_table(runs, sync_marks(runs))
     if args.check:
         ok = results_section((TOPIC / "README.md").read_text(encoding="utf-8")).strip() == md.strip()
         print("OK" if ok else "MISMATCH")

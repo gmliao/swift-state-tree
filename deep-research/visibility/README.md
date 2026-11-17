@@ -214,6 +214,17 @@ Client decode per frame (µs, Node, SDK; apply after #303):
 | 1 tick(s) per sync | 0.91 | 2.73 | 5.93 | 25.47 | 11.84 | 51.65 |
 | 2 tick(s) per sync | 1.00 | 2.93 | 5.94 | 25.28 | 11.77 | 50.57 |
 
+### Full views and partial outputs in the replayed rooms
+
+The records aren't kept, so these counts come from each replayed room's "Sync Output:" line (`sync-marks.json`, from each captured run's replay report). A full view sent to a player is a `seed` (its first view, a rejoin, or a resync in place). Each player has exactly one first seed, so later seeds are derived: a room's seeds minus its players. A key scope reset is an output that types every recipient's update `.firstSync`; it carries a diff, not a full view. Skipped and unverifiable are the comparisons of partial outputs the record marks (not committed, not sent, dropped, or a view that isn't verifiable), over every scope. The format writes nothing for a sync phase that planned nothing (skipped or deferred in the live run), so those aren't in any record. Summed over the cells:
+
+| Variant | Replayed rooms | Seeds | Later seeds (derived) | Rooms with seeds ≠ players | Key scope resets | Skipped | Unverifiable |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| radius | 14 | 80 | 0 | 0 | 0 | 0 | 0 |
+| all | 14 | 80 | 0 | 0 | 0 | 0 | 0 |
+| broadcast | 14 | 80 | 0 | 0 | 0 | 0 | 0 |
+| **All** | 42 | 240 | 0 | 0 | 0 | 0 | 0 |
+
 ## Conclusion
 
 From the Results at `75222b87` (medians over 3 repeats):

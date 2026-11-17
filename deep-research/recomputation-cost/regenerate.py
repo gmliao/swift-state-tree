@@ -29,6 +29,10 @@ The verify runs' sync-output verdicts come from sync-output.json (sync_output.py
 verify outputs): one entry per replayed record of the sizes runs and one per recording-on cost run,
 no other, each "Sync Output: passed" with nothing unverifiable or skipped.
 
+The sync stream markers come from sync-marks.json (sync_marks.py, deep-research/syncmarks.py, from
+the sizes runs' raw records): one entry per record, as many as the run's rooms, each with the run's
+players and one first seed per player.
+
 Usage: regenerate.py [--check | --markdown | --self-test | --record-check <process dir>]
 """
 import argparse
@@ -43,6 +47,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import provenance  # noqa: E402
+import syncmarks  # noqa: E402
 import syncoutput  # noqa: E402
 import wireform  # noqa: E402
 
@@ -804,6 +809,56 @@ def sync_outputs(runs: list, path: pathlib.Path = SYNC_OUTPUT) -> dict:
     return groups
 
 
+SYNC_MARKS = HERE / "sync-marks.json"
+
+
+def sync_marks(runs: list, path: pathlib.Path = SYNC_MARKS) -> list:
+    """The sizes runs' record entries from sync-marks.json, after its gate; exits naming every failure."""
+    records = json.loads(path.read_text(encoding="utf-8"))["records"]
+    sizes = {r["name"]: r["params"] for r in runs if r["params"]["kind"] == "sizes"}
+    failures, seen = [], {}
+    for key, e in records.items():
+        run = key.rsplit("/", 1)[0]
+        if run not in sizes:
+            failures.append(f"sync-marks.json: {key} is not a sizes run's record")
+            continue
+        seen[run] = seen.get(run, 0) + 1
+        p = sizes[run]
+        if e["format"] != "3.1":
+            failures.append(f"{key}: record format {e['format']}")
+        if e["players"] != p["players"] or e["seeds_first"] != p["players"]:
+            failures.append(f"{key}: {e['players']} players with {e['seeds_first']} first seeds; the run has {p['players']} per room")
+        later = e["seeds_later_rejoin"] + e["seeds_later_after_clear"] + e["seeds_later_other"]
+        if later != e["seeds_later"] or e["seeds_first"] + e["seeds_later"] != e["markers"]["seed"]:
+            failures.append(f"{key}: seed counts don't add up")
+        if set(e["partial"]) != set(syncmarks.PARTIAL):
+            failures.append(f"{key}: partial counts {sorted(e['partial'])}")
+    for run, p in sizes.items():
+        if seen.get(run, 0) != p["rooms"]:
+            failures.append(f"{run}: {seen.get(run, 0)} records in sync-marks.json, {p['rooms']} rooms")
+    if failures:
+        sys.exit("sync marks not usable:\n  " + "\n  ".join(failures))
+    return list(records.values())
+
+
+def sync_marks_lines(entries: list) -> list:
+    s = lambda k: sum(e[k] for e in entries)
+    m = lambda k: sum(e["markers"][k] for e in entries)
+    partial = sum(sum(e["partial"].values()) for e in entries)
+    return [f"Sync stream markers in the {len(entries)} records the sizes runs kept (the cost runs' records aren't kept; "
+            "`sync-marks.json`, from each record file). A full view sent to a player is a `seed` marker: its first view (firstSync), "
+            "a rejoin, or, after a `clear` for that player, a resync in place. An output that resets the dynamic key scopes "
+            "types every recipient's update `.firstSync`; it carries a diff, not a full view. Partial outputs are those the "
+            "format marks as not committed, not sent, not verifiable or dropped in encoding or extraction, and seeds whose view "
+            "isn't verifiable. The format writes nothing for a sync phase that planned nothing (skipped or deferred in the live "
+            "run), so those aren't in any record.", "",
+            "| records | players | first seeds | later seeds | rejoin | after a clear | other | clears | outputs | key scope resets | partial outputs and seeds |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            f"| {len(entries)} | {s('players'):,} | {s('seeds_first'):,} | {s('seeds_later'):,} | {s('seeds_later_rejoin'):,} | "
+            f"{s('seeds_later_after_clear'):,} | {s('seeds_later_other'):,} | {m('clear'):,} | {s('outputs'):,} | "
+            f"{s('key_scope_resets'):,} | {partial:,} |", ""]
+
+
 def sync_output_lines(groups: dict) -> list:
     every = syncoutput.total(groups["sizes"] + groups["cost"])
     lines = [f"Sync output: all {every['records']} verify runs ({len(groups['sizes'])} replayed records of the sizes runs, "
@@ -816,8 +871,9 @@ def sync_output_lines(groups: dict) -> list:
     return lines + [""]
 
 
-def results_markdown(runs: list, sync: dict | None = None) -> str:
-    """The Results section; `sync` (sync_outputs) adds the verify runs' sync-output lines."""
+def results_markdown(runs: list, sync: dict | None = None, marks: list | None = None) -> str:
+    """The Results section; `sync` (sync_outputs) adds the verify runs' sync-output lines, `marks`
+    (sync_marks) the sync stream markers of the kept records."""
     lines = [RESULTS_HEADING, ""]
     if not runs:
         return "\n".join(lines + ["No runs yet.", "", RESULTS_END])
@@ -826,12 +882,12 @@ def results_markdown(runs: list, sync: dict | None = None) -> str:
     replayed = [r for r in sizes if r["replay"]]
     forms = "; ".join(f"{enc} runs: {form.caption()}" for enc, form in INTENDED_WIRE.items())
     lines += [provenance.line(provenance.from_results(runs), node=False), "", f"Wire form (checked per run): {forms}.", ""]
-    lines += size_tables(sizes) + replay_table(replayed) + (sync_output_lines(sync) if sync is not None else []) + cost_tables(runs) + [RESULTS_END]
+    lines += size_tables(sizes) + replay_table(replayed) + (sync_output_lines(sync) if sync is not None else []) + (sync_marks_lines(marks) if marks is not None else []) + cost_tables(runs) + [RESULTS_END]
     return "\n".join(lines)
 
 
 def render(readme_path: pathlib.Path, runs: list, check_only: bool) -> bool:
-    generated = results_markdown(runs, sync_outputs(runs) if runs else None)
+    generated = results_markdown(runs, sync_outputs(runs) if runs else None, sync_marks(runs) if runs else None)
     readme = readme_path.read_text(encoding="utf-8")
     start, end = readme.index(RESULTS_HEADING), readme.index(RESULTS_END) + len(RESULTS_END)
     if check_only:
@@ -861,7 +917,7 @@ def main():
     if runs:
         check(runs)
     if args.markdown:
-        print(results_markdown(runs, sync_outputs(runs) if runs else None))
+        print(results_markdown(runs, sync_outputs(runs) if runs else None, sync_marks(runs) if runs else None))
         return
     readme = HERE / "README.md"
     if args.check:
