@@ -468,7 +468,7 @@ public extension SnapshotValue {
     }
 
     /// Two keys of `map` that convert to `key` (#535 D8).
-    static func collidingKeys(in map: Any, key: String) -> SyncError {
+    internal static func collidingKeys(in map: Any, key: String) -> SyncError {
         .collidingKeys("Two keys of \(type(of: map)) convert to \"\(key)\"")
     }
 
