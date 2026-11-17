@@ -55,20 +55,21 @@ package struct AtomicPatternIndex: Sendable {
 
     /// The table position of `path`, whose split (by the hasher this index was built from) has
     /// `pathHash` and `inSchema`: `table.node(atPath: path)`, without the walk when the pattern
-    /// decides it.
+    /// decides it. `path` is built only for the walk (#392).
     @inline(__always)
-    package func node(pathHash: UInt32, inSchema: Bool, path: String) -> AtomicLayoutTable.Node? {
+    package func node(pathHash: UInt32, inSchema: Bool, path: @autoclosure () -> String) -> AtomicLayoutTable.Node? {
         if inSchema, case .node(let node)? = resolutions[pathHash] {
             return node
         }
-        return table.node(atPath: path)
+        return table.node(atPath: path())
     }
 
-    /// `table.positional(value, atPath: path)` for a path with that split.
+    /// `table.positional(value, atPath: path)` for a path with that split. `path` is built only
+    /// for the walk and for an error (#392).
     @inline(__always)
     package func positional(
-        _ value: SnapshotValue, pathHash: UInt32, inSchema: Bool, path: String
+        _ value: SnapshotValue, pathHash: UInt32, inSchema: Bool, path: @autoclosure () -> String
     ) throws -> SnapshotValue {
-        try table.positional(value, at: node(pathHash: pathHash, inSchema: inSchema, path: path), path: path)
+        try table.positional(value, at: node(pathHash: pathHash, inSchema: inSchema, path: path()), path: path)
     }
 }
