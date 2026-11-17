@@ -400,7 +400,7 @@ For every gap, the runtime backstop stays: the land ends at the first throw.
 **Colliding keys** (D8 (b)). Today they throw only in `makeFull`, the replay-hash path. The sync `make` path overwrites silently (SnapshotValue.swift:427), so "close the land at the first throw" would never fire for a type error the maintainer listed. They are detected in the live conversion:
 - `make` checks the insert's previous value (`updateValue` returns non-nil) and throws `SyncError.collidingKeys`;
 - it is a structured type cause, so the land ends;
-- the cost is a nil check per dictionary entry, which the off-path A/B measures on the actual code.
+- the cost is a nil check per dictionary entry, on the Mirror path only; typed sync tables don't reach it (§7).
 - **The promise covers the library's conversion only.** A custom `toSnapshotValue` that builds its own `.object` has merged its keys before the library sees them; that stays the type's own contract, and the docs say so.
 
 **Entry points:**
@@ -491,6 +491,8 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 - an off-path A/B on the healthy path, judged by the instruction gate (#517).
 
 PR 4 gets the same A/B, for the access count on every write. PR 2 gets it for the collision check.
+
+**PR 2b's collision check (2026-11-17):** a probe replaced the off-path A/B, because the default path doesn't execute the change. With typed sync tables on (the default), the benchmark's lands never reach `make`'s Mirror dictionary branch: 0 hits in the cap100, cap100-moves and vis-tick cells. They hit it only with `USE_SYNC_TABLES=false`, at one `updateValue` result check per entry. `makeFull` is replay-hash only. The method and counts are on #581.
 
 ## 8. Tests
 
