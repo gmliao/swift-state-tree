@@ -103,11 +103,11 @@ struct GameState: StateNodeProtocol {
 | `.unsupportedKey(path:keyType:)` | 同步無法轉成字串的 dictionary key 型別：不是 `String`、`PlayerID` 或 `CustomStringConvertible` |
 | `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別 |
 
-class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；一般 struct 同樣透過預設實例檢查其內容。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
+class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此空集合中的值也會檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
 
 **編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
 
-**抓不到的情況。** 未加 `any` 的 protocol 名稱（`var p: P`）、指向 existential 的 typealias，以及手寫 conformance 的型別，macro 都看不到，而註冊時只看得到預設實例的值。這些情況由同步作為最後防線：第一個無法轉換的值會結束 land（[失敗處理](failure-handling.zh-TW.md)）。不經 host 或 registry 直接建立的 keeper 會在初始化時執行同一個檢查：未通過的 state 型別會讓初始化失敗，與 OnInitialize resolver 逾時相同。
+**抓不到的情況。** 未加 `any` 的 protocol 名稱（`var p: P`）、指向 existential 的 typealias，以及手寫 conformance 的型別，macro 都看不到。一般 struct（沒有 `@SnapshotConvertible`）在註冊時只能透過預設實例的值檢查，因此其宣告為 `Any` 或 `any P` 的 property，會被當成當時所存值的型別檢查（`var x: Any = 0` 會以 `Int` 通過）；Swift 的 reflection 拿不到宣告的型別。手寫 `toSnapshotValue()` 的儲存內容不會被檢查。這些情況由同步作為最後防線：第一個無法轉換的值會結束 land（[失敗處理](failure-handling.zh-TW.md)）。不經 host 或 registry 直接建立的 keeper 會在初始化時執行同一個檢查：未通過的 state 型別會讓初始化失敗，與 OnInitialize resolver 逾時相同。
 
 **破壞性變更（2026-11-17）。** #535 之前，註冊時分別拋出 `SyncValueSemanticsError` 與 `SyncPolicyNestingError`，而不支援的 key 型別或 existential 欄位要到同步時才發現。遷移方式：
 - `catch is SyncValueSemanticsError` 不再匹配。請 catch `LandRegistrationError` 並讀取其 `sync?.problems`；舊的錯誤是 `.valueSemantics` 或 `.policyNesting` 的 associated value。
