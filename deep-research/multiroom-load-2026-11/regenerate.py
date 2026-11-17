@@ -959,6 +959,12 @@ def input_latency_section(directory=INPUT_LATENCY):
         f"{f1(max(x['clientTotal'] for x in clients))} % of its 4 CPUs (400 %), worst event-loop delay p99 "
         f"{f2(max(x['loopP99Max'] for x in clients))} ms.",
     ]
+    report_a = load_gz(SERVER_AB / "data" / "runs" / "latency-A-1000" / "report.json.gz")
+    ab_a = il_row(report_a)
+    by_phase_a = {q["name"]: ((q.get("connectionLifecycle") or {}).get("joinFailures") or {}).get("phase") or 0
+                  for q in report_a["phases"]}
+    names = list(by_phase_a)
+    phases = ", ".join(f"{by_phase_a[n]:,} in {n}" for n in names[:-1]) + f" and {by_phase_a[names[-1]]:,} in {names[-1]}"
     compare_caption = (
         "server-ab's step 4 ran the same workload (refreeze rules, unprofiled, MoveTo 2/s, `--event-seed 1`) on 2026-11-06, "
         "on an earlier host configuration: before the host's memory configuration changed (2026-11-07) and its kernel "
@@ -966,8 +972,8 @@ def input_latency_section(directory=INPUT_LATENCY):
         "matcher was changed to match positional points and gate its hit rate (`4e8861dc`), and a frame's arrival is timed "
         "before the client's own work on it (`ee313cf3`). **Not directly comparable**; the rows are read from "
         "`../multiroom-load-2026-11-server-ab/data/runs/latency-{A,B}-1000/` and shown for reference only. Join failures "
-        "here are over all phases; server-ab's own step 4 table counts the steady phase's (40 for A, whose postflight "
-        "joins went unanswered).")
+        f"here are over all phases: A's {ab_a['joinFailures']:,} are {phases}, where none of its joins was answered "
+        f"within 5 s; server-ab's own step 4 table counts the steady phase's {by_phase_a['steady']:,}.")
     return "\n\n".join([
         IL_CAPTION, intro,
         "#### Steady phase, each run (disconnects and join failures over all phases)", il_run_table(runs, rows),
