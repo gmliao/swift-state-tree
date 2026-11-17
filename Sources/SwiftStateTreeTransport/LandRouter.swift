@@ -410,7 +410,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 group.addTask {
                     await Self.leaveAndClose(
                         sessionID: leave.sessionID, clientID: leave.clientID, adapter: leave.adapter,
-                        close: close, transport: transport,
+                        close: { close }, transport: transport,
                         leaveFinished: { progress.leaveFinished() }, closed: { progress.sessionClosed() }
                     )
                 }
@@ -422,11 +422,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// `onDisconnect` (OnLeave through the land's membership queue), awaited, then the close,
     /// awaited until the connection has closed (the close grace included). Neither throws, so a
     /// caller always gets past it. One body for both, so they can't drift apart (#102).
+    ///
+    /// `close` is read when the close request is issued, after the leave (#535 D10).
     private static func leaveAndClose(
         sessionID: SessionID,
         clientID: ClientID,
         adapter: TransportAdapter<State>?,
-        close: SessionClose,
+        close: @Sendable () -> SessionClose,
         transport: WebSocketTransport,
         leaveFinished: @Sendable () -> Void = {},
         afterLeave: @Sendable () async -> Void = {},
@@ -437,7 +439,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             leaveFinished()
         }
         await afterLeave()
-        await transport.closeSession(sessionID, with: close, awaitingClosed: true)
+        await transport.closeSession(sessionID, with: close(), awaitingClosed: true)
         closed()
     }
 
@@ -459,7 +461,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// until each one's leave has run: a host shutdown that starts meanwhile no longer finds
     /// them in its snapshot, and waits for their leaves (`closeSessionsForShutdown`) before it
     /// destroys the instance.
-    package func closeSessions(boundTo epoch: Epoch, close: SessionClose) async {
+    ///
+    /// `close` is read per session when its close request is issued, after its leave (#535
+    /// D10): a stop's code is the land's cause as of that request, so a land that fails while
+    /// its stop runs closes the sessions not yet closed with 4016. The request then hops to the
+    /// transport; a failure during that last hop still leaves the earlier code.
+    package func closeSessions(boundTo epoch: Epoch, close: @escaping @Sendable () -> SessionClose) async {
         closingEpochs.insert(epoch)
         let bound = sessionToBound.filter { $0.value.epoch == epoch }.map(\.key)
         let sessions = bound.map { sessionID -> (sessionID: SessionID, clientID: ClientID?, bound: BoundLand?) in

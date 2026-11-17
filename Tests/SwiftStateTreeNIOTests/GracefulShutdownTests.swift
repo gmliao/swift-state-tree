@@ -1650,3 +1650,318 @@ struct HostedLandFailureTests {
         try await f.host.shutdown()
     }
 }
+
+// MARK: - A failed land's stop (#535 B2)
+
+private func testFailure() -> LandFailure {
+    LandFailure(kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase))
+}
+
+/// `body`'s result, or nil after 10 s: a wait that hangs (a teardown waiting on itself) fails its
+/// test, well inside the suite's time limit. A hang guard, not a timing assumption. The body
+/// runs unstructured, so a body that never returns doesn't hold this call (a task group would
+/// wait for it).
+private func bounded<T: Sendable>(_ body: @escaping @Sendable () async -> T) async -> T? {
+    let race = BoundedRace<T>()
+    return await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+        race.install(continuation)
+        Task { race.settle(await body()) }
+        Task {
+            try? await safeTaskSleep(for: .seconds(10))
+            race.settle(nil)
+        }
+    }
+}
+
+/// The first of `bounded`'s two outcomes.
+private final class BoundedRace<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T?, Never>?
+    private var outcome: T??
+
+    func install(_ continuation: CheckedContinuation<T?, Never>) {
+        lock.lock()
+        if let outcome {
+            lock.unlock()
+            continuation.resume(returning: outcome)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func settle(_ value: T?) {
+        lock.lock()
+        guard outcome == nil else { lock.unlock(); return }
+        outcome = .some(value)
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
+@Suite("Land stop: a failed land (#535 B2)", .serialized, .timeLimit(.minutes(1)))
+struct FailedLandStopTests {
+    @Test("a failed land is stopped by its host: sessions closed with 4016, no OnLeave, destroyed with .failed, detached")
+    func failedLandIsStopped() async throws {
+        let events = Events()
+        let finalizePlayers = Events()
+        let f = try await Fixture.make(land: makeLand(events: events, finalizePlayers: finalizePlayers))
+        let (_, c1) = try await f.join("p1")
+        let (_, c2) = try await f.join("p2")
+        let keeper = try await f.keeper()
+
+        await keeper.failLandForTesting(testFailure())
+        // The host's stop joins the teardown: `forceShutdown` returns once both are done.
+        guard await bounded({ await keeper.forceShutdown() }) != nil else {
+            // A hung teardown would hang the host's shutdown too: end the test here.
+            Issue.record("the teardown hung"); return
+        }
+
+        #expect(await c1.closeCode == SessionClose.Code.landFailed)
+        #expect(await c2.closeCode == SessionClose.Code.landFailed)
+        #expect(keeper.destructionCause == .failed)
+        #expect(!events.all.contains { $0.hasPrefix("leave:") }, "no OnLeave on a failed land: \(events.all)")
+        #expect(events.count("finalize") == 1)
+        #expect(finalizePlayers.all == ["p1,p2"], "the state still holds the players OnLeave would have removed")
+        _ = await f.server.stopLand(landID: f.landID)  // shares the failure's stop if it's still running
+        #expect(await f.server.listLands().contains(f.landID) == false)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("a land that fails while an admin stop is held after its snapshot: each later close request gives 4016, and the teardown waits for the stop's latch")
+    func failureDuringAdminStopGives4016() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (_, connection) = try await f.join("p1")
+        let keeper = try await f.keeper()
+        let epoch = try #require(await f.server.landManager.getLand(landID: f.landID)).epoch
+        let snapshot = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.stopSnapshot) { await snapshot.arrive() }.hook)
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await snapshot.waitForArrivals(1), "the admin stop took its snapshot")
+        let latch = try #require(f.server.stopFlightsForTesting.latch(for: epoch), "the detach created the epoch's latch")
+        #expect(!latch.isSetForTesting)
+
+        await keeper.failLandForTesting(testFailure())
+        #expect(await keeper.waitForFailureForTesting())
+        snapshot.open()
+
+        // The teardown waits for the stop's latch, and the stop's destroy for the teardown.
+        guard let result = await bounded({ await stop.value }) else {
+            Issue.record("the stop and the teardown waited on each other"); return
+        }
+        #expect(result == .stopped(timedOut: false))
+        #expect(await connection.closeCode == SessionClose.Code.landFailed, "the close request came after the failure")
+        #expect(keeper.destructionCause == .failed)
+        #expect(!events.all.contains { $0.hasPrefix("leave:") })
+        #expect(events.count("finalize") == 1)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("a land that fails after an admin stop closed its sessions: the latch is set, the teardown doesn't wait, and the stop's destroy joins it")
+    func failureAfterAdminStopClosedSessions() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (_, connection) = try await f.join("p1")
+        let keeper = try await f.keeper()
+        let closed = Gate()
+        f.server.stopFlightsForTesting.onAfterSessionsClosedForTesting { _ in await closed.arrive() }
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await closed.waitForArrivals(1), "the admin stop closed the sessions")
+        await keeper.failLandForTesting(testFailure())
+        // The stop is still held before its destroy: the teardown finishes on its own.
+        guard await bounded({ await keeper.forceShutdown() }) != nil else {
+            // A hung teardown would hang the host's shutdown too: end the test here.
+            Issue.record("the teardown waited for the stop"); return
+        }
+        closed.open()
+
+        #expect(await stop.value == .stopped(timedOut: false))
+        #expect(await connection.closeCode == SessionClose.Code.landStopped, "closed before the failure")
+        #expect(keeper.destructionCause == .failed)
+        #expect(events.count("finalize") == 1)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        f.server.stopFlightsForTesting.onAfterSessionsClosedForTesting(nil)
+        try await f.host.shutdown()
+    }
+
+    @Test("a failure's stop and an admin DELETE racing at the detach share one stop: one detach, one destroy, 4016")
+    func failureStopSharedWithAdminDelete() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (_, connection) = try await f.join("p1")
+        let keeper = try await f.keeper()
+        let detached = Gate()
+        await f.server.landManager.installHolds(HoldRegistry<LandManagerHoldPoint>().on(.stopDetached) { await detached.arrive() }.hook)
+        let shared = Gate()
+        shared.open()
+        f.server.stopFlightsForTesting.onSharedForTesting { _ in Task { await shared.arrive() } }
+
+        await keeper.failLandForTesting(testFailure())
+        #expect(await detached.waitForArrivals(1), "the failure's stop detached the land")
+        let server = f.server
+        let landID = f.landID
+        let delete = Task { await server.stopLand(landID: landID) }
+        #expect(await shared.waitForArrivals(1), "the DELETE shares the failure's stop")
+        detached.open()
+
+        #expect(await delete.value == .stopped(timedOut: false))
+        guard await bounded({ await keeper.forceShutdown() }) != nil else {
+            // A hung teardown would hang the host's shutdown too: end the test here.
+            Issue.record("the teardown hung"); return
+        }
+        #expect(await connection.closeCode == SessionClose.Code.landFailed)
+        #expect(detached.arrivalCount == 1, "one detach")
+        #expect(events.count("finalize") == 1)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        f.server.stopFlightsForTesting.onSharedForTesting(nil)
+        try await f.host.shutdown()
+    }
+
+    @Test("a failure of an instance no longer stored stops nothing: the newer instance under its ID stays, and the teardown doesn't wait")
+    func oldEpochFailureDetachesNothing() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        await f.server.landManager.detachLand(landID: f.landID)
+        try await f.join("p2")
+        let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(fresh.epoch != old.epoch)
+
+        await old.keeper.failLandForTesting(testFailure())
+        guard await bounded({ await old.keeper.forceShutdown() }) != nil else {
+            // A hung teardown would hang the host's shutdown too: end the test here.
+            Issue.record("the hook waited although no latch exists for the old epoch"); return
+        }
+        #expect(old.keeper.destructionCause == .failed)
+        #expect(await f.server.landManager.getLand(landID: f.landID)?.epoch == fresh.epoch)
+        #expect(await f.players() == ["p2"])
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("a failure that shares another instance's stop still in flight waits for its end, then stops its own instance: 4016")
+    func failureSharingAnotherEpochsStop() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let first = try #require(await f.server.landManager.getLand(landID: f.landID))
+        // The first instance's admin stop is held after its destroy: its flight is still open.
+        let destroyed = Gate()
+        f.server.stopFlightsForTesting.onAfterDestroyForTesting { _ in await destroyed.arrive() }
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await destroyed.waitForArrivals(1), "the first instance's stop is past its destroy")
+        f.server.stopFlightsForTesting.onAfterDestroyForTesting(nil)
+
+        // A second instance under the ID, which fails while the first stop's flight is open.
+        let (_, connection) = try await f.join("p2")
+        let second = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(second.epoch != first.epoch)
+        let shared = Gate()
+        shared.open()
+        f.server.stopFlightsForTesting.onSharedForTesting { _ in Task { await shared.arrive() } }
+        await second.keeper.failLandForTesting(testFailure())
+        // The failure's hook shares the first stop's flight, still open, before it ends.
+        #expect(await shared.waitForArrivals(1), "the failure shares the first instance's stop")
+        f.server.stopFlightsForTesting.onSharedForTesting(nil)
+        destroyed.open()
+
+        guard await bounded({ await second.keeper.forceShutdown() }) != nil else {
+            Issue.record("the teardown hung"); return
+        }
+        #expect(await stop.value == .stopped(timedOut: false))
+        #expect(await connection.closeCode == SessionClose.Code.landFailed, "the second instance's own stop closed its session")
+        #expect(second.keeper.destructionCause == .failed)
+        #expect(await f.server.listLands().contains(f.landID) == false)
+        _ = await f.server.stopLand(landID: f.landID)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("a failure of an instance no longer stored doesn't wait out another instance's stop in flight")
+    func unstoredFailureDoesNotWaitForAnotherStop() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        await f.server.landManager.detachLand(landID: f.landID)
+        try await f.join("p2")
+        // The newer instance's admin stop, held after its snapshot: its flight stays open.
+        let snapshot = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.stopSnapshot) { await snapshot.arrive() }.hook)
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await snapshot.waitForArrivals(1), "the newer instance's stop is in flight")
+        let shared = Gate()
+        shared.open()
+        f.server.stopFlightsForTesting.onSharedForTesting { _ in Task { await shared.arrive() } }
+
+        await old.keeper.failLandForTesting(testFailure())
+        #expect(await shared.waitForArrivals(1), "the old instance's failure shares the newer stop")
+        f.server.stopFlightsForTesting.onSharedForTesting(nil)
+        let finished = await bounded { await old.keeper.forceShutdown() }
+        snapshot.open()
+        guard finished != nil else {
+            Issue.record("the old instance's teardown waited for the newer instance's stop"); return
+        }
+        #expect(old.keeper.destructionCause == .failed)
+        #expect(await stop.value == .stopped(timedOut: false))
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("stop and failure cycles of one land ID leave no latch behind")
+    func cyclesLeaveNoLatch() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        for cycle in 0..<4 {
+            try await f.join("p\(cycle)")
+            let keeper = try await f.keeper()
+            if cycle.isMultiple(of: 2) {
+                #expect(await f.server.stopLand(landID: f.landID) == .stopped(timedOut: false))
+            } else {
+                await keeper.failLandForTesting(testFailure())
+                guard await bounded({ await keeper.forceShutdown() }) != nil else {
+            // A hung teardown would hang the host's shutdown too: end the test here.
+            Issue.record("the teardown hung"); return
+        }
+                _ = await f.server.stopLand(landID: f.landID)
+            }
+            #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0, "cycle \(cycle)")
+        }
+        try await f.host.shutdown()
+    }
+}
+
+@Suite("Land stop flights: the sessions-closed latch (#535 B2)")
+struct StopLatchTests {
+    @Test("latches are by epoch: removing an old epoch's latch keeps a newer one, and a waiter holding a removed latch still returns")
+    func latchesAreByEpoch() async {
+        let flights = LandStopFlights()
+        let old = flights.createLatch(for: Epoch(rawValue: 1))
+        let new = flights.createLatch(for: Epoch(rawValue: 2))
+        #expect(flights.createLatch(for: Epoch(rawValue: 1)) === old, "created once per epoch")
+        let waiter = Task { await old.wait() }
+        flights.removeLatch(for: Epoch(rawValue: 1), ifIdenticalTo: old)
+        flights.removeLatch(for: Epoch(rawValue: 2), ifIdenticalTo: old)
+        #expect(flights.latch(for: Epoch(rawValue: 1)) == nil)
+        #expect(flights.latch(for: Epoch(rawValue: 2)) === new, "another stop's latch stays")
+        old.set()
+        await waiter.value
+        #expect(flights.latchCountForTesting == 1)
+    }
+}

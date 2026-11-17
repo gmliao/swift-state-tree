@@ -94,13 +94,20 @@ extension TransportAdapter: LandKeeperTransport {
         }
     }
     
-    /// The land failed (#535): closes every session with 4016 and returns once they are closed.
-    /// The keeper's destroy follows, then `onLandDestroyed`.
+    /// The land failed (#535): the output gate closes, in the failing segment.
     public nonisolated func closeOutputs(for failure: LandFailure) {
         outputGate.close(failure)
     }
 
+    /// The land failed (#535): returns once its sessions are closed with 4016. The keeper's
+    /// destroy follows, then `onLandDestroyed`.
+    ///
+    /// With a host (`landFailureHook`), the host stops the instance: it detaches it, its router
+    /// runs each session's leave (no OnLeave, the land has failed) and closes it with 4016, and
+    /// the hook returns once that is done. The stop's destroy joins this land's teardown. Built
+    /// directly, without a hook, the adapter closes every session it holds.
     public func landDidFail(_ failure: LandFailure) async {
+        if let landFailureHook, await landFailureHook() { return }
         await closeSessionsForLandFailure(failure)
     }
 

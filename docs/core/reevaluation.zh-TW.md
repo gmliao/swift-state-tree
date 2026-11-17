@@ -12,7 +12,7 @@ Re-evaluation（重評估）是**在固定的世界條件下重新執行狀態�
 
 | 概念                     | 說明                                           |
 | ------------------------ | ---------------------------------------------- |
-| **Live Mode**            | 正常執行，記錄所有輸入和 resolver outputs      |
+| **Live Mode**            | 正常執行；`enableLiveStateHashRecording` 開啟時記錄輸入和 resolver outputs（預設關閉） |
 | **Reevaluation Mode**    | 重播錄製的輸入，跳過 resolver，驗證 state hash |
 | **Deterministic Output** | 事件和同步請求會排入佇列，在 tick 結尾 flush   |
 

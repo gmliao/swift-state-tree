@@ -21,7 +21,7 @@
 - date: 2026-08-31
 - git_sha: `d23d66d`（`experiment/replay-scale-fp-perturbation` branch；含 `--record` 模式、擾動 hook、與確定性迭代修正）
 - swift_version: Apple Swift 6.3.2, build_config: release（此為 2026-08-31 的原始紀錄；format 2.4/2.5 的 arm64 批次為 Apple Swift 6.4.2）
-- host: Apple M2, macOS（8 cores, 16 GB）, arm64；跨架構重驗首次於 AMD Ryzen 5 7600X / WSL2 Ubuntu / Swift 6.2.3（x86_64）執行，見 Results 末表；record format 2.4/2.5 由兩台機器各自錄製與重驗（arm64 / Apple Swift 6.4.2；x86_64 / `swift:6.2.4-noble` 容器），3.0/3.1 只在 x86_64 執行，見各 Re-measurement 節
+- host: Apple M2, macOS（8 cores, 16 GB）, arm64；跨架構重驗首次於 AMD Ryzen 5 7600X / WSL2 Ubuntu / Swift 6.2.3（x86_64）執行，見 Results 末表；record format 2.4/2.5 由兩台機器各自錄製與重驗（arm64 / Apple Swift 6.4.2；x86_64 / `swift:6.2.4-noble` 容器），3.0 只在 x86_64 執行；3.1 先在 x86_64 錄製，2026-11-17 在 arm64（Apple M2，macOS 27.2.1，Apple Swift 6.4.2）以同一 commit 再錄製並交叉重驗，見 Cross-architecture at record format 3.1 節
 
 ## Command(s)
 
@@ -142,7 +142,74 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 
 | machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | second recording byte-identical | tick mismatches | ticks | client events | actions |
 |---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS 27.2.1 | arm64 | `022d8fdb` | clean | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
 | AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `022d8fdb` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+
+## Cross-architecture at record format 3.1
+
+On 2026-11-17 the 3.1 batch was recorded again on an Apple M2 (arm64, macOS 27.2.1, Apple Swift 6.4.2). It used the same 41 recordings, `scripts/run-batch.sh` with `TWICE=1`, and a clean checkout of `022d8fdb` (`source.json`: clean before the build and after the last seed). It is compared with the 2026-11-09 x86_64 batch (AMD Ryzen 5 7600X, Linux, Swift 6.2.4). Both batches are rows of the table above (`results/batch-3.1-arm64.json`, `results/batch-3.1-x86_64.json`).
+
+- **Cross-verify, the replay claim.** The arm64 runner (release, `022d8fdb`) replayed the 41 x86_64 recordings with `--verify`. All 41 exited 0 with both "Verified state hashes" lines (`results/crossverify-3.1-arm64.json`, written by `scripts/crossverify_collect.py`). The other direction, the x86_64 runner replaying the arm64 recordings, is covered by byte identity: the arm64 recordings are byte-identical to the x86_64 batch's, which the x86_64 runner at `022d8fdb` verified 41/41 in that batch. A run of it would replay identical inputs, so none was made. If one is, `scripts/crossverify_collect.py` writes it as `results/crossverify-3.1-x86_64.json`, and it becomes a row of the first table below.
+- **Bytes.** 41/41 recordings are byte-identical across the two machines. The arm64 batch's SHA256SUMS list is byte-identical to `results/batch-3.1-SHA256SUMS.txt`, so both batches name that one file.
+- **Content.** 41/41 recordings are identical (the sha256 of the `--convert` JSON view). No recording on either machine has a tick split into several turn records (#327), the reason two recordings can differ in bytes with the same content.
+- **The same machine twice.** Each machine's second recording is byte-identical to its first, 41/41 on each (the table above).
+- **Scope.** The comparison crosses the architecture, the OS (macOS against Linux) and the compiler version (Apple Swift 6.4.2 against Swift 6.2.4) together. The match holds across all three at once; it doesn't separate them. Sync outputs aren't compared. These recordings come from `ReevaluationRunner --record`, which runs the land without a transport, so they carry no sync stream and the runner reports "Sync Output: skipped". A 3.1 record made through a transport does carry one.
+
+`regenerate.py` writes the three tables below and `--check` gates them. Both 3.1 batches must be at one commit, and the cross-verify must replay the other machine's batch recordings, matched by seed and sha256.
+
+| runner | host | swift | commit | runner sha256 | recordings recorded on | recordings | exit 0 with both verification lines |
+|---|---|---|---|---|---|---:|---:|
+| arm64 | Apple M2, macOS 27.2.1 | Apple Swift version 6.4.2 | `022d8fdb` | `b7b8f0fe430253d5ba1341a4c147d8c1722624eac6bd8b96b07b2431c983d667` | x86_64 | 41 | 41/41 |
+
+| comparison (arm64 vs x86_64) | recordings |
+|---|---:|
+| byte-identical (file sha256) | 41/41 |
+| content-identical (sha256 of the `--convert` JSON view) | 41/41 |
+| with split ticks, arm64 / x86_64 | 0 / 0 |
+
+| seed | players | move every | ticks | sha256 (arm64) | sha256 (x86_64) | bytes | content |
+|---:|---:|---:|---:|---|---|---|---|
+| 1 | 5 | 20 | 1200 | `e077a39dabb8` | `e077a39dabb8` | same | same |
+| 2 | 5 | 20 | 1200 | `464482a0f490` | `464482a0f490` | same | same |
+| 3 | 5 | 20 | 1200 | `1cecc5264207` | `1cecc5264207` | same | same |
+| 4 | 5 | 20 | 1200 | `8ba6f8fd6863` | `8ba6f8fd6863` | same | same |
+| 5 | 5 | 20 | 1200 | `6c8b90e4d2f9` | `6c8b90e4d2f9` | same | same |
+| 6 | 5 | 20 | 1200 | `672af6cc2a91` | `672af6cc2a91` | same | same |
+| 7 | 5 | 20 | 1200 | `ecc145290cab` | `ecc145290cab` | same | same |
+| 8 | 5 | 20 | 1200 | `80aa0397a3c6` | `80aa0397a3c6` | same | same |
+| 9 | 5 | 20 | 1200 | `55e7cb21b1f7` | `55e7cb21b1f7` | same | same |
+| 10 | 5 | 20 | 1200 | `d988fb02e1fd` | `d988fb02e1fd` | same | same |
+| 11 | 5 | 20 | 1200 | `3e9fb14fd0ae` | `3e9fb14fd0ae` | same | same |
+| 12 | 5 | 20 | 1200 | `fedfb377666f` | `fedfb377666f` | same | same |
+| 13 | 5 | 20 | 1200 | `e875e6add343` | `e875e6add343` | same | same |
+| 14 | 5 | 20 | 1200 | `b4bb4765c70d` | `b4bb4765c70d` | same | same |
+| 15 | 5 | 20 | 1200 | `ba55c023f0f6` | `ba55c023f0f6` | same | same |
+| 16 | 5 | 20 | 1200 | `cc57830dbb7f` | `cc57830dbb7f` | same | same |
+| 17 | 5 | 20 | 1200 | `171ec2faa4a4` | `171ec2faa4a4` | same | same |
+| 18 | 5 | 20 | 1200 | `3b90b82dc1ca` | `3b90b82dc1ca` | same | same |
+| 19 | 5 | 20 | 1200 | `6c82118f2ba0` | `6c82118f2ba0` | same | same |
+| 20 | 5 | 20 | 1200 | `aeaa175d2c2f` | `aeaa175d2c2f` | same | same |
+| 21 | 5 | 20 | 1200 | `fb527f8c334b` | `fb527f8c334b` | same | same |
+| 22 | 5 | 20 | 1200 | `9c86e70017e1` | `9c86e70017e1` | same | same |
+| 23 | 5 | 20 | 1200 | `7d42ff84cb30` | `7d42ff84cb30` | same | same |
+| 24 | 5 | 20 | 1200 | `601fd43f9290` | `601fd43f9290` | same | same |
+| 25 | 5 | 20 | 1200 | `0019eba814fa` | `0019eba814fa` | same | same |
+| 26 | 5 | 20 | 1200 | `31ceb18f015c` | `31ceb18f015c` | same | same |
+| 27 | 5 | 20 | 1200 | `4472ea0f43c7` | `4472ea0f43c7` | same | same |
+| 28 | 5 | 20 | 1200 | `81d043d280d2` | `81d043d280d2` | same | same |
+| 29 | 5 | 20 | 1200 | `cb6f22e6f64c` | `cb6f22e6f64c` | same | same |
+| 30 | 5 | 20 | 1200 | `6a78ea9aa3ef` | `6a78ea9aa3ef` | same | same |
+| 101 | 2 | 20 | 1200 | `42687a61d4b8` | `42687a61d4b8` | same | same |
+| 102 | 2 | 20 | 1200 | `a17c5eedfd2f` | `a17c5eedfd2f` | same | same |
+| 103 | 2 | 20 | 1200 | `96c1bce996c7` | `96c1bce996c7` | same | same |
+| 111 | 10 | 20 | 1200 | `3c3a3497ffee` | `3c3a3497ffee` | same | same |
+| 112 | 10 | 20 | 1200 | `9ec19b296b62` | `9ec19b296b62` | same | same |
+| 113 | 10 | 20 | 1200 | `9c23a9bbd09d` | `9c23a9bbd09d` | same | same |
+| 121 | 5 | 5 | 1200 | `40d086db7071` | `40d086db7071` | same | same |
+| 122 | 5 | 5 | 1200 | `15c4579039cc` | `15c4579039cc` | same | same |
+| 123 | 5 | 5 | 1200 | `e948c5db8447` | `e948c5db8447` | same | same |
+| 201 | 5 | 20 | 12000 | `b180d034617f` | `b180d034617f` | same | same |
+| 202 | 5 | 20 | 12000 | `d12be6ce4b48` | `d12be6ce4b48` | same | same |
 
 ## Part B at record format 3.1 (full-state hash)
 
@@ -259,7 +326,7 @@ seeds 1–10，另加一格 server-only 欄位的擾動（[Part B at record form
 
 跨架構：在 record format 2.4 與 2.5，兩台機器各自獨立錄製一批（arm64 / macOS / Apple Swift 6.4.2，
 x86_64 / Linux / Swift 6.2.4），41 個 x86_64 檔與 arm64 檔逐檔 sha256 比對 41/41 位元相同，所以各機
-驗證自己那批也同時驗證了另一批，同時跨 CPU 架構、作業系統與 toolchain 三軸。3.0 與 3.1 只在 x86_64 執行，所以跨機器的位元一致最後一次是在 2.5 顯示的。較早的一次重驗
+驗證自己那批也同時驗證了另一批，同時跨 CPU 架構、作業系統與 toolchain 三軸。3.0 只在 x86_64 執行；3.1 於 2026-11-17 以同一 commit（`022d8fdb`）在 arm64 重新錄製，41 份與 x86_64 那批逐位元相同（41/41），arm64 runner 重驗 x86_64 的錄音也是 41/41（見 Cross-architecture at record format 3.1 節），所以跨機器的位元一致最近一次是在 3.1 顯示的。較早的一次重驗
 （2026-09-12，`results/crossarch-x86_64.json`）把 arm64 錄音以 sha256 對帳搬到 x86_64（WSL2 Ubuntu /
 Swift 6.2.3）重播，41/41 通過、0 mismatch。`E_t` 錄下後，δ 的重評估在這兩個平台之間不受錄製平台影響。
 
@@ -383,7 +450,7 @@ Each machine's verification of its own batch therefore also verifies the other's
     those are verified exactly, including `sequence`. The records behind the table above predate
     the fix and carry no watermarks, so they still go through the content-only re-check.
 - 原始紀錄（2026-08-31）的錄製與重播同為 arm64/macOS；跨架構（arm64→x86_64）證據見 Results 末表
-  與 record format 2.4、2.5 各節（3.0、3.1 只在 x86_64 執行）。
+  與 record format 2.4、2.5 各節（3.0 只在 x86_64 執行；3.1 見 Cross-architecture at record format 3.1 節）。
 - 擾動作用於當 tick 所有移動中的玩家（非單一玩家）；latency 以「首個 mismatch tick − 600」計。
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
 - 已變動軸：玩家數（2/5/10）、注入節奏（5/20 ticks）、長度（1,200/12,000 ticks）。未變動軸：

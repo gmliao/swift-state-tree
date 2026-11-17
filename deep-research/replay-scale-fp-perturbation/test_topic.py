@@ -4,7 +4,7 @@ ReevaluationRunner), scripts/summarize.py and regenerate.py's per-format batch c
 
 Usage: python3 test_topic.py   (no build needed)
 """
-import copy, json, os, pathlib, shutil, subprocess, sys, tempfile, unittest
+import copy, hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile, unittest
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
@@ -504,6 +504,72 @@ class CheckPerturb31(unittest.TestCase):
         edited = readme.replace("| 46 / 46 |", "| 45 / 46 |")
         self.assertNotEqual([t.strip() for t in regenerate.section_tables(edited, regenerate.PERTURB31_HEADING)],
                             [t.strip() for t in regenerate.perturb31_tables(self.runs, self.controls)])
+
+
+class CrossArch31(unittest.TestCase):
+    """The committed 3.1 batches and cross-verify pass check_crossarch31; mutants of them are refused,
+    and the tables count what differs."""
+
+    def setUp(self):
+        self.batches = regenerate.load_batches()["3.1"]
+        self.verifies = regenerate.load_crossverify31()
+
+    def test_the_committed_set_passes_and_renders(self):
+        self.assertEqual(regenerate.check_crossarch31(self.batches, self.verifies), [])
+        cross, comparison, per_recording = regenerate.crossarch31_tables(self.batches, self.verifies)
+        self.assertIn("| x86_64 | 41 | 41/41 |", cross)
+        self.assertIn("| byte-identical (file sha256) | 41/41 |", comparison)
+        self.assertEqual(per_recording.count("| same | same |"), 41)
+
+    def test_mutants_are_refused(self):
+        def recording_swapped(batches, verifies):
+            verifies[0]["recordings"][0]["recording_sha256"] = "0" * 64
+
+        def seed_missing(batches, verifies):
+            del verifies[0]["recordings"][-1]
+
+        def other_commit(batches, verifies):
+            batches[0]["meta"]["git_sha"] = "deadbeef"
+
+        def own_recordings(batches, verifies):
+            verifies[0]["meta"]["recorded_on"] = verifies[0]["meta"]["arch"]
+
+        def one_arch(batches, verifies):
+            batches[1]["meta"]["arch"] = batches[0]["meta"]["arch"]
+
+        for change in (recording_swapped, seed_missing, other_commit, own_recordings, one_arch):
+            with self.subTest(change.__name__):
+                batches, verifies = copy.deepcopy(self.batches), copy.deepcopy(self.verifies)
+                change(batches, verifies)
+                self.assertTrue(regenerate.check_crossarch31(batches, verifies))
+
+    def test_a_differing_recording_is_counted(self):
+        batches = copy.deepcopy(self.batches)
+        batches[0]["recordings"][3]["sha256"] = "f" * 64
+        _, comparison, per_recording = regenerate.crossarch31_tables(batches, self.verifies)
+        self.assertIn("| byte-identical (file sha256) | 40/41 |", comparison)
+        self.assertIn("| content-identical (sha256 of the `--convert` JSON view) | 41/41 |", comparison)
+        self.assertEqual(per_recording.count("| DIFFER | same |"), 1)
+
+
+class CrossverifyCollect(unittest.TestCase):
+    def test_pass_needs_exit_0_and_both_lines(self):
+        d = pathlib.Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, d)
+        (d / "records").mkdir(); (d / "logs").mkdir()
+        runner = d / "runner"; runner.write_bytes(b"stand-in")
+        ok = "Record: 3.1, complete\nVerified state hashes: a\nVerified state hashes: b\n"
+        for seed, text, code in ((1, ok, 0), (2, "Record: 3.1, complete\nVerified state hashes: a\n", 0), (3, ok, 5)):
+            (d / "records" / f"s{seed}.sstr").write_bytes(f"record {seed}".encode())
+            (d / "logs" / f"s{seed}.log").write_text(text, encoding="utf-8")
+            (d / "logs" / f"s{seed}.exit").write_text(f"{code}\n", encoding="utf-8")
+        out = d / "out.json"
+        subprocess.run([sys.executable, "-I", str(TOPIC / "scripts" / "crossverify_collect.py"), str(d / "logs"), str(d / "records"),
+                        str(runner), str(out), "--arch", "arm64", "--host", "h", "--swift", "s", "--commit", "022d8fdb",
+                        "--recorded-on", "x86_64"], check=True, capture_output=True)
+        doc = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual([r["passed"] for r in doc["recordings"]], [True, False, False])
+        self.assertEqual(doc["meta"]["record_format"], "3.1")
+        self.assertEqual(doc["recordings"][0]["recording_sha256"], hashlib.sha256(b"record 1").hexdigest())
 
 
 if __name__ == "__main__":
