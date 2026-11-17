@@ -263,7 +263,7 @@ private actor BroadcastHoldingTransport: LandKeeperTransport {
     func onLandDestroyed() async {}
 }
 
-@Suite("Resolver result delivered as a validated input", .timeLimit(.minutes(1)))
+@Suite("Resolver result delivered as a validated input", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct ResolverDeliveryTests {
     @Test("The sender leaves while its action's resolvers run: the delivery is rejected", arguments: [true, false], [false, true])
     func senderLeavesDuringResolvers(tick: Bool, inTurn: Bool) async throws {

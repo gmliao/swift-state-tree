@@ -225,7 +225,7 @@ private func saveRecord(_ keeper: LandKeeper<TicklessJobState>, name: String) as
     return path
 }
 
-@Suite("Tickless action jobs: resolvers off the session's line", .timeLimit(.minutes(1)))
+@Suite("Tickless action jobs: resolvers off the session's line", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TicklessActionJobTests {
     @Test("A held action doesn't block the session's later inputs; it applies on completion, and replay matches", arguments: [true, false])
     func chainNotBlockedAndReplays(inTurn: Bool) async throws {

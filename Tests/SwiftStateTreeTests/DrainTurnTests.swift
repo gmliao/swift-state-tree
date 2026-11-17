@@ -306,7 +306,7 @@ private func plainAction(_ amount: Int) -> ActionEnvelope {
                    payload: AnyCodable(DrainPlainAction(amount: amount)))
 }
 
-@Suite("Drain as turns", .timeLimit(.minutes(1)))
+@Suite("Drain as turns", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct DrainTurnTests {
     @Test("A destroyed keeper drops its transport only after the transport's last call, onLandDestroyed (#346)")
     func transportReleasedAfterLandDestroyed() async throws {

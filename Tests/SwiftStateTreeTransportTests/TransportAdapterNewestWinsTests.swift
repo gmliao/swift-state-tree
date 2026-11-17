@@ -195,7 +195,7 @@ private func makeFixture(inTurn: Bool, legacyJoin: Bool = false, mode: LandMode 
     return NewestWinsFixture(keeper: keeper, adapter: adapter, transport: transport)
 }
 
-@Suite("One session per player, newest wins (#92)")
+@Suite("One session per player, newest wins (#92)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TransportAdapterNewestWinsTests {
     let player = PlayerID("p1")
     let s1 = SessionID("s1"), c1 = ClientID("c1")
