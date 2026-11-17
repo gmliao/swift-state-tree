@@ -3183,17 +3183,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         detectsAccess: Bool = false,
         _ body: (inout State) throws -> R
     ) throws -> R {
-        guard detectsAccess else {
+        guard detectsAccess, detectsHandlerWrites else {
             return try runHandlerBody(throwWriteInput: throwWriteInput(), body)
         }
-        do throws(SyncWriteAccess.AccessedThrow) {
-            return try SyncWriteAccess.counting {
-                try runHandlerBody(throwWriteInput: throwWriteInput(), body)
-            }
+        let previous = SyncWriteAccess.install()
+        defer { SyncWriteAccess.restore(previous) }
+        do {
+            return try runHandlerBody(throwWriteInput: throwWriteInput(), body)
         } catch {
-            if error.accessed { handlerThrewAfterAccess = true }
-            throw error.error
+            if SyncWriteAccess.accessedSinceInstall() { handlerThrewAfterAccess = true }
+            throw error
         }
+    }
+
+    /// Test switch: false records as before #535 §3.7 (a write-then-throw fails alone), to make a
+    /// record of that behavior for replay tests.
+    private var detectsHandlerWrites = true
+
+    package func setDetectsHandlerWritesForTesting(_ value: Bool) {
+        detectsHandlerWrites = value
     }
 
     /// Set by `withMutableStateSync(detectsAccess: true)` when the handler threw after mutable
@@ -3919,12 +3927,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// A handler that throws **after** mutable access to a `@Sync` field (`SyncWriteAccess`, an
     /// action, client event, server input, OnJoin or OnLeave) ends the land (#535 §3.7, #87):
-    /// what it wrote can't be undone yet (#87's undo log), so its caller gets its error, the
-    /// batch ends at it (the inputs behind it get `landClosed`), the tick handler doesn't run,
+    /// what it wrote can't be undone yet (#87's undo log), so its caller gets its error (on a
+    /// tickless land; a tick land's caller had its ACK at intake), the batch ends at it (the inputs behind it get `landClosed`), the tick handler doesn't run,
     /// and the land fails with `.handlerWrite` at stage `.input` and P's sequence. P was recorded,
-    /// so replay applies it, sees it throw after access again, and ends the tick there. Not seen
-    /// (the input fails alone, as before): a whole-state replacement, a copy assigned back, and
-    /// storage without `@Sync`.
+    /// so replay applies it, sees it throw after access again (`checkReplayHandlerWrite`), and
+    /// ends the tick there. Replay itself never ends a batch on this rule: it follows the record,
+    /// which for an older record may continue past such an input. Not seen (the input fails
+    /// alone, as before): a whole-state replacement, storage without `@Sync`, and
+    /// `Sync.updateValueWithoutMarkingDirty(_:)`.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
@@ -3955,14 +3965,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
                 if isJoin { joinResults.append(JoinInputResult(sequence: item.sequence, failed: false)) }
             } catch {
+                let threwAfterAccess = handlerThrewAfterAccess
                 if isJoin { joinResults.append(JoinInputResult(sequence: item.sequence, failed: true)) }
                 failureCount += 1
                 outcomes[item.sequence] = .failure(error)
                 outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
                 discardIfFailedJoin(item)
-                if handlerThrewAfterAccess {
-                    handlerThrewAfterAccess = false
-                    noteReplayHandlerWrite(at: item.sequence)
+                handlerThrewAfterAccess = false
+                // Replay follows the record, not this rule: a record from before #535 §3.7 has a
+                // write-then-throw that failed alone, with the inputs and tick after it. A live
+                // failure's record has nothing after it, and its tick is checked against the
+                // writes noted here (`checkReplayHandlerWrite`).
+                if threwAfterAccess, mode == .reevaluation {
+                    replayHandlerWrites.insert(item.sequence)
+                } else if threwAfterAccess {
                     consumed = index + 1
                     handlerWriteFailure = LandFailure(
                         kind: .handlerWrite,
@@ -4136,22 +4152,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         replayRecordsPassOrdinals = value
     }
 
-    /// Re-evaluation: the sequences whose handler threw after mutable access (#535 §3.7). The
-    /// engine checks that a recorded `.handlerWrite` failure's input did so again.
+    /// Re-evaluation: the sequences whose handler threw after mutable access (#535 §3.7).
     private var replayHandlerWrites: Set<Int64> = []
 
-    private func noteReplayHandlerWrite(at sequence: Int64) {
-        if mode == .reevaluation { replayHandlerWrites.insert(sequence) }
-    }
+    /// Re-evaluation: the input whose handler threw after writing synced state live and ended
+    /// the land (a recorded `.handlerWrite` failure), checked at `replayFailureEnd`'s tick.
+    private var replayHandlerWriteSequence: Int64?
 
-    /// Whether the replayed input `sequence` threw after mutable access (re-evaluation only).
-    package func replayHandlerWrote(at sequence: Int64) -> Bool {
-        replayHandlerWrites.contains(sequence)
-    }
-
-    /// Installs `replayFailureEnd` (re-evaluation only).
-    package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
+    /// Installs `replayFailureEnd` (re-evaluation only). `handlerWriteSequence`: the recorded
+    /// failure is a `.handlerWrite` at that input.
+    package func setReplayFailureEnd(tickId: Int64, pass: Int64?, handlerWriteSequence: Int64? = nil) {
         replayFailureEnd = (tickId, pass)
+        replayHandlerWriteSequence = handlerWriteSequence
+    }
+
+    /// Re-evaluation, after `tickId`'s inputs: at the recorded `.handlerWrite` failure's tick,
+    /// the failing input must have thrown after mutable access again; otherwise the tick is a
+    /// recorded-pass mismatch, which the engine and the hosted runner both report.
+    private func checkReplayHandlerWrite(tickId: Int64) {
+        guard mode == .reevaluation, let sequence = replayHandlerWriteSequence,
+              replayFailureEnd?.tickId == tickId, !replayHandlerWrites.contains(sequence)
+        else { return }
+        recordedPassMismatches[tickId] = recordedPassMismatches[tickId]
+            ?? "the input at sequence \(sequence), whose handler threw after writing synced state live and ended the land, didn't do so in replay"
     }
 
     /// Installs `replayPassObserver` (re-evaluation only).
@@ -4448,6 +4471,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else if await replayRecordedPasses(replayPasses, tickId: tickId) {
             await transport?.syncBroadcastOnlyFromTransport()
         }
+        checkReplayHandlerWrite(tickId: tickId)
         // Replay of a tick land whose recorded failure ended this tick's inputs ends it the same way.
         let replayEndsHere = mode == .reevaluation && !isTickless && replayFailureEnd?.tickId == tickId
         if failure != nil || replayEndsHere {

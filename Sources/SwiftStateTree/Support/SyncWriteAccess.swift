@@ -7,14 +7,17 @@ import Foundation
 /// Counts mutable accesses to `@Sync` fields on the current thread while a handler runs.
 ///
 /// The contract is **mutable access**, not actual change: `Sync`'s setter and `_modify` call
-/// `noteAccess()` at entry, so `try validateThenMutate(&state.x)` counts even when the
+/// `noteAccess()` at entry (not `updateValueWithoutMarkingDirty(_:)`), so `try validateThenMutate(&state.x)` counts even when the
 /// validation throws first. The documented rule is to validate before taking `inout` access.
 ///
 /// The count lives in a POSIX thread-specific slot, not in the state: nothing is stored on a
 /// `StateNode`, so equality, encoding, snapshots, the state hash and the record don't change. A
 /// handler runs without an await (`LandKeeper.withMutableStateSync`), so its call stays on one
-/// thread. `counting(_:)` saves the slot's previous value and restores it, so a nested call and
-/// a later keeper on the same pooled thread start from their own count.
+/// thread. The caller installs the count with `install()`, which returns the slot's previous
+/// value, reads `accessedSinceInstall()` when the handler throws, and puts the previous value
+/// back with `restore(_:)` (in a `defer`), so a nested call and a later keeper on the same pooled
+/// thread start from their own count. Plain calls, not a closure-taking wrapper: the handler's
+/// closure stays in the caller's isolation.
 ///
 /// The slot holds `(count << 1) | 1` while installed and nothing otherwise, so a write outside a
 /// handler costs one thread-specific read. The count wraps; only "changed or not" is compared.
@@ -34,25 +37,28 @@ package enum SyncWriteAccess {
         pthread_setspecific(key, UnsafeRawPointer(bitPattern: next))
     }
 
-    /// Runs `body` with the count installed at zero. Returns its result, or rethrows its error
-    /// with whether it took mutable access to a `@Sync` field before throwing.
-    package static func counting<R>(_ body: () throws -> R) throws(AccessedThrow) -> R {
+    /// The slot's value while installed with no access counted yet.
+    private static var installed: UnsafeRawPointer? { UnsafeRawPointer(bitPattern: UInt(1)) }
+
+    /// Installs the count at zero on this thread and returns the slot's previous value, for
+    /// `restore(_:)`.
+    @inline(__always)
+    package static func install() -> UnsafeMutableRawPointer? {
         let previous = pthread_getspecific(key)
-        let installed = UnsafeRawPointer(bitPattern: UInt(1))
         pthread_setspecific(key, installed)
-        defer { pthread_setspecific(key, previous) }
-        do {
-            return try body()
-        } catch {
-            let accessed = pthread_getspecific(key).map { UnsafeRawPointer($0) } != installed
-            throw AccessedThrow(error: error, accessed: accessed)
-        }
+        return previous
     }
 
-    /// A handler's error and whether it took mutable access before it.
-    package struct AccessedThrow: Error {
-        package let error: any Error
-        package let accessed: Bool
+    /// Whether a `@Sync` field took mutable access since `install()` on this thread.
+    @inline(__always)
+    package static func accessedSinceInstall() -> Bool {
+        pthread_getspecific(key).map { UnsafeRawPointer($0) } != installed
+    }
+
+    /// Puts back the slot's value from before `install()`.
+    @inline(__always)
+    package static func restore(_ previous: UnsafeMutableRawPointer?) {
+        pthread_setspecific(key, previous.map { UnsafeRawPointer($0) })
     }
 
     /// Whether the count is installed on this thread (tests).

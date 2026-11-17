@@ -319,8 +319,9 @@ struct SyncWriteAccessTests {
         let outer = try accessedThrow {
             state.total = 1
             // The inner call accesses nothing and returns; the outer still counts its access.
-            let inner = try? SyncWriteAccess.counting { 0 }
-            #expect(inner == 0)
+            let previous = SyncWriteAccess.install()
+            #expect(!SyncWriteAccess.accessedSinceInstall())
+            SyncWriteAccess.restore(previous)
             throw HandlerWriteError()
         }
         #expect(outer)
@@ -345,14 +346,17 @@ struct SyncWriteAccessTests {
     }
 }
 
-/// Runs `body`, which must throw, in a counted call: whether it took mutable access first.
+/// Runs `body`, which must throw, with the count installed, as `LandKeeper` does: whether it
+/// took mutable access first.
 private func accessedThrow(_ body: () throws -> Void) throws -> Bool {
+    let previous = SyncWriteAccess.install()
+    defer { SyncWriteAccess.restore(previous) }
     do {
-        try SyncWriteAccess.counting(body)
+        try body()
         Issue.record("the body didn't throw")
         return false
     } catch {
-        #expect(error.error is HandlerWriteError)
-        return error.accessed
+        #expect(error is HandlerWriteError)
+        return SyncWriteAccess.accessedSinceInstall()
     }
 }

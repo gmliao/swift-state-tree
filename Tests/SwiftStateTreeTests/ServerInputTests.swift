@@ -8,6 +8,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+@testable import SwiftStateTreeReevaluationMonitor
 
 @StateNodeBuilder
 struct ServerInputTestState: StateNodeProtocol {
@@ -271,6 +272,14 @@ private func makeKeeper(
     return keeper
 }
 
+/// Every step of the hosted runner (the admin replay's) over the record at `path`.
+private func hostedSteps(definition: LandDefinition<ServerInputTestState>, path: String) async throws -> [ReevaluationStepResult] {
+    let runner = try await ConcreteReevaluationRunner(definition: definition, recordFilePath: path)
+    var steps: [ReevaluationStepResult] = []
+    while let step = try await runner.step() { steps.append(step) }
+    return steps
+}
+
 private func saveRecord(_ keeper: LandKeeper<ServerInputTestState>, name: String) async throws -> String {
     await keeper.waitForRecorderSubmissionsForTesting()
     let recorder = try #require(await keeper.getReevaluationRecorder())
@@ -374,6 +383,43 @@ struct ServerInputTests {
         )
         #expect(diverged.recordedPassMismatches.count == 1, "\(diverged.recordedPassMismatches)")
         #expect(diverged.serverEventVerification != .passed)
+
+        // The hosted runner (admin replay) reports the same verdict, from the keeper's table.
+        let hosted = try await hostedSteps(definition: makeDefinition(ticking: true), path: path)
+        #expect(hosted.allSatisfy { $0.recordedPassMismatch == nil && $0.isMatch }, "\(hosted.map(\.tickId))")
+        let hostedDiverged = try await hostedSteps(definition: makeDefinition(ticking: true, failingWrites: false), path: path)
+        #expect(hostedDiverged.filter { $0.recordedPassMismatch != nil }.count == 1)
+    }
+
+    @Test("A record from before #535 §3.7 (a write-then-throw failed alone; the inputs after it ran) replays as recorded")
+    func oldSemanticsRecordReplays() async throws {
+        let keeper = try await makeKeeper(ticking: true)
+        // Records as the previous behavior did: the failing input fails alone.
+        await keeper.setDetectsHandlerWritesForTesting(false)
+        _ = try accepted(await keeper.submitServerInput(SIFailing(tag: "x")))
+        _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "y")))
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        let system = LandContext.systemPlayerID.rawValue
+        #expect(await keeper.currentState().log == ["failing:x", "server:y:\(system)"])
+        #expect(keeper.failure == nil)
+
+        let path = try await saveRecord(keeper, name: "server-input-old-throw")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(ticking: true),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(result.liveFailure == nil)
+        #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
+        #expect(!result.recordedStateHashes.isEmpty)
+        for (tickId, recorded) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == recorded, "tick \(tickId): replay follows the record past the input")
+        }
+        #expect(result.serverEventVerification == .passed)
+        let hosted = try await hostedSteps(definition: makeDefinition(ticking: true), path: path)
+        #expect(!hosted.isEmpty && hosted.allSatisfy { $0.recordedPassMismatch == nil && $0.isMatch })
     }
 
     @Test("Live applies the record form: a Date and a Double decode the same live and in replay")

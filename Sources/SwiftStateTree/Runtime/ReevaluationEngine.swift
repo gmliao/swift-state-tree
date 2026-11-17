@@ -305,7 +305,11 @@ public enum ReevaluationEngine {
         let landFailure = try await source.getLandFailure()
         // Where the failure ended its turn among its inputs, replay ends that tick or pass too.
         if let landFailure, landFailure.failure.position.endsInputs == true {
-            await keeper.setReplayFailureEnd(tickId: landFailure.tickId, pass: landFailure.failure.position.pass.map(Int64.init))
+            await keeper.setReplayFailureEnd(
+                tickId: landFailure.tickId,
+                pass: landFailure.failure.position.pass.map(Int64.init),
+                handlerWriteSequence: landFailure.failure.handlerWriteSequence
+            )
         }
         let lastTickId = landFailure.map { min(maxTickId, $0.tickId) } ?? maxTickId
         
@@ -416,14 +420,6 @@ public enum ReevaluationEngine {
             unverifiableStateHashes: unverifiable
         )
         result.recordCompleteness = try await source.getRecordCompleteness()
-        // A live handler-write failure (#535 §3.7): replay applied the failing input, which must
-        // have thrown after mutable access again; otherwise the replay diverged at that input.
-        if let landFailure, landFailure.failure.kind == .handlerWrite,
-           let sequence = landFailure.failure.position.sequence,
-           !(await keeper.replayHandlerWrote(at: sequence)) {
-            recordedPassMismatches[landFailure.tickId] = "the input at sequence \(sequence), whose handler threw after "
-                + "writing synced state live and ended the land, didn't do so in replay"
-        }
         result.recordedPassMismatches = recordedPassMismatches
         result.liveFailure = landFailure?.failure
         return result
