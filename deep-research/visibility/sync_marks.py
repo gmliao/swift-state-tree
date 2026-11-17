@@ -7,7 +7,8 @@
 (<sweep>/<cell>-<variant>.json); for every result with replayed rooms, <sweep>/<cell>-<variant>.replay.json
 holds per room the runner's "Sync Output:" line. The records themselves aren't kept, so the counts
 come from that line (deep-research/syncmarks.py `verify_line`): per replayed room its seeds (a full
-view sent to a player), its key scope resets, and its skipped and unverifiable comparisons. Later
+view sent to a player), its key scope resets, its skipped and unverifiable comparisons, and the
+broadcast and per-player scopes' compared, unverifiable and skipped counts. Later
 seeds are derived: each player has exactly one first seed, so a room's seeds minus its players are
 the seeds after a player's first. Writes per result the sums, the rooms whose seeds differ from
 their players, and the sha256 of the replay.json read. regenerate.py gates and renders from
@@ -53,6 +54,8 @@ def main(argv):
             "key_scope_resets": sum(r["key_scope_resets"] for r in rooms),
             "skipped": sum(r["skipped"] for r in rooms),
             "unverifiable": sum(r["unverifiable"] for r in rooms),
+            **{key: {col: sum(r["scopes"][scope][col] for r in rooms) for col in ("compared", "unverifiable", "skipped")}
+               for key, scope in (("broadcast", "broadcast"), ("per_player", "per-player"))},
         }
     out = TOPIC / "sync-marks.json"
     out.write_text(json.dumps({"runs": runs}, indent=2, sort_keys=True) + "\n", encoding="utf-8")

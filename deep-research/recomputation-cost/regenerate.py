@@ -1020,7 +1020,7 @@ def stream_field_lines(processes: dict) -> list:
     for enc in sorted(INTENDED_WIRE):
         mine = [processes[n]["diff"] for n in names if processes[n]["params"]["encoding"] == enc]
         frames, overhead = sum(e["frames"] for e in mine), sum(e["overhead"] for e in mine)
-        lines += ["", f"Fixed overhead per frame, {enc}: {overhead / frames:.1f} B on average "
+        lines += ["", f"Overhead per frame, {enc}: {overhead / frames:.1f} B on average "
                   f"({min(e['overhead_min'] for e in mine)}–{max(e['overhead_max'] for e in mine)} B), "
                   f"{overhead / sum(e['bytes'] for e in mine) * 100:.1f} % of the measured bytes."]
     lines += ["", "Only this topic's sizes runs kept every frame; the EncodingBenchmark and ws-loadtest data sets record bytes "

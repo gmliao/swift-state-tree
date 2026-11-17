@@ -1,7 +1,17 @@
 {
   "runs": {
     "default-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -13,7 +23,17 @@
       "unverifiable": 0
     },
     "default-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -25,7 +45,17 @@
       "unverifiable": 0
     },
     "default-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -37,7 +67,17 @@
       "unverifiable": 0
     },
     "entities160-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -49,7 +89,17 @@
       "unverifiable": 0
     },
     "entities160-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -61,7 +111,17 @@
       "unverifiable": 0
     },
     "entities160-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -73,7 +133,17 @@
       "unverifiable": 0
     },
     "entities640-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -85,7 +155,17 @@
       "unverifiable": 0
     },
     "entities640-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -97,7 +177,17 @@
       "unverifiable": 0
     },
     "entities640-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -109,7 +199,17 @@
       "unverifiable": 0
     },
     "radius30-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -121,7 +221,17 @@
       "unverifiable": 0
     },
     "radius30-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -133,7 +243,17 @@
       "unverifiable": 0
     },
     "radius30-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -145,7 +265,17 @@
       "unverifiable": 0
     },
     "radius8-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -157,7 +287,17 @@
       "unverifiable": 0
     },
     "radius8-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -169,7 +309,17 @@
       "unverifiable": 0
     },
     "radius8-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "e3ddaef731c98c91378230c28d7a639043f758d4377d566c11c3284b56a28cbc",
       "rooms": 2,
@@ -181,7 +331,17 @@
       "unverifiable": 0
     },
     "tps2-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "3645062ab9c866beb774e784b148229b619626c448cac9f0e96ecc9de56f8a4c",
       "rooms": 2,
@@ -193,7 +353,17 @@
       "unverifiable": 0
     },
     "tps2-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "3645062ab9c866beb774e784b148229b619626c448cac9f0e96ecc9de56f8a4c",
       "rooms": 2,
@@ -205,7 +375,17 @@
       "unverifiable": 0
     },
     "tps2-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 1616,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 4,
       "replay_json_sha256": "3645062ab9c866beb774e784b148229b619626c448cac9f0e96ecc9de56f8a4c",
       "rooms": 2,
@@ -217,7 +397,17 @@
       "unverifiable": 0
     },
     "viewers16-all-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 6464,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 16,
       "replay_json_sha256": "a7dcacb7d3791ef1a0c0c72f06d6066ec9022dd31d77c0f23c2c760705f2273e",
       "rooms": 2,
@@ -229,7 +419,17 @@
       "unverifiable": 0
     },
     "viewers16-broadcast-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 6464,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 16,
       "replay_json_sha256": "a7dcacb7d3791ef1a0c0c72f06d6066ec9022dd31d77c0f23c2c760705f2273e",
       "rooms": 2,
@@ -241,7 +441,17 @@
       "unverifiable": 0
     },
     "viewers16-radius-rep1": {
+      "broadcast": {
+        "compared": 404,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "key_scope_resets": 0,
+      "per_player": {
+        "compared": 6464,
+        "skipped": 0,
+        "unverifiable": 0
+      },
       "players_per_room": 16,
       "replay_json_sha256": "a7dcacb7d3791ef1a0c0c72f06d6066ec9022dd31d77c0f23c2c760705f2273e",
       "rooms": 2,

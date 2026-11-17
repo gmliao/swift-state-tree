@@ -114,14 +114,19 @@ class VerifyLine(unittest.TestCase):
     def test_counts_and_resets(self):
         line = ("Sync Output: passed [compared/unverifiable/skipped: broadcast 1367/0/1, per-player 5363/2/0, "
                 "events 1367/0/0, seed 4/1/0, apply 6733/0/0]; 3 key scope resets\n")
-        self.assertEqual(syncmarks.verify_line(line), {"seeds": 5, "unverifiable": 3, "skipped": 1, "key_scope_resets": 3})
+        got = syncmarks.verify_line(line)
+        self.assertEqual({k: v for k, v in got.items() if k != "scopes"},
+                         {"seeds": 5, "unverifiable": 3, "skipped": 1, "key_scope_resets": 3})
+        self.assertEqual(got["scopes"]["per-player"], {"compared": 5363, "unverifiable": 2, "skipped": 0})
+        self.assertEqual(got["scopes"]["broadcast"], {"compared": 1367, "unverifiable": 0, "skipped": 1})
         plain = line.split("]")[0] + "]"
         self.assertEqual(syncmarks.verify_line(plain)["key_scope_resets"], 0)
 
     def test_refuses(self):
         for text in ("Sync Output: skipped (no sync stream: record version 3.1)",
                      "Sync Output: passed [compared/unverifiable/skipped: broadcast 1/0/0]",
-                     "Sync Output: passed [compared/unverifiable/skipped: seed 1/0/0]\n" * 2):
+                     "Sync Output: passed [compared/unverifiable/skipped: seed 1/0/0]\n" * 2,
+                     "Sync Output: passed [compared/unverifiable/skipped: seed 1/0/0, seed 1/0/0]"):
             with self.subTest(text[:40]), self.assertRaises(ValueError):
                 syncmarks.verify_line(text)
 
@@ -216,7 +221,23 @@ class TopicGates(unittest.TestCase):
         def missing(d):
             del d["runs"]["tps2-broadcast-rep1"]
 
-        self.refused(lambda p: rg.sync_marks(runs, p), "visibility", fewer_rooms, other_players, seeds_unbalanced, missing)
+        def per_player_missing(d):
+            del d["runs"]["default-radius-rep1"]["per_player"]
+
+        def per_player_none_compared(d):
+            d["runs"]["default-radius-rep1"]["per_player"]["compared"] = 0
+
+        def scope_skips_beyond_total(d):
+            d["runs"]["default-radius-rep1"]["broadcast"]["skipped"] = d["runs"]["default-radius-rep1"]["skipped"] + 1
+
+        def scopes_swapped(d):
+            e = d["runs"]["default-radius-rep1"]
+            e["broadcast"], e["per_player"] = e["per_player"], e["broadcast"]
+
+        self.refused(lambda p: rg.sync_marks(runs, p), "visibility", fewer_rooms, other_players, seeds_unbalanced, missing,
+                     per_player_missing, per_player_none_compared, scope_skips_beyond_total, scopes_swapped)
+        table = rg.sync_marks_table(runs, entries)
+        self.assertIn("| **All** | 42 | 8,484 | 0 | 0 | 48,480 | 0 | 0 |", table)
 
 
 if __name__ == "__main__":
