@@ -92,9 +92,9 @@ public final class TransportProfilerCounters: Sendable {
         /// 4011.
         var unresponsiveCloses = 0
         var droppedAcks = 0
-        /// Resync snapshots not sent because they didn't encode whole.
+        /// Always 0 since #535 PR 2a (failures end the land), kept for the report shape.
         var snapshotEncodeFailures = 0
-        /// 4012.
+        /// 4012: always 0 since #535 PR 2a (failures end the land), kept for the report shape.
         var unencodableCloses = 0
     }
 
@@ -312,7 +312,9 @@ public final class TransportProfilerCounters: Sendable {
         syncFailedPlans.wrappingIncrement(by: delta, ordering: .relaxed)
     }
 
-    /// A sync plan dropped patches, updates or fields that did not encode or extract (data loss).
+    /// A sync plan dropped patches, updates or fields that did not encode or extract. No caller:
+    /// `syncDroppedUpdates` is always 0 since #535 PR 2a (failures end the land), kept for the
+    /// report shape.
     func incrementSyncDroppedUpdates(by delta: Int = 1) {
         syncDroppedUpdates.wrappingIncrement(by: delta, ordering: .relaxed)
     }

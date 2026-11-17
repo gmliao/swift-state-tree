@@ -589,109 +589,51 @@ struct RowAddressingAdapterTests {
         }
     }
 
-    @Test("Opcode JSON: a row whose value does not encode is dropped from the plan; the rest of the table proceeds, and the row is retried")
-    func rowDrop() async throws {
-        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "ab": RowAddressingUnit(hp: 5), "b": RowAddressingUnit(hp: 2)])
+    @Test("Opcode JSON: a row whose value does not encode ends the land: no frame of the plan, no slot bound, no repair (#535 row 8)")
+    func rowEncodeFailureEndsTheLand() async throws {
+        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "b": RowAddressingUnit(hp: 2)])
         var run = try await RowAddressingRun.make(encoding: .opcodeJsonArray, rowAddressing: true, initial: initial)
         try await run.join("p1")
         _ = try await run.read("p1")
-        // A column that fails (a non-finite number) and a create that fails, beside healthy changes,
-        // one in a row whose key extends the dropped row's ("ab" after "a").
-        await run.tick { $0.units["a"]?.speed = .nan; $0.units["a"]?.hp = 11; $0.units["ab"]?.hp = 50; $0.units["b"]?.hp = 20; $0.units["x"] = RowAddressingUnit(hp: 9, speed: .infinity); $0.units["y"] = RowAddressingUnit(hp: 10) }
-        let first = try await run.read("p1")
-        func under(_ row: String) -> (StatePatch) -> Bool { { $0.path == row || $0.path.hasPrefix(row + "/") } }
-        #expect(!first.patches.contains(where: under("/units/a")), "the whole row a is out, its healthy hp too")
-        #expect(first.patches.contains { $0.path == "/units/ab/hp" }, "a row is dropped on component boundaries")
-        #expect(!first.patches.contains(where: under("/units/x")))
-        #expect(first.patches.contains { $0.path == "/units/b/hp" })
-        #expect(first.patches.contains { $0.path == "/units/y" })
-        let slots = try #require(await run.adapter.rowSlotsForTesting("units"))
-        #expect(slots["x"] == nil, "a dropped create takes no slot")
-        #expect(slots["y"] != nil)
-        #expect(await run.adapter.rowRetryFieldsForTesting() == ["units"])
-        #expect(await run.adapter.consecutiveRowRepairsForTesting() == 1)
-        var view = try run.view("p1")
-        // The client holds what last-sent holds for a: the old row.
-        guard case .object(let units)? = view["units"], case .object(let a)? = units["a"] else {
-            Issue.record("no row a"); return
-        }
-        #expect(a["hp"] == .double(1))
-        // Another field changes only: the retry set still diffs units, and the row is dropped again.
-        await run.tick { $0.round = 1 }
-        _ = try await run.read("p1")
-        #expect(await run.adapter.rowRetryFieldsForTesting() == ["units"])
-        #expect(await run.adapter.consecutiveRowRepairsForTesting() == 2)
-        // The values are fixed: both rows reach the client, and the set empties.
-        await run.tick { $0.units["a"]?.speed = 2; $0.units["x"]?.speed = 3 }
-        _ = try await run.read("p1")
-        #expect(await run.adapter.rowRetryFieldsForTesting() == [])
-        #expect(await run.adapter.consecutiveRowRepairsForTesting() == 0)
-        view = try run.view("p1")
-        #expect(view == (try await run.liveView()))
-        #expect(try run.clientSlots("p1") == (try #require(await run.adapter.rowSlotsForTesting("units"))))
+        let slotsBefore = try #require(await run.adapter.rowSlotsForTesting("units"))
+        // A column that fails (a non-finite number) and a create that fails, beside healthy changes.
+        run.script.queue { $0.units["a"]?.speed = .nan; $0.units["b"]?.hp = 20; $0.units["x"] = RowAddressingUnit(hp: 9, speed: .infinity) }
+        await run.keeper.stepTickOnce()
+        try #require(await run.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(run.keeper.failure?.kind == .syncEncode)
+        #expect(try await run.read("p1").patches.isEmpty, "nothing of the failing plan was sent")
+        #expect(await run.adapter.rowSlotsForTesting("units") == slotsBefore, "no slot bound or freed")
     }
 
-    @Test("Opcode JSON: a row that doesn't encode in the first join's seed is left out of the seed; its slot stays free, and it is created once it encodes")
-    func seedRowDrop() async throws {
-        // The bad row sorts between two others: the row after the gap keeps its seed slot.
-        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "x": RowAddressingUnit(hp: 2, speed: .nan), "z": RowAddressingUnit(hp: 3)])
+    @Test("Opcode JSON: a row that doesn't encode in the first join's seed ends the land; the joiner gets nothing (#535 rows 8, 13)")
+    func seedRowEncodeFailureEndsTheLand() async throws {
+        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "x": RowAddressingUnit(hp: 2, speed: .nan)])
         var run = try await RowAddressingRun.make(encoding: .opcodeJsonArray, rowAddressing: true, initial: initial)
-        try await run.join("p1")
-        let first = try await run.read("p1")
-        #expect(first.firstSync)
-        #expect(!first.patches.contains { $0.path == "/units/x" || $0.path.hasPrefix("/units/x/") })
-        let slots = try #require(await run.adapter.rowSlotsForTesting("units"))
-        #expect(slots["x"] == nil, "the dropped row binds no slot")
-        #expect(slots["a"]?.slot == 0 && slots["z"]?.slot == 2, "the others keep their seed slots: \(slots)")
-        #expect(try run.clientSlots("p1") == slots)
-        #expect(await run.adapter.rowRetryFieldsForTesting() == ["units"])
-        // A column of the row while it still doesn't encode, then the fix: the row arrives as a
-        // create, and nothing addresses an unbound slot on the client.
-        await run.tick { $0.units["x"]?.hp = 3 }
-        _ = try await run.read("p1")
-        await run.tick { $0.units["x"]?.speed = 1 }
-        let fixed = try await run.read("p1")
-        #expect(fixed.patches.contains { $0.path == "/units/x" }, "created whole")
-        #expect(try run.view("p1") == (try await run.liveView()))
-        #expect(try run.clientSlots("p1") == (try #require(await run.adapter.rowSlotsForTesting("units"))))
-        #expect(await run.adapter.rowRetryFieldsForTesting() == [])
+        try? await run.join("p1")
+        try #require(await run.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(run.keeper.failure?.kind == .syncEncode)
+        #expect(await run.frames.frames(for: SessionID("s-p1")).allSatisfy {
+            (try? JSONDecoder().decode(TransportMessage.self, from: $0)) != nil
+        }, "no state frame reached the joiner")
     }
 
-    @Test("The row repair: a follow-up for the first three committed plans that drop a row, none after; a clean plan re-arms it; failed plans are counted apart")
-    func rowRepairLimit() async throws {
+    @Test("A plan with a row that doesn't encode reports landFailed, never a repair (#535 D7)")
+    func rowEncodeFailureReportsLandFailed() async throws {
         let initial = unitsWith(["a": RowAddressingUnit(hp: 1)])
         var run = try await RowAddressingRun.make(encoding: .opcodeJsonArray, rowAddressing: true, initial: initial)
         try await run.join("p1")
         var broken = initial
         broken.units["a"]?.speed = .nan
-        func plan(_ state: RowAddressingState) async -> InTurnSyncResult {
-            // The writer must be empty, or the plan is deferred (back-pressure): a frame of the
-            // last plan may reach it after a drain returned, so a deferred plan is made again.
-            var result = InTurnSyncResult.deferredBackPressure
-            for _ in 0..<100 where result == .deferredBackPressure {
-                _ = await run.adapter.waitForOutboundDrain()
-                result = await run.adapter.runSyncPhaseInTurnIsolated(state: state, events: [], includeSync: true).result
-            }
-            return result
+        // The writer must be empty, or the plan is deferred (back-pressure).
+        var result = InTurnSyncResult.deferredBackPressure
+        for _ in 0..<100 where result == .deferredBackPressure {
+            _ = await run.adapter.waitForOutboundDrain()
+            result = await run.adapter.runSyncPhaseInTurnIsolated(state: broken, events: [], includeSync: true).result
         }
-        func expect(_ state: RowAddressingState, _ expected: InTurnSyncResult, _ comment: String, sourceLocation: SourceLocation = #_sourceLocation) async {
-            let result = await plan(state)
-            #expect(result == expected, "\(comment): \(result)", sourceLocation: sourceLocation)
+        guard case .landFailed(let failure) = result else {
+            Issue.record("expected landFailed: \(result)"); return
         }
-        for repairs in 1...3 {
-            await expect(broken, .committedWithRepairPending(clearDirtyFlags: true), "repair \(repairs)")
-        }
-        await expect(broken, .committed(clearDirtyFlags: true), "past the limit: no follow-up")
-        #expect(await run.adapter.consecutiveRowRepairsForTesting() == 4)
-        #expect(await run.adapter.consecutiveFailedPlansForTesting() == 0)
-        var fixed = initial
-        fixed.units["a"]?.speed = 2
-        await expect(fixed, .committed(clearDirtyFlags: true), "fixed")
-        #expect(await run.adapter.consecutiveRowRepairsForTesting() == 0)
-        await expect(broken, .committedWithRepairPending(clearDirtyFlags: true), "re-armed")
-        // A plan committed outside the in-turn path doesn't make the next turn a repair.
-        await run.adapter.syncNow()
-        await expect(fixed, .committed(clearDirtyFlags: true), "after syncNow")
+        #expect(failure.kind == .syncEncode)
     }
 
     @Test("The sync stream is the same with the feature off and on, and each arm's record replays to the same summary: row entries are made after the plan", arguments: RowAddressingEncoding.allCases)
@@ -730,53 +672,19 @@ struct RowAddressingAdapterTests {
         #expect(summaries[0] == summaries[1])
     }
 
-    @Test("A map whose seed failed is diffed from nothing once it converts: the record is the same with the feature off and on", arguments: RowAddressingEncoding.allCases)
-    func recordAfterAFailedSeed(encoding: RowAddressingEncoding) async throws {
+    @Test("A map whose seed conversion throws ends the land at the first join, the same with the feature off and on (#535 row 4)", arguments: RowAddressingEncoding.allCases)
+    func failedSeedEndsTheLand(encoding: RowAddressingEncoding) async throws {
         var initial = unitsWith(["a": RowAddressingUnit(hp: 1)])
         initial.units["a"]?.seal.failing = true
-        var streams: [Data] = []
+        var failures: [LandFailure] = []
         for on in [false, true] {
             var run = try await RowAddressingRun.make(encoding: encoding, rowAddressing: on, recording: true, initial: initial)
-            // The first join's seed: `units` throws, `round` seeds, so the tables are seeded
-            // with `units` left unseeded.
-            try await run.join("p1")
-            #expect(await run.adapter.rowSlotsForTesting("units") == nil, "units not seeded")
-            // It converts: its first diff is from nothing, for a synced recipient.
-            await run.tick { $0.units["a"]?.seal.failing = false; $0.units["b"] = RowAddressingUnit(hp: 2); $0.round = 1 }
-            if on {
-                #expect(await run.adapter.rowSlotsForTesting("units")?.count == 2, "slot-addressed from its first diff")
-            }
-            await run.tick { $0.units["a"]?.hp = 5 }
-            _ = try await run.read("p1")
-            #expect(try run.view("p1") == (try await run.liveView()), "on: \(on)")
-            await run.keeper.waitForRecorderSubmissionsForTesting()
-            let recorder = try #require(await run.keeper.getReevaluationRecorder())
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            streams.append(try encoder.encode(await recorder.getAllFrames()))
+            try? await run.join("p1")
+            try #require(await run.keeper.waitForFailureForTesting(), "on: \(on): the land failed")
+            failures.append(try #require(run.keeper.failure))
+            #expect(await run.adapter.rowSlotsForTesting("units") == nil, "on: \(on): units not seeded")
         }
-        #expect(streams[0] == streams[1])
-    }
-
-    @Test("Opcode JSON: a row dropped in the plan that diffs a map from nothing; the remake's key-scope reset updates carry the diff, digested in the live form")
-    func remakeAfterAFailedSeed() async throws {
-        var initial = unitsWith(["a": RowAddressingUnit(hp: 1)])
-        initial.units["a"]?.seal.failing = true
-        var run = try await RowAddressingRun.make(encoding: .opcodeJsonArray, rowAddressing: true, recording: true, initial: initial)
-        try await run.join("p1")
-        try await run.join("p2")
-        // `units` converts and is diffed from nothing, and a row in it doesn't encode: the plan is
-        // made again with every key scope reset, so each update carries the broadcast diff. (A
-        // digest of the wire form there fails the scope assertion in debug builds.)
-        await run.tick { $0.units["a"]?.seal.failing = false; $0.units["n"] = RowAddressingUnit(hp: 2, speed: .nan) }
-        #expect(await run.adapter.rowRetryFieldsForTesting() == ["units"])
-        await run.tick { $0.units["n"]?.speed = 1 }
-        for name in ["p1", "p2"] {
-            _ = try await run.read(name)
-            #expect(try run.view(name) == (try await run.liveView()), "\(name)")
-            #expect(try run.clientSlots(name) == (try #require(await run.adapter.rowSlotsForTesting("units"))))
-        }
-        await run.keeper.waitForRecorderSubmissionsForTesting()
+        #expect(failures.allSatisfy { $0.kind == .syncConversion && $0.field == "units" }, "\(failures)")
     }
 
     @Test("Merged frames: a lagging reader's resync sends the tables as {} plus creates; it ends at the live state with the server's slots, and the other reader is unaffected")
@@ -841,33 +749,6 @@ struct RowAddressingAdapterTests {
         #expect(on.patches.contains { $0.path == "/units/a" }, "on the wire: creates")
         #expect(sortedPatches(on.live) == sortedPatches(off.patches), "digested as today's patches")
         #expect(sortedPatches(off.live) == sortedPatches(off.patches), "off: unchanged")
-    }
-
-    @Test("A dropped row takes the patches below it on component boundaries only: /units/a, not /units/ab")
-    func componentBoundaries() {
-        let row = SyncRowRef(StatePatch(path: "/units/a/hp", operation: .set(.int(1)), split: nil))
-        #expect(row == nil, "a patch without a row split names no row")
-        let rows = RowAddressingRefProbe.ref(path: "/units/a/hp", slot: 0)
-        #expect(rows.rootPath == "/units")
-        #expect(rows.rowPath == "/units/a")
-        #expect(rows.covers("/units/a"))
-        #expect(rows.covers("/units/a/bag/k"))
-        #expect(!rows.covers("/units/ab"))
-        #expect(!rows.covers("/units/ab/hp"))
-    }
-}
-
-/// Builds a `SyncRowRef` from a path with a row split, through the land's own hasher.
-private enum RowAddressingRefProbe {
-    static func ref(path: String, slot: Int32) -> SyncRowRef {
-        let hasher = PathHasher(pathHashes: (try? rowAddressingPathHashes()) ?? [:])
-        var cursor = hasher.rootCursor
-        let components = path.split(separator: "/").map(String.init)
-        for (index, component) in components.enumerated() {
-            cursor = cursor.descending(component)!
-            if index == 1 { cursor = cursor.asRow(slot) }
-        }
-        return SyncRowRef(StatePatch(path: path, operation: .set(.int(1)), split: cursor.split))!
     }
 }
 

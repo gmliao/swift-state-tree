@@ -663,7 +663,6 @@ struct LandKeeperInputTurnTests {
         // The turn's event went out before its sync phase; no state frame did.
         let after = await f.transport.texts(for: f.session).dropFirst(before)
         #expect(!after.contains { $0.contains("/total") }, "no state frame from the failed plan: \(after)")
-        #expect(await f.keeper.inTurnRepairTurns == 0, "no repair turn")
         // Intake is closed: a later input is refused.
         await #expect(throws: (any Error).self) { try await f.add(1, sync: true) }
     }

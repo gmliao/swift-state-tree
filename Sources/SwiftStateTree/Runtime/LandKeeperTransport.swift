@@ -282,15 +282,10 @@ public enum InTurnSyncResult: Sendable, Equatable {
     /// The sync phase committed. `clearDirtyFlags`: the plan diffed every synced field, so the
     /// keeper clears the dirty flags now, in the same turn (clearing is part of the commit).
     case committed(clearDirtyFlags: Bool)
-    /// The sync phase committed, as `committed`, and left a repair: a part of it was held back
-    /// (a row that did not encode, with row addressing) and the next plan diffs it again. A land
-    /// without periodic sync schedules one repair sync-only turn, as after a failed plan within
-    /// its limit; a land with periodic sync relies on its next one.
-    case committedWithRepairPending(clearDirtyFlags: Bool)
-    /// The sync plan threw and committed nothing. Since #535 the keeper ends the land on it,
-    /// as on `landFailed` with kind `.syncPlan`; `repairAllowed` is read by nothing, and the
-    /// payload is to be removed (#535 decision D12).
-    case failed(repairAllowed: Bool)
+    /// The sync plan threw and committed nothing. The keeper ends the land on it, as on
+    /// `landFailed` with kind `.syncPlan` (#535). A transport that can name the failure reports
+    /// `landFailed` instead.
+    case failed
     /// The sync phase failed in a way that can't be brought back to a fully correct state
     /// (#535): a plan that threw, or a value or frame that didn't convert or encode. Nothing of
     /// it was committed or sent. The keeper ends the land in the same turn (`LandKeeper.failure`);

@@ -935,59 +935,6 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.observedTickId == 1, "the action and the tick handler run in tick 1's turn")
     }
 
-    @Test("One player's degraded seed leaves the broadcast and the other players compared")
-    func degradedSeedIsNarrow() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .json)
-        try await f.join(1)
-        try await f.set(1, "score", 10)
-        try await f.set(1, "break")
-        await f.tick()      // `fragile` stops extracting: an extraction drop on every output
-        try await f.join(2) // its seed leaves `fragile` out: unverifiable
-        try await f.set(1, "score", 11)
-        try await f.set(2, "score", 21)
-        await f.tick(2)
-        let stream = ReevaluationSyncStreamEntry.stream(of: await f.keeper.getReevaluationRecorder()!.getAllFrames())
-        let lastTick = try #require(stream.compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }.last)
-        #expect(lastTick.perPlayerUnverified == [VerifierFixture.player(2).rawValue])
-        let seeds = stream.compactMap { if case .marker(let m) = $0, m.kind == .seed { return m } else { return nil } }
-        #expect(seeds.map(\.viewDropFields) == [nil, ["fragile"]], "the degraded seed names the dropped field")
-
-        let sync = try await f.replay().syncOutput
-        #expect(sync.verdict == .partial, "\(sync.summary)")
-        #expect(sync.broadcast.compared == 3)
-        #expect(sync.broadcast.unverifiable == 0)
-        #expect(sync.seed.compared == 1)
-        #expect(sync.seed.unverifiable == 1)
-        // Player 1 on all three ticks; player 2 on the two ticks after its seed.
-        #expect(sync.perPlayer.compared == 3)
-        #expect(sync.perPlayer.unverifiable == 2)
-        // Player 2 is unverified for its view's drops, not because an output skipped it: its
-        // updates are still staged and apply-checked (two of the ten), only its hash is skipped.
-        #expect(sync.apply.compared == 10, "\(sync.summary)")
-    }
-
-    @Test("A player is verifiable again after a seed with a view hash")
-    func reseedRestoresVerification() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .json)
-        try await f.join(1)
-        try await f.set(1, "break")
-        await f.tick()
-        try await f.join(2)   // degraded seed
-        await f.tick()
-        await f.leave(2)
-        try await f.set(1, "fix")
-        await f.tick()
-        try await f.join(2)   // seed with a view hash
-        await f.tick()
-        let sync = try await f.replay().syncOutput
-        #expect(sync.seed.unverifiable == 1)
-        #expect(sync.seed.compared == 2)
-        #expect(sync.perPlayer.unverifiable == 1, "only the tick between the degraded seed and the leave")
-        if case .failed(let mismatch) = sync.verdict { Issue.record("\(mismatch.summary)") }
-    }
-
     @Test("A legacy cycle's output (a debug freeze's settle) is verified")
     func legacyCycleIsVerified() async throws {
         guard InTurnSync.isEnabled() else { return }
@@ -1093,27 +1040,6 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.scope == "per-player (combined)")
         #expect(mismatch.streamIndex == tick.streamIndex)
         #expect(mismatch.observedTickId == 1)
-    }
-
-    @Test("A per-player encode drop makes that player unverifiable until a verifiable seed: partial, never passed")
-    func perPlayerEncodeDropIsUnverifiable() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .json)
-        try await f.join(1)
-        try await f.join(2)
-        await f.tick()
-        try await f.set(1, "inf")
-        await f.tick()      // player 1's frame goes out without the infinite speed
-        try await f.set(1, "speed", 3)
-        await f.tick()      // still diverged: its client never got the dropped value
-        let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-        #expect(ticks[1].encodeDropScopes == [VerifierFixture.player(1).rawValue])
-        let sync = try await f.replay().syncOutput
-        #expect(sync.verdict == .partial, "\(sync.summary)")
-        // Player 1: compared on tick 0, unverifiable on ticks 1 and 2. Player 2: compared on all.
-        #expect(sync.perPlayer.compared == 4)
-        #expect(sync.perPlayer.unverifiable == 2)
-        #expect(sync.broadcast.unverifiable == 0)
     }
 
     @Test("Combined mode: a player's update that doesn't encode at all ends the land; no later tick is recorded (#535 row 10)")
@@ -1352,43 +1278,6 @@ struct SyncOutputVerifierTests {
         #expect(sync.verdict == .partial, "\(sync.summary)")
         #expect(sync.skipReasons == [.perPlayerResendNotSeen: 1])
     }
-
-    @Test("A joiner whose whole view never encodes is not benign; a later compared seed makes it so")
-    func unsentViewIsNotBenign() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        for seedsLater in [false, true] {
-            let fails = VerifierSwitch()
-            let f = await VerifierFixture.make(
-                encoding: .json,
-                encoder: VerifierFailingEncoder(fails: fails, player: VerifierFixture.player(2))
-            )
-            // The failed firstSync and tick each schedule a follow-up cycle 100 ms later: run
-            // during the failing window it is a second unsent view (#163), after it a seed.
-            let followUps = await f.holdFailedPlanFollowUps()
-            defer { followUps.open() }
-            try await f.join(1)
-            await f.tick()
-            fails.set(true)
-            try await f.join(2)  // its firstSync does not encode, not even empty
-            await f.tick()       // nor does the retried full view
-            fails.set(false)
-            if seedsLater {
-                await f.tick()   // the full view goes out now: a seed with a view hash
-            }
-            let outputs = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-            #expect(outputs[1].encodeDropScopes.contains(VerifierFixture.player(2).rawValue))
-            #expect(outputs[1].perPlayerUncommitted == nil, "it had no committed view to leave uncommitted")
-            let sync = try await f.replay().syncOutput
-            if seedsLater {
-                #expect(sync.verdict == .passed, "\(sync.summary)")
-                #expect(sync.skipReasons[.viewSentLater] == 1)
-                #expect(sync.skipReasons[.viewNotSent] == nil)
-            } else {
-                #expect(sync.verdict == .partial, "\(sync.summary)")
-                #expect(sync.skipReasons[.viewNotSent] == 1)
-            }
-        }
-    }
 }
 
 /// Rewrites a saved record's `recordMetadata.version`, to build an older-format record from a
@@ -1401,4 +1290,241 @@ func relabelRecordVersion(atPath path: String, to version: String?) throws {
     metadata["version"] = version
     root["recordMetadata"] = metadata
     try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]).write(to: url)
+}
+
+// MARK: - Records made before #535 PR 2a
+
+/// A tick output with some fields replaced. Live runs no longer record extraction or encode
+/// drops (every conversion or encode failure ends the land, #535), but records made before can
+/// hold them, so these rewrites build such records from a live recording.
+private func editingTickOutputs(
+    _ edit: @escaping (ReevaluationRecordedSyncOutput) -> (
+        perPlayerHash: UInt64?, perPlayerUnverified: [String]?, extractionDrops: [String: [String]], encodeDropScopes: [String]
+    )?
+) -> (inout [ReevaluationTickFrame]) -> Void {
+    { frames in
+        for (frameIndex, frame) in frames.enumerated() {
+            var changed = false
+            let outputs = frame.syncOutputs.map { output -> ReevaluationRecordedSyncOutput in
+                guard output.turnKind == .tick, let fields = edit(output) else { return output }
+                changed = true
+                return ReevaluationRecordedSyncOutput(
+                    index: output.index,
+                    turnKind: output.turnKind,
+                    observedTickId: output.observedTickId,
+                    streamIndex: output.streamIndex,
+                    sequence: output.sequence,
+                    afterPass: output.afterPass,
+                    broadcastHash: output.broadcastHash,
+                    perPlayerHash: fields.perPlayerHash,
+                    perPlayerUnverified: fields.perPlayerUnverified,
+                    perPlayerUncommitted: output.perPlayerUncommitted,
+                    perPlayerHashes: output.perPlayerHashes,
+                    eventsHash: output.eventsHash,
+                    eventsThroughSequence: output.eventsThroughSequence,
+                    eventsNotQueued: output.eventsNotQueued,
+                    eventsNotMerged: output.eventsNotMerged,
+                    resetsKeyScopes: output.resetsKeyScopes,
+                    extractionDrops: fields.extractionDrops,
+                    encodeDropScopes: fields.encodeDropScopes,
+                    patches: output.patches
+                )
+            }
+            guard changed else { continue }
+            frames[frameIndex] = replacingSync(frame, outputs: outputs, markers: frame.syncMarkers)
+        }
+    }
+}
+
+/// The first seed marker of `player` made degraded: its view dropped `fragile`, so it carries
+/// no view hash (a record made before #535 PR 2a).
+private func degradingFirstSeed(of player: PlayerID) -> (inout [ReevaluationTickFrame]) -> Void {
+    { frames in
+        for (frameIndex, frame) in frames.enumerated() {
+            guard let markerIndex = frame.syncMarkers.firstIndex(where: { $0.kind == .seed && $0.playerID == player.rawValue }) else { continue }
+            var markers = frame.syncMarkers
+            let marker = markers[markerIndex]
+            #expect(marker.viewHash != nil)
+            markers[markerIndex] = ReevaluationRecordedSyncMarker(
+                kind: marker.kind,
+                playerID: marker.playerID,
+                observedTickId: marker.observedTickId,
+                streamIndex: marker.streamIndex,
+                sequence: marker.sequence,
+                afterPass: marker.afterPass,
+                rejoin: marker.rejoin,
+                viewHash: nil,
+                viewDrops: [.extraction],
+                viewDropFields: ["fragile"]
+            )
+            frames[frameIndex] = replacingSync(frame, outputs: frame.syncOutputs, markers: markers)
+            return
+        }
+        Issue.record("no seed of \(player.rawValue)")
+    }
+}
+
+private func replacingSync(
+    _ frame: ReevaluationTickFrame, outputs: [ReevaluationRecordedSyncOutput], markers: [ReevaluationRecordedSyncMarker]
+) -> ReevaluationTickFrame {
+    ReevaluationTickFrame(
+        tickId: frame.tickId,
+        stateHash: frame.stateHash,
+        actions: frame.actions,
+        clientEvents: frame.clientEvents,
+        lifecycleEvents: frame.lifecycleEvents,
+        serverEvents: frame.serverEvents,
+        sequenceBeforeInputs: frame.sequenceBeforeInputs,
+        sequenceBeforeTickHandler: frame.sequenceBeforeTickHandler,
+        syncOutputs: outputs,
+        syncMarkers: markers,
+        initialize: frame.initialize
+    )
+}
+
+@Suite("Sync output verifier: drops in records made before #535 PR 2a", .timeLimit(.minutes(1)))
+struct SyncOutputVerifierOldDropTests {
+    private func tickOutputs(_ f: VerifierFixture) async throws -> [ReevaluationRecordedSyncOutput] {
+        try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+    }
+
+    @Test("An extraction drop is replayed with the cached value: the recorded hash without the dropped field compares")
+    func extractionDropIsSubstituted() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        // The hash the live engine would have recorded with `scores` dropped: a run where it
+        // doesn't change.
+        let unchanged = await VerifierFixture.make(encoding: .json)
+        try await unchanged.join(1)
+        await unchanged.tick(2)
+        let droppedHash = try #require(try await tickOutputs(unchanged).last).perPlayerHash
+
+        for substituted in [true, false] {
+            let f = await VerifierFixture.make(encoding: .json)
+            try await f.join(1)
+            await f.tick()
+            try await f.set(1, "score", 7)
+            await f.tick()
+            let player = VerifierFixture.player(1).rawValue
+            #expect(try await tickOutputs(f).last?.perPlayerHash != droppedHash, "the score change is in the live hash")
+            let sync = try await f.replay(rewrite: editingTickOutputs { output in
+                guard output.observedTickId == 1 else { return nil }
+                return (droppedHash, output.perPlayerUnverified, substituted ? [player: ["scores"]] : [:], output.encodeDropScopes)
+            }).syncOutput
+            if substituted {
+                #expect(sync.verdict == .passed, "\(sync.summary)")
+                #expect(sync.perPlayer.compared == 2)
+            } else {
+                guard case .failed = sync.verdict else {
+                    Issue.record("without the recorded drop the replayed score change must not compare: \(sync.summary)")
+                    continue
+                }
+            }
+        }
+    }
+
+    @Test("A degraded seed leaves the broadcast and the other players compared; a later seed with a view hash restores the player")
+    func degradedSeed() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        // Live left an unverified player out of `perPlayerHash`: the hash of player 1 alone, from
+        // a run without player 2.
+        let alone = await VerifierFixture.make(encoding: .json)
+        try await alone.join(1)
+        await alone.tick(3)
+        var aloneHashes: [Int64: UInt64?] = [:]
+        for output in try await tickOutputs(alone) {
+            if let tick = output.observedTickId { aloneHashes[tick] = output.perPlayerHash }
+        }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        await f.tick()
+        try await f.join(2)  // degraded below
+        await f.tick(2)
+        await f.leave(2)
+        await f.tick()
+        try await f.join(2)  // a seed with a view hash
+        await f.tick()
+        let player2 = VerifierFixture.player(2).rawValue
+        let degraded = degradingFirstSeed(of: VerifierFixture.player(2))
+        // Live listed the player in `perPlayerUnverified` while its view was unverifiable.
+        let listed = editingTickOutputs { output in
+            guard let tick = output.observedTickId, tick == 1 || tick == 2, let hash = aloneHashes[tick] else { return nil }
+            return (hash, [player2], output.extractionDrops, output.encodeDropScopes)
+        }
+        let sync = try await f.replay(rewrite: { frames in degraded(&frames); listed(&frames) }).syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.seed.compared == 2)
+        #expect(sync.seed.unverifiable == 1)
+        #expect(sync.perPlayer.unverifiable == 2, "the two ticks between the degraded seed and the leave")
+        #expect(sync.broadcast.unverifiable == 0)
+    }
+
+    @Test("A per-player encode drop makes a seeded player unverifiable until a seed with a view hash")
+    func encodeDropDiverges() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        try await f.join(2)
+        await f.tick(3)
+        let player1 = VerifierFixture.player(1).rawValue
+        let sync = try await f.replay(rewrite: editingTickOutputs { output in
+            guard output.observedTickId == 1 else { return nil }
+            return (output.perPlayerHash, output.perPlayerUnverified, output.extractionDrops, [player1])
+        }).syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        // Player 1: compared on tick 0, unverifiable on ticks 1 and 2. Player 2: compared on all.
+        #expect(sync.perPlayer.compared == 4)
+        #expect(sync.perPlayer.unverifiable == 2)
+    }
+
+    @Test("A joiner whose whole view never encoded is viewNotSent; a later compared seed makes it the benign viewSentLater", arguments: [false, true])
+    func unsentView(seedsLater: Bool) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        await f.tick(2)
+        if seedsLater {
+            try await f.join(2)
+            await f.tick()
+        }
+        let player2 = VerifierFixture.player(2).rawValue
+        let sync = try await f.replay(rewrite: editingTickOutputs { output in
+            // Tick 1, before player 2 has a seed: its full view did not encode.
+            guard output.observedTickId == 1 else { return nil }
+            return (output.perPlayerHash, output.perPlayerUnverified, output.extractionDrops, output.encodeDropScopes + [player2])
+        }).syncOutput
+        if seedsLater {
+            #expect(sync.verdict == .passed, "\(sync.summary)")
+            #expect(sync.skipReasons[.viewSentLater] == 1)
+            #expect(sync.skipReasons[.viewNotSent] == nil)
+        } else {
+            #expect(sync.verdict == .partial, "\(sync.summary)")
+            #expect(sync.skipReasons[.viewNotSent] == 1)
+        }
+    }
+}
+
+@Suite("Debug freeze settle: a sync failure ends the land (#535)", .timeLimit(.minutes(1)))
+struct DebugFreezeSettleFailureTests {
+    @Test("A settle cycle whose plan throws ends the land: the gate closes, the failure reaches the keeper, the freeze fails")
+    func settleFailureEndsTheLand() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        await f.tick()
+        // Quiet ticks request no sync: the broken field is first planned by the settle cycle.
+        try await f.set(1, "quiet")
+        await f.tick()
+        try await f.set(1, "break")
+        await f.tick()
+        #expect(f.keeper.failure == nil, "no plan has met the throw yet")
+        await #expect(throws: (any Error).self) { _ = try await f.adapter.debugFreeze() }
+        #expect(f.adapter.outputGate.isClosed)
+        // A submitted failure is applied by the keeper's next turn: on a tick land, its next tick.
+        await f.keeper.stepTickOnce()
+        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(f.keeper.failure?.kind == .syncConversion)
+        #expect(f.keeper.failure?.field == "fragile")
+        let outputs = try await f.stream().compactMap { if case .output(let o) = $0 { return o } else { return nil } }
+        #expect(!outputs.contains { $0.turnKind == .legacyCycle }, "the settle cycle committed nothing")
+    }
 }
