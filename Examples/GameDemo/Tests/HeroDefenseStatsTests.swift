@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 @testable import GameContent
 
 @Suite("Hero Defense stats")
@@ -39,7 +39,7 @@ struct HeroDefenseStatsTests {
                 autoStartLoops: false
             )
             await keeper.setLandID("hero-defense:stats")
-            try await keeper.join(playerID: PlayerID("alice"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+            try await keeper.join(playerID: PlayerID("alice"), clientID: ClientID("c1"), sessionID: SessionID(fixed: "s1"))
             // Long enough for spawns to be killed and to reach the base (every 30 ticks at first).
             for _ in 0..<400 { await keeper.stepTickOnce() }
             let state = await keeper.currentState()

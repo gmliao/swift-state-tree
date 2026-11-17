@@ -164,24 +164,7 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
     /// - Parameter type: The event type.
     /// - Returns: The event name (without "Event" suffix if present).
     public static func eventName(for type: Any.Type) -> String {
-        let typeName = String(describing: type)
-        
-        // Extract base type name (handle module prefixes)
-        var baseTypeName: String
-        if let lastComponent = typeName.split(separator: ".").last {
-            baseTypeName = String(lastComponent)
-        } else {
-            baseTypeName = typeName
-        }
-        
-        // Remove "Event" suffix if present, keep camelCase format
-        // Example: "ChatEvent" -> "Chat", "PingEvent" -> "Ping"
-        var eventID = baseTypeName
-        if eventID.hasSuffix("Event") {
-            eventID = String(eventID.dropLast(5))
-        }
-        
-        return eventID
+        payloadEventName(for: type)
     }
     
     /// Find a descriptor by event name.

@@ -144,13 +144,13 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             return encodeJoinResponse(opcode: opcode, payload: payload)
             
         case .actionResponse(let payload):
-            return encodeActionResponse(opcode: opcode, payload: payload)
+            return try encodeActionResponse(opcode: opcode, payload: payload)
             
         case .error(let payload):
             return encodeError(opcode: opcode, payload: payload)
             
         case .action(let payload):
-            return encodeAction(opcode: opcode, payload: payload)
+            return try encodeAction(opcode: opcode, payload: payload)
             
         case .join(let payload):
             return encodeJoin(opcode: opcode, payload: payload)
@@ -185,11 +185,11 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         return result
     }
     
-    private func encodeActionResponse(opcode: MessageKindOpcode, payload: TransportActionResponsePayload) -> [AnyCodable] {
+    private func encodeActionResponse(opcode: MessageKindOpcode, payload: TransportActionResponsePayload) throws -> [AnyCodable] {
         // Encode response payload: Array or Object
         let responseValue: AnyCodable
         if enablePayloadCompression {
-            responseValue = encodePayloadAsArray(payload.response)
+            responseValue = try encodePayloadAsArray(payload.response)
         } else {
             responseValue = payload.response
         }
@@ -215,11 +215,11 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         return result
     }
     
-    private func encodeAction(opcode: MessageKindOpcode, payload: TransportActionPayload) -> [AnyCodable] {
+    private func encodeAction(opcode: MessageKindOpcode, payload: TransportActionPayload) throws -> [AnyCodable] {
         // Encode action payload: Array or Object (same rule as Event)
         let payloadValue: AnyCodable
         if enablePayloadCompression {
-            payloadValue = encodePayloadAsArray(payload.action.payload)
+            payloadValue = try encodePayloadAsArray(payload.action.payload)
         } else {
             payloadValue = payload.action.payload
         }
@@ -271,7 +271,7 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             // Encode payload: Array or Object
             let payloadValue: AnyCodable
             if enablePayloadCompression {
-                payloadValue = encodePayloadAsArray(clientEvent.payload)
+                payloadValue = try encodePayloadAsArray(clientEvent.payload)
             } else {
                 payloadValue = AnyCodable(clientEvent.payload)
             }
@@ -299,7 +299,7 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             // Encode payload: Array or Object
             let payloadValue: AnyCodable
             if enablePayloadCompression {
-                payloadValue = encodePayloadAsArray(serverEvent.payload)
+                payloadValue = try encodePayloadAsArray(serverEvent.payload, typed: serverEvent.wireForm)
             } else {
                 payloadValue = AnyCodable(serverEvent.payload)
             }
@@ -317,11 +317,16 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         }
     }
     
-    private func encodePayloadAsArray(_ payload: Any) -> AnyCodable {
+    /// The positional form of a payload: an `Encodable` that writes the payload's fields into one JSON array, written by the
+    /// type's `@Payload` writer (#521). `typed` is the event's typed value when it carries one;
+    /// otherwise the payload is unwrapped from its box and cast.
+    private func encodePayloadAsArray(_ payload: Any, typed: (any ServerEventPayload)? = nil) throws -> AnyCodable {
+        if let typed {
+            return AnyCodable(PositionalPayloadJSON(payload: typed))
+        }
         // Extract the actual payload value from AnyCodable if needed
         let actualPayload: Any
         if let anyCodable = payload as? AnyCodable {
-            // If payload is AnyCodable, extract its base value
             actualPayload = anyCodable.base
         } else {
             actualPayload = payload
@@ -333,17 +338,14 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
             return AnyCodable([AnyCodable]())
         }
 
-        // All payload types (ActionPayload, ResponsePayload, ClientEventPayload, ServerEventPayload)
-        // must use @Payload macro which generates encodeAsArray() with correct field order.
-        // The default PayloadCompression.encodeAsArray() implementation is fatalError,
-        // so if a type doesn't have @Payload macro, it will crash at runtime.
+        // Every payload type (ActionPayload, ResponsePayload, ClientEventPayload,
+        // ServerEventPayload) is a PayloadCompression; a type without `@Payload` throws from its
+        // writer. A value that isn't a payload type at all (a raw dictionary, array or primitive)
+        // still ends the process here (#544).
         guard let payloadCompression = actualPayload as? any PayloadCompression else {
-            // This should never happen for valid payload types, but provide a clear error message
             fatalError("Payload type '\(type(of: actualPayload))' must conform to PayloadCompression and use @Payload macro for compression support.")
         }
-        
-        let array = payloadCompression.encodeAsArray()
-        return AnyCodable(array)
+        return AnyCodable(PositionalPayloadJSON(payload: payloadCompression))
     }
 }
 
@@ -372,5 +374,29 @@ public extension TransportEncoding {
                 enablePayloadCompression: enablePayloadCompression
             )
         }
+    }
+}
+
+/// A payload's positional form for the JSON encoders (#521): the `@Payload` writer's fields as
+/// one array. A leaf is encoded with its own `Codable`, any other field through `AnyCodable`, as
+/// each field of the `[AnyCodable]` array it replaces was.
+struct PositionalPayloadJSON: Encodable {
+    let payload: any PayloadCompression
+
+    func encode(to encoder: Encoder) throws {
+        var writer = JSONPayloadFieldWriter(container: encoder.unkeyedContainer())
+        try payload._writePayloadFields(into: &writer)
+    }
+}
+
+struct JSONPayloadFieldWriter: _PayloadFieldWriter {
+    var container: UnkeyedEncodingContainer
+
+    mutating func leaf<T: _PayloadWireLeaf>(_ value: T) throws {
+        try container.encode(value)
+    }
+
+    mutating func fallback<T: Encodable>(_ value: T) throws {
+        try container.encode(AnyCodable(value))
     }
 }

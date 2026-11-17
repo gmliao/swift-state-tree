@@ -400,7 +400,7 @@ public actor NIOWebSocketServer {
             upgradePipelineHandler: { channel, head in
                 let path = head.uri.components(separatedBy: "?").first ?? head.uri
                 let fullURI = head.uri
-                let sessionID = SessionID(UUID().uuidString)
+                let sessionID = SessionID.mint()
 
                 guard let transport = transportResolver(path) else {
                     logger.error("No transport found for path", metadata: ["path": .string(path)])

@@ -8,7 +8,7 @@ import Testing
 import Foundation
 import Logging
 @testable import GameContent
-@testable import SwiftStateTree
+@_spi(Testing) @testable import SwiftStateTree
 import SwiftStateTreeReevaluationMonitor
 
 // MARK: - Helpers
@@ -83,7 +83,7 @@ struct E2EStateSnapshotDiffTests {
         try await keeper.join(
             playerID: PlayerID("alice"),
             clientID: ClientID("c1"),
-            sessionID: SessionID("s1")
+            sessionID: SessionID(fixed: "s1")
         )
 
         // Run 35 ticks: covers monster spawning (MONSTER_SPAWN_INTERVAL_TICKS = 30)
@@ -192,7 +192,7 @@ struct E2EStateSnapshotDiffTests {
         try await keeper.join(
             playerID: PlayerID("charlie"),
             clientID: ClientID("c1"),
-            sessionID: SessionID("s1")
+            sessionID: SessionID(fixed: "s1")
         )
 
         let tickCount: Int64 = 5
@@ -284,7 +284,7 @@ struct E2EStateSnapshotDiffTests {
         try await keeper.join(
             playerID: PlayerID("bob"),
             clientID: ClientID("c1"),
-            sessionID: SessionID("s1")
+            sessionID: SessionID(fixed: "s1")
         )
         await keeper.stepTickOnce()
         try await recorder.save(to: recordingFile.path)

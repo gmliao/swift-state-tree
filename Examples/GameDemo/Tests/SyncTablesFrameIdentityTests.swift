@@ -16,7 +16,7 @@
 
 import Foundation
 import Testing
-@testable import SwiftStateTree
+@_spi(Testing) @testable import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 @testable import GameContent
@@ -80,7 +80,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
     }
 
     func join(_ name: String) async throws {
-        let session = SessionID("s-\(name)"), client = ClientID("c-\(name)")
+        let session = SessionID(fixed: "s-\(name)"), client = ClientID("c-\(name)")
         await adapter.onConnect(sessionID: session, clientID: client)
         _ = try await adapter.performJoin(
             playerSession: PlayerSession(playerID: name),
@@ -93,7 +93,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
     }
 
     func leave(_ name: String) async {
-        await adapter.onDisconnect(sessionID: SessionID("s-\(name)"), clientID: ClientID("c-\(name)"))
+        await adapter.onDisconnect(sessionID: SessionID(fixed: "s-\(name)"), clientID: ClientID("c-\(name)"))
         await settle()
     }
 
@@ -107,7 +107,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
     func event(_ payload: some ClientEventPayload, as name: String) async throws {
         try await keeper.handleClientEvent(
             AnyClientEvent(payload),
-            playerID: PlayerID(name), clientID: ClientID("c-\(name)"), sessionID: SessionID("s-\(name)")
+            playerID: PlayerID(name), clientID: ClientID("c-\(name)"), sessionID: SessionID(fixed: "s-\(name)")
         )
         await settle()
     }
@@ -115,7 +115,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
     func action(_ payload: some ActionPayload, as name: String) async throws {
         let envelope = ActionEnvelope(typeIdentifier: String(describing: type(of: payload)), payload: AnyCodable(payload))
         _ = try await keeper.handleActionEnvelope(
-            envelope, playerID: PlayerID(name), clientID: ClientID("c-\(name)"), sessionID: SessionID("s-\(name)")
+            envelope, playerID: PlayerID(name), clientID: ClientID("c-\(name)"), sessionID: SessionID(fixed: "s-\(name)")
         )
         await settle()
     }

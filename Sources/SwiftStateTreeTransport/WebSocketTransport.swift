@@ -477,12 +477,21 @@ public actor WebSocketTransport: Transport {
     }
 
     /// Maps a player to a session for `.player` targets, and returns the session's current
-    /// connection generation (`nil` when the session is not connected).
+    /// connection generation. A session that is not connected (never was, or its disconnect
+    /// cleanup already ran) is not mapped and gets `nil` (#549): the cleanup that would remove
+    /// the mapping has passed, so the mapping would never be removed. The check is the live
+    /// queue, not `isHeld`, which also counts a session whose disconnect is still running.
     @discardableResult
     public func registerSession(_ sessionID: SessionID, for playerID: PlayerID) -> UInt64? {
+        guard let queue = sessionQueues[sessionID] else { return nil }
         playerSessions[playerID, default: []].insert(sessionID)
         lastMissingPlayerLogAt.removeValue(forKey: playerID)
-        return sessionQueues[sessionID]?.generation
+        return queue.generation
+    }
+
+    /// Test hook: the sessions mapped to `playerID`.
+    func playerSessionsForTesting(_ playerID: PlayerID) -> Set<SessionID> {
+        playerSessions[playerID] ?? []
     }
 
     /// Returns once every current session's drain has handed its connection the frames queued

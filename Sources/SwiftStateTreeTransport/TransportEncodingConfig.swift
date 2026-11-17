@@ -53,7 +53,7 @@ public struct TransportEncodingConfig: Sendable {
 
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
-    var shouldEncodePayloadAsArray: Bool {
+    package var shouldEncodePayloadAsArray: Bool {
         switch message {
         case .opcodeJsonArray, .messagepack:
             return true

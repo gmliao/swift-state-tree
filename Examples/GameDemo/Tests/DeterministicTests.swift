@@ -4,7 +4,7 @@ import Testing
 import Foundation
 import Logging
 @testable import GameContent
-@testable import SwiftStateTree
+@_spi(Testing) @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
 
 struct DeterministicTests {
@@ -60,7 +60,7 @@ struct DeterministicTests {
             landID: "hero-defense:test-room",
             playerID: PlayerID("test-player"),
             clientID: ClientID("test-client"),
-            sessionID: SessionID("test-session"),
+            sessionID: SessionID(fixed: "test-session"),
             services: LandServices(),
             logger: createGameLogger(scope: "Test", logLevel: .error),
             tickId: 0,

@@ -3,7 +3,7 @@
 // Actor for thread-safe room and player management.
 
 import GameContent
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 
 // MARK: - Player State
 
@@ -45,7 +45,7 @@ actor RoomManager {
             // `--players-per-room` sets the room size (it was 5 for every room before).
             if room.playerCount < maxPlayersPerRoom, roomIndex < maxRooms {
                 let playerIndexInRoom = room.playerCount
-                let sessionID = SessionID("s-\(roomIndex)-\(playerIndexInRoom)")
+                let sessionID = SessionID(fixed: "s-\(roomIndex)-\(playerIndexInRoom)")
                 let player = PlayerState(
                     sessionID: sessionID,
                     roomIndex: roomIndex,
@@ -63,7 +63,7 @@ actor RoomManager {
         if nextAvailableRoomIndex < maxRooms {
             let roomIndex = nextAvailableRoomIndex
             nextAvailableRoomIndex += 1
-            let sessionID = SessionID("s-\(roomIndex)-0")
+            let sessionID = SessionID(fixed: "s-\(roomIndex)-0")
             let player = PlayerState(
                 sessionID: sessionID,
                 roomIndex: roomIndex,

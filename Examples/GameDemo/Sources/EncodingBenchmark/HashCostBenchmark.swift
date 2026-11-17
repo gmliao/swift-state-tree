@@ -6,7 +6,7 @@
 
 import Foundation
 import GameContent
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 
 struct HashCostSample {
     var fullNs: [UInt64] = []
@@ -59,7 +59,7 @@ func runHashCost(roomCount: Int, playersPerRoom: Int, warmupTicks: Int, measured
             _ = try? await keeper.join(
                 playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
                 clientID: ClientID("room\(roomIndex)-client-\(playerIndex)"),
-                sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
+                sessionID: SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             )
         }
         keepers.append(keeper)

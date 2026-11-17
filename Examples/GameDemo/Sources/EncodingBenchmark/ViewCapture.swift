@@ -11,7 +11,7 @@
 // A capture pass computes a projection per player per sync, so its timings aren't measurements.
 
 import Foundation
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 import SwiftStateTreeTransport
 import GameContent
 
@@ -101,7 +101,7 @@ final class ViewCaptureWriter<State: StateNodeProtocol>: @unchecked Sendable {
             FileManager.default.createFile(atPath: url.path, contents: nil)
             let handle = try FileHandle(forWritingTo: url)
             let roomPlayers = (0 ..< playersPerRoom).map {
-                (session: SessionID("room\(roomIndex)-session-\($0)"), player: PlayerID("room\(roomIndex)-player-\($0)"))
+                (session: SessionID(fixed: "room\(roomIndex)-session-\($0)"), player: PlayerID("room\(roomIndex)-player-\($0)"))
             }
             let header: [String: Any] = [
                 "landID": room.landID.stringValue,

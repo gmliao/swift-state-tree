@@ -36,13 +36,30 @@ extension ClientID: CodingKeyRepresentable {
 
 /// Session identifier (connection level)
 ///
-/// Used to identify a specific WebSocket connection.
-/// Dynamically generated for tracking purposes.
+/// Identifies one connection, and must not be reused (#552): a result keyed by a reused ID could
+/// be taken for the new connection's. Transports get each connection's ID from `mint()`; decoding
+/// (replay rebuilds recorded IDs) and `LandContext.systemSessionID` are the other sources. The
+/// type steers new connections to `mint()` but can't rule reuse out: the public `Decodable` and
+/// `CodingKeyRepresentable` inits still build an ID from any string.
 public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }
 
-    public init(_ rawValue: String) {
+    /// A fresh ID for a new connection: a random UUID, so no two connections share one.
+    public static func mint() -> SessionID {
+        SessionID(UUID().uuidString)
+    }
+
+    /// An ID from a known string: the framework's own (`systemSessionID`, recorded IDs in
+    /// replay) and this package's tests and benchmarks. Package-only, so app code building a
+    /// session's ID reaches for `mint()`.
+    package init(_ rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    /// A fixed ID, for tests and benchmarks outside this package that need a stable one
+    /// (`@_spi(Testing) import SwiftStateTree`). A server must use `mint()`.
+    @_spi(Testing) public init(fixed rawValue: String) {
         self.rawValue = rawValue
     }
 

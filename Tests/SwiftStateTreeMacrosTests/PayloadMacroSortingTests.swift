@@ -47,8 +47,18 @@ final class PayloadMacroSortingTests: XCTestCase {
                         )]
                 }
             
-                public func encodeAsArray() -> [AnyCodable] {
-                    return [AnyCodable(self.a), AnyCodable(self.m), AnyCodable(self.z)]
+                public func _writePayloadFields<__PayloadWriter: _PayloadFieldWriter>(into writer: inout __PayloadWriter) throws {
+                    try writer.field(self.a)
+                    try writer.field(self.m)
+                    try writer.field(self.z)
+                }
+            
+                public static var _payloadHasTypedWriter: Bool {
+                    true
+                }
+            
+                public static var _payloadFieldForms: [_PayloadFieldFormEntry] {
+                    [_PayloadFieldFormEntry("a", _payloadFieldForm(of: \\Self.a)), _PayloadFieldFormEntry("m", _payloadFieldForm(of: \\Self.m)), _PayloadFieldFormEntry("z", _payloadFieldForm(of: \\Self.z))]
                 }
             }
             """,

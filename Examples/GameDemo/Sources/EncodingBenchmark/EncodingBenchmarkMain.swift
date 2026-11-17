@@ -7,7 +7,7 @@
 import Foundation
 import GameContent
 import LoadTestPacing
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeMessagePack
 @_spi(Diagnostics) import SwiftStateTreeTransport
@@ -163,7 +163,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+            let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
@@ -242,6 +242,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
     // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    let prefixCacheBefore = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter))
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
     // Serial runs time the ticks and the syncs apart as well (each span inside `duration`).
@@ -325,6 +326,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    let framePrefixCache = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter)).since(prefixCacheBefore)
     if inputCounts != nil {
         for (roomIndex, room) in rooms.enumerated() {
             inputCounts?.rejected[roomIndex] = await room.transport.errorFrameCount()
@@ -379,6 +381,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     if !parallel {
         func ms(_ d: Duration) -> Double {
             Double(d.components.seconds) * 1000.0 + Double(d.components.attoseconds) / 1_000_000_000_000_000.0
@@ -477,7 +480,7 @@ func runMultiRoomBenchmark(
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+            let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
@@ -571,6 +574,7 @@ func runMultiRoomBenchmark(
     // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
     // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    let prefixCacheBefore = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter))
     // `--join-through-router on`: each player's transport-assigned client ID, read once here.
     let routerClientIDs = routerRooms?.clientIDs
     // `--merge-stats`: count the measured iterations only.
@@ -707,6 +711,7 @@ func runMultiRoomBenchmark(
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    let framePrefixCache = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter)).since(prefixCacheBefore)
     if inputCounts != nil {
         for (roomIndex, room) in rooms.enumerated() {
             inputCounts?.rejected[roomIndex] = await room.transport.errorFrameCount()
@@ -773,6 +778,7 @@ func runMultiRoomBenchmark(
     }
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     result.inputs = inputCounts?.json
     inputCounts?.requireComplete(label: "\(format.displayName)")
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
@@ -863,7 +869,7 @@ func runBenchmark(
     // Connect players
     let playerIDs = (0 ..< playerCount).map { PlayerID("player-\($0)") }
     for (index, playerID) in playerIDs.enumerated() {
-        let sessionID = SessionID("session-\(index)")
+        let sessionID = SessionID(fixed: "session-\(index)")
         let clientID = ClientID("client-\(index)")
         await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
 
@@ -889,7 +895,7 @@ func runBenchmark(
     let warmupIterations = min(5, iterations / 10)
     let actionPlayerID = playerIDs.first ?? PlayerID("player-0")
     let actionClientID = ClientID("client-0")
-    let actionSessionID = SessionID("session-0")
+    let actionSessionID = SessionID(fixed: "session-0")
 
     for i in 0 ..< warmupIterations {
         let action = BenchmarkMutateAction(iteration: i)
@@ -913,6 +919,7 @@ func runBenchmark(
 
     // Benchmark
     let skipsBefore = await MeasuredSync.skipCount([adapter])
+    let prefixCacheBefore = await MeasuredSync.prefixCacheCounts([adapter])
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
     for i in 0 ..< iterations {
@@ -933,6 +940,7 @@ func runBenchmark(
         await MeasuredSync.drain([adapter])
     }
     let syncSkips = await MeasuredSync.skipCount([adapter]) - skipsBefore
+    let framePrefixCache = await MeasuredSync.prefixCacheCounts([adapter]).since(prefixCacheBefore)
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
 
@@ -957,6 +965,7 @@ func runBenchmark(
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: [adapter])
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
@@ -1287,6 +1296,11 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     fields["messageEncoding"] = MessageEncodingOverride.name(result.format.messageEncoding)
     // `--inputs-from-wire`: the run's input counts (InputCounts).
     if let inputs = result.inputs { fields["inputs"] = inputs }
+    // The frame prefix caches' hits over the measured iterations (zero without the cache).
+    fields["framePrefixCache"] = [
+        "resumes": result.framePrefixCache.resumes,
+        "reusedSplits": result.framePrefixCache.reusedSplits,
+    ]
     if let counts = result.fieldMergeCounts {
         fields["fieldMerge"] = [
             "patches": counts.patches,

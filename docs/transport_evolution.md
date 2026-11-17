@@ -273,9 +273,10 @@ Based on performance test results on `2026-01-15` (GameServer: hero-defense, dur
 - **Implementation**: The `@Payload` Macro parses the Struct's Abstract Syntax Tree (AST) at compile time.
 - **Rule**: It sorts `Stored Properties` by **ASCII Name (Deterministic ASCII Sorting)** before generating serialization code. This ensures protocol stability even if you refactor source code (change declaration lines), as long as field names remain unchanged.
 - **Dual Guarantee (Synchronization)**:
-  1.  **Runtime (`encodeAsArray`)**: The Macro generates this function using sorted fields for Server serialization.
+  1.  **Runtime (`_writePayloadFields(into:)`)**: The Macro generates this writer using sorted fields for Server serialization. Each field whose declared type has a typed form (the scalars, the ID types and the deterministic-math types) is written directly; any other field goes through its `Codable` form.
   2.  **Schema (`getFieldMetadata`)**: The Macro generates this metadata using sorted fields for `SchemaExtractor` to write into `schema.json`.
 - **Critical Constraint**: These two functions MUST use the exact same sorting logic. We chose ASCII sorting because it guarantees **cross-platform, cross-language determinism** and is immune to developer refactoring habits.
+- **Types without `@Payload`**: A server event or action response that conforms by hand has no positional writer. Where payloads are compressed (`messagepack`, `opcodeJsonArray`), registering a land that sends one fails with `LandRegistrationError`, which names each such type; the uncompressed `json` encoding writes it by its `Codable` form.
 - **Schema Mapping**: Although the `properties` in a JSON Object are unordered, the `required` array in the generated `schema.json` strictly preserves this order, serving as the reference for clients to decode the Tuple Array.
 - **Source Code**: [PayloadMacro.swift](../Sources/SwiftStateTreeMacros/PayloadMacro.swift)
 - **Example**:

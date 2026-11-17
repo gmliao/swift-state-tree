@@ -4,9 +4,9 @@
 
 import Foundation
 import GameContent
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 import SwiftStateTreeMessagePack
-import SwiftStateTreeTransport
+@_spi(Diagnostics) import SwiftStateTreeTransport
 
 // MARK: - Types
 
@@ -76,7 +76,7 @@ func injectActiveMoveTargets(
         AnyClientEvent(type: "MoveTo", payload: payload),
         playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
         clientID: ClientID("room\(roomIndex)-client-\(playerIndex)"),
-        sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
+        sessionID: SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
     )
     }
 }
@@ -103,7 +103,7 @@ func injectRouterMoveTargets(
             AnyClientEvent(type: "MoveTo", payload: payload),
             playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
             clientID: clientIDs[playerIndex],
-            sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
+            sessionID: SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
         )
     }
 }
@@ -234,6 +234,10 @@ struct BenchmarkResult {
     /// Measured sync cycles the adapters skipped (back-pressure or a cycle in flight); the run
     /// exits unless it is 0 (#160).
     var syncSkips = 0
+    /// The opcode encoders' frame prefix caches over the measured iterations, summed over every
+    /// room's adapter (`TransportAdapter.framePrefixCacheCounts`): plans resumed and splits
+    /// reused. Zero for encodings without the cache.
+    var framePrefixCache = FramePrefixCacheCounts()
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {
@@ -311,7 +315,7 @@ enum BenchmarkRunner {
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+            let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
@@ -364,6 +368,7 @@ enum BenchmarkRunner {
     // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
     // Use serial execution for stability, parallel for performance comparison
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    let prefixCacheBefore = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter))
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
@@ -409,6 +414,7 @@ enum BenchmarkRunner {
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    let framePrefixCache = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter)).since(prefixCacheBefore)
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -442,6 +448,7 @@ enum BenchmarkRunner {
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
@@ -512,7 +519,7 @@ enum BenchmarkRunner {
         for (roomIndex, room) in rooms.enumerated() {
             let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
             for (playerIndex, playerID) in playerIDs.enumerated() {
-                let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+                let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
                 let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
                 await room.adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
                 
@@ -566,6 +573,7 @@ enum BenchmarkRunner {
         let roomsPerWorker = (rooms.count + effectiveWorkerCount - 1) / effectiveWorkerCount
         
         let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+        let prefixCacheBefore = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter))
         // Tick and sync time only: the drain after each iteration is not timed.
         var duration = Duration.zero
         let label = progressLabel ?? "worker-pool"
@@ -604,6 +612,7 @@ enum BenchmarkRunner {
         }
         
         let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+        let framePrefixCache = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter)).since(prefixCacheBefore)
         let timeMs = Double(duration.components.seconds) * 1000.0 +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
         
@@ -635,6 +644,7 @@ enum BenchmarkRunner {
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
@@ -705,7 +715,7 @@ enum BenchmarkRunner {
         for (roomIndex, room) in rooms.enumerated() {
             let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
             for (playerIndex, playerID) in playerIDs.enumerated() {
-                let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+                let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
                 let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
                 await room.adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
                 
@@ -762,6 +772,7 @@ enum BenchmarkRunner {
         let allRooms = Array(rooms.indices)
 
         let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+        let prefixCacheBefore = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter))
         var duration = Duration.zero
 
         await withTaskGroup(of: Void.self) { group in
@@ -797,6 +808,7 @@ enum BenchmarkRunner {
         }
 
         let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+        let framePrefixCache = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter)).since(prefixCacheBefore)
         let timeMs = Double(duration.components.seconds) * 1000.0 +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
         
@@ -828,6 +840,7 @@ enum BenchmarkRunner {
         )
         result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
         result.syncSkips = syncSkips
+        result.framePrefixCache = framePrefixCache
         MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
         return result
     }
@@ -898,7 +911,7 @@ enum BenchmarkRunner {
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
+            let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
             let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
@@ -957,6 +970,7 @@ enum BenchmarkRunner {
     // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
     // Use serial execution for stability, parallel for performance comparison
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    let prefixCacheBefore = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter))
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
@@ -1012,6 +1026,7 @@ enum BenchmarkRunner {
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    let framePrefixCache = await MeasuredSync.prefixCacheCounts(rooms.map(\.adapter)).since(prefixCacheBefore)
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -1052,6 +1067,7 @@ enum BenchmarkRunner {
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
@@ -1128,7 +1144,7 @@ enum BenchmarkRunner {
     // Connect players
     let playerIDs = (0 ..< playerCount).map { PlayerID("player-\($0)") }
     for (index, playerID) in playerIDs.enumerated() {
-        let sessionID = SessionID("session-\(index)")
+        let sessionID = SessionID(fixed: "session-\(index)")
         let clientID = ClientID("client-\(index)")
         await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
 
@@ -1154,7 +1170,7 @@ enum BenchmarkRunner {
     let warmupIterations = min(5, iterations / 10)
     let actionPlayerID = playerIDs.first ?? PlayerID("player-0")
     let actionClientID = ClientID("client-0")
-    let actionSessionID = SessionID("session-0")
+    let actionSessionID = SessionID(fixed: "session-0")
 
     for i in 0 ..< warmupIterations {
         let action = BenchmarkMutateAction(iteration: i)
@@ -1178,6 +1194,7 @@ enum BenchmarkRunner {
 
     // Benchmark
     let skipsBefore = await MeasuredSync.skipCount([adapter])
+    let prefixCacheBefore = await MeasuredSync.prefixCacheCounts([adapter])
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
     for i in 0 ..< iterations {
@@ -1198,6 +1215,7 @@ enum BenchmarkRunner {
         await MeasuredSync.drain([adapter])
     }
     let syncSkips = await MeasuredSync.skipCount([adapter]) - skipsBefore
+    let framePrefixCache = await MeasuredSync.prefixCacheCounts([adapter]).since(prefixCacheBefore)
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
 
@@ -1222,6 +1240,7 @@ enum BenchmarkRunner {
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: [adapter])
     result.syncSkips = syncSkips
+    result.framePrefixCache = framePrefixCache
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }

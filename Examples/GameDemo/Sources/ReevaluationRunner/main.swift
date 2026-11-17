@@ -1,7 +1,7 @@
 import Foundation
 import GameContent
 import Logging
-import SwiftStateTree
+@_spi(Testing) import SwiftStateTree
 
 @main
 struct ReevaluationRunnerMain {
@@ -461,7 +461,7 @@ struct ReevaluationRunnerMain {
             try await keeper.join(
                 playerID: PlayerID("batch\(seedId)-player-\(p)"),
                 clientID: ClientID("batch\(seedId)-client-\(p)"),
-                sessionID: SessionID("batch\(seedId)-session-\(p)")
+                sessionID: SessionID(fixed: "batch\(seedId)-session-\(p)")
             )
         }
         for tickId in Int64(0) ..< ticks {
@@ -478,7 +478,7 @@ struct ReevaluationRunnerMain {
                         AnyClientEvent(type: "MoveTo", payload: payload),
                         playerID: PlayerID("batch\(seedId)-player-\(p)"),
                         clientID: ClientID("batch\(seedId)-client-\(p)"),
-                        sessionID: SessionID("batch\(seedId)-session-\(p)")
+                        sessionID: SessionID(fixed: "batch\(seedId)-session-\(p)")
                     )
                 }
             }

@@ -64,9 +64,12 @@ let package = Package(
             dependencies: [
                 "DemoContent",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
-                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
             ],
-            path: "Tests/DemoContentTests"
+            path: "Tests/DemoContentTests",
+            // Golden recordings, read from the source tree by DemoPayloadFrameGoldenTests.
+            exclude: ["Fixtures"]
         )
     ]
 )

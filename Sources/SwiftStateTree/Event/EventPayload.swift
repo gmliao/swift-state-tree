@@ -14,11 +14,17 @@ public protocol ServerEventPayload: Codable, Sendable, SchemaMetadataProvider, P
 
 // MARK: - Payload Compression Protocol
 
-/// Protocol for payloads that can be encoded as arrays for compression
+/// A payload's positional form, written by `@Payload`: its fields in name order, for the
+/// compressed encodings, where field names are omitted (#521).
 public protocol PayloadCompression {
-    /// Encode the payload as an array of values in field order
-    /// This is used for opcode-based compression where field names are omitted
-    func encodeAsArray() -> [AnyCodable]
+    /// Hands each field, in name order, to `writer`. `@Payload` writes it.
+    func _writePayloadFields<W: _PayloadFieldWriter>(into writer: inout W) throws
+    /// Whether the type has a positional writer: true for `@Payload` types.
+    static var _payloadHasTypedWriter: Bool { get }
+    /// The name the schema and the wire use for the type.
+    static var _payloadWireName: String { get }
+    /// Each field and how the writer writes it, in field order.
+    static var _payloadFieldForms: [_PayloadFieldFormEntry] { get }
 }
 
 // Provide a default metadata implementation so enums and non-macro types still compile.
@@ -31,13 +37,19 @@ extension ServerEventPayload {
     public static func getFieldMetadata() -> [FieldMetadata] { [] }
 }
 
-// No default implementation - @Payload macro is required
-// This ensures correct field order for opcode-based compression
-// If you see this error, add @Payload macro to your event/action struct
+// A type without `@Payload` has no positional writer: writing it throws, and registration
+// refuses such a type where payloads are compressed (EV1, #521).
 extension PayloadCompression {
-    public func encodeAsArray() -> [AnyCodable] {
-        fatalError("encodeAsArray() must be implemented by @Payload macro. Type '\(type(of: self))' is missing @Payload macro.")
+    public func _writePayloadFields<W: _PayloadFieldWriter>(into writer: inout W) throws {
+        throw PayloadWithoutWriterError(typeName: String(describing: Self.self))
     }
+
+    public static var _payloadHasTypedWriter: Bool { false }
+
+    /// The event rule, for a type whose name `@Payload` couldn't fix at expansion.
+    public static var _payloadWireName: String { payloadEventName(for: Self.self) }
+
+    public static var _payloadFieldForms: [_PayloadFieldFormEntry] { [] }
 }
 
 // MARK: - Generic Event Container
@@ -74,38 +86,14 @@ public struct AnyClientEvent: Codable, Sendable {
     
     /// Create an AnyClientEvent from a concrete ClientEventPayload.
     ///
-    /// The event type name is derived from the type name, removing the "Event" suffix
-    /// to match schema generation (e.g., "MoveToEvent" -> "MoveTo").
+    /// The event type name is the type's `_payloadWireName`, the schema's name
+    /// (e.g., "MoveToEvent" -> "MoveTo").
     public init<E: ClientEventPayload>(_ event: E) {
-        self.type = Self.eventName(for: Swift.type(of: event))
+        self.type = E._payloadWireName
         self.payload = AnyCodable(event)
         self.rawBody = nil
     }
     
-    /// Generate event name from event type, matching schema generation logic.
-    ///
-    /// Removes the "Event" suffix if present to ensure consistency with schema eventHashes.
-    /// Example: "MoveToEvent" -> "MoveTo", "ChatMessageEvent" -> "ChatMessage"
-    private static func eventName(for eventType: Any.Type) -> String {
-        let typeName = String(describing: eventType)
-        
-        // Extract base type name (handle module prefixes)
-        var baseTypeName: String
-        if let lastComponent = typeName.split(separator: ".").last {
-            baseTypeName = String(lastComponent)
-        } else {
-            baseTypeName = typeName
-        }
-        
-        // Remove "Event" suffix if present, keep camelCase format
-        // Example: "ChatEvent" -> "Chat", "PingEvent" -> "Ping"
-        var eventID = baseTypeName
-        if eventID.hasSuffix("Event") {
-            eventID = String(eventID.dropLast(5))
-        }
-        
-        return eventID
-    }
 }
 
 /// Type-erased root type for all server events.
@@ -121,6 +109,14 @@ public struct AnyServerEvent: Codable, Sendable {
     
     /// Optional raw body for future extensibility.
     public let rawBody: Data?
+
+    /// The event as its typed value, for the positional encoders (#521): set by `init(_:)` for a
+    /// type with a positional writer; nil for the hand-built form, `init(type:payload:rawBody:)`.
+    package private(set) var wireForm: (any ServerEventPayload)? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case type, payload, rawBody
+    }
     
     public init(type: String, payload: AnyCodable, rawBody: Data? = nil) {
         self.type = type
@@ -130,36 +126,13 @@ public struct AnyServerEvent: Codable, Sendable {
     
     /// Create an AnyServerEvent from a concrete ServerEventPayload.
     ///
-    /// The event type name is derived from the type name, removing the "Event" suffix
-    /// to match schema generation (e.g., "PlayerShootEvent" -> "PlayerShoot").
+    /// The event type name is the type's `_payloadWireName`, the schema's name
+    /// (e.g., "PlayerShootEvent" -> "PlayerShoot").
     public init<E: ServerEventPayload>(_ event: E) {
-        self.type = Self.eventName(for: Swift.type(of: event))
+        self.type = E._payloadWireName
         self.payload = AnyCodable(event)
         self.rawBody = nil
+        self.wireForm = E._payloadHasTypedWriter ? event : nil
     }
     
-    /// Generate event name from event type, matching schema generation logic.
-    ///
-    /// Removes the "Event" suffix if present to ensure consistency with schema eventHashes.
-    /// Example: "PlayerShootEvent" -> "PlayerShoot", "ChatMessageEvent" -> "ChatMessage"
-    private static func eventName(for eventType: Any.Type) -> String {
-        let typeName = String(describing: eventType)
-        
-        // Extract base type name (handle module prefixes)
-        var baseTypeName: String
-        if let lastComponent = typeName.split(separator: ".").last {
-            baseTypeName = String(lastComponent)
-        } else {
-            baseTypeName = typeName
-        }
-        
-        // Remove "Event" suffix if present, keep camelCase format
-        // Example: "ChatEvent" -> "Chat", "PingEvent" -> "Ping"
-        var eventID = baseTypeName
-        if eventID.hasSuffix("Event") {
-            eventID = String(eventID.dropLast(5))
-        }
-        
-        return eventID
-    }
 }

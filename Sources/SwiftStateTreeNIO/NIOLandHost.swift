@@ -362,6 +362,10 @@ public actor NIOLandHost {
         // field can't reach its player in diffs (#179).
         try SyncValueSemantics.validate(State.self)
         try SyncPolicyNesting.validate(State.self)
+        // The land's payload types can be written in its encoding (EV1, #521).
+        try land.validateForRegistration(
+            context: LandRegistrationContext(payloadsCompressed: configuration.effectiveTransportEncoding.shouldEncodePayloadAsArray)
+        )
 
         let initialStateFunc = initialState
 
