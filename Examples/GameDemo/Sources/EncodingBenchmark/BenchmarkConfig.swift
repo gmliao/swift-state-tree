@@ -750,12 +750,14 @@ enum ArgumentParser {
                               from the start, so the state is unchanged.
       --rejoin-every <k>      Hero-defense: every k-th measured iteration, player 0 of each room
                               leaves and joins again with a new session. The leave and the
-                              admission run before the timed span; the joiner's firstSync, a
-                              full view of the populated room, runs inside it, before the
-                              room's sync. Serial runs only (--parallel false), rooms joined
-                              directly; not with --inputs-from-wire, --capture-views or
-                              --baseline. The result's rejoin records every and done; the run
-                              fails unless done = rooms x (iterations / k).
+                              admission run before the timed span; the joiner's standalone
+                              firstSync (syncStateForNewPlayer), a full view of the populated
+                              room, runs inside it, before the room's sync. Serial runs only
+                              (--parallel false), rooms joined directly; not with
+                              --active-players, --inputs-from-wire, --capture-views or
+                              --baseline. The result's rejoin records every and done (the
+                              firstSyncs sent); the run fails unless done = rooms x
+                              (iterations / k).
       --message-encoding <e>  json, opcode-json-array or messagepack: the run's message encoding
                               (events, action responses, client frames) in place of the
                               format's. Default: json for json-object and the opcode-json

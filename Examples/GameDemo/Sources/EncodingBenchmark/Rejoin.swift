@@ -6,7 +6,9 @@
 // iterations plan no full view with entries in the room's maps. Unset, nothing here runs.
 //
 // The leave and the admission run before the iteration's timed span (and its perf window); the
-// joiner's firstSync runs inside it, with the room's `syncNow()`.
+// joiner's firstSync runs inside it, with the room's `syncNow()`. It is the standalone firstSync
+// (`syncStateForNewPlayer`, a late-join snapshot), not an in-turn joiner's: the admission passes no
+// JoinResponse builder, so the join doesn't complete in a turn.
 
 import Foundation
 @_spi(Testing) import SwiftStateTree
@@ -30,6 +32,8 @@ enum RejoinRun {
             (config.useWorkerPool, "--use-worker-pool"),
             (config.joinThroughRouter, "--join-through-router on"),
             (config.inputsFromWire, "--inputs-from-wire"),
+            // The move injection addresses player 0 by its first session, which the rejoin replaces.
+            (config.activePlayers, "--active-players"),
             (config.captureViews != nil, "--capture-views (its players are the rooms' first sessions)"),
             (config.entityDeltaBaseline, "--baseline entity-delta"),
         ].filter(\.0).map(\.1)
@@ -44,6 +48,8 @@ struct RejoiningPlayer {
     private(set) var sessionID: SessionID
     private(set) var clientID: ClientID
     private(set) var rejoins = 0
+    /// FirstSyncs sent to a rejoined session: the run's `done`.
+    private(set) var firstSyncsSent = 0
     /// Admitted, not yet sent its firstSync.
     private(set) var pendingFirstSync: (PlayerID, SessionID)?
 
@@ -87,7 +93,11 @@ struct RejoiningPlayer {
         guard let (playerID, sessionID) = pendingFirstSync else { return }
         pendingFirstSync = nil
         await room.adapter.syncStateForNewPlayer(playerID: playerID, sessionID: sessionID)
+        firstSyncsSent += 1
     }
+
+    /// Every admission was followed by its firstSync.
+    var allFirstSyncsSent: Bool { pendingFirstSync == nil && firstSyncsSent == rejoins }
 
     private func fail(_ message: String) -> Never {
         try? FileHandle.standardError.write(contentsOf: Data("error: --rejoin-every: \(message)\n".utf8))

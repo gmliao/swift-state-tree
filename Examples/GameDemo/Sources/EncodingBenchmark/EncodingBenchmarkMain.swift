@@ -794,11 +794,12 @@ func runMultiRoomBenchmark(
     result.inputs = inputCounts?.json
     inputCounts?.requireComplete(label: "\(format.displayName)")
     if RejoinRun.every > 0 {
-        let done = rejoining.reduce(0) { $0 + $1.rejoins }
+        // `done` counts the firstSyncs sent; each must follow its admission.
+        let done = rejoining.reduce(0) { $0 + $1.firstSyncsSent }
         let expected = roomCount * (iterations / RejoinRun.every)
         result.rejoin = ["every": RejoinRun.every, "done": done, "expected": expected]
-        guard done == expected else {
-            try? FileHandle.standardError.write(contentsOf: Data("error: --rejoin-every: \(done) rejoins, expected \(expected)\n".utf8))
+        guard done == expected, rejoining.allSatisfy(\.allFirstSyncsSent) else {
+            try? FileHandle.standardError.write(contentsOf: Data("error: --rejoin-every: \(done) firstSyncs sent, expected \(expected)\n".utf8))
             exit(1)
         }
     }
