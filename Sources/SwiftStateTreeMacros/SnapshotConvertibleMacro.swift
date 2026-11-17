@@ -104,7 +104,25 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             """
         )
 
-        var extensions: [ExtensionDeclSyntax] = [convertibleExtension]
+        // The stored properties as `toSnapshotValue()` converts them, for the registration check
+        // (#535): it looks into this type's storage through these declared types, not the
+        // value's. A property without a type annotation is listed as `Any`; the check takes its
+        // value's type instead.
+        let storedFieldEntries = properties.map { property in
+            "(\"\(property.name)\", \(property.typeName.map { "(\($0)).self" } ?? "Any.self"))"
+        }
+        let storedFieldsBody = storedFieldEntries.isEmpty ? "[]" : "[\n        " + storedFieldEntries.joined(separator: ",\n        ") + "\n    ]"
+        let storedFieldsExtension = try ExtensionDeclSyntax(
+            """
+            extension \(type.trimmed): SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    \(raw: storedFieldsBody)
+                }
+            }
+            """
+        )
+
+        var extensions: [ExtensionDeclSyntax] = [convertibleExtension, storedFieldsExtension]
 
         // `@SnapshotConvertible(atomic: true)`: declare the value atomic, with its leaf paths in
         // declaration order (a nested atomic value contributes its own leaves, prefixed).

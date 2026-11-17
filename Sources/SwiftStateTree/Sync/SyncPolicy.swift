@@ -132,6 +132,15 @@ public extension SyncPolicy {
 ///
 /// The policy given to a wrapper built by hand (`_x = Sync(wrappedValue: v, .serverOnly)` in an
 /// init) is ignored: the field filters with the policy in its `@Sync` attribute.
+///
+/// **Types the sync can't check are refused (#535).** Under `@StateNodeBuilder`, a field whose
+/// declared type spells `any P`, `Any`, `AnyObject` or `P & Q` at any depth, or names
+/// `AnyHashable` or `AnyCodable`, is a compile error. Registration refuses a key type that
+/// doesn't convert to a string and those open types where they appear in nested storage. A
+/// protocol spelled bare, a typealias that names an existential, a plain struct's own property
+/// typed `Any` or `any P`, and a hand-written conversion aren't seen: a value there that can't
+/// be converted ends the land at its first sync. See
+/// `docs/core/sync.md#what-registration-refuses`.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     private var _wrappedValue: Value
