@@ -225,6 +225,15 @@ The records aren't kept, so these counts come from each replayed room's "Sync Ou
 | broadcast | 14 | 80 | 0 | 0 | 0 | 0 | 0 |
 | **All** | 42 | 240 | 0 | 0 | 0 | 0 | 0 |
 
+The same lines give each scope's comparisons at re-evaluation (`SyncOutputVerifier`): the broadcast scope is compared once per output, the per-player scope once per output for each player that has a view. Compared / unverifiable / skipped, summed over the cells:
+
+| Variant | Replayed rooms | Broadcast compared | Broadcast unverifiable | Broadcast skipped | Per-player compared | Per-player unverifiable | Per-player skipped |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| radius | 14 | 2,828 | 0 | 0 | 16,160 | 0 | 0 |
+| all | 14 | 2,828 | 0 | 0 | 16,160 | 0 | 0 |
+| broadcast | 14 | 2,828 | 0 | 0 | 16,160 | 0 | 0 |
+| **All** | 42 | 8,484 | 0 | 0 | 48,480 | 0 | 0 |
+
 ## Conclusion
 
 From the Results at `75222b87` (medians over 3 repeats):

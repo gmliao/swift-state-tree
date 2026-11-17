@@ -178,15 +178,19 @@ PART = re.compile(r"([\w-]+) (\d+)/(\d+)/(\d+)")
 
 
 def verify_line(text):
-    """{"seeds", "unverifiable", "skipped", "key_scope_resets"} from one runner output's
+    """{"seeds", "unverifiable", "skipped", "key_scope_resets", "scopes"} from one runner output's
     "Sync Output:" line; ValueError unless it has exactly one with counts. seeds sums the seed
-    scope's three columns; unverifiable and skipped sum every scope's."""
+    scope's three columns; unverifiable and skipped sum every scope's; scopes holds each scope's
+    {"compared", "unverifiable", "skipped"}."""
     found = LINE.findall(text)
     if len(found) != 1:
         raise ValueError(f"{len(found)} 'Sync Output:' lines with counts, expected 1")
     parts, resets = found[0]
-    out = {"seeds": None, "unverifiable": 0, "skipped": 0, "key_scope_resets": int(resets or 0)}
+    out = {"seeds": None, "unverifiable": 0, "skipped": 0, "key_scope_resets": int(resets or 0), "scopes": {}}
     for kind, compared, unverifiable, skipped in PART.findall(parts):
+        if kind in out["scopes"]:
+            raise ValueError(f"scope {kind} twice in the line")
+        out["scopes"][kind] = {"compared": int(compared), "unverifiable": int(unverifiable), "skipped": int(skipped)}
         out["unverifiable"] += int(unverifiable)
         out["skipped"] += int(skipped)
         if kind == "seed":

@@ -213,9 +213,9 @@ A second s comes from the full views: their entries' bytes over their fields, a 
 | messagepack p10 c5 r2 | 13.51 | 983.6 | 868.6 |
 | messagepack p10 c20 r1 | 13.51 | 977.4 | 864.4 |
 
-Fixed overhead per frame, json: 43.5 B on average (36–68 B), 7.1 % of the measured bytes.
+Overhead per frame, json: 43.5 B on average (36–68 B), 7.1 % of the measured bytes.
 
-Fixed overhead per frame, messagepack: 5.9 B on average (5–7 B), 7.2 % of the measured bytes.
+Overhead per frame, messagepack: 5.9 B on average (5–7 B), 7.2 % of the measured bytes.
 
 Only this topic's sizes runs kept every frame; the EncodingBenchmark and ws-loadtest data sets record bytes per sync or per update but no fields per round, so this check covers this topic only.
 
