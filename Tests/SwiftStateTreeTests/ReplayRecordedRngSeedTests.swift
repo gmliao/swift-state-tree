@@ -36,7 +36,8 @@ private func makeRngSeedReplayLand() -> LandDefinition<RngSeedReplayState> {
 
 /// Runs three ticks live with state hashes recorded, saves the record to `path`, and returns the
 /// seed the live land used. `seed`: the live RNG service's own seed; nil for the default.
-private func recordRngSeedLand(seed: UInt64?, path: String) async throws -> UInt64? {
+/// `recordsSeed`: false writes a record without `rngSeed`, as older records were.
+private func recordRngSeedLand(seed: UInt64?, recordsSeed: Bool = true, path: String) async throws -> UInt64? {
     var services = LandServices()
     if let seed {
         services.register(DeterministicRngService(seed: seed), as: DeterministicRngService.self)
@@ -58,7 +59,7 @@ private func recordRngSeedLand(seed: UInt64?, path: String) async throws -> UInt
         createdAt: Date(timeIntervalSince1970: 1_800_000_000),
         metadata: [:],
         landDefinitionID: "rng-seed-replay",
-        rngSeed: liveSeed
+        rngSeed: recordsSeed ? liveSeed : nil
     ))
     for _ in 0..<3 {
         await keeper.stepTickOnce()
@@ -68,12 +69,15 @@ private func recordRngSeedLand(seed: UInt64?, path: String) async throws -> UInt
     return liveSeed
 }
 
-/// The seeds a record can hold: the default (the landID-derived one) and a configured one.
+/// The seeds a record can hold: the default (the landID-derived one), a configured one, and none
+/// (the live land used the default; the replay falls back to the landID-derived seed).
 enum RecordedRngSeed: String, CaseIterable, Sendable, CustomTestStringConvertible {
     case landIDDerived
     case configured
+    case notRecorded
 
     var liveSeed: UInt64? { self == .configured ? 42 : nil }
+    var recordsSeed: Bool { self != .notRecorded }
     var testDescription: String { rawValue }
 }
 
@@ -87,8 +91,11 @@ struct ReplayRecordedRngSeedTests {
     func engineReplaysWithTheRecordedSeed(seed: RecordedRngSeed) async throws {
         let path = recordPath()
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let liveSeed = try await recordRngSeedLand(seed: seed.liveSeed, path: path)
+        let liveSeed = try await recordRngSeedLand(seed: seed.liveSeed, recordsSeed: seed.recordsSeed, path: path)
         #expect(liveSeed == (seed.liveSeed ?? DeterministicSeed.fromLandID(rngSeedReplayLandID)))
+        let metadata = try await ReevaluationRecordFile.openSource(filePath: path).getMetadata()
+        #expect(metadata.rngSeed == (seed.recordsSeed ? liveSeed : nil))
+        #expect(metadata.replayRngSeed == liveSeed)
 
         let result = try await ReevaluationEngine.run(
             definition: makeRngSeedReplayLand(), initialState: RngSeedReplayState(), recordFilePath: path
@@ -119,7 +126,7 @@ struct ReplayRecordedRngSeedTests {
     func runnerReplaysWithTheRecordedSeed(seed: RecordedRngSeed, withInitialState: Bool) async throws {
         let path = recordPath()
         defer { try? FileManager.default.removeItem(atPath: path) }
-        _ = try await recordRngSeedLand(seed: seed.liveSeed, path: path)
+        _ = try await recordRngSeedLand(seed: seed.liveSeed, recordsSeed: seed.recordsSeed, path: path)
 
         // Both initializers: one builds its own services, the other takes the caller's.
         let runner = withInitialState
