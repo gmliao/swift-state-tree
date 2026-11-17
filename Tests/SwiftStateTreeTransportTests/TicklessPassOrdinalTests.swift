@@ -144,6 +144,7 @@ private func playTies(_ f: OrdinalFixture) async throws {
     try await f.add(1, 3)
     try await f.join(2)
     try await f.add(2, 4)
+    // wall-clock: lets the writer send the last frames before the test reads the record; the record itself is awaited by its submissions
     #expect(await f.adapter.waitForOutboundDrain())
 }
 
@@ -206,6 +207,7 @@ struct TicklessPassOrdinalTests {
         let frozen = try await f.adapter.debugFreeze()
         _ = await f.adapter.debugResume(freezeToken: frozen.freezeToken)
         try await f.add(1, 5)
+        // wall-clock: lets the writer send the resumed cycle's frames; the record itself is awaited by its submissions
         #expect(await f.adapter.waitForOutboundDrain())
         let stream = ReevaluationSyncStreamEntry.stream(of: try await f.frames())
         let legacy = stream.compactMap { entry -> ReevaluationRecordedSyncOutput? in
