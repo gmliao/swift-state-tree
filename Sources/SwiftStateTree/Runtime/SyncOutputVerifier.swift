@@ -258,6 +258,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     /// committed), until a seed with `viewHash`. Their hashes are still compared, since the live
     /// hash covers what the diff planned; their counts are unverifiable.
     private var diverged: Set<PlayerID> = []
+    /// Players whose latest seed was not verifiable (no `viewHash`: its view dropped values), until
+    /// a verifiable seed or a clear. Live lists them in each output's `perPlayerUnverified`.
+    /// A player listed there outside this set has a verifiable view, so it is listed because the
+    /// output didn't address it (its sessions ended before its clear, #553).
+    private var unverifiableViews: Set<PlayerID> = []
     /// Opcode 107: sequences the live adapter never queued or merged (`eventsNotQueued`,
     /// `eventsNotMerged`).
     private var notQueued: Set<Int64> = []
@@ -310,6 +315,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         let position = Position(marker)
         let scope = "seed (player \(playerID.rawValue))"
         if let recorded = marker.viewHash {
+            unverifiableViews.remove(playerID)
             diverged.remove(playerID)
             let replayed = CanonicalPatchList(patches).hash
             guard compare(recorded, replayed, scope: scope, at: position) else { return }
@@ -317,6 +323,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             pendingResends.removeValue(forKey: playerID)
             viewsSentLater += pendingViews.removeValue(forKey: playerID) ?? 0
         } else {
+            unverifiableViews.insert(playerID)
             seed.unverifiable += 1
         }
         if let failure = Self.applyCheck(patches, to: [:], expected: snapshot.values, scope: scope, at: position) {
@@ -330,6 +337,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         engine.clearCacheForDisconnectedPlayer(playerID)
         seeded.remove(playerID)
         diverged.remove(playerID)
+        unverifiableViews.remove(playerID)
         resendsNotSeen += pendingResends.removeValue(forKey: playerID) ?? 0
     }
 
@@ -394,6 +402,20 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             var pairs: [(String, UInt64)] = []
             var replayedPatches: [String: [StatePatch]] = [:]
             for playerID in seeded.sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
+                // Listed as unverified with a verifiable view: the output didn't address the
+                // player (its sessions ended before its clear). Replay checks what the server
+                // produced, so it is neither compared nor staged: its shadow view doesn't advance
+                // on a diff the server didn't make for it. A player unverified for its view's
+                // drops (`unverifiableViews`) was addressed: it is staged and apply-checked below,
+                // and only its hash is skipped. Limit: the record doesn't say which outputs addressed
+                // a player, so a degraded-seed player whose sessions then end is staged and
+                // apply-checked on its leave's output too, which didn't address it. Its clear
+                // follows that output and drops what was staged, so nothing later reads it.
+                if unverified.contains(playerID.rawValue), !unverifiableViews.contains(playerID),
+                   !uncommitted.contains(playerID.rawValue) {
+                    perPlayer.unverifiable += 1
+                    continue
+                }
                 let perPlayerSnapshot = Self.substituting(
                     output.extractionDrops[playerID.rawValue],
                     in: engine.extractPerPlayerSnapshot(for: playerID, from: state, mode: .all, drops: &drops),
@@ -702,6 +724,9 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     private let hasInitializeMarker: Bool
     private var lastSteppedTick: Int64 = -1
     private let skipReason: String?
+    /// A tickless land's record from 3.4 on: entries are located by the pass they read after
+    /// (`afterPass`, #563), stepped per pass (`steppedPass`), not by tick.
+    private let locatesByPass: Bool
     private let eventsApplicable: Bool
     private var malformed: String?
     private let recordIsComplete: Bool
@@ -734,14 +759,12 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             skipReason = "record \(metadata.version ?? "unknown") predates syncConfig"
         } else if config?.fullSnapshot == true {
             skipReason = "full-snapshot strategy is not verified"
-        } else if tickless {
-            // Every entry of a tickless land observes tick -1, and nothing recorded orders an
-            // entry against the passes of tick 0 unambiguously: reported as not verified, never
-            // as a mismatch (#563).
-            skipReason = "a tickless land's sync outputs are not located among its passes (#563)"
+        } else if tickless, ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor) {
+            skipReason = "record \(metadata.version ?? "unknown") predates pass ordinals: a tickless land's sync outputs are not located among its passes (#563)"
         } else {
             skipReason = nil
         }
+        locatesByPass = tickless
         let merged = config?.mergedBroadcastFrame ?? false
         shadow = SyncOutputShadow(mergedBroadcastFrame: merged)
         eventsApplicable = merged
@@ -759,7 +782,7 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         }
         initializeApplied = !hasInitializeMarker
         for entry in entries {
-            if let tick = Self.neededTick(entry), tick >= 0 {
+            if let tick = Self.neededTick(entry, byPass: locatesByPass), tick >= 0 {
                 neededCounts[tick, default: 0] += 1
             }
         }
@@ -778,6 +801,22 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
 
     /// The replay stepped `tickId`: its state and the server events it emitted.
     package mutating func stepped(tickId: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
+        // A record located by pass is stepped per pass (`steppedPass`).
+        guard !locatesByPass else { return }
+        step(key: tickId, state: state, events: events)
+    }
+
+    /// The replay applied a tickless land's pass `ordinal` (from 1): the state after it and the
+    /// server events it emitted (#563).
+    package mutating func steppedPass(ordinal: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
+        guard locatesByPass else { return }
+        step(key: ordinal - 1, state: state, events: events)
+    }
+
+    /// The state an entry needs is keyed by tick, or, located by pass, by ordinal - 1: an entry
+    /// read after pass k needs key k - 1, and one read before any pass needs -1, the state
+    /// around OnInitialize, as a tick land's entry read before tick 0.
+    private mutating func step(key tickId: Int64, state: State, events: [ReevaluationRecordedServerEvent]) {
         guard skipReason == nil, malformed == nil, shadow.mismatch == nil else { return }
         lastSteppedTick = tickId
         if neededCounts[tickId] != nil {
@@ -846,7 +885,11 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     private mutating func drain() {
         while next < entries.count, malformed == nil, shadow.mismatch == nil {
             let entry = entries[next]
-            let needed = Self.neededTick(entry)
+            if locatesByPass, Self.lacksPass(entry) {
+                malformed = "sync stream entry \(entry.streamIndex) of a tickless record has no afterPass"
+                return
+            }
+            let needed = Self.neededTick(entry, byPass: locatesByPass)
             if let needed, needed > lastSteppedTick { return }
             let state: State?
             if let needed {
@@ -900,12 +943,23 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         }
     }
 
-    /// The tick whose state the entry reads; nil when it reads none (clear, initialize).
-    private static func neededTick(_ entry: ReevaluationSyncStreamEntry) -> Int64? {
+    /// The key of the state the entry reads (`step`); nil when it reads none (clear,
+    /// initialize). By pass: the pass it read after, minus one.
+    private static func neededTick(_ entry: ReevaluationSyncStreamEntry, byPass: Bool) -> Int64? {
         switch entry {
-        case .output(let output): return output.observedTickId ?? -1
+        case .output(let output):
+            return byPass ? (output.afterPass ?? 0) - 1 : (output.observedTickId ?? -1)
         case .marker(let marker):
-            return marker.kind == .seed ? (marker.observedTickId ?? -1) : nil
+            guard marker.kind == .seed else { return nil }
+            return byPass ? (marker.afterPass ?? 0) - 1 : (marker.observedTickId ?? -1)
+        }
+    }
+
+    /// An entry that reads state but records no pass (malformed in a record located by pass).
+    private static func lacksPass(_ entry: ReevaluationSyncStreamEntry) -> Bool {
+        switch entry {
+        case .output(let output): return output.afterPass == nil
+        case .marker(let marker): return marker.kind == .seed && marker.afterPass == nil
         }
     }
 }

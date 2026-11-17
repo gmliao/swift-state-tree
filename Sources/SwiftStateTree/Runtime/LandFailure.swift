@@ -6,7 +6,7 @@ import Foundation
 /// writing synced state can't be brought back to a fully correct state, so the land ends: its
 /// sessions close with 4016 (`landFailed`), and its destroy handlers and save see
 /// `LandDestructionCause.failed`. The keeper keeps the first failure (`LandKeeper.failure`).
-public struct LandFailure: Error, Sendable, Equatable, CustomStringConvertible {
+public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConvertible {
     public enum Kind: String, Sendable, Codable {
         /// A synced value didn't convert.
         case syncConversion
@@ -63,12 +63,19 @@ public struct LandFailurePosition: Sendable, Equatable, Codable, CustomStringCon
     /// The input applied when the failure happened, for `.input`.
     public let sequence: Int64?
     public let stage: Stage
+    /// True when the failure ended the turn that applied it among its inputs: a failure a
+    /// transport reported (`submitLandFailure`), applied as an input, ends the batch there. The
+    /// turn then ran no tick handler and sent none of its inputs' events (on a tickless land,
+    /// set only when that turn's pass, `pass`, applied inputs before it). Replay ends the
+    /// recorded tick or pass the same way (record format 3.4). Nil otherwise.
+    public let endsInputs: Bool?
 
-    public init(tickId: Int64? = nil, pass: Int? = nil, sequence: Int64? = nil, stage: Stage) {
+    public init(tickId: Int64? = nil, pass: Int? = nil, sequence: Int64? = nil, stage: Stage, endsInputs: Bool? = nil) {
         self.tickId = tickId
         self.pass = pass
         self.sequence = sequence
         self.stage = stage
+        self.endsInputs = endsInputs
     }
 
     public var description: String {

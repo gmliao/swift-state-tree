@@ -48,6 +48,10 @@ public protocol ReevaluationSource: Sendable {
     /// Every recorded sync output and marker, in stream order (`streamIndex`).
     func getSyncStream() async throws -> [ReevaluationSyncStreamEntry]
 
+    /// The failure that ended the live land and the tick of the frame that holds it (record
+    /// format 3.4, #535 D9); nil when the land didn't fail or the record is older.
+    func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)?
+
     /// What OnInitialize did in the live run (record format 2.1, frame 0); nil before 2.1.
     func getInitializeRecord() async throws -> ReevaluationRecordedInitialize?
 
@@ -68,6 +72,11 @@ extension ReevaluationSource {
     /// Default for conformers that do not record passes.
     public func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] {
         []
+    }
+
+    /// Default for conformers that record no land failure.
+    public func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)? {
+        nil
     }
 
     /// Default for conformers that do not record server inputs.
@@ -217,6 +226,10 @@ public actor JSONReevaluationSource: ReevaluationSource {
         framesByTickId[tickId]?.passes ?? []
     }
 
+    public func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)? {
+        frames.first { $0.landFailure != nil }.flatMap { frame in frame.landFailure.map { (frame.tickId, $0) } }
+    }
+
     public func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] {
         ReevaluationSyncStreamEntry.stream(of: frames)
     }
@@ -292,6 +305,10 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
 
     public func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] {
         framesByTickId[tickId]?.passes ?? []
+    }
+
+    public func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)? {
+        frames.first { $0.landFailure != nil }.flatMap { frame in frame.landFailure.map { (frame.tickId, $0) } }
     }
 
     public func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] {

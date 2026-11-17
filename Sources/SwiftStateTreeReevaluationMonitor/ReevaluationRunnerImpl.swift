@@ -99,6 +99,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     private var currentTickId: Int64 = -1
     private let initialState: State
     private var syncOutputDriver: SyncOutputReplayDriver<State>
+    private let tickless: Bool
+    private let recordsPassOrdinals: Bool
+    private let landFailure: (tickId: Int64, failure: LandFailure)?
+    /// A tickless land's events taken after each replayed pass, for the tick's event check.
+    private var passEvents: [ReevaluationRecordedServerEvent] = []
     private var initialize: ReevaluationEngine.InitializeVerification = .notRecorded
     private var prepared = false
 
@@ -117,13 +122,22 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
+        // A land without a tick handler is tickless, as the keeper and the engine decide it: from
+        // record 3.4 its sync outputs are located by pass, stepped after each replayed pass (#563).
+        tickless = definition.lifetimeHandlers.tickHandler == nil
+        recordsPassOrdinals = !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor)
         syncOutputDriver = SyncOutputReplayDriver(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
             incomparability: ReevaluationRecordVersion.hashIncomparability(
                 recorded: metadata.version, holdsNonNFCText: try await source.getHoldsNonNFCText()
-            )
+            ),
+            tickless: tickless
         )
-        maxTickId = try await source.getMaxTickId()
+        // A land that failed live ends at its failure (#535 D9): the replay stops at that tick.
+        let landFailure = try await source.getLandFailure()
+        self.landFailure = landFailure
+        let recordedMaxTickId = try await source.getMaxTickId()
+        maxTickId = landFailure.map { min(recordedMaxTickId, $0.tickId) } ?? recordedMaxTickId
 
         let initialState = State()
         self.initialState = initialState
@@ -177,13 +191,22 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
+        // A land without a tick handler is tickless, as the keeper and the engine decide it: from
+        // record 3.4 its sync outputs are located by pass, stepped after each replayed pass (#563).
+        tickless = definition.lifetimeHandlers.tickHandler == nil
+        recordsPassOrdinals = !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor)
         syncOutputDriver = SyncOutputReplayDriver(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
             incomparability: ReevaluationRecordVersion.hashIncomparability(
                 recorded: metadata.version, holdsNonNFCText: try await source.getHoldsNonNFCText()
-            )
+            ),
+            tickless: tickless
         )
-        maxTickId = try await source.getMaxTickId()
+        // A land that failed live ends at its failure (#535 D9): the replay stops at that tick.
+        let landFailure = try await source.getLandFailure()
+        self.landFailure = landFailure
+        let recordedMaxTickId = try await source.getMaxTickId()
+        maxTickId = landFailure.map { min(recordedMaxTickId, $0.tickId) } ?? recordedMaxTickId
 
         // Use provided services as base. The record decides the RNG seed (`replayRngSeed`), as
         // in `ReevaluationEngine.run`: a provided RNG service is replaced.
@@ -218,6 +241,17 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     public func prepare() async throws {
         guard !prepared else { return }
         prepared = true
+        await keeper.setReplayRecordsPassOrdinals(recordsPassOrdinals)
+        // Where the recorded failure ended its turn among its inputs, replay ends that tick or
+        // pass the same way (`LandFailurePosition.endsInputs`).
+        if let landFailure, landFailure.failure.position.endsInputs == true {
+            await keeper.setReplayFailureEnd(tickId: landFailure.tickId, pass: landFailure.failure.position.pass.map(Int64.init))
+        }
+        if tickless {
+            await keeper.setReplayPassObserver { [weak self] ordinal, state in
+                await self?.steppedPass(ordinal: ordinal, state: state)
+            }
+        }
         await keeper.awaitInitialization()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
@@ -233,6 +267,19 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             afterInitialize: stateAfterInitialize,
             initializeEvents: initializeEvents
         )
+    }
+
+    /// After a replayed tickless pass: its events, and the sync outputs read after it (#563).
+    private func steppedPass(ordinal: Int64, state: State) async {
+        let events = await capturingSink.takeEmittedEvents(for: 0)
+        passEvents += events
+        syncOutputDriver.steppedPass(ordinal: ordinal, state: state, events: events)
+    }
+
+    /// The failure that ended the live land, if it failed (record format 3.4); the replay stops
+    /// at its tick (`maxTickId`).
+    public func liveFailure() -> LandFailure? {
+        landFailure?.failure
     }
 
     /// The sync-output verification of the ticks stepped so far; final once `step()` returned nil.
@@ -298,7 +345,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         } else {
             isMatch = true
         }
-        let emittedServerEvents = await capturingSink.takeEmittedEvents(for: tickId)
+        // A tickless pass's events were taken after it (`steppedPass`).
+        let emittedServerEvents = passEvents + (await capturingSink.takeEmittedEvents(for: tickId))
+        passEvents.removeAll()
         syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedServerEvents)
         let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []
 

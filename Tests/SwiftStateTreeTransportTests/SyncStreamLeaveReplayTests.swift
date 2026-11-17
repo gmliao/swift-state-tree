@@ -25,7 +25,9 @@ enum LeaveReplayCase: String, CaseIterable, Sendable, CustomTestStringConvertibl
 private let leaveReplayLandID = "leave-replay:local"
 
 /// Each action changes the broadcast and per-player state, emits two events and asks for a
-/// sync. With `tick`, a tick advances `ticks`, emits an event and asks for a sync.
+/// sync. A leave does too: it changes `total` and the staying players' scores, emits an event
+/// and asks for a sync, so its turn records outputs a clear placed too early would precede.
+/// With `tick`, a tick advances `ticks`, emits an event and asks for a sync.
 private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState> {
     let rule = HandleAction(TurnBoundaryAction.self) { (state: inout TurnBoundaryState, action: TurnBoundaryAction, ctx: LandContext) in
         state.total += action.value
@@ -35,15 +37,22 @@ private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState
         ctx.emitEvent(SyncStreamTestEvent(message: "all-\(action.value)"), to: .all)
         return SyncStreamSetResponse(ok: true)
     }
+    let leave = OnLeave { (state: inout TurnBoundaryState, ctx: LandContext) in
+        state.total += 100
+        state.scores[ctx.playerID] = nil
+        for playerID in state.scores.keys { state.scores[playerID, default: 0] += 1000 }
+        ctx.emitEvent(SyncStreamTestEvent(message: "left-\(ctx.playerID.rawValue)"), to: .all)
+        ctx.requestSyncNow()
+    }
     guard tick else {
         return Land("leave-replay", using: TurnBoundaryState.self) {
             ServerEvents { Register(SyncStreamTestEvent.self) }
-            Rules { rule }
+            Rules { rule; leave }
         }
     }
     return Land("leave-replay", using: TurnBoundaryState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
-        Rules { rule }
+        Rules { rule; leave }
         Lifetime {
             Tick(every: .seconds(3600)) { (state: inout TurnBoundaryState, ctx: LandContext) in
                 state.ticks += 1
@@ -54,9 +63,19 @@ private func makeLeaveReplayLand(tick: Bool) -> LandDefinition<TurnBoundaryState
     }
 }
 
+/// What one recorded leave case left in the sync stream.
+private struct LeaveCaseRecord {
+    /// p2's sync-stream markers in stream order.
+    let markers: [ReevaluationRecordedSyncMarker]
+    /// Every output, in stream order.
+    let outputs: [ReevaluationRecordedSyncOutput]
+    /// The last stream index recorded before p2's first disconnect, nil when there is none.
+    let lastIndexBeforeLeave: UInt64?
+}
+
 /// Plays the case's script live with in-turn sync and the sync stream recorded, saves the
-/// record to `path`, and returns p2's sync-stream markers in stream order.
-private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: String) async throws -> [ReevaluationRecordedSyncMarker] {
+/// record to `path`, and returns what its sync stream holds.
+private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: String) async throws -> LeaveCaseRecord {
     let keeper = LandKeeper<TurnBoundaryState>(
         definition: makeLeaveReplayLand(tick: tick),
         initialState: TurnBoundaryState(),
@@ -123,7 +142,11 @@ private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: Str
         await keeper.stepTickOnce()
         await keeper.waitForRecorderSubmissionsForTesting()
     }
+    var lastIndexBeforeLeave: UInt64?
     func disconnect(_ session: String) async {
+        if lastIndexBeforeLeave == nil {
+            lastIndexBeforeLeave = ReevaluationSyncStreamEntry.stream(of: await recorder.getAllFrames()).map(\.streamIndex).max()
+        }
         await adapter.onDisconnect(sessionID: SessionID(session), clientID: ClientID("c-\(session)"))
         await keeper.waitForRecorderSubmissionsForTesting()
     }
@@ -155,10 +178,14 @@ private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: Str
 
     await keeper.waitForRecorderSubmissionsForTesting()
     try await recorder.save(to: path)
-    let markers = ReevaluationSyncStreamEntry.stream(of: await recorder.getAllFrames()).compactMap { entry -> ReevaluationRecordedSyncMarker? in
+    let stream = ReevaluationSyncStreamEntry.stream(of: await recorder.getAllFrames())
+    let markers = stream.compactMap { entry -> ReevaluationRecordedSyncMarker? in
         if case .marker(let marker) = entry, marker.playerID == "p2" { return marker } else { return nil }
     }
-    return markers
+    let outputs = stream.compactMap { entry -> ReevaluationRecordedSyncOutput? in
+        if case .output(let output) = entry { return output } else { return nil }
+    }
+    return LeaveCaseRecord(markers: markers, outputs: outputs, lastIndexBeforeLeave: lastIndexBeforeLeave)
 }
 
 struct SyncStreamLeaveReplayTests {
@@ -170,7 +197,8 @@ struct SyncStreamLeaveReplayTests {
         guard InTurnSync.isEnabled() else { return }
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("leave-replay-\(UUID().uuidString).sstr").path
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let markers = try await recordLeaveCase(leaveCase, tick: tick, path: path)
+        let record = try await recordLeaveCase(leaveCase, tick: tick, path: path)
+        let markers = record.markers
 
         // p2's markers in stream order: the clear sits between the views it ends and starts.
         let kinds = markers.map { "\($0.kind.rawValue)\($0.rejoin == true ? "-rejoin" : "")" }
@@ -186,6 +214,26 @@ struct SyncStreamLeaveReplayTests {
         }
         let indices = markers.map(\.streamIndex)
         #expect(indices == indices.sorted())
+        // A leave that runs OnLeave (the player's last session ends). Tickless, its turn's sync
+        // phase records an output before the clear (#553 placement); p2's session is gone, so
+        // the output doesn't address p2 and lists it as unverified, and replay neither compares
+        // nor stages p2 there. On a tick land the leave's sync runs in the next tick, after the
+        // clear, where its changes are verified. The superseded session's disconnect runs no leave.
+        if leaveCase != .otherSessionRemains {
+            let before = try #require(record.lastIndexBeforeLeave)
+            let clear = try #require(markers.first { $0.kind == .clear })
+            let leaveOutputs = record.outputs.filter { $0.streamIndex > before && $0.streamIndex < clear.streamIndex }
+            let summary = "outputs \(record.outputs.map(\.streamIndex)), clear \(clear.streamIndex), before \(before)"
+            if tick {
+                #expect(leaveOutputs.isEmpty, "\(summary)")
+            } else {
+                #expect(leaveOutputs.count == 1, "\(summary)")
+                #expect(leaveOutputs.allSatisfy { $0.perPlayerUnverified == ["p2"] }, "\(leaveOutputs.map(\.perPlayerUnverified))")
+            }
+            // p2 is unverified only there: every other output addresses the players it lists.
+            let others = record.outputs.filter { !leaveOutputs.map(\.streamIndex).contains($0.streamIndex) }
+            #expect(others.allSatisfy { $0.perPlayerUnverified == nil }, "\(others.map(\.perPlayerUnverified))")
+        }
 
         let result = try await ReevaluationEngine.run(
             definition: makeLeaveReplayLand(tick: tick),
@@ -195,17 +243,19 @@ struct SyncStreamLeaveReplayTests {
         #expect(result.recordCompleteness == .complete)
         #expect(result.serverEventVerification == .passed, "\(result.serverEventMismatches.map(\.tickId))")
         let sync = result.syncOutput
-        guard tick else {
+        if !tick {
             #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
-            // Nothing recorded orders a tickless entry against the passes unambiguously, so the
-            // check reports the record as not verified, never as a mismatch (#563).
-            #expect(sync.verdict == .skipped(reason: "a tickless land's sync outputs are not located among its passes (#563)"), "\(sync.summary)")
-            withKnownIssue("a tickless land's sync outputs aren't verified (#563)") {
-                #expect(sync.verdict == .passed, "\(sync.summary)")
-            }
-            return
         }
-        #expect(sync.verdict == .passed, "\(sync.summary)")
+        // From record 3.4 a tickless land's entries are located by pass ordinal (#563), so both
+        // land kinds verify. A tickless leave's output doesn't address the departed p2: that one
+        // per-player scope is unverifiable, so the verdict is partial, never a mismatch.
+        if !tick && leaveCase != .otherSessionRemains {
+            #expect(sync.verdict == .partial, "\(sync.summary)")
+            #expect(sync.perPlayer.unverifiable == 1, "\(sync.summary)")
+        } else {
+            #expect(sync.verdict == .passed, "\(sync.summary)")
+            #expect(sync.perPlayer.unverifiable == 0, "\(sync.summary)")
+        }
         #expect(sync.broadcast.compared > 0)
         #expect(sync.perPlayer.compared > 0)
         #expect(sync.seed.compared == (leaveCase == .lastSession ? 2 : 3))

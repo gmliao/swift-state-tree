@@ -234,9 +234,9 @@ public struct SyncStreamDraft: Sendable {
     package enum Entry: Sendable {
         /// A committed plan's output; `make` gets its stream index and its index in the tick.
         case output(observedTickId: Int64?, make: @Sendable (_ streamIndex: UInt64, _ index: Int) -> ReevaluationRecordedSyncOutput)
-        /// A seed or clear marker; `make` gets its stream index and the keeper's output
-        /// sequence at numbering (a clear records it).
-        case marker(make: @Sendable (_ streamIndex: UInt64, _ sequence: Int64) -> ReevaluationRecordedSyncMarker)
+        /// A seed or clear marker; `make` gets its stream index and where a read would read the
+        /// state at numbering (a clear records its sequence and, tickless, its `afterPass`).
+        case marker(make: @Sendable (_ streamIndex: UInt64, _ position: SyncReadPosition) -> ReevaluationRecordedSyncMarker)
     }
 
     package let entry: Entry

@@ -22,8 +22,12 @@ import Foundation
 ///   delay the sync loop.
 ///
 /// Stated limits:
-/// - A joiner's first sync and the delivery of its OnJoin effects to the joiner stay outside
-///   the turn (the joiner path still reads the state with an `await`).
+/// - A join completes in the sync phase of the turn it flips in (#194): the joiner's full view
+///   is planned from that turn's end state in the same plan as the other recipients' diffs, and
+///   its frames follow theirs (its JoinResponse, its firstSync, then the targeted events its
+///   OnJoin addressed to it). With in-turn sync off, the firstSync is sent on its own after the
+///   JoinResponse, from a separate state read, and targeted events addressed to a session while
+///   it is joining aren't delivered to it.
 /// - The debug freeze settle still runs a `beginSync` / `endSync` cycle. A turn that wants a
 ///   sync while such a cycle is in flight leaves it to a sync-only turn after `endSync`.
 /// - Opcode 107 keeps emit order per frame kind only: per session the merged broadcast frame

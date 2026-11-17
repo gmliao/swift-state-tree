@@ -962,6 +962,9 @@ struct SyncOutputVerifierTests {
         // Player 1 on all three ticks; player 2 on the two ticks after its seed.
         #expect(sync.perPlayer.compared == 3)
         #expect(sync.perPlayer.unverifiable == 2)
+        // Player 2 is unverified for its view's drops, not because an output skipped it: its
+        // updates are still staged and apply-checked (two of the ten), only its hash is skipped.
+        #expect(sync.apply.compared == 10, "\(sync.summary)")
     }
 
     @Test("A player is verifiable again after a seed with a view hash")

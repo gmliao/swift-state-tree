@@ -980,6 +980,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// read (#564): the shared broadcast cache may already be past the read, so the next cycle
     /// sends the player its whole view instead (diagnostics).
     private(set) var initialSyncsDroppedBehindCommit = 0
+    /// Initial syncs dropped after their state read because the land failed during the read
+    /// (#535): the output gate is closed, so nothing was planned, committed or recorded for
+    /// them (diagnostics).
+    private(set) var initialSyncsDroppedLandFailed = 0
     /// Counts sync phase commits. A standalone firstSync captures it before its state read and
     /// commits only if it is unchanged after (#564): a commit in between may have moved the
     /// shared broadcast cache past the read, which the next diff would then start from.
@@ -1087,6 +1091,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Players whose latest seed was not verifiable (`viewDrops` not empty), until a verifiable
     /// seed or a clear: left out of `perPlayerHash` (`perPlayerUnverified`).
     private var syncStreamUnverifiedPlayers: Set<PlayerID> = []
+    /// Players with a view in the sync stream: seeded, and not cleared since. One whose sessions
+    /// have all ended before its clear (a leave's turn runs before the clear, #553) isn't
+    /// addressed by an output in between: that output lists it in `perPlayerUnverified`.
+    private var syncStreamViewPlayers: Set<PlayerID> = []
     /// Opcode 107: sequences of in-turn events with no recipient, until the next recorded output
     /// lists them (`eventsNotQueued`).
     private var syncStreamUnqueuedEvents: [Int64] = []
@@ -4323,11 +4331,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         let observedTickId = read.position?.observedTickId
         let sequence = read.position?.sequence ?? -1
+        let afterPass = read.position?.afterPass
         // A resynced player's view restarts: a clear before this plan's output, for the players
         // whose snapshot committed (a seed follows). One whose snapshot didn't encode keeps its
         // view, live and in the stream.
         for playerID in digest.resyncPlayers.filter({ digest.seeds[$0] != nil }).sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
             syncStreamUnverifiedPlayers.remove(playerID)
+            syncStreamViewPlayers.remove(playerID)
             drafts.append(Self.clearDraft(playerID))
         }
         if !digest.isFirstSync {
@@ -4359,7 +4369,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                     patches = scopes
                 }
-                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) }
+                // Replay checks what this output produced: a player with a view it doesn't address,
+                // because the player's sessions ended before its clear (the leave's own turn), is
+                // listed as unverified, as one whose view isn't verifiable is.
+                let recipients = Set(digest.recipients)
+                let departed = syncStreamViewPlayers.filter {
+                    !recipients.contains($0) && digest.seeds[$0] == nil && membershipCoordinator.sessionIDs(for: $0).isEmpty
+                }
+                let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) } + Array(departed)
                 perPlayerUnverified = unverified.isEmpty ? nil : Self.sortedIDs(unverified)
                 perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : Self.sortedIDs(Array(digest.uncommitted))
             }
@@ -4380,6 +4397,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     observedTickId: observedTickId,
                     streamIndex: streamIndex,
                     sequence: sequence,
+                    afterPass: afterPass,
                     broadcastHash: broadcastHash,
                     perPlayerHash: perPlayerHash,
                     perPlayerUnverified: perPlayerUnverified,
@@ -4398,6 +4416,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         for (playerID, seed) in digest.seeds.sorted(by: { SnapshotValue.utf8Less($0.key.rawValue, $1.key.rawValue) }) {
             let rejoin = !syncStreamSeededPlayers.insert(playerID).inserted
+            syncStreamViewPlayers.insert(playerID)
             let viewDrops = seed.drops.sorted { $0.rawValue < $1.rawValue }
             if viewDrops.isEmpty {
                 syncStreamUnverifiedPlayers.remove(playerID)
@@ -4413,6 +4432,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     observedTickId: observedTickId,
                     streamIndex: streamIndex,
                     sequence: sequence,
+                    afterPass: afterPass,
                     rejoin: rejoin,
                     viewHash: viewHash,
                     viewDrops: viewDrops,
@@ -4437,14 +4457,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func recordSyncStreamClear(_ playerID: PlayerID, outsideTurn: Bool = false) {
         guard keeperRecordsSyncStream() else { return }
         syncStreamUnverifiedPlayers.remove(playerID)
+        syncStreamViewPlayers.remove(playerID)
         let draft = Self.clearDraft(playerID)
         keeper.assumeIsolated { $0.submitSyncStream([draft], outsideTurn: outsideTurn) }
     }
 
-    /// A clear marker's draft; the keeper's output sequence at numbering is its sequence.
+    /// A clear marker's draft; where the keeper would read the state at numbering is its
+    /// position (its sequence and, tickless, its `afterPass`).
     private static func clearDraft(_ playerID: PlayerID) -> SyncStreamDraft {
-        SyncStreamDraft(.marker { streamIndex, sequence in
-            ReevaluationRecordedSyncMarker(kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex, sequence: sequence)
+        SyncStreamDraft(.marker { streamIndex, position in
+            ReevaluationRecordedSyncMarker(
+                kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex,
+                sequence: position.sequence, afterPass: position.afterPass
+            )
         })
     }
 
@@ -6316,6 +6341,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
               membershipCoordinator.playerID(for: sessionID) == playerID else {
             initialSyncsDroppedStale += 1
             logger.info("Initial sync dropped: the session left during it", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "playerID": .string(playerID.rawValue),
+            ])
+            return
+        }
+        // The land failed during the read (#535): its output gate is closed, so this firstSync
+        // is never sent. Return before planning, so nothing of it is committed or recorded.
+        guard !outputGate.isClosed else {
+            initialSyncsDroppedLandFailed += 1
+            logger.info("Initial sync dropped: the land failed during its state read", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
             ])
