@@ -35,19 +35,24 @@ struct MergePatchesTests {
         return merged
     }
 
+    /// The cases, as (path, value) pairs: broadcast, then per-player. Typed here, not in the
+    /// `@Test` arguments: inferring the literal's type there (empty arrays in tuples) took the
+    /// type checker past its time limit on some toolchains.
+    static let mergeCases: [([(String, Int)], [(String, Int)])] = [
+        // Broadcast duplicates keep the first.
+        ([("/a", 1), ("/b", 2), ("/a", 3)], []),
+        // Two per-player patches at one path over an empty broadcast: one patch, the second.
+        ([], [("/x", 1), ("/y", 2), ("/x", 3)]),
+        // A per-player patch replaces the broadcast one in place; a new path is appended.
+        ([("/a", 1), ("/b", 2)], [("/c", 3), ("/a", 4), ("/c", 5)]),
+        // Canonically equal spellings (NFC and NFD of one name) are one path, on both sides.
+        ([("/m/caf\u{E9}", 1), ("/m/cafe\u{301}", 2)], [("/m/cafe\u{301}", 3), ("/z", 4), ("/m/caf\u{E9}", 5)]),
+        ([("/a", 1)], [("/m/cafe\u{301}", 2), ("/m/caf\u{E9}", 3)]),
+    ]
+
     @Test(
         "Duplicates on both sides, canonically equal paths and the order match the old merge",
-        arguments: [
-            // Broadcast duplicates keep the first.
-            ([("/a", 1), ("/b", 2), ("/a", 3)], []),
-            // Two per-player patches at one path over an empty broadcast: one patch, the second.
-            ([], [("/x", 1), ("/y", 2), ("/x", 3)]),
-            // A per-player patch replaces the broadcast one in place; a new path is appended.
-            ([("/a", 1), ("/b", 2)], [("/c", 3), ("/a", 4), ("/c", 5)]),
-            // Canonically equal spellings (NFC and NFD of one name) are one path, on both sides.
-            ([("/m/caf\u{E9}", 1), ("/m/cafe\u{301}", 2)], [("/m/cafe\u{301}", 3), ("/z", 4), ("/m/caf\u{E9}", 5)]),
-            ([("/a", 1)], [("/m/cafe\u{301}", 2), ("/m/caf\u{E9}", 3)]),
-        ]
+        arguments: mergeCases
     )
     func matchesTheOldMerge(broadcast: [(String, Int)], perPlayer: [(String, Int)]) {
         let b = broadcast.map { patch($0.0, $0.1) }
