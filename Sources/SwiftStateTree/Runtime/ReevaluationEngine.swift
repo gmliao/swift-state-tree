@@ -268,9 +268,11 @@ public enum ReevaluationEngine {
             hashDefinition: hashDefinition,
             hashIncomparability: hashIncomparability
         )
-        // A tickless land's record holds its passes in frame 0; from 3.4 its sync stream is
-        // located by pass, stepped after each replayed pass (#563).
-        let tickless = maxTickId == 0 ? !(try await source.getPasses(for: 0)).isEmpty : false
+        // A land without a tick handler is tickless, as the keeper decides it: its record holds
+        // its passes in frame 0 (3.1 on), and from 3.4 its sync stream is located by pass, stepped
+        // after each replayed pass (#563). Decided from the definition, not the record: a record
+        // from before 3.1 has no passes, and its sync stream is skipped as before 3.4.
+        let tickless = definition.lifetimeHandlers.tickHandler == nil
         let syncOutputs = SyncOutputDriverBox(SyncOutputReplayDriver<State>(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
             incomparability: nfcIncomparability, tickless: tickless

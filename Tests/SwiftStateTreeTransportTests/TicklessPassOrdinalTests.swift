@@ -217,12 +217,20 @@ struct TicklessPassOrdinalTests {
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
     }
 
-    @Test("A tickless record from before 3.4 has no ordinals: its sync outputs are not verified, with the reason")
-    func olderTicklessRecordIsSkipped() async throws {
+    /// 3.0 records no passes (they arrive in 3.1): the land is known tickless from its
+    /// definition, not from the record, so its sync outputs are skipped too, never compared by tick.
+    @Test(
+        "A tickless record from before 3.4 has no ordinals: its sync outputs are not verified, with the reason",
+        arguments: ["3.3", "3.0"]
+    )
+    func olderTicklessRecordIsSkipped(version: String) async throws {
         guard InTurnSync.isEnabled() else { return }
         let f = await OrdinalFixture.make()
         try await playTies(f)
-        let result = try await f.replay(version: "3.3")
+        let result = try await f.replay(version: version) { frames in
+            guard version == "3.0" else { return }
+            frames = frames.map { $0.replacing(passes: []) }
+        }
         guard case .skipped(let reason) = result.syncOutput.verdict else {
             Issue.record("expected skipped, got \(result.syncOutput.summary)")
             return
