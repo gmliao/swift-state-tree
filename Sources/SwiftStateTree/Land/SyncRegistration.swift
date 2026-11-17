@@ -58,7 +58,8 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
 ///
 /// The registration check (#535) looks into the type's storage through them, so it sees what a
 /// value holds even when a default instance doesn't hold one (an empty collection). A property
-/// without a type annotation is listed as `Any`. A type that converts itself by hand doesn't
+/// without a type annotation is listed as `Any` and is checked only through a default instance's
+/// value: one inside an empty collection isn't seen. A type that converts itself by hand doesn't
 /// conform, and its storage isn't checked.
 public protocol SnapshotConvertibleStoredFields {
     /// Implementation detail of `@SnapshotConvertible`, read by the registration check; not a

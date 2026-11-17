@@ -109,7 +109,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // value's. A property without a type annotation is listed as `Any`; the check takes its
         // value's type instead.
         let storedFieldEntries = properties.map { property in
-            "(\"\(property.name)\", \(property.typeName.map { "(\($0)).self" } ?? "Any.self"))"
+            "(\"\(property.name)\", \(property.typeName.map { "(\(metatypeSpelling($0))).self" } ?? "Any.self"))"
         }
         let storedFieldsBody = storedFieldEntries.isEmpty ? "[]" : "[\n        " + storedFieldEntries.joined(separator: ",\n        ") + "\n    ]"
         let storedFieldsExtension = try ExtensionDeclSyntax(
@@ -182,7 +182,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             if !isAtomicRequested(node), properties.allSatisfy({ $0.typeName != nil }),
                !declaresSnapshotFieldMetadata(declaration) {
                 let entries = properties.map { property in
-                    let typeName = property.typeName!
+                    let typeName = metatypeSpelling(property.typeName!)
                     return "FieldMetadata(name: \"\(property.name)\", type: (\(typeName)).self, policy: nil, nodeKind: SchemaHelper.determineNodeKind(from: (\(typeName)).self), defaultValue: nil)"
                 }
                 let body = entries.isEmpty ? "[]" : "[\n        " + entries.joined(separator: ",\n        ") + "\n    ]"
@@ -469,3 +469,9 @@ private struct SnapshotConvertibleDiagnostic: DiagnosticMessage, @unchecked Send
     )
 }
 
+/// A property's declared type as a type expression for `(T).self`. An implicitly unwrapped
+/// optional (`Int!`) is only a declaration attribute, and `(Int!).self` doesn't compile; its type
+/// is `Int?`.
+private func metatypeSpelling(_ typeName: String) -> String {
+    typeName.hasSuffix("!") ? String(typeName.dropLast()) + "?" : typeName
+}
