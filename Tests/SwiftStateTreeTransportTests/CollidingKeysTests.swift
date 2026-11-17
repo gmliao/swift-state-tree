@@ -87,6 +87,11 @@ struct CollidingKeysTests {
             await adapter.waitForOutboundIdleForTesting()
             await keeper.stepTickOnce()  // a second key with the same string
         }
+        if !InTurnSync.isEnabled() {
+            // Legacy sync runs outside the turn and submits the failure, which the keeper applies
+            // in its next turn: on this tick land, the next tick.
+            await keeper.stepTickOnce()
+        }
         try #require(await keeper.waitForFailureForTesting(), "the land failed")
         await keeper.waitUntilDrained()
         #expect(keeper.failure?.kind == .syncConversion)
