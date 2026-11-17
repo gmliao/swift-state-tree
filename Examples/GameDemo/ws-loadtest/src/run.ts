@@ -89,7 +89,7 @@ export interface PhaseTotals {
     /** The first such error, if any. */
     firstDecodeError?: string;
     disconnectCount: number;
-    /** In-place resyncs the clients received (#332); the lag closes are in `closes.serverByCode` (4010, 4011, 4012). */
+    /** In-place resyncs the clients received (#332); the lag closes are in `closes.serverByCode` (4010, 4011). */
     resyncCount: number;
     /**
      * Row entries the clients received (`rowAddressing`): with the feature negotiated (see
