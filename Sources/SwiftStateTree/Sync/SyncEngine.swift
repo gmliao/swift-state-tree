@@ -1463,6 +1463,8 @@ package struct ExtractionDrops: Sendable {
     package var viewFields: [String] = []
     /// The first conversion error, for the dropped-updates log.
     package var firstError: String?
+    /// The field of the first conversion error.
+    package var firstField: String?
 
     package init() {}
 
@@ -1483,6 +1485,7 @@ package struct ExtractionDrops: Sendable {
         }
         if firstError == nil {
             firstError = "field \(field): \(error)"
+            firstField = field
         }
     }
 }

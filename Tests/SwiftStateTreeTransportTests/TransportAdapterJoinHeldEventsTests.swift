@@ -350,55 +350,19 @@ struct TransportAdapterJoinHeldEventsTests {
         #expect(await fixture.adapter.inTurnJoinFailures[.eventOverflow] == 1)
     }
 
-    @Test("A joiner whose firstSync doesn't encode is not flipped; it keeps its events, and the next cycle flips it")
-    func unencodableFirstSyncIsNotFlipped() async throws {
-        let fixture = await makeFixture(.messagepack)
-        try await joinMember(fixture)
+    @Test("A joiner whose firstSync doesn't encode ends the land: nothing is sent to it, no retry (#535 row 13)", arguments: [true, false])
+    func unencodableFirstSyncEndsTheLand(tick: Bool) async throws {
+        let fixture = await makeFixture(.messagepack, tick: tick)
+        await fixture.keeper.setTransport(fixture.adapter)
         let p1 = PlayerID("p1"), s1 = SessionID("s1")
         await fixture.adapter.setSyncEncodeFaultForTesting { $0 == p1 }
         let join = Task { try await joinInTurn(fixture, session: s1, player: p1) }
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
-        await fixture.keeper.stepTickOnce()
-        // #194 flipped it here, with no firstSync.
-        #expect(await fixture.adapter.isJoiningInTurn(s1), "not flipped")
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == [], "no JoinResponse before its state")
-        // An event in the window where it would have been flipped: held.
-        await fixture.adapter.sendEvent(AnyServerEvent(HeldEventsTestEvent(note: "note-mid")), to: .session(s1))
-        // It no longer asks for join sync turns of its own; the land's periodic sync retries it.
-        #expect(await fixture.adapter.hasJoinsAwaitingSyncForTesting() == false)
-        await fixture.keeper.runSyncLoopIterationForTesting()
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == [])
-        await fixture.adapter.setSyncEncodeFaultForTesting(nil)
-        await fixture.keeper.runSyncLoopIterationForTesting()
-        try await join.value
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync", "event:note-a", "event:note-b", "event:note-mid"])
-        #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 0)
-    }
-
-    @Test("Tickless land, a firstSync that never encodes: a bounded number of retries, then the join times out")
-    func unencodableFirstSyncOnTicklessLandIsBounded() async throws {
-        let fixture = await makeFixture(.messagepack, tick: false)
-        let p1 = PlayerID("p1"), s1 = SessionID("s1")
-        let attempts = EncodeAttempts()
-        await fixture.adapter.setSyncEncodeFaultForTesting { player in
-            guard player == p1 else { return false }
-            attempts.increment()
-            return true
-        }
-        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .milliseconds(1500), budget: nil)
-        await #expect(throws: JoinFlipError.timeout) {
-            try await joinInTurn(fixture, session: s1, player: p1)
-        }
-        // The first plan and at most `syncFailedPlanFollowUpLimit` follow-ups (100 ms apart),
-        // each encoding the joiner's firstSync and its fallback: not back-to-back phases until
-        // the timeout.
-        let limit = TransportAdapter<HeldEventsTestState>.syncFailedPlanFollowUpLimit
-        #expect(attempts.count >= 2, "the firstSync was tried")
-        #expect(attempts.count <= 2 * (1 + limit), "attempts: \(attempts.count)")
-        #expect(await fixture.sent.kinds(for: s1) == [])
+        if tick { await fixture.keeper.stepTickOnce() }
+        try #require(await fixture.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(fixture.keeper.failure?.kind == .syncEncode)
+        #expect(await fixture.sent.kinds(for: s1) == [], "no JoinResponse, firstSync or event")
+        join.cancel()
     }
 
     @Test("A disconnect or a newer join while events are held or queued: no event is sent, and the discard is counted", arguments: [true, false])
@@ -407,8 +371,8 @@ struct TransportAdapterJoinHeldEventsTests {
         try await joinMember(fixture)
         let heldBefore = await fixture.adapter.eventsHeldForJoiningSessions
         let s1 = SessionID("s1"), p1 = PlayerID("p1")
-        // Its firstSync doesn't encode: it stays joining after the tick, holding OnJoin's two events.
-        await fixture.adapter.setSyncEncodeFaultForTesting { $0 == p1 }
+        // Its flip is held: it stays joining after the tick, holding OnJoin's two events.
+        await fixture.adapter.setJoinFlipHeldForTesting(true)
         let join = Task { try await joinInTurn(fixture, session: s1, player: p1) }
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
         await fixture.keeper.stepTickOnce()
@@ -422,7 +386,7 @@ struct TransportAdapterJoinHeldEventsTests {
             let s2 = SessionID("s2")
             let newer = Task { try await joinInTurn(fixture, session: s2, player: p1) }
             await #expect(throws: JoinFlipError.superseded) { try await join.value }
-            await fixture.adapter.setSyncEncodeFaultForTesting(nil)
+            await fixture.adapter.setJoinFlipHeldForTesting(false)
             await eventually("s2 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s2) }
             await fixture.keeper.stepTickOnce()
             try await newer.value
@@ -432,14 +396,6 @@ struct TransportAdapterJoinHeldEventsTests {
         #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 3, "two held, one still queued")
         #expect(await fixture.adapter.eventsHeldForJoiningSessions == heldBefore + (disconnect ? 0 : 2), "only the newer join's own")
     }
-}
-
-/// Counts encode attempts from the fault hook (called on the adapter's executor).
-private final class EncodeAttempts: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func increment() { lock.lock(); value += 1; lock.unlock() }
-    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 @Suite("Membership: a re-registration keeps its stamp only while bound (#69)")

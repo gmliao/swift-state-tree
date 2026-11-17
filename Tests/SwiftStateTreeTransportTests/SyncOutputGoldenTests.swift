@@ -315,7 +315,7 @@ struct SyncOutputGoldenTests {
                 #expect(kinds.values.allSatisfy { $0 != .fallback }, "\(golden): \(kinds)")
             }
             try await golden.play(f)
-            #expect(await f.adapter.syncDroppedUpdates == 0, "\(golden), per-player tables \(on): no drop or encode failure")
+            #expect(f.keeper.failure == nil, "\(golden), per-player tables \(on): no conversion or encode failure")
             streams.append(try await f.stream())
             let recorder = try #require(await f.keeper.getReevaluationRecorder())
             let encoder = JSONEncoder()

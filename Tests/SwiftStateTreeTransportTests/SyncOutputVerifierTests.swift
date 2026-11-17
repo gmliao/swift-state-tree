@@ -935,59 +935,6 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.observedTickId == 1, "the action and the tick handler run in tick 1's turn")
     }
 
-    @Test("One player's degraded seed leaves the broadcast and the other players compared")
-    func degradedSeedIsNarrow() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .json)
-        try await f.join(1)
-        try await f.set(1, "score", 10)
-        try await f.set(1, "break")
-        await f.tick()      // `fragile` stops extracting: an extraction drop on every output
-        try await f.join(2) // its seed leaves `fragile` out: unverifiable
-        try await f.set(1, "score", 11)
-        try await f.set(2, "score", 21)
-        await f.tick(2)
-        let stream = ReevaluationSyncStreamEntry.stream(of: await f.keeper.getReevaluationRecorder()!.getAllFrames())
-        let lastTick = try #require(stream.compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }.last)
-        #expect(lastTick.perPlayerUnverified == [VerifierFixture.player(2).rawValue])
-        let seeds = stream.compactMap { if case .marker(let m) = $0, m.kind == .seed { return m } else { return nil } }
-        #expect(seeds.map(\.viewDropFields) == [nil, ["fragile"]], "the degraded seed names the dropped field")
-
-        let sync = try await f.replay().syncOutput
-        #expect(sync.verdict == .partial, "\(sync.summary)")
-        #expect(sync.broadcast.compared == 3)
-        #expect(sync.broadcast.unverifiable == 0)
-        #expect(sync.seed.compared == 1)
-        #expect(sync.seed.unverifiable == 1)
-        // Player 1 on all three ticks; player 2 on the two ticks after its seed.
-        #expect(sync.perPlayer.compared == 3)
-        #expect(sync.perPlayer.unverifiable == 2)
-        // Player 2 is unverified for its view's drops, not because an output skipped it: its
-        // updates are still staged and apply-checked (two of the ten), only its hash is skipped.
-        #expect(sync.apply.compared == 10, "\(sync.summary)")
-    }
-
-    @Test("A player is verifiable again after a seed with a view hash")
-    func reseedRestoresVerification() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .json)
-        try await f.join(1)
-        try await f.set(1, "break")
-        await f.tick()
-        try await f.join(2)   // degraded seed
-        await f.tick()
-        await f.leave(2)
-        try await f.set(1, "fix")
-        await f.tick()
-        try await f.join(2)   // seed with a view hash
-        await f.tick()
-        let sync = try await f.replay().syncOutput
-        #expect(sync.seed.unverifiable == 1)
-        #expect(sync.seed.compared == 2)
-        #expect(sync.perPlayer.unverifiable == 1, "only the tick between the degraded seed and the leave")
-        if case .failed(let mismatch) = sync.verdict { Issue.record("\(mismatch.summary)") }
-    }
-
     @Test("A legacy cycle's output (a debug freeze's settle) is verified")
     func legacyCycleIsVerified() async throws {
         guard InTurnSync.isEnabled() else { return }
@@ -1093,27 +1040,6 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.scope == "per-player (combined)")
         #expect(mismatch.streamIndex == tick.streamIndex)
         #expect(mismatch.observedTickId == 1)
-    }
-
-    @Test("A per-player encode drop makes that player unverifiable until a verifiable seed: partial, never passed")
-    func perPlayerEncodeDropIsUnverifiable() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .json)
-        try await f.join(1)
-        try await f.join(2)
-        await f.tick()
-        try await f.set(1, "inf")
-        await f.tick()      // player 1's frame goes out without the infinite speed
-        try await f.set(1, "speed", 3)
-        await f.tick()      // still diverged: its client never got the dropped value
-        let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-        #expect(ticks[1].encodeDropScopes == [VerifierFixture.player(1).rawValue])
-        let sync = try await f.replay().syncOutput
-        #expect(sync.verdict == .partial, "\(sync.summary)")
-        // Player 1: compared on tick 0, unverifiable on ticks 1 and 2. Player 2: compared on all.
-        #expect(sync.perPlayer.compared == 4)
-        #expect(sync.perPlayer.unverifiable == 2)
-        #expect(sync.broadcast.unverifiable == 0)
     }
 
     @Test("Combined mode: a player's update that doesn't encode at all ends the land; no later tick is recorded (#535 row 10)")
@@ -1351,43 +1277,6 @@ struct SyncOutputVerifierTests {
         let sync = try await f.replay(rewrite: markingUnsent(VerifierFixture.player(1), atTick: 1)).syncOutput
         #expect(sync.verdict == .partial, "\(sync.summary)")
         #expect(sync.skipReasons == [.perPlayerResendNotSeen: 1])
-    }
-
-    @Test("A joiner whose whole view never encodes is not benign; a later compared seed makes it so")
-    func unsentViewIsNotBenign() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        for seedsLater in [false, true] {
-            let fails = VerifierSwitch()
-            let f = await VerifierFixture.make(
-                encoding: .json,
-                encoder: VerifierFailingEncoder(fails: fails, player: VerifierFixture.player(2))
-            )
-            // The failed firstSync and tick each schedule a follow-up cycle 100 ms later: run
-            // during the failing window it is a second unsent view (#163), after it a seed.
-            let followUps = await f.holdFailedPlanFollowUps()
-            defer { followUps.open() }
-            try await f.join(1)
-            await f.tick()
-            fails.set(true)
-            try await f.join(2)  // its firstSync does not encode, not even empty
-            await f.tick()       // nor does the retried full view
-            fails.set(false)
-            if seedsLater {
-                await f.tick()   // the full view goes out now: a seed with a view hash
-            }
-            let outputs = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
-            #expect(outputs[1].encodeDropScopes.contains(VerifierFixture.player(2).rawValue))
-            #expect(outputs[1].perPlayerUncommitted == nil, "it had no committed view to leave uncommitted")
-            let sync = try await f.replay().syncOutput
-            if seedsLater {
-                #expect(sync.verdict == .passed, "\(sync.summary)")
-                #expect(sync.skipReasons[.viewSentLater] == 1)
-                #expect(sync.skipReasons[.viewNotSent] == nil)
-            } else {
-                #expect(sync.verdict == .partial, "\(sync.summary)")
-                #expect(sync.skipReasons[.viewNotSent] == 1)
-            }
-        }
     }
 }
 

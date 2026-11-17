@@ -433,84 +433,44 @@ extension SyncStreamFixture where S == SyncStreamDropState {
 
 @Suite("Sync stream producer: drops, legacy cycles, order", .timeLimit(.minutes(1)))
 struct SyncStreamProducerDropTests {
-    @Test("An extraction drop is recorded on the output, and on a firstSync seed as an unverifiable view")
-    func extractionDrops() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await SyncStreamFixture<SyncStreamDropState>.makeDrop()
-        try await f.join()
-        try await f.set("break")
-        await f.tick()  // inputs apply in the tick turn: `fragile` stops extracting
-        // A second player joins: its firstSync view leaves `fragile` out.
-        let second = PlayerID("sst-player-2")
-        await f.adapter.onConnect(sessionID: SessionID("sst-session-2"), clientID: ClientID("sst-client-2"))
-        try await simulateRouterJoin(
-            adapter: f.adapter,
-            keeper: f.keeper,
-            sessionID: SessionID("sst-session-2"),
-            clientID: ClientID("sst-client-2"),
-            playerID: second
-        )
-        let stream = try await f.stream()
-        let seeds = markers(stream).filter { $0.kind == .seed }
-        #expect(seeds.map(\.playerID) == [f.player.rawValue, second.rawValue])
-        #expect(seeds[0].viewDrops.isEmpty)
-        #expect(seeds[0].viewHash != nil)
-        #expect(seeds[1].viewHash == nil)
-        #expect(seeds[1].viewDrops == [.extraction])
-        #expect(seeds[1].observedTickId == 0)
-        let tick = try #require(outputs(stream).first { $0.turnKind == .tick })
-        #expect(tick.extractionDrops == ["broadcast": ["fragile"]])
-        #expect(tick.encodeDropScopes.isEmpty)
+    enum DropCase: String, CaseIterable, CustomTestStringConvertible {
+        /// A broadcast field whose extraction throws (#535 rows 1, 3).
+        case extraction
+        /// A per-player value that doesn't encode (#535 row 10).
+        case encode
+        /// A joiner's first view that doesn't encode at all (#535 row 13).
+        case firstView
+        var testDescription: String { rawValue }
     }
 
-    @Test("An encode drop is recorded on the output, and on a degraded full-view seed as an unverifiable view")
-    func encodeDrops() async throws {
-        guard InTurnSync.isEnabled() else { return }
-        let f = await SyncStreamFixture<SyncStreamDropState>.makeDrop()
-        // Registered without a firstSync: tick 0's plan sends the player its full view, and the
-        // infinite speed set in that turn does not encode, so the view goes out degraded.
-        try await f.joinWithoutFirstSync()
-        try await f.set("inf")
-        await f.tick()
-        let seed = try #require(markers(try await f.stream()).first { $0.kind == .seed })
-        #expect(seed.viewHash == nil, "the client got the view without the infinite speed")
-        #expect(seed.viewDrops == [.encode])
-        #expect(seed.observedTickId == 0)
-        #expect(seed.rejoin == false)
-
-        try await f.set("speed", 3)
-        await f.tick()
-        try await f.set("inf")
-        await f.tick()
-        let ticks = outputs(try await f.stream()).filter { $0.turnKind == .tick }
-        #expect(ticks.map(\.encodeDropScopes) == [[f.player.rawValue], [], [f.player.rawValue]])
-        #expect(ticks[0].perPlayerHash == CanonicalPatchList.combinedHash([]), "the seed replaces the player's per-player scope")
-        #expect(ticks[1].perPlayerHash != nil)
-        #expect(ticks[2].perPlayerHash != nil, "the frame without the dropped patch was committed")
-    }
-
-    @Test("A full view that fails to encode entirely records no seed; the next real seed is not a rejoin")
-    func noPhantomSeed() async throws {
+    @Test("A conversion or encode failure ends the land: the failing plan records no output and no seed (#535)", arguments: DropCase.allCases)
+    func failingPlanRecordsNothing(drop: DropCase) async throws {
         guard InTurnSync.isEnabled() else { return }
         let fails = SyncStreamSwitch()
         let f = await SyncStreamFixture<SyncStreamDropState>.makeDrop(encoder: SyncStreamFailingEncoder(fails: fails))
-        // The loops do not run, so each failed plan schedules a follow-up cycle 100 ms later:
-        // after `fails.set(false)` it would send the seed before the tick. Hold it, so the seed
-        // comes from the tick (#163).
-        let followUps = TestGate()
-        await f.adapter.installHolds(HoldRegistry.at(.failedPlanFollowUp) { await followUps.arrive() })
-        defer { followUps.open() }
-        fails.set(true)
-        try await f.join()  // the firstSync fails entirely: the joiner is skipped
-        await f.tick()      // the full view fails entirely: nothing reaches the client
-        #expect(markers(try await f.stream()).isEmpty)
-        fails.set(false)
-        await f.tick()      // the full view is sent
-        let seeds = markers(try await f.stream()).filter { $0.kind == .seed }
-        #expect(seeds.count == 1)
-        #expect(seeds.first?.rejoin == false)
-        #expect(seeds.first?.observedTickId == 1)
-        #expect(seeds.first?.viewHash != nil)
+        if drop != .firstView {
+            try await f.join()
+            await f.tick()
+        }
+        let before = try await f.stream()
+        switch drop {
+        case .extraction:
+            try await f.set("break")
+            await f.tick()
+        case .encode:
+            try await f.set("inf")
+            await f.tick()
+        case .firstView:
+            fails.set(true)
+            try? await f.join()
+            // The join's own firstSync, or the tick's full view of an unsynced player.
+            await f.keeper.stepTickOnce()
+        }
+        try #require(await f.keeper.waitForFailureForTesting(), "\(drop): the land failed")
+        #expect(f.keeper.failure?.kind == (drop == .extraction ? .syncConversion : .syncEncode))
+        let after = try await f.stream()
+        #expect(outputs(after).count == outputs(before).count, "\(drop): no output of the failing plan")
+        #expect(markers(after).filter { $0.kind == .seed }.count == markers(before).filter { $0.kind == .seed }.count, "\(drop): no seed")
     }
 
     @Test("An opcode 107 plan that consumes an event without a keeper sequence has no events hash")

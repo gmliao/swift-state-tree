@@ -288,6 +288,35 @@ private func comparePPScenario<State: StateNodeProtocol>(
     expectSameFrames(frames[1], frames[2], "\(label), broadcast tables alone", sourceLocation: sourceLocation)
 }
 
+/// As `comparePPScenario`, for a script that ends the land: every configuration sends the same
+/// frames before the failure and fails; `check` reads each configuration's failure.
+private func comparePPFailure<State: StateNodeProtocol>(
+    _ label: String,
+    definition: @escaping () -> LandDefinition<State>,
+    onePass: Bool,
+    dirtyTracking: Bool = true,
+    encoding: TransportEncodingConfig,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    script: (PPScenarioRun<State>) async throws -> Void,
+    check: (LandFailure) -> Void
+) async throws {
+    var frames: [[(target: String, data: Data)]] = []
+    for config in ppScenarioConfigs {
+        let run = await PPScenarioRun<State>(
+            definition: definition(), tables: config.tables, perPlayerTables: config.perPlayerTables,
+            onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding
+        )
+        defer { run.finish() }
+        try await script(run)
+        try #require(await run.keeper.waitForFailureForTesting(), "\(label): the land failed", sourceLocation: sourceLocation)
+        check(try #require(run.keeper.failure, sourceLocation: sourceLocation))
+        frames.append(await run.transport.sent)
+    }
+    #expect(frames[2].count > 2, "\(label): frames were sent before the failure", sourceLocation: sourceLocation)
+    expectSameFrames(frames[0], frames[2], "\(label), both tables", sourceLocation: sourceLocation)
+    expectSameFrames(frames[1], frames[2], "\(label), broadcast tables alone", sourceLocation: sourceLocation)
+}
+
 /// Encoding × one-pass × dirty tracking. Without dirty tracking every plan's mode is `.all`.
 private let ppScenarioCells: [String] = dirtyIdentityEncodings.flatMap { encoding in
     [true, false].flatMap { onePass in [true, false].map { dirty in "\(encoding.0)|\(onePass)|dirty-\(dirty)" } }
@@ -302,7 +331,7 @@ private func ppScenarioCell(_ cell: String) throws -> (encoding: TransportEncodi
 
 @Suite("The per-player tables send today's frames through failures and membership changes (#514)", .timeLimit(.minutes(1)))
 struct PerPlayerSyncTablesScenarioTests {
-    @Test("Failed plans, encode failures, broadcast-only syncs, throws, leaves and supersedes", arguments: ppScenarioCells)
+    @Test("Broadcast-only syncs, joins, leaves and supersedes", arguments: ppScenarioCells)
     func failuresAndMembership(cell: String) async throws {
         let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
         try await comparePPScenario(cell, definition: { makePPScenarioLand(landID: "pp-scenario") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
@@ -327,16 +356,9 @@ struct PerPlayerSyncTablesScenarioTests {
             await run.syncBroadcastOnly()
             await run.sync()
 
-            // A per-player conversion throws (for every player), a player joins right after,
-            // then it converts. With one-pass on, today falls back to the separate extraction
-            // for every player (T1) and the typed diff stays per pair; their frames agree here
-            // because every recipient already has boxes (see `oneTimeThrowOnePass`).
-            try await run.step("p1", mark: 7, risky: -1)
-            await run.sync()
+            // A per-player conversion that throws ends the land (#535): `perPlayerThrowEndsTheLand`.
             try await run.join("p3")
             try await run.step("p3", hand: "g")
-            await run.sync()
-            try await run.step("p1", risky: 2)
             await run.sync()
 
             // A leave and a reconnect: the player's view again from empty.
@@ -362,113 +384,43 @@ struct PerPlayerSyncTablesScenarioTests {
         }
     }
 
-    /// T1 and the failure scenarios with a per-player throw for one player, one-pass on and off
-    /// (interim, #535; D5's expected outputs). The throwing pair sends none of its field, its
-    /// box keeps what its client has, and one drop is counted per failing (player, root) that the
-    /// cycle converts; the other players and the player's other fields flow. Two failing roots
-    /// count two. A key reset while the throw lasts keeps the boxes. With one-pass on, today's
-    /// all-or-nothing fallback to the separate extraction (T1) changes only how a player
-    /// without boxes is seeded, and a recipient always has boxes here: a player's firstSync
-    /// commits its seed with its firstSync mark, and a clear removes both. So the frames are
-    /// also today's, and are compared with them.
-    @Test("A per-player throw for one player: its field is dropped, its box kept, the rest flows (T1)", arguments: ppScenarioCells)
-    func oneTimeThrowOnePass(cell: String) async throws {
+    /// A per-player conversion that throws for one player ends the land (#535 rows 3, 4 and 6),
+    /// on every table configuration, with the same frames before it and the same failure: no
+    /// frame of the failing cycle goes out.
+    @Test("A per-player throw for one player ends the land; the frames before it and the failure match across the tables", arguments: ppScenarioCells)
+    func perPlayerThrowEndsTheLand(cell: String) async throws {
         let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
-        let textual = !cell.hasPrefix("messagepack")
-        try await comparePPScenario(cell, definition: { makePPScenarioLand(landID: "pp-scenario-t1") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
-            /// Runs a sync; returns the drops it counted and the frames each player got.
-            func cycle(_ body: () async throws -> Void = {}) async throws -> (drops: Int, frames: [String: [String]]) {
-                let before = await run.adapter.syncDroppedUpdates
-                let sentBefore = await run.transport.sent.count
-                try await body()
-                await run.sync()
-                let sent = await run.transport.sent.dropFirst(sentBefore)
-                var frames: [String: [String]] = [:]
-                for frame in sent { frames[frame.target, default: []].append(String(decoding: frame.data, as: UTF8.self)) }
-                return (await run.adapter.syncDroppedUpdates - before, frames)
-            }
-            func lastSent(_ name: String, _ field: String) async -> SnapshotValue? {
-                await run.adapter.lastSentPerPlayerSnapshotForTesting(PlayerID(name))?.values[field]
-            }
-            func mentions(_ frames: [String]?, _ field: String) -> Bool {
-                (frames ?? []).contains { $0.contains("\\/\(field)") || $0.contains("\"\(field)\"") }
-            }
-            let p1 = "session(s-p1)", p2 = "session(s-p2)"
+        try await comparePPFailure(cell, definition: { makePPScenarioLand(landID: "pp-scenario-t1") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
             try await run.join("p1")
             try await run.join("p2")
-            try await run.join("p3")
             try await run.step("p1", secret: 1, vault: 1)
             try await run.step("p2", secret: 1)
             await run.sync()
-            let committed = await lastSent("p1", "secrets")
-            #expect(committed == .object(["p1.s": .object(["n": .int(1)])]))
-
             // p1's entry throws for p1 only, while p1's hand and p2's own entry change.
-            let one = try await cycle {
-                try await run.step("p1", hand: "a", secret: -1)
-                try await run.step("p2", secret: 2)
-            }
-            #expect(one.drops == 1, "one failing (player, root)")
-            #expect(await lastSent("p1", "secrets") == committed, "p1's box keeps what its client has")
-            #expect(await lastSent("p2", "secrets") == .object(["p2.s": .object(["n": .int(2)])]))
-            if textual {
-                #expect(mentions(one.frames[p1], "hands") && !mentions(one.frames[p1], "secrets"))
-                #expect(mentions(one.frames[p2], "secrets"))
-            }
-
-            // Two failing roots for p1; p3's hand flows.
-            let two = try await cycle {
-                try await run.step("p1", secret: -2, vault: -1)
-                try await run.step("p3", hand: "b")
-            }
-            #expect(two.drops == 2, "two failing roots")
-            #expect(await lastSent("p1", "vault") == .object(["p1.v": .object(["n": .int(1)])]))
-
-            // A cycle while both still throw: the boxes stay. (A failed plan's key reset is gone:
-            // a failed plan ends the land, #535 row 19.)
-            let still = try await cycle { try await run.step("p2", board: 1) }
-            #expect(still.drops == (onePass && dirtyTracking ? 0 : 2), "the throwing roots are converted only under `.all`")
-            #expect(await lastSent("p1", "secrets") == committed)
-            if textual {
-                #expect(!mentions(still.frames[p1], "secrets") && !mentions(still.frames[p1], "vault"))
-            }
-
-            // Both convert again: the missed values go out.
-            let back = try await cycle { try await run.step("p1", secret: 3, vault: 4) }
-            #expect(back.drops == 0)
-            #expect(await lastSent("p1", "secrets") == .object(["p1.s": .object(["n": .int(3)])]))
-            if textual {
-                #expect(mentions(back.frames[p1], "secrets") && mentions(back.frames[p1], "vault"))
-            }
+            try await run.step("p1", hand: "a", secret: -1)
+            try await run.step("p2", secret: 2)
+            await run.sync()
+        } check: { failure in
+            #expect(failure.kind == .syncConversion, "\(cell)")
+            #expect(failure.field == "secrets", "\(cell)")
         }
     }
 
-    /// A per-player update that fails to encode is re-encoded without the patches that can't be
-    /// (NaN in JSON): what was sent commits, so the boxes advance as today's cache does and the
-    /// next plan doesn't send the kept patches again.
-    @Test("A per-player update re-encoded without an unencodable patch commits the rest", arguments: [true, false])
-    func droppingReencode(onePass: Bool) async throws {
+    /// A per-player update that doesn't encode (NaN in JSON) ends the land (#535 row 10): nothing
+    /// of it is re-encoded or sent.
+    @Test("A per-player update with an unencodable patch ends the land", arguments: [true, false])
+    func unencodablePerPlayerPatchEndsTheLand(onePass: Bool) async throws {
         let encoding = TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray)
-        try await comparePPScenario("dropping re-encode, one-pass \(onePass)", definition: { makePPScenarioLand(landID: "pp-scenario-nan") }, onePass: onePass, encoding: encoding) { run in
+        try await comparePPFailure("unencodable patch, one-pass \(onePass)", definition: { makePPScenarioLand(landID: "pp-scenario-nan") }, onePass: onePass, encoding: encoding) { run in
             try await run.join("p1")
             try await run.join("p2")
             await run.sync()
-            for round in 0..<3 {
-                try await run.step("p1", hand: "h\(round)", mark: round, board: round)
-                await run.sync()
-            }
-            // One plan: p1's hand and mark change with its speed set to NaN.
+            try await run.step("p1", hand: "h", mark: 1, board: 1)
+            await run.sync()
             try await run.step("p1", hand: "n", mark: 4, speed: PPScenarioStep.nan)
             await run.sync()
-            #expect(await run.adapter.syncDroppedUpdates > 0, "the NaN patch was dropped")
-            try await run.step("p1", board: 7)
-            await run.sync()
-            try await run.step("p2", mark: 5)
-            await run.sync()
-            try await run.step("p1", speed: 3)
-            await run.sync()
-            try await run.step("p1", hand: "m", board: 8)
-            await run.sync()
+        } check: { failure in
+            #expect(failure.kind == .syncEncode)
         }
     }
 
@@ -548,25 +500,20 @@ struct PerPlayerSyncTablesScenarioTests {
         }
     }
 
-    @Test("A state without per-player fields: a broadcast throw and the cycles after it", arguments: ppScenarioCells)
+    @Test("A state without per-player fields: a broadcast throw ends the land, the same on every table configuration (#535 rows 1, 3)", arguments: ppScenarioCells)
     func noPerPlayerFields(cell: String) async throws {
         let (encoding, onePass, dirtyTracking) = try ppScenarioCell(cell)
-        try await comparePPScenario(cell, definition: { makePPScenarioBroadcastLand(landID: "pp-scenario-broadcast") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
+        try await comparePPFailure(cell, definition: { makePPScenarioBroadcastLand(landID: "pp-scenario-broadcast") }, onePass: onePass, dirtyTracking: dirtyTracking, encoding: encoding) { run in
             try await run.join("p1")
             try await run.join("p2")
             await run.sync()
             try await run.step("p1", board: 1)
             await run.sync()
-            // A broadcast conversion throws (B2 for this plan whatever the one-pass switch). A
-            // failed plan's key reset is gone: a failed plan ends the land (#535 row 19).
+            // A broadcast conversion throws (whatever the one-pass switch): the land ends.
             try await run.step("p2", risky: -1, board: 3)
             await run.sync()
-            try await run.step("p2", board: 4)
-            await run.sync()
-            try await run.step("p1", board: 5)
-            await run.sync()
-            try await run.step("p2", risky: 1)
-            await run.sync()
+        } check: { failure in
+            #expect(failure.kind == .syncConversion, "\(cell)")
         }
     }
 

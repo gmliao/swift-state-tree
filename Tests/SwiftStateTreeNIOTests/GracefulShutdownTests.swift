@@ -1665,10 +1665,14 @@ private func bounded<T: Sendable>(_ body: @escaping @Sendable () async -> T) asy
     let race = BoundedRace<T>()
     return await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
         race.install(continuation)
-        Task { race.settle(await body()) }
-        Task {
+        // The timer is cancelled once the body wins, so a finished test holds no task.
+        let timer = Task {
             try? await safeTaskSleep(for: .seconds(10))
             race.settle(nil)
+        }
+        Task {
+            race.settle(await body())
+            timer.cancel()
         }
     }
 }
@@ -1828,11 +1832,11 @@ struct FailedLandStopTests {
         try await f.host.shutdown()
     }
 
-    @Test("a failure of an instance no longer stored stops nothing: the newer instance under its ID stays, and the teardown doesn't wait")
+    @Test("a failure of an instance no longer stored stops nothing: the newer instance under its ID stays, the teardown doesn't wait, and the old instance's adapter closes its session with 4016")
     func oldEpochFailureDetachesNothing() async throws {
         let events = Events()
         let f = try await Fixture.make(land: makeLand(events: events))
-        try await f.join("p1")
+        let (_, oldConnection) = try await f.join("p1")
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
         await f.server.landManager.detachLand(landID: f.landID)
         try await f.join("p2")
@@ -1845,6 +1849,7 @@ struct FailedLandStopTests {
             Issue.record("the hook waited although no latch exists for the old epoch"); return
         }
         #expect(old.keeper.destructionCause == .failed)
+        #expect(await oldConnection.closeCode == SessionClose.Code.landFailed, "no host stop closed it: the adapter's fallback")
         #expect(await f.server.landManager.getLand(landID: f.landID)?.epoch == fresh.epoch)
         #expect(await f.players() == ["p2"])
         #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
@@ -1895,7 +1900,7 @@ struct FailedLandStopTests {
     func unstoredFailureDoesNotWaitForAnotherStop() async throws {
         let events = Events()
         let f = try await Fixture.make(land: makeLand(events: events))
-        try await f.join("p1")
+        let (_, oldConnection) = try await f.join("p1")
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
         await f.server.landManager.detachLand(landID: f.landID)
         try await f.join("p2")
@@ -1919,6 +1924,7 @@ struct FailedLandStopTests {
             Issue.record("the old instance's teardown waited for the newer instance's stop"); return
         }
         #expect(old.keeper.destructionCause == .failed)
+        #expect(await oldConnection.closeCode == SessionClose.Code.landFailed, "no host stop closed it: the adapter's fallback")
         #expect(await stop.value == .stopped(timedOut: false))
         #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
         try await f.host.shutdown()

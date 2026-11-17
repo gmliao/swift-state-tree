@@ -618,14 +618,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
 
-    /// Sync-only turns run to repair a failed in-turn plan (diagnostics).
-    private(set) var inTurnRepairTurns = 0
-
     /// A land without periodic sync: a sync-only turn waits for the writer to drain (at most one).
     private var inTurnDrainRetryPending = false
-
-    /// A land without periodic sync: a repair sync-only turn is scheduled (at most one).
-    private var inTurnRepairPending = false
 
     /// A turn wanted a sync phase while a legacy cycle (`beginSync` ... `endSync`: the debug
     /// settle, a joiner's path) held the sync flag: `endSync` then runs a sync-only turn, so the
@@ -655,8 +649,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// sync loop (other jobs run between turns).
     static var inputTurnBatchLimit: Int { 64 }
 
-    /// Delay before a repair sync-only turn after a failed in-turn plan.
-    static var inTurnRepairDelay: Duration { .milliseconds(100) }
 
     /// The last recorder submission. Each submission awaits the one before it, so turn records
     /// reach the recorder in turn order.
@@ -4512,14 +4504,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - deferred by back-pressure: nothing was planned, so the dirty flags and the adapter's
     ///   queued events stay. A land with periodic sync relies on its next sync-only turn; one
     ///   without gets one sync-only turn once the writer drains.
-    /// - failed: the flags stay set. A land with periodic sync relies on its next sync-only turn;
-    ///   one without gets a repair sync-only turn while the adapter allows it.
+    /// - failed or landFailed: the land ends in this turn (#535); nothing was committed.
     ///
     /// `joinSyncOnly`: the phase ran only for ready joins, outside a periodic land's cadence; if
     /// back-pressure defers it, such phases stop until a sync commits (`periodicJoinSyncAllowed`).
     private func applyInTurnSyncResult(_ result: InTurnSyncResult, transport: any LandKeeperTransport, joinSyncOnly: Bool = false) {
         switch result {
-        case let .committed(clearDirtyFlags), let .committedWithRepairPending(clearDirtyFlags):
+        case let .committed(clearDirtyFlags):
             if clearDirtyFlags {
                 state.clearDirty()
             }
@@ -4529,9 +4520,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Joins left over a commit's budget: the next sync-only turn completes them.
             if !hasPeriodicSync && transportHasJoinsAwaitingSync {
                 scheduleJoinSyncTurn(after: .zero)
-            }
-            if case .committedWithRepairPending = result, !hasPeriodicSync {
-                scheduleRepairSyncOnlyTurn()
             }
         case .skipped:
             inTurnSyncDue = false
@@ -4543,8 +4531,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 retrySyncOnlyTurnAfterWriterDrain(transport: transport)
             }
         case .failed:
-            // A transport that still reports a thrown plan this way (`repairAllowed` is read by
-            // nothing since #535): the first throw ends the land, as `.landFailed` does.
+            // A transport that reports a thrown plan without its failure: the first throw ends
+            // the land, as `.landFailed` does (#535).
             inTurnSyncDue = false
             failLand(LandFailure(
                 kind: .syncPlan,
@@ -4969,23 +4957,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !isDraining, transportHasJoinsAwaitingSync, let transport else { return }
         joinSyncTurnsForTesting += 1
         runSyncOnlyTurn(transport: transport)
-    }
-
-    /// After a failed plan on a land without periodic sync: one repair sync-only turn after
-    /// `inTurnRepairDelay` (at most one pending; the adapter bounds failures in a row).
-    private func scheduleRepairSyncOnlyTurn() {
-        guard !inTurnRepairPending else { return }
-        inTurnRepairPending = true
-        Task { [weak self] in
-            try? await safeTaskSleep(for: Self.inTurnRepairDelay)
-            await self?.runRepairSyncOnlyTurn()
-        }
-    }
-
-    private func runRepairSyncOnlyTurn() {
-        inTurnRepairPending = false
-        inTurnRepairTurns += 1
-        runSyncOnlyTurnIfInTurn()
     }
 
     // MARK: - In-turn sync: tickless input turns

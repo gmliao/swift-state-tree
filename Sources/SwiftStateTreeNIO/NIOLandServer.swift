@@ -97,11 +97,10 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         // sessions itself (`landDidFail`'s fallback).
         landManager.landFailureStop.set { [weak landManager, weak landRouter] landID, epoch in
             guard let landManager, let landRouter else { return false }
-            await Self.stopForFailure(
+            return await Self.stopForFailure(
                 landID: landID, epoch: epoch, landManager: landManager, landRouter: landRouter,
                 stops: stops, timeout: stopTimeout, logger: logger
             )
-            return true
         }
     }
     
@@ -240,10 +239,14 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   waits for its detach step. If that stop detached this epoch, it waits for the latch.
     /// - A shared stop that detached another instance of the ID (or none) isn't this epoch's. If
     ///   this epoch is no longer stored and has no latch, no stop will close its sessions, and
-    ///   it returns at once; otherwise it waits for that stop's end, which doesn't depend on
-    ///   this land, then runs its own.
+    ///   it returns false at once; otherwise it waits for that stop's end, which doesn't depend
+    ///   on this land, then runs its own.
     /// - Its own stop finding no instance: nothing will close this epoch's sessions (the
-    ///   instance isn't stored any more), and it returns at once.
+    ///   instance isn't stored any more, for example detached by `detachLand`), and it returns
+    ///   false at once.
+    ///
+    /// Returns whether a host stop closed this epoch's sessions. On false the adapter closes
+    /// them itself, with 4016 (`landDidFail`'s fallback).
     ///
     /// None of these waits depend on this land's destroy, so the teardown can't wait on itself.
     ///
@@ -258,10 +261,10 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         stops: LandStopFlights,
         timeout: Duration,
         logger: Logger
-    ) async {
+    ) async -> Bool {
         if let latch = stops.latch(for: epoch) {
             await latch.wait()
-            return
+            return true
         }
         logger.error("Stopping a failed land", metadata: [
             "landID": .string(landID.stringValue),
@@ -278,13 +281,15 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             // This epoch's latch: the shared stop, or another one meanwhile, detached it.
             if let latch = stops.latch(for: epoch) {
                 await latch.wait()
-                return
+                return true
             }
-            if detachedEpoch == epoch || flight.epoch == epoch { return }
+            if detachedEpoch == epoch { return true }
+            // Its own stop found no instance with this epoch.
+            if flight.epoch == epoch { return false }
             // Another instance's stop. This epoch no longer stored: no stop will detach it, so
             // none will raise its latch (checked after, since only a detach creates one).
             if !(await landManager.isStored(landID: landID, epoch: epoch)), stops.latch(for: epoch) == nil {
-                return
+                return false
             }
             // Its end doesn't wait on this land.
             _ = await flight.task.value
