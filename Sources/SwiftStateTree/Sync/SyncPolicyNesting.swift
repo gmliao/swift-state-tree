@@ -20,8 +20,10 @@ import Foundation
 /// - under `.masked`: the mask runs on the node's server value first, then the children's policies;
 /// - under `.serverOnly`: nothing below is ever sent.
 ///
-/// `LandTypeRegistry.init` (so every host that serves a land), `NIOLandHost.register`,
-/// `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema`/`generate` run this check.
+/// The registration check (`LandDefinition.validateForRegistration`) runs it, so
+/// `LandTypeRegistry.init` (every host that serves a land), `NIOLandHost.register`,
+/// `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema`/`generate` report it as
+/// `LandRegistrationError.sync`'s `.policyNesting` problem.
 public enum SyncPolicyNesting {
     /// Throws `SyncPolicyNestingError` listing every per-player field with a broadcast ancestor
     /// in `rootType`, at any depth.

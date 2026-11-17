@@ -18,6 +18,14 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
         /// `PlayerID` or `CustomStringConvertible` (`SyncError.unsupportedKey` at run time).
         /// `path` is the dictionary's field, from the root type (`Root.items[*]`).
         case unsupportedKey(path: String, keyType: String)
+        /// A synced type that can hold a value of any type (#535 D8 (b)): `Any`, `AnyObject`,
+        /// `AnyHashable` or `AnyCodable`, as a collection's element, key or value or an optional's
+        /// wrapped type. What it holds can't be checked here. `@StateNodeBuilder` and
+        /// `@SnapshotConvertible` refuse these, and `any P`, where the declared type spells them;
+        /// this row catches the ones a hand-written conformance or a nested type brings in. An
+        /// `any P` reached through a typealias isn't seen by either: the land ends at the first
+        /// conversion that throws.
+        case existentialField(path: String, typeName: String)
 
         public var description: String {
             switch self {
@@ -28,6 +36,9 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
             case .unsupportedKey(let path, let keyType):
                 return "\(path): key type \(keyType) doesn't convert to a string; use String, PlayerID or a "
                     + "CustomStringConvertible key"
+            case .existentialField(let path, let typeName):
+                return "\(path): \(typeName) holds a value of any type, which can't be checked; use a concrete "
+                    + "type, or an enum with a case for each kind of value"
             }
         }
     }
@@ -58,9 +69,9 @@ package enum SyncRegistration {
         } catch {
             preconditionFailure("SyncPolicyNesting.validate threw \(error)")
         }
-        var keys = KeyWalker()
-        keys.visitNode(rootType, sample: rootType.init(), path: String(describing: rootType))
-        problems += keys.problems
+        var types = TypeWalker()
+        types.visitNode(rootType, sample: rootType.init(), path: String(describing: rootType))
+        problems += types.problems
         return problems
     }
 
@@ -82,6 +93,16 @@ package enum SyncRegistration {
         }
     }
 
+    /// Throws `LandRegistrationError` with `rootType`'s synced-state problems, for an entry point
+    /// that has a state type but no land definition (`LandTypeRegistry`). `landType` names what
+    /// is being registered.
+    package static func validate(_ rootType: any StateNodeProtocol.Type, landType: String) throws {
+        let problems = cachedProblems(rootType)
+        if !problems.isEmpty {
+            throw LandRegistrationError(landType: landType, payload: nil, sync: SyncRegistrationError(problems: problems))
+        }
+    }
+
     /// Whether `rootType`'s result is cached (tests).
     package static func isCachedForTesting(_ rootType: any StateNodeProtocol.Type) -> Bool {
         cache.withLock { $0[ObjectIdentifier(rootType)] != nil }
@@ -94,11 +115,18 @@ package enum SyncRegistration {
         type == String.self || type == PlayerID.self || type is any CustomStringConvertible.Type
     }
 
-    /// Finds dictionaries with an unsupported key type, through the same structure as the other
-    /// two walks: synced fields, optionals, collections, nested state nodes, and plain structs
-    /// through a default instance's values. A type with its own `toSnapshotValue()` converts its
-    /// storage itself and isn't looked into.
-    private struct KeyWalker {
+    /// The types that hold a value of any type (`existentialField`).
+    package static func isOpenType(_ type: Any.Type) -> Bool {
+        let id = ObjectIdentifier(type)
+        return id == ObjectIdentifier(Any.self) || id == ObjectIdentifier(AnyObject.self)
+            || id == ObjectIdentifier(AnyHashable.self) || id == ObjectIdentifier(AnyCodable.self)
+    }
+
+    /// Finds dictionaries with an unsupported key type and open types (`existentialField`),
+    /// through the same structure as the other two walks: synced fields, optionals, collections,
+    /// nested state nodes, and plain structs through a default instance's values. A type with its
+    /// own `toSnapshotValue()` converts its storage itself and isn't looked into.
+    private struct TypeWalker {
         var problems: [SyncRegistrationError.Problem] = []
         private var onPath: Set<ObjectIdentifier> = []
 
@@ -110,20 +138,33 @@ package enum SyncRegistration {
             let fieldSamples = sample.map(SyncPolicyNesting.syncFieldValues(of:)) ?? [:]
             for field in type.getFieldMetadata() where field.policy != nil && field.policy != .serverOnly {
                 let fieldSample = fieldSamples[field.name]
-                let fieldType = field.type == Any.self ? fieldSample.map { Swift.type(of: $0) } ?? field.type : field.type
-                visitValue(fieldType, sample: fieldSample, path: "\(path).\(field.name)")
+                // A field whose metadata says `Any` (a conformance that doesn't name the type):
+                // its value's type stands in, as in the other two walks. The macros refuse a field
+                // declared `Any`.
+                if field.type == Any.self {
+                    guard let fieldSample else { continue }
+                    visitValue(Swift.type(of: fieldSample), sample: fieldSample, path: "\(path).\(field.name)")
+                } else {
+                    visitValue(field.type, sample: fieldSample, path: "\(path).\(field.name)")
+                }
             }
         }
 
         mutating func visitValue(_ type: Any.Type, sample: Any?, path: String) {
-            if let node = type as? any StateNodeProtocol.Type {
+            if isOpenType(type) {
+                problems.append(.existentialField(path: path, typeName: String(describing: type)))
+            } else if let node = type as? any StateNodeProtocol.Type {
                 visitNode(node, sample: sample ?? node.init(), path: path)
             } else if let wrapped = NestingOptionalHelper.wrappedType(of: type) {
                 let inner = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                 visitValue(wrapped, sample: inner, path: path)
             } else if let value = SchemaHelper.dictionaryValueType(from: type) {
-                if let key = SchemaHelper.dictionaryKeyType(from: type), !isSupportedKeyType(key) {
-                    problems.append(.unsupportedKey(path: path, keyType: String(describing: key)))
+                if let key = SchemaHelper.dictionaryKeyType(from: type) {
+                    if isOpenType(key) {
+                        problems.append(.existentialField(path: "\(path)[key]", typeName: String(describing: key)))
+                    } else if !isSupportedKeyType(key) {
+                        problems.append(.unsupportedKey(path: path, keyType: String(describing: key)))
+                    }
                 }
                 let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                     .flatMap { Mirror(reflecting: $0).children.dropFirst().first?.value }

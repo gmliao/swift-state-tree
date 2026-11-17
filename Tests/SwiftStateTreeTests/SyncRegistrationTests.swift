@@ -74,9 +74,57 @@ struct RegistrationCacheRoot: StateNodeProtocol {
     init() {}
 }
 
+/// Open types a hand-written or nested type can bring in, where the macros can't see them: a
+/// plain struct's stored properties aren't read by `@StateNodeBuilder`.
+struct RegistrationOpenHolder: @unchecked Sendable {
+    var bag: [String: Any] = [:]
+    var hashed: [AnyHashable: Int] = [:]
+    var boxed: AnyCodable? = nil
+    var list: [AnyObject] = []
+}
+
+@StateNodeBuilder
+struct RegistrationOpenRoot: StateNodeProtocol {
+    @Sync(.broadcast) var holder: RegistrationOpenHolder = RegistrationOpenHolder()
+    @Sync(.broadcast) var count: Int = 0
+    init() {}
+}
+
+/// The documented gap: an existential behind a typealias isn't refused; a value that converts
+/// passes, and the land ends at the first conversion that throws.
+protocol RegistrationGapPayload: Sendable {}
+extension Int: RegistrationGapPayload {}
+typealias RegistrationAnyGapPayload = any RegistrationGapPayload
+
+@StateNodeBuilder
+struct RegistrationGapRoot: StateNodeProtocol {
+    @Sync(.broadcast) var payload: RegistrationAnyGapPayload = 0
+    init() {}
+}
+
+/// A state the backstop refuses, with a field OnInitialize would set.
+@StateNodeBuilder
+struct RegistrationBackstopRoot: StateNodeProtocol {
+    @Sync(.broadcast) var keyed: [RegistrationOpaqueKey: Int] = [:]
+    @Sync(.serverOnly) var initialized: Bool = false
+    init() {}
+}
+
+private actor RegistrationDestroyFlag: LandKeeperTransport {
+    private(set) var destroyed = false
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async { destroyed = true }
+}
+
+private func isUnsupportedKey(_ problem: SyncRegistrationError.Problem) -> Bool {
+    if case .unsupportedKey = problem { true } else { false }
+}
+
 // MARK: - Tests
 
-@Suite("Synced-state registration rows (#535 §4)")
+@Suite("Synced-state registration rows (#535 §4)", .timeLimit(.minutes(1)))
 struct SyncRegistrationTests {
     @Test("An unsupported key type is found through fields, optionals, collections, plain structs and nested nodes; a supported or server-only one isn't")
     func unsupportedKeys() {
@@ -131,5 +179,76 @@ struct SyncRegistrationTests {
         #expect(first == SyncRegistration.problems(RegistrationCacheRoot.self))
         #expect(first == [.unsupportedKey(path: "RegistrationCacheRoot.keyed", keyType: "RegistrationOpaqueKey")])
         #expect(SyncRegistration.cachedProblems(RegistrationCacheRoot.self) == first)
+    }
+
+    @Test("Open types (Any, AnyObject, AnyHashable, AnyCodable) are found as elements, keys, values and wrapped types")
+    func openTypes() {
+        let problems = SyncRegistration.problems(RegistrationOpenRoot.self)
+        #expect(problems == [
+            .existentialField(path: "RegistrationOpenRoot.holder.bag[*]", typeName: "Any"),
+            .existentialField(path: "RegistrationOpenRoot.holder.hashed[key]", typeName: "AnyHashable"),
+            .existentialField(path: "RegistrationOpenRoot.holder.boxed", typeName: "AnyCodable"),
+            .existentialField(path: "RegistrationOpenRoot.holder.list[*]", typeName: "AnyObject"),
+        ], "\(problems)")
+    }
+
+    @Test("An existential behind a typealias is the documented gap: registration passes it")
+    func typealiasGap() {
+        #expect(SyncRegistration.problems(RegistrationGapRoot.self).isEmpty)
+    }
+
+    @Test("validateForRegistration reports the synced-state rows in LandRegistrationError.sync, whatever the context")
+    func definitionEntryPoint() throws {
+        let land = Land("registration-keys", using: RegistrationMixedRoot.self) { Rules {} }
+        for context in [LandRegistrationContext.encodingIndependent, LandRegistrationContext(payloadsCompressed: true)] {
+            let error = try #require(throws: LandRegistrationError.self) { try land.validateForRegistration(context: context) }
+            #expect(error.landType == "registration-keys")
+            #expect(error.payload == nil)
+            #expect(error.sync?.problems == SyncRegistration.problems(RegistrationMixedRoot.self))
+            #expect(error.description.contains("RegistrationMixedRoot.keyed"))
+        }
+        try Land("registration-clean", using: RegistrationCleanRoot.self) { Rules {} }
+            .validateForRegistration(context: .encodingIndependent)
+        let registry = try #require(throws: LandRegistrationError.self) {
+            try SyncRegistration.validate(RegistrationKeysRoot.self, landType: "RegistrationKeysRoot")
+        }
+        #expect(registry.sync?.problems.allSatisfy(isUnsupportedKey) == true)
+    }
+
+    @Test("The backstop: a keeper whose state fails the check fails its initialization, before OnInitialize, and is torn down")
+    func backstop() async throws {
+        let definition = Land("registration-backstop", using: RegistrationBackstopRoot.self) {
+            Lifetime {
+                OnInitialize { (state: inout RegistrationBackstopRoot, _: LandContext) in
+                    state.initialized = true
+                }
+            }
+            Rules {}
+        }
+        let transport = RegistrationDestroyFlag()
+        let keeper = LandKeeper<RegistrationBackstopRoot>(
+            definition: definition, initialState: RegistrationBackstopRoot(), autoStartLoops: false, transport: transport
+        )
+        let failure = try await #require(throws: LandInitializationError.self) {
+            try await keeper.leave(playerID: PlayerID("p-1"), clientID: ClientID("c-p-1"), sessionID: SessionID("s-p-1"))
+        }
+        let registration = try #require(failure.underlying as? LandRegistrationError)
+        #expect(registration.landType == "registration-backstop")
+        #expect(registration.sync?.problems == [
+            .unsupportedKey(path: "RegistrationBackstopRoot.keyed", keyType: "RegistrationOpaqueKey"),
+        ])
+        while !(await transport.destroyed) { await Task.yield() }
+        #expect(await keeper.currentState().initialized == false, "OnInitialize didn't run")
+    }
+
+    @Test("ReevaluationEngine.run refuses the definition before it reads the record")
+    func reevaluationRefuses() async throws {
+        let land = Land("registration-replay", using: RegistrationMixedRoot.self) { Rules {} }
+        let error = try await #require(throws: LandRegistrationError.self) {
+            _ = try await ReevaluationEngine.run(
+                definition: land, initialState: RegistrationMixedRoot(), recordFilePath: "/nonexistent/record.json"
+            )
+        }
+        #expect(error.sync?.problems.count == 2)
     }
 }

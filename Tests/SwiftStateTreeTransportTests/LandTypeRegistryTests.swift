@@ -149,8 +149,8 @@ struct LandTypeRegistryClassState: StateNodeProtocol {
 }
 
 @Test("LandTypeRegistry rejects a state whose synced field holds a class (#464)")
-func testLandTypeRegistryRejectsClassField() {
-    #expect(throws: SyncValueSemanticsError.self) {
+func testLandTypeRegistryRejectsClassField() throws {
+    let error = try #require(throws: LandRegistrationError.self) {
         _ = try LandTypeRegistry<LandTypeRegistryClassState>(
             landFactory: { landType, _ in
                 Land(landType, using: LandTypeRegistryClassState.self) { Rules {} }
@@ -158,11 +158,12 @@ func testLandTypeRegistryRejectsClassField() {
             initialStateFactory: { _, _ in LandTypeRegistryClassState() }
         )
     }
+    #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
 }
 
 @Test("LandTypeRegistry rejects a state with a per-player field under a broadcast field (#179)")
-func testLandTypeRegistryRejectsNestedPerPlayer() {
-    #expect(throws: SyncPolicyNestingError.self) {
+func testLandTypeRegistryRejectsNestedPerPlayer() throws {
+    let error = try #require(throws: LandRegistrationError.self) {
         _ = try LandTypeRegistry<LandTypeRegistryNestedState>(
             landFactory: { landType, _ in
                 Land(landType, using: LandTypeRegistryNestedState.self) { Rules {} }
@@ -170,4 +171,5 @@ func testLandTypeRegistryRejectsNestedPerPlayer() {
             initialStateFactory: { _, _ in LandTypeRegistryNestedState() }
         )
     }
+    #expect(error.sync?.problems.contains(where: { if case .policyNesting = $0 { true } else { false } }) == true)
 }

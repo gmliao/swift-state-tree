@@ -37,8 +37,8 @@ public struct AnyLandDefinition: Sendable {
 
     /// Extract the protocol schema from this LandDefinition.
     ///
-    /// - Throws: `SyncValueSemanticsError` when a synced field holds a class (#464); `SyncPolicyNestingError` when the
-    ///   state nests a per-player field under a broadcast field (#179); `RecursiveStateTypeError` when a state type holds itself (#286).
+    /// - Throws: `LandRegistrationError` when the state fails a synced-state row (its `sync`: #464,
+    ///   #179, #535); `RecursiveStateTypeError` when a state type holds itself (#286).
     public func extractSchema() throws -> ProtocolSchema {
         try _extractSchema()
     }

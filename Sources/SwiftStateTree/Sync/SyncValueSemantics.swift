@@ -27,9 +27,10 @@ import Foundation
 /// `@Internal` fields are not synced and not checked: they may hold a class (a cache, a
 /// service handle). They are also outside the #87 checks.
 ///
-/// `LandTypeRegistry.init`, `NIOLandHost.register` and `SchemaExtractor.extract` run this
-/// check, next to `SyncPolicyNesting.validate`. It is `package`, not public: users meet the
-/// rule through those entry points and `SyncValueSemanticsError`, not by calling it.
+/// The registration check (`LandDefinition.validateForRegistration`, which
+/// `LandTypeRegistry.init`, `NIOLandHost.register` and `SchemaExtractor.extract` run) includes it,
+/// next to `SyncPolicyNesting.validate`. It is `package`, not public: users meet the rule as
+/// `LandRegistrationError.sync`'s `.valueSemantics` problem, not by calling it.
 package enum SyncValueSemantics {
     /// Throws `SyncValueSemanticsError` naming every synced field, at any depth, whose type is
     /// a class or whose default value holds one.
