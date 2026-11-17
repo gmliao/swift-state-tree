@@ -18,7 +18,7 @@ the `@colyseus/schema` one B1.
 The measured commit, its dirty flag, the Swift and Node versions and the build configuration open
 the Results section: `regenerate.py` writes that line from the results' `meta` and refuses
 results with no commit, from more than one commit, or from a dirty tree (`--check` verifies it
-with the tables). The measurement host runs pinned (`run.sh`). Mac runs check correctness and the
+with the tables). The measurement host (an AMD Ryzen 5 7600X; the results don't record the CPU model) runs pinned (`run.sh`). Mac runs check correctness and the
 tooling only; their numbers aren't in this README.
 
 ## Command(s)

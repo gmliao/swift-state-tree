@@ -103,16 +103,24 @@ def check_batches(fmt, batches, results=None) -> list:
 def batch_table(batches) -> str:
     """The machine table of one format's re-measurement, one row per batch file, with each batch's
     commit and tree as its meta records them (from 3.0 on: source.json, through summarize.py; a
-    machine's batch is its own commit, so the rows can differ)."""
-    out = ["| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |",
-           "|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    machine's batch is its own commit, so the rows can differ). "second recording byte-identical"
+    counts the recordings whose second recording on the same machine (run-batch.sh TWICE=1) has
+    the same bytes, from `second_recording_bytes_identical`; a batch without the field (2.5) shows
+    "not recorded"."""
+    out = ["| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | second recording byte-identical | tick mismatches | ticks | client events | actions |",
+           "|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for b in batches:
         m, t = b["meta"], batch_totals(b)
         n = t["recordings"]
         tree = {False: "clean", True: "dirty"}.get(m.get("git_dirty"), "not recorded")
-        out.append("| {} | {} | `{}` | {} | {} | {} | {} | {}/{} | {}/{} | {} | {:,} | {:,} | {} |".format(
+        recs = b.get("recordings") or []
+        if recs and all("second_recording_bytes_identical" in r for r in recs):
+            same_bytes = f"{sum(1 for r in recs if r['second_recording_bytes_identical'])}/{len(recs)}"
+        else:
+            same_bytes = "not recorded"
+        out.append("| {} | {} | `{}` | {} | {} | {} | {} | {}/{} | {}/{} | {} | {} | {:,} | {:,} | {} |".format(
             m["host"], m["arch"], m.get("git_sha") or "not recorded", tree, m["swift"], m["build"], n,
-            t["verified_vs_recorded"], n, t["verified_run1_vs_run2"], n,
+            t["verified_vs_recorded"], n, t["verified_run1_vs_run2"], n, same_bytes,
             t["mismatch_ticks"], t["ticks"], t["client_events"], t["actions"],
         ))
     return "\n".join(out) + "\n"

@@ -134,7 +134,7 @@ await client.sendAction("resumeVerification", {});
 
 ### State Hash 證明 Reevaluation
 
-每 tick 的 `stateHash` 是完整 server state（`fullStateSnapshot()`，錄製格式 2.4 起）以 sorted-keys JSON 編碼後的決定性 FNV-1a64 hash：涵蓋每一層的每個 `@Sync` 欄位，不論其 policy。server-only、per-player 與 masked 欄位都以實際值納入 hash，巢狀 state node 也會納入其所有 `@Sync` 欄位，即使它位於 `@SnapshotConvertible` 值（透過其產生的 `toFullSnapshotValue()`）或 enum 的 payload 中亦同。只有手寫 `toSnapshotValue()` 的值（例如 DeterministicMath 型別）則依該轉換的結果納入 hash。`@Internal` property 不納入 hash：其文件中的用法是 wall-clock timestamp 之類的值，納入會讓每次 replay 都不符；而會影響 state 的 internal 值本來就會反映在 `@Sync` 欄位上。當 live 與 replay 在每個 tick 都產生相同 hash 時，即證明 state 轉換邏輯是決定性的。Server event 由相同的 handler 與輸入產生；記錄它們可提供額外的一致性檢查。
+每 tick 的 `stateHash` 是完整 server state（`fullStateSnapshot()`，錄製格式 2.4 起）以 sorted-keys JSON 編碼後的決定性 FNV-1a64 hash：涵蓋每一層的每個 `@Sync` 欄位，不論其 policy。server-only、per-player 與 masked 欄位都以實際值納入 hash，巢狀 state node 也會納入其所有 `@Sync` 欄位，即使它位於 `@SnapshotConvertible` 值（透過其產生的 `toFullSnapshotValue()`）或 enum 的 payload 中亦同。只有手寫 `toSnapshotValue()` 的值（例如 DeterministicMath 型別）則依該轉換的結果納入 hash。`@Internal` property 不納入 hash：其文件中的用法是 wall-clock timestamp 之類的值，納入會讓每次 replay 都不符；而會影響 state 的 internal 值本來就會反映在 `@Sync` 欄位上。當 live 與 replay 在每個 tick 都產生相同 hash 時，即證明 state 轉換邏輯是決定性的。Server event 由相同的 handler 與輸入產生；記錄它們可提供額外的一致性檢查。此保證只對同一個程式 build 成立：只有錄製它的那個 build 重播時，才保證得到相同的 hash；handler 或其相依不同的 build，可能由相同輸入算出不同的 state。
 
 此 hash 永遠不會送給 client，也沒有任何 sync 路徑會計算它：client 輸出不受影響。map 的 key 與送給 client 時一樣轉成字串（同一個 map 中若有兩個 key 轉成同一字串，hash 即無法計算），set 的元素依其標準編碼排序，因此插入順序不會影響 hash。
 

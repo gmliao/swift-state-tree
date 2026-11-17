@@ -125,23 +125,23 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 
 ## Re-measurement at record format 2.5
 
-| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
-|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Apple M2, macOS 27.2 | arm64 | `0d213f2f` | not recorded | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
-| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `6e5cb141` | not recorded | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | second recording byte-identical | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS 27.2 | arm64 | `0d213f2f` | not recorded | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | not recorded | 0 | 70,800 | 20,760 | 0 |
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `6e5cb141` | not recorded | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | not recorded | 0 | 70,800 | 20,760 | 0 |
 
 ## Re-measurement at record format 3.0
 
-| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
-|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `986097b7` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | second recording byte-identical | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `986097b7` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 40/41 | 0 | 70,800 | 20,760 | 0 |
 
 
 ## Re-measurement at record format 3.1
 
-| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
-|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `022d8fdb` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | second recording byte-identical | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `022d8fdb` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
 
 ## Conclusion
 
