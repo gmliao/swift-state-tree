@@ -650,11 +650,11 @@ struct LandKeeperInputTurnTests {
         // The three inputs wait in the queue, so one turn applies them together.
         await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.wait() })
         let a = Task { try await f.add(1) }
-        try await f.waitForPending(1)
+        try await f.waitForPending(1) // wall-clock: a tickless caller waits for its turn inside the call, and no hold marks the enqueue
         let b = Task { try await f.add(-5) }
-        try await f.waitForPending(2)
+        try await f.waitForPending(2) // wall-clock: a tickless caller waits for its turn inside the call, and no hold marks the enqueue
         let c = Task { try await f.add(2) }
-        try await f.waitForPending(3)
+        try await f.waitForPending(3) // wall-clock: a tickless caller waits for its turn inside the call, and no hold marks the enqueue
         await f.keeper.installHolds(nil)
         await gate.release()
 
