@@ -248,8 +248,15 @@ def measure(process_dir, encoding):
         silent = [s for s in range(1, n + 1) if s not in seqs]
         room_out[room] = {
             "land_id": land, "record_sha256": sha, "outputs": n,
-            "rounds_with_frames": len(seqs), "rounds_without_frames": len(silent),
+            "diff_rounds": sum(bool(fs) for fs in seqs.values()),
+            # Seqs whose only frames are full views; the first join's output has no diff to send.
+            "full_view_only_seqs": sorted(s for s, fs in seqs.items() if not fs),
+            "first_seq": min(seqs),
+            "rounds_without_frames": len(silent),
             "seqs_beyond_outputs": sum(s > n or s < 1 for s in seqs),
+            # Hash pairs of diff rounds whose frames carry no entry (empty updates that still sent a frame).
+            "empty_round_hashes": sorted({"/".join(map(str, hashes[s - 1])) for s, fs in seqs.items()
+                                          if fs and 1 <= s <= n and all(not f["entries"] for f in fs)}),
             "silent_hashes": sorted({"/".join(map(str, hashes[s - 1])) for s in silent}),
             # A diff round whose output has a frameless output's hashes is a key scope reset whose
             # updates are all empty (a reset sends every recipient one); any other is unexplained.

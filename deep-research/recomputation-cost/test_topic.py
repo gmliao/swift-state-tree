@@ -420,6 +420,20 @@ class StreamFieldsTests(unittest.TestCase):
         def rounds_short(d):
             room(d)["rounds_without_frames"] -= 1
 
+        def two_full_view_only(d):
+            room(d)["full_view_only_seqs"].append(room(d)["first_seq"] + 1)
+
+        def full_view_only_not_first(d):
+            room(d)["full_view_only_seqs"] = [room(d)["first_seq"] + 1]
+
+        def beyond_outputs(d):
+            room(d)["seqs_beyond_outputs"] = 1
+
+        def silent_hash_not_empty(d):
+            for e in d.values():
+                for r in e["rooms"].values():
+                    r["empty_round_hashes"] = []
+
         def second_silent_hash(d):
             room(d)["silent_hashes"] = ["x/y"]
             first(d)["rooms"][sorted(first(d)["rooms"])[1]]["silent_hashes"] = ["a/b"]
@@ -440,7 +454,8 @@ class StreamFieldsTests(unittest.TestCase):
             first(d)["diff"]["overhead_max"] = 0
 
         for change in (file_missing, unexplained, too_many_recipients, rounds_short, second_silent_hash,
-                       other_record, unknown_frame, bytes_unbalanced, process_missing, overhead_beyond_max):
+                       other_record, unknown_frame, bytes_unbalanced, process_missing, overhead_beyond_max,
+                       two_full_view_only, full_view_only_not_first, beyond_outputs, silent_hash_not_empty):
             with self.subTest(change.__name__), self.assertRaises(SystemExit):
                 regenerate.stream_fields(runs, self.mutated(change))
 

@@ -34,10 +34,12 @@ the sizes runs' raw records): one entry per record, as many as the run's rooms, 
 players and one first seed per player.
 
 The fields each sync round sends come from stream-fields.json (stream_fields.py, from the sizes runs'
-stream dumps and records): every stream file of the run read and decoded; per room, the record's
-outputs equal its rounds with frames plus the outputs that sent nothing (all of them one empty
-hash pair, and no diff round carrying it but a key scope reset of empty updates); recipients never
-above the run's players; each record the one sync-marks.json counted.
+stream dumps and records): every stream file of the run read and decoded; per room, every frame's
+seq within the record's outputs, exactly one output whose only frames are full views (the first
+join's, the room's first seq), every output without a frame carrying one hash pair that is an
+empty update's (a diff round whose frames carry no entry has it), and no other round carrying it but
+a key scope reset of empty updates; recipients never above the run's players; each record the one
+sync-marks.json counted.
 
 Usage: regenerate.py [--check | --markdown | --self-test | --record-check <process dir>]
 """
@@ -877,7 +879,7 @@ def stream_fields(runs: list, path: pathlib.Path = STREAM_FIELDS, marks: pathlib
     for key, e in json.loads(marks.read_text(encoding="utf-8"))["records"].items():
         marked.setdefault(key.rsplit("/", 1)[0], set()).add(e["sha256"])
     sizes = {r["name"]: r["params"] for r in runs if r["params"]["kind"] == "sizes"}
-    failures, silent = [], set()
+    failures, silent, empty = [], set(), set()
     if set(processes) != set(sizes):
         failures.append(f"stream-fields.json lists {sorted(set(processes) ^ set(sizes))} unlike the sizes runs")
     for name, e in processes.items():
@@ -905,16 +907,20 @@ def stream_fields(runs: list, path: pathlib.Path = STREAM_FIELDS, marks: pathlib
         if {r["record_sha256"] for r in e["rooms"].values()} != marked.get(name, set()):
             failures.append(f"{name}: its records aren't the ones sync-marks.json counted")
         for room, r in e["rooms"].items():
-            if r["outputs"] != r["rounds_with_frames"] + r["rounds_without_frames"] or r["seqs_beyond_outputs"]:
-                failures.append(f"{name} {room}: {r['outputs']} outputs, {r['rounds_with_frames']} rounds with frames, "
-                                f"{r['rounds_without_frames']} without, {r['seqs_beyond_outputs']} beyond")
+            if r["seqs_beyond_outputs"] or r["full_view_only_seqs"] != [r["first_seq"]] \
+                    or r["outputs"] != r["diff_rounds"] + len(r["full_view_only_seqs"]) + r["rounds_without_frames"]:
+                failures.append(f"{name} {room}: {r['outputs']} outputs, {r['diff_rounds']} diff rounds, full views only at "
+                                f"{r['full_view_only_seqs']} (first seq {r['first_seq']}), {r['rounds_without_frames']} "
+                                f"without frames, {r['seqs_beyond_outputs']} beyond")
             if r["unexplained_rounds"]:
                 failures.append(f"{name} {room}: {r['unexplained_rounds']} rounds carry a frameless output's hashes")
             if r["max_recipients"] > p["players"]:
                 failures.append(f"{name} {room}: {r['max_recipients']} recipients, the run has {p['players']} players")
             silent |= set(r["silent_hashes"])
-    if len(silent) > 1:
-        failures.append(f"frameless outputs carry {len(silent)} different hash pairs")
+            empty |= set(r["empty_round_hashes"])
+    if len(silent) > 1 or not silent <= empty:
+        failures.append(f"frameless outputs carry {sorted(silent)}, not one hash pair of a round whose frames are empty "
+                        f"({sorted(empty)})")
     if failures:
         sys.exit("stream fields not usable:\n  " + "\n  ".join(failures))
     return {name: {**e, "params": sizes[name]} for name, e in processes.items()}
@@ -949,8 +955,8 @@ def stream_field_lines(processes: dict) -> list:
              "session's frames). A patch is one entry of a frame as sent; a field is one value it sets or removes: 1 for a "
              "plain entry, the mask's bit count for a merged entry (`[parent, keys, op, mask, v1, …]`, one value per bit). "
              "Each session's first state frame is its full view and isn't counted here; the later ones, key scope resets "
-             "included, are. Measured bytes are a frame's bytes without the events merged into it: its entries plus a fixed "
-             "overhead (wrapper, opcode, seq, array headers, json keys and commas). The join response and event frames are "
+             "included, are. Measured bytes are a frame's bytes without the events merged into it: its entries plus a "
+             "per-frame overhead (wrapper, opcode, seq, array headers, json keys and commas). The join response and event frames are "
              "left out, and so are WebSocket framing and compression. An entry carried, identical, by every recipient's "
              "frame of a round counts as broadcast, the rest as per-player.", "",
              "| run | rounds | recipients | broadcast fields per round (mean / median) | per-player fields per round | "
@@ -964,9 +970,18 @@ def stream_field_lines(processes: dict) -> list:
                      f"{e['fields'] / r:.1f} / {hist_median(e['hist']['fields']):g} | {e['bytes'] / r:,.1f} |")
     rooms = [r for n in names for r in processes[n]["rooms"].values()]
     per_player = sum(processes[n]["diff"]["per_player_fields"] for n in names)
-    lines += ["", f"Rounds are the records' sync outputs: {sum(r['outputs'] for r in rooms):,} in {len(rooms)} rooms, of which "
-              f"{sum(r['rounds_without_frames'] for r in rooms)} sent no frame (all with the same broadcast and per-player "
-              "hashes, those of an empty update). "
+    frameless = {enc: sum(r["rounds_without_frames"] for n in names if processes[n]["params"]["encoding"] == enc
+                          for r in processes[n]["rooms"].values()) for enc in sorted(INTENDED_WIRE)}
+    empty_rounds = {enc: sum(int(processes[n]["diff"]["hist"]["fields"].get("0", 0)) for n in names
+                             if processes[n]["params"]["encoding"] == enc) for enc in sorted(INTENDED_WIRE)}
+    lines += ["", f"Rounds are the records' sync outputs: {sum(r['outputs'] for r in rooms):,} in {len(rooms)} rooms. "
+              f"{sum(r['diff_rounds'] for r in rooms):,} are the rounds above; {sum(len(r['full_view_only_seqs']) for r in rooms)} "
+              "(one per room, its first seq: the first join) sent only full views; "
+              f"{sum(frameless.values())} sent no frame ("
+              + ", ".join(f"{enc} {n}" for enc, n in frameless.items()) + "). Those all carry one broadcast and per-player "
+              "hash pair, the one of the diff rounds whose frames hold no entry ("
+              + ", ".join(f"{enc} {n}" for enc, n in empty_rounds.items()) + "): an empty update. An empty update that "
+              "resets the dynamic key scopes still sends each recipient a frame, and only messagepack has key scopes. "
               + ("In this workload every changed field was broadcast (per-player fields: 0 in every run): every entry "
                  "was in every recipient's frame."
                  if per_player == 0 else f"{per_player:,} fields were per-player.")]
@@ -974,10 +989,12 @@ def stream_field_lines(processes: dict) -> list:
         pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "frames")
     lines += ["", "The model: bytes per round ≈ (broadcast fields × recipients + per-player fields) × s, with s a mean size "
               "per field. s is the entries' bytes over their fields, per encoding, from the runs at the other cadence, so "
-              "no row is predicted from its own bytes. That model leaves out the fixed overhead each frame carries, and "
+              "no row is predicted from its own bytes. That model leaves out the overhead each frame carries, and "
               "the measured / predicted ratio's excess over 1 is that overhead. The variant adds it: predicted bytes per "
               "round ≈ fields × s + frames × c, with c the mean overhead per frame, also per encoding from the runs at "
-              "the other cadence.", "",
+              "the other cadence. The c5 and c20 runs send nearly the same rounds and fields, so holding out the cadence "
+              "doesn't test s independently: the table is an accounting of bytes per field and per frame more than a "
+              "validated prediction.", "",
               "| run | s, other cadence (B) | predicted bytes per round | measured bytes per round | measured / predicted | "
               "c, other cadence (B) | predicted with c | measured / predicted with c |",
               "|---|---:|---:|---:|---:|---:|---:|---:|"]

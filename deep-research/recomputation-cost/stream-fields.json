@@ -107,11 +107,16 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 373,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 10,
           "outputs": 375,
           "record_sha256": "625eb8e464a2b076cdd371f27818e541b903cb765a614fb9cecaf8187af4babe",
-          "rounds_with_frames": 374,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -120,22 +125,32 @@
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 10,
           "outputs": 349,
           "record_sha256": "59e2428e08934b57e5e34f1f37a4b094cddda9252c62604602cc7e867210a4b2",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 362,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 10,
           "outputs": 366,
           "record_sha256": "35563178d48072a39409ce0ecaaae318a31c335bf1b96431d17c4901ba306fdb",
-          "rounds_with_frames": 363,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -144,55 +159,80 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 378,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 10,
           "outputs": 379,
           "record_sha256": "acc95ea272a560418651a86fc92bc4e1e2e0b7a4a32e4103fae3f829d17af82c",
-          "rounds_with_frames": 379,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 373,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 10,
           "outputs": 374,
           "record_sha256": "ba97400268256a076c46a26f7e4127520639bf003d35e160b4be442ad15819a2",
-          "rounds_with_frames": 374,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 358,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 10,
           "outputs": 359,
           "record_sha256": "f9967a242bb537c98218165497079eab1a1944b3655614fddae60c8581db16d1",
-          "rounds_with_frames": 359,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 323,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 10,
           "outputs": 324,
           "record_sha256": "2050c89c3b7a7adc11f71ab7c76420ada1a82344d51077aa0f24070698372d20",
-          "rounds_with_frames": 324,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 328,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 10,
           "outputs": 332,
           "record_sha256": "57919875e11c546366f139acac622a9e853ee1cd8fb3a1914c0219313ee7a00a",
-          "rounds_with_frames": 329,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -201,11 +241,16 @@
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 323,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 10,
           "outputs": 327,
           "record_sha256": "0da129be7fabb15769ae501acb89deecaa644083080ccfa74c955c5d338ccc7c",
-          "rounds_with_frames": 324,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -214,11 +259,16 @@
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 338,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 10,
           "outputs": 340,
           "record_sha256": "3d63cb37a9bfc1861ceed0abb13bf99fe5b24428a940f50bbc5595163931d210",
-          "rounds_with_frames": 339,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -339,22 +389,32 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 10,
           "outputs": 364,
           "record_sha256": "72ba49e7053f57dc1d27e1ed69da1159f045f7a0aacf0eacb5d27d7356fc9efd",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 10,
           "outputs": 351,
           "record_sha256": "b7842fafb5f9db0734a82cba8208a10e086acc9343c10d6fe26e484d610176b2",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -363,11 +423,16 @@
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 342,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 10,
           "outputs": 347,
           "record_sha256": "460d204908e9ac7ac0d68a4960362a505aacc2052ff489bb301fbd89144d63c4",
-          "rounds_with_frames": 343,
           "rounds_without_frames": 4,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -376,11 +441,16 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 368,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 10,
           "outputs": 371,
           "record_sha256": "8c8cc463d8d3ef6c702baa5943f0d60107ad13e4ee6a626a5be9f383cd632cbf",
-          "rounds_with_frames": 369,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -389,11 +459,16 @@
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 373,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 10,
           "outputs": 377,
           "record_sha256": "3ed1f8706338229649cc2598ebaadfedcf45b8c49c2736755558afe7bcdd827f",
-          "rounds_with_frames": 374,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -402,11 +477,16 @@
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 368,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 10,
           "outputs": 371,
           "record_sha256": "2f664897f3a89b89b5a1a9807d7bbb0435a263904e891d76835d3ddb7072ea7d",
-          "rounds_with_frames": 369,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -415,11 +495,16 @@
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 343,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 10,
           "outputs": 345,
           "record_sha256": "62859d5709753df3ed83ae770030ef8108fe6036d98daac37e67693c9106f37e",
-          "rounds_with_frames": 344,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -428,11 +513,16 @@
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 10,
           "outputs": 350,
           "record_sha256": "85e098e8c1ab81b4fb372d4fbe88bf754ae485bb9f6d3276da67c2c25fc95a3c",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -441,11 +531,16 @@
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 333,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 10,
           "outputs": 335,
           "record_sha256": "c745335abb891ff8254cfcf8e0a07ea382dd87b9a8508f7ca286f62d9ba28b3f",
-          "rounds_with_frames": 334,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -454,11 +549,16 @@
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 318,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 10,
           "outputs": 323,
           "record_sha256": "28842440d035d726eacc845a02c997122d4ec4b79cda9c266218d3b91faecd1f",
-          "rounds_with_frames": 319,
           "rounds_without_frames": 4,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -533,55 +633,80 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 350,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 2,
           "outputs": 351,
           "record_sha256": "2478f022c92681c619908fe113b8fd99c16ec40bdacbbed85be4705c0f2f4461",
-          "rounds_with_frames": 351,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 375,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 2,
           "outputs": 376,
           "record_sha256": "64eef0bc67f2675f2f3386a77be7819564ab56cb2378d54f45bf9e2a0aeae2e1",
-          "rounds_with_frames": 376,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 360,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 2,
           "outputs": 361,
           "record_sha256": "a247ff612eae71fe74c08769e43318c506a65b8459da2df25a01e0fde7e39b47",
-          "rounds_with_frames": 361,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 374,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 2,
           "outputs": 375,
           "record_sha256": "8d6cad3f186aad3f27ed2b2bb8c6e73733747424a2710baf176e8724fc47a014",
-          "rounds_with_frames": 375,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 349,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 2,
           "outputs": 351,
           "record_sha256": "2a8377e1629858d2db1107e07e001defb7913c81a18891aa45cf6e485ef7f705",
-          "rounds_with_frames": 350,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -590,55 +715,80 @@
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 354,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 2,
           "outputs": 355,
           "record_sha256": "7e2ae0676f70e7d6c30c25450ac9a88ea8a07980b597bf56cbe2cb9f4c34cb8c",
-          "rounds_with_frames": 355,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 359,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 2,
           "outputs": 360,
           "record_sha256": "887133126ada77dc9118a7fe410172e88c5d90150a4315a3c8a89927598ee254",
-          "rounds_with_frames": 360,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 325,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 2,
           "outputs": 326,
           "record_sha256": "53f3cba24563d943e78476b8369fc0e1a35332c3f1662b9d5e35fd3d88432995",
-          "rounds_with_frames": 326,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 310,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 2,
           "outputs": 311,
           "record_sha256": "b4b8b5e9189b4f5829a15638743332e51ba9c45ce58ab3728587ee5eef7107da",
-          "rounds_with_frames": 311,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 315,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 2,
           "outputs": 316,
           "record_sha256": "9ecf6d90c3dffafa501635207de287bbc6f5f3da7ffc2d45793a14ebcd189678",
-          "rounds_with_frames": 316,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -711,110 +861,160 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 360,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 2,
           "outputs": 361,
           "record_sha256": "49567dabad59256aefd14b1bb4fc982dfa4d368a4e2eec6a54562ea957b49296",
-          "rounds_with_frames": 361,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 365,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 2,
           "outputs": 366,
           "record_sha256": "0848b04191622562aa06c9c9f2ca89160ad945aa81ed2041ece01b7f6fc89a52",
-          "rounds_with_frames": 366,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 340,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 2,
           "outputs": 341,
           "record_sha256": "b7954b149e7ca21449363dc9fe14b87ff65f43571613112e520aa2ddaa0f5875",
-          "rounds_with_frames": 341,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 374,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 2,
           "outputs": 375,
           "record_sha256": "84ff874c9d98f356cae9cd4d0b7affc2ad21ad52b94b7c73fa6f4ea25dd854d2",
-          "rounds_with_frames": 375,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 369,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 2,
           "outputs": 370,
           "record_sha256": "3e822090115091ca69ee8012f7e4d10d61f728c80c72f16a4161b203ff7d91ed",
-          "rounds_with_frames": 370,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 334,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 2,
           "outputs": 335,
           "record_sha256": "5da59ed32aec0f628a4aef39c37f7220e97870021b0cf6c6d390d37edaf84cfb",
-          "rounds_with_frames": 335,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 339,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 2,
           "outputs": 340,
           "record_sha256": "a4672ba6df08863994489d1735d030ffc533d5ee1c97ad67d161868dda4eb612",
-          "rounds_with_frames": 340,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 345,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 2,
           "outputs": 346,
           "record_sha256": "04a859eda68da34c786f25ba8cab93d607a6a46fc30eb6ebff54e2ae2dc5fe37",
-          "rounds_with_frames": 346,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 310,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 2,
           "outputs": 311,
           "record_sha256": "bbcdaa669131c23bc6e5bcdcdaeca3cbe79610b4f6949ba6616b781d725190ef",
-          "rounds_with_frames": 311,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 335,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 2,
           "outputs": 336,
           "record_sha256": "c18b5ea275f781e5bdbc41c4b9aada9fe038f1c4841879015ee2005826191b94",
-          "rounds_with_frames": 336,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -904,22 +1104,32 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 349,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 5,
           "outputs": 350,
           "record_sha256": "7824108735385bc351a343bdd82b351b6b94fe27ebec5b4dc0ea35547ff1bbe3",
-          "rounds_with_frames": 350,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 384,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 5,
           "outputs": 387,
           "record_sha256": "8ebb20a80bea7fc36c9b781bab06a31888e80993a3a7d906c03188a89026a08c",
-          "rounds_with_frames": 385,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -928,11 +1138,16 @@
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 359,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 5,
           "outputs": 363,
           "record_sha256": "057ddac4f28843954d04bc52ea7325d51e2b5463ac79985eb8930435abb7c5e7",
-          "rounds_with_frames": 360,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -941,55 +1156,80 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 368,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 5,
           "outputs": 369,
           "record_sha256": "d8281eec74d359ac3935da83e862bb9db9a0fa909ac50683b223c94f44f253ff",
-          "rounds_with_frames": 369,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 333,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 5,
           "outputs": 334,
           "record_sha256": "fe2115549f6c8c6a51c0ee9810e5c3840a8dcea74c4375fdf32d7e045b53ca86",
-          "rounds_with_frames": 334,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 368,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 5,
           "outputs": 369,
           "record_sha256": "2c4be80a8d72a4504bebbaec867d89e439e1f7b0c78be99de61a5e274b10b33a",
-          "rounds_with_frames": 369,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 353,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 5,
           "outputs": 354,
           "record_sha256": "b18e8d9c8cae17d741d3bfac29175c8c71688596aae15568f31a2334c0826149",
-          "rounds_with_frames": 354,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 334,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 5,
           "outputs": 336,
           "record_sha256": "b85bc07c5cc7a8c3da53ae2f1b75cf043c0a086317e0fadd8ecf6348269fb07f",
-          "rounds_with_frames": 335,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -998,11 +1238,16 @@
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 319,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 5,
           "outputs": 322,
           "record_sha256": "7b4210e50669b17ceca75cf5bc224626a9f10e919cc83a8eb20fae260ede234e",
-          "rounds_with_frames": 320,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1011,11 +1256,16 @@
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 314,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 5,
           "outputs": 318,
           "record_sha256": "0f1df1cf65a2a1eab2a4028a77ed02cc2109878c84138c6276350a4655cb5618",
-          "rounds_with_frames": 315,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1109,22 +1359,32 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 389,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 5,
           "outputs": 390,
           "record_sha256": "5acbbb389b0957038d0f4c8de52e81a8023c614df9d8ef143f4aeda5da3f4908",
-          "rounds_with_frames": 390,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 344,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 5,
           "outputs": 348,
           "record_sha256": "589263214870854525d3dff9a8c532e4ada621212d85dbf0de4f0d52b6046e0c",
-          "rounds_with_frames": 345,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1133,11 +1393,16 @@
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 339,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 5,
           "outputs": 342,
           "record_sha256": "96fbc0f41413352ec77963ea5bb40a5c26efc94689921b9b61c52fcc1402e24f",
-          "rounds_with_frames": 340,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1146,55 +1411,80 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 5,
           "outputs": 349,
           "record_sha256": "41154d9e6d0a027a8323d82e14efe3aa4667c2fa5fca1338438130ca319d5fae",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 5,
           "outputs": 364,
           "record_sha256": "6bec9f3f2da1cb15aa51fcf7d45a6b8136abecdc08b045581dab0d3f45a1c1bf",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 368,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 5,
           "outputs": 369,
           "record_sha256": "4261f83879458308ab64a0df0af0d961ad92eb65a770dcf86982e0ac9a451586",
-          "rounds_with_frames": 369,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 333,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 5,
           "outputs": 334,
           "record_sha256": "ef7c452616c5865827dd88308d0f7ab274fbbf4f91cfaed93b218945d7f952ce",
-          "rounds_with_frames": 334,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 334,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 5,
           "outputs": 336,
           "record_sha256": "68d45a55a96f86f20a86f6a770feae9a99b15e9d7e67754503175e02632c34a5",
-          "rounds_with_frames": 335,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1203,11 +1493,16 @@
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 329,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 5,
           "outputs": 332,
           "record_sha256": "7f4363cff81a70118fda55893dfc6b51dbdbc45b557bdc05ccea732dd20c031c",
-          "rounds_with_frames": 330,
           "rounds_without_frames": 2,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1216,11 +1511,16 @@
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 334,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 5,
           "outputs": 338,
           "record_sha256": "232792e6d01d8301b8cf3893c5e88f65ac277c3e16b7f05a23f40755dd109ee8",
-          "rounds_with_frames": 335,
           "rounds_without_frames": 3,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1339,33 +1639,52 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 394,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 10,
           "outputs": 395,
           "record_sha256": "8a8367516d13adb13a2e6a06e1358621c4ff0d096ccc73af9c6da37e4fbb5052",
-          "rounds_with_frames": 395,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 359,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 10,
           "outputs": 360,
           "record_sha256": "e412edf1401830466bd96c66712a2b4d4c456f56bdeb0b47dcca642535e2f506",
-          "rounds_with_frames": 360,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 372,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 10,
           "outputs": 374,
           "record_sha256": "e1037bae22c24fc8764094555a19bfb82c7a309fcc30b0bb409033184f838c9e",
-          "rounds_with_frames": 373,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1374,77 +1693,120 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 360,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 10,
           "outputs": 361,
           "record_sha256": "2249f895b3671d62455c77088f973adf84ba05d7cb481d957c0d74bcf9c6c114",
-          "rounds_with_frames": 361,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 10,
           "outputs": 364,
           "record_sha256": "728c3ada32ebfb07432987bbe593def802933b0723b7b930644f97034a1e6f30",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 10,
           "outputs": 349,
           "record_sha256": "52ebef3b770e2decd8e7cf2186f6877bd5234ae2ff87ebf8f4b05811998d97ef",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 10,
           "outputs": 364,
           "record_sha256": "746ee94ab3ac0ca1e67b655fb4cefe54ffc116295f01d211f39b6b3eb2859db7",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 319,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 10,
           "outputs": 320,
           "record_sha256": "901d2a0e7bb20f4c3efb05fe7416b50ba8c6b19276e2a59875c56bcec24b3373",
-          "rounds_with_frames": 320,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 314,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 10,
           "outputs": 315,
           "record_sha256": "8f1bdfdce5fef080a5c8c47789ee099afef60d77bd4118d0dcaa42fcd4fc5af0",
-          "rounds_with_frames": 315,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 319,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 10,
           "outputs": 320,
           "record_sha256": "8e178d9eccc35aa996f7f6229b99ba8ebe9b31bd854becdb7c782df5e025e8ea",
-          "rounds_with_frames": 320,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -1565,33 +1927,50 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 10,
           "outputs": 364,
           "record_sha256": "59cf886fa9345e97529fce7029cc9b4919741286b1f4f74993f13e90054bce5b",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 379,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 10,
           "outputs": 380,
           "record_sha256": "51f2b3adc87b798dede3371ed59642dd51184f884346d6b4c0cc9f0841b308c1",
-          "rounds_with_frames": 380,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 342,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 10,
           "outputs": 344,
           "record_sha256": "6e4bc1cca2fd98f4f9ffec6a7110433b2ee16f6d598ea87ecf2d5bb76e689a14",
-          "rounds_with_frames": 343,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1600,77 +1979,122 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 359,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 10,
           "outputs": 360,
           "record_sha256": "e94b835f4df3275dd4e637a42643c89eab838893ce9c86e439d6d961bcb4b41d",
-          "rounds_with_frames": 360,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 373,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 10,
           "outputs": 374,
           "record_sha256": "5e4a47ea2fc0788d84bf0329cb5739be220af768a6dafb58e4576985ade57319",
-          "rounds_with_frames": 374,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 349,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 10,
           "outputs": 350,
           "record_sha256": "f602d3ba821b5e84dbd11e6cecdfbca91e5a8dd28370c8ded3577a9415c2c9f5",
-          "rounds_with_frames": 350,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 355,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 10,
           "outputs": 356,
           "record_sha256": "770fc355f18e7f43ee259635b026f1a267c01acca73bed0e24f167999cf2f6d7",
-          "rounds_with_frames": 356,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 328,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 10,
           "outputs": 329,
           "record_sha256": "6990a0a0d6df91a6518ff568b7ad63cb3751a2b3ff61eeb4b387c892b33e9ad6",
-          "rounds_with_frames": 329,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 354,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 10,
           "outputs": 355,
           "record_sha256": "8cd7ef744214f0b4da3f8fad6fa43f78447bfa1834dd827f62d4b3abde359100",
-          "rounds_with_frames": 355,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 309,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 10,
           "outputs": 310,
           "record_sha256": "55e8ae2eb423b8b945e0436f7856831e2e50ab0061fb9a2b26f709455c06e9f2",
-          "rounds_with_frames": 310,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -1791,33 +2215,52 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 385,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 10,
           "outputs": 386,
           "record_sha256": "a4b0a6add0fc26855bd35e9366a2d1f88150c0c996380533b90342fb8ca73332",
-          "rounds_with_frames": 386,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 378,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 10,
           "outputs": 379,
           "record_sha256": "3921da50069c63d749e267693dd3fcc608204b9684d9fce85e76abaf6fc0d043",
-          "rounds_with_frames": 379,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 10,
           "outputs": 365,
           "record_sha256": "bc6eef8899221aec586e655059fba8ee9b1f795c550f7abf088d8a1df979e5f0",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 1,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [
@@ -1826,77 +2269,122 @@
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 380,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 10,
           "outputs": 381,
           "record_sha256": "f6e7e6b008e5dec387d6f4fd39dd055b881785685f61aea6366e3ab006138cc8",
-          "rounds_with_frames": 381,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 334,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 10,
           "outputs": 335,
           "record_sha256": "adeb49112e1b27fafdadbf92cceb9819fe27342a98caa37b685b3e93dc979bda",
-          "rounds_with_frames": 335,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 338,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 10,
           "outputs": 339,
           "record_sha256": "f5f59b91789ff4b1289c447dff829163a37681d5b3347efb7f5b921d7406b1f0",
-          "rounds_with_frames": 339,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 323,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 10,
           "outputs": 324,
           "record_sha256": "1e56c51ff59e210e798215cce18e28973a270c3b2c9a86d1ac0d992b311d7ef8",
-          "rounds_with_frames": 324,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 330,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 10,
           "outputs": 331,
           "record_sha256": "9b925e81702287c5a5b601df6fbf6db2d0878ff812ae98ef46486e08be3918cc",
-          "rounds_with_frames": 331,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 355,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 10,
           "outputs": 356,
           "record_sha256": "bc7e6807a188a611915bfa6815fcd2aff686917ebbe4c1d84f915aedb29d0087",
-          "rounds_with_frames": 356,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 331,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 10,
           "outputs": 332,
           "record_sha256": "0cd84d2d4794c1e75a9d4cb9f45133a0fdefb6735a925a5e41ab619b72f7e1bf",
-          "rounds_with_frames": 332,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -1969,110 +2457,160 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 350,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 2,
           "outputs": 351,
           "record_sha256": "1268d1316984fe0e46d2a4cafd83f400ae69f8b7ae665a72bf3e9fc5b95b26eb",
-          "rounds_with_frames": 351,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 355,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 2,
           "outputs": 356,
           "record_sha256": "dd72108a7a3f82d94ec07f67a9407bfdf54614d197b81eb9772ac4891d324521",
-          "rounds_with_frames": 356,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 370,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 2,
           "outputs": 371,
           "record_sha256": "f72108dc9c2233b174762d5e818c984cedf574dcbe3d912bc60b03e98aa7d6f5",
-          "rounds_with_frames": 371,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 374,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 2,
           "outputs": 375,
           "record_sha256": "bba550c191f3955445230e97490be3fbc3dc0cd03467fc795d693033808e9292",
-          "rounds_with_frames": 375,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 329,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 2,
           "outputs": 330,
           "record_sha256": "d3271b7e953b7403def298b12b10e1089f8e4a3b97622489ed4be0892ad84895",
-          "rounds_with_frames": 330,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 334,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 2,
           "outputs": 335,
           "record_sha256": "c690114225e53d5aba25655d50bc85380912502ac206be90d842df713f71fd85",
-          "rounds_with_frames": 335,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 339,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 2,
           "outputs": 340,
           "record_sha256": "86ccc8b21220ab187073a4019c69d3341881d511063be7de22fcc89519766147",
-          "rounds_with_frames": 340,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 355,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 2,
           "outputs": 356,
           "record_sha256": "b7e5ed8f967436da5d5e7472001562e3dcba55bc8e69994c6132df2130bc6565",
-          "rounds_with_frames": 356,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 340,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 2,
           "outputs": 341,
           "record_sha256": "ea334a221bdcb4effa7f32f6e00e938278a7395eebe53c27285dca65602780d2",
-          "rounds_with_frames": 341,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 325,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 2,
           "outputs": 326,
           "record_sha256": "c09c8e2f62c069e03a0254b5d8b9b824ce7f103163eb09903040ec2052894598",
-          "rounds_with_frames": 326,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -2147,110 +2685,162 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 360,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 2,
           "outputs": 361,
           "record_sha256": "4dcbc03529d0e03f532241c06eac6a9f1fc88a968ee55c1e9ccfc16c59a88ab3",
-          "rounds_with_frames": 361,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 345,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 2,
           "outputs": 346,
           "record_sha256": "89679d61fed8c37479e77668b6142587e6c4be349ef906c28a683348c4b0a847",
-          "rounds_with_frames": 346,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 370,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 2,
           "outputs": 371,
           "record_sha256": "4ba27529842e85bdf9bf11d09d6b2dbefd1163abd4ffca17e102cfded0d63f56",
-          "rounds_with_frames": 371,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 355,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 2,
           "outputs": 356,
           "record_sha256": "130d0571818bc546313ccd9951c745299d6186cde1a89be44b5df680d646baf7",
-          "rounds_with_frames": 356,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 339,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 2,
           "outputs": 340,
           "record_sha256": "c956faabd3af6a44f37d6d23698c856cb0b6e55b53da34fd23361ca36ce9c966",
-          "rounds_with_frames": 340,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 324,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 2,
           "outputs": 325,
           "record_sha256": "84b1257508845d3a155ebc3c07e116ddd0e804a4da5d3b24ff5c3e007874b6bf",
-          "rounds_with_frames": 325,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 339,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 2,
           "outputs": 340,
           "record_sha256": "933c4b4e835432066297842b8f9f0bbfaa28c8b79ab8ed7facaaed47a83a3420",
-          "rounds_with_frames": 340,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 345,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 2,
           "outputs": 346,
           "record_sha256": "823490b2a0c04115ccc2298ae9060cd12bfaa6754548fe062da6a7764b736d7f",
-          "rounds_with_frames": 346,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 350,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 2,
           "outputs": 351,
           "record_sha256": "1fcd05aa970641ef795e6504b558fd00ec898a92709b673b679c39042e23b551",
-          "rounds_with_frames": 351,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 345,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 2,
           "outputs": 346,
           "record_sha256": "2e63827d70c24265566b3e0ee37cbc48c9730fc3c4d0fcf52f53fe448f51bb1e",
-          "rounds_with_frames": 346,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -2342,110 +2932,170 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 369,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 5,
           "outputs": 370,
           "record_sha256": "1891a0e07424f6080f981b5403331467e7dc6df0e9748c632347e27916cf984b",
-          "rounds_with_frames": 370,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 357,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 5,
           "outputs": 358,
           "record_sha256": "5a3ea796c50ebaddf8a851512be2e30020d19cd2b11a29070d5e0987439cd480",
-          "rounds_with_frames": 358,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 370,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 5,
           "outputs": 371,
           "record_sha256": "e87bce57dc65bef40bb1628a54b64999a7c0649a78e2baf51e4afff0c20c4064",
-          "rounds_with_frames": 371,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 5,
           "outputs": 349,
           "record_sha256": "c941231f1726527579c169a2ec2fcf1a5e0c98b7a5ff8920baaf7b0ff37202e6",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 373,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 5,
           "outputs": 374,
           "record_sha256": "a0184c3502d55b347dc8cc3553ae64c298c12ede4360fcb874a7873db41667db",
-          "rounds_with_frames": 374,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 348,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 5,
           "outputs": 349,
           "record_sha256": "1692732f918a699cb7cbb5254dd35ce8bbc5bdb2e9c302a80f05e42afb81a036",
-          "rounds_with_frames": 349,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 323,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 5,
           "outputs": 324,
           "record_sha256": "786a0bb31a16f3b41d49ab83ff26349bc345df83c95c96e27ae554b618080503",
-          "rounds_with_frames": 324,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 356,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 5,
           "outputs": 357,
           "record_sha256": "2181fc632b30c4b6bb424bac6e8f933db3dd6d3209b5ce254ab4c11b9e194229",
-          "rounds_with_frames": 357,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 342,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 5,
           "outputs": 343,
           "record_sha256": "7b6fe5ffa0d23044dd66385d70dcbd7297813ff02fe85e4b09c105030f215b89",
-          "rounds_with_frames": 343,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 306,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 5,
           "outputs": 307,
           "record_sha256": "bcaa983040edbec8b47e8b0e166f64ab921cbae81eea5fd752d1c3c245921607",
-          "rounds_with_frames": 307,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
@@ -2539,110 +3189,172 @@
       },
       "rooms": {
         "room-0": {
+          "diff_rounds": 370,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-0",
           "max_recipients": 5,
           "outputs": 371,
           "record_sha256": "7c884c99694042a6100732295993a77e253131462d037bbf56808d8d4165016f",
-          "rounds_with_frames": 371,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-1": {
+          "diff_rounds": 375,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-1",
           "max_recipients": 5,
           "outputs": 376,
           "record_sha256": "c6c621b7f45fba31f6d0ec7fb9110fdf06078eedf2bf87d42485ad2923ebef59",
-          "rounds_with_frames": 376,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-2": {
+          "diff_rounds": 360,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-2",
           "max_recipients": 5,
           "outputs": 361,
           "record_sha256": "940a0fdff0b177290be1727d38c0a64d00c08d873bfa0ef208ebb177195b992d",
-          "rounds_with_frames": 361,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-3": {
+          "diff_rounds": 338,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-3",
           "max_recipients": 5,
           "outputs": 339,
           "record_sha256": "a7942a0ea60e27cbc54ba474cf7e4c6612919183ebc0d35fcb037034679de45a",
-          "rounds_with_frames": 339,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-4": {
+          "diff_rounds": 343,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-4",
           "max_recipients": 5,
           "outputs": 344,
           "record_sha256": "5bb0c98797d40ae51f5229f6a284651b71256755e69703ebf0a1436f4abc5142",
-          "rounds_with_frames": 344,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-5": {
+          "diff_rounds": 328,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-5",
           "max_recipients": 5,
           "outputs": 329,
           "record_sha256": "69d1a1015ef04111b7516b9c81342840e6d561f290e25fdc98dcfefdbd204f8c",
-          "rounds_with_frames": 329,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-6": {
+          "diff_rounds": 363,
+          "empty_round_hashes": [],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-6",
           "max_recipients": 5,
           "outputs": 364,
           "record_sha256": "5c22384df9748ef1e575cbc7fd892c6837e2400d22411de8e22ea669a8b7a936",
-          "rounds_with_frames": 364,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-7": {
+          "diff_rounds": 357,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-7",
           "max_recipients": 5,
           "outputs": 358,
           "record_sha256": "a81c930139395d840275df94bf1d5588a0c7825893699d9c7d970b59c18dc5d0",
-          "rounds_with_frames": 358,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-8": {
+          "diff_rounds": 342,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-8",
           "max_recipients": 5,
           "outputs": 343,
           "record_sha256": "af8c30ca74e75f59489fe612fc04674ab933f038f3c135962a5c4e5d1041d9f5",
-          "rounds_with_frames": 343,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
           "unexplained_rounds": 0
         },
         "room-9": {
+          "diff_rounds": 315,
+          "empty_round_hashes": [
+            "a8c7f832281a39c5/a8c7f832281a39c5"
+          ],
+          "first_seq": 1,
+          "full_view_only_seqs": [
+            1
+          ],
           "land_id": "hero-defense:room-9",
           "max_recipients": 5,
           "outputs": 316,
           "record_sha256": "f4ee2ce0ae90863b426b0b4231cd8317f4cab7bded7fdfeac59475cf1f08e5c6",
-          "rounds_with_frames": 316,
           "rounds_without_frames": 0,
           "seqs_beyond_outputs": 0,
           "silent_hashes": [],
