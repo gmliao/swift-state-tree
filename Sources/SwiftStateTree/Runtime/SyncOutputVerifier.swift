@@ -407,7 +407,10 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
                 // produced, so it is neither compared nor staged: its shadow view doesn't advance
                 // on a diff the server didn't make for it. A player unverified for its view's
                 // drops (`unverifiableViews`) was addressed: it is staged and apply-checked below,
-                // and only its hash is skipped.
+                // and only its hash is skipped. Limit: the record doesn't say which outputs addressed
+                // a player, so a degraded-seed player whose sessions then end is staged and
+                // apply-checked on its leave's output too, which didn't address it. Its clear
+                // follows that output and drops what was staged, so nothing later reads it.
                 if unverified.contains(playerID.rawValue), !unverifiableViews.contains(playerID),
                    !uncommitted.contains(playerID.rawValue) {
                     perPlayer.unverifiable += 1

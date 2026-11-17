@@ -3782,8 +3782,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async {
         // All tickless passes share one tick id, so the events and sync requests are taken
         // here: a later pass can't flush this pass's, nor this pass a later one's.
-        let events = takeEmittedEvents(forTick: executingTickId)
-        let syncRequests = outputCollector.syncRequestsByTick.removeValue(forKey: executingTickId)
+        // The land failed in this pass (a `landFailure` item ended its batch, #535): no events and
+        // no sync, as an input turn (`runInputTurn`). Its inputs were applied and are recorded;
+        // its events are neither sent nor recorded, so replay drops them too.
+        let passEvents = takeEmittedEvents(forTick: executingTickId)
+        let passSyncRequests = outputCollector.syncRequestsByTick.removeValue(forKey: executingTickId)
+        let events = failure == nil ? passEvents : []
+        let syncRequests = failure == nil ? passSyncRequests : nil
         // The pass is one turn record (#327): its inputs, pass and events in one submission that
         // ends the turn. With nothing of its own to record it still ends the turn, closing what
         // reached the recorder during the pass (as before #325).
