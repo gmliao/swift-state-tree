@@ -394,6 +394,14 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             var pairs: [(String, UInt64)] = []
             var replayedPatches: [String: [StatePatch]] = [:]
             for playerID in seeded.sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
+                // Not verified in this output: neither compared nor staged, so its shadow view
+                // doesn't advance on a diff the server may not have produced for it (a player
+                // the output didn't address). It leaves the set only by a seed (a fresh view) or
+                // a clear.
+                if unverified.contains(playerID.rawValue), !uncommitted.contains(playerID.rawValue) {
+                    perPlayer.unverifiable += 1
+                    continue
+                }
                 let perPlayerSnapshot = Self.substituting(
                     output.extractionDrops[playerID.rawValue],
                     in: engine.extractPerPlayerSnapshot(for: playerID, from: state, mode: .all, drops: &drops),

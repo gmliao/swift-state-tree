@@ -305,4 +305,69 @@ struct TicklessPassOrdinalTests {
         #expect(failing.tickId > 1)
         #expect(earlier.tickHashes.keys.max() == 1)
     }
+
+    @Test("The sync stream ends at the land failure: a firstSync read before it records nothing, a later clear neither, and what came before is kept (#535)")
+    func syncStreamEndsAtTheFailure() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await OrdinalFixture.make()
+        try await f.join(1)
+        try await f.add(1, 5)
+        let before = ReevaluationSyncStreamEntry.stream(of: try await f.frames())
+        // p1's seed, then the action's output: the last entry before the failure.
+        let lastBefore = try #require(before.last)
+        guard case .output = lastBefore else {
+            Issue.record("the last entry before the failure is not the action's output: \(lastBefore)")
+            return
+        }
+
+        // p2 joins the direct way; its standalone firstSync reads the state and is held.
+        let session = SessionID("s2"), client = ClientID("c2"), player = OrdinalFixture.player(2)
+        await f.adapter.onConnect(sessionID: session, clientID: client)
+        let decision = try await f.keeper.join(
+            session: PlayerSession(playerID: player.rawValue, deviceID: "dev", metadata: [:]),
+            clientID: client, sessionID: session, services: LandServices()
+        )
+        guard case .allow = decision else {
+            Issue.record("p2's join was denied")
+            return
+        }
+        await f.adapter.registerSession(sessionID: session, clientID: client, playerID: player, authInfo: nil)
+        _ = await f.adapter.allocatePlayerSlot(accountKey: player.rawValue, for: player)
+        let afterRead = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.initialSyncAfterRead) { await afterRead.arrive() })
+        let firstSync = Task { await f.adapter.syncStateForNewPlayer(playerID: player, sessionID: session) }
+        #expect(await afterRead.waitForArrivals(1))
+        await f.adapter.installHolds(nil)
+
+        // The land fails while the read is held; its teardown is held too, so p2's ticket is
+        // still current when the firstSync resumes: only the closed gate stops it.
+        let teardown = TestGate()
+        await f.keeper.installHolds(HoldRegistry.at(.landFailedTeardown) { await teardown.arrive() })
+        await f.keeper.failLandForTesting(LandFailure(
+            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        afterRead.open()
+        await firstSync.value
+        #expect(await f.adapter.initialSyncsDroppedLandFailed == 1)
+        #expect(await f.adapter.initialSyncsDroppedStale == 0)
+
+        // A disconnect after the failure: its clear is outside the stream too.
+        await f.adapter.onDisconnect(sessionID: SessionID("s1"), clientID: ClientID("c1"))
+        teardown.open()
+        await f.keeper.installHolds(nil)
+
+        let frames = try await f.frames()
+        #expect(frames.compactMap(\.landFailure).count == 1)
+        let stream = ReevaluationSyncStreamEntry.stream(of: frames)
+        // Nothing after the failure: the stream is what it was before it, entry for entry, its
+        // indices dense from 0. A guard placed too early would drop entries from before it.
+        #expect(stream.map(\.streamIndex) == before.map(\.streamIndex))
+        #expect(stream.map(\.streamIndex) == Array(0..<UInt64(stream.count)))
+        #expect(stream.last?.streamIndex == lastBefore.streamIndex)
+        let markers = stream.compactMap { entry -> ReevaluationRecordedSyncMarker? in
+            if case .marker(let marker) = entry { return marker } else { return nil }
+        }
+        #expect(!markers.contains { $0.playerID == player.rawValue }, "p2's seed was recorded after the failure")
+        #expect(!markers.contains { $0.kind == .clear }, "a clear was recorded after the failure")
+    }
 }

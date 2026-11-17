@@ -4735,8 +4735,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// turn: a legacy cycle's or an initial sync's commit, a disconnect's or a superseded
     /// session's clear, each in the synchronous segment of what it describes. `outsideTurn`: as
     /// `recordSyncMarker`'s.
+    ///
+    /// The sync stream ends at the land failure (#535 D9): once `failure` is set nothing more
+    /// is numbered or recorded, outputs, seeds and clears alike (the clears of the sessions the
+    /// failure's teardown closes included). Replay stops at the failure's tick, so nothing after
+    /// it is verified. The failing turn's drafts submitted before `failLand` are kept.
     package func submitSyncStream(_ drafts: [SyncStreamDraft], outsideTurn: Bool = false) {
-        guard reevaluationRecorder != nil else { return }
+        guard reevaluationRecorder != nil, failure == nil else { return }
         for draft in drafts {
             switch draft.entry {
             case let .output(observedTickId, make):
