@@ -5,12 +5,16 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
+/// An existential behind a typealias: the macro can't see it (#535's documented gap), so the
+/// field list still names its type. A field spelled `any P` is refused at expansion.
+typealias SnapshotFieldListAnyConvertible = any SnapshotValueConvertible
+
 /// One let-only struct per property type form the generated `(T).self` must parse for.
 @SnapshotConvertible
 struct SnapshotFieldListForms {
-    let existential: any SnapshotValueConvertible
+    let existential: SnapshotFieldListAnyConvertible
     let optional: Int?
-    let optionalExistential: (any SnapshotValueConvertible)?
+    let optionalExistential: SnapshotFieldListAnyConvertible?
     let dictionary: [String: [Int]]
     let generic: Optional<String>
 }

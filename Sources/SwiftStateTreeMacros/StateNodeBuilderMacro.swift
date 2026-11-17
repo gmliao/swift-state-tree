@@ -37,6 +37,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Validate all stored properties have @Sync or @Internal
         try validateProperties(propertiesWithNodes, context: context)
 
+        // A synced field whose type can hold a value of any type is refused (#535 D8 (b)).
+        if diagnoseRefusedFieldTypes(in: structDecl, onlySynced: true, context: context) {
+            throw RefusedFieldTypeError()
+        }
+
         // Generate getSyncFields() method
         let getSyncFieldsMethod = try generateGetSyncFields(properties: properties)
 

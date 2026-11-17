@@ -82,6 +82,11 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // Collect all stored properties
         let properties = collectStoredProperties(from: structDecl)
 
+        // Every stored property is converted, so none may hold a value of any type (#535 D8 (b)).
+        if diagnoseRefusedFieldTypes(in: structDecl, onlySynced: false, context: context) {
+            throw RefusedFieldTypeError()
+        }
+
         // Generate toSnapshotValue() method
         let toSnapshotValueMethod = try generateToSnapshotValueMethod(properties: properties)
 
