@@ -326,7 +326,7 @@ seeds 1–10，另加一格 server-only 欄位的擾動（[Part B at record form
 
 跨架構：在 record format 2.4 與 2.5，兩台機器各自獨立錄製一批（arm64 / macOS / Apple Swift 6.4.2，
 x86_64 / Linux / Swift 6.2.4），41 個 x86_64 檔與 arm64 檔逐檔 sha256 比對 41/41 位元相同，所以各機
-驗證自己那批也同時驗證了另一批，同時跨 CPU 架構、作業系統與 toolchain 三軸。3.0 與 3.1 只在 x86_64 執行，所以跨機器的位元一致最後一次是在 2.5 顯示的。較早的一次重驗
+驗證自己那批也同時驗證了另一批，同時跨 CPU 架構、作業系統與 toolchain 三軸。3.0 只在 x86_64 執行；3.1 於 2026-11-17 以同一 commit（`022d8fdb`）在 arm64 重新錄製，41 份與 x86_64 那批逐位元相同（41/41），arm64 runner 重驗 x86_64 的錄音也是 41/41（見 Cross-architecture at record format 3.1 節），所以跨機器的位元一致最近一次是在 3.1 顯示的。較早的一次重驗
 （2026-09-12，`results/crossarch-x86_64.json`）把 arm64 錄音以 sha256 對帳搬到 x86_64（WSL2 Ubuntu /
 Swift 6.2.3）重播，41/41 通過、0 mismatch。`E_t` 錄下後，δ 的重評估在這兩個平台之間不受錄製平台影響。
 
@@ -450,7 +450,7 @@ Each machine's verification of its own batch therefore also verifies the other's
     those are verified exactly, including `sequence`. The records behind the table above predate
     the fix and carry no watermarks, so they still go through the content-only re-check.
 - 原始紀錄（2026-08-31）的錄製與重播同為 arm64/macOS；跨架構（arm64→x86_64）證據見 Results 末表
-  與 record format 2.4、2.5 各節（3.0、3.1 只在 x86_64 執行）。
+  與 record format 2.4、2.5 各節（3.0 只在 x86_64 執行；3.1 見 Cross-architecture at record format 3.1 節）。
 - 擾動作用於當 tick 所有移動中的玩家（非單一玩家）；latency 以「首個 mismatch tick − 600」計。
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
 - 已變動軸：玩家數（2/5/10）、注入節奏（5/20 ticks）、長度（1,200/12,000 ticks）。未變動軸：
