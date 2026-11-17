@@ -8,6 +8,11 @@ and checks that every batch of a format lists that format's per-file sha256
 per-recording batch it names, and that a per-recording batch is complete: all 41 recordings, each
 in the format its file name gives, and each second recording (run-batch.sh TWICE=1) identical: by
 content (the JSON view's sha256) from the 3.0 batches on, by bytes in the 2.4 and 2.5 batches.
+
+Also regenerates the tables of `## Part B at record format 3.1 (full-state hash)` from
+results/perturb-3.1/ (scripts/perturb_collect.py's output); `--check` compares them and refuses a set
+that isn't every cell × seeds 1-10 on the 3.1 batch's own recordings (batch-3.1-SHA256SUMS.txt),
+with both controls 10/10 and every run read as detected (exit 5) or verified (exit 0).
 """
 import argparse
 import hashlib
@@ -195,6 +200,133 @@ def tables(runs) -> str:
     return "\n".join(out) + "\n"
 
 
+PERTURB31 = HERE / "results" / "perturb-3.1"
+PERTURB31_HEADING = "## Part B at record format 3.1 (full-state hash)"
+PERTURB31_SEEDS = list(range(1, 11))
+PERTURB31_TICK = 600
+# (mode, eps as passed) in table order; the server-only cell is the runner at its own commit.
+PERTURB31_CELLS = [("float", "1e-07"), ("fixed", "1.0"), ("fixed", "1000.0"), ("serveronly", "1")]
+
+
+def load_perturb31(directory=None):
+    """(runs, controls) from results/perturb-3.1/ (scripts/perturb_collect.py's output)."""
+    d = directory or PERTURB31
+    runs = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(d.glob("perturb-*.json"))]
+    controls = json.loads((d / "controls.json").read_text(encoding="utf-8"))
+    return runs, controls
+
+
+def recorded_sums(results=None) -> dict:
+    """{file name: sha256} from the 3.1 batch's SHA256SUMS: the recordings Part B 3.1 replayed."""
+    text = ((results or HERE / "results") / "batch-3.1-SHA256SUMS.txt").read_text(encoding="utf-8")
+    return {name: sha for sha, name in (line.split() for line in text.splitlines() if line.strip())}
+
+
+def check_perturb31(runs, controls, sums, batch_sha) -> list:
+    """Every cell × seed once, on the 3.1 batch's own recordings, read by one rule; both controls
+    10/10 exit 0 with both verification lines; each run's runner is its control's; the matrix ran
+    on the batch's commit and the server-only cell on the other runner."""
+    errors = []
+    runner_of = {}
+    for r in controls["runners"]:
+        runner_of[r["git_sha"]] = r["runner_sha256"]
+        seeds = sorted(x["seed"] for x in r["runs"])
+        if seeds != PERTURB31_SEEDS:
+            errors.append(f"control {r['git_sha']}: seeds {seeds}")
+        for x in r["runs"]:
+            if (x["exit"], x["verified_lines"]) != (0, 2):
+                errors.append(f"control {r['git_sha']} s{x['seed']}: exit {x['exit']}, {x['verified_lines']} verification lines")
+            if sums.get(f"s{x['seed']}.sstr") != x["recording_sha256"]:
+                errors.append(f"control {r['git_sha']} s{x['seed']}: recording isn't the 3.1 batch's")
+    if len(runner_of) != 2:
+        errors.append(f"controls name {len(runner_of)} runners, expected 2")
+    cells = {}
+    for r in runs:
+        p, m, meta = r["params"], r["metrics"], r["meta"]
+        key = (p["mode"], p["eps"])
+        cells.setdefault(key, []).append(p["seed"])
+        name = f"{p['mode']} {p['eps']} s{p['seed']}"
+        if key not in PERTURB31_CELLS:
+            errors.append(f"{name}: not a cell of the table")
+        if runner_of.get(meta["git_sha"]) != meta["runner_sha256"]:
+            errors.append(f"{name}: runner {meta['runner_sha256'][:12]} isn't its control's at {meta['git_sha']}")
+        if sums.get(f"s{p['seed']}.sstr") != p["recording_sha256"]:
+            errors.append(f"{name}: recording isn't the 3.1 batch's")
+        if p["perturb_tick"] != PERTURB31_TICK:
+            errors.append(f"{name}: perturb tick {p['perturb_tick']}")
+        if m["exit"] == 0:
+            if m["detected"] or m["verified_lines"] != 2:
+                errors.append(f"{name}: exit 0 needs both verification lines and no detection")
+        elif m["exit"] == 5:
+            if not m["detected"] or m["detection_latency_ticks"] != m["first_mismatch_tick"] - PERTURB31_TICK \
+                    or not m["mismatch_ticks"]:
+                errors.append(f"{name}: exit 5 needs a first mismatching tick and a mismatch count")
+        else:
+            errors.append(f"{name}: exit {m['exit']} is neither detected (5) nor verified (0)")
+    for key in PERTURB31_CELLS:
+        if sorted(cells.get(key, [])) != PERTURB31_SEEDS:
+            errors.append(f"{key[0]} {key[1]}: seeds {sorted(cells.get(key, []))}")
+    commits = {key: {r["meta"]["git_sha"] for r in runs if (r["params"]["mode"], r["params"]["eps"]) == key}
+               for key in PERTURB31_CELLS}
+    if any(len(c) != 1 for c in commits.values()):
+        errors.append(f"a cell ran on more than one runner: {commits}")
+    else:
+        matrix = {c for key, cs in commits.items() if key[0] != "serveronly" for c in cs}
+        serveronly = commits[("serveronly", "1")]
+        if matrix != {batch_sha}:
+            errors.append(f"the matrix ran at {sorted(matrix)}, the 3.1 batch at {batch_sha}")
+        if serveronly & matrix:
+            errors.append("the server-only cell ran on the matrix's runner")
+    return errors
+
+
+def perturb31_tables(runs, controls) -> list:
+    """The section's tables, in order: the summary in the 2026-08-31 shape plus mismatch ticks and
+    the runner's commit, the controls, and every run."""
+    def span(values):
+        return f"{min(values)} / {max(values)}" if values else "—"
+
+    summary = ["| mode | eps | runner | detected | detection latency (ticks) min / max | mismatch ticks min / max |",
+               "|---|---|---|---:|---|---|"]
+    for mode, eps in PERTURB31_CELLS:
+        cell = [r for r in runs if (r["params"]["mode"], r["params"]["eps"]) == (mode, eps)]
+        det = [r["metrics"] for r in cell if r["metrics"]["detected"]]
+        summary.append(f"| {mode} | {eps} | `{cell[0]['meta']['git_sha']}` | {len(det)}/{len(cell)} | "
+                       f"{span([m['detection_latency_ticks'] for m in det])} | {span([m['mismatch_ticks'] for m in det])} |")
+
+    ctl = ["| runner | runner sha256 | recordings | exit 0 with both verification lines |", "|---|---|---:|---:|"]
+    for r in controls["runners"]:
+        ok = sum(1 for x in r["runs"] if (x["exit"], x["verified_lines"]) == (0, 2))
+        ctl.append(f"| `{r['git_sha']}` | `{r['runner_sha256']}` | {len(r['runs'])} | {ok}/{len(r['runs'])} |")
+
+    order = {key: i for i, key in enumerate(PERTURB31_CELLS)}
+    per_run = ["| seed | mode | eps | runner | exit | detected | first mismatch tick | latency (ticks) | mismatch ticks |",
+               "|---:|---|---|---|---:|---|---:|---:|---:|"]
+    for r in sorted(runs, key=lambda r: (order[(r["params"]["mode"], r["params"]["eps"])], r["params"]["seed"])):
+        p, m = r["params"], r["metrics"]
+        dash = lambda v: "—" if v is None else v  # noqa: E731
+        per_run.append(f"| {p['seed']} | {p['mode']} | {p['eps']} | `{r['meta']['git_sha']}` | {m['exit']} | "
+                       f"{'yes' if m['detected'] else 'no'} | {dash(m['first_mismatch_tick'])} | "
+                       f"{dash(m['detection_latency_ticks'])} | {dash(m['mismatch_ticks'])} |")
+    return ["\n".join(t) + "\n" for t in (summary, ctl, per_run)]
+
+
+def section_tables(readme: str, heading: str) -> list:
+    """Every Markdown table in the section under `heading`, in order."""
+    start = readme.index(heading)
+    end = readme.find("\n## ", start + 1)
+    tables, current = [], []
+    for line in readme[start:end if end != -1 else None].split("\n"):
+        if line.startswith("|"):
+            current.append(line)
+        elif current:
+            tables.append("\n".join(current) + "\n")
+            current = []
+    if current:
+        tables.append("\n".join(current) + "\n")
+    return tables
+
+
 def results_section(readme: str) -> str:
     if "## Results" not in readme:
         print("README.md has no '## Results' section", file=sys.stderr)
@@ -234,12 +366,29 @@ def main():
                 for e in errors:
                     print(e, file=sys.stderr)
                 sys.exit(1)
+        if PERTURB31_HEADING not in readme:
+            print("MISMATCH")
+            print(f"README.md has no '{PERTURB31_HEADING}' section", file=sys.stderr)
+            sys.exit(1)
+        runs, controls = load_perturb31()
+        errors = check_perturb31(runs, controls, recorded_sums(), load_batches()["3.1"][0]["meta"]["git_sha"])
+        if errors:
+            print("MISMATCH")
+            for e in errors:
+                print(e, file=sys.stderr)
+            sys.exit(1)
+        if [x.strip() for x in section_tables(readme, PERTURB31_HEADING)] != [x.strip() for x in perturb31_tables(runs, controls)]:
+            print("MISMATCH")
+            print(f"README.md {PERTURB31_HEADING} tables do not match results/perturb-3.1/", file=sys.stderr)
+            sys.exit(1)
         print("OK")
     else:
         print(t, end="")
         for fmt, batches in load_batches().items():
             print(f"\n{batch_heading(fmt)}\n")
             print(batch_table(batches), end="")
+        print(f"\n{PERTURB31_HEADING}\n")
+        print("\n".join(perturb31_tables(*load_perturb31())), end="")
 
 
 if __name__ == "__main__":

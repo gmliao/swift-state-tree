@@ -91,6 +91,7 @@ Each run's exact command, start and end time, shims, toolchain and kernel are in
 | `data/rerun/<run>/summary.json`, `toolchain.txt` | The scalability script's summary and the toolchains of each run |
 | `data/b0/r{300,500}-B0-{1,2,3}/` | The 2026-11-05 comparison runs: report, toolchain, the scenario they used (`base-scenario.json`) and the run line (`meta.txt`) |
 | `data/host-cpu.json` | Host CPU summary per run (mean, p95, sample count, sampler) |
+| `data/input-latency/<run>/report.json.gz`, `data/input-latency/runs.json` | The input-to-visible set (2026-11-17, `695fe86c`, MoveTo 1/s and 2/s at 100–1000 rooms, a smoke and three suites): each run's ws-loadtest report, and per run the driver's facts (start, end, exit, the server's spawn ramp and CPU list, the client-load check, toolchain, TIME_WAIT at the start, the sha256 of the uncompressed report), from `collect_input_latency.py` |
 | `data/provenance/` | Server SHA, pinning shims, the server's startup line, per-run headers, the driver's chain logs (TIME_WAIT waits, per-run checks), and the SHA-256 manifests of the full raw result sets |
 
 The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-second host samples) are kept by the maintainer. `data/provenance/MANIFEST-*.sha256` lists their files and hashes. Each published report is the gzip of the file with the same run in the manifest.
@@ -289,6 +290,72 @@ Each arm adds that many MoveTo events per player per second to the 1 PlayAction/
 
 **Host-drift control** (`mr-20261110-control`, suite-1 at 300 rooms at arm 0, run after the arms): server CPU 0.786 % per room, against arm 0's 300-room runs [0.793–0.811]: **outside it: the set is flagged for host drift** (compare the arms' numbers with care). It isn't tabled.
 
+### Input-to-visible latency (MoveTo 1/s and 2/s)
+
+Server and client at `695fe86cb985752293dc184ff4d650b0689d90c2`, the MoveTo arms' commit; release GameServer; Swift version 6.2.4 (swift-6.2.4-RELEASE); Node v24.22.2; kernel `6.18.58.1-microsoft-standard-WSL2`; 2026-11-17. Same image, sysctls, Node and pinning as the arms (server CPUs 0–7, client 8–11), in a separate container. The workload is the arms' `refreeze` rules (every server reported `spawnRampTicks=3000`; ws-loadtest's default warm-up), **unprofiled** (the arms' tables are profiled, so compare server CPU with them only with that in mind), with `--input-latency on --move-to-rate <1|2> --event-seed 1`, 5 players per room. run.sh has no input-latency option, so each run is one invocation of the scalability script with run.sh's per-run checks applied by the driver (TIME_WAIT drained to at most 200, the server's CPU list, the spawn ramp, one summary naming the room count, `clientload.py`), recorded in `data/input-latency/runs.json`. Order: one smoke run (1000 rooms, 2/s), then three suites, rooms ascending within each rate; suite 1 ran 1/s then 2/s, suite 2 2/s then 1/s, suite 3 1/s then 2/s. Input-to-visible is the time from sending a MoveTo to the first state update that shows its effect ([`METRICS.md`](../../Examples/GameDemo/ws-loadtest/METRICS.md)).
+
+#### Steady phase, each run (disconnects and join failures over all phases)
+
+| run | MoveTo /s | rooms | joined / connections | input-to-visible p50 / p95 / p99 / max (ms) | sent / seen / superseded / timed out | RTT p50 / p95 / p99 (ms) | update p95 / p99 (ms) | server CPU mean / p95 (%) | client CPU total (%) / worst loop delay p99 (ms) | disconnects / join failures | steady |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| smoke-m2-1000 | 2 | 1000 | 5,000 / 5,000 | 1,310 / 2,246 / 2,463 / 2,961 | 511,992 / 511,295 / 0 / 697 | 1266.07 / 2197.97 / 2405.40 | 198 / 254 | 751.5 / 760.0 | 201.3 / 1.35 | 430 / 0 | FAIL |
+| lat-s1-m1-100 | 1 | 100 | 500 / 500 | 54 / 97 / 100 / 101 | 28,715 / 28,715 / 0 / 0 | 0.71 / 1.83 / 1.98 | 100 / 101 | 100.3 / 101.9 | 30.9 / 0.83 | 0 / 0 | pass |
+| lat-s1-m1-300 | 1 | 300 | 1,500 / 1,500 | 51 / 95 / 100 / 103 | 84,692 / 84,692 / 0 / 0 | 0.72 / 1.87 / 2.00 | 100 / 101 | 274.8 / 279.9 | 64.3 / 0.93 | 0 / 0 | pass |
+| lat-s1-m1-500 | 1 | 500 | 2,500 / 2,500 | 52 / 95 / 100 / 103 | 138,605 / 138,605 / 0 / 0 | 0.83 / 1.90 / 2.22 | 101 / 101 | 446.4 / 458.4 | 102.7 / 0.95 | 0 / 0 | pass |
+| lat-s1-m1-1000 | 1 | 1000 | 5,000 / 5,000 | 173 / 290 / 349 / 548 | 263,909 / 263,909 / 0 / 0 | 131.39 / 225.68 / 277.21 | 158 / 196 | 748.7 / 752.3 | 187.9 / 1.08 | 0 / 0 | FAIL |
+| lat-s1-m2-100 | 2 | 100 | 500 / 500 | 48 / 95 / 100 / 101 | 57,431 / 57,431 / 0 / 0 | 0.74 / 1.82 / 1.96 | 100 / 101 | 106.3 / 109.9 | 33.8 / 0.72 | 0 / 0 | pass |
+| lat-s1-m2-300 | 2 | 300 | 1,500 / 1,500 | 51 / 96 / 99 / 112 | 169,362 / 169,362 / 0 / 0 | 0.77 / 1.86 / 1.99 | 101 / 101 | 298.9 / 318.6 | 72.2 / 0.93 | 0 / 0 | pass |
+| lat-s1-m2-500 | 2 | 500 | 2,500 / 2,500 | 51 / 96 / 100 / 104 | 277,153 / 277,153 / 0 / 0 | 0.86 / 1.92 / 2.58 | 101 / 101 | 486.5 / 496.5 | 113.2 / 0.98 | 0 / 0 | pass |
+| lat-s1-m2-1000 | 2 | 1000 | 5,000 / 5,000 | 341 / 628 / 730 / 1,052 | 524,296 / 524,172 / 0 / 124 | 310.08 / 590.74 / 707.10 | 192 / 242 | 761.9 / 768.0 | 199.6 / 1.31 | 0 / 0 | FAIL |
+| lat-s2-m1-100 | 1 | 100 | 500 / 500 | 53 / 96 / 100 / 101 | 28,706 / 28,706 / 0 / 0 | 0.67 / 1.81 / 1.96 | 100 / 101 | 100.5 / 102.9 | 31.6 / 0.72 | 0 / 0 | pass |
+| lat-s2-m1-300 | 1 | 300 | 1,500 / 1,500 | 49 / 95 / 99 / 102 | 84,680 / 84,680 / 0 / 0 | 0.72 / 1.84 / 1.98 | 100 / 101 | 276.1 / 281.9 | 65.0 / 0.90 | 0 / 0 | pass |
+| lat-s2-m1-500 | 1 | 500 | 2,500 / 2,500 | 51 / 96 / 100 / 106 | 138,570 / 138,570 / 0 / 0 | 0.83 / 1.91 / 2.36 | 101 / 101 | 442.8 / 449.4 | 103.6 / 0.95 | 0 / 0 | pass |
+| lat-s2-m1-1000 | 1 | 1000 | 5,000 / 5,000 | 175 / 292 / 356 / 536 | 263,908 / 263,908 / 0 / 0 | 135.15 / 229.01 / 279.50 | 159 / 198 | 746.6 / 754.6 | 187.7 / 1.08 | 0 / 0 | FAIL |
+| lat-s2-m2-100 | 2 | 100 | 500 / 500 | 48 / 95 / 100 / 101 | 57,410 / 57,410 / 0 / 0 | 0.72 / 1.82 / 1.95 | 100 / 101 | 108.4 / 109.9 | 34.0 / 0.71 | 0 / 0 | pass |
+| lat-s2-m2-300 | 2 | 300 | 1,500 / 1,500 | 51 / 95 / 100 / 104 | 169,368 / 169,368 / 0 / 0 | 0.76 / 1.86 / 1.98 | 101 / 101 | 298.6 / 304.6 | 72.0 / 0.92 | 0 / 0 | pass |
+| lat-s2-m2-500 | 2 | 500 | 2,500 / 2,500 | 51 / 96 / 100 / 104 | 277,151 / 277,151 / 0 / 0 | 0.91 / 1.93 / 2.54 | 101 / 101 | 479.4 / 491.5 | 113.9 / 0.97 | 0 / 0 | pass |
+| lat-s2-m2-1000 | 2 | 1000 | 5,000 / 5,000 | 1,064 / 2,614 / 2,897 / 3,406 | 489,533 / 488,218 / 0 / 1,315 | 1021.75 / 2566.22 / 2831.17 | 207 / 273 | 747.6 / 758.0 | 196.6 / 1.39 | 1,433 / 0 | FAIL |
+| lat-s3-m1-100 | 1 | 100 | 500 / 500 | 55 / 96 / 99 / 101 | 28,695 / 28,695 / 0 / 0 | 0.70 / 1.83 / 1.96 | 100 / 101 | 100.1 / 101.9 | 31.1 / 0.73 | 0 / 0 | pass |
+| lat-s3-m1-300 | 1 | 300 | 1,500 / 1,500 | 51 / 95 / 99 / 102 | 84,687 / 84,687 / 0 / 0 | 0.71 / 1.84 / 1.99 | 100 / 101 | 276.4 / 283.6 | 64.7 / 0.95 | 0 / 0 | pass |
+| lat-s3-m1-500 | 1 | 500 | 2,500 / 2,500 | 50 / 95 / 100 / 102 | 138,564 / 138,564 / 0 / 0 | 0.81 / 1.89 / 2.00 | 101 / 101 | 442.9 / 451.6 | 102.7 / 0.94 | 0 / 0 | pass |
+| lat-s3-m1-1000 | 1 | 1000 | 5,000 / 5,000 | 169 / 279 / 335 / 508 | 263,811 / 263,811 / 0 / 0 | 127.32 / 215.29 / 262.40 | 153 / 190 | 750.4 / 755.3 | 187.7 / 1.06 | 0 / 0 | FAIL |
+| lat-s3-m2-100 | 2 | 100 | 500 / 500 | 53 / 96 / 99 / 101 | 57,407 / 57,407 / 0 / 0 | 0.74 / 1.85 / 1.98 | 100 / 101 | 108.1 / 110.9 | 34.0 / 0.73 | 0 / 0 | pass |
+| lat-s3-m2-300 | 2 | 300 | 1,500 / 1,500 | 50 / 96 / 100 / 102 | 169,358 / 169,358 / 0 / 0 | 0.72 / 1.86 / 1.98 | 100 / 101 | 296.5 / 305.7 | 71.2 / 0.90 | 0 / 0 | pass |
+| lat-s3-m2-500 | 2 | 500 | 2,500 / 2,500 | 49 / 96 / 100 / 110 | 277,169 / 277,169 / 0 / 0 | 0.80 / 1.91 / 2.41 | 101 / 101 | 484.9 / 496.8 | 114.1 / 0.96 | 0 / 0 | pass |
+| lat-s3-m2-1000 | 2 | 1000 | 5,000 / 5,000 | 710 / 1,355 / 1,515 / 1,879 | 515,488 / 515,042 / 0 / 446 | 668.15 / 1308.76 / 1465.43 | 197 / 254 | 757.4 / 763.7 | 201.7 / 1.26 | 0 / 0 | FAIL |
+
+#### Per room count and rate: median [min–max] over the 3 suites (the smoke excluded)
+
+| rooms | MoveTo /s | input-to-visible p50 (ms) | p95 (ms) | p99 (ms) | max (ms) | RTT p99 (ms) | update p95 (ms) | server CPU mean (%) | timed out (sum) | disconnects (sum) | steady passed |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 1 | 54 [53–55] | 96 [96–97] | 100 [99–100] | 101 [101–101] | 1.96 [1.96–1.98] | 100 [100–100] | 100.3 [100.1–100.5] | 0 | 0 | 3/3 |
+| 300 | 1 | 51 [49–51] | 95 [95–95] | 99 [99–100] | 102 [102–103] | 1.99 [1.98–2.00] | 100 [100–100] | 276.1 [274.8–276.4] | 0 | 0 | 3/3 |
+| 500 | 1 | 51 [50–52] | 95 [95–96] | 100 [100–100] | 103 [102–106] | 2.22 [2.00–2.36] | 101 [101–101] | 442.9 [442.8–446.4] | 0 | 0 | 3/3 |
+| 1000 (over capacity) | 1 | 173 [169–175] | 290 [279–292] | 349 [335–356] | 536 [508–548] | 277.21 [262.40–279.50] | 158 [153–159] | 748.7 [746.6–750.4] | 0 | 0 | 0/3 |
+| 100 | 2 | 48 [48–53] | 95 [95–96] | 100 [99–100] | 101 [101–101] | 1.96 [1.95–1.98] | 100 [100–100] | 108.1 [106.3–108.4] | 0 | 0 | 3/3 |
+| 300 | 2 | 51 [50–51] | 96 [95–96] | 100 [99–100] | 104 [102–112] | 1.98 [1.98–1.99] | 101 [100–101] | 298.6 [296.5–298.9] | 0 | 0 | 3/3 |
+| 500 | 2 | 51 [49–51] | 96 [96–96] | 100 [100–100] | 104 [104–110] | 2.54 [2.41–2.58] | 101 [101–101] | 484.9 [479.4–486.5] | 0 | 0 | 3/3 |
+| 1000 (over capacity) | 2 | 710 [341–1,064] | 1,355 [628–2,614] | 1,515 [730–2,897] | 1,879 [1,052–3,406] | 1465.43 [707.10–2831.17] | 197 [192–207] | 757.4 [747.6–761.9] | 1,885 | 1,433 | 0/3 |
+
+#### 1000 rooms, MoveTo 2/s, beside server-ab step 4
+
+server-ab's step 4 ran the same workload (refreeze rules, unprofiled, MoveTo 2/s, `--event-seed 1`) on 2026-11-06, on an earlier host configuration: before the host's memory configuration changed (2026-11-07) and its kernel changed (2026-11-10), with the client at `9b41c5a9`. Between that client and `695fe86c` the input-to-visible matcher was changed to match positional points and gate its hit rate (`4e8861dc`), and a frame's arrival is timed before the client's own work on it (`ee313cf3`). **Not directly comparable**; the rows are read from `../multiroom-load-2026-11-server-ab/data/runs/latency-{A,B}-1000/` and shown for reference only. Join failures here are over all phases; server-ab's own step 4 table counts the steady phase's (40 for A, whose postflight joins went unanswered).
+
+| server | input-to-visible p50 / p95 / p99 / max (ms) | sent / seen / superseded / timed out | RTT p50 / p95 / p99 (ms) | update p95 / p99 (ms) | server CPU mean / p95 (%) | disconnects / join failures (all phases) |
+|---|---|---|---|---|---|---|
+| server-ab A, `b629861` (2026-11-06) | 2,063 / 3,688 / 3,898 / 4,951 | 485,685 / 110,384 / 375,288 / 13 | 7022.95 / 16747.33 / 17965.01 | 134 / 158 | 746.6 / 756.1 | 0 / 2,050 |
+| server-ab B, `ee8a407a` (2026-11-06) | 191 / 318 / 381 / 641 | 527,481 / 527,480 / 0 / 1 | 158.00 / 262.85 / 320.20 | 179 / 221 | 747.5 / 753.3 | 0 / 0 |
+| `695fe86c` suite 1 (2026-11-17) | 341 / 628 / 730 / 1,052 | 524,296 / 524,172 / 0 / 124 | 310.08 / 590.74 / 707.10 | 192 / 242 | 761.9 / 768.0 | 0 / 0 |
+| `695fe86c` suite 2 (2026-11-17) | 1,064 / 2,614 / 2,897 / 3,406 | 489,533 / 488,218 / 0 / 1,315 | 1021.75 / 2566.22 / 2831.17 | 207 / 273 | 747.6 / 758.0 | 1,433 / 0 |
+| `695fe86c` suite 3 (2026-11-17) | 710 / 1,355 / 1,515 / 1,879 | 515,488 / 515,042 / 0 / 446 | 668.15 / 1308.76 / 1465.43 | 197 / 254 | 757.4 / 763.7 | 0 / 0 |
+
+#### Findings
+
+- At 100–500 rooms all 18 runs passed steady with 0 disconnects and 0 inputs timed out; input-to-visible p99 99–100 ms, max 101–112 ms.
+- "Over capacity" marks a room count at which every run failed the steady phase's bars: 1000. At 1000 rooms the server ran at 746.6–761.9 % mean CPU of its 8 CPUs, and every run broke `rttP95`, `rttP99` and `updateP95` (steady-phase bars).
+- At 1000 rooms and 2/s the three suites differ widely: input-to-visible p50 341, 1,064, 710 ms (suites 1, 2, 3); suite 2 lost 1,433 of 5,000 connections.
+- The client wasn't the bottleneck: `clientload.py` passed every run; client CPU at most 201.7 % of its 4 CPUs (400 %), worst event-loop delay p99 1.39 ms.
+
 ### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)
 
 The set this topic published before the refreeze: the path index and field merge didn't exist at its commit, so its bytes and CPU aren't like for like with the sweep above, and it isn't compared with it. Its own comparisons (2026-11-05, 2026-02-06) are kept as published.
@@ -383,6 +450,14 @@ This rerun and the 2026-11-05 runs: median [min–max] over 3 runs. 2026-02-06: 
 
 ### The MoveTo arms (695fe86c)
 - **The host-drift control is flagged:** run after the three arms, it read 0.786 % server CPU per room at 300 rooms, against arm 0's three 300-room runs at 0.793–0.811 %, about 0.9 % below the band's minimum ((0.793 − 0.786) / 0.793) (the server used less CPU per room, not more), so read the arms' differences against that spread.
+
+### The input-to-visible set (695fe86c, 2026-11-17)
+
+- **Unprofiled,** unlike the arms' tables: its server CPU compares with theirs only with that difference in mind. Its workload is the arms' `refreeze` rules, so the monster load rises through steady (the limit under the MoveTo arms).
+- **Not run by run.sh,** which has no input-latency option: one scalability-script invocation per run, with run.sh's per-run checks applied by the driver and recorded in `runs.json`. The run headers aren't published; `runs.json` holds what `regenerate.py` checks from them.
+- **Its own container** from the same image (`swift:6.2.4-noble`), with the same sysctls, Node and pinning as the arms, on kernel `6.18.58.1`. The host's TIME_WAIT count at each run's start was 0, or 200 at the 300-room runs (the bar), after waits of 0–60 s.
+- **1000 rooms is over capacity** for this host and workload: every run failed the steady bars, and at 2/s the three suites' input-to-visible p50 differ by about a factor of three, so a 1000-room figure is a range, not an estimate.
+- **The server-ab rows** came from an earlier host configuration and client (`9b41c5a9`); see the caption above the comparison.
 
 ### This rerun
 - **The host's memory configuration changed after these runs (2026-11-07),** so later sets from this machine aren't directly comparable with this one. The pagefile moved to C: at 16–24 GB, which raised the commit limit from 33.5 GB to 48.2 GB. WSL2's `.wslconfig` is now `memory=24GB`, `swap=4GB`, `autoMemoryReclaim=gradual` (reclaim was disabled before). Windows Update is disabled, and about 160 GB was freed on C:. The next multi-room set is a new baseline.

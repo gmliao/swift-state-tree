@@ -25,6 +25,10 @@ A, per room: the frames' bytes summed over the room's sessions (A_total), and pe
 fair against a whole-file gzip of B but is not how a live stream can be compressed: a live
 stream is sent frame by frame.
 
+The verify runs' sync-output verdicts come from sync-output.json (sync_output.py, from the raw
+verify outputs): one entry per replayed record of the sizes runs and one per recording-on cost run,
+no other, each "Sync Output: passed" with nothing unverifiable or skipped.
+
 Usage: regenerate.py [--check | --markdown | --self-test | --record-check <process dir>]
 """
 import argparse
@@ -39,6 +43,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import provenance  # noqa: E402
+import syncoutput  # noqa: E402
 import wireform  # noqa: E402
 
 HERE = pathlib.Path(__file__).parent
@@ -769,7 +774,50 @@ def cost_tables(runs: list) -> list:
     return lines + [""]
 
 
-def results_markdown(runs: list) -> str:
+SYNC_OUTPUT = HERE / "sync-output.json"
+
+
+def sync_outputs(runs: list, path: pathlib.Path = SYNC_OUTPUT) -> dict:
+    """{"sizes": [...], "cost": [...]} verdicts from sync-output.json, after its gate; exits naming
+    every failure. Expected: verify-<record>.txt per replayed record of a sizes run, verify.txt per
+    recording-on cost run."""
+    outputs = json.loads(path.read_text(encoding="utf-8"))["outputs"]
+    expected = {}
+    for r in runs:
+        p = r["params"]
+        if p["kind"] == "sizes":
+            for record in r.get("replay") or {}:
+                expected[f"{r['name']}/verify-{record}.txt"] = "sizes"
+        elif p["kind"] == "cost" and p["side"] == "on":
+            expected[f"{r['name']}/verify.txt"] = "cost"
+    failures = []
+    if set(outputs) != set(expected):
+        failures.append(f"sync-output.json lists {sorted(set(outputs) ^ set(expected))} unlike the runs' verify outputs")
+    groups = {"sizes": [], "cost": []}
+    for name, kind in expected.items():
+        if name in outputs:
+            groups[kind].append(outputs[name])
+    for kind, entries in groups.items():
+        failures += syncoutput.failures(syncoutput.total(entries), f"{kind} verify runs")
+    if failures:
+        sys.exit("sync output not usable:\n  " + "\n  ".join(failures))
+    return groups
+
+
+def sync_output_lines(groups: dict) -> list:
+    every = syncoutput.total(groups["sizes"] + groups["cost"])
+    lines = [f"Sync output: all {every['records']} verify runs ({len(groups['sizes'])} replayed records of the sizes runs, "
+             f"the first record of each of the {len(groups['cost'])} recording-on cost runs) report \"Sync Output: passed\" with 0 unverifiable and 0 skipped "
+             "(`sync-output.json`, from each run's verify output). Compared:", "",
+             "| verify runs | runs | " + " | ".join(syncoutput.KINDS) + " |", "|---|---|" + "---|" * len(syncoutput.KINDS)]
+    for label, entries in (("sizes", groups["sizes"]), ("cost", groups["cost"]), ("all", groups["sizes"] + groups["cost"])):
+        s = syncoutput.total(entries)
+        lines.append(f"| {label} | {s['records']} | " + " | ".join(f"{s['counts'][k][0]:,}" for k in syncoutput.KINDS) + " |")
+    return lines + [""]
+
+
+def results_markdown(runs: list, sync: dict | None = None) -> str:
+    """The Results section; `sync` (sync_outputs) adds the verify runs' sync-output lines."""
     lines = [RESULTS_HEADING, ""]
     if not runs:
         return "\n".join(lines + ["No runs yet.", "", RESULTS_END])
@@ -778,12 +826,12 @@ def results_markdown(runs: list) -> str:
     replayed = [r for r in sizes if r["replay"]]
     forms = "; ".join(f"{enc} runs: {form.caption()}" for enc, form in INTENDED_WIRE.items())
     lines += [provenance.line(provenance.from_results(runs), node=False), "", f"Wire form (checked per run): {forms}.", ""]
-    lines += size_tables(sizes) + replay_table(replayed) + cost_tables(runs) + [RESULTS_END]
+    lines += size_tables(sizes) + replay_table(replayed) + (sync_output_lines(sync) if sync is not None else []) + cost_tables(runs) + [RESULTS_END]
     return "\n".join(lines)
 
 
 def render(readme_path: pathlib.Path, runs: list, check_only: bool) -> bool:
-    generated = results_markdown(runs)
+    generated = results_markdown(runs, sync_outputs(runs) if runs else None)
     readme = readme_path.read_text(encoding="utf-8")
     start, end = readme.index(RESULTS_HEADING), readme.index(RESULTS_END) + len(RESULTS_END)
     if check_only:
@@ -813,7 +861,7 @@ def main():
     if runs:
         check(runs)
     if args.markdown:
-        print(results_markdown(runs))
+        print(results_markdown(runs, sync_outputs(runs) if runs else None))
         return
     readme = HERE / "README.md"
     if args.check:

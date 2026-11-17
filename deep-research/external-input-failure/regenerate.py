@@ -11,6 +11,10 @@ by hand can't pass them: only the outcomes the cell injects (and each of them), 
 outside the cells that allow them (cells.allows_limit_rejections), no request pending at the end,
 and the `abandonedResolvers` gauge at 0 at the end. Every cell of the matrix
 must be present in every repeat.
+
+The replayed records' sync-output verdicts come from sync-output.json (sync_output.py, from the raw
+records.json files): every result must have its entry, with as many records as it replayed rooms,
+each "Sync Output: passed" with nothing unverifiable or skipped; the last table sums them per cell.
 """
 import argparse, json, pathlib, statistics, sys
 
@@ -18,7 +22,7 @@ TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells  # noqa: E402
 sys.path.insert(0, str(TOPIC.parent))
-import gameserver_wire, provenance, wireform  # noqa: E402
+import gameserver_wire, provenance, syncoutput, wireform  # noqa: E402
 
 
 def wire_failure(name, run):
@@ -218,6 +222,54 @@ def tables(runs):
     return "\n".join(out)
 
 
+SYNC_OUTPUT = TOPIC / "sync-output.json"
+
+
+def sync_output(runs, path=SYNC_OUTPUT):
+    """{result name: summary} from sync-output.json, after its gate; exits naming every failure."""
+    entries = json.loads(path.read_text(encoding="utf-8"))["runs"]
+    failures = []
+    names = {f"{r['params']['cell']}-rep{r['params']['repeat']}": r for r in runs}
+    if set(entries) != set(names):
+        failures.append(f"sync-output.json lists {sorted(set(entries) ^ set(names))} unlike results/")
+    for name, r in names.items():
+        e = entries.get(name)
+        if e is None:
+            continue
+        if e["source_dir"] != r["meta"]["source_dir"]:
+            failures.append(f"{name}: sync output from {e['source_dir']}, the result from {r['meta']['source_dir']}")
+        if e["records"] != r["metrics"]["replayed_rooms"]:
+            failures.append(f"{name}: {e['records']} sync-output verdicts, {r['metrics']['replayed_rooms']} replayed rooms")
+        failures += syncoutput.failures(e, name)
+    if failures:
+        sys.exit("sync output not usable:\n  " + "\n  ".join(failures))
+    return entries
+
+
+def summed(entries):
+    counts = {k: [sum(e["counts"][k][i] for e in entries) for i in range(3)] for k in syncoutput.KINDS}
+    return {"records": sum(e["records"] for e in entries), "counts": counts}
+
+
+def sync_output_table(runs, entries):
+    order = [c for _, members in AXES for c in members]
+    present = sorted({r["params"]["cell"] for r in runs}, key=order.index)
+    rows = []
+    for c in present:
+        rows.append((LABELS[c], summed([entries[f"{c}-rep{r['params']['repeat']}"] for r in runs if r["params"]["cell"] == c])))
+    everything = summed(list(entries.values()))
+    out = ["\n### Sync output of the replayed records\n",
+           f"`ReevaluationRunner --verify` checks the sync outputs each replayed record carries against the ones its "
+           f"replay produces. All {everything['records']:,} replayed records, over every cell and repeat, report "
+           f"\"Sync Output: passed\" with 0 unverifiable and 0 skipped; compared, summed over the repeats "
+           f"(`sync-output.json`, from each run's records.json):\n",
+           "| Cell | Replayed records | Broadcast | Per-player | Events | Seed | Apply |",
+           "|---|---:|---:|---:|---:|---:|---:|"]
+    for label, s in rows + [("**All cells**", everything)]:
+        out.append(f"| {label} | {s['records']:,} | " + " | ".join(f"{s['counts'][k][0]:,}" for k in syncoutput.KINDS) + " |")
+    return "\n".join(out)
+
+
 def results_section(readme):
     marker = "## Results"
     if marker not in readme:
@@ -236,6 +288,8 @@ def main():
     runs = load(args.results)
     check(runs)
     md = tables(runs)
+    if runs:
+        md += "\n" + sync_output_table(runs, sync_output(runs))
     if args.check:
         ok = results_section((TOPIC / "README.md").read_text(encoding="utf-8")).strip() == md.strip()
         print("OK" if ok else "MISMATCH")

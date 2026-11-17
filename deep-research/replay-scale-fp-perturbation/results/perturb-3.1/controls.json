@@ -1,0 +1,164 @@
+{
+  "meta": {
+    "date": "2026-11-17",
+    "host": "AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble)",
+    "swift_version": "6.2.4",
+    "build_config": "release",
+    "record_format": "3.1",
+    "command": "env -u HERO_PERTURB_TICK -u HERO_PERTURB_MODE -u HERO_PERTURB_EPS ReevaluationRunner --input s<N>.sstr --verify"
+  },
+  "runners": [
+    {
+      "git_sha": "022d8fdb",
+      "runner_sha256": "ccff7d190b437a84009f3ffc986f1e7b52663e8fd0bd5fa775758dcf33fbb306",
+      "runs": [
+        {
+          "seed": 1,
+          "recording_sha256": "e077a39dabb89c8461b998389e7a321ae3728e1b61e5416dc3f2973ad6143b1c",
+          "source_log": "control-s1.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 2,
+          "recording_sha256": "464482a0f49069ea3dfc6537ebfb8676bffed24e6c7214196ec4990c55a51650",
+          "source_log": "control-s2.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 3,
+          "recording_sha256": "1cecc52642072c5691184b1c235d10d7a1b374719bf754896ae515e47575fe9e",
+          "source_log": "control-s3.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 4,
+          "recording_sha256": "8ba6f8fd6863ee1fc5ae59b269be34f125279d58033590562388818cc739c3c4",
+          "source_log": "control-s4.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 5,
+          "recording_sha256": "6c8b90e4d2f930c2f3c137deb1891fd0fd63ebff9ecbcc460780f40f82488deb",
+          "source_log": "control-s5.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 6,
+          "recording_sha256": "672af6cc2a91ca396de3632f87036593323883859ebc35315f4d791205c7d0e3",
+          "source_log": "control-s6.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 7,
+          "recording_sha256": "ecc145290cab78f8c1a647dba34191f2474f0f32a1737fa3b9c6f080b338f1d3",
+          "source_log": "control-s7.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 8,
+          "recording_sha256": "80aa0397a3c6ddfdc549f30099287d07b5aa04f2ef3969d11fb1b62305722282",
+          "source_log": "control-s8.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 9,
+          "recording_sha256": "55e7cb21b1f770cd4363932e0205ec2d71a97a269f5175ce49b6eca52c19c88d",
+          "source_log": "control-s9.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 10,
+          "recording_sha256": "d988fb02e1fd19384b7aa661350a35cd418c0b9dde35ebada46ba65e6028ddb3",
+          "source_log": "control-s10.log",
+          "exit": 0,
+          "verified_lines": 2
+        }
+      ]
+    },
+    {
+      "git_sha": "dc6f85e7",
+      "runner_sha256": "cda7802d436400c2321c0f1fe15dd80ad9456a41f3b86f23c46e41f1a849206d",
+      "runs": [
+        {
+          "seed": 1,
+          "recording_sha256": "e077a39dabb89c8461b998389e7a321ae3728e1b61e5416dc3f2973ad6143b1c",
+          "source_log": "control2-s1.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 2,
+          "recording_sha256": "464482a0f49069ea3dfc6537ebfb8676bffed24e6c7214196ec4990c55a51650",
+          "source_log": "control2-s2.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 3,
+          "recording_sha256": "1cecc52642072c5691184b1c235d10d7a1b374719bf754896ae515e47575fe9e",
+          "source_log": "control2-s3.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 4,
+          "recording_sha256": "8ba6f8fd6863ee1fc5ae59b269be34f125279d58033590562388818cc739c3c4",
+          "source_log": "control2-s4.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 5,
+          "recording_sha256": "6c8b90e4d2f930c2f3c137deb1891fd0fd63ebff9ecbcc460780f40f82488deb",
+          "source_log": "control2-s5.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 6,
+          "recording_sha256": "672af6cc2a91ca396de3632f87036593323883859ebc35315f4d791205c7d0e3",
+          "source_log": "control2-s6.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 7,
+          "recording_sha256": "ecc145290cab78f8c1a647dba34191f2474f0f32a1737fa3b9c6f080b338f1d3",
+          "source_log": "control2-s7.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 8,
+          "recording_sha256": "80aa0397a3c6ddfdc549f30099287d07b5aa04f2ef3969d11fb1b62305722282",
+          "source_log": "control2-s8.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 9,
+          "recording_sha256": "55e7cb21b1f770cd4363932e0205ec2d71a97a269f5175ce49b6eca52c19c88d",
+          "source_log": "control2-s9.log",
+          "exit": 0,
+          "verified_lines": 2
+        },
+        {
+          "seed": 10,
+          "recording_sha256": "d988fb02e1fd19384b7aa661350a35cd418c0b9dde35ebada46ba65e6028ddb3",
+          "source_log": "control2-s10.log",
+          "exit": 0,
+          "verified_lines": 2
+        }
+      ]
+    }
+  ]
+}

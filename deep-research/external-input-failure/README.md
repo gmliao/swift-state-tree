@@ -83,7 +83,7 @@ Metric semantics (one unit of each):
 - one outcome per request: actions sent = applied + failed + timedOut + abandonedLimitRejected + inFlightLimitRejected + errored + pending at the end, `unmatched` 0, and nothing pending at the end;
 - only the injected outcomes, and each injected one occurs (`regenerate.py` checks this again from the counts);
 - per room, the client's applied answers (from the samples, late answers included) = the land's `applied` (the clients' state, which convergence checked against the projection) = the actions in the land's record;
-- every replayed record passes `ReevaluationRunner --verify`; every land converged;
+- every replayed record passes `ReevaluationRunner --verify`; every land converged. `regenerate.py` also checks, from `sync-output.json` (`sync_output.py`, from each run's records.json), that every replayed record reports "Sync Output: passed" with nothing unverifiable or skipped (the last table of Results);
 - the client's `timedOut` = the growth of the server's `resolverTimeouts`;
 - no backlog: over the load (to the quiet point), no session queued more than 4 messages (`inboundQueuedMessagesMax`, `cells.BACKLOG_BOUND`). A cell within its rate holds the action being handled plus at most one that arrived during it; a full-scale run of every deadline cell peaked at 1. A backlog grows by about one per second per session;
 - the gauge read 0 within its bound, settles at 0 after the last send and is 0 at the end (`regenerate.py` checks this again); in a cooperative cell it is 0 for good within the longest call plus one profiler interval plus 250 ms of the last send (during the load an interval samples cancellations in flight, which end promptly, so a task that outlives its deadline shows only after the sends stop);
@@ -201,6 +201,27 @@ Join and leave checks against the seeded draws (counts over the run):
 | rate 0 | 0 [0–0] | 0 [0–0] | 0 [0–0] | 0 [0–0] |
 | 10% of joins fail | 50 [50–50] | 0 [0–0] | 0 [0–0] | 0 [0–0] |
 | 10% of leaves fail (2 of 4 leave per room) | 0 [0–0] | 0 [0–0] | 100 [100–100] | 0 [0–0] |
+
+### Sync output of the replayed records
+
+`ReevaluationRunner --verify` checks the sync outputs each replayed record carries against the ones its replay produces. All 1,950 replayed records, over every cell and repeat, report "Sync Output: passed" with 0 unverifiable and 0 skipped; compared, summed over the repeats (`sync-output.json`, from each run's records.json):
+
+| Cell | Replayed records | Broadcast | Per-player | Events | Seed | Apply |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline (delay 0, always succeeds) | 150 | 204,850 | 818,799 | 204,850 | 600 | 1,024,099 |
+| rate 0 | 150 | 204,816 | 818,655 | 204,816 | 600 | 1,023,921 |
+| rate 0.1 | 150 | 204,783 | 818,524 | 204,783 | 600 | 1,023,757 |
+| rate 0.5 | 150 | 204,848 | 818,791 | 204,848 | 600 | 1,024,089 |
+| rate 0.1, jitter 200 ms | 150 | 204,799 | 818,596 | 204,799 | 600 | 1,023,845 |
+| service deadline (delay 1500, deadline 1000) | 150 | 204,922 | 819,087 | 204,922 | 600 | 1,024,459 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 150 | 204,831 | 818,724 | 204,831 | 600 | 1,024,005 |
+| framework deadline, cancellation ignored | 150 | 204,889 | 818,954 | 204,889 | 600 | 1,024,293 |
+| rate 0.1, 200 rooms | 150 | 209,334 | 836,736 | 209,334 | 600 | 1,046,520 |
+| framework deadline, cooperative, 200 rooms | 150 | 209,288 | 836,550 | 209,288 | 600 | 1,046,288 |
+| framework deadline, cancellation ignored, 200 rooms | 150 | 209,275 | 836,499 | 209,275 | 600 | 1,046,224 |
+| 10% of joins fail | 150 | 204,929 | 803,886 | 204,929 | 600 | 1,009,265 |
+| 10% of leaves fail (2 of 4 leave per room) | 150 | 204,126 | 805,692 | 204,126 | 600 | 1,010,268 |
+| **All cells** | 1,950 | 2,675,690 | 10,669,493 | 2,675,690 | 7,800 | 13,351,033 |
 
 ## Conclusion
 

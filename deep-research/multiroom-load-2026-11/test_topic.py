@@ -1253,5 +1253,85 @@ class AfterRowDefault(unittest.TestCase):
         self.assertFalse(regenerate.intended_form({"ROW_ADDRESSING": "false"}, "6f7920c0").row_addressing)
 
 
+class InputLatencySet(unittest.TestCase):
+    """The input-to-visible set's gates (regenerate.il_load) on a copy of data/input-latency/, and
+    collect_input_latency.py's deterministic gzip."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp()) / "input-latency"
+        self.addCleanup(shutil.rmtree, self.dir.parent)
+        shutil.copytree(regenerate.INPUT_LATENCY, self.dir)
+        self.meta = json.loads((self.dir / "runs.json").read_text(encoding="utf-8"))
+
+    def write(self):
+        (self.dir / "runs.json").write_text(json.dumps(self.meta), encoding="utf-8")
+
+    def refused(self, needle):
+        with self.assertRaises(SystemExit) as cm:
+            regenerate.il_load(self.dir)
+        self.assertIn(needle, str(cm.exception))
+
+    def run_of(self, name):
+        return next(r for r in self.meta["runs"] if r["name"] == name)
+
+    def test_the_committed_set_passes(self):
+        _, runs, rows = regenerate.il_load(self.dir)
+        self.assertEqual(len(runs), 25)
+        self.assertEqual(regenerate.il_over_capacity(runs, rows), {1000})
+
+    def test_a_missing_matrix_run_is_refused(self):
+        self.meta["runs"] = [r for r in self.meta["runs"] if r["name"] != "lat-s2-m1-300"]
+        self.write()
+        self.refused("lat-s2-m1-300")
+
+    def test_a_changed_report_is_refused(self):
+        path = self.dir / "lat-s1-m1-100" / "report.json.gz"
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            report = json.load(f)
+        report["meta"]["generatedAt"] = "changed"
+        with gzip.open(path, "wt", encoding="utf-8") as f:
+            json.dump(report, f)
+        self.refused("isn't the collected one")
+
+    def test_run_facts_off_the_cell_are_refused(self):
+        for key, value, needle in (("moveToPerS", 2, "MoveTo"), ("clientLoadRc", 1, "clientload.py exit 1"),
+                                   ("spawnRampTicks", 0, "spawnRampTicks 0"), ("serverCpusAllowed", "0-11", "pinning"),
+                                   ("summaryRoomCounts", [100, 300], "the summary names rooms"),
+                                   ("node", "v22.0.0", "Node")):
+            with self.subTest(key):
+                original = copy.deepcopy(self.meta)
+                self.run_of("lat-s3-m1-500")[key] = value
+                self.write()
+                self.refused(needle)
+                self.meta = original
+                self.write()
+
+    def test_the_collector_writes_the_same_bytes_twice(self):
+        raw = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, raw)
+        run = raw / "lat-s1-m1-100" / "scalability-x" / "run-1"
+        run.mkdir(parents=True)
+        with gzip.open(self.dir / "lat-s1-m1-100" / "report.json.gz", "rb") as f:
+            (run / "ws-loadtest-1.json").write_bytes(f.read())
+        (run / "toolchain.txt").write_text("GAMESERVER_SOURCE_SHA=" + "a" * 40 + "\n", encoding="utf-8")
+        (run.parent / "summary.json").write_text(json.dumps({"config": {"roomCounts": [100]}, "runs": [{"exitCode": 0}]}), encoding="utf-8")
+        (raw / "chain.log").write_text("t build: porcelain before 0\nt build: porcelain after 0\n"
+                                       "t lat-s1-m1-100 start: TIME_WAIT=0 waited=3s\n", encoding="utf-8")
+        (raw / "lat-s1-m1-100.run-header.txt").write_text(
+            "start=s\nshim stdbuf: exec taskset -c 0-7 x\nshim node: exec taskset -c 8-11 y\nswift: S\nnode: v\n"
+            "uname -r: k\nexit=0 end=e\nserver spawnRampTicks: 3000\nserver Cpus_allowed_list: 0-7\nclient load check rc=0\n", encoding="utf-8")
+        import collect_input_latency
+        outs = []
+        for i in range(2):
+            out = raw / f"out{i}"
+            with mock.patch("sys.stdout"):
+                self.assertEqual(collect_input_latency.main([str(raw), str(out)]), 0)
+            outs.append((out / "lat-s1-m1-100" / "report.json.gz").read_bytes())
+        self.assertEqual(outs[0], outs[1])
+        facts = json.loads((raw / "out0" / "runs.json").read_text(encoding="utf-8"))
+        self.assertEqual(facts["runs"][0]["reportSha256"], self.run_of("lat-s1-m1-100")["reportSha256"])
+        self.assertEqual(facts["runs"][0]["timeWaitWaitedS"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,7 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 | A 變體 | MoveTo cadence | every 5 ticks（seeds 121–123） | 1,200 ticks、5 players |
 | A 長程 | ticks | 12,000（~10 分鐘；seeds 201–202） | 5 players、cadence 20 |
 | B | 擾動 | float 1e-7 / fixed +1 LSB / fixed +1000 LSB | perturb tick = 600，seeds 1–10 |
+| B（3.1） | 擾動 | 同上，另加 serveronly +1（`nextTurretID`，runner `dc6f85e7`） | perturb tick = 600，3.1 批次的 seeds 1–10 |
 
 ## Results
 
@@ -143,6 +144,92 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 |---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `022d8fdb` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
 
+## Part B at record format 3.1 (full-state hash)
+
+Part B above (2026-08-31) hashed the broadcast view of the state (`snapshot(for: nil)`). Since record format 2.4 the per-tick hash covers every `@Sync` field, server-only fields included, and no `@Internal` property. This re-run repeats Part B with that hash and adds one cell that perturbs a server-only field.
+
+- **Recordings:** the 3.1 batch's seeds 1–10 (5 players, a MoveTo every 20 ticks, 1,200 ticks each, a state hash on every tick): the files that batch recorded, not new recordings. Each file's sha256 equals its line in `results/batch-3.1-SHA256SUMS.txt`, which `regenerate.py --check` compares.
+- **Runners:** release builds of `ReevaluationRunner`. The three original cells ran at `022d8fdb`, the 3.1 batch's commit. The server-only cell ran at `dc6f85e7`, one commit on `022d8fdb` that changes only `Examples/GameDemo/Sources/GameContent/HeroDefenseLand.swift` and `Systems/MovementSystem.swift` (`git diff --stat 022d8fdb dc6f85e7 -- Sources Package.swift Package.resolved` prints nothing). It adds `HERO_PERTURB_MODE=serveronly`: at `HERO_PERTURB_TICK` it adds the integer `HERO_PERTURB_EPS` to `HeroDefenseState.nextTurretID`, a `@Sync(.serverOnly)` counter that no client receives. As in every cell, the hook acts only in the replay process; the recordings stay those of `022d8fdb`.
+- **Machine:** AMD Ryzen 5 7600X, Linux (WSL2, Docker `swift:6.2.4-noble`), Swift 6.2.4, 2026-11-17.
+
+```bash
+# Control, each runner and recording: no perturbation
+env -u HERO_PERTURB_TICK -u HERO_PERTURB_MODE -u HERO_PERTURB_EPS ReevaluationRunner --input s<N>.sstr --verify
+# The original cells, runner at 022d8fdb
+HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=float HERO_PERTURB_EPS=1e-07  ReevaluationRunner --input s<N>.sstr --verify
+HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=fixed HERO_PERTURB_EPS=1.0    ReevaluationRunner --input s<N>.sstr --verify
+HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=fixed HERO_PERTURB_EPS=1000.0 ReevaluationRunner --input s<N>.sstr --verify
+# The server-only cell, runner at dc6f85e7
+HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=serveronly HERO_PERTURB_EPS=1 ReevaluationRunner --input s<N>.sstr --verify
+```
+
+Each run is its own process. A run is **detected** when `--verify` exits 5 with "Verification failed: mismatched ticks vs recorded=<n>": the first mismatching tick is the first `tick` line it prints, the latency is that tick minus 600, and n is the number of mismatching ticks. A run is **not detected** when it exits 0 with both "Verified state hashes" lines (the computed hashes match the recorded ones, and two re-evaluation runs are identical). No run exited otherwise. `scripts/perturb_collect.py` reads the logs into `results/perturb-3.1/`, and `regenerate.py` builds the tables below from those files.
+
+Summary, in the shape of the 2026-08-31 table plus the mismatch ticks and the runner:
+
+| mode | eps | runner | detected | detection latency (ticks) min / max | mismatch ticks min / max |
+|---|---|---|---:|---|---|
+| float | 1e-07 | `022d8fdb` | 0/10 | — | — |
+| fixed | 1.0 | `022d8fdb` | 10/10 | 0 / 0 | 46 / 46 |
+| fixed | 1000.0 | `022d8fdb` | 10/10 | 0 / 0 | 98 / 600 |
+| serveronly | 1 | `dc6f85e7` | 10/10 | 0 / 0 | 600 / 600 |
+
+Controls: with the three variables unset, both runners verify all ten recordings.
+
+| runner | runner sha256 | recordings | exit 0 with both verification lines |
+|---|---|---:|---:|
+| `022d8fdb` | `ccff7d190b437a84009f3ffc986f1e7b52663e8fd0bd5fa775758dcf33fbb306` | 10 | 10/10 |
+| `dc6f85e7` | `cda7802d436400c2321c0f1fe15dd80ad9456a41f3b86f23c46e41f1a849206d` | 10 | 10/10 |
+
+- **float 1e-07: 0/10.** In none of the ten recordings did a hashed field change: the offset, added to the Float move speed before quantization, was absorbed by quantization. That is what these ten recordings show, not a guarantee: a value close to a rounding boundary can quantize one LSB off (an LSB is the fixed-point step, 0.001 world units, not a float ULP), and that is the size of change the fixed +1 cell injects.
+- **fixed 1.0 and 1000.0 (+1 and +1000 LSB on a moving player's x): 10/10 at latency 0,** as on 2026-08-31. Absorption by quantization and detection by the hash are separate results: the float row says that the offset reached no hashed field, the fixed rows that a change which does reach one is detected on the tick it is made.
+- **serveronly 1: 10/10 at latency 0,** every tick from 600 to 1,199 mismatching (600 ticks). The counter is in the full-state hash and not in the broadcast view. In these recordings it stays out of every broadcast field only because they place no turret: the counter is read only when a turret is placed, and the recordings carry only MoveTo events.
+
+Every run:
+
+| seed | mode | eps | runner | exit | detected | first mismatch tick | latency (ticks) | mismatch ticks |
+|---:|---|---|---|---:|---|---:|---:|---:|
+| 1 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 2 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 3 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 4 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 5 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 6 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 7 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 8 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 9 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 10 | float | 1e-07 | `022d8fdb` | 0 | no | — | — | — |
+| 1 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 2 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 3 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 4 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 5 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 6 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 7 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 8 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 9 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 10 | fixed | 1.0 | `022d8fdb` | 5 | yes | 600 | 0 | 46 |
+| 1 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 100 |
+| 2 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 100 |
+| 3 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 135 |
+| 4 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 600 |
+| 5 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 100 |
+| 6 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 98 |
+| 7 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 294 |
+| 8 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 541 |
+| 9 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 100 |
+| 10 | fixed | 1000.0 | `022d8fdb` | 5 | yes | 600 | 0 | 100 |
+| 1 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 2 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 3 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 4 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 5 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 6 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 7 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 8 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 9 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+| 10 | serveronly | 1 | `dc6f85e7` | 5 | yes | 600 | 0 | 600 |
+
 ## Conclusion
 
 41 段錄音共 **70,800 ticks**（核心 30×1,200 + 玩家數/注入節奏變體 9 段 + 兩段 12,000-tick 長程）
@@ -150,13 +237,20 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 （`022d8fdb`，x86_64，Swift 6.2.4）：41/41 verified vs recorded、41/41 run1 == run2、0 tick
 mismatch。這是計數，不換算成 per-tick mismatch 機率的上界：同一段錄音內的 tick 不是獨立試驗。
 
-擾動測試（Part B）是 2026-08-31 的紀錄（`d23d66d`，hash 為 broadcast view），2.4 起未重跑：
-次解析度的浮點擾動（1e-7，量化前，加在 moveSpeed）10/10 被定點量化吸收（仍 0 mismatch），而移動中
-玩家 x 座標的 ≥1 LSB 偏移 10/10 在注入當 tick（延遲 0）被逐 tick hash 比對暴露。亦即：(1)
-**量化屏障**——低於量化步長的浮點雜訊寫不進定點狀態，決定性不依賴偵測來維持；(2) **稽核靈敏度**
-——對移動中玩家座標的 ≥1 LSB 偏移，離線重播驗證的逐 tick hash 比對當拍暴露它。現在的 hash（2.4
-起）涵蓋每個 `@Sync` 欄位，不含 `@Internal` 屬性。此驗證屬 audit-time（重播稽核／CI）
-機制，非 runtime 監測。
+擾動測試（Part B）最初是 2026-08-31 的紀錄（`d23d66d`，hash 為 broadcast view）；2026-11-17 在 record
+format 3.1 以 full-state hash（涵蓋每個 `@Sync` 欄位，不含 `@Internal` 屬性）重跑，用的是 3.1 批次的
+seeds 1–10，另加一格 server-only 欄位的擾動（[Part B at record format 3.1](#part-b-at-record-format-31-full-state-hash)）。
+兩次結果相同：
+- **量化吸收（觀察，非保證）**：次解析度的浮點擾動（1e-7，量化前，加在 moveSpeed）在兩次各 10 段錄音裡都
+  0/10 被偵測，即沒有任何被 hash 的欄位改變。這是這些錄音裡觀察到的結果：落在捨入邊界附近的值，加上 1e-7
+  後可能量化成差 1 LSB 的整數（LSB = 定點步長 0.001 世界座標，不是浮點 ULP）。
+- **hash 偵測**：移動中玩家 x 座標 +1 與 +1000 LSB 的偏移 10/10 在注入當 tick（延遲 0）被逐 tick hash 比對
+  暴露。量化吸收與 hash 偵測是兩個不同的結果：前者是偏移沒有寫進被 hash 的欄位，後者是寫進去的改變當拍被發現。
+- **server-only 欄位**（只在 3.1 重跑）：`nextTurretID`（`@Sync(.serverOnly)`）+1，10/10 在注入當 tick 被偵測，
+  之後每個 tick 都不符（600/600）。這個欄位不在 broadcast view 裡；在這些錄音中它沒有影響任何 broadcast 欄位，
+  只是因為錄音裡沒有放置砲塔（這個計數只在放置砲塔時被讀取）。
+
+此驗證屬 audit-time（重播稽核／CI）機制，非 runtime 監測。
 
 跨架構：在 record format 2.4 與 2.5，兩台機器各自獨立錄製一批（arm64 / macOS / Apple Swift 6.4.2，
 x86_64 / Linux / Swift 6.2.4），41 個 x86_64 檔與 arm64 檔逐檔 sha256 比對 41/41 位元相同，所以各機
@@ -203,7 +297,7 @@ Each machine's verification of its own batch therefore also verifies the other's
 
 With the full-state hash this covers the server-only `Float` `pathProgress`. In Hero Defense it is computed from integer square roots, dequantized, then one IEEE division and `min`, with no library math.
 
-Part B (perturbation) was not re-run at 2.4.
+Part B (perturbation) was not re-run at 2.4; it was re-run at record format 3.1 ([Part B at record format 3.1](#part-b-at-record-format-31-full-state-hash)).
 
 ## Record format 2.5: what changed and how it was verified
 

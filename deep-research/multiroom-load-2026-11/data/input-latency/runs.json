@@ -1,0 +1,708 @@
+{
+  "buildPorcelain": [
+    0,
+    0
+  ],
+  "runs": [
+    {
+      "name": "lat-s1-m1-100",
+      "suite": 1,
+      "moveToPerS": 1,
+      "rooms": 100,
+      "report": "lat-s1-m1-100/report.json.gz",
+      "reportSha256": "dd16d8160438ae38ab6f3a30ecd5697bf092bf8fb0b67667f734dfb04fd52a13",
+      "summaryRoomCounts": [
+        100
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 16,
+      "start": "2026-11-17T02:11:40Z",
+      "exit": 0,
+      "end": "2026-11-17T02:13:06Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m1-1000",
+      "suite": 1,
+      "moveToPerS": 1,
+      "rooms": 1000,
+      "report": "lat-s1-m1-1000/report.json.gz",
+      "reportSha256": "aea3e38ee342d0c51e43f6f59767c78e787b9f660b846e52ea7e807f1fc2120a",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 60,
+      "start": "2026-11-17T02:18:49Z",
+      "exit": 1,
+      "end": "2026-11-17T02:20:23Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m1-300",
+      "suite": 1,
+      "moveToPerS": 1,
+      "rooms": 300,
+      "report": "lat-s1-m1-300/report.json.gz",
+      "reportSha256": "c045c2499a6e48a75c43cd9b1187390c72608585f618ab8515b91c850bd4c5ac",
+      "summaryRoomCounts": [
+        300
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 200,
+      "timeWaitWaitedS": 48,
+      "start": "2026-11-17T02:13:55Z",
+      "exit": 0,
+      "end": "2026-11-17T02:15:22Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m1-500",
+      "suite": 1,
+      "moveToPerS": 1,
+      "rooms": 500,
+      "report": "lat-s1-m1-500/report.json.gz",
+      "reportSha256": "aa3eb0b6605c4a149d6f9b4564ff00ffe5a29bdbc749f96d368538a3dc64a86b",
+      "summaryRoomCounts": [
+        500
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:16:20Z",
+      "exit": 0,
+      "end": "2026-11-17T02:17:49Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m2-100",
+      "suite": 1,
+      "moveToPerS": 2,
+      "rooms": 100,
+      "report": "lat-s1-m2-100/report.json.gz",
+      "reportSha256": "26c60a94bcbe37b16500682009e90ec942c93a42378638bb86c662add7d30bb6",
+      "summaryRoomCounts": [
+        100
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 56,
+      "start": "2026-11-17T02:21:19Z",
+      "exit": 0,
+      "end": "2026-11-17T02:22:45Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m2-1000",
+      "suite": 1,
+      "moveToPerS": 2,
+      "rooms": 1000,
+      "report": "lat-s1-m2-1000/report.json.gz",
+      "reportSha256": "2551fa2ced0f2c09579bf681bef6b8f4f867add18986316288fcbedf4d9aea7f",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:28:30Z",
+      "exit": 1,
+      "end": "2026-11-17T02:30:04Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m2-300",
+      "suite": 1,
+      "moveToPerS": 2,
+      "rooms": 300,
+      "report": "lat-s1-m2-300/report.json.gz",
+      "reportSha256": "4bb3c2d5c4898fd0ce880b5a33845c6543489b434f96db2f145ef2b8eada55e4",
+      "summaryRoomCounts": [
+        300
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 200,
+      "timeWaitWaitedS": 50,
+      "start": "2026-11-17T02:23:36Z",
+      "exit": 0,
+      "end": "2026-11-17T02:25:03Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s1-m2-500",
+      "suite": 1,
+      "moveToPerS": 2,
+      "rooms": 500,
+      "report": "lat-s1-m2-500/report.json.gz",
+      "reportSha256": "53fd3f67b4b10fc76c3aae94b9bf9988e8ce6d52dfa6cf1de630cd0c4b4dd2c3",
+      "summaryRoomCounts": [
+        500
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 60,
+      "start": "2026-11-17T02:26:03Z",
+      "exit": 0,
+      "end": "2026-11-17T02:27:32Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m1-100",
+      "suite": 2,
+      "moveToPerS": 1,
+      "rooms": 100,
+      "report": "lat-s2-m1-100/report.json.gz",
+      "reportSha256": "1de0e4682f366fecb905007a36268c1ef419ae5752745338c2cd2797155c259b",
+      "summaryRoomCounts": [
+        100
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:40:40Z",
+      "exit": 0,
+      "end": "2026-11-17T02:42:06Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m1-1000",
+      "suite": 2,
+      "moveToPerS": 1,
+      "rooms": 1000,
+      "report": "lat-s2-m1-1000/report.json.gz",
+      "reportSha256": "93f7f0047cb54f6abc5f425bb3e3558720e335d2622f7cbce9df31a149447613",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:47:49Z",
+      "exit": 1,
+      "end": "2026-11-17T02:49:21Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m1-300",
+      "suite": 2,
+      "moveToPerS": 1,
+      "rooms": 300,
+      "report": "lat-s2-m1-300/report.json.gz",
+      "reportSha256": "cc50d853d94671a8a990af95369a80ae8cebbab6dd1669647bd6934d3acacc62",
+      "summaryRoomCounts": [
+        300
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 200,
+      "timeWaitWaitedS": 48,
+      "start": "2026-11-17T02:42:54Z",
+      "exit": 0,
+      "end": "2026-11-17T02:44:22Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m1-500",
+      "suite": 2,
+      "moveToPerS": 1,
+      "rooms": 500,
+      "report": "lat-s2-m1-500/report.json.gz",
+      "reportSha256": "559d718804279034a6898602a0a805b439af72c6987bff01a268c422f51cd9ac",
+      "summaryRoomCounts": [
+        500
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 60,
+      "start": "2026-11-17T02:45:22Z",
+      "exit": 0,
+      "end": "2026-11-17T02:46:51Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m2-100",
+      "suite": 2,
+      "moveToPerS": 2,
+      "rooms": 100,
+      "report": "lat-s2-m2-100/report.json.gz",
+      "reportSha256": "a25b19a56ec4229c25e6aeb8ddab59b443240a967813a59f4e98a4d1a5dccf2c",
+      "summaryRoomCounts": [
+        100
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:31:02Z",
+      "exit": 0,
+      "end": "2026-11-17T02:32:28Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m2-1000",
+      "suite": 2,
+      "moveToPerS": 2,
+      "rooms": 1000,
+      "report": "lat-s2-m2-1000/report.json.gz",
+      "reportSha256": "23404c5976c7e6c11d02721dc1a262e2f0af3e8657839e3d01a7f6c289408b2e",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:38:09Z",
+      "exit": 1,
+      "end": "2026-11-17T02:39:42Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m2-300",
+      "suite": 2,
+      "moveToPerS": 2,
+      "rooms": 300,
+      "report": "lat-s2-m2-300/report.json.gz",
+      "reportSha256": "9a8efc9712c5efb7bc74eec99f6c5f8286b7eedcc5d11003c85957e29d5e1c93",
+      "summaryRoomCounts": [
+        300
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 200,
+      "timeWaitWaitedS": 48,
+      "start": "2026-11-17T02:33:17Z",
+      "exit": 0,
+      "end": "2026-11-17T02:34:44Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s2-m2-500",
+      "suite": 2,
+      "moveToPerS": 2,
+      "rooms": 500,
+      "report": "lat-s2-m2-500/report.json.gz",
+      "reportSha256": "6e846993e91d194768e4dbda217ee8a79985da6b91b5ce22f90bfa7987f3b755",
+      "summaryRoomCounts": [
+        500
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:35:42Z",
+      "exit": 0,
+      "end": "2026-11-17T02:37:11Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m1-100",
+      "suite": 3,
+      "moveToPerS": 1,
+      "rooms": 100,
+      "report": "lat-s3-m1-100/report.json.gz",
+      "reportSha256": "5761f4427479b5297b7240ff8739e659a7038b97f62ed8a9c832e0bbbfff4dc1",
+      "summaryRoomCounts": [
+        100
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 56,
+      "start": "2026-11-17T02:50:18Z",
+      "exit": 0,
+      "end": "2026-11-17T02:51:44Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m1-1000",
+      "suite": 3,
+      "moveToPerS": 1,
+      "rooms": 1000,
+      "report": "lat-s3-m1-1000/report.json.gz",
+      "reportSha256": "35d8068ec0a3ff4ce2912fa4a8506756403c0c01bf01e67c03e026dd69b49327",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:57:27Z",
+      "exit": 1,
+      "end": "2026-11-17T02:58:59Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m1-300",
+      "suite": 3,
+      "moveToPerS": 1,
+      "rooms": 300,
+      "report": "lat-s3-m1-300/report.json.gz",
+      "reportSha256": "515baeef04b1b658d00e34e2b1a155ad7f80f98c348376a277d612cbc706d4ed",
+      "summaryRoomCounts": [
+        300
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 200,
+      "timeWaitWaitedS": 50,
+      "start": "2026-11-17T02:52:34Z",
+      "exit": 0,
+      "end": "2026-11-17T02:54:02Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m1-500",
+      "suite": 3,
+      "moveToPerS": 1,
+      "rooms": 500,
+      "report": "lat-s3-m1-500/report.json.gz",
+      "reportSha256": "81dcda64255b20aefaa40b03548b8315651295557199733288be2fc751b51d32",
+      "summaryRoomCounts": [
+        500
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:55:00Z",
+      "exit": 0,
+      "end": "2026-11-17T02:56:29Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m2-100",
+      "suite": 3,
+      "moveToPerS": 2,
+      "rooms": 100,
+      "report": "lat-s3-m2-100/report.json.gz",
+      "reportSha256": "d886fa8af7e8534f2e33411e6d69a5507b10c830503e7ea0ae1ea984955f969b",
+      "summaryRoomCounts": [
+        100
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T02:59:58Z",
+      "exit": 0,
+      "end": "2026-11-17T03:01:24Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m2-1000",
+      "suite": 3,
+      "moveToPerS": 2,
+      "rooms": 1000,
+      "report": "lat-s3-m2-1000/report.json.gz",
+      "reportSha256": "660df69545a9d4aa621bf5c1b6c09b056103a3a162164a99f2ef97e4ba0ddff5",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 60,
+      "start": "2026-11-17T03:07:07Z",
+      "exit": 1,
+      "end": "2026-11-17T03:08:40Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m2-300",
+      "suite": 3,
+      "moveToPerS": 2,
+      "rooms": 300,
+      "report": "lat-s3-m2-300/report.json.gz",
+      "reportSha256": "50f2444a104036396dafeaccf2acf8d8cafa094f254a42ec797d1ae7591a8db2",
+      "summaryRoomCounts": [
+        300
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 200,
+      "timeWaitWaitedS": 48,
+      "start": "2026-11-17T03:02:12Z",
+      "exit": 0,
+      "end": "2026-11-17T03:03:40Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "lat-s3-m2-500",
+      "suite": 3,
+      "moveToPerS": 2,
+      "rooms": 500,
+      "report": "lat-s3-m2-500/report.json.gz",
+      "reportSha256": "bcd2b3a956b01e11296bef556bba4ba473de7c7d78cabdef0207242850ab7d9e",
+      "summaryRoomCounts": [
+        500
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 58,
+      "start": "2026-11-17T03:04:38Z",
+      "exit": 0,
+      "end": "2026-11-17T03:06:07Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    },
+    {
+      "name": "smoke-m2-1000",
+      "suite": "smoke",
+      "moveToPerS": 2,
+      "rooms": 1000,
+      "report": "smoke-m2-1000/report.json.gz",
+      "reportSha256": "15da13bfe55c602917dcb614ef6bd15e99975cf530a7802a059143d33d78c340",
+      "summaryRoomCounts": [
+        1000
+      ],
+      "summaryExitCodes": [
+        0
+      ],
+      "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "timeWaitAtStart": 0,
+      "timeWaitWaitedS": 0,
+      "start": "2026-11-17T02:09:09Z",
+      "exit": 1,
+      "end": "2026-11-17T02:10:43Z",
+      "spawnRampTicks": 3000,
+      "serverCpusAllowed": "0-7",
+      "clientLoadRc": 0,
+      "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+      "node": "v24.22.2",
+      "kernel": "6.18.58.1-microsoft-standard-WSL2",
+      "stdbufShim": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"",
+      "nodeShim": "exec taskset -c 8-11 /usr/local/bin/node \"$@\""
+    }
+  ]
+}
