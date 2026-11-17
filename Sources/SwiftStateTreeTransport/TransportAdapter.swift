@@ -1251,6 +1251,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Callback to notify when land has been destroyed.
     /// Called after all destroy handlers (OnFinalize, AfterFinalize) have completed.
     var onLandDestroyedCallback: (@Sendable () async -> Void)?
+    /// The host's stop of this instance on a land failure (#535 B2), set by `LandManager` at
+    /// creation with the instance's epoch. It returns once the instance's sessions are closed
+    /// (the stop's sessions-closed latch), never after the destroy, and false if no host
+    /// stopped it (its server is gone). Without it, or on false, `landDidFail` closes the
+    /// sessions itself.
+    private(set) var landFailureHook: (@Sendable () async -> Bool)?
+
+    /// Sets the host's stop for a land failure (`LandManager`, at creation).
+    package func setLandFailureHook(_ hook: @escaping @Sendable () async -> Bool) {
+        landFailureHook = hook
+    }
 
     /// Creates a TransportAdapter that connects a LandKeeper to a Transport.
     ///

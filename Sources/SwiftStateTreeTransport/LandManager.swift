@@ -124,6 +124,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// Mints each created instance's epoch.
     private var epochs = EpochCounter()
+    /// The host's stop for a failed land (#535 B2), set by the server that owns this manager
+    /// before any land exists. Each instance built after it is set gets it as its adapter's land
+    /// failure hook, with its epoch; without it, a failed land's adapter closes its sessions
+    /// itself.
+    package nonisolated let landFailureStop = LandFailureStopSlot()
     /// Instances detached by ID (`detachLand`, `detachForStop`) while they may still drain, held
     /// weakly until their own `onLandDestroyed` runs. A creation for the same ID waits for any of
     /// them that is draining, as for a stored draining instance, and for a stopping one (#102).
@@ -684,6 +689,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         if let syncLagPolicy {
             await transportAdapter.setSyncLagPolicy(syncLagPolicy)
         }
+        if let stop = landFailureStop.current {
+            // This instance's epoch, captured now: the stop detaches only this instance.
+            await transportAdapter.setLandFailureHook { [landID, epoch] in await stop(landID, epoch) }
+        }
         
         // Configure record metadata (deterministic re-evaluation). After the adapter exists: the
         // sync stream is recorded only with in-turn sync on, which the adapter decides.
@@ -792,18 +801,37 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// A creation for the ID waits until a stopping instance is dropped (its `onLandDestroyed`),
     /// within `drainWaitTimeout`, then builds a fresh one: the stopping instance's destruction
     /// starts only after its sessions' leaves, so its drain alone isn't a signal yet.
-    package func detachForStop(landID: LandID) async -> DetachedInstance? {
-        if let detachedNow = detach(landID: landID, stopping: true) {
+    ///
+    /// With `epoch` (a failed land's stop, #535 B2), it detaches the stored instance only if it
+    /// has that epoch, in this one segment, and returns nil otherwise: a failure of an instance
+    /// that is no longer stored stops nothing (a newer instance under the ID stays).
+    ///
+    /// `onDetach` runs in the segment of a detach, with the detached epoch, before any await:
+    /// the stop creates that epoch's sessions-closed latch there, so a failure that finds the
+    /// epoch detached finds its latch too.
+    package func detachForStop(
+        landID: LandID,
+        epoch: Epoch? = nil,
+        onDetach: (Epoch) -> Void = { _ in }
+    ) async -> DetachedInstance? {
+        if epoch == nil || lands[landID]?.epoch == epoch,
+           let detachedNow = detach(landID: landID, stopping: true) {
+            onDetach(detachedNow.epoch)
             await holds.at(.stopDetached)
             return detachedNow
         }
-        guard let entries = detached[landID] else { return nil }
+        guard epoch == nil, let entries = detached[landID] else { return nil }
         for (epoch, entry) in entries where entry.stopping {
             if let keeper = entry.keeper, let adapter = entry.adapter {
                 return DetachedInstance(landID: landID, epoch: epoch, keeper: keeper, adapter: adapter)
             }
         }
         return nil
+    }
+
+    /// Whether the stored instance of `landID` has `epoch` (#535 B2: a failed land's stop).
+    package func isStored(landID: LandID, epoch: Epoch) -> Bool {
+        lands[landID]?.epoch == epoch
     }
 
     /// Moves the stored instance of `landID` to `detached`, in this one segment.
@@ -1214,5 +1242,27 @@ enum PayloadFallbackLog {
         lock.lock()
         defer { lock.unlock() }
         return logged.insert(landType).inserted
+    }
+}
+
+/// The host's stop for a failed land (#535 B2): set once by the server that owns the manager,
+/// read at each instance's creation. A lock, so the server's synchronous init can set it.
+package final class LandFailureStopSlot: @unchecked Sendable {
+    /// Returns false when no host stopped the land (its server is gone).
+    package typealias Stop = @Sendable (LandID, Epoch) async -> Bool
+
+    private let lock = NSLock()
+    private var stop: Stop?
+
+    package init() {}
+
+    package func set(_ stop: @escaping Stop) {
+        lock.lock(); defer { lock.unlock() }
+        self.stop = stop
+    }
+
+    package var current: Stop? {
+        lock.lock(); defer { lock.unlock() }
+        return stop
     }
 }

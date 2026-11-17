@@ -132,3 +132,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-14 | [A snapshot read behind a shared diff baseline](2026-11-14-a-snapshot-read-behind-a-shared-diff-baseline.md) | reentrancy, initial-sync, broadcast-cache, legacy-sync |
 | 2026-11-14 | [A case placed only at the root never tests the descent](2026-11-14-a-case-placed-only-at-the-root-never-tests-the-descent.md) | testing, mutants, fixtures, path-trie, sync-tables |
 | 2026-11-17 | [A test-argument literal the pinned toolchain type-checks and a newer one times out on](2026-11-17-pinned-toolchain-type-checks-what-local-times-out-on.md) | toolchain, swift-testing, type-checking, ci |
+| 2026-11-17 | [A hang guard in a task group waits for the hang](2026-11-17-a-hang-guard-in-a-task-group-waits-for-the-hang.md) | testing, hang-bound, deadlock, task-group, mutants |

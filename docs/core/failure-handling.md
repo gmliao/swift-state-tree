@@ -76,14 +76,14 @@ Read at `main` 9755a625; line numbers are as of that commit. **Current** means t
 
 | Path | Today | Status |
 |---|---|---|
-| OnLeave and the destroy handlers | a failed land clears its players without OnLeave in the failing turn, and its destroy handlers and save run with `LandDestructionCause.failed` and `LandKeeper.failure` (`LandKeeper.swift:4892`). A host's stop that closes a session before the failure's teardown still runs that session's leave (`LandKeeper.swift:2397-2439`) | current for the failure's own teardown; target: the host's stop path also skips OnLeave on a failed land (#535 PR 1 part B) |
+| OnLeave and the destroy handlers | a failed land clears its players without OnLeave in the failing turn, and its destroy handlers and save run with `LandDestructionCause.failed` and `LandKeeper.failure` (`LandKeeper.swift:4892`). With a host, the failure's teardown stops the land through the host (`NIOLandServer`): the router forwards each session's leave, which finds no player and runs no OnLeave, then closes it. A session an admin stop closed before the failure had its leave run as for any stop | current (#535 PR 1 part B) |
 | The re-evaluation record | the failure is recorded once, in the frame of its tick, in the turn segment that ends the land (`ReevaluationTickFrame.landFailure`, record format 3.4). Replay stops at that tick and reports it (`RunResult.liveFailure`); see [Reevaluation](reevaluation.md#pass-ordinals-and-the-land-failure-34) | current |
 
 ## Close codes
 
-- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it (current for an in-turn sync plan's throw; the other rows are the target, #535). Until #535 PR 1 part B, a host's stop that closes a session first gives it 4014.
+- **4016 `landFailed`:** a land that ends on a failure closes its sessions with it, built directly or hosted. With a host, the failure's teardown stops the land as an admin stop does (detach, each session's leave, the close), and the code is read per session when its close request is issued: a land that fails while an admin stop runs gives 4016 to every session whose close request comes after the failure. A session already closed, or whose close request was issued before the failure, keeps 4014; so does a failure during the request's last hop to the transport. Once a host shutdown has taken the sessions for its own close (`closeSessionsForShutdown`), a land that fails closes them with the shutdown's 1001.
 - **4012 `unencodableView`:** sent today when a resync's or first view's frame keeps failing to encode. Once #535 lands it is reserved and no longer sent.
-- **4014 `landStopped`:** an admin stop, unchanged.
+- **4014 `landStopped`:** an admin stop of a land that hasn't failed.
 
 ## How other systems do it
 
