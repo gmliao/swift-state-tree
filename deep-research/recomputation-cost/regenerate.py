@@ -894,6 +894,8 @@ def stream_fields(runs: list, path: pathlib.Path = STREAM_FIELDS, marks: pathlib
             failures.append(f"{name}: diff frames don't add up")
         if d["bytes"] != d["entry_bytes"] + d["overhead"]:
             failures.append(f"{name}: bytes aren't entries plus overhead")
+        if not d["frames"] or not d["overhead_min"] * d["frames"] <= d["overhead"] <= d["overhead_max"] * d["frames"]:
+            failures.append(f"{name}: the mean overhead per frame isn't within its min and max")
         if d["fields"] != sum(int(k) * v for k, v in d["hist"]["fields"].items()) \
                 or d["broadcast_fields"] != sum(int(k) * v for k, v in d["hist"]["broadcast_fields"].items()) \
                 or sum(d["hist"]["fields"].values()) != d["rounds"] or sum(d["hist"]["broadcast_fields"].values()) != d["rounds"]:
@@ -965,24 +967,39 @@ def stream_field_lines(processes: dict) -> list:
     lines += ["", f"Rounds are the records' sync outputs: {sum(r['outputs'] for r in rooms):,} in {len(rooms)} rooms, of which "
               f"{sum(r['rounds_without_frames'] for r in rooms)} sent no frame (all with the same broadcast and per-player "
               "hashes, those of an empty update). "
-              + ("No round sent a per-player field: every entry was in every recipient's frame." if per_player == 0 else
-                 f"{per_player:,} fields were per-player.")]
-    lines += ["", "The model: bytes per round ≈ fields per round × s, where fields per round is the broadcast fields times "
-              "the recipients plus the per-player fields, and s a mean size per field. s is the entries' bytes over their "
-              "fields, per encoding, from the runs at the other cadence, so no row is predicted from its own bytes. A second "
-              "s comes from the full views (their entries' bytes over their fields, a map of objects counting its objects' "
-              "members): those fields are entity properties set at once, not the fields a diff sets, so that column is shown "
-              "only for comparison. The fixed overhead isn't in the model.", "",
+              + ("No round in any run sent a per-player field: every entry was in every recipient's frame. This check "
+                 "therefore covers the model's broadcast term only; this workload doesn't exercise its per-player term."
+                 if per_player == 0 else f"{per_player:,} fields were per-player.")]
+    overhead = lambda enc, pred: pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "overhead") / \
+        pooled(lambda p: p["encoding"] == enc and pred(p), "diff", "frames")
+    lines += ["", "The model: bytes per round ≈ (broadcast fields × recipients + per-player fields) × s, with s a mean size "
+              "per field. s is the entries' bytes over their fields, per encoding, from the runs at the other cadence, so "
+              "no row is predicted from its own bytes. That model leaves out the fixed overhead each frame carries, and "
+              "the measured / predicted ratio's excess over 1 is that overhead. The variant adds it: predicted bytes per "
+              "round ≈ fields × s + frames × c, with c the mean overhead per frame, also per encoding from the runs at "
+              "the other cadence.", "",
               "| run | s, other cadence (B) | predicted bytes per round | measured bytes per round | measured / predicted | "
-              "s, full views (B) | predicted from full views |",
-              "|---|---:|---:|---:|---:|---:|---:|"]
+              "c, other cadence (B) | predicted with c | measured / predicted with c |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|"]
     for n in names:
         e, p = processes[n]["diff"], processes[n]["params"]
-        s = size(p["encoding"], lambda q, c=p["cadence"]: q["cadence"] != c)
+        other = lambda q, c=p["cadence"]: q["cadence"] != c
+        s, c = size(p["encoding"], other), overhead(p["encoding"], other)
         r = e["rounds"]
-        predicted = s * e["fields"] / r
-        lines.append(f"| {label(p)} | {s:.2f} | {predicted:,.1f} | {e['bytes'] / r:,.1f} | {e['bytes'] / (s * e['fields']):.3f} | "
-                     f"{full[p['encoding']]:.2f} | {full[p['encoding']] * e['fields'] / r:,.1f} |")
+        predicted, with_c = s * e["fields"], s * e["fields"] + c * e["frames"]
+        lines.append(f"| {label(p)} | {s:.2f} | {predicted / r:,.1f} | {e['bytes'] / r:,.1f} | {e['bytes'] / predicted:.3f} | "
+                     f"{c:.2f} | {with_c / r:,.1f} | {e['bytes'] / with_c:.3f} |")
+    lines += ["", "A second s comes from the full views: their entries' bytes over their fields, a map of objects counting "
+              "its objects' members. Those fields are entity properties set all at once when a session starts, a different "
+              "population from the fields a diff sets, and that s doesn't predict the steady-state bytes; it is shown only "
+              "for comparison.", "",
+              "| run | s, full views (B) | predicted from full views | measured bytes per round |",
+              "|---|---:|---:|---:|"]
+    for n in names:
+        e, p = processes[n]["diff"], processes[n]["params"]
+        r = e["rounds"]
+        lines.append(f"| {label(p)} | {full[p['encoding']]:.2f} | {full[p['encoding']] * e['fields'] / r:,.1f} | "
+                     f"{e['bytes'] / r:,.1f} |")
     for enc in sorted(INTENDED_WIRE):
         mine = [processes[n]["diff"] for n in names if processes[n]["params"]["encoding"] == enc]
         frames, overhead = sum(e["frames"] for e in mine), sum(e["overhead"] for e in mine)

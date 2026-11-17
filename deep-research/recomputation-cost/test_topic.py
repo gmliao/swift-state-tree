@@ -404,6 +404,7 @@ class StreamFieldsTests(unittest.TestCase):
         self.assertEqual(sum(r["outputs"] for e in processes.values() for r in e["rooms"].values()), 45564)
         lines = "\n".join(regenerate.stream_field_lines(processes))
         self.assertIn("| messagepack p10 c5 r2 |", lines)
+        self.assertIn("| measured / predicted with c |", lines)
         first = lambda d: d[sorted(d)[0]]
         room = lambda d: first(first(d)["rooms"])
 
@@ -435,8 +436,11 @@ class StreamFieldsTests(unittest.TestCase):
         def process_missing(d):
             del d[sorted(d)[0]]
 
+        def overhead_beyond_max(d):
+            first(d)["diff"]["overhead_max"] = 0
+
         for change in (file_missing, unexplained, too_many_recipients, rounds_short, second_silent_hash,
-                       other_record, unknown_frame, bytes_unbalanced, process_missing):
+                       other_record, unknown_frame, bytes_unbalanced, process_missing, overhead_beyond_max):
             with self.subTest(change.__name__), self.assertRaises(SystemExit):
                 regenerate.stream_fields(runs, self.mutated(change))
 

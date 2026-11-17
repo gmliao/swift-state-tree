@@ -65,6 +65,8 @@ The raw sweep directories (records, streams) aren't in this repository; they are
 - no cost or noise process was saturated (`lateSeconds` and `skippedByCap` 0) or lacks profiling windows;
 - every recording-on cost process passed the record check: as many records as rooms, all complete, nothing left in the spool, every record spanning at least the steady phase's ticks, the records' inputs (client events and actions) adding up to the actions completed, and the first record verified.
 
+The fields per sync round (`stream-fields.json`) are refused unless every stream file of each sizes run was read and decoded with nothing left over (as many files and full views as sessions, no frame of an unknown kind), each room's record outputs equal its rounds with frames plus the outputs that sent no frame (all with one hash pair, which no other round carries but a key scope reset of empty updates), no round has more recipients than the run's players, the records are the ones `sync-marks.json` counted, and the byte, overhead and per-round sums agree.
+
 Mutation checks (`test_topic.py`): dropping the saturation gate, the order gate or the action count from the record check, a cost run with `--stream-dir`, and a non-ABBA order each fail a test, and so does dropping the wire-form comparison.
 
 ## Parameter matrix
@@ -173,25 +175,43 @@ Each sizes run's stream dump (`--stream-dir`) holds every frame each session rec
 | messagepack p10 c5 r2 | 3,517 | 9.88 | 7.31 / 6 | 0.00 | 50.7 | 72.8 / 60 | 868.6 |
 | messagepack p10 c20 r1 | 3,511 | 9.89 | 7.26 / 6 | 0.00 | 50.4 | 72.4 / 60 | 864.4 |
 
-Rounds are the records' sync outputs: 45,564 in 130 rooms, of which 57 sent no frame (all with the same broadcast and per-player hashes, those of an empty update). No round sent a per-player field: every entry was in every recipient's frame.
+Rounds are the records' sync outputs: 45,564 in 130 rooms, of which 57 sent no frame (all with the same broadcast and per-player hashes, those of an empty update). No round in any run sent a per-player field: every entry was in every recipient's frame. This check therefore covers the model's broadcast term only; this workload doesn't exercise its per-player term.
 
-The model: bytes per round ≈ fields per round × s, where fields per round is the broadcast fields times the recipients plus the per-player fields, and s a mean size per field. s is the entries' bytes over their fields, per encoding, from the runs at the other cadence, so no row is predicted from its own bytes. A second s comes from the full views (their entries' bytes over their fields, a map of objects counting its objects' members): those fields are entity properties set at once, not the fields a diff sets, so that column is shown only for comparison. The fixed overhead isn't in the model.
+The model: bytes per round ≈ (broadcast fields × recipients + per-player fields) × s, with s a mean size per field. s is the entries' bytes over their fields, per encoding, from the runs at the other cadence, so no row is predicted from its own bytes. That model leaves out the fixed overhead each frame carries, and the measured / predicted ratio's excess over 1 is that overhead. The variant adds it: predicted bytes per round ≈ fields × s + frames × c, with c the mean overhead per frame, also per encoding from the runs at the other cadence.
 
-| run | s, other cadence (B) | predicted bytes per round | measured bytes per round | measured / predicted | s, full views (B) | predicted from full views |
-|---|---:|---:|---:|---:|---:|---:|
-| json p2 c5 r1 | 83.62 | 928.6 | 1,004.8 | 1.082 | 26.80 | 297.6 |
-| json p2 c20 r1 | 83.61 | 928.2 | 1,004.7 | 1.082 | 26.80 | 297.5 |
-| json p5 c5 r1 | 83.62 | 2,582.2 | 2,785.8 | 1.079 | 26.80 | 827.4 |
-| json p5 c20 r1 | 83.61 | 2,546.5 | 2,751.0 | 1.080 | 26.80 | 816.1 |
-| json p10 c5 r1 | 83.62 | 6,089.7 | 6,542.1 | 1.074 | 26.80 | 1,951.4 |
-| json p10 c20 r1 | 83.61 | 6,073.1 | 6,526.2 | 1.075 | 26.80 | 1,946.4 |
-| messagepack p2 c5 r1 | 11.03 | 122.5 | 130.8 | 1.068 | 13.51 | 150.0 |
-| messagepack p2 c20 r1 | 11.07 | 122.6 | 130.6 | 1.065 | 13.51 | 149.6 |
-| messagepack p5 c5 r1 | 11.03 | 337.8 | 363.1 | 1.075 | 13.51 | 413.5 |
-| messagepack p5 c20 r1 | 11.07 | 334.8 | 359.3 | 1.073 | 13.51 | 408.7 |
-| messagepack p10 c5 r1 | 11.03 | 801.4 | 867.9 | 1.083 | 13.51 | 981.2 |
-| messagepack p10 c5 r2 | 11.03 | 803.3 | 868.6 | 1.081 | 13.51 | 983.6 |
-| messagepack p10 c20 r1 | 11.07 | 800.8 | 864.4 | 1.079 | 13.51 | 977.4 |
+| run | s, other cadence (B) | predicted bytes per round | measured bytes per round | measured / predicted | c, other cadence (B) | predicted with c | measured / predicted with c |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| json p2 c5 r1 | 83.62 | 928.6 | 1,004.8 | 1.082 | 43.49 | 1,015.3 | 0.990 |
+| json p2 c20 r1 | 83.61 | 928.2 | 1,004.7 | 1.082 | 43.53 | 1,014.9 | 0.990 |
+| json p5 c5 r1 | 83.62 | 2,582.2 | 2,785.8 | 1.079 | 43.49 | 2,798.1 | 0.996 |
+| json p5 c20 r1 | 83.61 | 2,546.5 | 2,751.0 | 1.080 | 43.53 | 2,762.6 | 0.996 |
+| json p10 c5 r1 | 83.62 | 6,089.7 | 6,542.1 | 1.074 | 43.49 | 6,520.1 | 1.003 |
+| json p10 c20 r1 | 83.61 | 6,073.1 | 6,526.2 | 1.075 | 43.53 | 6,504.0 | 1.003 |
+| messagepack p2 c5 r1 | 11.03 | 122.5 | 130.8 | 1.068 | 5.94 | 134.4 | 0.974 |
+| messagepack p2 c20 r1 | 11.07 | 122.6 | 130.6 | 1.065 | 5.95 | 134.5 | 0.971 |
+| messagepack p5 c5 r1 | 11.03 | 337.8 | 363.1 | 1.075 | 5.94 | 367.2 | 0.989 |
+| messagepack p5 c20 r1 | 11.07 | 334.8 | 359.3 | 1.073 | 5.95 | 364.3 | 0.986 |
+| messagepack p10 c5 r1 | 11.03 | 801.4 | 867.9 | 1.083 | 5.94 | 860.2 | 1.009 |
+| messagepack p10 c5 r2 | 11.03 | 803.3 | 868.6 | 1.081 | 5.94 | 862.0 | 1.008 |
+| messagepack p10 c20 r1 | 11.07 | 800.8 | 864.4 | 1.079 | 5.95 | 859.7 | 1.005 |
+
+A second s comes from the full views: their entries' bytes over their fields, a map of objects counting its objects' members. Those fields are entity properties set all at once when a session starts, a different population from the fields a diff sets, and that s doesn't predict the steady-state bytes; it is shown only for comparison.
+
+| run | s, full views (B) | predicted from full views | measured bytes per round |
+|---|---:|---:|---:|
+| json p2 c5 r1 | 26.80 | 297.6 | 1,004.8 |
+| json p2 c20 r1 | 26.80 | 297.5 | 1,004.7 |
+| json p5 c5 r1 | 26.80 | 827.4 | 2,785.8 |
+| json p5 c20 r1 | 26.80 | 816.1 | 2,751.0 |
+| json p10 c5 r1 | 26.80 | 1,951.4 | 6,542.1 |
+| json p10 c20 r1 | 26.80 | 1,946.4 | 6,526.2 |
+| messagepack p2 c5 r1 | 13.51 | 150.0 | 130.8 |
+| messagepack p2 c20 r1 | 13.51 | 149.6 | 130.6 |
+| messagepack p5 c5 r1 | 13.51 | 413.5 | 363.1 |
+| messagepack p5 c20 r1 | 13.51 | 408.7 | 359.3 |
+| messagepack p10 c5 r1 | 13.51 | 981.2 | 867.9 |
+| messagepack p10 c5 r2 | 13.51 | 983.6 | 868.6 |
+| messagepack p10 c20 r1 | 13.51 | 977.4 | 864.4 |
 
 Fixed overhead per frame, json: 43.5 B on average (36–68 B), 7.1 % of the measured bytes.
 
@@ -229,3 +249,6 @@ Noise floor: two recording-off processes at 10 players, cadence 5: CPU 236.5 % a
 
 - B_minimal is not a format the runtime reads; it bounds what an input-only record could weigh.
 - A counts encoded frames handed to the in-process transport, not bytes on a socket (no WebSocket or TCP framing).
+- Sync bytes against fields: no round in these runs sent a per-player field, so the check covers the broadcast term (fields × recipients × s) only; the per-player term isn't exercised by this workload.
+- Sync bytes against fields: the fields × s model leaves out the fixed per-frame overhead, about 7 % of the measured bytes, and that is why the measured bytes exceed its prediction; the table also shows the prediction with a per-frame constant.
+- Sync bytes against fields: the s from the full views is a different population (entity properties set at once when a session starts) and doesn't predict steady-state bytes; it is shown only for comparison.
