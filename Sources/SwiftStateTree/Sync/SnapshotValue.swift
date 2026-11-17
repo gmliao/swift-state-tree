@@ -421,7 +421,11 @@ public extension SnapshotValue {
                 let valueMirror = pairChildren[1]
                 let keyString = try makeKeyString(from: keyMirror.value)
                 let mappedValue = try make(from: valueMirror.value, for: playerID)
-                object[keyString] = mappedValue
+                // Two keys that convert to the same string: one would overwrite the other on
+                // every client (#535 D8).
+                if object.updateValue(mappedValue, forKey: keyString) != nil {
+                    throw collidingKeys(in: value, key: keyString)
+                }
             }
             return .object(object)
         case .class:
@@ -461,6 +465,11 @@ public extension SnapshotValue {
         throw SyncError.unsupportedValue(
             "\(type(of: node)) has player-dependent fields and is encoded without a player, under a broadcast field: those fields would reach no player (#179)"
         )
+    }
+
+    /// Two keys of `map` that convert to `key` (#535 D8).
+    internal static func collidingKeys(in map: Any, key: String) -> SyncError {
+        .collidingKeys("Two keys of \(type(of: map)) convert to \"\(key)\"")
     }
 
     private static func makeKeyString(from value: Any) throws -> String {
@@ -568,7 +577,7 @@ public extension SnapshotValue {
                 }
                 let key = try makeKeyString(from: pair[0].value)
                 guard object[key] == nil else {
-                    throw SyncError.unsupportedKey("Two keys of \(type(of: value)) convert to \"\(key)\"")
+                    throw collidingKeys(in: value, key: key)
                 }
                 object[key] = try makeFull(from: pair[1].value)
             }

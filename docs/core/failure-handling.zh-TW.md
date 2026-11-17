@@ -48,7 +48,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | 執行時 conversion 拋出錯誤的欄位 | land 以 `syncConversion` 結束，並指出該欄位；plan 不提交也不送出任何東西，其 session 以 4016 關閉（`SyncPhasePlan.noteExtractionDrops`）。加入者的 view、resync 的 view 與 seed 也一樣 | 已符合（#535 第 1、3、4、6 列） |
-| 轉成相同字串的 dictionary key | 後一筆默默覆蓋前一筆（`SnapshotValue.swift:424`） | 目標：關閉 land（#535） |
+| 轉成相同字串的 dictionary key | conversion 拋出 `SyncError.collidingKeys`，land 依任何拋出錯誤的 conversion 處理而結束。只有函式庫自己的 conversion 會檢查：自訂 `toSnapshotValue()` 自行建立 `.object` 時，key 在函式庫看到之前就已合併，這仍屬該型別自己的約定 | 已符合（#535 D8） |
 | 編碼無法承載的 patch（例如 JSON 中的非有限數） | 不論在哪種 frame，land 都以 `syncEncode` 結束：合併廣播 frame（`encodeMergedBroadcastFrameOrFail`）、per-player 或合併式 frame、row addressing 表格的 row（`planPerPlayerFrames`、`stateFrameEncodeFailure`）。不會去掉它重新編碼，失敗的 cycle 不送出任何東西 | 已符合（#535 第 8、9、10 列） |
 | 路徑在 schema 之外的 patch | 同上一列，並計入 `unmappedPathPatches`（一次失敗計一次） | 已符合（#535 D6）。目前全為 `let` 的 `@SnapshotConvertible` struct 在 schema 中沒有其下的路徑（#566） |
 | 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。in-turn sync：keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。legacy sync（未啟用 in-turn）：adapter 不再送出任何東西並提交失敗，keeper 在下一個 turn 套用（`submitLandFailure`）。加入者獨立的 firstSync plan 拋出錯誤時，同樣結束 land，不排 follow-up（第 16 列） | 已符合 |

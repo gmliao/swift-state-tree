@@ -55,7 +55,8 @@ struct EncodingPipeline: Sendable {
     /// Build MessagePack frame [107, stateUpdatePayload, eventsArray].
     ///
     /// This merges state update with pending events into a single MessagePack frame (opcode 107).
-    /// Returns nil on failure (caller should send state update separately).
+    /// Returns nil on failure. With events, the caller ends the land rather than send the state
+    /// alone, which would lose them (#535 row 17).
     ///
     /// - Parameters:
     ///   - stateUpdateData: Encoded state update data

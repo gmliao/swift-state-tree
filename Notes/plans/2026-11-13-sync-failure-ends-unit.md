@@ -257,7 +257,7 @@ This state belongs to the adapter, not the keeper, so the keeper rule doesn't bi
 - the first-sync suspensions (TA 5722-5740);
 - the legacy event flush, per event;
 - the broadcast-only sync;
-- **debug settle** (TA 6671-6682): it reads the state with an await (`beginSyncLocatedIfRecording`), then runs `runFullSyncPhase`; the run is skipped on a stale generation;
+- **debug settle** (TA 6671-6682): it reads the state with an await (`beginSyncLocatedIfRecording`), then runs `runFullSyncPhase`. A settle whose freeze generation went stale during that await still runs its plan: the plan syncs the current state, which is harmless, and the result isn't published, because the generation is checked after the cycle's last await;
 - **the action-result output** (TA 5941-5993): it has its own ticket domain (the action's sequence), and is covered below.
 
 The PR lists every `await` in these paths, and a test holds at each (§8).
@@ -400,7 +400,7 @@ For every gap, the runtime backstop stays: the land ends at the first throw.
 **Colliding keys** (D8 (b)). Today they throw only in `makeFull`, the replay-hash path. The sync `make` path overwrites silently (SnapshotValue.swift:427), so "close the land at the first throw" would never fire for a type error the maintainer listed. They are detected in the live conversion:
 - `make` checks the insert's previous value (`updateValue` returns non-nil) and throws `SyncError.collidingKeys`;
 - it is a structured type cause, so the land ends;
-- the cost is a nil check per dictionary entry, which the off-path A/B measures on the actual code.
+- the cost is a nil check per dictionary entry on the Mirror path, which full views and seeds take even with typed sync tables; the off-path A/B measures it (§7).
 - **The promise covers the library's conversion only.** A custom `toSnapshotValue` that builds its own `.object` has merged its keys before the library sees them; that stays the type's own contract, and the docs say so.
 
 **Entry points:**
@@ -491,6 +491,8 @@ All failures are reported in one error, `SyncRegistrationError`, with one case p
 - an off-path A/B on the healthy path, judged by the instruction gate (#517).
 
 PR 4 gets the same A/B, for the access count on every write. PR 2 gets it for the collision check.
+
+**PR 2b's collision check (2026-11-17):** the A/B stands. With typed sync tables on, a map field that the tables don't cover (`[Int: MonsterState]`, `[Int: TurretState]` in hero-defense) still goes through `make`'s Mirror dictionary branch whenever a full view or a table seed is planned with entries in it: an in-turn joiner's firstSync, the standalone firstSync, a sync-lag resync and `SyncNodeMapRootSlot.stageSeed`. A first probe saw no hits only because every benchmark join happens before monsters spawn and no cell resyncs. The A/B therefore needs a cell whose window holds populated full views, beside the steady-state cells.
 
 ## 8. Tests
 
