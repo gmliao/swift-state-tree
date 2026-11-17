@@ -1001,6 +1001,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func performInitialization() async {
+        // The backstop for a keeper no registration checked (#535 §4): a state type that fails
+        // the synced-state rows fails initialization, as an OnInitialize resolver timeout does,
+        // before any handler runs. One cached lookup per state type.
+        let problems = SyncRegistration.cachedProblems(State.self)
+        if !problems.isEmpty {
+            let error = LandRegistrationError(landType: definition.id, payload: nil, sync: SyncRegistrationError(problems: problems))
+            logger.error("❌ The land's state type fails the registration check: the land is torn down", metadata: [
+                "error": .string(error.description),
+            ])
+            initializationFailure = LandInitializationError(underlying: error)
+            Task { await self.tearDownAfterFailedInitialization() }
+            return
+        }
         if mode == .reevaluation {
             await replayInitializeBeforeTickZero()
         }

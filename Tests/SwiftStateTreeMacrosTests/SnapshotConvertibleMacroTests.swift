@@ -45,6 +45,16 @@ final class SnapshotConvertibleMacroTests {
                 }
             }
 
+            extension PlayerState: SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    [
+                    ("name", (String).self),
+                    ("hpCurrent", (Int).self),
+                    ("hpMax", (Int).self)
+                ]
+                }
+            }
+
             extension PlayerState: SnapshotValueDecodable {
                 public init(fromSnapshotValue value: SnapshotValue) throws {
                     guard case .object(let _dict) = value else {
@@ -86,6 +96,12 @@ final class SnapshotConvertibleMacroTests {
 
                 public func toFullSnapshotValue() throws -> SnapshotValue {
                     return .object([:])
+                }
+            }
+
+            extension EmptyState: SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    []
                 }
             }
 
@@ -132,6 +148,15 @@ final class SnapshotConvertibleMacroTests {
                     "players": try SnapshotValue.makeFull(from: self.players as Any),
                     "round": try SnapshotValue.makeFull(from: self.round as Any)
                 ])
+                }
+            }
+
+            extension GameState: SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    [
+                    ("players", ([String: PlayerState]).self),
+                    ("round", (Int).self)
+                ]
                 }
             }
 
@@ -183,6 +208,15 @@ final class SnapshotConvertibleMacroTests {
                     "name": try SnapshotValue.makeFull(from: self.name as Any),
                     "score": try SnapshotValue.makeFull(from: self.score as Any)
                 ])
+                }
+            }
+
+            extension OptionalState: SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    [
+                    ("name", (String?).self),
+                    ("score", (Int).self)
+                ]
                 }
             }
 
@@ -238,6 +272,16 @@ final class SnapshotConvertibleMacroTests {
                     "hpCurrent": try SnapshotValue.makeFull(from: self.hpCurrent as Any),
                     "hpMax": try SnapshotValue.makeFull(from: self.hpMax as Any)
                 ])
+                }
+            }
+
+            extension PlayerState: SnapshotConvertibleStoredFields {
+                public static var _snapshotStoredFields: [(name: String, type: Any.Type)] {
+                    [
+                    ("name", (String).self),
+                    ("hpCurrent", (Int).self),
+                    ("hpMax", (Int).self)
+                ]
                 }
             }
 

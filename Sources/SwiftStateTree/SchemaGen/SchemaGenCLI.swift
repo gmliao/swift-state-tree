@@ -13,9 +13,8 @@ public struct SchemaGenCLI {
     ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
     ///     when reevaluation is enabled (convention-based, no need to pass alias per land)
     /// - Returns: Aggregated ProtocolSchema containing all lands and definitions
-    /// - Throws: `SyncValueSemanticsError` when a land's synced field holds a class (#464);
-    ///   `SyncPolicyNestingError` when a land's state nests a per-player field under a broadcast
-    ///   field (#179); `RecursiveStateTypeError` when a land's state type holds itself
+    /// - Throws: `LandRegistrationError` when a land's state fails a synced-state row (its `sync`:
+    ///   #464, #179, #535); `RecursiveStateTypeError` when a land's state type holds itself
     ///   (#286)
     public static func generateSchema(
         landDefinitions: [AnyLandDefinition],
@@ -76,9 +75,8 @@ public struct SchemaGenCLI {
     ///   - version: Schema version string (default: "0.1.0")
     ///   - outputPath: Optional file path to write schema to. If nil, writes to stdout
     ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
-    /// - Throws: `SyncValueSemanticsError` when a land's synced field holds a class (#464),
-    ///   `SyncPolicyNestingError` when a land's state nests a per-player field under a broadcast
-    ///   field (#179), `RecursiveStateTypeError` when a land's state type holds itself
+    /// - Throws: `LandRegistrationError` when a land's state fails a synced-state row (its `sync`:
+    ///   #464, #179, #535), `RecursiveStateTypeError` when a land's state type holds itself
     ///   (#286), or encoding errors if JSON encoding fails
     public static func generate(
         landDefinitions: [AnyLandDefinition],

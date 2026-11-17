@@ -8,17 +8,17 @@ public struct SchemaExtractor {
     ///   - landDefinition: The LandDefinition to extract schema from.
     ///   - version: Schema version string (default: "0.1.0").
     /// - Returns: A ProtocolSchema containing all land definitions, actions, events, and state tree schemas.
-    /// - Throws: `SyncValueSemanticsError` when a synced field holds a class (#464): such a state can't be served.
-    ///   `SyncPolicyNestingError` when the state nests a per-player field under a
-    ///   broadcast field (#179): such a state can't be served, so it gets no schema.
+    /// - Throws: `LandRegistrationError` when the state can't be served, so it gets no schema: its
+    ///   `sync` names the synced-state problems (a class in a synced field, #464; a per-player
+    ///   field under a broadcast one, #179; an unsupported key type or a type that holds any
+    ///   value, #535). The encoding-dependent payload rows aren't checked here.
     ///   `RecursiveStateTypeError` when a state type holds itself (#286): its path patterns
     ///   never end.
     public static func extract<State: StateNodeProtocol>(
         from landDefinition: LandDefinition<State>,
         version: String = "0.1.0"
     ) throws -> ProtocolSchema {
-        try SyncValueSemantics.validate(State.self)
-        try SyncPolicyNesting.validate(State.self)
+        try landDefinition.validateForRegistration(context: .encodingIndependent)
         var definitions: [String: JSONSchema] = [:]
         var visitedTypes: Set<String> = []
         

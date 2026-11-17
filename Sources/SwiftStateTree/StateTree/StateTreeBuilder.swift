@@ -21,6 +21,15 @@
 ///     var lastProcessedTimestamp: Date = Date()
 /// }
 /// ```
+///
+/// An `@Sync` property whose declared type can hold a value of any type is a compile error
+/// (#535): `any P`, `Any`, `AnyObject` or a composition `P & Q` at any depth (`[String: Any]`,
+/// `(any P)?`), and `AnyHashable` and `AnyCodable` by name. Use a concrete type, or an enum with
+/// a case for each kind of value. `@Internal` properties may hold anything. Not caught here: a
+/// protocol spelled bare, a typealias that names an existential, and a type that conforms to
+/// `StateNodeProtocol` by hand; registration checks what a default instance holds, and a value
+/// it can't see ends the land at its first conversion that throws. See
+/// `docs/core/sync.md#what-registration-refuses`.
 @attached(member, names: arbitrary)
 public macro StateNodeBuilder() = #externalMacro(
     module: "SwiftStateTreeMacros",
@@ -61,7 +70,14 @@ public macro StateNodeBuilder() = #externalMacro(
 /// metadata (`SchemaMetadataProvider`) is generated from the same properties. Every stored property
 /// must have a type annotation and be a scalar (`AtomicScalarLeaf`) or an atomic value; the
 /// compiler rejects anything else (optionals, collections).
-@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata))
+///
+/// A stored property whose declared type can hold a value of any type is a compile error
+/// (#535): `any P`, `Any`, `AnyObject` or a composition `P & Q` at any depth (`[String: Any]`,
+/// `(any P)?`), and `AnyHashable` and `AnyCodable` by name. Registration also looks into the
+/// value's storage through the declared types (`SnapshotConvertibleStoredFields`). Not caught: a
+/// protocol spelled bare and a typealias that names an existential; such a value ends the land
+/// at its first conversion that throws. See `docs/core/sync.md#what-registration-refuses`.
+@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, SnapshotConvertibleStoredFields, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata), named(_snapshotStoredFields))
 public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "SnapshotConvertibleMacro"

@@ -348,8 +348,10 @@ public actor NIOLandHost {
     ///   - initialState: Factory for creating initial state.
     ///   - webSocketPath: WebSocket path (e.g., "/game/counter").
     ///   - configuration: Server configuration for this land.
-    /// - Throws: `SyncValueSemanticsError` when a synced field holds a class (#464), `SyncPolicyNestingError` when the
-    ///   state nests a per-player field under a broadcast field (#179), or a realm registration
+    /// - Throws: `LandRegistrationError` when the land fails a registration check: its `sync`
+    ///   names the state's synced-state problems (a class in a synced field, #464; a per-player
+    ///   field under a broadcast one, #179; an unsupported key type or a type that holds any value,
+    ///   #535), its `payload` the payload types its encoding can't write. Or a realm registration
     ///   error.
     public func register<State: StateNodeProtocol>(
         landType: String,
@@ -358,11 +360,8 @@ public actor NIOLandHost {
         webSocketPath: String,
         configuration: NIOLandServerConfiguration
     ) async throws {
-        // Synced state is made of value types (#464), and a per-player field under a broadcast
-        // field can't reach its player in diffs (#179).
-        try SyncValueSemantics.validate(State.self)
-        try SyncPolicyNesting.validate(State.self)
-        // The land's payload types can be written in its encoding (EV1, #521).
+        // The state's synced-state rows (#464, #179, #535) and the land's payload types in its
+        // encoding (EV1, #521), in one throw.
         try land.validateForRegistration(
             context: LandRegistrationContext(payloadsCompressed: configuration.effectiveTransportEncoding.shouldEncodePayloadAsArray)
         )

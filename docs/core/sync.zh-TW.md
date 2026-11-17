@@ -62,7 +62,7 @@ State node 不論位於何處，都套用其欄位自身的 policy：作為欄�
 | `.masked`（node 型別的欄位） | 先執行 mask，再套用子欄位的 policy | | | |
 | `.serverOnly` | 以下都不會送出 | | | |
 
-**依玩家而變的欄位不能有 `.broadcast` 祖先**（#179），不論中間隔著哪種容器。broadcast 欄位只在沒有玩家的情況下編碼一次，送給所有人，因此其下的 per-player 欄位在 diff 中送不到該玩家。`LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會以 `SyncPolicyNestingError` 拒絕這種 state，錯誤中列出每個欄位與其 broadcast 祖先；`SyncPolicyNesting.validate(_:)` 執行同樣的檢查。一般的 struct（不是 state node）會透過預設實例檢查其內容，因為 encoder 會像對待子節點一樣走訪其 stored property；檢查看不到的部分（例如空陣列的元素）會在 broadcast 編碼遇到時被拒絕（`SyncError.unsupportedValue`）。macro 無法辨識的 policy（不是寫成 `.name` 或 `.name(...)`）一律 fail closed，且每個 `@Sync` property 都必須明確標註型別。per-player 資料請改放在頂層的 per-player 欄位：
+**依玩家而變的欄位不能有 `.broadcast` 祖先**（#179），不論中間隔著哪種容器。broadcast 欄位只在沒有玩家的情況下編碼一次，送給所有人，因此其下的 per-player 欄位在 diff 中送不到該玩家。`LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會以 `LandRegistrationError` 拒絕這種 state：其 `sync` 含有 `.policyNesting` 問題，也就是列出每個欄位與其 broadcast 祖先的 `SyncPolicyNestingError`（見[註冊時拒絕的型別](#註冊時拒絕的型別)）；`SyncPolicyNesting.validate(_:)` 執行同樣的檢查。一般的 struct（不是 state node）會透過預設實例檢查其內容，因為 encoder 會像對待子節點一樣走訪其 stored property；檢查看不到的部分（例如空陣列的元素）會在 broadcast 編碼遇到時被拒絕（`SyncError.unsupportedValue`）。macro 無法辨識的 policy（不是寫成 `.name` 或 `.name(...)`）一律 fail closed，且每個 `@Sync` property 都必須明確標註型別。per-player 資料請改放在頂層的 per-player 欄位：
 
 ```swift
 @StateNodeBuilder
@@ -85,12 +85,33 @@ struct GameState: StateNodeProtocol {
 ### 同步狀態只能由 value type 組成
 
 每個 `@Sync` 欄位在任何深度都只能放 value type（struct、enum、由它們組成的集合、state node）（#464）。Diff 比較的是值；debug build 也會拿 handler 執行前的副本檢查拋出錯誤的 handler 是否寫入過（見 [Runtime](runtime.zh-TW.md#input-與-turn)）。透過共用物件的寫入兩者都看不到，因此同步狀態中的 class 會被拒絕：
-- **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `SyncValueSemanticsError`，列出每個欄位與 class，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential 欄位（`any P`）的內容。
+- **註冊時。** `LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會拋出 `LandRegistrationError`，其 `sync` 含有 `.valueSemantics` 問題，也就是列出每個欄位與 class 的 `SyncValueSemanticsError`，例如 `GameState.inventory: Inventory is a class; synced state must be value types`。檢查會走訪每個同步欄位的型別（包含 `.serverOnly` 欄位），穿過 optional、array、set、dictionary 的 key 與 value，以及巢狀 state node，並透過預設實例檢查一般 struct、tuple、enum payload 與 existential 欄位（`any P`）的內容。
 - **轉換狀態時。** 檢查看不到的 class（之後才存入 existential 欄位的、位於預設實例沒有採用的 enum case 裡的、或加進註冊時還是空的集合裡的）會讓轉換拋出 `SyncError.unsupportedValue`。Dictionary 的 key 是例外：key 是透過它的 description 轉換的，因此放在 value type key 內部的 class（例如含有 class 屬性的 `CustomStringConvertible` struct）只有在註冊時、且預設實例的第一個 key 含有 class 時才會被拒絕（檢查只取 dictionary 的第一個項目）。每次同步都會轉換，因此該 Land 的同步會失敗（`.serverOnly` 欄位只在錄製或計算狀態雜湊時，以及 debug build 檢查拋出錯誤的 handler 是否寫入時才會轉換，因此失敗的是這些步驟）；若 class 位於事件 payload 中，sync-output verifier 無法將該事件正規化，會把 events 範圍回報為無法驗證。
 
 請把型別改成 struct 或 enum。Land 需要但不同步的參照（例如快取或 service handle）放在 `@Internal` 欄位，這類欄位不受檢查。`SnapshotValueConvertible` 型別由它自己的 `toSnapshotValue()` 轉換，但其儲存內容仍會被檢查：遵循此 protocol 的 class 會被拒絕，預設實例含有 class 的遵循 struct 也會被拒絕。
 
 **破壞性變更（2026-11-10）。** #464 之前，同步狀態中的 class 會依其 stored property 編碼，只有參照回自己的物件圖會被拒絕。現在狀態含有 class 的 Land 會註冊失敗。
+
+### 註冊時拒絕的型別
+
+所有只由 state 型別就能決定的註冊檢查，都在同一個錯誤中回報（#535）。`LandDefinition.validateForRegistration(context:)` 執行這些檢查，`NIOLandHost.register`、`LandTypeRegistry.init`、`SchemaExtractor.extract`、`SchemaGenCLI` 與 `ReevaluationEngine.run` 都會呼叫它。它們拋出 `LandRegistrationError`，其 `sync` 是 `SyncRegistrationError`，每一列對應一種問題：
+
+| 問題 | 意義 |
+|---|---|
+| `.valueSemantics(SyncValueSemanticsError)` | 同步欄位含有 class（見上文） |
+| `.policyNesting(SyncPolicyNestingError)` | broadcast 欄位下有依玩家而變的欄位（見上文） |
+| `.unsupportedKey(path:keyType:)` | 同步無法轉成字串的 dictionary key 型別：不是 `String`、`PlayerID` 或 `CustomStringConvertible` |
+| `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別 |
+
+class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此空集合中的值也會檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
+
+**編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
+
+**抓不到的情況。** 未加 `any` 的 protocol 名稱（`var p: P`）、指向 existential 的 typealias，以及手寫 conformance 的型別，macro 都看不到。一般 struct（沒有 `@SnapshotConvertible`）在註冊時只能透過預設實例的值檢查，因此其宣告為 `Any` 或 `any P` 的 property，會被當成當時所存值的型別檢查（`var x: Any = 0` 會以 `Int` 通過）；Swift 的 reflection 拿不到宣告的型別。手寫 `toSnapshotValue()` 的儲存內容不會被檢查。這些情況由同步作為最後防線：第一個無法轉換的值會結束 land（[失敗處理](failure-handling.zh-TW.md)）。不經 host 或 registry 直接建立的 keeper 會在初始化時執行同一個檢查：未通過的 state 型別會讓初始化失敗，與 OnInitialize resolver 逾時相同。
+
+**破壞性變更（2026-11-17）。** #535 之前，註冊時分別拋出 `SyncValueSemanticsError` 與 `SyncPolicyNestingError`，而不支援的 key 型別或 existential 欄位要到同步時才發現。遷移方式：
+- `catch is SyncValueSemanticsError` 不再匹配。請 catch `LandRegistrationError` 並讀取其 `sync?.problems`；舊的錯誤是 `.valueSemantics` 或 `.policyNesting` 的 associated value。
+- existential 欄位改用具體型別，或為每種可能的值各設一個 case 的 enum。`AnyCodable` 或 `AnyHashable` 欄位同樣處理；不支援的 key 型別改用 `String`、`PlayerID` 或 `CustomStringConvertible` 的 key。
 
 ## Snapshot 與 Diff
 

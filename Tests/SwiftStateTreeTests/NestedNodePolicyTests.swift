@@ -723,15 +723,17 @@ struct SyncPolicyNestingTests {
         ])
     }
 
-    @Test("Schema extraction rejects the land at every entry point")
-    func schemaEntryPoints() {
+    @Test("Schema extraction rejects the land at every entry point, with the nesting in LandRegistrationError.sync (#535)")
+    func schemaEntryPoints() throws {
         let land = Land("nesting-array", using: NestingArrayRoot.self) { Rules {} }
-        #expect(throws: SyncPolicyNestingError.self) {
+        var error = try #require(throws: LandRegistrationError.self) {
             _ = try SchemaExtractor.extract(from: land)
         }
-        #expect(throws: SyncPolicyNestingError.self) {
+        #expect(error.sync?.problems.contains(where: { if case .policyNesting = $0 { true } else { false } }) == true)
+        error = try #require(throws: LandRegistrationError.self) {
             _ = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(land)])
         }
+        #expect(error.sync?.problems.contains(where: { if case .policyNesting = $0 { true } else { false } }) == true)
     }
 
     @Test("perPlayerSlice and the deprecated custom are rejected too")
@@ -761,11 +763,12 @@ struct SyncPolicyNestingTests {
     }
 
     @Test("SchemaGen rejects the land")
-    func schemaGen() {
+    func schemaGen() throws {
         let land = Land("nesting-array", using: NestingArrayRoot.self) { Rules {} }
-        #expect(throws: SyncPolicyNestingError.self) {
+        let error = try #require(throws: LandRegistrationError.self) {
             try SchemaGenCLI.generate(landDefinitions: [AnyLandDefinition(land)], outputPath: "/dev/null")
         }
+        #expect(error.sync?.problems.contains(where: { if case .policyNesting = $0 { true } else { false } }) == true)
     }
 
     /// The order of a masked node field: the mask runs on the server value first, then the

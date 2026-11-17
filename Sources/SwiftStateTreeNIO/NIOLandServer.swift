@@ -32,8 +32,8 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   - initialStateFactory: Factory for creating initial state.
     ///   - configuration: Server configuration.
     ///   - transport: Shared WebSocketTransport instance.
-    /// - Throws: `SyncValueSemanticsError` (#464) or `SyncPolicyNestingError` (#179) from
-    ///   `LandTypeRegistry.init`.
+    /// - Throws: `LandRegistrationError` from `LandTypeRegistry.init`: the state's synced-state
+    ///   problems in its `sync` (#464, #179, #535).
     public init(
         landType: String,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,

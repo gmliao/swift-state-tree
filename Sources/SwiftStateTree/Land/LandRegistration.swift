@@ -36,18 +36,36 @@ public struct PayloadRegistrationError: Error, CustomStringConvertible, Sendable
 public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     public let landType: String
     public let payload: PayloadRegistrationError?
+    /// The state type's synced-state problems (#535): a class in a synced field
+    /// (`.valueSemantics`, #464), a per-player field under a broadcast one (`.policyNesting`,
+    /// #179), an unsupported key type, or a type that holds a value of any type. Before #535 the
+    /// first two were thrown on their own, as `SyncValueSemanticsError` and
+    /// `SyncPolicyNestingError`; each is now this field's associated value.
+    public let sync: SyncRegistrationError?
+
+    init(landType: String, payload: PayloadRegistrationError?, sync: SyncRegistrationError? = nil) {
+        self.landType = landType
+        self.payload = payload
+        self.sync = sync
+    }
 
     public var description: String {
-        "land type '\(landType)' can't be registered: " + [payload?.description].compactMap { $0 }.joined(separator: "; ")
+        "land type '\(landType)' can't be registered: " + [payload?.description, sync?.description].compactMap { $0 }.joined(separator: "; ")
     }
 }
 
 extension LandDefinition {
     /// Every registration check this definition fails under `context`, in one throw.
+    ///
+    /// The synced-state rows hold whatever the context: they depend on the state type alone, and
+    /// their result is cached per type (`SyncRegistration.cachedProblems`), under the contract that
+    /// a state type's default `init()` is deterministic.
     public func validateForRegistration(context: LandRegistrationContext) throws {
         let payload = context.payloadsCompressed == true ? payloadsWithoutWriter() : nil
-        if payload != nil {
-            throw LandRegistrationError(landType: id, payload: payload)
+        let problems = SyncRegistration.cachedProblems(State.self)
+        let sync = problems.isEmpty ? nil : SyncRegistrationError(problems: problems)
+        if payload != nil || sync != nil {
+            throw LandRegistrationError(landType: id, payload: payload, sync: sync)
         }
     }
 

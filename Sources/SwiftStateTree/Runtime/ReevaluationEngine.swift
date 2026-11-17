@@ -192,6 +192,10 @@ public enum ReevaluationEngine {
     }
 
     /// Run a deterministic re-evaluation from a JSON record file.
+    ///
+    /// Throws `LandRegistrationError` before anything is read or a keeper is built when the
+    /// definition fails the encoding-independent registration rows (#535): such a land can't
+    /// have run live.
     public static func run<State: StateNodeProtocol>(
         definition: LandDefinition<State>,
         initialState: State,
@@ -204,6 +208,7 @@ public enum ReevaluationEngine {
         requiredRecordVersion: String? = nil,
         logger: Logger? = nil
     ) async throws -> RunResult {
+        try definition.validateForRegistration(context: .encodingIndependent)
         // Opening the source rejects a record older than `minimumSupported`.
         let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()

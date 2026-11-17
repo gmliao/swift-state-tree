@@ -261,12 +261,14 @@ struct SyncValueSemanticsTests {
         }
     }
 
-    @Test("Schema extraction and SchemaGen refuse the land")
-    func schemaEntryPoints() {
+    @Test("Schema extraction and SchemaGen refuse the land, with the class in LandRegistrationError.sync (#535)")
+    func schemaEntryPoints() throws {
         let land = Land("value-check", using: ValueCheckClassFieldRoot.self) { Rules {} }
-        #expect(throws: SyncValueSemanticsError.self) { _ = try SchemaExtractor.extract(from: land) }
-        #expect(throws: SyncValueSemanticsError.self) {
+        var error = try #require(throws: LandRegistrationError.self) { _ = try SchemaExtractor.extract(from: land) }
+        #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
+        error = try #require(throws: LandRegistrationError.self) {
             _ = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(land)])
         }
+        #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
     }
 }

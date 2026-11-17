@@ -401,7 +401,7 @@ struct NIOLandHostPolicyNestingTests {
         let logger = Logger(label: "test")
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, logger: logger, adminAPIKey: nil))
         let land = Land("class-field", using: HostClassFieldState.self) { Rules {} }
-        await #expect(throws: SyncValueSemanticsError.self) {
+        let error = try await #require(throws: LandRegistrationError.self) {
             try await host.register(
                 landType: "class-field",
                 land: land,
@@ -410,6 +410,7 @@ struct NIOLandHostPolicyNestingTests {
                 configuration: NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
             )
         }
+        #expect(error.sync?.problems.contains(where: { if case .valueSemantics = $0 { true } else { false } }) == true)
         #expect(await host.realm.isRegistered(landType: "class-field") == false)
     }
 
@@ -418,7 +419,7 @@ struct NIOLandHostPolicyNestingTests {
         let logger = Logger(label: "test")
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, logger: logger, adminAPIKey: nil))
         let land = Land("nested-per-player", using: NestedPerPlayerUnderBroadcastState.self) { Rules {} }
-        await #expect(throws: SyncPolicyNestingError.self) {
+        let error = try await #require(throws: LandRegistrationError.self) {
             try await host.register(
                 landType: "nested-per-player",
                 land: land,
@@ -427,6 +428,7 @@ struct NIOLandHostPolicyNestingTests {
                 configuration: NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
             )
         }
+        #expect(error.sync?.problems.contains(where: { if case .policyNesting = $0 { true } else { false } }) == true)
         #expect(await host.realm.isRegistered(landType: "nested-per-player") == false)
     }
 

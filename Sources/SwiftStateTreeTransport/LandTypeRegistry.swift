@@ -27,16 +27,16 @@ public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     ///     The returned LandDefinition.id must match the landType parameter.
     ///   - initialStateFactory: Factory function that creates initial state for a given landType and landID.
     ///   - replayLandSuffix: Suffix used to identify replay land types (default: "-replay").
-    /// - Throws: `SyncValueSemanticsError` when a synced field of `State` holds a class (#464);
-    ///   `SyncPolicyNestingError` when `State` nests a per-player field under a broadcast field
-    ///   (#179): its per-player data would reach no player in diffs.
+    /// - Throws: `LandRegistrationError` whose `sync` names `State`'s synced-state problems: a
+    ///   class in a synced field (#464), a per-player field under a broadcast field (#179), an
+    ///   unsupported key type or a type that holds any value (#535). Its `landType` is `State`'s
+    ///   name: a registry serves every land type of that state.
     public init(
         landFactory: @escaping @Sendable (String, LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (String, LandID) -> State,
         replayLandSuffix: String = "-replay"
     ) throws {
-        try SyncValueSemantics.validate(State.self)
-        try SyncPolicyNesting.validate(State.self)
+        try SyncRegistration.validate(State.self, landType: String(describing: State.self))
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
         self.replayLandSuffix = replayLandSuffix
