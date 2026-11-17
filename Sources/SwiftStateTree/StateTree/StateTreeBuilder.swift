@@ -74,7 +74,9 @@ public macro StateNodeBuilder() = #externalMacro(
 /// A stored property whose declared type can hold a value of any type is a compile error
 /// (#535): `any P`, `Any`, `AnyObject` or a composition `P & Q` at any depth (`[String: Any]`,
 /// `(any P)?`), and `AnyHashable` and `AnyCodable` by name. Registration also looks into the
-/// value's storage through the declared types (`SnapshotConvertibleStoredFields`). Not caught: a
+/// value's storage through the declared types (`SnapshotConvertibleStoredFields`), also inside
+/// an empty collection; a property without a type annotation is checked only through a default
+/// instance's value. Not caught: a
 /// protocol spelled bare and a typealias that names an existential; such a value ends the land
 /// at its first conversion that throws. See `docs/core/sync.md#what-registration-refuses`.
 @attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, SnapshotFieldListProvider, SnapshotConvertibleStoredFields, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths), named(getFieldMetadata), named(snapshotFieldMetadata), named(_snapshotStoredFields))

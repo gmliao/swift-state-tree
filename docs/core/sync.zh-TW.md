@@ -103,7 +103,7 @@ struct GameState: StateNodeProtocol {
 | `.unsupportedKey(path:keyType:)` | 同步無法轉成字串的 dictionary key 型別：不是 `String`、`PlayerID` 或 `CustomStringConvertible` |
 | `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別 |
 
-class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此空集合中的值也會檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
+class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此有標註型別的 property 即使位於空集合中也會檢查；沒有標註型別的 property 只能透過預設實例的值檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
 
 **編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
 
