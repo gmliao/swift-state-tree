@@ -829,6 +829,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         return nil
     }
 
+    /// Whether the stored instance of `landID` has `epoch` (#535 B2: a failed land's stop).
+    package func isStored(landID: LandID, epoch: Epoch) -> Bool {
+        lands[landID]?.epoch == epoch
+    }
+
     /// Moves the stored instance of `landID` to `detached`, in this one segment.
     private func detach(landID: LandID, stopping: Bool) -> DetachedInstance? {
         guard let stored = lands[landID] else { return nil }

@@ -81,7 +81,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 ## Close code
 
-- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session，不論是直接建立還是由 host 管理。有 host 時，失敗的拆除與管理端停止一樣停止 land（detach、每個 session 的 leave、關閉），而 close code 在每個 session 的關閉請求發出時才讀取：管理端停止進行中 land 失敗時，關閉請求在失敗之後發出的每個 session 都收到 4016。已關閉、或關閉請求在失敗之前就發出的 session 維持 4014；請求送往 transport 的最後一段途中才失敗的也一樣。host 關機期間，關機流程已先接手所有 session 自行關閉，因此此時失敗的 land，其 session 以關機的 1001 關閉。
+- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session，不論是直接建立還是由 host 管理。有 host 時，失敗的拆除與管理端停止一樣停止 land（detach、每個 session 的 leave、關閉），而 close code 在每個 session 的關閉請求發出時才讀取：管理端停止進行中 land 失敗時，關閉請求在失敗之後發出的每個 session 都收到 4016。已關閉、或關閉請求在失敗之前就發出的 session 維持 4014；請求送往 transport 的最後一段途中才失敗的也一樣。host 關機流程一旦接手 session 自行關閉（`closeSessionsForShutdown`），之後才失敗的 land，其 session 以關機的 1001 關閉。
 - **4012 `unencodableView`：** 目前在 resync 或第一次 view 的 frame 持續無法編碼時送出。#535 落地後保留不用，不再送出。
 - **4014 `landStopped`：** 管理端停止一個沒有失敗的 land。
 

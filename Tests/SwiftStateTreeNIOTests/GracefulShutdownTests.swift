@@ -1870,8 +1870,13 @@ struct FailedLandStopTests {
         let (_, connection) = try await f.join("p2")
         let second = try #require(await f.server.landManager.getLand(landID: f.landID))
         #expect(second.epoch != first.epoch)
+        let shared = Gate()
+        shared.open()
+        f.server.stopFlightsForTesting.onSharedForTesting { _ in Task { await shared.arrive() } }
         await second.keeper.failLandForTesting(testFailure())
-        #expect(await second.keeper.waitForFailureForTesting())
+        // The failure's hook shares the first stop's flight, still open, before it ends.
+        #expect(await shared.waitForArrivals(1), "the failure shares the first instance's stop")
+        f.server.stopFlightsForTesting.onSharedForTesting(nil)
         destroyed.open()
 
         guard await bounded({ await second.keeper.forceShutdown() }) != nil else {
@@ -1882,6 +1887,39 @@ struct FailedLandStopTests {
         #expect(second.keeper.destructionCause == .failed)
         #expect(await f.server.listLands().contains(f.landID) == false)
         _ = await f.server.stopLand(landID: f.landID)
+        #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("a failure of an instance no longer stored doesn't wait out another instance's stop in flight")
+    func unstoredFailureDoesNotWaitForAnotherStop() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        await f.server.landManager.detachLand(landID: f.landID)
+        try await f.join("p2")
+        // The newer instance's admin stop, held after its snapshot: its flight stays open.
+        let snapshot = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.stopSnapshot) { await snapshot.arrive() }.hook)
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await snapshot.waitForArrivals(1), "the newer instance's stop is in flight")
+        let shared = Gate()
+        shared.open()
+        f.server.stopFlightsForTesting.onSharedForTesting { _ in Task { await shared.arrive() } }
+
+        await old.keeper.failLandForTesting(testFailure())
+        #expect(await shared.waitForArrivals(1), "the old instance's failure shares the newer stop")
+        f.server.stopFlightsForTesting.onSharedForTesting(nil)
+        let finished = await bounded { await old.keeper.forceShutdown() }
+        snapshot.open()
+        guard finished != nil else {
+            Issue.record("the old instance's teardown waited for the newer instance's stop"); return
+        }
+        #expect(old.keeper.destructionCause == .failed)
+        #expect(await stop.value == .stopped(timedOut: false))
         #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
         try await f.host.shutdown()
     }

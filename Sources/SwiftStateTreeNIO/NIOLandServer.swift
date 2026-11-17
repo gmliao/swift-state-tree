@@ -238,16 +238,18 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   set at once if that stop is past its sessions.
     /// - Otherwise it starts the stop for the epoch, or shares the one in flight for the ID, and
     ///   waits for its detach step. If that stop detached this epoch, it waits for the latch.
-    /// - A shared stop that detached another instance of the ID (or none) isn't this epoch's: it
-    ///   waits for that stop's end, which doesn't depend on this land, then runs its own.
+    /// - A shared stop that detached another instance of the ID (or none) isn't this epoch's. If
+    ///   this epoch is no longer stored and has no latch, no stop will close its sessions, and
+    ///   it returns at once; otherwise it waits for that stop's end, which doesn't depend on
+    ///   this land, then runs its own.
     /// - Its own stop finding no instance: nothing will close this epoch's sessions (the
     ///   instance isn't stored any more), and it returns at once.
     ///
     /// None of these waits depend on this land's destroy, so the teardown can't wait on itself.
     ///
-    /// During a host shutdown, the router has already taken every session for its own close
-    /// (1001, `closeSessionsForShutdown`), so this stop finds none bound and its sessions close
-    /// with 1001, not 4016: the shutdown's code.
+    /// Once a host shutdown's `closeSessionsForShutdown` has taken the sessions for its own
+    /// close (1001), this stop finds none bound, and they close with 1001, not 4016: the
+    /// shutdown's code.
     private static func stopForFailure(
         landID: LandID,
         epoch: Epoch,
@@ -279,7 +281,12 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
                 return
             }
             if detachedEpoch == epoch || flight.epoch == epoch { return }
-            // Another instance's stop: its end doesn't wait on this land.
+            // Another instance's stop. This epoch no longer stored: no stop will detach it, so
+            // none will raise its latch (checked after, since only a detach creates one).
+            if !(await landManager.isStored(landID: landID, epoch: epoch)), stops.latch(for: epoch) == nil {
+                return
+            }
+            // Its end doesn't wait on this land.
             _ = await flight.task.value
         }
     }
