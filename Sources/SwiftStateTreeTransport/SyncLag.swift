@@ -13,7 +13,7 @@ public struct SyncLagPolicy: Sendable, Equatable {
     public var ackTimeout: Duration
     /// Acks older than this are stale: they pause the resync decision.
     public var ackFreshness: Duration
-    /// The close grace of a terminal lag close (4010, 4011, 4012; #339): after its close frame is
+    /// The close grace of a terminal lag close (4010, 4011; #339): after its close frame is
     /// written, the server reads and discards inbound for up to this long, until the client's
     /// close frame, then closes the channel (`SessionClose.closeGrace`). Zero closes the channel
     /// as soon as the frame is written. Writing the frame itself stays bounded by the session

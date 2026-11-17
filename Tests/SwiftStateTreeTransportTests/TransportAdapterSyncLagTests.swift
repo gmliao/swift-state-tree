@@ -14,6 +14,23 @@ struct SyncLagTestState: StateNodeProtocol {
     /// A value JSON can't encode (NaN) makes a full view fail to encode whole.
     @Sync(.broadcast)
     var speeds: [String: Double] = [:]
+    /// Converts until its token is tripped (`SyncLagFragile`).
+    @Sync(.broadcast)
+    var fragile: SyncLagFragile = SyncLagFragile()
+}
+
+/// A value whose conversion throws once its token is in `trippedTokens`. Tripping it writes no
+/// state, so a test can make a field throw at the plan it chooses.
+struct SyncLagFragile: Codable, Sendable, Equatable, SnapshotValueConvertible {
+    struct Fault: Error {}
+    var token = 0
+    nonisolated(unsafe) private static var trippedTokens: Set<Int> = []
+    private static let lock = NSLock()
+    static func trip(_ token: Int) { lock.withLock { _ = trippedTokens.insert(token) } }
+    func toSnapshotValue() throws -> SnapshotValue {
+        if Self.lock.withLock({ Self.trippedTokens.contains(token) }) { throw Fault() }
+        return .int(token)
+    }
 }
 
 /// Path hashes for the MessagePack fixture: dynamic key slots need them.
@@ -43,21 +60,6 @@ struct SyncLagSpeedAction: ActionPayload {
     typealias Response = SyncLagIncrementResponse
     let nan: Bool
     public init(nan: Bool) { self.nan = nan }
-}
-
-/// Throws on its first call only.
-final class FailOnce: @unchecked Sendable {
-    struct Fault: Error {}
-    private let lock = NSLock()
-    private var fired = false
-    var didFire: Bool { lock.withLock { fired } }
-    func fire() throws {
-        let first = lock.withLock { () -> Bool in
-            defer { fired = true }
-            return !fired
-        }
-        if first { throw Fault() }
-    }
 }
 
 /// A clock the test moves by hand.
@@ -181,10 +183,10 @@ struct TransportAdapterSyncLagTests {
     func makeFixture(
         timerInterval: Duration = .seconds(3600), binary: Bool = false, syncSequence: Bool = true,
         inTurnSync: Bool = true,
-        failFirstSync: Bool = false,
         syncTables: Bool? = nil,
         failViewEncode: Bool = false,
         keeperTransport: Bool = false,
+        fragileToken: Int = 0,
         holds: HoldRegistry<TransportAdapterHoldPoint>? = nil
     ) async throws -> Fixture {
         // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.
@@ -192,7 +194,9 @@ struct TransportAdapterSyncLagTests {
         if let syncTables { envConfig.useSyncTables = syncTables }
         let definition = syncLagTestLand()
         let transport = Opcode107RecordingTransport()
-        let keeper = LandKeeper<SyncLagTestState>(definition: definition, initialState: SyncLagTestState())
+        var initial = SyncLagTestState()
+        initial.fragile.token = fragileToken
+        let keeper = LandKeeper<SyncLagTestState>(definition: definition, initialState: initial)
         let adapter = TransportAdapter<SyncLagTestState>(
             keeper: keeper,
             transport: transport,
@@ -210,10 +214,6 @@ struct TransportAdapterSyncLagTests {
         let clock = SyncLagManualClock()
         await adapter.setSyncLagClockForTesting { clock.now }
         await adapter.setSyncLagTimerIntervalForTesting(timerInterval)
-        if failFirstSync {
-            let once = FailOnce()
-            await adapter.setFirstSyncPlanFaultForTesting { try once.fire() }
-        }
         let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock, binary: binary)
         if failViewEncode {
             // Every update of the player fails to encode, even its empty fallback.
@@ -609,6 +609,23 @@ struct TransportAdapterSyncLagTests {
         f.clock.advance(3.5)
         await f.ack(acked)
         return acked
+    }
+
+    @Test("A resync whose view has a field whose conversion throws ends the land, naming the field (#535 rows 3, 11)")
+    func throwingFieldInResyncEndsTheLand() async throws {
+        let token = Int.random(in: 1 ... Int.max)
+        let f = try await makeFixture(keeperTransport: true, fragileToken: token)
+        _ = try await resyncDue(f)
+        SyncLagFragile.trip(token)
+        // A resync is due: the plan sends a full view, and meets the throw.
+        try? await f.bump()
+        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        await f.keeper.waitUntilDrained()
+        #expect(f.keeper.failure?.kind == .syncConversion)
+        #expect(f.keeper.failure?.field == "fragile")
+        #expect(try await f.stateFrames().map(\.op).contains(3) == false, "no partial snapshot")
+        #expect(f.adapter.outputGate.isClosed)
+        #expect(await f.transport.closes.map(\.code) == [SessionClose.Code.landFailed])
     }
 
     @Test("A resync snapshot that doesn't encode ends the land: no partial snapshot, 4016, never 4012 (#535 row 11)")

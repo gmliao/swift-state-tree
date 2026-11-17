@@ -310,6 +310,7 @@ private func comparePPFailure<State: StateNodeProtocol>(
         try await script(run)
         try #require(await run.keeper.waitForFailureForTesting(), "\(label): the land failed", sourceLocation: sourceLocation)
         check(try #require(run.keeper.failure, sourceLocation: sourceLocation))
+        #expect(run.adapter.outputGate.isClosed, "\(label): the output gate closed", sourceLocation: sourceLocation)
         frames.append(await run.transport.sent)
     }
     #expect(frames[2].count > 2, "\(label): frames were sent before the failure", sourceLocation: sourceLocation)
@@ -514,6 +515,7 @@ struct PerPlayerSyncTablesScenarioTests {
             await run.sync()
         } check: { failure in
             #expect(failure.kind == .syncConversion, "\(cell)")
+            #expect(failure.field == "flaky", "\(cell)")
         }
     }
 

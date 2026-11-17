@@ -216,11 +216,10 @@ private final class SyncPhaseSwitch: @unchecked Sendable {
     func set(_ value: Bool) { lock.lock(); on = value; lock.unlock() }
 }
 
-/// Wraps a real encoder; while `failDiffs` is on, every per-player-scope `.diff` update fails
-/// (firstSync, `.noChange` and the broadcast-scope opcode 107 state still encode).
+/// Wraps a real encoder; while `failingPlayer` is set, every per-player-scope update of that
+/// player fails (the broadcast-scope opcode 107 state still encodes).
 private struct FailingDiffEncoder: StateUpdateEncoderWithScope {
     let inner: any StateUpdateEncoder
-    let failDiffs: SyncPhaseSwitch
     let failingPlayer: SyncPhaseFailingPlayer
 
     var encoding: StateUpdateEncoding { inner.encoding }
@@ -240,9 +239,6 @@ private struct FailingDiffEncoder: StateUpdateEncoderWithScope {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
-        if case .diff = update, case .perPlayer = scope, failDiffs.isOn {
-            throw SyncPhaseFault()
-        }
         if case .perPlayer = scope, failingPlayer.current == playerID {
             throw SyncPhaseFault()
         }
@@ -510,8 +506,6 @@ private struct SyncPhaseFixture {
     let keeper: LandKeeper<SyncPhaseTestState>
     let adapter: TransportAdapter<SyncPhaseTestState>
     let transport: SyncPhaseTransport
-    /// While on, the encoder fails every per-player `.diff` update (see `FailingDiffEncoder`).
-    let diffEncodingFails: SyncPhaseSwitch
     /// While set, every per-player update of that player fails to encode (deterministic).
     let failingPlayer: SyncPhaseFailingPlayer
     /// The schema's path table when the adapter sends path indices; nil for hashes.
@@ -548,7 +542,6 @@ private struct SyncPhaseFixture {
             definition: makeSyncPhaseLand(periodicSync: periodicSync),
             initialState: SyncPhaseTestState()
         )
-        let failDiffs = SyncPhaseSwitch()
         let failingPlayer = SyncPhaseFailingPlayer()
         let hasher = PathHasher(pathHashes: syncPhasePathHashes)
         let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync, fullSnapshot: fullSnapshot, syncTables: syncTables)
@@ -576,7 +569,7 @@ private struct SyncPhaseFixture {
                 transport: transport,
                 landID: "sync-phase-test",
                 transportEnvConfig: envConfig,
-                stateUpdateEncoder: FailingDiffEncoder(inner: inner, failDiffs: failDiffs, failingPlayer: failingPlayer),
+                stateUpdateEncoder: FailingDiffEncoder(inner: inner, failingPlayer: failingPlayer),
                 pathHashes: encoding == .json ? nil : syncPhasePathHashes
             )
         }
@@ -586,7 +579,6 @@ private struct SyncPhaseFixture {
             keeper: keeper,
             adapter: adapter,
             transport: transport,
-            diffEncodingFails: failDiffs,
             failingPlayer: failingPlayer,
             pathIndex: indexHasher
         )
@@ -843,6 +835,55 @@ struct TransportAdapterSyncPhaseTests {
         }
     }
 
+    @Test("without opcode 107, an event that doesn't encode ends the land; one to a target with no recipient doesn't (#535 row 17)", arguments: [SyncPhaseEncoding.json, .opcodeJsonArray], [true, false])
+    func unencodableImmediateEventEndsTheLand(encoding: SyncPhaseEncoding, unencodable: Bool) async throws {
+        let f = try await SyncPhaseFixture.make(encoding: encoding)
+        await f.keeper.setTransport(f.adapter)
+        await f.sync()
+        if unencodable {
+            await f.adapter.setEventEncodingFaultForTesting { _ in .all }
+            await f.queueEvent("unencodable", to: .all)
+            try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+            #expect(f.keeper.failure?.kind == .eventEncode)
+            #expect(f.adapter.outputGate.isClosed)
+            await f.keeper.waitUntilDrained()
+            #expect(await f.transport.closeCodes(for: f.session) == [SessionClose.Code.landFailed])
+        } else {
+            await f.queueEvent("nobody", to: .player(PlayerID("not-a-member")))
+            await f.queueEvent("healthy", to: .all)
+            await f.adapter.waitForOutboundIdleForTesting()
+            #expect(f.keeper.failure == nil, "a target with no recipient is not a loss")
+            #expect(count("healthy", in: await f.transport.messages(for: f.session)) == 1)
+        }
+    }
+
+    @Test("opcode 107: a merged frame whose events don't pack ends the land instead of sending the state alone; without events it doesn't (#535 row 17)", arguments: [true, false])
+    func unpackableMergedEventsEndTheLand(withEvents: Bool) async throws {
+        // The production configuration: event bodies merge only with a MessagePack message encoder.
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true)
+        await f.keeper.setTransport(f.adapter)
+        await f.sync()
+        let before = await f.frameCount()
+        await f.adapter.setMergedEventsPackFaultForTesting { true }
+        try await f.set("a", 1)
+        if withEvents {
+            await f.queueEvent("merged", to: .all)
+        }
+        await f.sync()
+        if withEvents {
+            try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+            #expect(f.keeper.failure?.kind == .eventEncode)
+            #expect(f.adapter.outputGate.isClosed)
+            #expect(await f.frameCount() == before, "no state-only frame without its events")
+            await f.keeper.waitUntilDrained()
+            #expect(await f.transport.closeCodes(for: f.session) == [SessionClose.Code.landFailed])
+        } else {
+            #expect(await f.adapter.waitForOutboundDrain())
+            #expect(f.keeper.failure == nil, "no events: the state-only frame says the same")
+            #expect(await f.frameCount() > before)
+        }
+    }
+
     @Test("a broadcast-only cycle with a value that does not encode (NaN, json) ends the land (#535 row 12)")
     func unencodableBroadcastOnlyPatchEndsTheLand() async throws {
         let f = try await SyncPhaseFixture.make(encoding: .json)
@@ -934,6 +975,9 @@ struct TransportAdapterSyncPhaseTests {
             #expect(f.keeper.failure?.field == "fragile", "fullSnapshot \(fullSnapshot)")
             #expect(await f.frameCount() == before, "fullSnapshot \(fullSnapshot): no frame of the failing cycle")
             #expect(await f.clientState().value(at: "/a") != .int(5), "fullSnapshot \(fullSnapshot): the healthy change isn't sent either")
+            await f.keeper.waitUntilDrained()
+            #expect(f.adapter.outputGate.isClosed, "fullSnapshot \(fullSnapshot)")
+            #expect(await f.transport.closeCodes(for: f.session) == [SessionClose.Code.landFailed], "fullSnapshot \(fullSnapshot)")
         }
     }
 
@@ -956,6 +1000,9 @@ struct TransportAdapterSyncPhaseTests {
         #expect(f.keeper.failure?.kind == .syncConversion)
         #expect(f.keeper.failure?.field == "pfragiles")
         #expect(await f.frameCount() == before, "no frame of the failing cycle")
+        await f.keeper.waitUntilDrained()
+        #expect(f.adapter.outputGate.isClosed)
+        #expect(await f.transport.closeCodes(for: f.session) == [SessionClose.Code.landFailed])
     }
 
     @Test("the typed tables on and off: a throwing broadcast field sends the same frames and fails the same way", arguments: [true, false], [true, false])

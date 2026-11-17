@@ -135,9 +135,7 @@ struct SyncPhaseBroadcastLog {
 ///
 /// A frame that doesn't encode, or a field whose snapshot conversion throws, fails the plan
 /// (#535): it throws a `LandFailure`, commits nothing and sends nothing, and the land ends.
-/// Caches, firstSync marks and events are unchanged. Its dirty fields are merged
-/// into the next plan's (`TransportAdapter.carriedDirtyFields`), and the next committed full plan
-/// resets the key scopes (`TransportAdapter.keyScopeResetPending`).
+/// Caches, firstSync marks and events are unchanged; no later plan runs.
 /// One sync plan's phase times: snapshot extraction (broadcast and per-player in one call), the
 /// broadcast diff, and the per-player diffs. Encoding is in none of them. `combined`: no merged
 /// broadcast frames, so the per-player time includes folding the broadcast diff in.
@@ -609,6 +607,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         mergedBroadcastFrameFaultForTesting = fault
     }
 
+    /// Installs `mergedEventsPackFaultForTesting` (tests only).
+    func setMergedEventsPackFaultForTesting(_ fault: (@Sendable () -> Bool)?) {
+        mergedEventsPackFaultForTesting = fault
+    }
+
     /// How long teardown waits for queued frames to reach the transport.
     static var outboundTeardownTimeout: Duration { .seconds(2) }
     private let landID: String
@@ -1031,8 +1034,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// encode (any update type, any encoding).
     private var syncEncodeFaultForTesting: (@Sendable (PlayerID) -> Bool)?
     /// Tests only: while this returns `true`, the opcode 107 merged broadcast frame fails to
-    /// encode, its re-encode included.
+    /// encode.
     private var mergedBroadcastFrameFaultForTesting: (@Sendable () -> Bool)?
+    /// Tests only: while this returns `true`, merging the broadcast events into the opcode 107
+    /// frame fails, as a pack failure would (#535 row 17).
+    private var mergedEventsPackFaultForTesting: (@Sendable () -> Bool)?
     /// Fails the pack of an opcode 103 event frame for a session (tests only, #535 row 17).
     private var eventFramePackFaultForTesting: (@Sendable (SessionID) -> Bool)?
     /// The phase times of the last committed full plan; nil while profiling is off.
@@ -3017,9 +3023,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return sendEventImmediately(event, to: target, failsEncoding: fault == .all) ? .sentAlone : .lost
         }
 
-        // Immediate mode: encoded and enqueued now
-        sendEventImmediately(event, to: target, failsEncoding: fault == .all)
-        return .immediate
+        // Immediate mode: encoded and enqueued now. An event that doesn't encode is lost, which
+        // ends the land (#535 row 17); a stale or invalid target isn't a loss.
+        return sendEventImmediately(event, to: target, failsEncoding: fault == .all) ? .immediate : .lost
     }
 
     /// Where `enqueueEventSynchronously` put an event.
@@ -3031,7 +3037,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         case noRecipient
         /// Opcode 107, but the body did not encode: sent as its own frame.
         case sentAlone
-        /// Opcode 107, but the body did not encode, and neither did its own frame: lost.
+        /// The event did not encode: with opcode 107 neither its body nor its own frame, without it
+        /// its frame. Lost, so the land ends (#535 row 17).
         case lost
         /// Not opcode 107: sent as its own frame.
         case immediate
@@ -3924,7 +3931,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// getting frames and acks at once, and the close carries the connection generation captured
     /// here, so a later connection under the same session is never closed by it.
     ///
-    /// Every terminal close ends here (a lag close, and a never-synced session's 4012), so the
+    /// Every terminal close ends here (a lag close), so the
     /// decision line is written here, once per decision: each caller counts the close, and the
     /// counters and the lines agree.
     /// A failed land (#535): every session this adapter holds, joined or not, is ended in this
@@ -4029,15 +4036,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Logs a failed sync plan, at most every 10 seconds: a deterministic failure fails every
-    /// plan, and would otherwise log every cycle.
+    /// Logs a failed sync plan, at most every 10 seconds. The failure ends the land (#535), so
+    /// normally only one plan fails; the bound covers the plans already in flight.
     private func logSyncFailureIfDue(_ error: any Error) {
         let now = ContinuousClock.now
         if let last = lastSyncFailureLog, now - last < .seconds(10) {
             return
         }
         lastSyncFailureLog = now
-        logger.error("❌ Sync plan failed; nothing was committed, the next plan resends its changes", metadata: [
+        logger.error("❌ Sync plan failed; nothing was committed, and the land ends", metadata: [
             "landID": .string(landID),
             "failedPlans": .string("\(syncFailedPlans)"),
             "error": .string("\(error)")
@@ -4580,9 +4587,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// updates in the plan; encodes every frame. `fullSnapshot` (the full-snapshot strategy)
     /// extracts `.all` and diffs against the `.empty` baseline. `resetsKeyScopes` types every
     /// recipient's updates `.firstSync`, sent even when empty (see `keyScopeResetPending`).
-    /// Updates that fail to encode are re-encoded without the patches that do not encode
-    /// (`encodeDroppingUnencodablePatches`); fields whose snapshot conversion throws are left out
-    /// (`SyncEngine.ExtractionDrops`).
+    /// An update that fails to encode, or a field whose snapshot conversion throws
+    /// (`SyncEngine.ExtractionDrops`), makes the plan throw a `LandFailure`: the land ends (#535).
     ///
     /// Frames per session, in order (the outbound writer keeps it, #60):
     /// - opcode 107: the merged broadcast frame (broadcast state update + broadcast events), then
@@ -4949,9 +4955,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
     /// events, when there is anything to send.
     /// With `resetsKeyScope` it is always planned, typed `.firstSync` (broadcast key scope reset).
-    /// If it fails to encode, it is re-encoded typed `.firstSync` without the patches that do not
-    /// encode (broadcast key scope reset, the same frame for every recipient); if even an empty
-    /// update fails, the broadcast events go as event frames without the state.
+    /// If its state doesn't encode, or its events don't pack into it, the plan throws and the
+    /// land ends (#535 rows 10, 17).
     private func planMergedBroadcastFrame(
         broadcastDiff: [StatePatch],
         recipients: [SyncPhaseRecipient],
@@ -4990,8 +4995,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         plan.stateUpdateCount += recipients.count
     }
 
-    /// `encodeMergedBroadcastFrame`; on failure, the update without the patches that do not encode,
-    /// typed `.firstSync` (see `encodeDroppingUnencodablePatches`). `nil` if even that fails.
     /// The land's failure for a state frame that didn't encode (#535 rows 8, 10, 11, 13 and 14):
     /// nothing is re-encoded with patches dropped. A path outside the schema is counted in
     /// `unmappedPathPatches` (D6).
@@ -5019,6 +5022,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         do {
             return try encodeMergedBroadcastFrame(update: update, playerID: playerID, eventBodies: eventBodies)
+        } catch let failure as LandFailure {
+            throw failure
         } catch {
             throw stateFrameEncodeFailure(error, what: "broadcast frame")
         }
@@ -5043,13 +5048,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 scope: .broadcast,
                 syncSeq: planSyncSeq
             )
-            if let combined = buildStateUpdateWithEventBodies(
+            if !mergedEventsPackFails(), let combined = buildStateUpdateWithEventBodies(
                 stateUpdateArray: updateArray,
                 eventBodies: eventBodies,
                 allowEmptyEvents: true
             ) {
                 return combined
             }
+            try refuseLosingMergedEvents(eventBodies)
             return try pack(.array(updateArray))
         }
         let updateData = try encodeStateUpdate(
@@ -5058,11 +5064,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             playerSlot: nil,
             scope: .broadcast
         )
-        return buildStateUpdateWithEventBodies(
+        if !mergedEventsPackFails(), let combined = buildStateUpdateWithEventBodies(
             stateUpdateData: updateData,
             eventBodies: eventBodies,
             allowEmptyEvents: true
-        ) ?? updateData
+        ) {
+            return combined
+        }
+        try refuseLosingMergedEvents(eventBodies)
+        return updateData
+    }
+
+    private func mergedEventsPackFails() -> Bool {
+        mergedEventsPackFaultForTesting?() == true
+    }
+
+    /// The merged frame didn't pack. Without events the state-only frame says the same; with
+    /// events, the plan already consumed them, so sending the state alone would lose them: the
+    /// land ends (#535 row 17).
+    private func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue]) throws {
+        guard !eventBodies.isEmpty else { return }
+        throw LandFailure(
+            kind: .eventEncode,
+            detail: "the opcode 107 frame merging \(eventBodies.count) broadcast event(s) didn't pack",
+            position: LandFailurePosition(stage: .syncPhase)
+        )
     }
 
     /// Per-player state frames in recipient order. With opcode 107 each recipient's targeted event
@@ -5726,9 +5752,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// json / opcodeJsonArray, broadcast-only: the update encoded per player (no event merging),
-    /// the same frame for each of its sessions. If it fails to encode for a player, it is
-    /// re-encoded for that player typed `.firstSync` without the patches that do not encode (see
-    /// `encodeDroppingUnencodablePatches`). Returns the size of the last encoded frame (for
+    /// the same frame for each of its sessions. If it fails to encode for a player, the plan
+    /// throws and the land ends (#535 row 12). Returns the size of the last encoded frame (for
     /// logging).
     private func planBroadcastOnlySeparateFrames(
         update: StateUpdate,
@@ -6890,7 +6915,19 @@ extension TransportAdapter {
                         try runFullSyncPhase(state: state, read: read)
                     }
                 } catch {
+                    // As in `withSyncState`: a plan's first throw ends the land (#535). Close the
+                    // output in this segment, then hand the failure to the keeper.
+                    let failure = error as? LandFailure ?? LandFailure(
+                        kind: .syncPlan,
+                        detail: String(describing: error),
+                        position: LandFailurePosition(stage: .syncPhase)
+                    )
+                    logger.error("Debug freeze settle sync failed: the land ends", metadata: [
+                        "error": .string("\(error)")
+                    ])
+                    outputGate.close(failure)
                     await keeper.endSync()
+                    await keeper.submitLandFailure(failure)
                     throw error
                 }
                 await holds.at(.cycleBeforeEndSync)
