@@ -17,7 +17,8 @@ The full views and partial outputs come from sync-marks.json (sync_marks.py, dee
 from the captured runs' replay reports): one entry per result with replayed rooms, with its rooms
 and players per room. The broadcast and per-player scopes' compared, unverifiable and skipped counts
 come from the same entries (the same replay report and sha256), each scope present, at least one
-comparison each, and their skipped and unverifiable within the entry's totals.
+comparison each, their skipped and unverifiable within the entry's totals, and per-player compared
+equal to broadcast compared × seeds / rooms (once per output, and once per output and seeded player).
 """
 import argparse, json, pathlib, statistics, sys
 
@@ -254,6 +255,9 @@ def sync_marks(runs, path=SYNC_MARKS):
             failures.append(f"{name}: no broadcast and per-player scope counts")
         elif any(sum(s[c] for s in scopes) > e[c] for c in ("skipped", "unverifiable")) or not all(s["compared"] for s in scopes):
             failures.append(f"{name}: scope counts don't fit the room totals")
+        elif e["per_player"]["compared"] * e["rooms"] != e["broadcast"]["compared"] * e["seeds"]:
+            failures.append(f"{name}: per-player compared {e['per_player']['compared']} isn't broadcast compared "
+                            f"{e['broadcast']['compared']} × seeds {e['seeds']} / rooms {e['rooms']}")
     if failures:
         sys.exit("sync marks not usable:\n  " + "\n  ".join(failures))
     return entries
@@ -283,8 +287,10 @@ def sync_marks_table(runs, entries):
     cols = [(scope, c) for scope in SCOPES for c in SCOPE_COLUMNS]
     scoped = lambda es: [sum(e[scope][c] for e in es) for scope, c in cols]
     out += ["", "The same lines give each scope's comparisons at re-evaluation (`SyncOutputVerifier`): the broadcast scope "
-            "is compared once per output, the per-player scope once per output for each player that has a view. "
-            "Compared / unverifiable / skipped, summed over the cells:\n",
+            "is compared once per output, the per-player scope once per output for each player that has a view, so "
+            "per-player compared is broadcast compared × seeds / rooms in every entry (`regenerate.py` checks it). "
+            "These counts depend only on the outputs and the seeded players, so they are the same in every variant; "
+            "what is compared differs. Compared / unverifiable / skipped, summed over the cells:\n",
             "| Variant | Replayed rooms | Broadcast compared | Broadcast unverifiable | Broadcast skipped | "
             "Per-player compared | Per-player unverifiable | Per-player skipped |",
             "|---|---:|---:|---:|---:|---:|---:|---:|"]

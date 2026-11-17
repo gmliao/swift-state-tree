@@ -230,8 +230,12 @@ class TopicGates(unittest.TestCase):
         def scope_skips_beyond_total(d):
             d["runs"]["default-radius-rep1"]["broadcast"]["skipped"] = d["runs"]["default-radius-rep1"]["skipped"] + 1
 
+        def scopes_swapped(d):
+            e = d["runs"]["default-radius-rep1"]
+            e["broadcast"], e["per_player"] = e["per_player"], e["broadcast"]
+
         self.refused(lambda p: rg.sync_marks(runs, p), "visibility", fewer_rooms, other_players, seeds_unbalanced, missing,
-                     per_player_missing, per_player_none_compared, scope_skips_beyond_total)
+                     per_player_missing, per_player_none_compared, scope_skips_beyond_total, scopes_swapped)
         table = rg.sync_marks_table(runs, entries)
         self.assertIn("| **All** | 42 | 8,484 | 0 | 0 | 48,480 | 0 | 0 |", table)
 
