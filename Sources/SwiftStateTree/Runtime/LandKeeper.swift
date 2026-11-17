@@ -2340,6 +2340,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inputDrainScheduled
     }
 
+    /// Callers of `waitForInputDrainIdleForTesting`, resumed when the drain ends.
+    private var inputDrainIdleWaitersForTesting: [CheckedContinuation<Void, Never>] = []
+
+    /// Test hook: returns once no input drain is scheduled or running, so the next input starts
+    /// a drain of its own (and passes its `.inputDrain` hold).
+    package func waitForInputDrainIdleForTesting() async {
+        guard inputDrainScheduled else { return }
+        await withCheckedContinuation { inputDrainIdleWaitersForTesting.append($0) }
+    }
+
     /// Test hook: whether a caller waits on the slot of `sequence`.
     package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
         actionSlots[sequence]?.waiter != nil
@@ -3918,7 +3928,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if removingFromQueue { removePendingItems(Array(items.prefix(consumed))) }
         noteJoinInputsConsumed(joinResults)
         if appliedShutdown { completeShutdownTurn() }
-        if let appliedFailure { failLand(appliedFailure) }
+        if let appliedFailure { failLand(appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty) }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount, consumed: consumed)
     }
 
@@ -3969,6 +3979,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for (index, pass) in passes.enumerated() where mismatch == nil {
             if let ordinal = pass.ordinal, ordinal != ordinalBase + Int64(index) + 1 {
                 mismatch = "pass \(index) is numbered \(ordinal), expected \(ordinalBase + Int64(index) + 1)"
+            } else if pass.ordinal == nil, replayRecordsPassOrdinals {
+                // A 3.4 record numbers every tickless pass: a missing ordinal is a malformed record.
+                mismatch = "pass \(index) has no ordinal, which a record from 3.4 on always carries"
             }
             if pass.sequenceBefore < previousWatermark {
                 mismatch = "pass \(index) starts at sequence \(pass.sequenceBefore), before the previous pass's \(previousWatermark)"
@@ -4013,14 +4026,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             restoreSequenceWatermark(pass.sequenceBefore, tickId: tickId, point: "pass")
             let outcome = runInputTurn(batch, removingFromQueue: false)
             if outcome.syncBroadcastOnly { syncBroadcastOnly = true }
+            // Live, a failure applied as an input in this pass ended it there: its inputs'
+            // events were never sent, so the replayed pass sends none either (#535 D9).
+            if let end = replayFailureEnd, end.tickId == tickId, let failingPass = end.pass, failingPass == passOrdinal {
+                outputCollector.emittedEvents.removeAll { $0.tickId == tickId && $0.sequence >= pass.sequenceBefore }
+            }
+            // The pass and the state after it, taken in the segment that applied it, for what
+            // the record read after it (`afterPass`, #563).
+            let ordinalAfter = passOrdinal
+            let stateAfter = state
             if !outcome.record.isEmpty {
                 await submitTurnRecord(outcome.record)
             }
             // Replay has no callers; this clears the turn's outcomes (`inputTurnResults`).
             resumeInputTurnWaiters(for: outcome.appliedItems)
-            // The state after the pass, for what the record read after it (`afterPass`, #563).
+            // The pass's events reach the sink now, not after the frame's last pass, so the
+            // sync-output check sees each pass's events before the outputs read after it.
+            await flushOutputs(forTick: tickId)
             if let observer = replayPassObserver {
-                await observer(passOrdinal, state)
+                await observer(ordinalAfter, stateAfter)
             }
         }
         if let mismatch {
@@ -4038,6 +4062,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Re-evaluation: called after each replayed tickless pass with its ordinal and the state after
     /// it (#563), so the sync-output check locates what the record read after that pass.
     private var replayPassObserver: (@Sendable (Int64, State) async -> Void)?
+
+    /// Re-evaluation: where the recorded failure ended its turn among its inputs
+    /// (`LandFailurePosition.endsInputs`): the tick (a tick land's tick handler is skipped and
+    /// its events dropped) or, tickless, the pass whose events are dropped. Replay doesn't end
+    /// the land (`failLand` returns early), so it ends that work by this instead.
+    private var replayFailureEnd: (tickId: Int64, pass: Int64?)?
+
+    /// Re-evaluation: the record is 3.4 or later, so every tickless pass carries its ordinal.
+    private var replayRecordsPassOrdinals = false
+
+    /// Sets `replayRecordsPassOrdinals` from the record's version (re-evaluation only).
+    package func setReplayRecordsPassOrdinals(_ value: Bool) {
+        replayRecordsPassOrdinals = value
+    }
+
+    /// Installs `replayFailureEnd` (re-evaluation only).
+    package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
+        replayFailureEnd = (tickId, pass)
+    }
 
     /// Installs `replayPassObserver` (re-evaluation only).
     package func setReplayPassObserver(_ observer: (@Sendable (Int64, State) async -> Void)?) {
@@ -4332,7 +4375,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else if await replayRecordedPasses(replayPasses, tickId: tickId) {
             await transport?.syncBroadcastOnlyFromTransport()
         }
-        if failure != nil {
+        // Replay of a tick land whose recorded failure ended this tick's inputs ends it the same way.
+        let replayEndsHere = mode == .reevaluation && !isTickless && replayFailureEnd?.tickId == tickId
+        if failure != nil || replayEndsHere {
             // The land failed in this tick's inputs (#535, a legacy failure arrives here as a
             // `landFailure` item): no tick handler, no state hash, no W2 and no outputs, as the
             // in-turn tick (`runTickTurn`). The inputs applied before it were recorded.
@@ -4712,7 +4757,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// that applied nothing (no pass is recorded) and on a tick land (no passes).
     private func takePassOrdinal(applied: AppliedInputs) -> Int64? {
         passInProgress = nil
-        guard isTickless, !applied.appliedOrder.isEmpty else { return nil }
+        guard countsPasses, !applied.appliedOrder.isEmpty else { return nil }
         passOrdinal += 1
         return passOrdinal
     }
@@ -4720,7 +4765,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Marks a tickless pass as applying, so a failure while it applies names it (`failLand`).
     /// `takePassOrdinal` ends it in the same segment.
     private func beginPass() {
-        passInProgress = isTickless ? passOrdinal + 1 : nil
+        passInProgress = countsPasses ? passOrdinal + 1 : nil
+    }
+
+    /// Whether passes are numbered: a tickless land that records (live, with a recorder) or
+    /// replays. Without a recorder nothing reads the ordinal, so the default path doesn't count.
+    private var countsPasses: Bool {
+        isTickless && (reevaluationRecorder != nil || mode == .reevaluation)
     }
 
     /// What the sync stream records of the current turn's sync phase, nil when it isn't
@@ -5059,17 +5110,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         failLand(failure)
     }
 
-    private func failLand(_ reported: LandFailure) {
-        // A tickless land counts by pass (#535 D9): the pass applying now, or the last one.
-        let pass: Int? = isTickless ? (passInProgress ?? (passOrdinal > 0 ? passOrdinal : nil)).map(Int.init) : nil
-        let position = reported.position.tickId == nil && reported.position.pass == nil
-            ? LandFailurePosition(
-                tickId: lastCommittedTickId >= 0 ? lastCommittedTickId : nil,
-                pass: pass,
-                sequence: reported.position.sequence ?? outputCollector.nextSequence,
-                stage: reported.position.stage
-            )
-            : reported.position
+    /// Ends the land on `reported` (#535). `endsInputs`: applied as an input (`applyInputs`),
+    /// the failure ended its turn's batch there; `appliedInputs`: the batch applied inputs
+    /// before it. The recorded position says so (`LandFailurePosition.endsInputs`), so replay
+    /// ends that tick or pass the same way.
+    private func failLand(_ reported: LandFailure, endsInputs: Bool = false, appliedInputs: Bool = false) {
+        // A tickless land counts by pass (#535 D9): the pass that applied inputs before the
+        // failure, else the last one recorded. A pass that applied nothing is never recorded.
+        let lastPass: Int64? = passOrdinal > 0 ? passOrdinal : nil
+        let pass: Int? = isTickless ? ((endsInputs && appliedInputs ? passInProgress : nil) ?? lastPass).map(Int.init) : nil
+        // On a tickless land a failure ends work only in a pass that applied something; on a
+        // tick land it also skips the tick handler.
+        let ended = endsInputs && (!isTickless || appliedInputs)
+        let base = reported.position
+        let position = LandFailurePosition(
+            tickId: base.tickId == nil && base.pass == nil ? (lastCommittedTickId >= 0 ? lastCommittedTickId : nil) : base.tickId,
+            pass: base.tickId == nil && base.pass == nil ? pass : base.pass,
+            sequence: base.sequence,
+            stage: base.stage,
+            endsInputs: ended ? true : nil
+        )
         let failure = LandFailure(kind: reported.kind, field: reported.field, detail: reported.detail, position: position)
         guard mode == .live else {
             logger.error("A land failure in re-evaluation; replay doesn't end the land", metadata: [
@@ -5214,6 +5274,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         inputDrainScheduled = false
         inTurnProbeForTesting?("input-drain-end")
+        let idleWaiters = inputDrainIdleWaitersForTesting
+        inputDrainIdleWaitersForTesting.removeAll()
+        idleWaiters.forEach { $0.resume() }
     }
 
     /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.

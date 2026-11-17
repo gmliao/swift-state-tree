@@ -6,6 +6,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeReevaluationMonitor
 
 @StateNodeBuilder
 struct OrdinalState: StateNodeProtocol {
@@ -21,11 +22,27 @@ struct OrdinalAddAction: ActionPayload {
     let amount: Int
 }
 
-/// No tick: inputs run in passes. The action changes state, asks for a sync and emits no event,
-/// so its output reads at the sequence its own pass started at (the #563 tie).
+@Payload
+struct OrdinalEmitAction: ActionPayload {
+    typealias Response = SyncStreamSetResponse
+    let amount: Int
+}
+
+/// No tick: inputs run in passes. The add action changes state, asks for a sync and emits no
+/// event, so its output reads at the sequence its own pass started at (the #563 tie). The emit
+/// action does the same and emits an event to everyone and one to its player first.
 func makeOrdinalLand() -> LandDefinition<OrdinalState> {
     Land("tickless-pass-ordinal-test", using: OrdinalState.self) {
+        ServerEvents { Register(SyncStreamTestEvent.self) }
         Rules {
+            HandleAction(OrdinalEmitAction.self) { (state: inout OrdinalState, action: OrdinalEmitAction, ctx: LandContext) in
+                state.total += action.amount
+                state.marks[ctx.playerID] = state.total
+                ctx.emitEvent(SyncStreamTestEvent(message: "all-\(action.amount)"), to: .all)
+                ctx.emitEvent(SyncStreamTestEvent(message: "to-\(ctx.playerID.rawValue)"), to: .player(ctx.playerID))
+                ctx.requestSyncNow()
+                return SyncStreamSetResponse(ok: true)
+            }
             HandleAction(OrdinalAddAction.self) { (state: inout OrdinalState, action: OrdinalAddAction, ctx: LandContext) in
                 state.total += action.amount
                 state.marks[ctx.playerID] = state.total
@@ -40,7 +57,7 @@ struct OrdinalFixture {
     let keeper: LandKeeper<OrdinalState>
     let adapter: TransportAdapter<OrdinalState>
 
-    static func make() async -> OrdinalFixture {
+    static func make(encoding: InTurnEncoding = .json) async -> OrdinalFixture {
         let keeper = LandKeeper<OrdinalState>(
             definition: makeOrdinalLand(),
             initialState: OrdinalState(),
@@ -52,7 +69,7 @@ struct OrdinalFixture {
             keeper: keeper,
             transport: transport,
             landID: "tickless-pass-ordinal-test",
-            encodingConfig: InTurnEncoding.json.config,
+            encodingConfig: encoding.config,
             inTurnSync: true
         )
         await transport.setDelegate(adapter)
@@ -82,6 +99,18 @@ struct OrdinalFixture {
         )
     }
 
+    func emit(_ n: Int, _ amount: Int) async throws {
+        _ = try await keeper.handleActionEnvelope(
+            ActionEnvelope(
+                typeIdentifier: String(describing: OrdinalEmitAction.self),
+                payload: AnyCodable(OrdinalEmitAction(amount: amount))
+            ),
+            playerID: Self.player(n),
+            clientID: ClientID("c\(n)"),
+            sessionID: SessionID("s\(n)")
+        )
+    }
+
     func frames() async throws -> [ReevaluationTickFrame] {
         await keeper.waitForRecorderSubmissionsForTesting()
         let recorder = try #require(await keeper.getReevaluationRecorder())
@@ -93,6 +122,34 @@ struct OrdinalFixture {
         version: String = ReevaluationRecordVersion.current,
         rewrite: ((inout [ReevaluationTickFrame]) -> Void)? = nil
     ) async throws -> ReevaluationEngine.RunResult {
+        try await withSavedRecord(version: version, rewrite: rewrite) { path in
+            try await ReevaluationEngine.run(
+                definition: makeOrdinalLand(),
+                initialState: OrdinalState(),
+                recordFilePath: path
+            )
+        }
+    }
+
+    /// Replays the record with the hosted runner (the monitor's replay) and returns its sync-output
+    /// verification and the live failure it read.
+    func replayHosted() async throws -> (sync: SyncOutputVerification, liveFailure: LandFailure?, steps: Int) {
+        try await withSavedRecord(version: ReevaluationRecordVersion.current, rewrite: nil) { path in
+            let runner = try await ConcreteReevaluationRunner(
+                definition: makeOrdinalLand(), initialState: OrdinalState(), recordFilePath: path
+            )
+            var steps = 0
+            while try await runner.step() != nil { steps += 1 }
+            return (await runner.syncOutputVerification(), await runner.liveFailure(), steps)
+        }
+    }
+
+    /// Saves the record as `version`, after `rewrite`, and runs `body` on its path.
+    private func withSavedRecord<T>(
+        version: String,
+        rewrite: ((inout [ReevaluationTickFrame]) -> Void)?,
+        _ body: (String) async throws -> T
+    ) async throws -> T {
         await keeper.waitForRecorderSubmissionsForTesting()
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -123,11 +180,7 @@ struct OrdinalFixture {
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(file).write(to: URL(fileURLWithPath: path))
         }
-        return try await ReevaluationEngine.run(
-            definition: makeOrdinalLand(),
-            initialState: OrdinalState(),
-            recordFilePath: path
-        )
+        return try await body(path)
     }
 }
 
@@ -144,8 +197,7 @@ private func playTies(_ f: OrdinalFixture) async throws {
     try await f.add(1, 3)
     try await f.join(2)
     try await f.add(2, 4)
-    // wall-clock: lets the writer send the last frames before the test reads the record; the record itself is awaited by its submissions
-    #expect(await f.adapter.waitForOutboundDrain())
+    await f.adapter.waitForOutboundIdleForTesting()
 }
 
 @Suite("Tickless pass ordinals (#563) and the recorded land failure (#535 D9)", .timeLimit(.minutes(1)))
@@ -207,8 +259,7 @@ struct TicklessPassOrdinalTests {
         let frozen = try await f.adapter.debugFreeze()
         _ = await f.adapter.debugResume(freezeToken: frozen.freezeToken)
         try await f.add(1, 5)
-        // wall-clock: lets the writer send the resumed cycle's frames; the record itself is awaited by its submissions
-        #expect(await f.adapter.waitForOutboundDrain())
+        await f.adapter.waitForOutboundIdleForTesting()
         let stream = ReevaluationSyncStreamEntry.stream(of: try await f.frames())
         let legacy = stream.compactMap { entry -> ReevaluationRecordedSyncOutput? in
             if case .output(let output) = entry, output.turnKind == .legacyCycle { return output } else { return nil }
@@ -357,6 +408,8 @@ struct TicklessPassOrdinalTests {
         await f.adapter.onDisconnect(sessionID: SessionID("s1"), clientID: ClientID("c1"))
         teardown.open()
         await f.keeper.installHolds(nil)
+        // The teardown closes the sessions: their clears are outside the stream too.
+        await f.keeper.waitUntilDrained()
 
         let frames = try await f.frames()
         #expect(frames.compactMap(\.landFailure).count == 1)
@@ -371,5 +424,114 @@ struct TicklessPassOrdinalTests {
         }
         #expect(!markers.contains { $0.playerID == player.rawValue }, "p2's seed was recorded after the failure")
         #expect(!markers.contains { $0.kind == .clear }, "a clear was recorded after the failure")
+    }
+
+    @Test("A tickless pass's events reach the shadow before the outputs read after it", arguments: [InTurnEncoding.json, .messagepack])
+    func ticklessPassEventsReachTheShadow(encoding: InTurnEncoding) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await OrdinalFixture.make(encoding: encoding)
+        try await f.join(1)
+        try await f.emit(1, 3)
+        try await f.join(2)
+        try await f.add(2, 4)
+        try await f.emit(2, 5)
+        let result = try await f.replay()
+        #expect(result.serverEventVerification == .passed)
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        if encoding == .messagepack {
+            // Merged broadcast frames carry the events: each emitting pass's output compares them.
+            #expect(result.syncOutput.events.compared > 0, "\(result.syncOutput.summary)")
+        }
+        // The hosted runner (the monitor's replay) locates them the same way (#563).
+        let hosted = try await f.replayHosted()
+        #expect(hosted.sync.verdict == .passed, "\(hosted.sync.summary)")
+        #expect(hosted.sync.perPlayer.compared == result.syncOutput.perPlayer.compared)
+    }
+
+    @Test("A 3.4 tickless pass without its ordinal is a record error")
+    func missingOrdinalIsReported() async throws {
+        let f = await OrdinalFixture.make()
+        try await playTies(f)
+        let result = try await f.replay { frames in
+            let index = frames.firstIndex { !$0.passes.isEmpty }!
+            var passes = frames[index].passes
+            passes[1] = ReevaluationRecordedPass(sequenceBefore: passes[1].sequenceBefore, inputs: passes[1].inputs)
+            frames[index] = frames[index].replacing(passes: passes)
+        }
+        let reason = try #require(result.recordedPassMismatches[0])
+        #expect(reason.contains("has no ordinal"), "\(reason)")
+    }
+
+    @Test("A failure applied as an input in a tickless pass ends that pass: its events are dropped, live and in replay")
+    func ticklessFailureInsideAPass() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await OrdinalFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        try await f.emit(1, 2)
+        // The next pass holds an emitting action and, behind it, a transport-reported failure.
+        // The action's intake queues it and starts the drain, held at its start: the action is
+        // queued once the drain arrives.
+        let drain = TestGate()
+        // The earlier pass's drain has ended, so the action starts a drain of its own.
+        await f.keeper.waitForInputDrainIdleForTesting()
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await drain.arrive() })
+        let action = Task { try? await f.emit(1, 7) }
+        #expect(await drain.waitForArrivals(1))
+        await f.keeper.submitLandFailure(LandFailure(
+            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        drain.open()
+        await f.keeper.installHolds(nil)
+        _ = await action.value
+        #expect(await f.keeper.waitForFailureForTesting())
+
+        let frames = try await f.frames()
+        let failure = try #require(frames.compactMap(\.landFailure).first)
+        let passes = frames.flatMap(\.passes)
+        #expect(failure.position.endsInputs == true)
+        #expect(failure.position.pass.map(Int64.init) == passes.last?.ordinal, "the pass the failure ended")
+        #expect(failure.position.sequence == nil, "a sequence names an input only for the .input stage")
+        let lastPass = try #require(passes.last)
+        let recordedEvents = frames.flatMap(\.serverEvents)
+        #expect(!recordedEvents.contains { $0.sequence >= lastPass.sequenceBefore }, "the failing pass's events were sent")
+
+        let result = try await f.replay()
+        #expect(result.liveFailure?.kind == .syncEncode)
+        #expect(result.serverEventVerification == .passed, "the replayed failing pass emitted its events")
+        #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
+        let hosted = try await f.replayHosted()
+        #expect(hosted.liveFailure?.kind == .syncEncode)
+        #expect(hosted.sync.verdict == .passed, "\(hosted.sync.summary)")
+    }
+
+    @Test("A failure applied as an input inside a tick ends that tick: no tick handler and none of its events, live and in replay")
+    func tickFailureInsideATick() async throws {
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        await f.tick()
+        // An emitting action, and behind it a transport-reported failure, both queued for tick 2:
+        // a tick land's action returns once queued.
+        try await f.set(1, "burst", 2)
+        await f.keeper.submitLandFailure(LandFailure(
+            kind: .eventEncode, detail: "test failure", position: LandFailurePosition(stage: .eventFlush)
+        ))
+        await f.keeper.stepTickOnce()
+        #expect(await f.keeper.waitForFailureForTesting())
+
+        await f.keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await f.keeper.getReevaluationRecorder())
+        let frames = await recorder.getAllFrames()
+        let failing = try #require(frames.first { $0.landFailure != nil })
+        #expect(failing.landFailure?.position.endsInputs == true)
+        #expect(failing.serverEvents.isEmpty, "the failing tick's events were sent")
+        #expect(!failing.actions.isEmpty, "the action applied before the failure is recorded")
+
+        let result = try await f.replay()
+        #expect(result.liveFailure?.kind == .eventEncode)
+        #expect(result.serverEventVerification == .passed, "the replayed tick emitted what live dropped")
+        #expect(result.tickHashes.keys.max() == failing.tickId)
+        for (tickId, recorded) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == recorded, "tick \(tickId)")
+        }
     }
 }

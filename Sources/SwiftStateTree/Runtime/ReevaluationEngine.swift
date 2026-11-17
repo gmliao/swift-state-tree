@@ -291,7 +291,14 @@ public enum ReevaluationEngine {
         }
         // A land that failed live ends at its failure (#535 D9): replay stops at that tick (a
         // tickless land's passes end there too: nothing was applied after it).
+        await keeper.setReplayRecordsPassOrdinals(
+            !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor)
+        )
         let landFailure = try await source.getLandFailure()
+        // Where the failure ended its turn among its inputs, replay ends that tick or pass too.
+        if let landFailure, landFailure.failure.position.endsInputs == true {
+            await keeper.setReplayFailureEnd(tickId: landFailure.tickId, pass: landFailure.failure.position.pass.map(Int64.init))
+        }
         let lastTickId = landFailure.map { min(maxTickId, $0.tickId) } ?? maxTickId
         
         let snapshotEncoder = JSONEncoder()

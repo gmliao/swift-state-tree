@@ -168,7 +168,7 @@ await client.sendAction("resumeVerification", {});
 
 錄製格式 3.4（#563、#535）新增三個選填 key。沒有 tick 的 land 從 1 開始為 pass 編號（`ReevaluationRecordedPass.ordinal`），每個 sync output 與 sync marker 錄製它是在哪個 pass 之後讀取的（`afterPass`；0 表示在任何 pass 之前）。序號在套用該 pass 的 turn 片段中取得，早於 sync phase 讀取，因此在 turn 外 commit 的 output（debug freeze 的 settle、之後的 resume）也會標出它讀到的是哪個 pass 的 state。讀取時的 sequence 無法定位 output：一個沒有送出 event 的 pass，其 output 讀到的 sequence 就是該 pass 開始時的值，同一個值同時代表該 pass 之前與之後。Replay 檢查序號是否無缺口地接續它自己的計數（不符時該 tick 失敗，與其他 pass 不符相同），並依 `afterPass` 定位每個沒有 tick 的 output 與 seed，因此沒有 tick 的 land 的 sync output 也會被驗證。早於 3.4 的沒有 tick 的錄製沒有序號：其 sync-output 判定為 `skipped`，並附上原因。有 tick 的 land 一如既往依 tick 定位 output。
 
-因失敗而結束的 land（#535）會把失敗錄在其 tick 的 frame 中（`ReevaluationTickFrame.landFailure`，型別為 `LandFailure`：kind、field、detail，以及位置：tick、pass、sequence 與 stage）。它只錄一次，就在結束 land 的同一個 turn 片段中。Sync stream 也在此結束：失敗之後不再錄製任何 sync output、seed 或 clear，包括失敗的拆除所關閉的 session 的 clear，以及讀取 state 期間 land 已失敗的 firstSync。失敗的 turn 在失敗之前的條目照常保留。Replay 與 live 執行一樣停在該 tick，並回報該失敗（`RunResult.liveFailure`、`ReevaluationSource.getLandFailure()`）；在它之前的部分照常驗證。3.3 版本會拒絕 3.4 錄製（minor 較新）。
+因失敗而結束的 land（#535）會把失敗錄在其 tick 的 frame 中（`ReevaluationTickFrame.landFailure`，型別為 `LandFailure`：kind、field、detail，以及位置：tick、pass、sequence 與 stage）。它只錄一次，就在結束 land 的同一個 turn 片段中。Sync stream 也在此結束：失敗之後不再錄製任何 sync output、seed 或 clear，包括失敗的拆除所關閉的 session 的 clear，以及讀取 state 期間 land 已失敗的 firstSync。失敗的 turn 在失敗之前的條目照常保留。transport 回報的失敗會當作輸入套用，並在該處結束其 turn 的批次；它的位置會標明這點（`LandFailurePosition.endsInputs`），replay 也以同樣方式結束該 tick：不執行 tick handler，也不送出該 turn 的任何 event（沒有 tick 的 land 則是該 pass 的 event）。Replay 與 live 執行一樣停在該 tick，並回報該失敗（`RunResult.liveFailure`、`ReevaluationSource.getLandFailure()`）；在它之前的部分照常驗證。3.3 版本會拒絕 3.4 錄製（minor 較新）。
 
 ### 錄製所含的 Hash
 
@@ -200,7 +200,7 @@ Action、client event、lifecycle event 與 server event 共用同一個 `sequen
 
 ### Sync Output 驗證
 
-每個 commit 的 sync plan 會依 scope（broadcast scope 與每位玩家的 scope）錄製其 canonical patch list 的 hash，以及隨之送出的 event。不比對編碼後的位元組：dynamic-key slot、frame 順序與 wire encoding 都不是 canonical 的。Replay 以餵入 replay 狀態的 shadow sync engine 重新規劃每個錄製的 sync output，並比對 hash（不符時 `ReevaluationRunner --verify` 以 exit code 8 結束）。有 tick 的 land 的 output 與它讀取的那個 tick 的 state 比對；沒有 tick 的 land 從 3.4 起，與它讀取時最後套用的那個 pass 之後的 state 比對（見「Pass 序號與 land 失敗」）。
+每個 commit 的 sync plan 會依 scope（broadcast scope 與每位玩家的 scope）錄製其 canonical patch list 的 hash，以及隨之送出的 event。不比對編碼後的位元組：dynamic-key slot、frame 順序與 wire encoding 都不是 canonical 的。Replay 以餵入 replay 狀態的 shadow sync engine 重新規劃每個錄製的 sync output，並比對 hash（不符時 `ReevaluationRunner --verify` 以 exit code 8 結束）。有 tick 的 land 的 output 與它讀取的那個 tick 的 state 比對；沒有 tick 的 land 從 3.4 起，與它讀取時最後套用的那個 pass 之後的 state 比對（見「Pass 序號與 land 失敗」）。Replay 檢查的是 server 實際產生的內容：一筆 output 沒有送給的玩家會列在它的 `perPlayerUnverified`，在那筆 output 既不比對也不 stage。沒有 tick 的 land 上，玩家離開的那個 turn 會在該玩家的 clear 之前 sync，而這時該玩家的 session 已經結束，所以那筆 output 會列出離開的玩家，含有這種離開的錄製判定為 `partial`。
 
 它能抓到：
 

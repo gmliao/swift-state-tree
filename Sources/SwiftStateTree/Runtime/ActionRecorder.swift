@@ -333,15 +333,15 @@ public enum ReevaluationRecordVersion {
         }
     }
 
-    /// Whether `recorded` is a 2.x version before `2.<minor>` (3.x has every 2.x change).
-    /// A missing or malformed version is not.
     /// Whether `recorded` is older than 3.`minor` (any 2.x is). A missing or malformed version
     /// is not.
-    static func isBefore3(_ recorded: String?, minor: Int) -> Bool {
+    package static func isBefore3(_ recorded: String?, minor: Int) -> Bool {
         guard let parsed = recorded.flatMap(parse) else { return false }
         return parsed.major < 3 || (parsed.major == 3 && parsed.minor < minor)
     }
 
+    /// Whether `recorded` is a 2.x version before `2.<minor>` (3.x has every 2.x change).
+    /// A missing or malformed version is not.
     static func isBefore(_ recorded: String?, minor: Int) -> Bool {
         guard let parsed = recorded.flatMap(parse) else { return false }
         return parsed.major < 2 || (parsed.major == 2 && parsed.minor < minor)

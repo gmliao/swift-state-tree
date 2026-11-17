@@ -258,6 +258,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     /// committed), until a seed with `viewHash`. Their hashes are still compared, since the live
     /// hash covers what the diff planned; their counts are unverifiable.
     private var diverged: Set<PlayerID> = []
+    /// Players whose latest seed was not verifiable (no `viewHash`: its view dropped values), until
+    /// a verifiable seed or a clear. Live lists them in each output's `perPlayerUnverified`.
+    /// A player listed there outside this set has a verifiable view, so it is listed because the
+    /// output didn't address it (its sessions ended before its clear, #553).
+    private var unverifiableViews: Set<PlayerID> = []
     /// Opcode 107: sequences the live adapter never queued or merged (`eventsNotQueued`,
     /// `eventsNotMerged`).
     private var notQueued: Set<Int64> = []
@@ -310,6 +315,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         let position = Position(marker)
         let scope = "seed (player \(playerID.rawValue))"
         if let recorded = marker.viewHash {
+            unverifiableViews.remove(playerID)
             diverged.remove(playerID)
             let replayed = CanonicalPatchList(patches).hash
             guard compare(recorded, replayed, scope: scope, at: position) else { return }
@@ -317,6 +323,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             pendingResends.removeValue(forKey: playerID)
             viewsSentLater += pendingViews.removeValue(forKey: playerID) ?? 0
         } else {
+            unverifiableViews.insert(playerID)
             seed.unverifiable += 1
         }
         if let failure = Self.applyCheck(patches, to: [:], expected: snapshot.values, scope: scope, at: position) {
@@ -330,6 +337,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         engine.clearCacheForDisconnectedPlayer(playerID)
         seeded.remove(playerID)
         diverged.remove(playerID)
+        unverifiableViews.remove(playerID)
         resendsNotSeen += pendingResends.removeValue(forKey: playerID) ?? 0
     }
 
@@ -394,11 +402,14 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             var pairs: [(String, UInt64)] = []
             var replayedPatches: [String: [StatePatch]] = [:]
             for playerID in seeded.sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
-                // Not verified in this output: neither compared nor staged, so its shadow view
-                // doesn't advance on a diff the server may not have produced for it (a player
-                // the output didn't address). It leaves the set only by a seed (a fresh view) or
-                // a clear.
-                if unverified.contains(playerID.rawValue), !uncommitted.contains(playerID.rawValue) {
+                // Listed as unverified with a verifiable view: the output didn't address the
+                // player (its sessions ended before its clear). Replay checks what the server
+                // produced, so it is neither compared nor staged: its shadow view doesn't advance
+                // on a diff the server didn't make for it. A player unverified for its view's
+                // drops (`unverifiableViews`) was addressed: it is staged and apply-checked below,
+                // and only its hash is skipped.
+                if unverified.contains(playerID.rawValue), !unverifiableViews.contains(playerID),
+                   !uncommitted.contains(playerID.rawValue) {
                     perPlayer.unverifiable += 1
                     continue
                 }
