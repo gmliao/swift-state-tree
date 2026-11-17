@@ -36,9 +36,18 @@ public struct PayloadRegistrationError: Error, CustomStringConvertible, Sendable
 public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     public let landType: String
     public let payload: PayloadRegistrationError?
+    /// The state type's synced-state problems (#535). Not yet filled by the entry points: they
+    /// still throw `SyncValueSemanticsError` and `SyncPolicyNestingError` themselves.
+    public let sync: SyncRegistrationError?
+
+    init(landType: String, payload: PayloadRegistrationError?, sync: SyncRegistrationError? = nil) {
+        self.landType = landType
+        self.payload = payload
+        self.sync = sync
+    }
 
     public var description: String {
-        "land type '\(landType)' can't be registered: " + [payload?.description].compactMap { $0 }.joined(separator: "; ")
+        "land type '\(landType)' can't be registered: " + [payload?.description, sync?.description].compactMap { $0 }.joined(separator: "; ")
     }
 }
 
