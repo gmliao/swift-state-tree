@@ -192,17 +192,20 @@ struct HandlerWriteTests {
         #expect(await keeper.currentState().total == 5)
     }
 
-    @Test("a whole-state replacement is mostly caught: a fresh state's marks differ, so it ends the land (ON and OFF)", arguments: [false, true])
+    @Test("a whole-state replacement is mostly caught: with non-zero old marks, a fresh state's sum differs and the land ends (ON and OFF)", arguments: [false, true])
     func wholeStateReplacementWithAFreshState(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(tick: false, inTurn: inTurn)
         #expect(await send(keeper, "ok", 2) == "ok 2")
+        // The old marks are non-zero (join and "ok" wrote), so a fresh state's sum differs.
+        #expect(await keeper.currentState()._syncWriteMark() != 0)
         #expect(await send(keeper, "replace") == "threw")
         let failure = try #require(keeper.failure)
         #expect(failure.kind == .handlerWrite && failure.position.stage == .input)
     }
 
-    @Test("not guaranteed: a replacement whose marks sum to the old value (here a copy of the state) isn't seen; the input fails alone (ON and OFF)", arguments: [false, true])
+    @Test("pins an unseen assignment (the gap, not a behavior to keep): a replacement whose marks sum to the old value, here a copy of the state, fails alone (ON and OFF)", arguments: [false, true])
     func wholeStateReplacementWithTheSameMarks(inTurn: Bool) async throws {
+        // Pins the gap: an assignment the sum can't see, not a behavior to keep.
         let keeper = try await makeKeeper(tick: false, inTurn: inTurn)
         #expect(await send(keeper, "ok", 2) == "ok 2")
         #expect(await send(keeper, "replaceCopy") == "threw")
