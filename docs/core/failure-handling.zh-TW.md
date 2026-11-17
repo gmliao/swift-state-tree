@@ -76,14 +76,14 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
-| OnLeave 與 destroy handler | 失敗的 land 在失敗的 turn 內清除玩家，不執行 OnLeave；destroy handler 與存檔執行時看得到 `LandDestructionCause.failed` 與 `LandKeeper.failure`（`LandKeeper.swift:4892`）。host 停止時若在失敗的拆除之前先關閉某個 session，該 session 的 leave 仍會執行（`LandKeeper.swift:2397-2439`） | 失敗本身的拆除已符合；目標：host 的停止路徑在失敗的 land 上同樣略過 OnLeave（#535 PR 1 part B） |
+| OnLeave 與 destroy handler | 失敗的 land 在失敗的 turn 內清除玩家，不執行 OnLeave；destroy handler 與存檔執行時看得到 `LandDestructionCause.failed` 與 `LandKeeper.failure`（`LandKeeper.swift:4892`）。有 host 時，失敗的拆除透過 host（`NIOLandServer`）停止 land：router 轉送每個 session 的 leave，leave 找不到玩家，不執行 OnLeave，然後關閉該 session。管理端停止在失敗之前就關閉的 session，其 leave 與任何停止一樣照常執行 | 已符合（#535 PR 1 part B） |
 | 重新評估的錄製 | 失敗只錄一次，錄在其 tick 的 frame 中，就在結束 land 的 turn 片段內（`ReevaluationTickFrame.landFailure`，錄製格式 3.4）。Replay 停在該 tick 並回報它（`RunResult.liveFailure`）；見 [Reevaluation](reevaluation.zh-TW.md#pass-序號與-land-失敗34) | 已符合 |
 
 ## Close code
 
-- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session（in-turn sync plan 拋出錯誤時已符合；其他列為目標，#535）。在 #535 PR 1 part B 之前，host 停止時先關閉的 session 收到的是 4014。
+- **4016 `landFailed`：** 因失敗而結束的 land 以此關閉其 session，不論是直接建立還是由 host 管理。有 host 時，失敗的拆除與管理端停止一樣停止 land（detach、每個 session 的 leave、關閉），而 close code 在每個 session 的關閉請求發出時才讀取：管理端停止進行中 land 失敗時，關閉請求在失敗之後發出的每個 session 都收到 4016。已關閉、或關閉請求在失敗之前就發出的 session 維持 4014；請求送往 transport 的最後一段途中才失敗的也一樣。
 - **4012 `unencodableView`：** 目前在 resync 或第一次 view 的 frame 持續無法編碼時送出。#535 落地後保留不用，不再送出。
-- **4014 `landStopped`：** 管理端停止，不變。
+- **4014 `landStopped`：** 管理端停止一個沒有失敗的 land。
 
 ## 其他系統的做法
 
