@@ -720,7 +720,8 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         metadata: ReevaluationRecordMetadata,
         stream: [ReevaluationSyncStreamEntry],
         completeness: ReevaluationRecordCompleteness = .complete,
-        incomparability: String? = nil
+        incomparability: String? = nil,
+        tickless: Bool = false
     ) {
         self.incomparability = incomparability
         recordIsComplete = completeness.isComplete
@@ -733,6 +734,11 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             skipReason = "record \(metadata.version ?? "unknown") predates syncConfig"
         } else if config?.fullSnapshot == true {
             skipReason = "full-snapshot strategy is not verified"
+        } else if tickless {
+            // Every entry of a tickless land observes tick -1, and nothing recorded orders an
+            // entry against the passes of tick 0 unambiguously: reported as not verified, never
+            // as a mismatch (#563).
+            skipReason = "a tickless land's sync outputs are not located among its passes (#563)"
         } else {
             skipReason = nil
         }
