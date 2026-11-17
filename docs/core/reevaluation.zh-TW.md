@@ -20,21 +20,21 @@ Re-evaluation（重評估）是**在固定的世界條件下重新執行狀態�
 
 ### 錄製（Live Mode）
 
-在 Live 模式下，`LandKeeper` 會自動記錄：
+在 Live 模式下，`LandKeeper` 只有在 `enableLiveStateHashRecording` 為 `true` 時才會錄製；它預設為 `false`，此時什麼都不錄。開啟後，keeper 會一起記錄：
 
 1. **Actions** - `sequence`、`payload`、`resolverOutputs`、`resolvedAtTick`
 2. **Client Events** - `sequence`、`payload`、`resolvedAtTick`
 3. **Lifecycle Events** - `OnJoin`、`OnLeave`、`OnInitialize` 及其 resolver outputs，以及強制關閉（`"shutdown"`）
 4. **Server Events** - 透過 `ctx.emitEvent()` 發送的事件
-5. **State Hash** - 可選的每 tick hash 用於驗證
+5. **State Hash** - 每 tick 的 hash，用於驗證
 
 ```swift
-// 在 Live 模式下會自動錄製
+// 只有開啟 enableLiveStateHashRecording 才會錄製
 let keeper = LandKeeper(
     definition: myLand,
     initialState: MyState(),
-    mode: .live,  // 啟用錄製
-    enableLiveStateHashRecording: true  // 啟用每 tick hash
+    mode: .live,
+    enableLiveStateHashRecording: true  // 錄製 input、server event 與每 tick hash
 )
 ```
 

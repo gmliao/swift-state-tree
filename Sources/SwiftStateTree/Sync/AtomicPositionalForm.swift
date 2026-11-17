@@ -34,12 +34,13 @@ extension AtomicLayoutTable {
     /// Throws when a value at an atomic path doesn't have exactly the declared leaves (a value
     /// built by hand, a custom `toSnapshotValue`), so it is reported, never sent half-converted.
     package func positional(_ value: SnapshotValue, atPath path: String) throws -> SnapshotValue {
-        try positional(value, at: node(atPath: path), path: path)
+        try positional(value, at: node(atPath: path), path: { path })
     }
 
     /// `positional(_:atPath:)` with the path's table position already known (`node(atPath:)`,
-    /// or `AtomicPatternIndex`); `path` is only for the errors and the nested values' paths.
-    package func positional(_ value: SnapshotValue, at node: Node?, path: String) throws -> SnapshotValue {
+    /// or `AtomicPatternIndex`). `path` is called only for an error: it is non-escaping and
+    /// never stored, and a nested value's path is built from it the same way (#392).
+    package func positional(_ value: SnapshotValue, at node: Node?, path: () -> String) throws -> SnapshotValue {
         guard let node else { return value }
         return try Self.positional(value, at: node, path: path)
     }
@@ -54,7 +55,7 @@ extension AtomicLayoutTable {
 
     // MARK: - Encode
 
-    private static func positional(_ value: SnapshotValue, at node: Node, path: String) throws -> SnapshotValue {
+    private static func positional(_ value: SnapshotValue, at node: Node, path: () -> String) throws -> SnapshotValue {
         if let leafPaths = node.leafPaths {
             switch value {
             case .null:
@@ -62,7 +63,7 @@ extension AtomicLayoutTable {
             case .object(let object):
                 return .array(try leaves(of: object, in: leafPaths, path: path))
             default:
-                throw AtomicPositionalFormError(path: path, reason: "expected an object, got \(kind(value))")
+                throw AtomicPositionalFormError(path: path(), reason: "expected an object, got \(kind(value))")
             }
         }
         switch value {
@@ -70,7 +71,7 @@ extension AtomicLayoutTable {
             var result = object
             for (key, child) in object {
                 if let childNode = node.child(key) {
-                    result[key] = try positional(child, at: childNode, path: path + "/" + key)
+                    result[key] = try positional(child, at: childNode, path: { path() + "/" + key })
                 }
             }
             return .object(result)
@@ -78,7 +79,7 @@ extension AtomicLayoutTable {
             guard let elementNode = node.wildcard else { return value }
             var result = elements
             for index in elements.indices {
-                result[index] = try positional(elements[index], at: elementNode, path: path + "/\(index)")
+                result[index] = try positional(elements[index], at: elementNode, path: { path() + "/\(index)" })
             }
             return .array(result)
         default:
@@ -88,13 +89,13 @@ extension AtomicLayoutTable {
 
     /// The leaves of `object` in `leafPaths` order; its leaf set must be exactly `leafPaths`.
     private static func leaves(
-        of object: [String: SnapshotValue], in leafPaths: [[String]], path: String
+        of object: [String: SnapshotValue], in leafPaths: [[String]], path: () -> String
     ) throws -> [SnapshotValue] {
         var found = 0
         countLeaves(.object(object), into: &found)
         guard found == leafPaths.count else {
             throw AtomicPositionalFormError(
-                path: path, reason: "has \(found) leaves, its type declares \(leafPaths.count)"
+                path: path(), reason: "has \(found) leaves, its type declares \(leafPaths.count)"
             )
         }
         var result: [SnapshotValue] = []
@@ -104,14 +105,14 @@ extension AtomicLayoutTable {
             for key in leafPath {
                 guard case .object(let fields) = current, let next = fields[key] else {
                     throw AtomicPositionalFormError(
-                        path: path, reason: "no leaf \(leafPath.joined(separator: "."))"
+                        path: path(), reason: "no leaf \(leafPath.joined(separator: "."))"
                     )
                 }
                 current = next
             }
             guard isScalar(current) else {
                 throw AtomicPositionalFormError(
-                    path: path, reason: "leaf \(leafPath.joined(separator: ".")) is \(kind(current))"
+                    path: path(), reason: "leaf \(leafPath.joined(separator: ".")) is \(kind(current))"
                 )
             }
             result.append(current)

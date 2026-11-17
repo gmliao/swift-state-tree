@@ -147,6 +147,15 @@ private final class ShutdownInTurnTransport: LandKeeperTransport, @unchecked Sen
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
+    }
+
+    private func syncPhaseResult<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
         includeSync: Bool
     ) -> InTurnSyncResult {
         lock.withLock {

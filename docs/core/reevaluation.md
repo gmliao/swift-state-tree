@@ -20,21 +20,21 @@ Re-evaluation is the ability to **re-execute state transition logic under fixed 
 
 ### Recording (Live Mode)
 
-In Live mode, `LandKeeper` automatically records:
+In Live mode, `LandKeeper` records only when `enableLiveStateHashRecording` is `true`; it is `false` by default, and then nothing is recorded. With it on, the keeper records these together:
 
 1. **Actions** - `sequence`, `payload`, `resolverOutputs`, `resolvedAtTick`
 2. **Client Events** - `sequence`, `payload`, `resolvedAtTick`
 3. **Lifecycle Events** - `OnJoin`, `OnLeave`, `OnInitialize` with resolver outputs, and a forced shutdown (`"shutdown"`)
 4. **Server Events** - Events emitted via `ctx.emitEvent()`
-5. **State Hash** - Optional per-tick hash for verification
+5. **State Hash** - A per-tick hash for verification
 
 ```swift
-// Recording is automatic in Live mode
+// Recording is on only with enableLiveStateHashRecording
 let keeper = LandKeeper(
     definition: myLand,
     initialState: MyState(),
-    mode: .live,  // Recording enabled
-    enableLiveStateHashRecording: true  // Enable per-tick hash
+    mode: .live,
+    enableLiveStateHashRecording: true  // Record inputs, server events and per-tick hashes
 )
 ```
 

@@ -56,6 +56,15 @@ private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Send
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
+    }
+
+    private func syncPhaseResult<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
         includeSync: Bool
     ) -> InTurnSyncResult {
         guard includeSync else { return .notRequested }

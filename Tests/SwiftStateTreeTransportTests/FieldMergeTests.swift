@@ -382,6 +382,58 @@ struct FieldMergeTests {
         #expect(cache.resumes == 0)
     }
 
+    @Test("Split-only patches compare by their keys' bytes: an NFD key after an NFC one plans in full; a mixed frame compares bytes")
+    func splitOnlyPlanComparesBytes() throws {
+        let nfc = "\u{E9}", nfd = "e\u{301}"
+        /// A patch whose path isn't stored: its split, from the hasher's own walk (#392).
+        func splitOnly(_ path: String, _ value: SnapshotValue) throws -> StatePatch {
+            var cursor: PathHasher.Cursor? = Self.hasher.rootCursor
+            for component in PathHasher.components(of: path) { cursor = cursor?.descending(component) }
+            let walked = try #require(cursor)
+            #expect(walked.isLossless)
+            return StatePatch(split: try #require(walked.split), operation: .set(value))
+        }
+        func frame(_ key: String, name: Bool) throws -> [StatePatch] {
+            var patches = [try splitOnly("/monsters/\(key)/hp", .int(1)), try splitOnly("/round", .int(2))]
+            if name { patches.append(try splitOnly("/monsters/\(key)/name", .string("n"))) }
+            return patches
+        }
+        func bytes(_ entries: [FieldMergeEntry]) -> [[[UInt8]]] {
+            entries.compactMap { entry in
+                if case .merged(_, let keys, _, _) = entry { return keys.map { Array($0.utf8) } }
+                return nil
+            }
+        }
+        let cache = FramePrefixCache()
+        for patches in [try frame(nfc, name: false), try frame(nfc, name: false), try frame(nfd, name: true)] {
+            let allSplitOnly = patches.allSatisfy { $0.isSplitOnly }
+            #expect(allSplitOnly)
+            let splits = patches.map { Self.hasher.splitReportingMatch($0.path) }
+            let full = FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table)
+            let shared = FieldMergePlan.splitsAndEntries(patches: patches, hasher: Self.hasher, table: Self.table, cache: cache)
+            #expect(Self.shape(shared.entries) == Self.shape(full))
+            #expect(bytes(shared.entries) == bytes(full))
+            #expect(shared.splits.map { $0.dynamicKeys.map { Array($0.utf8) } } == splits.map { $0.dynamicKeys.map { Array($0.utf8) } })
+        }
+        #expect(cache.resumes == 0)
+        // The second frame took the first's splits; the NFD frame took none.
+        #expect(cache.reusedSplits == 2)
+
+        // A string frame after a split-only one with the same bytes reuses its splits; with an
+        // NFD key it doesn't.
+        let mixed = FramePrefixCache()
+        _ = FieldMergePlan.splitsAndEntries(patches: try frame(nfc, name: false), hasher: Self.hasher, table: nil, cache: mixed)
+        let strings = [
+            StatePatch(path: "/monsters/\(nfc)/hp", operation: .set(.int(1))),
+            StatePatch(path: "/round", operation: .set(.int(2))),
+        ]
+        _ = FieldMergePlan.splitsAndEntries(patches: strings, hasher: Self.hasher, table: nil, cache: mixed)
+        #expect(mixed.reusedSplits == 2)
+        let nfdStrings = [StatePatch(path: "/monsters/\(nfd)/hp", operation: .set(.int(1)))] + strings.dropFirst()
+        _ = FieldMergePlan.splitsAndEntries(patches: nfdStrings, hasher: Self.hasher, table: nil, cache: mixed)
+        #expect(mixed.reusedSplits == 2)
+    }
+
     @Test("A shared plan equals the full plan over frames that share prefixes of any length")
     func sharedPlanMatchesFullPlan() {
         // A small pool of paths: fields of a few entities, the entities themselves, a top-level field.

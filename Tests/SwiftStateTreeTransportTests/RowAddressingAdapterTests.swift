@@ -670,7 +670,7 @@ struct RowAddressingAdapterTests {
             var result = InTurnSyncResult.deferredBackPressure
             for _ in 0..<100 where result == .deferredBackPressure {
                 _ = await run.adapter.waitForOutboundDrain()
-                result = await run.adapter.runSyncPhaseInTurnIsolated(state: state, events: [], includeSync: true)
+                result = await run.adapter.runSyncPhaseInTurnIsolated(state: state, events: [], includeSync: true).result
             }
             return result
         }
