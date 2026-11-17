@@ -362,7 +362,7 @@ struct LandReleaseTests {
         #expect(released, "after a teardown that finished before the wiring: \(land.description)")
     }
 
-    @Test("A tickless land destroyed while an action job is held: answered landClosed once, nothing reaches the released transport uncounted, released")
+    @Test("A tickless land destroyed while an action job is held: answered landClosed once, nothing reaches the released transport uncounted, released", .resolverDeadlinesOff)
     func ticklessLandWithHeldJob() async throws {
         let manager = makeManager(landFactory: { ticklessJobLand($0) })
         let landID = LandReleaseGates.freshLandID("land-release-job")

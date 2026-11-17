@@ -33,7 +33,7 @@ def batch_heading(fmt):
 
 def load_runs():
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted((HERE / "results").glob("*.json"))
-            if not p.name.startswith("batch-")]
+            if not p.name.startswith(("batch-", "crossverify-"))]
 
 
 def load_batches(results=None):
@@ -311,6 +311,70 @@ def perturb31_tables(runs, controls) -> list:
     return ["\n".join(t) + "\n" for t in (summary, ctl, per_run)]
 
 
+CROSSARCH31_HEADING = "## Cross-architecture at record format 3.1"
+
+
+def load_crossverify31(results=None) -> list:
+    """results/crossverify-3.1-<runner arch>.json (scripts/crossverify_collect.py): one machine's
+    runner replaying the other machine's 3.1 recordings."""
+    return [json.loads(p.read_text(encoding="utf-8"))
+            for p in sorted((results or HERE / "results").glob("crossverify-3.1-*.json"))]
+
+
+def check_crossarch31(batches, verifies) -> list:
+    """The 3.1 batches: one per architecture, each complete, all at one commit. A cross-verify: at
+    that commit, in the batch's record format, replaying every recording that another machine's
+    batch recorded (by seed, by sha256), with one entry per seed."""
+    errors = []
+    by_arch = {b["meta"]["arch"]: b for b in batches}
+    if len(by_arch) != len(batches) or len(by_arch) < 2:
+        return [f"3.1 batches: {sorted(b['meta']['arch'] for b in batches)}, expected one per architecture, at least two"]
+    commits = {b["meta"]["git_sha"] for b in batches}
+    if len(commits) != 1:
+        errors.append(f"3.1 batches at {sorted(commits)}, expected one commit")
+    for v in verifies:
+        m = v["meta"]
+        name = f"crossverify-3.1-{m['arch']}.json"
+        source = by_arch.get(m["recorded_on"])
+        if source is None or m["recorded_on"] == m["arch"]:
+            errors.append(f"{name}: recorded_on {m['recorded_on']!r} is not another architecture's batch")
+            continue
+        if m["git_sha"] not in commits or m["record_format"] != "3.1":
+            errors.append(f"{name}: commit {m['git_sha']}, format {m['record_format']}; the batches are {sorted(commits)}, 3.1")
+        want = {r["seed"]: r["sha256"] for r in source["recordings"]}
+        got = {r["seed"]: r["recording_sha256"] for r in v["recordings"]}
+        if len(got) != len(v["recordings"]) or got != want:
+            errors.append(f"{name}: its recordings are not {m['recorded_on']}'s batch (by seed and sha256)")
+    return errors
+
+
+def crossarch31_tables(batches, verifies) -> list:
+    """The cross-verify (each runner on the other machine's recordings), the byte and content
+    comparison, and the per-recording comparison."""
+    by_arch = {b["meta"]["arch"]: b for b in batches}
+    arches = sorted(by_arch)
+    out = ["| runner | host | swift | commit | runner sha256 | recordings recorded on | recordings | exit 0 with both verification lines |\n"
+           "|---|---|---|---|---|---|---:|---:|\n" + "".join(
+               f"| {m['arch']} | {m['host']} | {m['swift']} | `{m['git_sha']}` | `{m['runner_sha256']}` | {m['recorded_on']} | "
+               f"{len(v['recordings'])} | {sum(r['passed'] for r in v['recordings'])}/{len(v['recordings'])} |\n"
+               for v in verifies for m in [v["meta"]])]
+    a, b = (by_arch[x]["recordings"] for x in arches)
+    pairs = list(zip(sorted(a, key=lambda r: r["seed"]), sorted(b, key=lambda r: r["seed"])))
+    n = len(pairs)
+    split = " / ".join(str(sum(1 for r in by_arch[x]["recordings"] if any(r["split_ticks"]))) for x in arches)
+    out.append(f"| comparison ({arches[0]} vs {arches[1]}) | recordings |\n|---|---:|\n"
+               f"| byte-identical (file sha256) | {sum(x['sha256'] == y['sha256'] for x, y in pairs)}/{n} |\n"
+               f"| content-identical (sha256 of the `--convert` JSON view) | {sum(x['content_sha256'] == y['content_sha256'] for x, y in pairs)}/{n} |\n"
+               f"| with split ticks, {arches[0]} / {arches[1]} | {split} |\n")
+    rows = [f"| seed | players | move every | ticks | sha256 ({arches[0]}) | sha256 ({arches[1]}) | bytes | content |",
+            "|---:|---:|---:|---:|---|---|---|---|"]
+    for x, y in pairs:
+        rows.append(f"| {x['seed']} | {x['players']} | {x['move_every']} | {x['ticks']} | `{x['sha256'][:12]}` | `{y['sha256'][:12]}` | "
+                    f"{'same' if x['sha256'] == y['sha256'] else 'DIFFER'} | {'same' if x['content_sha256'] == y['content_sha256'] else 'DIFFER'} |")
+    out.append("\n".join(rows) + "\n")
+    return out
+
+
 def section_tables(readme: str, heading: str) -> list:
     """Every Markdown table in the section under `heading`, in order."""
     start = readme.index(heading)
@@ -381,6 +445,18 @@ def main():
             print("MISMATCH")
             print(f"README.md {PERTURB31_HEADING} tables do not match results/perturb-3.1/", file=sys.stderr)
             sys.exit(1)
+        batches31, verifies = load_batches()["3.1"], load_crossverify31()
+        errors = check_crossarch31(batches31, verifies)
+        if errors:
+            print("MISMATCH")
+            for e in errors:
+                print(e, file=sys.stderr)
+            sys.exit(1)
+        if CROSSARCH31_HEADING not in readme or [x.strip() for x in section_tables(readme, CROSSARCH31_HEADING)] != [
+                x.strip() for x in crossarch31_tables(batches31, verifies)]:
+            print("MISMATCH")
+            print(f"README.md {CROSSARCH31_HEADING} tables do not match results/batch-3.1-*.json and crossverify-3.1-*.json", file=sys.stderr)
+            sys.exit(1)
         print("OK")
     else:
         print(t, end="")
@@ -389,6 +465,8 @@ def main():
             print(batch_table(batches), end="")
         print(f"\n{PERTURB31_HEADING}\n")
         print("\n".join(perturb31_tables(*load_perturb31())), end="")
+        print(f"\n{CROSSARCH31_HEADING}\n")
+        print("\n".join(crossarch31_tables(load_batches()["3.1"], load_crossverify31())), end="")
 
 
 if __name__ == "__main__":

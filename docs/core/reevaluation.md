@@ -12,7 +12,7 @@ Re-evaluation is the ability to **re-execute state transition logic under fixed 
 
 | Concept                  | Description                                                    |
 | ------------------------ | -------------------------------------------------------------- |
-| **Live Mode**            | Normal execution, records all inputs and resolver outputs      |
+| **Live Mode**            | Normal execution; records inputs and resolver outputs when `enableLiveStateHashRecording` is on (off by default) |
 | **Reevaluation Mode**    | Replays recorded inputs, skips resolvers, verifies state hash  |
 | **Deterministic Output** | Events and sync requests are queued and flushed at end of tick |
 

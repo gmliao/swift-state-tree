@@ -197,7 +197,7 @@ private func envelope<A: ActionPayload>(_ action: A) -> ActionEnvelope {
 
 // MARK: - Tests
 
-@Suite("LandKeeper debug freeze (#79)", .timeLimit(.minutes(1)))
+@Suite("LandKeeper debug freeze (#79)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct LandKeeperDebugFreezeTests {
     let player = PlayerID("p1")
     let client = ClientID("c1")

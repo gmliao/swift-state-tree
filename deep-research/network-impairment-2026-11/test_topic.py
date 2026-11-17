@@ -166,8 +166,11 @@ class SyncLagDefaults(unittest.TestCase):
         for key, pattern in expected.items():
             value = int(re.search(pattern, source).group(1))
             self.assertEqual(cell.SYNC_LAG_DEFAULTS[key], value if key == "slowConsumerCount" else value * 1000, key)
-        limit = int(re.search(r"snapshotEncodeFailureLimit = (\d+)", source).group(1))
-        self.assertEqual(regenerate.UNENCODABLE_FAILURES_PER_CLOSE, limit, "a 4012 follows this many failed snapshot encodes")
+        # Until #535 PR 2a a 4012 followed 3 failed snapshot encodes (`snapshotEncodeFailureLimit`), the
+        # limit the recorded runs used. PR 2a removed it (a failure ends the land, 4012 is no longer
+        # sent), so the value is pinned here as historical.
+        self.assertIsNone(re.search(r"snapshotEncodeFailureLimit", source), "the limit is gone since #535 PR 2a")
+        self.assertEqual(regenerate.UNENCODABLE_FAILURES_PER_CLOSE, 3, "a 4012 followed this many failed snapshot encodes")
         keys = (self.ROOT / "Sources" / "SwiftStateTreeTransport" / "TransportEnvKeys.swift").read_text(encoding="utf-8")
         self.assertEqual(set(cell.SYNC_LAG_ENV), set(re.findall(r'"(SYNC_(?:LAG|ACK)_[A-Z_]+)"', keys)))
 

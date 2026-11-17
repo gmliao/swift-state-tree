@@ -223,7 +223,7 @@ private func sendReturning(_ f: Fixture, _ requestID: String, _ action: some Act
     }
 }
 
-@Suite("Adapter: actions with resolvers don't block the session's chain (tick lands)", .timeLimit(.minutes(1)))
+@Suite("Adapter: actions with resolvers don't block the session's chain (tick lands)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TransportAdapterActionJobTests {
     let s1 = SessionID("s1"), c1 = ClientID("c1")
 

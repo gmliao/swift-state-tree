@@ -110,7 +110,7 @@ private struct InitRecordFixture {
     }
 }
 
-@Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)))
+@Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct SyncStreamInitializeRecordTests {
     @Test("Both sync paths record OnInitialize's events and post-initialize state hash", arguments: [true, false])
     func initializeRecordOnBothPaths(inTurn: Bool) async throws {

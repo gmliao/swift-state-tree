@@ -215,6 +215,11 @@ struct PathIndexTests {
         let f = await VerifierFixture.make(encoding: .opcodeJsonArray, pathIndex: true, pathHashes: verifierPathHashes)
         try await f.join(1)
         await f.keeper.stepTickOnce()
+        if !InTurnSync.isEnabled() {
+            // Legacy sync runs outside the turn and submits the failure, which the keeper applies
+            // in its next turn: on this tick land, the next tick.
+            await f.keeper.stepTickOnce()
+        }
         try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
         let failure = f.keeper.failure
         #expect(failure?.kind == .syncEncode)

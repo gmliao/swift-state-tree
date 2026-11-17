@@ -153,7 +153,7 @@ private actor ReplayOrderTransport: Transport {
     func sendBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) async {}
 }
 
-@Suite("Action jobs: the processing order is reconstructable from the record (tick lands)", .timeLimit(.minutes(1)))
+@Suite("Action jobs: the processing order is reconstructable from the record (tick lands)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct ActionJobReplayOrderTests {
     @Test(
         "An action that a resolver-free action overtakes replays in its recorded (resolvedAtTick, sequence) order",
