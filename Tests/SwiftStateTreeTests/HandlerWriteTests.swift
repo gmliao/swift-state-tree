@@ -11,8 +11,15 @@ import Testing
 // MARK: - Land
 
 @StateNodeBuilder
+struct HandlerWriteInner: StateNodeProtocol {
+    @Sync(.broadcast) var level: Int = 0
+    init() {}
+}
+
+@StateNodeBuilder
 struct HandlerWriteItem: StateNodeProtocol {
     @Sync(.broadcast) var hp: Int = 0
+    @Sync(.broadcast) var inner: HandlerWriteInner = HandlerWriteInner()
     init() {}
 }
 
@@ -21,13 +28,16 @@ struct HandlerWriteState: StateNodeProtocol {
     @Sync(.broadcast) var total: Int = 0
     @Sync(.broadcast) var tags: [String] = []
     @Sync(.broadcast) var item: HandlerWriteItem = HandlerWriteItem()
+    @Sync(.broadcast) var items: [String: HandlerWriteItem] = ["a": HandlerWriteItem()]
     /// What ran, in order.
     @Sync(.broadcast) var log: [String] = []
     init() {}
 }
 
-/// `kind`: "ok" adds `amount`; "root", "container" and "nested" write that way, then throw;
-/// "replace" replaces the whole state, then throws; "validate" throws before any access.
+/// `kind`: "ok" adds `amount`; "root", "container", "nested", "deep" (a node two levels down) and
+/// "element" (a node inside a container) write that way, then throw; "replace" replaces the whole
+/// state with a fresh one and "replaceCopy" with a copy of itself, then throw; "validate" throws
+/// before any access.
 @Payload
 struct HandlerWriteAction: ActionPayload {
     typealias Response = HandlerWriteAck
@@ -63,8 +73,18 @@ private func makeHandlerWriteLand(tick: Bool) -> LandDefinition<HandlerWriteStat
             case "nested":
                 state.item.hp += action.amount
                 throw HandlerWriteError()
+            case "deep":
+                state.item.inner.level += action.amount
+                throw HandlerWriteError()
+            case "element":
+                state.items["a"]?.inner.level += action.amount
+                throw HandlerWriteError()
             case "replace":
                 state = HandlerWriteState()
+                throw HandlerWriteError()
+            case "replaceCopy":
+                let copy = state
+                state = copy
                 throw HandlerWriteError()
             case "validate":
                 throw HandlerWriteError()
@@ -146,8 +166,8 @@ private func send(_ keeper: LandKeeper<HandlerWriteState>, _ kind: String, _ amo
 @Suite("A handler that throws after writing synced state ends the land (#535 §3.7)", .timeLimit(.minutes(1)))
 struct HandlerWriteTests {
     @Test(
-        "a throw after a root, an in-place container or a nested node write ends the land at that input (ON and OFF)",
-        arguments: ["root", "container", "nested"], [false, true]
+        "a throw after a root, an in-place container, a nested node, a deeper node or a container element's node write ends the land at that input (ON and OFF)",
+        arguments: ["root", "container", "nested", "deep", "element"], [false, true]
     )
     func writeThenThrowEndsTheLand(kind: String, inTurn: Bool) async throws {
         let keeper = try await makeKeeper(tick: false, inTurn: inTurn)
@@ -172,14 +192,23 @@ struct HandlerWriteTests {
         #expect(await keeper.currentState().total == 5)
     }
 
-    @Test("the named gap: a whole-state replacement before the throw isn't counted; the input fails alone (ON and OFF)", arguments: [false, true])
-    func wholeStateReplacementIsTheGap(inTurn: Bool) async throws {
+    @Test("a whole-state replacement is mostly caught: a fresh state's marks differ, so it ends the land (ON and OFF)", arguments: [false, true])
+    func wholeStateReplacementWithAFreshState(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(tick: false, inTurn: inTurn)
         #expect(await send(keeper, "ok", 2) == "ok 2")
         #expect(await send(keeper, "replace") == "threw")
+        let failure = try #require(keeper.failure)
+        #expect(failure.kind == .handlerWrite && failure.position.stage == .input)
+    }
+
+    @Test("not guaranteed: a replacement whose marks sum to the old value (here a copy of the state) isn't seen; the input fails alone (ON and OFF)", arguments: [false, true])
+    func wholeStateReplacementWithTheSameMarks(inTurn: Bool) async throws {
+        let keeper = try await makeKeeper(tick: false, inTurn: inTurn)
+        #expect(await send(keeper, "ok", 2) == "ok 2")
+        #expect(await send(keeper, "replaceCopy") == "threw")
         #expect(keeper.failure == nil)
-        #expect(await keeper.currentState().total == 0, "the replacement is kept, as before")
         #expect(await send(keeper, "ok", 3) == "ok 3")
+        #expect(await keeper.currentState().total == 5)
     }
 
     @Test("a throwing OnLeave that wrote ends the land (ON and OFF)", arguments: [false, true])
@@ -284,79 +313,49 @@ struct HandlerWriteManualConformanceTests {
     }
 }
 
-// MARK: - The thread-local count
+// MARK: - The write mark
 
-@Suite("The @Sync access count is per thread and per call (#535 D5)")
-struct SyncWriteAccessTests {
-    @Test("a write outside a counted call isn't counted, and leaves nothing installed")
-    func outsideACall() throws {
+@Suite("The @Sync write mark moves on every mutable access and only then (#535 §3.7)")
+struct SyncWriteMarkTests {
+    @Test("a read doesn't move the mark; the setter, _modify and updateValueWithoutMarkingDirty do")
+    func accessorsMoveTheMark() throws {
         var state = HandlerWriteState()
+        let start = try #require(state._syncWriteMark())
+        _ = state.total
+        _ = state.item.inner.level
+        #expect(state._syncWriteMark() == start)
         state.total = 1
-        #expect(!SyncWriteAccess.isInstalledForTesting)
+        #expect(state._syncWriteMark() == start &+ 1)
+        state.tags.append("x")
+        #expect(state._syncWriteMark() == start &+ 2)
+        var field = Sync(wrappedValue: 0, .broadcast)
+        let fieldStart = field._syncWriteMark
+        field.updateValueWithoutMarkingDirty(3)
+        #expect(field._syncWriteMark == fieldStart &+ 1)
     }
 
-    @Test("two calls in turn on one thread: the second starts from a clean count")
-    func twoCallsInTurn() throws {
-        var a = HandlerWriteState()
-        var b = HandlerWriteState()
-        let first = try accessedThrow {
-            a.total = 1
-            throw HandlerWriteError()
-        }
-        #expect(first)
-        let second = try accessedThrow {
-            _ = b.total
-            throw HandlerWriteError()
-        }
-        #expect(!second, "a read isn't access, and the first call's count is gone")
-        b.total = 2
-        #expect(!SyncWriteAccess.isInstalledForTesting)
-    }
-
-    @Test("a nested call restores the outer count")
-    func nestedCall() throws {
+    @Test("a write deep in a nested node or inside a container element moves the root's mark")
+    func nestedWritesMoveTheRootMark() throws {
         var state = HandlerWriteState()
-        let outer = try accessedThrow {
-            state.total = 1
-            // The inner call accesses nothing and returns; the outer still counts its access.
-            let previous = SyncWriteAccess.install()
-            #expect(!SyncWriteAccess.accessedSinceInstall())
-            SyncWriteAccess.restore(previous)
-            throw HandlerWriteError()
-        }
-        #expect(outer)
-        let outerWithoutAccess = try accessedThrow {
-            _ = try? accessedThrow {
-                state.total = 2
-                throw HandlerWriteError()
-            }
-            throw HandlerWriteError()
-        }
-        #expect(!outerWithoutAccess, "the inner call's access is its own")
+        let start = try #require(state._syncWriteMark())
+        state.item.inner.level += 1
+        #expect(state._syncWriteMark() != start)
+        let afterDeep = state._syncWriteMark()
+        state.items["a"]?.inner.level += 1
+        #expect(state._syncWriteMark() != afterDeep)
     }
 
-    @Test("the pinned false positive: a temporary @Sync value's write counts")
-    func temporarySyncCounts() throws {
-        let accessed = try accessedThrow {
-            var scratch = HandlerWriteState()
-            scratch.total = 1
-            throw HandlerWriteError()
-        }
-        #expect(accessed)
+    @Test("a temporary @Sync value's write doesn't move the state's mark (the old false positive is gone)")
+    func temporaryDoesNotMoveTheMark() throws {
+        let state = HandlerWriteState()
+        let start = state._syncWriteMark()
+        var scratch = HandlerWriteState()
+        scratch.total = 1
+        #expect(state._syncWriteMark() == start)
     }
-}
 
-/// Runs `body`, which must throw, with the count installed, as `LandKeeper` does: whether it
-/// took mutable access first.
-private func accessedThrow(_ body: () throws -> Void) throws -> Bool {
-    let previous = SyncWriteAccess.install()
-    defer { SyncWriteAccess.restore(previous) }
-    do {
-        try body()
-        Issue.record("the body didn't throw")
-        return false
-    } catch {
-        #expect(error is HandlerWriteError)
-        return SyncWriteAccess.accessedSinceInstall()
+    @Test("a hand-written conformance has no mark")
+    func manualConformanceHasNoMark() {
+        #expect(HandlerWriteManualState()._syncWriteMark() == nil)
     }
 }

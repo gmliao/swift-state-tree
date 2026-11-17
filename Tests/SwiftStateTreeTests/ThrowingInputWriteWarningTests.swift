@@ -2,9 +2,9 @@
 //
 // #87: a handler that throws keeps what it wrote before the throw. Debug builds warn, once per
 // input type and keeper, when a throwing handler changed the synced state; a handler that
-// throws before its first write doesn't warn. A throw after mutable access to a `@Sync` field
-// ends the land (#535 §3.7), so the warning matters for what that count doesn't see: here, a
-// whole-state replacement.
+// throws before its first write doesn't warn. A write the #535 §3.7 detector sees ends the land
+// instead; these tests turn the detector off to exercise the warning, which is what remains for
+// the writes it doesn't see.
 
 import Foundation
 import Logging
@@ -69,16 +69,12 @@ private func makeThrowWriteLand(failingJoin: Bool = false, finalize: Bool = fals
             }
             HandleAction(ThrowWriteAddAction.self) { (state: inout ThrowWriteState, action: ThrowWriteAddAction, _: LandContext) in
                 if action.validateFirst, action.fail { throw ThrowWriteError() }
-                if action.fail {
-                    // A whole-state replacement, then a throw: the access count doesn't see it.
-                    state = ThrowWriteState()
-                    throw ThrowWriteError()
-                }
                 state.score += action.amount
+                if action.fail { throw ThrowWriteError() }
                 return ThrowWriteAck(ok: true)
             }
-            HandleAction(ThrowWriteOtherAction.self) { (state: inout ThrowWriteState, _: ThrowWriteOtherAction, _: LandContext) throws -> ThrowWriteAck in
-                state = ThrowWriteState()
+            HandleAction(ThrowWriteOtherAction.self) { (state: inout ThrowWriteState, action: ThrowWriteOtherAction, _: LandContext) throws -> ThrowWriteAck in
+                state.score += action.amount
                 throw ThrowWriteError()
             }
             // Two handlers for one event: the first writes, the second throws.
@@ -162,6 +158,8 @@ private struct ThrowWriteFixture {
         )
         // Independent of a `DEBUG_WARN_THROWING_INPUT_WRITES` the developer exported.
         await keeper.setWarnsThrowingInputWritesForTesting(true)
+        // The warning on its own, as for a write the detector doesn't see (#535 §3.7).
+        await keeper.setDetectsHandlerWritesForTesting(false)
         let fixture = ThrowWriteFixture(keeper: keeper, records: records)
         if join {
             try await keeper.join(playerID: fixture.player, clientID: fixture.client, sessionID: fixture.session)
@@ -207,24 +205,20 @@ private let otherKey = "action \(String(describing: ThrowWriteOtherAction.self))
 
 @Suite("A throwing handler's writes are kept; debug builds warn once per input type (#87)")
 struct ThrowingInputWriteWarningTests {
-    @Test("a handler that replaces the state and then throws keeps it and warns once per input type; the land goes on", .enabled(if: throwWriteCheckIsCompiled))
+    @Test("a handler that writes and then throws keeps its write and warns once per input type", .enabled(if: throwWriteCheckIsCompiled))
     func writeThenThrowWarnsOncePerType() async throws {
         let f = try await ThrowWriteFixture.make()
-        try await f.add(5, fail: false)
-        await #expect(throws: ThrowWriteError.self) { try await f.add(0, fail: true) }
-        #expect(await f.keeper.currentState().score == 0, "the replacement before the throw is kept")
+        await #expect(throws: ThrowWriteError.self) { try await f.add(5, fail: true) }
+        #expect(await f.keeper.currentState().score == 5, "the write before the throw is kept")
         #expect(f.records.warnedInputs == [addKey])
         #expect(f.records.warnedSequences.allSatisfy { $0 != nil }, "the warning names the input's sequence")
-        #expect(f.keeper.failure == nil, "a whole-state replacement isn't counted: the input fails alone")
 
         // The same type again: no second warning.
-        try await f.add(2, fail: false)
-        await #expect(throws: ThrowWriteError.self) { try await f.add(0, fail: true) }
-        #expect(await f.keeper.currentState().score == 0)
+        await #expect(throws: ThrowWriteError.self) { try await f.add(2, fail: true) }
+        #expect(await f.keeper.currentState().score == 7)
         #expect(f.records.warnedInputs == [addKey])
 
         // Another type warns on its own.
-        try await f.add(1, fail: false)
         await #expect(throws: ThrowWriteError.self) { try await f.other(1) }
         #expect(f.records.warnedInputs == [addKey, otherKey])
     }
@@ -251,8 +245,6 @@ struct ThrowingInputWriteWarningTests {
         #expect(await f.keeper.currentState().score == 4)
         let eventType = AnyClientEvent(ThrowWriteBumpEvent(amount: 0)).type
         #expect(f.records.warnedInputs == ["event \(eventType)"], "warned: \(f.records.warnedInputs)")
-        // The first handler's write was counted: the land ended too (#535 §3.7).
-        #expect(f.keeper.failure?.kind == .handlerWrite)
 
         // A discarded join's writes stay and reach the other players.
         let j = try await ThrowWriteFixture.make(failingJoin: true, join: false)
@@ -260,16 +252,14 @@ struct ThrowingInputWriteWarningTests {
         _ = try? await j.keeper.join(playerID: j.player, clientID: j.client, sessionID: j.session)
         #expect(await j.keeper.currentState().joined == 1, "the failed OnJoin's write is kept")
         #expect(j.records.warnedInputs == ["OnJoin"])
-        #expect(j.keeper.failure?.kind == .handlerWrite)
     }
 
     @Test("with the check turned off, a write and then a throw doesn't warn")
     func switchOffDoesNotWarn() async throws {
         let f = try await ThrowWriteFixture.make()
         await f.keeper.setWarnsThrowingInputWritesForTesting(false)
-        try await f.add(5, fail: false)
-        await #expect(throws: ThrowWriteError.self) { try await f.add(0, fail: true) }
-        #expect(await f.keeper.currentState().score == 0)
+        await #expect(throws: ThrowWriteError.self) { try await f.add(5, fail: true) }
+        #expect(await f.keeper.currentState().score == 5)
         #expect(f.records.warnedInputs.isEmpty, "warned: \(f.records.warnedInputs)")
         #expect(!ThrowingInputWriteCheck.isEnabled(environment: [EnvKeys.Debug.warnThrowingInputWrites: "false"]))
         #expect(ThrowingInputWriteCheck.isEnabled(environment: [:]))

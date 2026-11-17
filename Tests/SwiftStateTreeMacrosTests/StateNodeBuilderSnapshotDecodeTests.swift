@@ -118,6 +118,14 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     return _score.isDirty || _name.isDirty || _internal_counter.isDirty
                 }
 
+                public func _syncWriteMark() -> UInt64? {
+                    var mark: UInt64 = 0
+                    mark &+= UInt64(_score._syncWriteMark)
+                    mark &+= UInt64(_name._syncWriteMark)
+                    mark &+= UInt64(_internal_counter._syncWriteMark)
+                    return mark
+                }
+
                 public func getDirtyFields() -> Set<String> {
                     var dirtyFields: Set<String> = []
 

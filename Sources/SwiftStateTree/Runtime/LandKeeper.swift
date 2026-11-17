@@ -3175,9 +3175,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (`warnIfThrowWrote`). `nil` skips the check (replay, or a handler whose state nothing
     /// reads afterwards). Release builds never copy, and never build the input's name.
     ///
-    /// `detectsAccess` (an input's handler, #535 §3.7): the handler runs with the `@Sync` access
-    /// count installed (`SyncWriteAccess`), and a throw after mutable access sets
-    /// `handlerThrewAfterAccess` before the error is rethrown; `applyInputs` then ends the land.
+    /// `detectsAccess` (an input's handler, #535 §3.7): the state's write mark
+    /// (`StateNodeProtocol._syncWriteMark()`) is read before the handler and, if it throws, again
+    /// after; a changed mark sets `handlerThrewAfterAccess` before the error is rethrown, and
+    /// `applyInputs` then ends the land.
     private func withMutableStateSync<R>(
         throwWriteInput: @autoclosure () -> ThrowWriteInput?,
         detectsAccess: Bool = false,
@@ -3186,12 +3187,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard detectsAccess, detectsHandlerWrites else {
             return try runHandlerBody(throwWriteInput: throwWriteInput(), body)
         }
-        let previous = SyncWriteAccess.install()
-        defer { SyncWriteAccess.restore(previous) }
+        let markBefore = state._syncWriteMark()
         do {
             return try runHandlerBody(throwWriteInput: throwWriteInput(), body)
         } catch {
-            if SyncWriteAccess.accessedSinceInstall() { handlerThrewAfterAccess = true }
+            if let markBefore, state._syncWriteMark() != markBefore { handlerThrewAfterAccess = true }
             throw error
         }
     }
@@ -3925,16 +3925,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// like the others, in order (`applyPendingItem` records before the handler runs), so replay
     /// runs it again and it fails the same way.
     ///
-    /// A handler that throws **after** mutable access to a `@Sync` field (`SyncWriteAccess`, an
-    /// action, client event, server input, OnJoin or OnLeave) ends the land (#535 §3.7, #87):
-    /// what it wrote can't be undone yet (#87's undo log), so its caller gets its error (on a
-    /// tickless land; a tick land's caller had its ACK at intake), the batch ends at it (the inputs behind it get `landClosed`), the tick handler doesn't run,
-    /// and the land fails with `.handlerWrite` at stage `.input` and P's sequence. P was recorded,
-    /// so replay applies it, sees it throw after access again (`checkReplayHandlerWrite`), and
-    /// ends the tick there. Replay itself never ends a batch on this rule: it follows the record,
-    /// which for an older record may continue past such an input. Not seen (the input fails
-    /// alone, as before): a whole-state replacement, storage without `@Sync`, and
-    /// `Sync.updateValueWithoutMarkingDirty(_:)`.
+    /// A handler that throws **after** mutable access to a `@Sync` field (an action, client
+    /// event, server input, OnJoin or OnLeave; seen through the state's write mark,
+    /// `_syncWriteMark()`) ends the land (#535 §3.7, #87): what it wrote can't be undone yet
+    /// (#87's undo log), so its caller gets its error (on a tickless land; a tick land's caller
+    /// had its ACK at intake), the batch ends at it (the inputs behind it get `landClosed`), the
+    /// tick handler doesn't run, and the land fails with `.handlerWrite` at stage `.input` and P's
+    /// sequence. P was recorded, so replay applies it, sees it throw after access again
+    /// (`checkReplayHandlerWrite`), and ends the tick there. Replay itself never ends a batch on
+    /// this rule: it follows the record, which for an older record may continue past such an
+    /// input. Not seen (the input fails alone, as before): storage without `@Sync` and a
+    /// hand-written conformance; a whole-state replacement whose marks sum to the old value.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
