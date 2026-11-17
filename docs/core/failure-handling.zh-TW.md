@@ -54,7 +54,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。in-turn sync：keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。legacy sync（未啟用 in-turn）：adapter 不再送出任何東西並提交失敗，keeper 在下一個 turn 套用（`submitLandFailure`）。加入者獨立的 firstSync plan 拋出錯誤時，同樣結束 land，不排 follow-up（第 16 列） | 已符合 |
 | 單一玩家的狀態 frame 或 broadcast-only frame 完全無法編碼 | land 結束；失敗的 cycle 不送任何東西，其 session 以 4016 關閉（`planPerPlayerFrames`、`planBroadcastOnlySeparateFrames`） | 已符合（#535 第 10、12 列） |
 | resync 或第一次 view 的完整 view 無法編碼 | 第一次失敗就結束 land，不重試；不再送出 4012（`planPerPlayerFrames`、`planFirstSync`） | 已符合（#535 第 11、13 列） |
-| 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event，或 event frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`）。未使用 opcode 107：記錄錯誤，event 不送出 | opcode 107 已符合（#535 第 17 列）；未使用時的目標：關閉 land（#521） |
+| 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event、event frame 無法 pack，或合併 state 與 event 的 frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`、`encodeMergedBroadcastFrame`）。未使用 opcode 107：frame 無法編碼的 event 結束 land；目標目前沒有接收者的 event 不算遺失 | 已符合（#535 第 17 列） |
 | 寫入狀態後才拋出錯誤的 handler | 該輸入單獨失敗，之後的輸入繼續；它的寫入保留並同步出去，debug build 會發出警告（`LandKeeper.swift:3836-3837`、`:3189`） | 目標：關閉 land（#535）；部分寫入由 #87 追蹤 |
 | replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:277`、`TransportMessageEncoder.swift:346`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
 | replay 無法載入或對應錄製的輸入 | 以警告略過該輸入，該 tick 在沒有它的情況下執行（`LandKeeper.swift:4126-4139`、`:4250-4256`） | 目標：驗證執行失敗，並附上 tick 與原因（#521；規則由 #535 追蹤） |
