@@ -862,9 +862,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Initialize recorder if in live mode AND recording is enabled
         // This prevents unnecessary recorder creation in load tests or when recording is not needed
         if mode == .live && enableLiveStateHashRecording {
-            // The record carries the land's schema fingerprint (#521 D15). A registered land's
-            // was computed, and cached, at registration; a keeper built directly whose definition
-            // has none records without it, and its record is refused at replay.
+            // The record carries the land's schema fingerprint (#521 D15), cached on the
+            // definition value: a land whose factory returns the registered value (NIOLandHost's)
+            // reads what registration computed, and a factory that builds a definition per land
+            // computes it here, once per land, at creation. A keeper whose definition has none
+            // records without it, and its record is refused at replay.
             let schemaFingerprint: String?
             do {
                 schemaFingerprint = try ReevaluationSchemaFingerprint.cached(for: definition)
