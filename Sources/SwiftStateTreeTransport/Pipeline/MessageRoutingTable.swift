@@ -20,10 +20,11 @@ struct MessageRoutingTable: Sendable {
     ///   - sessionID: Session ID of the sender
     ///   - adapter: TransportAdapter instance to handle the message
     func route<State: StateNodeProtocol>(
-        _ message: TransportMessage,
+        _ frame: DecodedClientFrame,
         from sessionID: SessionID,
         to adapter: TransportAdapter<State>
     ) async {
+        let message = frame.message
         switch message.kind {
         case .join:
             await adapter.handleJoinMessage(message, from: sessionID)
@@ -36,7 +37,7 @@ struct MessageRoutingTable: Sendable {
             
         case .action, .actionResponse, .event:
             // These messages require player to be joined
-            await adapter.handlePlayerMessage(message, from: sessionID)
+            await adapter.handlePlayerMessage(frame, from: sessionID)
         }
     }
 }

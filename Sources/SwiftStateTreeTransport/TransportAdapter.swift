@@ -2702,10 +2702,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // We compute it lazily in the catch block to avoid unnecessary work
         do {
             // Use decoding pipeline for all message decoding (centralizes format detection)
-            let transportMsg: TransportMessage
+            let transportMsg: DecodedClientFrame
             let decodeStart = ContinuousClock.now
             
-            transportMsg = try decodingPipeline.decode(message)
+            transportMsg = try decodingPipeline.decodeClientFrame(message)
 
             if let profiler {
                 let decodeElapsed = ContinuousClock.now - decodeStart
@@ -2801,7 +2801,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
     
     /// Handle messages that require player to be joined (action, actionResponse, event).
-    func handlePlayerMessage(_ message: TransportMessage, from sessionID: SessionID) async {
+    func handlePlayerMessage(_ frame: DecodedClientFrame, from sessionID: SessionID) async {
+        let message = frame.message
         // For other messages, require player to be joined.
         // Under load, clients may send (e.g. MoveTo) before join ack is processed; log at debug to avoid noise.
         guard let playerID = membershipCoordinator.playerID(for: sessionID),
@@ -2842,6 +2843,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 await handleActionRequest(
                     requestID: payload.requestID,
                     envelope: payload.action,
+                    bounded: frame.bounded?.compactMap { message in
+                        if case .action(let action) = message.payload { return action.action }
+                        return nil
+                    },
                     playerID: playerID,
                     clientID: clientID,
                     sessionID: sessionID
@@ -2890,12 +2895,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
 
                     do {
-                        try await keeper.handleClientEvent(
-                            anyClientEvent,
-                            playerID: playerID,
-                            clientID: clientID,
-                            sessionID: sessionID
-                        )
+                        // With its frame's bound, the payload isn't walked again (#362).
+                        let bounded = frame.bounded?.compactMap { message -> AnyClientEvent? in
+                            if case .event(.fromClient(let event)) = message.payload { return event }
+                            return nil
+                        }
+                        if let bounded {
+                            try await keeper.handleClientEvent(
+                                bounded,
+                                playerID: playerID,
+                                clientID: clientID,
+                                sessionID: sessionID
+                            )
+                        } else {
+                            try await keeper.handleClientEvent(
+                                anyClientEvent,
+                                playerID: playerID,
+                                clientID: clientID,
+                                sessionID: sessionID
+                            )
+                        }
                     } catch let rejection as LandInputRejection {
                         // Expected, not a handler error: the land is closing (an event still
                         // queued at teardown, or one sent while it drains) or a newer join
@@ -6097,9 +6116,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Handle action request from client
+    /// `bounded`, when given, is `envelope` with its frame's bound (`DepthBounded`).
     private func handleActionRequest(
         requestID: String,
         envelope: ActionEnvelope,
+        bounded: DepthBounded<ActionEnvelope>?,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
@@ -6115,12 +6136,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Submitted on the inbound chain; an action with resolvers on a tick land comes back
             // pending, and is answered from a tracked task, so the chain moves on.
             let response: AnyCodable
-            switch try await keeper.submitAction(
-                envelope,
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID
-            ) {
+            // With its frame's bound, the payload isn't walked again (#362).
+            let submission: ActionSubmission
+            if let bounded {
+                submission = try await keeper.submitAction(bounded, playerID: playerID, clientID: clientID, sessionID: sessionID)
+            } else {
+                submission = try await keeper.submitAction(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID)
+            }
+            switch submission {
             case .completed(let completed):
                 response = completed
             case .pending(let sequence):

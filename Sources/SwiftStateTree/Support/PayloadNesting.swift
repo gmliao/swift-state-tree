@@ -12,7 +12,10 @@ import Logging
 ///   (`checkClientJSON`): a frame the router forwards is checked by the router and again by the
 ///   adapter's pipeline. MessagePack from a client unpacks at the same limit;
 /// - a 2.x JSON record is checked the same way, at the record limit;
-/// - every payload is checked again before its re-encode, whatever its source (`check`).
+/// - a payload is checked before its re-encode (`check`), unless it comes with its frame's bound
+///   (`DepthBounded`, which only the adapter's decode pipeline builds): a live input is checked
+///   once, by its frame's decode. A replayed input or one handed to the keeper's public API is
+///   walked.
 ///
 /// Two limits; a test pins both and their relation:
 /// - `clientFrameMaxDepth` (32) bounds what a client sends, in every encoding. Measured on macOS

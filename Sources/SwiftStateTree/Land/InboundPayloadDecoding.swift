@@ -9,9 +9,29 @@ import Foundation
 /// The re-encode recurses once per nesting level, so the payload's depth is checked first
 /// (`PayloadNesting`, #362), whatever its source: a frame, a recorded action replayed. A
 /// payload deeper than the limit throws `PayloadNesting.TooDeep` instead of exhausting the stack.
+/// A payload whose frame was bounded at decode (`DepthBounded`) is already no deeper than that,
+/// and isn't walked again: each live input is checked once, by its frame's decode.
 enum InboundPayloadDecoding {
     static func decode<T: Decodable>(_ type: T.Type, from payload: AnyCodable, decoder: JSONDecoder) throws -> T {
         try PayloadNesting.check(payload.base)
+        return try reencoded(type, from: payload, decoder: decoder)
+    }
+
+    /// A payload from a frame its decoder bounded (`DepthBounded`): no deeper than the client
+    /// limit already, so it isn't walked again.
+    static func decode<T: Decodable>(_ type: T.Type, from payload: DepthBounded<AnyCodable>, decoder: JSONDecoder) throws -> T {
+        try reencoded(type, from: payload.value, decoder: decoder)
+    }
+
+    /// Walks `payload` (`decode(_:from:decoder:)`) unless it comes with its bound.
+    static func decode<T: Decodable>(_ type: T.Type, from payload: AnyCodable, bounded: DepthBounded<AnyCodable>?, decoder: JSONDecoder) throws -> T {
+        if let bounded {
+            return try decode(type, from: bounded, decoder: decoder)
+        }
+        return try decode(type, from: payload, decoder: decoder)
+    }
+
+    private static func reencoded<T: Decodable>(_ type: T.Type, from payload: AnyCodable, decoder: JSONDecoder) throws -> T {
         let payloadData = try JSONEncoder().encode(payload)
         return try decoder.decode(type, from: payloadData)
     }
