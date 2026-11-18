@@ -202,6 +202,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let sessionID: SessionID
         public let resolverOutputs: [String: any ResolverOutput]
         public let resolvedAtTick: Int64
+        /// `action`, bound by its frame's decode (`DepthBounded`); `nil` walks it at decode.
+        package let boundedAction: DepthBounded<AnyCodable>?
 
         public init(
             sequence: Int64,
@@ -213,14 +215,78 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: [String: any ResolverOutput],
             resolvedAtTick: Int64
         ) {
+            self.init(
+                sequence: sequence,
+                action: action,
+                boundedAction: nil,
+                actionType: actionType,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
+        }
+
+        /// The action and its bound, one value: a bounded action is `bounded.value`.
+        package init(
+            sequence: Int64,
+            bounded: DepthBounded<AnyCodable>,
+            actionType: any ActionPayload.Type,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            resolverOutputs: [String: any ResolverOutput],
+            resolvedAtTick: Int64
+        ) {
+            self.init(
+                sequence: sequence,
+                action: bounded.value,
+                boundedAction: bounded,
+                actionType: actionType,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
+        }
+
+        private init(
+            sequence: Int64,
+            action: AnyCodable,
+            boundedAction: DepthBounded<AnyCodable>?,
+            actionType: any ActionPayload.Type,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            resolverOutputs: [String: any ResolverOutput],
+            resolvedAtTick: Int64
+        ) {
             self.sequence = sequence
             self.action = action
+            self.boundedAction = boundedAction
             self.actionType = actionType
             self.playerID = playerID
             self.clientID = clientID
             self.sessionID = sessionID
             self.resolverOutputs = resolverOutputs
             self.resolvedAtTick = resolvedAtTick
+        }
+
+        /// This item with other resolver outputs and tick, keeping the action and its bound.
+        package func with(resolverOutputs: [String: any ResolverOutput], resolvedAtTick: Int64) -> PendingActionItem {
+            PendingActionItem(
+                sequence: sequence,
+                action: action,
+                boundedAction: boundedAction,
+                actionType: actionType,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolverOutputs: resolverOutputs,
+                resolvedAtTick: resolvedAtTick
+            )
         }
     }
 
@@ -231,6 +297,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let clientID: ClientID
         public let sessionID: SessionID
         public let resolvedAtTick: Int64
+        /// `event`'s payload, bound by its frame's decode (`DepthBounded`); `nil` walks it.
+        package let boundedPayload: DepthBounded<AnyCodable>?
 
         public init(
             sequence: Int64,
@@ -246,6 +314,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.clientID = clientID
             self.sessionID = sessionID
             self.resolvedAtTick = resolvedAtTick
+            self.boundedPayload = nil
+        }
+
+        /// The event and its bound, one value: a bounded event is `bounded.value`.
+        package init(
+            sequence: Int64,
+            bounded: DepthBounded<AnyClientEvent>,
+            playerID: PlayerID,
+            clientID: ClientID,
+            sessionID: SessionID,
+            resolvedAtTick: Int64
+        ) {
+            self.sequence = sequence
+            self.event = bounded.value
+            self.playerID = playerID
+            self.clientID = clientID
+            self.sessionID = sessionID
+            self.resolvedAtTick = resolvedAtTick
+            self.boundedPayload = bounded.map(\.payload)
         }
     }
 
@@ -1927,16 +2014,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         input: String
     ) throws {
         try validateDelivery(of: item, ticket: ticket, input: input)
-        pendingItems.append(.action(PendingActionItem(
-            sequence: item.sequence,
-            action: item.action,
-            actionType: item.actionType,
-            playerID: item.playerID,
-            clientID: item.clientID,
-            sessionID: item.sessionID,
-            resolverOutputs: item.resolverOutputs,
-            resolvedAtTick: lastCommittedTickId
-        )))
+        pendingItems.append(.action(item.with(resolverOutputs: item.resolverOutputs, resolvedAtTick: lastCommittedTickId)))
         inTurnProbeForTesting?("action-queued")
     }
 
@@ -2091,16 +2169,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let item = job.item
             do {
                 try deliverResolvedAction(
-                    PendingActionItem(
-                        sequence: item.sequence,
-                        action: item.action,
-                        actionType: item.actionType,
-                        playerID: item.playerID,
-                        clientID: item.clientID,
-                        sessionID: item.sessionID,
-                        resolverOutputs: outputs,
-                        resolvedAtTick: item.resolvedAtTick
-                    ),
+                    item.with(resolverOutputs: outputs, resolvedAtTick: item.resolvedAtTick),
                     ticket: job.ticket,
                     input: job.input
                 )
@@ -2641,7 +2710,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ) async throws -> AnyCodable {
         // An awaiting caller holds its own wait: the action-job caps aren't applied, so direct
         // callers that send concurrently (tests, benchmarks) behave as before.
-        switch try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: false) {
+        switch try await submit(envelope, bounded: nil, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: false) {
         case .completed(let response):
             return response
         case .pending(let sequence):
@@ -2667,9 +2736,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws -> ActionSubmission {
+        try await submitAction(envelope, bounded: nil, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    }
+
+    /// `submitAction` for an action from a frame its decode bounded (`DepthBounded`): its
+    /// payload's depth isn't walked again.
+    package func submitAction(
+        _ bounded: DepthBounded<ActionEnvelope>,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async throws -> ActionSubmission {
+        try await submitAction(bounded.value, bounded: bounded, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    }
+
+    private func submitAction(
+        _ envelope: ActionEnvelope,
+        bounded: DepthBounded<ActionEnvelope>?,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async throws -> ActionSubmission {
         let submission: ActionSubmission
         do {
-            submission = try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: true)
+            submission = try await submit(envelope, bounded: bounded, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: true)
         } catch {
             await holds.at(.actionSubmitted)
             throw error
@@ -2678,8 +2768,44 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return submission
     }
 
+    /// A live action's pending item, carrying its payload's bound when it has one.
+    private func makeLiveActionItem(
+        sequence: Int64,
+        envelope: ActionEnvelope,
+        bounded: DepthBounded<AnyCodable>?,
+        actionType: any ActionPayload.Type,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) -> PendingActionItem {
+        if let bounded {
+            return PendingActionItem(
+                sequence: sequence,
+                bounded: bounded,
+                actionType: actionType,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolverOutputs: [:],
+                resolvedAtTick: lastCommittedTickId
+            )
+        }
+        return PendingActionItem(
+            sequence: sequence,
+            action: envelope.payload,
+            actionType: actionType,
+            playerID: playerID,
+            clientID: clientID,
+            sessionID: sessionID,
+            resolverOutputs: [:],
+            resolvedAtTick: lastCommittedTickId
+        )
+    }
+
+    /// `bounded`, when given, is `envelope` with its bound (`DepthBounded`).
     private func submit(
         _ envelope: ActionEnvelope,
+        bounded: DepthBounded<ActionEnvelope>?,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID,
@@ -2746,8 +2872,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.actionNotRegistered
         }
 
-        // Decode action payload from AnyCodable
-        let decodedAction = try InboundPayloadDecoding.decode(actionPayloadType, from: envelope.payload, decoder: decoder)
+        // Decode action payload from AnyCodable: walked for its depth first unless its frame's
+        // decode bounded it (#362).
+        let boundedAction = bounded?.map(\.payload)
+        let decodedAction = try InboundPayloadDecoding.decode(actionPayloadType, from: envelope.payload, bounded: boundedAction, decoder: decoder)
 
         // Intake segment: the sender check, the sequence and the ticket (the sender's entry
         // generation). After the resolvers' await, only `deliverResolvedAction` runs, which
@@ -2774,15 +2902,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 ticklessJobWork.insert(sequence)
             }
             startActionJob(
-                PendingActionItem(
+                makeLiveActionItem(
                     sequence: sequence,
-                    action: envelope.payload,
+                    envelope: envelope,
+                    bounded: boundedAction,
                     actionType: actionPayloadType,
                     playerID: playerID,
                     clientID: clientID,
-                    sessionID: sessionID,
-                    resolverOutputs: [:],
-                    resolvedAtTick: lastCommittedTickId
+                    sessionID: sessionID
                 ),
                 decodedAction: decodedAction,
                 executors: handler.resolverExecutors,
@@ -2793,16 +2920,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         try deliverResolvedAction(
-            PendingActionItem(
+            // Rebound to the tick current at delivery (`deliverResolvedAction`).
+            makeLiveActionItem(
                 sequence: sequence,
-                action: envelope.payload,
+                envelope: envelope,
+                bounded: boundedAction,
                 actionType: actionPayloadType,
                 playerID: playerID,
                 clientID: clientID,
-                sessionID: sessionID,
-                resolverOutputs: [:],
-                // Rebound to the tick current at delivery (`deliverResolvedAction`).
-                resolvedAtTick: lastCommittedTickId
+                sessionID: sessionID
             ),
             ticket: ticket,
             input: typeIdentifier
@@ -2865,6 +2991,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws {
+        try await handleClientEvent(event, bounded: nil, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    }
+
+    /// `handleClientEvent` for an event from a frame its decode bounded (`DepthBounded`): its
+    /// payload's depth isn't walked again.
+    package func handleClientEvent(
+        _ bounded: DepthBounded<AnyClientEvent>,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async throws {
+        try await handleClientEvent(bounded.value, bounded: bounded, playerID: playerID, clientID: clientID, sessionID: sessionID)
+    }
+
+    private func handleClientEvent(
+        _ event: AnyClientEvent,
+        bounded: DepthBounded<AnyClientEvent>?,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async throws {
         try await ensureInitialized()
         // In re-evaluation mode, events come from ReevaluationSource, not from transport.
         guard mode == .live else {
@@ -2912,17 +3059,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Bind event to lastCommittedTickId for replay logging
         let resolvedAtTick = lastCommittedTickId
 
-        // Create pending item and add to queue
-        let pendingItem = PendingItem.clientEvent(
-            PendingClientEventItem(
+        // Create pending item and add to queue, with the payload's bound if its frame had one.
+        let pendingItem: PendingItem
+        if let bounded {
+            pendingItem = .clientEvent(PendingClientEventItem(
+                sequence: sequence,
+                bounded: bounded,
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                resolvedAtTick: resolvedAtTick
+            ))
+        } else {
+            pendingItem = .clientEvent(PendingClientEventItem(
                 sequence: sequence,
                 event: event,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
                 resolvedAtTick: resolvedAtTick
-            )
-        )
+            ))
+        }
         pendingItems.append(pendingItem)
 
         // A tickless land applies the event now: in an input turn the caller waits for (in-turn
@@ -3347,7 +3504,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Decode action from AnyCodable
             let decoder = JSONDecoder()
-            let decodedAction = try InboundPayloadDecoding.decode(actionItem.actionType, from: actionItem.action, decoder: decoder)
+            let decodedAction = try InboundPayloadDecoding.decode(actionItem.actionType, from: actionItem.action, bounded: actionItem.boundedAction, decoder: decoder)
 
             // Create context with resolver outputs
             let ctx = makeContext(
@@ -3431,7 +3588,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Throws only from `validate`, before anything is written (#586).
             try withMutableStateSync { state in
-                try handler.invoke(&state, event: eventItem.event, ctx: ctx)
+                try handler.invoke(&state, event: eventItem.event, boundedPayload: eventItem.boundedPayload, ctx: ctx)
             }
 
         case let .serverInput(inputItem):
