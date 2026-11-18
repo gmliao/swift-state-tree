@@ -178,6 +178,49 @@ struct LandManagerReevaluationModeTests {
         }
     }
 
+    @Test("A replay definition named by the replay alias checks a record against the recorded definition's fingerprint (#521 D15)")
+    func replayAliasDefinitionChecksLiveFingerprint() async throws {
+        // The factory names each definition by its land type, the replay land's too.
+        let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
+            Land(landID.landType, using: ReevaluationModeTestState.self) { Rules {} }
+        }
+        let live = try ReevaluationSchemaFingerprint.compute(for: landFactory(LandID(landType: "alias-game", instanceId: "live")))
+        let replayID = LandID(landType: "alias-game-replay", instanceId: "replay-1")
+        let alias = try ReevaluationSchemaFingerprint.compute(for: landFactory(replayID))
+        #expect(alias != live, "the definition's id is part of the fingerprint")
+
+        // A live recording holds the live type's fingerprint: the replay land is created.
+        let liveRecord = try writeModeRecord(
+            version: ReevaluationRecordVersion.current, schemaFingerprint: live, landDefinitionID: "alias-game"
+        )
+        defer { try? FileManager.default.removeItem(at: liveRecord) }
+        let manager = LandManager<ReevaluationModeTestState>(
+            landFactory: landFactory,
+            initialStateFactory: { _ in ReevaluationModeTestState() },
+            keeperModeResolver: { _, _ in .reevaluation(recordFilePath: liveRecord.path) }
+        )
+        let container = try await manager.getOrCreateLand(
+            landID: replayID, definition: landFactory(replayID), initialState: ReevaluationModeTestState(), metadata: [:]
+        )
+        #expect(await container.keeper.getMode() == .reevaluation)
+
+        // The alias definition's own value, which no live recording holds, is another schema.
+        let aliasRecord = try writeModeRecord(
+            version: ReevaluationRecordVersion.current, schemaFingerprint: alias, landDefinitionID: "alias-game"
+        )
+        defer { try? FileManager.default.removeItem(at: aliasRecord) }
+        let refusing = LandManager<ReevaluationModeTestState>(
+            landFactory: landFactory,
+            initialStateFactory: { _ in ReevaluationModeTestState() },
+            keeperModeResolver: { _, _ in .reevaluation(recordFilePath: aliasRecord.path) }
+        )
+        await #expect(throws: ReevaluationRecordFingerprintError.mismatch(recorded: alias, current: live)) {
+            _ = try await refusing.getOrCreateLand(
+                landID: replayID, definition: landFactory(replayID), initialState: ReevaluationModeTestState(), metadata: [:]
+            )
+        }
+    }
+
     @Test("A recording manager refuses a land whose schema fingerprint can't be computed; one that doesn't record creates it (#521 D15)")
     func recordingManagerChecksFingerprint() async throws {
         let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
@@ -256,8 +299,8 @@ struct LandManagerReevaluationModeTests {
     }
 }
 
-/// A one-frame JSON record of `test-replay` at `version`.
-private func writeModeRecord(version: String, schemaFingerprint: String?) throws -> URL {
+/// A one-frame JSON record of `test-replay` at `version`, recorded with the definition `landDefinitionID`.
+private func writeModeRecord(version: String, schemaFingerprint: String?, landDefinitionID: String = "test-replay") throws -> URL {
     let recordFile = FileManager.default.temporaryDirectory
         .appendingPathComponent("land-manager-reeval-test-\(UUID().uuidString).json")
     let encoder = JSONEncoder()
@@ -268,7 +311,7 @@ private func writeModeRecord(version: String, schemaFingerprint: String?) throws
             landType: "test-replay",
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: [:],
-            landDefinitionID: "test-replay",
+            landDefinitionID: landDefinitionID,
             version: version,
             schemaFingerprint: schemaFingerprint
         ),

@@ -39,9 +39,10 @@ public enum ReevaluationSchemaFingerprint {
     /// policies, and whether a field has a default), the actions, which response each returns,
     /// the client and server events, the server inputs, a `Set`'s element type and a
     /// `CaseIterable` raw-value enum's raw values. It doesn't cover behavior (handler and tick
-    /// logic, the tick interval, services, configuration, the environment, a default's value),
-    /// which replay checks by the state hash per tick. It is strict: an added action, event or
-    /// field changes it too.
+    /// logic, the tick interval, services, configuration, the environment, a default's value).
+    /// `ReevaluationEngine.run` and the monitor's runner check those by the state hash per tick;
+    /// keeper-mode replay (`LandManager`'s `.reevaluation`) compares none. It is strict: an added
+    /// action, event or field changes it too.
     ///
     /// Canonical input: every `description` and the root wire form are left out, `required` lists
     /// are sorted, a `@Payload` type's fields are named by their wire key (`_payloadWireKeys`),
@@ -51,11 +52,21 @@ public enum ReevaluationSchemaFingerprint {
     /// What it doesn't see: a field of a type read through the `Codable` sample fallback, or of
     /// a `@Payload` type whose `CodingKeys` are in an extension or that encodes itself, is named
     /// by its Swift property name, so a rename changes it and a change of the key alone isn't
-    /// seen; and the cases of a raw-value enum that isn't `CaseIterable`.
+    /// seen; the cases of a raw-value enum that isn't `CaseIterable`; and a `let` with an initial
+    /// value in a `@Payload` type, which a synthesized `Decodable` doesn't decode (#611).
     ///
     /// - Throws: `SchemaFingerprintError` for a type whose fields it can't list or tell apart,
     ///   and what `SchemaExtractor.extract(from:)` throws for a land that can't be registered.
     public static func compute<State: StateNodeProtocol>(for definition: LandDefinition<State>) throws -> String {
+        try compute(for: definition, keyedAs: nil)
+    }
+
+    /// `compute(for:)` with the land's schema keyed by `landType` instead of `definition.id`: a
+    /// replay definition named by the replay alias, checked against a live recording.
+    static func compute<State: StateNodeProtocol>(
+        for definition: LandDefinition<State>,
+        keyedAs landType: String?
+    ) throws -> String {
         let probe = SchemaExtractionProbe()
         let (lands, defs, serverInputs) = try SchemaExtractionProbe.$current.withValue(probe) {
             let schema = try SchemaExtractor.extract(from: definition, version: formatTag)
@@ -93,7 +104,10 @@ public enum ReevaluationSchemaFingerprint {
         }
         let input = FingerprintInput(
             format: formatTag,
-            lands: try lands.mapValues { try canonical($0) },
+            lands: try Dictionary(
+                lands.map { (landType != nil && $0.key == definition.id ? landType! : $0.key, try canonical($0.value)) },
+                uniquingKeysWith: { first, _ in first }
+            ),
             defs: canonicalDefs,
             serverInputs: try serverInputs.mapValues { try canonical($0) },
             actionResponses: actionResponses
@@ -159,7 +173,9 @@ public enum ReevaluationSchemaFingerprint {
         result.items = try schema.items.map { Box(try canonical($0.value)) }
         result.additionalProperties = try schema.additionalProperties.map { Box(try canonical($0.value)) }
         // A default's value is computed when the process runs (`UUID()`, `Date()`, config): only
-        // whether there is one is part of the shape. Replay's state hash checks the value.
+        // whether there is one is part of the shape. `ReevaluationEngine.run` and the monitor's
+        // runner compare the state hash per tick, which covers the value; keeper-mode replay
+        // compares none, so there a changed static default isn't caught.
         if schema.defaultValue != nil {
             result.defaultValue = .bool(true)
         }
@@ -237,8 +253,9 @@ public enum ReevaluationRecordFingerprintError: Error, Equatable, Sendable, Cust
     /// The record carries no schema fingerprint: it is older than
     /// `ReevaluationRecordVersion.minimumReplayable`, or its keeper had none. Re-record it.
     case missing(recordedVersion: String?)
-    /// The record's fingerprint differs from the current definition's: a field, a type, a policy
-    /// or a default changed, or an action, an event or a server input was added or removed.
+    /// The record's fingerprint differs from the current definition's: a field, a type, a
+    /// policy, whether a state field has a default or an action's response changed, or an
+    /// action, an event or a server input was added or removed.
     case mismatch(recorded: String, current: String)
 
     public var description: String {
@@ -264,8 +281,26 @@ extension ReevaluationSchemaFingerprint {
         _ metadata: ReevaluationRecordMetadata,
         against definition: LandDefinition<State>
     ) throws {
+        try checkRecord(metadata, against: definition, replayLandSuffix: nil)
+    }
+
+    /// `checkRecord(_:against:)` for a replay land (`LandManager`'s `.reevaluation` mode): a
+    /// definition whose id is the recorded definition's (`landDefinitionID`) plus
+    /// `replayLandSuffix` is checked under the recorded id, which a live recording's fingerprint
+    /// holds. Any other definition, the live one reused among them, is checked under its own.
+    package static func checkRecord<State: StateNodeProtocol>(
+        _ metadata: ReevaluationRecordMetadata,
+        against definition: LandDefinition<State>,
+        replayLandSuffix: String?
+    ) throws {
         let recorded = try recordedFingerprint(of: metadata)
-        let current = try cached(for: definition)
+        let current: String
+        if let suffix = replayLandSuffix, !suffix.isEmpty, let recordedID = metadata.landDefinitionID,
+           definition.id == recordedID + suffix {
+            current = try compute(for: definition, keyedAs: recordedID)
+        } else {
+            current = try cached(for: definition)
+        }
         guard recorded == current else {
             throw ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current)
         }

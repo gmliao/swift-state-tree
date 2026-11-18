@@ -66,6 +66,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             enableLoopPhaseOffset: configuration.enableLoopPhaseOffset,
             inTurnSync: configuration.inTurnSync,
             syncLagPolicy: configuration.syncLag,
+            replayLandSuffix: configuration.replayLandSuffix,
             logger: configuration.logger
         )
         

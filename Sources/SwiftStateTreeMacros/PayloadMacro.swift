@@ -248,7 +248,7 @@ public struct PayloadMacro: MemberMacro {
     private static func generateWriterMembers(properties: [PropertyInfo]) -> [DeclSyntax] {
         let writes = properties.map { "    try writer.field(self.\($0.name))" }.joined(separator: "\n")
         let forms = properties
-            .map { "_PayloadFieldFormEntry(\"\($0.name)\", _payloadFieldForm(of: \\Self.\($0.name)))" }
+            .map { "_PayloadFieldFormEntry(\"\($0.wireName)\", _payloadFieldForm(of: \\Self.\($0.name)))" }
             .joined(separator: ", ")
         return [
             """

@@ -352,6 +352,11 @@ struct FPPlainInput: ServerInputPayload {
     let tag: String
 }
 
+/// A server event without `@Payload`: no positional writer, and unlistable fields.
+struct FPPlainEvent: ServerEventPayload {
+    let tag: String
+}
+
 struct FPPlainNote: ClientEventPayload {
     let text: String
 }
@@ -369,6 +374,22 @@ struct FPKeyed: ServerEventPayload {
         case same = "same"
         case renamed = "r"
     }
+}
+
+/// A keyword property in a snapshot value: its snapshot key and field name have no backticks.
+/// With a `let`, the macro declares the fields (no decoder).
+@SnapshotConvertible
+struct FPSnapshotKeyed: Codable, Sendable {
+    let `default`: Int
+    let plain: Int
+}
+
+/// The same with `var`s and an `init()`: the macro generates `init(fromSnapshotValue:)`.
+@SnapshotConvertible
+struct FPSnapshotKeyedDecodable: Codable, Sendable {
+    var `default`: Int = 0
+    var plain: Int = 0
+    init() {}
 }
 
 /// The two cases `@Payload`'s key list can't see.
@@ -564,6 +585,37 @@ struct SchemaFingerprintTests {
         // The macro reads the declaration only: these two give the property names.
         #expect(FPKeysInExtension._payloadWireKeys.isEmpty)
         #expect(FPCustomEncode._payloadWireKeys.isEmpty)
+    }
+
+    @Test("A backticked property is named without its backticks: @Payload's field metadata and field forms, @SnapshotConvertible's field metadata and snapshot keys")
+    func backtickedNames() throws {
+        #expect(FPKeyed.getFieldMetadata().map(\.name) == ["default", "renamed", "same"])
+        #expect(FPKeyed._payloadFieldForms.map(\.name) == ["default", "renamed", "same"])
+        #expect(FPSnapshotKeyed.snapshotFieldMetadata.map(\.name).sorted() == ["default", "plain"])
+        let snapshot = try FPSnapshotKeyed(default: 1, plain: 2).toSnapshotValue()
+        #expect(snapshot == .object(["default": .int(1), "plain": .int(2)]))
+        #expect(try FPSnapshotKeyed(default: 1, plain: 2).toFullSnapshotValue() == snapshot)
+        var decodable = FPSnapshotKeyedDecodable()
+        decodable.default = 1
+        decodable.plain = 2
+        #expect(try decodable.toSnapshotValue() == snapshot)
+        #expect(try FPSnapshotKeyedDecodable(fromSnapshotValue: snapshot).default == 1)
+    }
+
+    @Test("A land refused for another registration row isn't fingerprinted: schemaFingerprint is nil, and the row is kept")
+    func fingerprintSkippedWhenAnotherRowFails() throws {
+        // A server event without @Payload: no positional writer (the payload row, with
+        // compression on), and fields the fingerprint can't list.
+        let land = Land(fpLandID, using: FPv1.FPState.self) {
+            ServerEvents { Register(FPPlainEvent.self) }
+            Rules {}
+        }
+        #expect(Self.thrownError { try fingerprint(land) } as? SchemaFingerprintError == .unbuildableType("FPPlainEvent"))
+        let error = try #require(throws: LandRegistrationError.self) {
+            try land.validateForRegistration(context: LandRegistrationContext(payloadsCompressed: true, recordsForReplay: true))
+        }
+        #expect(error.payload?.typesWithoutWriter == ["server event FPPlainEvent"])
+        #expect(error.schemaFingerprint == nil)
     }
 
     @Test("Field-less payloads and an AnyCodable field are hashed as they are")
