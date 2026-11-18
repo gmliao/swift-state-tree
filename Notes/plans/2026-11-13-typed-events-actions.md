@@ -381,7 +381,7 @@ package protocol PayloadDecodingSource: Sendable {
     - The converter reports that branch to the fingerprint (a package flag on the extraction), and the fingerprint throws `SchemaFingerprintError.unbuildableType`.
     - The schema's shape isn't the test. A field-less type is an empty object too, and it is hashed as it is: hero-defense's `PlayAction`, `ShootEvent` and `UpgradeWeaponEvent`, VisibilityTest's `ParkEntitiesAction` (`VisibilityTestLand.swift:284`), and Demo's `IncrementAction`. So is the `Any` def.
     - SchemaGen's output doesn't change; only the fingerprint looks at the flag.
-  - **Refused at registration when it would record (U3).** When recording or reevaluation is on for the land (`enableLiveStateHashRecording`, `NIOLandHost.swift:190`, `LandManager.swift:199`; or a reevaluation keeper), registration computes the fingerprint. An `unbuildableType` throws `LandRegistrationError`, naming the type, from the same entry points as the other registration rows (§5). So no record that can never replay is made. With recording off, the fingerprint isn't computed, and nothing changes.
+  - **Refused at registration when it would record (U3).** When recording or reevaluation is on for the land (`enableLiveStateHashRecording`, `NIOLandHost.swift:196`, `LandManager.swift:199`; or a reevaluation keeper), registration computes the fingerprint. An `unbuildableType` throws `LandRegistrationError`, naming the type, from the same entry points as the other registration rows (§5). So no record that can never replay is made. With recording off, the fingerprint isn't computed, and nothing changes.
   - **`Set` defaults are sorted** by each element's canonical JSON, since a `Set`'s iteration order depends on the hash seed.
 - **What it doesn't cover (S3).** It describes the shapes on the wire and in the record, not the behavior. Handler and tick logic, the tick interval, services, the land's configuration and the environment aren't in it. Replay still checks those through the state hash per tick, as today.
 - **Strict means additive changes are refused too.** A new action, a new event, or a new optional field changes the fingerprint, so older records of that land stop replaying, by decision (D15).
@@ -421,6 +421,17 @@ package protocol PayloadDecodingSource: Sendable {
 - it is independent of the event writer, and PR 1b's decode doesn't depend on it to be correct, since the decode is the last guard;
 - landing it first means PR 1b's mismatch tests build records that pass the fingerprint and carry a corrupt payload, which is the case the decode guards;
 - the fixtures' re-recorded diff would otherwise bury PR 1b's logic.
+
+**PR 1f as built: where it departs from the text above.**
+- **F is 3.6:** #591 merged first with 3.5. Its 3.5 records have no fingerprint and are refused with the older ones; #591's gate tests expect that refusal, through the engine and both runner initializers.
+- **The cache is per definition value, not per definition type.** A key of the state type and the land's `id` let a changed definition with the same `id` reuse the old value within a process (a test replaying against a land without its server input passed the fingerprint that way). Registration computes it once and stores it on the definition; the land's keepers, built from the same value, read it there.
+- **The engine's own error.** `ReevaluationEngine.run` lives in the core module, so it throws `ReevaluationRecordFingerprintError` (`.missing`, `.mismatch`); the runner maps it to `ReevaluationReplayCompatibilityError` 2004 / 2005, and the admin route to its two code strings.
+- **Server inputs list their fields.** `ServerInputPayload` refines `SchemaMetadataProvider`, with a default empty field list. A `SchemaMetadataProvider` type whose field list is empty but that has fields (a payload or server input without `@Payload`) is unbuildable, so a land that records must give its server inputs `@Payload`: a behavior change for a recording land with such a type.
+- **What isn't unbuildable** besides field-less types: collections, raw-value types, `Date`, `Data`, `URL`, `UUID`, `Decimal`, a value with its own snapshot conversion (`SnapshotValueConvertible` without `@SnapshotConvertible`), and `Any` / `AnyCodable`. None has a `{}` sample, and none is described by its stored fields.
+- **`Set` defaults** are found by the field's `$ref` to a `Set<…>` def; the schema has no set kind.
+- **Registration for reevaluation** (`registerWithReevaluation*`) checks the fingerprint with recording off too: its records are replayed by definition.
+- **The admin route** compares with the realm's fingerprint for the live land type; a land server that reports none (the protocol's default) skips the mismatch check, while the missing check still runs.
+- **The tracked hero-defense records** are re-recorded as `{1,2,3}-hero-defense.sstr`. The old `3-hero-defense.json` stays, bytes unchanged, as `Tests/SwiftStateTreeTests/Fixtures/hero-defense-record-2.5.json`, the canonical MessagePack tests' input only.
 
 ## 5. Error paths under #535's scope rule
 

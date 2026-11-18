@@ -45,6 +45,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private let codec: any TransportCodec
     /// The largest frame before the join is admitted (`HandshakeFrameLimit`); `nil`: no limit.
     private let maxHandshakeFrameBytes: Int?
+    /// Refused frames a session may send before its join is admitted (`HandshakeFrameLimit`);
+    /// `nil`: no budget.
+    private let maxRefusedHandshakeFrames: Int?
     private let messageEncoder: any TransportMessageEncoder
     
     // MARK: - Session Management
@@ -59,6 +62,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private var refusedSessions: Set<SessionID> = []
     /// Frames dropped from refused sessions (tests).
     private(set) var framesDroppedAfterRefusalForTesting = 0
+    /// Each connected session's refused pre-join frames so far (`maxRefusedHandshakeFrames`).
+    private var refusedHandshakeFrames: [SessionID: Int] = [:]
     
     /// The land instance each session is bound to, from the bind on (#390).
     private var sessionToBound: [SessionID: BoundLand] = [:]
@@ -120,6 +125,22 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             case .joining(let attempt): attempt.admitted == nil
             case .joined: false
             }
+        }
+    }
+
+    /// A client frame being refused, with the connection it came on: the session's connection
+    /// generation when the frame arrived (`onMessage`). A refusal counts against the session's
+    /// budget only with one, and only while that connection is still the session's: the error
+    /// may go out after an await, by when the ID may be a new connection's. A refusal that is
+    /// the server's doing (a land shutting down, a join superseded) passes `nil`.
+    private struct RefusedFrame {
+        let generation: UInt64?
+
+        /// `nil` when the join failed because the land is shutting down: the client is told to
+        /// retry, and that isn't its frame's doing.
+        func unlessServerCaused(_ error: any Error) -> RefusedFrame? {
+            if case .landShuttingDown? = error as? JoinError { return nil }
+            return self
         }
     }
 
@@ -242,8 +263,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///     session name any `playerID`, so pass `true` whenever the land authenticates players.
     ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false)
     ///   - maxHandshakeFrameBytes: The largest frame a session may send before its join is admitted
-    ///     (`HandshakeFrameLimit`, default from `HANDSHAKE_FRAME_MAX_BYTES`, 64 KiB); `nil`: no
+    ///     (`HandshakeFrameLimit`, default from `HANDSHAKE_FRAME_MAX_BYTES`, 8 KiB); `nil`: no
     ///     limit. A larger frame is refused before it is parsed, and the session is closed (1009).
+    ///   - maxRefusedHandshakeFrames: Refused frames a session may send before its join is
+    ///     admitted (`HandshakeFrameLimit`, default from `HANDSHAKE_REFUSED_FRAME_BUDGET`, 8);
+    ///     `nil`: no budget. The next refused frame gets its error, then the session is closed
+    ///     (1008).
     ///   - logger: Optional logger instance
     public init(
         landManager: LandManager<State>,
@@ -254,6 +279,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .jsonOpcode,
         maxHandshakeFrameBytes: Int? = HandshakeFrameLimit.fromEnvironment(),
+        maxRefusedHandshakeFrames: Int? = HandshakeFrameLimit.refusedFrameBudgetFromEnvironment(),
         logger: Logger? = nil
     ) {
         self.landManager = landManager
@@ -264,6 +290,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.encodingConfig = transportEncoding
         self.maxHandshakeFrameBytes = maxHandshakeFrameBytes
+        self.maxRefusedHandshakeFrames = maxRefusedHandshakeFrames
         self.stateUpdateFeatures = landManager.stateUpdateFeatures
         self.codec = transportEncoding.makeCodec()
         self.messageEncoder = transportEncoding.makeMessageEncoder()
@@ -354,6 +381,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionToConnectionGeneration.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
         sessionToBound.removeValue(forKey: sessionID)
+        refusedHandshakeFrames.removeValue(forKey: sessionID)
         if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
         setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
         return bound
@@ -524,6 +552,108 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     var closingEpochCountForTesting: Int { closingEpochs.count }
 
     // MARK: - Message Handling
+
+    /// What a handshake-phase frame decodes to (`decodeHandshakeFrame`).
+    enum HandshakeFrameDecode {
+        /// An empty frame.
+        case empty
+        /// A frame that doesn't start like JSON (`{` or `[`); only JSON is accepted before join.
+        case notJSON
+        case message(TransportMessage)
+    }
+
+    /// What a frame after the handshake decodes to (`decodePostHandshakeFrame`).
+    enum PostHandshakeFrameDecode {
+        /// A sync ack (#332), forwarded to the bound land's adapter as is.
+        case syncAck(UInt64)
+        case message(TransportMessage)
+    }
+
+    /// Decodes a frame received before the handshake completes: JSON only, either the opcode
+    /// array format or the JSON object format. A static function of the client's bytes, so the
+    /// decoder fuzz tests (#528) run this exact code; `onMessage` acts on the result.
+    static func decodeHandshakeFrame(
+        _ message: Data,
+        sessionID: SessionID,
+        logger: Logger
+    ) throws -> HandshakeFrameDecode {
+        guard let firstByte = message.first else {
+            return .empty
+        }
+
+        let transportMsg: TransportMessage
+        // Check if message is JSON (starts with { or [)
+        if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
+            // Try JSON opcode array format first
+            if let json = try? JSONSerialization.jsonObject(with: message),
+               let array = json as? [Any],
+               array.count >= 1,
+               let firstElement = array[0] as? Int,
+               firstElement >= 101 && firstElement <= 106 {
+                // JSON opcode array format
+                transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+
+                if logger.logLevel <= .debug {
+                    logger.debug("Handshake: Decoded JSON opcode array format", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "opcode": .string("\(firstElement)")
+                    ])
+                }
+            } else {
+                // JSON object format
+                let jsonCodec = TransportEncodingConfig.json.makeCodec()
+                transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
+
+                if logger.logLevel <= .debug {
+                    logger.debug("Handshake: Decoded JSON object format", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "kind": .string(transportMsg.kind.rawValue)
+                    ])
+                }
+            }
+        } else {
+            return .notJSON
+        }
+        return .message(transportMsg)
+    }
+
+    /// Decodes a frame received after the handshake, in the configured encoding. A static
+    /// function of the client's bytes, so the decoder fuzz tests (#528) run this exact code.
+    static func decodePostHandshakeFrame(
+        _ message: Data,
+        codec: any TransportCodec,
+        sessionID: SessionID,
+        logger: Logger
+    ) throws -> PostHandshakeFrameDecode {
+        // A sync ack (#332) isn't a TransportMessage: it goes to the bound land's adapter
+        // as is, never to the keeper. Only a frame that starts like one is parsed.
+        if let seq = SyncAckFrame.parse(message) {
+            return .syncAck(seq)
+        }
+        let transportMsg: TransportMessage
+        if codec.encoding == .messagepack {
+            // MessagePack codec handles both map and opcode-array formats.
+            transportMsg = try codec.decode(TransportMessage.self, from: message)
+        } else if let json = try? JSONSerialization.jsonObject(with: message),
+                  let array = json as? [Any],
+                  array.count >= 1,
+                  let firstElement = array[0] as? Int,
+                  firstElement >= 101 && firstElement <= 106
+        {
+            // JSON opcode array format
+            if logger.logLevel <= .debug {
+                logger.debug("Detected opcode array format message", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "opcode": .string("\(firstElement)")
+                ])
+            }
+            transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+        } else {
+            // Standard JSON object format
+            transportMsg = try codec.decode(TransportMessage.self, from: message)
+        }
+        return .message(transportMsg)
+    }
     
     /// Called when a message is received from a client.
     ///
@@ -540,6 +670,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             framesDroppedAfterRefusalForTesting += 1
             return
         }
+        // The connection this frame came on, for a refusal that goes out after an await.
+        let frame = RefusedFrame(generation: sessionToConnectionGeneration[sessionID])
         // Get handshake phase for this session
         let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
         
@@ -555,59 +687,33 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     return
                 }
 
-                // During handshake, only accept JSON-encoded messages
-                guard let firstByte = message.first else {
+                switch try Self.decodeHandshakeFrame(message, sessionID: sessionID, logger: logger) {
+                case .empty:
                     await sendError(
                         to: sessionID,
+                        refusing: frame,
                         code: .invalidJSON,
                         message: "Empty message received"
                     )
                     return
-                }
-                
-                // Check if message is JSON (starts with { or [)
-                if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
-                    // Try JSON opcode array format first
-                    if let json = try? JSONSerialization.jsonObject(with: message),
-                       let array = json as? [Any],
-                       array.count >= 1,
-                       let firstElement = array[0] as? Int,
-                       firstElement >= 101 && firstElement <= 106 {
-                        // JSON opcode array format
-                        transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
-                        
-                        if logger.logLevel <= .debug {
-                            logger.debug("Handshake: Decoded JSON opcode array format", metadata: [
-                                "sessionID": .string(sessionID.rawValue),
-                                "opcode": .string("\(firstElement)")
-                            ])
-                        }
-                    } else {
-                        // JSON object format
-                        let jsonCodec = TransportEncodingConfig.json.makeCodec()
-                        transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
-                        
-                        if logger.logLevel <= .debug {
-                            logger.debug("Handshake: Decoded JSON object format", metadata: [
-                                "sessionID": .string(sessionID.rawValue),
-                                "kind": .string(transportMsg.kind.rawValue)
-                            ])
-                        }
-                    }
-                } else {
+                case .notJSON:
                     // Non-JSON format during handshake not allowed
                     await sendError(
                         to: sessionID,
+                        refusing: frame,
                         code: .invalidJSON,
                         message: "Handshake not completed. Only JSON-encoded join messages are accepted."
                     )
                     return
+                case .message(let decoded):
+                    transportMsg = decoded
                 }
                 
                 // During handshake, only process join messages
                 guard transportMsg.kind == .join else {
                     await sendError(
                         to: sessionID,
+                        refusing: frame,
                         code: .joinSessionNotConnected,
                         message: "Not joined. Please send a join request first."
                     )
@@ -616,32 +722,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 
             // MARK: - Post-Handshake: Use configured encoding
             } else {
-                // A sync ack (#332) isn't a TransportMessage: it goes to the bound land's adapter
-                // as is, never to the keeper. Only a frame that starts like one is parsed.
-                if let seq = SyncAckFrame.parse(message) {
+                switch try Self.decodePostHandshakeFrame(message, codec: codec, sessionID: sessionID, logger: logger) {
+                case .syncAck(let seq):
                     await forwardSyncAck(seq, sessionID: sessionID)
                     return
-                }
-                if codec.encoding == .messagepack {
-                    // MessagePack codec handles both map and opcode-array formats.
-                    transportMsg = try codec.decode(TransportMessage.self, from: message)
-                } else if let json = try? JSONSerialization.jsonObject(with: message),
-                          let array = json as? [Any],
-                          array.count >= 1,
-                          let firstElement = array[0] as? Int,
-                          firstElement >= 101 && firstElement <= 106
-                {
-                    // JSON opcode array format
-                    if logger.logLevel <= .debug {
-                        logger.debug("Detected opcode array format message", metadata: [
-                            "sessionID": .string(sessionID.rawValue),
-                            "opcode": .string("\(firstElement)")
-                        ])
-                    }
-                    transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
-                } else {
-                    // Standard JSON object format
-                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                case .message(let decoded):
+                    transportMsg = decoded
                 }
             }
             
@@ -656,13 +742,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                         sessionID: sessionID,
                         requestedPlayerID: payload.playerID,
                         deviceID: payload.deviceID,
-                        metadata: payload.metadata
+                        metadata: payload.metadata,
+                        frame: frame
                     )
                 }
                 
             default:
                 // For all other messages, forward to bound TransportAdapter
-                await forwardToTransportAdapter(message: message, sessionID: sessionID, transportMsg: transportMsg)
+                await forwardToTransportAdapter(message: message, sessionID: sessionID, transportMsg: transportMsg, frame: frame)
             }
         } catch {
             logger.error("Failed to decode message", metadata: [
@@ -671,6 +758,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             ])
             await sendError(
                 to: sessionID,
+                refusing: frame,
                 code: .invalidJSON,
                 message: "Failed to decode message: \(error)"
             )
@@ -695,7 +783,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         requestedPlayerID: String?,
         deviceID: String?,
-        metadata: [String: AnyCodable]?
+        metadata: [String: AnyCodable]?,
+        frame: RefusedFrame
     ) async {
         // Validate session is connected
         guard let clientID = sessionToClient[sessionID] else {
@@ -703,6 +792,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinSessionNotConnected,
                 message: "Session not connected"
             )
@@ -715,6 +805,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinInProgress,
                 message: "A join is already in progress"
             )
@@ -727,6 +818,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinAlreadyJoined,
                 message: "Already joined a land"
             )
@@ -745,6 +837,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinPlayerMismatch,
                 message: rejection.message
             )
@@ -763,6 +856,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinStateUpdateFeatureMissing,
                 message: TransportAdapter<State>.missingFeaturesMessage(missing),
                 details: [
@@ -797,7 +891,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 endAttempt(sessionID)
                 let (code, message) = landInstanceId.map { (ErrorCode.joinRoomNotFound, "Land not found: \(LandID(landType: landType, instanceId: $0).rawValue)") }
                     ?? (ErrorCode.joinDenied, "Auto-creation of new lands is disabled. Please specify a landInstanceId to join an existing land.")
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
+                await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: frame, code: code, message: message)
                 return
             }
             (landID, container) = found
@@ -809,7 +903,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             endAttempt(sessionID)
             let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
                 ?? (ErrorCode.joinRoomNotFound, "\(error)")
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: errorCode, message: errorMessage)
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: frame.unlessServerCaused(error), code: errorCode, message: errorMessage)
             logger.error("Join failed (land creation or replay load)", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
@@ -826,7 +920,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         if isShuttingDown {
             endAttempt(sessionID)
             let (code, message) = Self.joinErrorResponse(.landShuttingDown)
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: code, message: message)
             return
         }
         // The instance is being stopped (#102): no binding, in this segment, so every session
@@ -834,7 +928,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         if closingEpochs.contains(container.epoch) {
             endAttempt(sessionID)
             let (code, message) = Self.joinErrorResponse(.landShuttingDown)
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: code, message: message)
             return
         }
         // The land's own list: it can hold more than the configured one (`rowAddressing`, which
@@ -852,6 +946,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinStateUpdateFeatureMissing,
                 message: TransportAdapter<State>.missingFeaturesMessage(missing),
                 details: [
@@ -998,6 +1093,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame,
                 code: .joinDenied,
                 message: "Join denied"
             )
@@ -1015,6 +1111,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
+                refusing: frame.unlessServerCaused(error),
                 code: errorCode,
                 message: errorMessage
             )
@@ -1167,7 +1264,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 return
             }
             endAttempt(sessionID)
-            await sendJoinError(requestID: after.requestID, sessionID: sessionID, code: unanswered.code, message: unanswered.message)
+            // Answered from the deadline's timer, not in the frame's handling: not counted (an
+            // uncounted refusal errs toward the client).
+            await sendJoinError(requestID: after.requestID, sessionID: sessionID, refusing: nil, code: unanswered.code, message: unanswered.message)
             return
         }
         endAttempt(sessionID)
@@ -1229,9 +1328,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         case .superseded:
             // A newer join of the player replaced this session. The error settles this
             // client's pending join before the supersede closes its connection.
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join superseded by a newer join of the player")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: .joinDenied, message: "Join superseded by a newer join of the player")
         case .landClosed:
-            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Land is shutting down, retry the join")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, refusing: nil, code: .joinDenied, message: "Land is shutting down, retry the join")
         case .timeout, .onJoinFailed, .eventOverflow, .inboundOverflow:
             let (code, message): (ErrorCode, String) = switch failure {
             case .timeout: (.joinDenied, JoinTimeoutPhase.flip.message)
@@ -1273,22 +1372,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionHandshakePhase[sessionID] != nil
     }
 
-    /// A frame over the pre-join limit (`HandshakeFrameLimit`): the session is refused.
-    ///
-    /// In this segment, before any await, the session's router state goes as on a disconnect:
-    /// the session is unbound, `refusedSessions` drops every later frame, so nothing the client
-    /// sends next can join, and a join attempt in progress ends. That stops a join not yet in
-    /// the keeper. A join already in the keeper's join (CanJoin, the admission) isn't cut: it
-    /// finishes, and the forwarded disconnect then removes the player, as on a client
-    /// disconnect at that point (whether to cut it is #241). Then the error goes out, stamped
-    /// with the session's connection, and the 1009 close behind it.
+    /// A frame over the pre-join limit (`HandshakeFrameLimit`): the session is refused, with
+    /// an error saying so and a 1009 close (`refuseHandshakeSession`).
     private func refuseOversizedHandshakeFrame(_ sessionID: SessionID, bytes: Int, limit: Int) async {
-        refusedSessions.insert(sessionID)
-        let generation = sessionToConnectionGeneration[sessionID]
-        let clientID = sessionToClient[sessionID] ?? ClientID("")
-        let bound = removeSession(sessionID)
-        // Counted in flight in this segment, as `onDisconnect` does (`closeSessionsForShutdown`).
-        await forwardDisconnect(bound, sessionID: sessionID, clientID: clientID)
         logger.warning("Frame before join over the limit; closing the session", metadata: [
             "sessionID": .string(sessionID.rawValue),
             "bytes": .string("\(bytes)"),
@@ -1298,11 +1384,55 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             code: .invalidMessageFormat,
             message: "Frame of \(bytes) bytes before join is over the \(limit)-byte limit"
         )
-        if let data = try? TransportEncodingConfig.json.makeMessageEncoder().encode(TransportMessage.error(payload)) {
-            await transport.sendSessionFrames([SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)])
+        let data = try? TransportEncodingConfig.json.makeMessageEncoder().encode(TransportMessage.error(payload))
+        await refuseHandshakeSession(sessionID, errorData: data, close: .handshakeFrameTooBig)
+    }
+
+    /// Counts a refused frame of a session that hasn't been admitted, in the segment that
+    /// refused it (`maxRefusedHandshakeFrames`). Returns whether it is over the budget: the
+    /// caller then refuses the session with this frame's error (`refuseHandshakeSession`) in
+    /// the same segment. Only while the frame's connection is still the session's (its
+    /// generation is the ticket): a session no longer connected, or connected again under the
+    /// same ID, isn't counted or refused for an old connection's frame.
+    private func countRefusedHandshakeFrame(_ sessionID: SessionID, frame: RefusedFrame) -> Bool {
+        guard let budget = maxRefusedHandshakeFrames,
+              sessionToClient[sessionID] != nil,
+              sessionToConnectionGeneration[sessionID] == frame.generation else { return false }
+        let count = refusedHandshakeFrames[sessionID, default: 0] + 1
+        refusedHandshakeFrames[sessionID] = count
+        return count > budget
+    }
+
+    /// Refuses a session before its join is admitted: the error `errorData`, then `close`.
+    ///
+    /// In this segment, before any await, the session's router state goes as on a disconnect:
+    /// the session is unbound, `refusedSessions` drops every later frame, so nothing the client
+    /// sends next can join, and a join attempt in progress ends. That stops a join not yet in
+    /// the keeper. A join already in the keeper's join (CanJoin, the admission) isn't cut: it
+    /// finishes, and the forwarded disconnect then removes the player, as on a client
+    /// disconnect at that point (whether to cut it is #241). Then the error goes out, stamped
+    /// with the session's connection, and the close behind it.
+    private func refuseHandshakeSession(_ sessionID: SessionID, errorData: Data?, close: SessionClose) async {
+        refusedSessions.insert(sessionID)
+        let generation = sessionToConnectionGeneration[sessionID]
+        let clientID = sessionToClient[sessionID] ?? ClientID("")
+        let bound = removeSession(sessionID)
+        // Counted in flight in this segment, as `onDisconnect` does (`closeSessionsForShutdown`).
+        await forwardDisconnect(bound, sessionID: sessionID, clientID: clientID)
+        if let errorData {
+            await transport.sendSessionFrames([SessionFrame(data: errorData, sessionID: sessionID, connectionGeneration: generation)])
         }
         // Behind the error, so the close can't overtake it.
-        await transport.closeSessionAfterQueuedFrames(sessionID, generation: generation, with: .handshakeFrameTooBig)
+        await transport.closeSessionAfterQueuedFrames(sessionID, generation: generation, with: close)
+    }
+
+    /// The refused pre-join frame over the budget: its error, then the 1008 close.
+    private func refuseOverBudget(_ sessionID: SessionID, errorData: Data) async {
+        logger.warning("Too many refused frames before join; closing the session", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "budget": .string("\(maxRefusedHandshakeFrames ?? 0)")
+        ])
+        await refuseHandshakeSession(sessionID, errorData: errorData, close: .handshakeRefusedFrames)
     }
 
     /// A join error frame, JSON as in the handshake: the client hasn't had its JoinResponse.
@@ -1325,12 +1455,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private func forwardToTransportAdapter(
         message: Data,
         sessionID: SessionID,
-        transportMsg: TransportMessage
+        transportMsg: TransportMessage,
+        frame: RefusedFrame
     ) async {
         guard let bound = sessionToBound[sessionID] else {
             logger.warning("Message from session not bound to any land: \(sessionID.rawValue)")
             await sendError(
                 to: sessionID,
+                refusing: frame,
                 code: .joinSessionNotConnected,
                 message: "Not joined to any land. Send a join request first."
             )
@@ -1346,8 +1478,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             if sessionToBound[sessionID]?.epoch == bound.epoch {
                 sessionToBound.removeValue(forKey: sessionID)
             }
+            // The land ended under the session: the server's doing, not counted.
             await sendError(
                 to: sessionID,
+                refusing: nil,
                 code: .joinRoomNotFound,
                 message: "Land no longer exists"
             )
@@ -1433,9 +1567,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Send a join error to the client.
+    /// - Parameter frame: The client frame this refuses (`RefusedFrame`), or `nil` for an
+    ///   error that is the server's doing: only a refused client frame counts against the
+    ///   session's pre-join budget.
     private func sendJoinError(
         requestID: String,
         sessionID: SessionID,
+        refusing frame: RefusedFrame?,
         code: ErrorCode,
         message: String,
         details: [String: AnyCodable]? = nil
@@ -1457,6 +1595,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let errorData = try encoder.encode(errorResponse)
+            // A refused frame before the join is admitted counts against the session's budget,
+            // in this segment: over it, this error is the last frame, then the 1008 close.
+            if let frame, handshakePhase.decodesAsHandshake, countRefusedHandshakeFrame(sessionID, frame: frame) {
+                await refuseOverBudget(sessionID, errorData: errorData)
+                return
+            }
             await deliver(errorData, to: sessionID)
         } catch {
             logger.error("Failed to send join error", metadata: [
@@ -1468,8 +1612,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     }
     
     /// Send a generic error to the client.
+    /// - Parameter frame: As for `sendJoinError`.
     private func sendError(
         to sessionID: SessionID,
+        refusing frame: RefusedFrame?,
         code: ErrorCode,
         message: String,
         details: [String: AnyCodable]? = nil
@@ -1488,6 +1634,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             }
             
             let errorData = try encoder.encode(errorResponse)
+            // A refused frame before the join is admitted counts against the session's budget,
+            // in this segment: over it, this error is the last frame, then the 1008 close.
+            if let frame, handshakePhase.decodesAsHandshake, countRefusedHandshakeFrame(sessionID, frame: frame) {
+                await refuseOverBudget(sessionID, errorData: errorData)
+                return
+            }
             await deliver(errorData, to: sessionID)
         } catch {
             logger.error("Failed to send error", metadata: [

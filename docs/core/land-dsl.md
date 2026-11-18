@@ -118,7 +118,7 @@ HandleAction(BuyAction.self,
 
 #### One Handler per Type
 
-A land declares one `HandleAction` per action type, one `HandleEvent` per client-event type and one `HandleServerInput` per server-input type. A second declaration is refused at registration with `LandRegistrationError.duplicateHandlers`, which names the type and the `fileID:line` of both declarations. A keeper built without registration refuses it at initialization too.
+A land declares one `HandleAction` per action type, one `HandleEvent` per client-event type and one `HandleServerInput` per server-input type. A second declaration is refused at registration with `LandRegistrationError.duplicateHandlers`, which names the type and the `fileID:line` of both declarations. A keeper built without registration refuses it at initialization too. Inputs are dispatched by name, so two distinct types that share a name are refused the same way (#599): two action types whose names, last components or schema names meet (`Ping` and `PingAction`, or `A.Move` and `B.Move`), two server-input types with one name, and two registered client- or server-event types with one event name (`Hit` and `HitEvent`).
 
 #### What the Compiler Can't Stop
 

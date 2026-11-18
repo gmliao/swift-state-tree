@@ -162,9 +162,16 @@ public struct NIOLandServerConfiguration: Sendable {
 
     /// The largest frame a session may send before its join is admitted, in bytes; `nil`: no
     /// limit. Defaults to the environment (`HandshakeFrameLimit.fromEnvironment()`,
-    /// `HANDSHAKE_FRAME_MAX_BYTES`, 64 KiB). A larger frame is refused before it is parsed, and
+    /// `HANDSHAKE_FRAME_MAX_BYTES`, 8 KiB). A larger frame is refused before it is parsed, and
     /// the session is closed with 1009.
     public var maxHandshakeFrameBytes: Int?
+
+    /// Refused frames a session may send before its join is admitted; `nil`: no budget.
+    /// Defaults to the environment (`HandshakeFrameLimit.refusedFrameBudgetFromEnvironment()`,
+    /// `HANDSHAKE_REFUSED_FRAME_BUDGET`, 8). The next refused frame gets its error, then the
+    /// session is closed with 1008: a client should reconnect rather than retry joins on one
+    /// connection.
+    public var maxRefusedHandshakeFrames: Int?
 
     /// Encoding configuration for transport messages and state updates.
     public var transportEncoding: TransportEncodingConfig
@@ -236,10 +243,12 @@ public struct NIOLandServerConfiguration: Sendable {
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         inTurnSync: Bool = true,
         syncLag: SyncLagPolicy = .fromEnvironment(),
-        maxHandshakeFrameBytes: Int? = HandshakeFrameLimit.fromEnvironment()
+        maxHandshakeFrameBytes: Int? = HandshakeFrameLimit.fromEnvironment(),
+        maxRefusedHandshakeFrames: Int? = HandshakeFrameLimit.refusedFrameBudgetFromEnvironment()
     ) {
         self.logger = logger
         self.maxHandshakeFrameBytes = maxHandshakeFrameBytes
+        self.maxRefusedHandshakeFrames = maxRefusedHandshakeFrames
         self.syncLag = syncLag
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
