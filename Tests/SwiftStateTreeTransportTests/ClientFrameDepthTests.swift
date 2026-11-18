@@ -109,8 +109,9 @@ enum ClientFrameChain {
     }
 
     /// Every decode a frame of `encoding` reaches, ending in the payload decode and the join
-    /// checks. Each step may throw; none may trap.
-    static func run(_ data: Data, encoding: FrameEncoding) -> ChainReport {
+    /// checks. Each step may throw; none may trap. It yields between stages: a deep frame's
+    /// stage takes long in a debug build, and the cases run in parallel on the cooperative pool.
+    static func run(_ data: Data, encoding: FrameEncoding) async -> ChainReport {
         let logger = ClientFrameTargets.logger
         let session = ClientFrameTargets.sessionID
         var report = ChainReport()
@@ -139,18 +140,22 @@ enum ClientFrameChain {
             }
         }
         if encoding != .messagepack {
+            await Task.yield()
             stage("handshake") {
                 guard case .message(let message) = try FuzzRouter.decodeHandshakeFrame(data, sessionID: session, logger: logger) else { return nil }
                 return message
             }
         }
+        await Task.yield()
         stage("router") {
             guard case .message(let message) = try FuzzRouter.decodePostHandshakeFrame(
                 data, codec: ClientFrameTargets.codec(encoding), sessionID: session, logger: logger
             ) else { return nil }
             return message
         }
+        await Task.yield()
         stage("pipeline") { try ClientFrameTargets.pipeline(encoding, legacyJoin: false).decode(data) }
+        await Task.yield()
         stage("pipeline-legacy-join") { try ClientFrameTargets.pipeline(encoding, legacyJoin: true).decode(data) }
         return report
     }
@@ -185,7 +190,7 @@ enum ClientFrameChain {
     }
 }
 
-@Suite("Client frame decoders: deep nesting and amplification (#362, #528)", .timeLimit(.minutes(5)))
+@Suite("Client frame decoders: deep nesting and amplification (#362, #528)", .serialized, .timeLimit(.minutes(5)))
 struct ClientFrameDepthTests {
     static let jsonLimit = 512
 
@@ -214,7 +219,7 @@ struct ClientFrameDepthTests {
                 let data = encoding == .json
                     ? DeepFrames.json(kind, depth: depth, objects: objects)
                     : DeepFrames.opcodeJSON(kind, depth: depth, objects: objects)
-                let report = await Task.detached { ClientFrameChain.run(data, encoding: encoding) }.value
+                let report = await Task.detached { await ClientFrameChain.run(data, encoding: encoding) }.value
                 Self.check(report, encoding: encoding, depth: depth, limit: Self.jsonLimit,
                            "\(encoding) \(kind) depth \(depth) \(objects ? "objects" : "arrays")")
             }
@@ -226,7 +231,7 @@ struct ClientFrameDepthTests {
     func messagePackDepth(kind: String) async throws {
         for depth in Self.depths(upTo: messagePackMaxNestingDepth) {
             let data = DeepFrames.messagePack(kind, depth: depth)
-            let report = await Task.detached { ClientFrameChain.run(data, encoding: .messagepack) }.value
+            let report = await Task.detached { await ClientFrameChain.run(data, encoding: .messagepack) }.value
             Self.check(report, encoding: .messagepack, depth: depth, limit: messagePackMaxNestingDepth,
                        "messagepack \(kind) depth \(depth)")
         }

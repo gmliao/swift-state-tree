@@ -300,7 +300,7 @@ enum ClientFrameTargets {
 
 // MARK: - Tests
 
-@Suite("Client frame decoders: decode or throw (#528)", .timeLimit(.minutes(5)))
+@Suite("Client frame decoders: decode or throw (#528)", .serialized, .timeLimit(.minutes(5)))
 struct ClientFrameFuzzTests {
     static let encodings = FrameEncoding.allCases
 
@@ -355,10 +355,10 @@ struct ClientFrameFuzzTests {
     }
 
     @Test("T1: the router's handshake decode (before join, JSON only)")
-    func handshakeDecode() {
+    func handshakeDecode() async {
         let seeds = ClientFrameCorpus.frames.filter { $0.encoding != .messagepack }.map(\.bytes)
         var messages = 0
-        let outcome = ClientFrameFuzzer.run(target: "T1-handshake", seeds: seeds) { data in
+        let outcome = await ClientFrameFuzzer.run(target: "T1-handshake", seeds: seeds) { data in
             if case .message(let message) = try FuzzRouter.decodeHandshakeFrame(
                 data, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger
             ) {
@@ -371,12 +371,12 @@ struct ClientFrameFuzzTests {
     }
 
     @Test("T2: the sync-ack parser", arguments: [FrameEncoding.opcodeJsonArray, .messagepack])
-    func syncAckParse(encoding: FrameEncoding) {
+    func syncAckParse(encoding: FrameEncoding) async {
         let target = "T2-sync-ack-\(encoding)"
         let seeds = ClientFrameCorpus.frames(encoding).filter { $0.kind == "syncAck" }.map(\.bytes)
         var parsed = 0
         var refused = 0
-        ClientFrameFuzzer.run(target: target, seeds: seeds) { data in
+        await ClientFrameFuzzer.run(target: target, seeds: seeds) { data in
             if SyncAckFrame.parse(data) != nil { parsed += 1 } else { refused += 1 }
         }
         print("[client-frame-fuzz] \(target) parsed=\(parsed) refused=\(refused)")
@@ -384,11 +384,11 @@ struct ClientFrameFuzzTests {
     }
 
     @Test("T3: the router's post-handshake decode", arguments: encodings)
-    func postHandshakeDecode(encoding: FrameEncoding) {
+    func postHandshakeDecode(encoding: FrameEncoding) async {
         let codec = ClientFrameTargets.codec(encoding)
         let target = "T3-router-\(encoding)"
         var payloads = PayloadOutcomes()
-        let outcome = ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
+        let outcome = await ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
             if case .message(let message) = try FuzzRouter.decodePostHandshakeFrame(
                 data, codec: codec, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger
             ) {
@@ -400,11 +400,11 @@ struct ClientFrameFuzzTests {
     }
 
     @Test("T3: the adapter's decoding pipeline, legacy join off and on", arguments: encodings, [false, true])
-    func adapterPipelineDecode(encoding: FrameEncoding, legacyJoin: Bool) {
+    func adapterPipelineDecode(encoding: FrameEncoding, legacyJoin: Bool) async {
         let pipeline = ClientFrameTargets.pipeline(encoding, legacyJoin: legacyJoin)
         let target = "T3-pipeline-\(encoding)-\(legacyJoin)"
         var payloads = PayloadOutcomes()
-        let outcome = ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
+        let outcome = await ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
             let message = try pipeline.decode(data)
             ClientFrameTargets.decodePayloads(of: message, outcomes: &payloads)
             ClientFrameTargets.checkJoin(message)
@@ -414,7 +414,7 @@ struct ClientFrameFuzzTests {
     }
 
     @Test("T4: the MessagePack unpacker and decoders, each entry point counted")
-    func messagePackDecoders() {
+    func messagePackDecoders() async {
         let seeds = ClientFrameCorpus.frames(.messagepack).map(\.bytes)
         let serializer = MessagePackSerializer()
         var direct = FuzzOutcome()
@@ -429,7 +429,7 @@ struct ClientFrameFuzzTests {
             }
         }
         // The runner's outcome is the unpacker's: the decoders below run on what unpacks.
-        let unpacked = ClientFrameFuzzer.run(target: "T4-messagepack", seeds: seeds) { data in
+        let unpacked = await ClientFrameFuzzer.run(target: "T4-messagepack", seeds: seeds) { data in
             let value = try unpack(data)
             count(&direct) { _ = try MessagePackDirectDecoder().decodeTransportMessage(from: value) }
             count(&anyCodable) { _ = try serializer.decode(AnyCodable.self, from: data) }
@@ -442,7 +442,7 @@ struct ClientFrameFuzzTests {
     }
 
     @Test("T4: random bytes, not mutated from the corpus", arguments: encodings)
-    func randomBytes(encoding: FrameEncoding) {
+    func randomBytes(encoding: FrameEncoding) async {
         let target = "T4-random-\(encoding)"
         let pipeline = ClientFrameTargets.pipeline(encoding, legacyJoin: false)
         var generator = FuzzGenerator.forTarget(target, seed: ClientFrameFuzzConfig.seed)
@@ -450,7 +450,8 @@ struct ClientFrameFuzzTests {
         var pipelineOutcome = FuzzOutcome()
         var handshake = FuzzOutcome()
         var syncAckRefused = 0
-        for _ in 0..<ClientFrameFuzzConfig.iterations {
+        for index in 0..<ClientFrameFuzzConfig.iterations {
+            if index % ClientFrameFuzzer.inputsPerYield == 0 { await Task.yield() }
             let count = Int.random(in: 0...96, using: &generator)
             let data = Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &generator) })
             recorder?.record(data)

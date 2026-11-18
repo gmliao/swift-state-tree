@@ -9,7 +9,7 @@
 // Seed: `SST_FUZZ_SEED`, a decimal or `0x` number, or `random` (picked). Each target prints
 // the seed it ran with.
 // `SST_FUZZ_LAST_INPUT=<path>` writes each target's input to `<path>.<target>` before decoding
-// it, so after a trap that file holds the crasher. Targets run in parallel, hence one file each.
+// it, so after a trap that file holds the crasher: one file per target.
 // When replaying, run the one target with `--filter`. A file write per input makes a run
 // I/O-bound, so set it when replaying a seed that trapped, not for a long run. The seed and the
 // target name are enough to replay a trap.
@@ -303,6 +303,12 @@ struct FuzzInputRecorder {
 }
 
 enum ClientFrameFuzzer {
+    /// Inputs between yields. Each decode is synchronous CPU work; without a yield the targets
+    /// hold the cooperative pool's threads for seconds and starve other suites' tasks, so a
+    /// wall-clock deadline elsewhere expires before its test runs. The suites are also
+    /// `.serialized`, so they use one pool thread at a time.
+    static let inputsPerYield = 32
+
     /// Runs `decode` on each seed, then on `iterations` inputs mutated from `seeds`: decode or throw. Returns how
     /// many inputs decoded and how many threw; a trap ends the process.
     @discardableResult
@@ -312,7 +318,7 @@ enum ClientFrameFuzzer {
         iterations: Int = ClientFrameFuzzConfig.iterations,
         seed: UInt64 = ClientFrameFuzzConfig.seed,
         decode: (Data) throws -> Void
-    ) -> FuzzOutcome {
+    ) async -> FuzzOutcome {
         precondition(!seeds.isEmpty, "\(target): no seeds")
         var generator = FuzzGenerator.forTarget(target, seed: seed)
         var outcome = FuzzOutcome()
@@ -320,6 +326,7 @@ enum ClientFrameFuzzer {
         // Each seed once unmutated, then the mutations: every decoder a seed reaches runs on a
         // valid input at least once, so each target's "decoded" count can't be zero by chance.
         for index in 0..<(seeds.count + iterations) {
+            if index % inputsPerYield == 0 { await Task.yield() }
             let input: Data
             if index < seeds.count {
                 input = Data(seeds[index])
