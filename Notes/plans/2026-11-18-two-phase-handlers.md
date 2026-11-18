@@ -1,6 +1,6 @@
 # Two-phase handlers: validate, then apply (#586, minimal)
 
-Status: open (rev 1, 2026-11-18). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
+Status: open (rev 2, 2026-11-18: D1 and D3 decided). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
 
 ## Decision (maintainer, 2026-11-18)
 
@@ -132,12 +132,14 @@ From a scan of handler bodies that contain `throw`, or a `try` that isn't `try?`
 
 ## Open for Main and the maintainer
 
-- **D1:** the rejected marker in record format 3.5 (§4), or rely on the hash and events as today.
+- **D1: decided (maintainer, 2026-11-18): the rejected marker.** Record format 3.5, an optional `rejected` on the pass, compared in replay; an older record (nil) isn't compared. Tests:
+  - a `validate` divergence (rejected live, applied in replay, and the reverse) is reported with its sequence and tick;
+  - a 3.4 record still replays clean.
 - **D2:** `OnJoin` loses its in-turn failure. `CanJoin` runs at join intake, in the segment of the insert, but `OnJoin` is a queued input applied in a later turn. A `CanJoin` state check can be stale by then; that is today's timing for `maxPlayers` too. Options:
   - (a) Accept and document it: state checks for a join go in `CanJoin`, and `OnJoin` may assume nothing changed.
   - (b) Also give `OnJoin` a `validate:`/`apply:` form. A rejected join then needs a path that undoes the player insert, which is the in-turn join failure path §5 removes.
   - I recommend (a).
-- **D3:** keep `try` out of the single-closure body entirely (the compiler enforces this), with no `rethrows`-style escape hatch.
+- **D3: decided (Main, 2026-11-18):** no `rethrows`-style escape hatch. The single-closure body is non-throwing.
 
 ## PRs
 
