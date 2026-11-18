@@ -82,26 +82,22 @@ private func makePinFixture() async -> PinFixture {
     return PinFixture(keeper: keeper, adapter: adapter, sent: sent)
 }
 
-/// Joins `player` on `session` through the in-turn path, stepping the tick until it flips.
+/// Joins `player` on `session` through the in-turn path. `admitJoin` returns once the join is
+/// registered and waits for its flip; one tick step flips it, and `awaitJoined` waits for that.
 private func joinPin(_ fixture: PinFixture, session: SessionID, player: String) async throws {
     let client = ClientID("c-\(session.rawValue)")
     await fixture.adapter.onConnect(sessionID: session, clientID: client)
-    let join = Task {
-        _ = try await fixture.adapter.performJoin(
-            playerSession: PlayerSession(playerID: player, deviceID: "dev", metadata: [:]),
-            clientID: client,
-            sessionID: session,
-            authInfo: nil,
-            joinResponse: { _, _ in Data("{}".utf8) }
-        )
-    }
-    for _ in 0..<2000 {
-        if await fixture.adapter.isInTurnJoinRegisteredForTesting(session) { break }
-        try? await safeTaskSleep(for: .milliseconds(1))
-    }
+    let admitted = try await fixture.adapter.admitJoin(
+        playerSession: PlayerSession(playerID: player, deviceID: "dev", metadata: [:]),
+        clientID: client,
+        sessionID: session,
+        authInfo: nil,
+        joinResponse: { _, _ in Data("{}".utf8) }
+    )
+    #expect(admitted?.completedInTurn == true)
     await fixture.keeper.stepTickOnce()
-    try await join.value
-    #expect(await fixture.adapter.waitForOutboundDrain())
+    try await fixture.adapter.awaitJoined(sessionID: session)
+    await fixture.adapter.waitForOutboundIdleForTesting()
 }
 
 @Suite(
@@ -127,7 +123,7 @@ struct EventFramePackBytesTests {
             to: .player(PlayerID("p0"))
         )
         await fixture.adapter.syncNow()
-        #expect(await fixture.adapter.waitForOutboundDrain())
+        await fixture.adapter.waitForOutboundIdleForTesting()
         let all = await fixture.sent.eventFrames(for: s0)
         #expect(all == [Self.heldFrame, Self.targetedFrame], "\(all)")
     }
