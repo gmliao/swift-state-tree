@@ -142,7 +142,7 @@ struct MembershipSnapshot: Sendable {
 
 /// The actor that runs `MembershipModel`. Its effects reach the keeper and transport models,
 /// and wait at the fixture's gates: an effect with a non-empty gate opens "at <gate>" when its
-/// worker starts. The keeper's join worker calls back into this actor (`ask`) in the middle of
+/// worker starts. The keeper's join worker calls back into this actor (`query`) in the middle of
 /// its run, as the keeper shares the adapter's executor.
 actor MembershipActor: TurnActor {
     let core: TurnCore<MembershipModel>
@@ -151,11 +151,11 @@ actor MembershipActor: TurnActor {
     nonisolated let transport: TransportModel
     private var flushed: [Int] = []
 
-    init(fixture: Fixture = Fixture(), parkedLimit: Int = 1024, segmentBudget: Int = 64) {
+    init(fixture: Fixture = Fixture(), queueLimit: Int = 1024, maxReleasesPerBatch: Int = 64) {
         let core = TurnCore(
             MembershipModel(),
-            parkedLimit: parkedLimit,
-            segmentBudget: segmentBudget,
+            queueLimit: queueLimit,
+            maxReleasesPerBatch: maxReleasesPerBatch,
             clock: TestClock(fixture: fixture)
         )
         core.onDiagnostic = { event in fixture.observe(event) }
@@ -240,13 +240,13 @@ actor MembershipActor: TurnActor {
 
     /// Returns once the machine's log has `count` lines (a control call).
     func waitForLog(_ count: Int) async {
-        _ = try? await call(.awaitLog(count), cancellation: .ignored)
+        _ = try? await sendAndWait(.awaitLog(count), cancellation: .ignoresCancel)
     }
 
     /// The keeper's segment at its insert when the join has no OnJoin input: it asks the
     /// adapter first and inserts only an admitted player.
     func keeperAdmitThenInsert(session: Int, player: Int) -> Bool {
-        guard ask(.admit(session: session, player: player)) == 1 else { return false }
+        guard query(.admit(session: session, player: player)) == 1 else { return false }
         keeper.insert(player: player, session: session)
         return true
     }
@@ -254,7 +254,7 @@ actor MembershipActor: TurnActor {
     /// The keeper's segment after its resolvers: the player went in before them, and a
     /// refused admission takes it out again, if it is still this join's entry.
     func keeperAdmitOrRollBack(session: Int, player: Int) -> Bool {
-        if ask(.admit(session: session, player: player)) == 1 { return true }
+        if query(.admit(session: session, player: player)) == 1 { return true }
         keeper.remove(player: player, session: session)
         return false
     }

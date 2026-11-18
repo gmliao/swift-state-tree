@@ -5,7 +5,7 @@ import Testing
 /// a core diagnostic or an awaited reply.
 @Suite("Turn core: ordered checks", .timeLimit(.minutes(1)))
 struct OrderedChecksTests {
-    @Test("1: a completion after its key ended goes to handleStale")
+    @Test("1: a completion after its key ended goes to handleLateResult")
     func completionAfterKeyEndedIsStale() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
@@ -37,7 +37,7 @@ struct OrderedChecksTests {
         await a.waitForLog(8)
         let s = await a.snapshot()
         #expect(mid.log == wantMid)
-        #expect(mid.stats.parked == 1)
+        #expect(mid.stats.queued == 1)
         #expect(mid.stats.heldKeys == 1)
         #expect(s.log == wantMid + ["end 2", "begin 3", "end 3"])
         #expect(s.stats.heldKeys == 0)
@@ -60,7 +60,7 @@ struct OrderedChecksTests {
         #expect(s.stats.heldKeys == 0)
     }
 
-    @Test("4: an untilWorkerRetires hold outlives the deadline and is released by the stale result")
+    @Test("4: an untilWorkerReturns hold outlives the deadline and is released by the stale result")
     func retiringHoldOutlivesDeadline() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
@@ -73,24 +73,24 @@ struct OrderedChecksTests {
         await a.waitForLog(5)
         let s = await a.snapshot()
         #expect(mid.log == ["begin 1", "abandoned 1 deadline"])
-        #expect(mid.stats.parked == 1)
+        #expect(mid.stats.queued == 1)
         #expect(mid.stats.heldKeys == 1)
         #expect(mid.stats.openRequests == 0)
         #expect(s.log == ["begin 1", "abandoned 1 deadline", "stale 1", "begin 2", "end 2"])
         #expect(s.stats.heldKeys == 0)
     }
 
-    @Test("5: close answers a parked call and refuses a later one; a stepped call still gets its answer")
+    @Test("5: close answers a queued call and refuses a later one; a stepped call still gets its answer")
     func closeAnswersParkedRefusesLater() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
-        let stepped = Task { try await a.call(.transaction(4, "c4"), cancellation: .ignored) }
+        let stepped = Task { try await a.sendAndWait(.transaction(4, "c4"), cancellation: .ignoresCancel) }
         await f.wait("at c4")
-        let parked = Task { try await a.call(.transaction(5, ""), cancellation: .ignored) }
+        let parked = Task { try await a.sendAndWait(.transaction(5, ""), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         await a.send(.shutdown)
         let parkedResult = outcome(await parked.result)
-        let late = outcome(await Task { try await a.call(.echo(1), cancellation: .ignored) }.result)
+        let late = outcome(await Task { try await a.sendAndWait(.echo(1), cancellation: .ignoresCancel) }.result)
         f.open("c4")
         let steppedResult = outcome(await stepped.result)
         let s = await a.snapshot()
@@ -99,7 +99,7 @@ struct OrderedChecksTests {
         #expect(steppedResult == "success 4")
         #expect(s.log == ["begin 4", "shutdown", "end 4"])
         #expect(s.stats.pendingWaiters == 0)
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
     }
 
     @Test("6: emit under an ended key is dropped and counted")
@@ -123,12 +123,12 @@ struct OrderedChecksTests {
         #expect(s.steps == 2)
     }
 
-    @Test("8: a collaborator called between steps may read, ask and send")
+    @Test("8: a collaborator called between steps may read, query and send")
     func collaboratorBetweenSteps() async {
         let a = DemoActor()
         let saw = await a.collaboratorBetweenSteps()
         let s = await a.snapshot()
-        // It read two steps and was answered the first ask; its send stepped after them.
+        // It read two steps and was answered the first query; its send stepped after them.
         #expect(saw == [2, 1])
         #expect(s.steps == 3)
         #expect(s.asks == 1)
@@ -139,12 +139,12 @@ struct OrderedChecksTests {
     func callReplyAndReplyAfter() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
-        let value = try? await a.call(.echo(42), cancellation: .ignored)
+        let value = try? await a.sendAndWait(.echo(42), cancellation: .ignoresCancel)
         #expect(value == 42)
 
         // Published after the request's completion step.
         let afterCompletion = Task {
-            try await a.call(.replyAfter(job: 9, gate: "r9", deadline: nil), cancellation: .ignored)
+            try await a.sendAndWait(.replyAfter(job: 9, gate: "r9", deadline: nil), cancellation: .ignoresCancel)
         }
         await f.wait("at r9")
         let waiting = await a.snapshot()
@@ -154,7 +154,7 @@ struct OrderedChecksTests {
 
         // Published when the request is abandoned (here by its deadline).
         let afterAbandon = Task {
-            try await a.call(.replyAfter(job: 10, gate: "never", deadline: .seconds(5)), cancellation: .ignored)
+            try await a.sendAndWait(.replyAfter(job: 10, gate: "never", deadline: .seconds(5)), cancellation: .ignoresCancel)
         }
         await f.wait("at never")
         let waitingAgain = await a.snapshot()
@@ -187,12 +187,12 @@ struct OrderedChecksTests {
         #expect(s.log == ["abandoned job 3 cancelled", "stale 3"])
     }
 
-    @Test("11: a parked input is withdrawn when its scope ends; ending another key leaves it")
+    @Test("11: a queued input is withdrawn when its scope ends; ending another key leaves it")
     func scopeEndWithdrawsParked() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "s1"))
-        let scoped = Task { try await a.call(.scoped(1, scope: 5), cancellation: .ignored) }
+        let scoped = Task { try await a.sendAndWait(.scoped(1, scope: 5), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         await a.send(.endJob(6))
         let afterOther = await a.snapshot()
@@ -201,38 +201,38 @@ struct OrderedChecksTests {
         f.open("s1")
         await a.waitForLog(2)
         let s = await a.snapshot()
-        #expect(afterOther.stats.parked == 1)
+        #expect(afterOther.stats.queued == 1)
         #expect(result == "withdrawn")
         #expect(s.log == ["begin 1", "end 1"])
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
     }
 
-    @Test("12: the parked limit refuses a call with overloaded; a send over it is dropped and counted")
-    func parkedLimitRefuses() async {
+    @Test("12: the queue limit refuses a call with queueFull; a send over it is dropped and counted")
+    func queueLimitRefuses() async {
         let f = Fixture()
-        let a = DemoActor(fixture: f, parkedLimit: 2)
+        let a = DemoActor(fixture: f, queueLimit: 2)
         await a.send(.transaction(1, "l1"))
-        let second = Task { try await a.call(.transaction(2, ""), cancellation: .ignored) }
-        let third = Task { try await a.call(.transaction(3, ""), cancellation: .ignored) }
+        let second = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .ignoresCancel) }
+        let third = Task { try await a.sendAndWait(.transaction(3, ""), cancellation: .ignoresCancel) }
         await f.wait("park #2")
-        let fourth = outcome(await Task { try await a.call(.transaction(4, ""), cancellation: .ignored) }.result)
+        let fourth = outcome(await Task { try await a.sendAndWait(.transaction(4, ""), cancellation: .ignoresCancel) }.result)
         await a.send(.transaction(5, ""))
         let full = await a.snapshot()
         f.open("l1")
         let results = [outcome(await second.result), outcome(await third.result)].sorted()
         let s = await a.snapshot()
-        #expect(fourth == "overloaded")
+        #expect(fourth == "queueFull")
         #expect(full.stats.droppedSends == 1)
-        #expect(full.stats.parked == 2)
+        #expect(full.stats.queued == 2)
         #expect(results == ["success 2", "success 3"])
         #expect(!s.log.contains("begin 4"))
         #expect(!s.log.contains("begin 5"))
     }
 
-    @Test("13: 40 released inputs step in order, at most segmentBudget per segment; a late arrival steps after them")
+    @Test("13: 40 released inputs step in order, at most maxReleasesPerBatch per batch; a late arrival steps after them")
     func releasedInputsDrainInBudgetedSegments() async {
         let f = Fixture()
-        let a = DemoActor(fixture: f, segmentBudget: 8)
+        let a = DemoActor(fixture: f, maxReleasesPerBatch: 8)
         await a.drainWithLateArrival(count: 40)
         await a.waitForLog(44)
         await a.clearHooks()
@@ -260,30 +260,30 @@ struct OrderedChecksTests {
         #expect(state.foreign == 1)
     }
 
-    @Test("15: a token marked before arrival withdraws; marked while parked withdraws on release; revoke withdraws in its step")
+    @Test("15: a token marked before arrival withdraws; marked while queued withdraws on release; revoke withdraws in its step")
     func endTokens() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
 
         // Marked before the input arrives: withdrawn before any step.
-        let early = EndToken()
-        early.markEnded()
-        let first = outcome(await Task { try await a.call(.guarded(1, token: early), cancellation: .ignored) }.result)
+        let early = WithdrawToken()
+        early.withdraw()
+        let first = outcome(await Task { try await a.sendAndWait(.guarded(1, token: early), cancellation: .ignoresCancel) }.result)
 
-        // Marked upstream while parked: it keeps its place, and is withdrawn when released.
+        // Marked upstream while queued: it keeps its place, and is withdrawn when released.
         await a.send(.transaction(1, "g1"))
-        let late = EndToken()
-        let second = Task { try await a.call(.guarded(2, token: late), cancellation: .ignored) }
+        let late = WithdrawToken()
+        let second = Task { try await a.sendAndWait(.guarded(2, token: late), cancellation: .ignoresCancel) }
         await f.wait("park #1")
-        late.markEnded()
-        let stillParked = await a.snapshot().stats.parked
+        late.withdraw()
+        let stillParked = await a.snapshot().stats.queued
         f.open("g1")
         let secondResult = outcome(await second.result)
 
         // Revoked by a step: withdrawn in that step.
         await a.send(.transaction(3, "g3"))
-        let revoked = EndToken()
-        let third = Task { try await a.call(.guarded(3, token: revoked), cancellation: .ignored) }
+        let revoked = WithdrawToken()
+        let third = Task { try await a.sendAndWait(.guarded(3, token: revoked), cancellation: .ignoresCancel) }
         await f.wait("park #2")
         await a.send(.revoke(revoked))
         let afterRevoke = await a.snapshot()
@@ -295,22 +295,22 @@ struct OrderedChecksTests {
         #expect(first == "withdrawn")
         #expect(stillParked == 1)
         #expect(secondResult == "withdrawn")
-        #expect(afterRevoke.stats.parked == 0)
-        #expect(revoked.isEnded)
+        #expect(afterRevoke.stats.queued == 0)
+        #expect(revoked.isWithdrawn)
         #expect(thirdResult == "withdrawn")
         #expect(s.log == ["begin 1", "end 1", "begin 3", "revoke", "end 3"])
     }
 
-    @Test("16: queue steps after the inputs already parked, survives close, the parked limit and a key's end; only endAll drops it")
+    @Test("16: queue steps after the inputs already queued, survives close, the queue limit and a key's end; only endAll drops it")
     func queueKeepsItsPlace() async {
         let f = Fixture()
-        let a = DemoActor(fixture: f, parkedLimit: 2)
+        let a = DemoActor(fixture: f, queueLimit: 2)
         await a.send(.transaction(1, "q1"))
-        let parked = Task { try await a.call(.transaction(2, ""), cancellation: .ignored) }
+        let parked = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         await a.send(.enqueue("a"))
-        // The queued input counts as parked, so the limit is reached...
-        let overLimit = outcome(await Task { try await a.call(.transaction(3, ""), cancellation: .ignored) }.result)
+        // The queued input counts as queued, so the limit is reached...
+        let overLimit = outcome(await Task { try await a.sendAndWait(.transaction(3, ""), cancellation: .ignoresCancel) }.result)
         // ...and doesn't apply to `queue` itself.
         await a.send(.enqueue("b"))
         await a.send(.endKey(.membership))
@@ -321,15 +321,15 @@ struct OrderedChecksTests {
         f.open("q1")
         await a.waitForLog(8)
         let s = await a.snapshot()
-        #expect(overLimit == "overloaded")
-        #expect(beforeClose.stats.parked == 3)
+        #expect(overLimit == "queueFull")
+        #expect(beforeClose.stats.queued == 3)
         #expect(parkedResult == "closed")
-        #expect(afterClose.stats.parked == 2)
+        #expect(afterClose.stats.queued == 2)
         #expect(s.log == [
             "begin 1", "enqueue a true", "enqueue b true", "end key membership", "shutdown",
             "end 1", "queued a", "queued b",
         ])
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
 
         // endAll drops what is queued, and a later queue does nothing.
         let g = Fixture()
@@ -342,11 +342,11 @@ struct OrderedChecksTests {
         g.open("x1")
         await b.waitForLog(6)
         let t = await b.snapshot()
-        #expect(afterEnd.stats.parked == 0)
+        #expect(afterEnd.stats.queued == 0)
         #expect(t.log == ["begin 1", "enqueue c true", "teardown", "abandoned 1 keyEnded", "enqueue d false", "stale 1"])
         #expect(t.stats.ignoredAfterEnd == 1)
 
-        // The queued input steps after the inputs already parked behind the key, which survive
+        // The queued input steps after the inputs already queued behind the key, which survive
         // here and step first, in their order.
         let h = Fixture()
         let c = DemoActor(fixture: h)
@@ -360,9 +360,9 @@ struct OrderedChecksTests {
         h.open("y1")
         await c.waitForLog(7)
         let u = await c.snapshot()
-        // `step 7` arrived after the queue and parks after it.
+        // `step 7` arrived after the queue and queues after it.
         #expect(u.log == ["begin 1", "enqueue e true", "end 1", "step 5", "step 6", "queued e", "step 7"])
-        #expect(u.stats.parked == 0)
+        #expect(u.stats.queued == 0)
     }
 
     @Test("17: endAll abandons, ends, withdraws, drops and closes; then issue and queue are ignored, run and ask still step")
@@ -372,9 +372,9 @@ struct OrderedChecksTests {
         await a.send(.setup)
         await a.send(.start(job: 1, gate: "x1"))
         await a.send(.transaction(2, "x2"))
-        let scoped = Task { try await a.call(.scoped(3, scope: 7), cancellation: .ignored) }
+        let scoped = Task { try await a.sendAndWait(.scoped(3, scope: 7), cancellation: .ignoresCancel) }
         await f.wait("park #1")
-        let unscoped = Task { try await a.call(.transaction(4, ""), cancellation: .ignored) }
+        let unscoped = Task { try await a.sendAndWait(.transaction(4, ""), cancellation: .ignoresCancel) }
         await f.wait("park #2")
         await a.send(.enqueue("x"))
         await a.send(.teardown)
@@ -384,15 +384,15 @@ struct OrderedChecksTests {
         await a.send(.issueKey(9))
         await a.send(.enqueue("y"))
         await a.send(.runMark("after end"))
-        let asked = await a.ask(.bump)
-        let late = outcome(await Task { try await a.call(.echo(1), cancellation: .ignored) }.result)
+        let asked = await a.query(.bump)
+        let late = outcome(await Task { try await a.sendAndWait(.echo(1), cancellation: .ignoresCancel) }.result)
         await a.waitForLog(8)
         let s = await a.snapshot()
         #expect(scopedResult == "withdrawn")
         #expect(unscopedResult == "closed")
         #expect(afterEnd.stats.liveKeys == 0)
         #expect(afterEnd.stats.openRequests == 0)
-        #expect(afterEnd.stats.parked == 0)
+        #expect(afterEnd.stats.queued == 0)
         #expect(afterEnd.stats.pendingWaiters == 0)
         #expect(asked == 1)
         #expect(late == "closed")
@@ -404,12 +404,12 @@ struct OrderedChecksTests {
         #expect(s.stats.liveKeys == 0)
     }
 
-    @Test("18: endAll with an untilWorkerRetires hold: the hold outlives it, and its deadline does nothing")
+    @Test("18: endAll with an untilWorkerReturns hold: the hold outlives it, and its deadline does nothing")
     func endAllWithRetiringHold() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "w", deadline: .seconds(9), untilRetire: true))
-        let parked = Task { try await a.call(.transaction(2, ""), cancellation: .ignored) }
+        let parked = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         await a.send(.teardown)
         let parkedResult = outcome(await parked.result)
@@ -449,34 +449,34 @@ struct OrderedChecksTests {
         #expect(s.stats.openRequests == 0)
     }
 
-    @Test("19b: a supersede withdraws the inputs parked under the old generation's scope; one parked before the key's first issue stays")
+    @Test("19b: a supersede withdraws the inputs queued under the old generation's scope; one queued before the key's first issue stays")
     func supersedeWithdrawsScopedParked() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         // Job 1 is bound (its key is live); job 2's key isn't issued yet.
         await a.send(.issueKey(1))
-        // A transaction holds .membership; a call scoped to job 1 and a send scoped to job 2 park
+        // A transaction holds .membership; a call scoped to job 1 and a send scoped to job 2 queue
         // behind it.
         await a.send(.transaction(1, "t1"))
-        let scopedCall = Task { try await a.call(.scoped(9, scope: 1), cancellation: .ignored) }
+        let scopedCall = Task { try await a.sendAndWait(.scoped(9, scope: 1), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         await a.send(.scoped(10, scope: 2))
         await f.wait("park #2")
-        // The rebind: job 1's key is superseded, which withdraws the call parked under it. Job 2's
-        // first issue isn't a supersede: its parked send stays.
+        // The rebind: job 1's key is superseded, which withdraws the call queued under it. Job 2's
+        // first issue isn't a supersede: its queued send stays.
         await a.send(.issueKey(1))
         await a.send(.issueKey(2))
         let callResult = outcome(await scopedCall.result)
         let mid = await a.snapshot()
-        // The hold is released: only what stayed parked steps, under the new generation.
+        // The hold is released: only what stayed queued steps, under the new generation.
         f.open("t1")
         await a.waitForLog(6)
         let s = await a.snapshot()
         #expect(callResult == "\(TurnError.withdrawn)")
-        #expect(mid.stats.parked == 1)
+        #expect(mid.stats.queued == 1)
         #expect(s.log == ["issue 1 false", "begin 1", "issue 1 true", "issue 2 false", "end 1", "scoped 10"])
         #expect(!s.log.contains("scoped 9"))
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
     }
 
     @Test("20: outputs flush before the next step; a step's effects launch after its flush")
@@ -492,18 +492,18 @@ struct OrderedChecksTests {
         await a.send(.emitAndWork(7))
         await f.wait("performed 7")
         let s = await a.snapshot()
-        // The two released steps ran in one segment, each flushed before the next stepped.
+        // The two released steps ran in one batch, each flushed before the next stepped.
         #expect(s.log == ["begin 1", "end 1", "step 1", "step 2"])
         #expect(s.batches == [[1], [2], [7]])
         #expect(f.trace == ["flush [1]", "flush [2]", "flush [7]", "perform 7"])
     }
 
-    @Test("28: hold handover: the closing step makes the next request on the same key, and a parked input waits for it")
+    @Test("28: hold handover: the closing step makes the next request on the same key, and a queued input waits for it")
     func holdHandover() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         await a.send(.relay(1, first: "h1", second: "h2"))
-        let parked = Task { try await a.call(.transaction(7, ""), cancellation: .ignored) }
+        let parked = Task { try await a.sendAndWait(.transaction(7, ""), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         f.open("h1")
         await a.waitForLog(2)
@@ -512,7 +512,7 @@ struct OrderedChecksTests {
         let result = outcome(await parked.result)
         let s = await a.snapshot()
         #expect(mid.log == ["relay 1", "relay 1 leg 1"])
-        #expect(mid.stats.parked == 1)
+        #expect(mid.stats.queued == 1)
         #expect(mid.stats.heldKeys == 1)
         #expect(mid.stats.openRequests == 1)
         #expect(result == "success 7")

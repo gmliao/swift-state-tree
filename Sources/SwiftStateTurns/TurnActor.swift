@@ -5,7 +5,7 @@
 /// A deadline's or a timer's task doesn't keep the actor alive: it holds it weakly, so a periodic
 /// timer doesn't outlive the actor's last owner. An effect's task does, until its result has been
 /// handled, so launched work is never dropped. Released with no effect in flight, the actor and
-/// its core go away, and the core cancels its deadline and timer tasks. A `call` still waiting then is a bug (a debug
+/// its core go away, and the core cancels its deadline and timer tasks. A `sendAndWait` still waiting then is a bug (a debug
 /// assertion), so an adopter ends its keys (`endAll`) and answers its callers first.
 public protocol TurnActor: Actor {
     /// `PlainData`: only a machine that `@PlainData` checked can be run.
@@ -21,27 +21,27 @@ public protocol TurnActor: Actor {
 }
 
 extension TurnActor {
-    /// Submits `input`. Steps now when the core is idle; queued when a step or segment runs.
-    /// Refused (closed, withdrawn, over the parked limit), it is dropped and counted.
+    /// Submits `input`. Steps now when the core is idle; queued when a step or batch runs.
+    /// Refused (closed, withdrawn, over the queue limit), it is dropped and counted.
     @inlinable public func send(_ input: M.Input) {
         submit(input, caller: nil)
     }
 
     /// Submits `input` and waits for its reply (`Turn.reply`). Refused, it throws `TurnError`.
     /// `cancellation` says what this call's task cancellation does; see `CallerCancellation`.
-    @inlinable public func call(_ input: M.Input, cancellation: CallerCancellation) async throws -> M.Reply {
+    @inlinable public func sendAndWait(_ input: M.Input, cancellation: CallerCancellation) async throws -> M.Reply {
         let core = self.core
         core.nextInput &+= 1
         let id = InputID(raw: core.nextInput)
         switch cancellation {
-        case .ignored:
+        case .ignoresCancel:
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<M.Reply, any Error>) in
                 core.waiters[id] = continuation
                 self.submit(input, caller: id)
             }
-        case .honoured:
+        case .cancelsCall:
             let isControl: Bool
-            if case .control = core.machine.admission(of: input) { isControl = true } else { isControl = false }
+            if case .control = core.machine.inputPolicy(for: input) { isControl = true } else { isControl = false }
             if Task.isCancelled, isControl {
                 // Cancelled before entry: a control input is still submitted and stepped (rule 16),
                 // but its caller doesn't wait. A reply from its step finds no waiter.
@@ -68,10 +68,10 @@ extension TurnActor {
     /// A synchronous collaborator's question, answered as a step. Between steps only: from
     /// inside a step it stops the process.
     ///
-    /// Called outside a segment, what the answer's step produced (outputs, replies, effects) has
-    /// left the core when this returns. Called from inside a segment (a collaborator the driver
-    /// called between two steps), it leaves when that segment drains, after the return.
-    @inlinable public func ask(_ query: M.Query) -> M.Answer {
+    /// Called outside a batch, what the answer's step produced (outputs, replies, effects) has
+    /// left the core when this returns. Called from inside a batch (a collaborator the driver
+    /// called between two steps), it leaves when that batch drains, after the return.
+    @inlinable public func query(_ query: M.Query) -> M.Answer {
         let core = self.core
         if !core.inSegment { beginEntry() }
         let answer = core.stepAnswer(query)
@@ -81,7 +81,7 @@ extension TurnActor {
 
     // MARK: Entries
 
-    /// A new entry from outside: a new segment, so the next `Turn.now` reads the clock.
+    /// A new entry from outside: a new batch, so the next `Turn.now` reads the clock.
     @inlinable func beginEntry() {
         core.cachedNow = nil
     }
@@ -98,7 +98,7 @@ extension TurnActor {
         let core = self.core
         if core.inStep || core.inSegment {
             core.queued.push((input, caller))
-            // Made from inside a step: the segment that follows the step picks it up.
+            // Made from inside a step: the batch that follows the step picks it up.
             core.rt.dirty = true
             return
         }
@@ -109,26 +109,26 @@ extension TurnActor {
 
     @inlinable func admit(_ input: M.Input, caller: InputID?) {
         let core = self.core
-        switch core.machine.admission(of: input) {
+        switch core.machine.inputPolicy(for: input) {
         case .control:
             core.step(input, caller: caller)
-        case .external(let hold, let scope, let token):
+        case .normal(let hold, let scope, let token):
             if core.rt.closed {
                 refuse(caller, .closed)
                 return
             }
-            if let token, token.isEnded {
+            if let token, token.isWithdrawn {
                 refuse(caller, .withdrawn)
                 return
             }
             if let hold, core.rt.isBlocked(hold) {
-                if core.rt.parkedCount >= core.parkedLimit {
-                    refuse(caller, .overloaded)
+                if core.rt.parkedCount >= core.queueLimit {
+                    refuse(caller, .queueFull)
                     return
                 }
                 core.rt.park(Parked(input: input, caller: caller, scope: scope, token: token), behind: hold)
                 core.rt.parkEvents += 1
-                core.onDiagnostic?(.parked(total: core.rt.parkEvents))
+                core.onDiagnostic?(.queued(total: core.rt.parkEvents))
                 return
             }
             core.step(input, caller: caller)
@@ -167,7 +167,7 @@ extension TurnActor {
                 if let waiting { core.rt.replies.append(contentsOf: waiting) }
                 core.rt.dirty = true
             } else {
-                // The request closed before its worker returned: the worker has retired.
+                // The request closed before its worker returned: the worker has returned.
                 core.rt.retire(id)
                 if let input { core.stepStale(input) }
             }
@@ -224,13 +224,13 @@ extension TurnActor {
 
     /// Not recursive. After every step: outputs are flushed, replies published and effects
     /// launched, before the next step. Then one step at a time: an abandoned request, a queued
-    /// send, a released parked input (at most `segmentBudget` per segment).
+    /// send, a released queued input (at most `maxReleasesPerBatch` per batch).
     @inlinable func runSegment() {
         let core = self.core
         if core.inSegment { return }
         core.inSegment = true
         defer { core.inSegment = false }
-        var budget = core.segmentBudget
+        var budget = core.maxReleasesPerBatch
         var released = 0
         while true {
             drainProducts()
@@ -245,8 +245,8 @@ extension TurnActor {
             }
             if let key = core.rt.nextReleasable() {
                 if budget == 0 {
-                    // The rest steps in a later segment, as the actor's own job. Until then the
-                    // key counts as blocked: a new input for it parks behind the ones still parked.
+                    // The rest steps in a later batch, as the actor's own job. Until then the
+                    // key counts as blocked: a new input for it queues behind the ones still queued.
                     if !core.drainScheduled {
                         core.drainScheduled = true
                         core.counters.drainContinuations += 1
@@ -256,7 +256,7 @@ extension TurnActor {
                 }
                 budget -= 1
                 if let parked = core.rt.popParked(key) {
-                    if let token = parked.token, token.isEnded {
+                    if let token = parked.token, token.isWithdrawn {
                         refuse(parked.caller, .withdrawn)
                     } else {
                         core.step(parked.input, caller: parked.caller)
@@ -267,7 +267,7 @@ extension TurnActor {
             }
             break
         }
-        if released > 0 { core.onDiagnostic?(.segmentEnded(released: released)) }
+        if released > 0 { core.onDiagnostic?(.batchEnded(released: released)) }
         core.rt.dirty = false
     }
 

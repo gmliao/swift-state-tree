@@ -92,7 +92,7 @@ case .leave(let player):
     seats[player] = nil
 ```
 
-`leave` ends the player's key. The load's request belongs to that key, so the request closes, and the joiner gets its answer in the same segment. When the load returns, its result is an input whose request has closed. It goes to `handleStale` and seats nobody. The same scenario passes, and the hazard can't be written:
+`leave` ends the player's key. The load's request belongs to that key, so the request closes, and the joiner gets its answer in the same batch. When the load returns, its result is an input whose request has closed. It goes to `handleLateResult` and seats nobody. The same scenario passes, and the hazard can't be written:
 
 - A handler can't `await`. The `await-in-handle` snippet under `scripts/must-not-compile/turns/` doesn't compile.
 - A handler can't start a task that reaches the machine. That is the `task-in-handle` snippet.

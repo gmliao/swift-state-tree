@@ -6,7 +6,7 @@ import Testing
 /// "cancelled deadline N".
 @Suite("Turn core: clock and timers", .timeLimit(.minutes(1)))
 struct ClockAndTimerTests {
-    @Test("26: a timer fires once at its instant with that instant in its input; a new one replaces it; ending the key drops a fire on its way; one clock read per segment")
+    @Test("26: a timer fires once at its instant with that instant in its input; a new one replaces it; ending the key drops a fire on its way; one clock read per batch")
     func timerFiresReplacesAndDrops() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
@@ -28,7 +28,7 @@ struct ClockAndTimerTests {
         await a.waitForLog(3)
 
         // Ending the key drops a fire that has already woken: the wake and the end happen in
-        // one segment (the flush of `.emit(3)` opens the gate, then sends the end), so the
+        // one batch (the flush of `.emit(3)` opens the gate, then sends the end), so the
         // timer's task re-enters the actor only after the end.
         await a.send(.arm(job: 3, at: .seconds(8)))
         await a.onOutput(3, open: "deadline 8", thenSend: .endJob(3))
@@ -116,7 +116,7 @@ struct ClockAndTimerTests {
         #expect(f.count(of: "stale timer") == 1)
     }
 
-    @Test("30: a Duration deadline and turn.now in one segment take one clock read")
+    @Test("30: a Duration deadline and turn.now in one batch take one clock read")
     func oneClockReadPerSegment() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)

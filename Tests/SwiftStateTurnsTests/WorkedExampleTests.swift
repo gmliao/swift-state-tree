@@ -43,11 +43,11 @@ struct Lobby: TurnMachine {
     /// Loads that came back after their join was given up.
     var late: Int
 
-    func admission(of input: Input) -> Admission<Key> {
+    func inputPolicy(for input: Input) -> InputPolicy<Key> {
         switch input {
         // A join waits while another join's load holds the profile store.
-        case .join: .external(hold: .store, scope: nil)
-        default: .external(hold: nil, scope: nil)
+        case .join: .normal(waitsFor: .store, belongsTo: nil)
+        default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
 
@@ -56,7 +56,7 @@ struct Lobby: TurnMachine {
         case .join(let player):
             // The player's binding. The load is a request it owns, holding the store with a
             // deadline.
-            turn.issue(.player(player))
+            turn.start(.player(player))
             let hold = Hold.untilRequestCloses(Key.store, deadline: .seconds(2))
             guard let id = turn.request(.loadProfile(player: player), for: .player(player), holding: hold) else { return }
             loading[id] = player
@@ -85,7 +85,7 @@ struct Lobby: TurnMachine {
         turn.reply(to: caller, .failure(error))
     }
 
-    mutating func handleStale(_ input: Input, _ turn: inout Turn<Lobby>) {
+    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Lobby>) {
         // A load that returned after its request closed: nothing to seat.
         late += 1
     }
@@ -102,8 +102,8 @@ enum LobbyError: Error {
 actor LobbyActor: TurnActor {
     let core = TurnCore(
         Lobby(seats: [:], loading: [:], waiting: [:], late: 0),
-        parkedLimit: 64,
-        segmentBudget: 16,
+        queueLimit: 64,
+        maxReleasesPerBatch: 16,
         clock: ContinuousTurnClock()
     )
     nonisolated let profiles: any ProfileStore
@@ -154,14 +154,14 @@ extension LobbyActor {
 
 @Suite("The documentation's worked example")
 struct WorkedExampleTests {
-    @Test("The lobby: a call joins and waits for the loaded profile; a second join parks behind the first load")
+    @Test("The lobby: a call joins and waits for the loaded profile; a second join queues behind the first load")
     func lobby() async throws {
         // docs:use
         let lobby = LobbyActor(profiles: ImmediateProfiles())
-        let count = try await lobby.call(.join(player: 7), cancellation: .ignored)
+        let count = try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel)
         // count == 1, and the lobby flushed "welcome player 7".
         // docs:end
-        let second = try await lobby.call(.join(player: 8), cancellation: .ignored)
+        let second = try await lobby.sendAndWait(.join(player: 8), cancellation: .ignoresCancel)
         #expect(count == 1)
         #expect(second == 2)
         #expect(await lobby.sent == ["welcome player 7", "welcome player 8"])

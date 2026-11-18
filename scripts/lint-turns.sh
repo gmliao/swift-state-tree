@@ -332,7 +332,7 @@ EOF
   } > "$dir/${markers%% *}"
   cat > "$dir/Sources/SwiftStateTurns/Core.swift" <<'EOF'
 extension Int: PlainData {}
-public final class EndToken: @unchecked Sendable {}
+public final class WithdrawToken: @unchecked Sendable {}
 public protocol TurnActor: Actor { var core: TurnCore<M> { get } }
 public protocol TurnMachine: Sendable {}
 EOF

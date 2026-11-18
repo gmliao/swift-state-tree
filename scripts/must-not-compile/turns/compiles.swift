@@ -15,7 +15,7 @@ struct Counter: TurnMachine {
 
     mutating func handle(_ input: Int, _ turn: inout Turn<Counter>) {
         total += input
-        turn.issue(1)
+        turn.start(1)
         if let id = turn.request(input, for: 1, holding: .untilRequestCloses(1, deadline: .seconds(5))) {
             pending.insert(id)
         }

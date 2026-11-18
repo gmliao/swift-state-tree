@@ -15,17 +15,17 @@ actor 的方法一次只跑一個。但方法裡的每個 `await`，都會讓其
 ## 各部分如何組合
 
 - **`TurnMachine`**（純狀態機）：一個 step 接收狀態與一個 input，回傳新的狀態，以及 outputs、replies 和 effects。step 是同步的，只存純資料，不能 `await`。
-- **`TurnCore`**（機制）：它保管*排隊佇列*（parked queue，排在進行中工作後面的 input）、*key* 與其 *generation*（哪些工作仍然需要）、*hold* 與其 deadline（讓後來的 input 等待的東西），以及 timer。
-- **`TurnActor`**（外殼）：`send` 與 `call` 把 input 帶進來。`perform` 在 actor 之外執行 effect。`flush` 把 output 送出去。
+- **`TurnCore`**（機制）：它保管*佇列*（queue，排在進行中工作後面的 input）、*key* 與其 *generation*（哪些工作仍然需要）、*hold* 與其 deadline（讓後來的 input 等待的東西），以及 timer。
+- **`TurnActor`**（外殼）：`send` 與 `sendAndWait` 把 input 帶進來。`perform` 在 actor 之外執行 effect。`flush` 把 output 送出去。
 
-effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次進入 actor（一次 `send`、一次 `call`、一個回來的結果）執行一個 *segment*：這次進入引起的 step。segment budget 限制一次 hold 釋放在一個 segment 裡能讓多少個排隊的 input 執行。兩次進入之間，沒有等待中的 run loop。這個模式稱為「functional core, imperative shell」（函式式核心、命令式外殼）。Elm 的 `Cmd`/`Msg` 與 Erlang 的 `gen_server` 也是同樣的形狀。
+effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次進入 actor（一次 `send`、一次 `sendAndWait`、一個回來的結果）執行一個 *batch*：這次進入引起的 step。`maxReleasesPerBatch` 限制一次 hold 釋放在一個 batch 裡能讓多少個佇列的 input 執行。兩次進入之間，沒有等待中的 run loop。這個模式稱為「functional core, imperative shell」（函式式核心、命令式外殼）。Elm 的 `Cmd`/`Msg` 與 Erlang 的 `gen_server` 也是同樣的形狀。
 
 ## 規則
 
 - **狀態只在 step 裡改變。** 狀態機的 handler 不是 `async`，所以 step 不能 await。只有 step 拿到的 `Turn` 能接觸 core。
-- **Effect 以 input 的形式回來。** step 需要完成某項工作時，會發出一個 request。`perform` 在 actor 之外執行這項工作。結果成為之後某個 step 的新 input，由那個 step 依當下的狀態決定它的意義。request 已經關閉的結果，會交給 `handleStale`，而不是 `handle`。request 在這些情況下關閉：它的 key 結束或被取代、deadline 已過、或被取消。
-- **step 管不到的，由 core 管：** key 與 generation、帶 deadline 的 hold、end token。handler 不持有任何 ticket。
-- **取代（supersede）也會結束舊 generation 的排隊 input。** 對一個仍有效的 key 再次呼叫 `issue`，就是*取代*它。這會關閉舊 generation 的 request、取消它的 timer，並撤回（withdraw）以該 key 為 scope 的排隊 input，和 `end` 一樣。排隊中的 input 不帶 generation；少了這一步，在舊綁定下送出的 input 會在新綁定下執行。它的呼叫端會收到 `withdrawn`，可以重試。限制：在該 key 第一次 `issue` 之前就排隊的 input 會保留。
+- **Effect 以 input 的形式回來。** step 需要完成某項工作時，會發出一個 request。`perform` 在 actor 之外執行這項工作。結果成為之後某個 step 的新 input，由那個 step 依當下的狀態決定它的意義。request 已經關閉的結果，會交給 `handleLateResult`，而不是 `handle`。request 在這些情況下關閉：它的 key 結束或被取代、deadline 已過、或被取消。
+- **step 管不到的，由 core 管：** key 與 generation、帶 deadline 的 hold、withdraw token。handler 不持有任何 ticket。
+- **取代（supersede）也會結束舊 generation 在佇列中的 input。** 對一個仍有效的 key 再次呼叫 `start`，就是*取代*它。這會關閉舊 generation 的 request、取消它的 timer，並撤回（withdraw）以該 key 為 scope、在佇列中的 input，和 `end` 一樣。佇列中的 input 不帶 generation；少了這一步，在舊綁定下送出的 input 會在新綁定下執行。它的呼叫端會收到 `withdrawn`，可以重試。限制：在該 key 第一次 `start` 之前就佇列的 input 會保留。
 - **只存純資料。** `@PlainData` 在編譯時檢查狀態機只存純值。只有 `PlainData` 的狀態機能被執行。
 
 ## 範例
@@ -94,7 +94,7 @@ case .leave(let player):
     seats[player] = nil
 ```
 
-載入的 request 屬於這個 key，所以它會關閉，加入的呼叫端在同一個 segment 就得到回覆。回來的結果交給 `handleStale`，不會讓任何人入座。同一個情境會通過，而且這種危險寫不出來。handler 不能 `await`，也不能啟動碰得到狀態機的 task。`scripts/must-not-compile/turns/` 下的 `await-in-handle` 與 `task-in-handle` snippet 無法編譯。
+載入的 request 屬於這個 key，所以它會關閉，加入的呼叫端在同一個 batch 就得到回覆。回來的結果交給 `handleLateResult`，不會讓任何人入座。同一個情境會通過，而且這種危險寫不出來。handler 不能 `await`，也不能啟動碰得到狀態機的 task。`scripts/must-not-compile/turns/` 下的 `await-in-handle` 與 `task-in-handle` snippet 無法編譯。
 
 ## 核心概念
 
@@ -104,15 +104,15 @@ core 用到十幾個概念。下面每一個都建立在前面幾個之上，也
 
 *input* 是送給狀態機的一則訊息，例如「player 7 想加入」。*step* 是狀態機處理一個 input。step 一次只跑一個，而且不能 `await`，所以 step 讀狀態時，沒有任何東西會改變它。
 
-input 有三種送達方式。`send` 送出它，在它執行完（或排隊，見「Admission」）後返回。`call` 還會等待 step 的回覆，step 用 `reply` 給出回覆。`ask` 向狀態機提出一個同步的問題，在一個 step 裡回答，並傳回答案。
+input 有三種送達方式。`send` 送出 input，不等回覆就返回；它在 input 執行完或排入佇列（見「Input policy」）後返回。`sendAndWait` 送出 input，並等待狀態機的回覆，step 用 `reply` 給出回覆。`query` 向狀態機提出一個同步的問題，在一個 step 裡回答，並傳回答案。
 
 ```swift
-let connection = EndToken()
-let seated = try await room.call(.join(player: 7, connection: connection), cancellation: .honoured)
-let count = await room.ask(.seatCount)
+let connection = WithdrawToken()
+let seated = try await room.sendAndWait(.join(player: 7, connection: connection), cancellation: .cancelsCall)
+let count = await room.query(.seatCount)
 ```
 
-API：`send`、`call`、`reply`、`ask`、`answer`。
+API：`send`、`sendAndWait`、`reply`、`query`、`answer`。
 
 ### Effect 與 perform
 
@@ -129,7 +129,7 @@ API：`perform`、`request`、`run`。
 
 ### Key
 
-*key* 為某件「工作可能不再需要」的事物命名，例如玩家在大廳裡的位置。`issue` 開始它，`end` 結束它。玩家在加入途中離開時，結束他的 key，就是狀態機表達「這位玩家的資料載入不再需要」的方式。
+*key* 為某件「工作可能不再需要」的事物命名，例如玩家在大廳裡的位置。`start` 開始它，`end` 結束它。玩家在加入途中離開時，結束他的 key，就是狀態機表達「這位玩家的資料載入不再需要」的方式。
 
 ```swift
 case .leave(let player):
@@ -138,21 +138,21 @@ case .leave(let player):
     seats[player] = nil
 ```
 
-API：`issue`、`end`、`isLive`。
+API：`start`、`end`、`isLive`。
 
 ### Generation
 
-*generation* 是 key 的一段生命週期，從一次 `issue` 到下一次。對仍有效的 key 呼叫 `issue`，就是*取代*（supersede）它：舊的 generation 結束，新的開始。這回答了重新連線的情況。玩家斷線後再加入，會得到新的 generation，所以為舊連線開始的資料載入，不會讓新的連線入座。
+*generation* 是 key 的一段生命週期，從一次 `start` 到下一次。對仍有效的 key 呼叫 `start`，就是*取代*（supersede）它：舊的 generation 結束，新的開始。這回答了重新連線的情況。玩家斷線後再加入，會得到新的 generation，所以為舊連線開始的資料載入，不會讓新的連線入座。
 
-![key player 7 的 generation 1 擁有一個載入 request，並有一個 chat input 以它為 scope 排隊。issue 開始 generation 2：request 以 keyEnded 被放棄，遲到的結果交給 handleStale，排隊的 chat 被撤回。](supersede-timeline.zh-TW.svg)
+![key player 7 的 generation 1 擁有一個載入 request，並有一個 chat input 以它為 scope 排入佇列。start 開始 generation 2：request 以 keyEnded 被放棄，遲到的結果交給 handleLateResult，佇列中的 chat 被撤回。](supersede-timeline.zh-TW.svg)
 
-key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleStale`。以該 key 為 scope 排隊的 input 被撤回，呼叫端收到 `withdrawn`。限制：在該 key 第一次 `issue` 之前就排隊的 input 會保留。
+key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleLateResult`。以該 key 為 scope、在佇列中的 input 被撤回，呼叫端收到 `withdrawn`。限制：在該 key 第一次 `start` 之前就佇列的 input 會保留。
 
-API：`issue`（取代時回傳 true）、`generation(of:)`、`Generation`。
+API：`start`（取代時回傳 true）、`generation(of:)`、`Generation`。
 
 ### Request
 
-*request* 是由某個 key 目前的 generation 擁有的 effect。它有一個 ID，並以兩種方式之一結束。結果在它仍開著時回來：結果在 `handle` 裡執行。或者它先關閉，也就是被*放棄*（abandoned）：`handleAbandoned` 帶著原因執行（deadline 已過、key 結束、或被取消）。在那之後才到的結果交給 `handleStale`，所以一個卡住的資料庫載入最後才回來，也不會改變任何東西。
+*request* 是由某個 key 目前的 generation 擁有的 effect。它有一個 ID，並以兩種方式之一結束。結果在它仍開著時回來：結果在 `handle` 裡執行。或者它先關閉，也就是被*放棄*（abandoned）：`handleAbandoned` 帶著原因執行（deadline 已過、key 結束、或被取消）。在那之後才到的結果交給 `handleLateResult`，所以一個卡住的資料庫載入最後才回來，也不會改變任何東西。
 
 ```swift
 let hold = Hold.untilRequestCloses(Key.store, deadline: .seconds(2))
@@ -160,20 +160,20 @@ guard let id = turn.request(.loadProfile(player: player), for: .player(player), 
 loading[id] = player
 ```
 
-API：`RequestID`、`cancel`、`Abandonment`、`handleAbandoned`、`handleStale`。
+API：`RequestID`、`cancel`、`Abandonment`、`handleAbandoned`、`handleLateResult`。
 
 ### Hold
 
 *hold* 讓之後的 input 排在進行中的工作後面。個人資料存取端一次只服務一個載入；少了 hold，第二次加入會在第一次的載入還在跑時，開始第二個載入。request 對一個 key 取得 hold，指定該 key 的 input 會等到 hold 結束。
 
-![join 7 執行並發出佔住 store 的載入 request。join 8 在載入進行中到達並排隊。載入結果執行時 request 關閉、hold 結束，join 8 接著執行。](hold-timeline.zh-TW.svg)
+![join 7 執行並發出佔住 store 的載入 request。join 8 在載入進行中到達並排入佇列。載入結果執行時 request 關閉、hold 結束，join 8 接著執行。](hold-timeline.zh-TW.svg)
 
-hold 有兩種。`untilRequestCloses` 在 request 關閉時結束，不論原因。`untilWorkerRetires` 只在工作回來時結束，即使 request 先被放棄也一樣。執行期間會改動其他東西的工作，例如資料庫寫入，就用這一種：
+hold 有兩種。`untilRequestCloses` 在 request 關閉時結束，不論原因。`untilWorkerReturns` 只在工作回來時結束，即使 request 先被放棄也一樣。執行期間會改動其他東西的工作，例如資料庫寫入，就用這一種：
 
 ```swift
 // The write changes the database while it runs: the hold lasts until the worker
 // returns, even if the request is abandoned first.
-let hold = Hold.untilWorkerRetires(Key.database, deadline: .seconds(5))
+let hold = Hold.untilWorkerReturns(Key.database, deadline: .seconds(5))
 if let id = turn.request(.writeStats(player: player), for: .player(player), holding: hold) {
     saving[id] = player
 ```
@@ -182,34 +182,34 @@ if let id = turn.request(.writeStats(player: player), for: .player(player), hold
 
 API：`Hold`、`request(_:for:holding:)`。
 
-### Admission
+### Input policy（輸入規則）
 
-*admission*（准入）是狀態機對每種 input 的規則：它是否排在某個 hold 後面，以及它屬於哪個 key（它的 *scope*）。必須等待的 input 會*排隊*（parked）。如果它的 scope 所指的玩家在等待期間離開，它會被撤回，永遠不會執行。
+*input policy*（輸入規則）是狀態機對每種 input 的規則：它是否排在某個 hold 後面，以及它屬於哪個 key（它的 *scope*）。必須等待的 input 會*排入佇列*（queued）。如果它的 scope 所指的玩家在等待期間離開，它會被撤回，永遠不會執行。
 
 ```swift
 // Waits while a save holds the database; withdrawn if the player leaves meanwhile.
-case .chat(let player, _): .external(hold: .database, scope: .player(player))
-case .saveStats: .external(hold: .database, scope: nil)
+case .chat(let player, _): .normal(waitsFor: .database, belongsTo: .player(player))
+case .saveStats: .normal(waitsFor: .database, belongsTo: nil)
 ```
 
-排隊佇列有上限，在建立 core 時設定。超過上限的 input 會以 `overloaded` 被拒絕，所以大量湧入的 input 不會讓記憶體無限成長。`control` input 從不受限：斷線或停止一定會執行。step 自己的後續工作可以用 `queue` 在 hold 後面保留位置。這種*釘住*（pinned）的 input 不會因 scope 被撤回，也不會因上限被拒絕。
+佇列有上限，在建立 core 時設定。超過上限的 input 會以 `queueFull` 被拒絕，所以大量湧入的 input 不會讓記憶體無限成長。`control` input 從不受限：斷線或停止一定會執行。step 自己的後續工作可以用 `queue` 在 hold 後面保留位置。這種*釘住*（pinned）的 input 不會因 scope 被撤回，也不會因上限被拒絕。
 
-API：`Admission`、`queue(_:behind:)`、`TurnError`。
+API：`InputPolicy`、`queue(_:behind:)`、`TurnError`。
 
-### End token
+### Withdraw token
 
-*end token* 讓送出者在 input 執行前放棄它。key 做不到這件事，因為 input 還沒開始任何東西。從一個在排隊期間就關閉的連線送來的加入，不應該讓任何人入座：
+*withdraw token* 讓送出者在 input 執行前放棄它。key 做不到這件事，因為 input 還沒開始任何東西。從一個在佇列中時就關閉的連線送來的加入，不應該讓任何人入座：
 
 ```swift
-let late = EndToken()
-late.markEnded()
+let late = WithdrawToken()
+late.withdraw()
 await #expect(throws: TurnError.withdrawn) {
-    try await room.call(.join(player: 8, connection: late), cancellation: .honoured)
+    try await room.sendAndWait(.join(player: 8, connection: late), cancellation: .cancelsCall)
 ```
 
-core 在 input 到達時讀取 token，離開排隊佇列時再讀一次。狀態機從不保存 token。
+core 在 input 到達時讀取 token，離開佇列時再讀一次。狀態機從不保存 token。
 
-API：`EndToken`、`revoke`。
+API：`WithdrawToken`、`revoke`。
 
 ### Timer 與時鐘
 
@@ -220,17 +220,17 @@ API：`EndToken`、`revoke`。
 turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: player))
 ```
 
-`turn.now` 讀取 core 的時鐘，每個 segment 一次。時鐘是注入的，沒有預設值。測試傳入一個由它手動推進的時鐘，所以一分鐘的 timer 在測試指定的時候觸發，而不是真的等一分鐘。
+`turn.now` 讀取 core 的時鐘，每個 batch 一次。時鐘是注入的，沒有預設值。測試傳入一個由它手動推進的時鐘，所以一分鐘的 timer 在測試指定的時候觸發，而不是真的等一分鐘。
 
 API：`timer(at:for:_:)`、`now`、`TurnClock`、`TurnInstant`。
 
-### Segment 與 segment budget
+### Batch 與 `maxReleasesPerBatch`
 
-*segment* 是一次進入 actor 所引起的 step：一次 `send`、一次 `call`、或一個回來的結果。載入結果釋放 hold 時，排在後面的加入會在同一個 segment 裡執行。兩次進入之間沒有 run loop。*segment budget* 限制一次釋放在一個 segment 裡能讓多少個排隊的 input 執行；其餘的在之後的 segment 繼續，所以排在同一個 hold 後面的一長串 input，不會把其他呼叫端擋在外面。
+*batch* 是一次進入 actor 所引起的 step：一次 `send`、一次 `sendAndWait`、或一個回來的結果。載入結果釋放 hold 時，排在後面的加入會在同一個 batch 裡執行。兩次進入之間沒有 run loop。`maxReleasesPerBatch` 限制一次釋放在一個 batch 裡能讓多少個佇列的 input 執行；其餘的在之後的 batch 繼續，所以排在同一個 hold 後面的一長串 input，不會把其他呼叫端擋在外面。限制：它只計算 hold 釋放後讓它執行的佇列中 input；batch 期間的放棄與新到的 send 不計入。
 
 ```swift
-parkedLimit: 64,
-segmentBudget: 16,
+queueLimit: 64,
+maxReleasesPerBatch: 16,
 clock: ContinuousTurnClock()
 ```
 
@@ -244,7 +244,7 @@ API：`TurnStats`（`foreignCompletions`）。
 
 ### 呼叫端取消
 
-`call` 會等待，而等待的 task 可能被取消，例如客戶端的連線 task 結束時。每個 `call` 都要說明這代表什麼；沒有預設值。`.ignored`：呼叫端繼續等，並拿到真正的結果。呼叫端必須知道結果時選它，例如等待存檔的關機流程。`.honoured`：呼叫端立刻收到 `CancellationError`，仍在排隊的 input 被撤回，永遠不會執行。已經執行的 input 會繼續。呼叫端消失就代表不再需要這個 input 時選它，例如已離開的客戶端送來的加入。
+`sendAndWait` 會等待，而等待的 task 可能被取消，例如客戶端的連線 task 結束時。每個 `sendAndWait` 都要說明這代表什麼；沒有預設值。`.ignoresCancel`：呼叫端繼續等，並拿到真正的結果。呼叫端必須知道結果時選它，例如等待存檔的關機流程。`.cancelsCall`：呼叫端立刻收到 `CancellationError`，仍在佇列的 input 被撤回，永遠不會執行。已經執行的 input 會繼續。呼叫端消失就代表不再需要這個 input 時選它，例如已離開的客戶端送來的加入。
 
 API：`CallerCancellation`。
 
@@ -252,16 +252,16 @@ API：`CallerCancellation`。
 
 | 概念 | 它回答的問題 | API |
 |---|---|---|
-| Input 與 step | 工作如何一次一個地改變狀態？ | `send`、`call`、`reply`、`ask` |
+| Input 與 step | 工作如何一次一個地改變狀態？ | `send`、`sendAndWait`、`reply`、`query` |
 | Effect 與 perform | step 如何不 await 就完成非同步工作？ | `perform`、`request`、`run` |
-| Key | 這項工作還需要嗎？ | `issue`、`end` |
-| Generation | 重新連線後，這個結果屬於目前的綁定嗎？ | `issue`、`Generation` |
-| Request | 工作完成了，還是被放棄了？ | `RequestID`、`handleAbandoned`、`handleStale` |
+| Key | 這項工作還需要嗎？ | `start`、`end` |
+| Generation | 重新連線後，這個結果屬於目前的綁定嗎？ | `start`、`Generation` |
+| Request | 工作完成了，還是被放棄了？ | `RequestID`、`handleAbandoned`、`handleLateResult` |
 | Hold | 什麼必須排在進行中的工作後面？ | `Hold` |
-| Admission | 這個 input 要等嗎？它屬於誰？ | `Admission`、`queue` |
-| End token | 送出者能在 input 執行前放棄它嗎？ | `EndToken`、`revoke` |
+| Input policy | 這個 input 要等嗎？它屬於誰？ | `InputPolicy`、`queue` |
+| Withdraw token | 送出者能在 input 執行前放棄它嗎？ | `WithdrawToken`、`revoke` |
 | Timer 與時鐘 | step 如何在之後行動？測試如何控制時間？ | `timer`、`now`、`TurnClock` |
-| Segment | 每次進入執行多少？ | `segmentBudget` |
+| Batch | 每次進入執行多少？ | `maxReleasesPerBatch` |
 | Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |
 | 呼叫端取消 | 呼叫端的 task 被取消時會怎樣？ | `CallerCancellation` |
 

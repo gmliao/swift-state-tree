@@ -9,7 +9,7 @@ struct Mach: TurnMachine {
     typealias Key = Int
     typealias Reply = Int
     mutating func handle(_ input: Int, _ turn: inout Turn<Mach>) {
-        turn.issue(1)
+        turn.start(1)
         turn.request(input, for: 1, holding: .untilRequestCloses(1))
     }
 }

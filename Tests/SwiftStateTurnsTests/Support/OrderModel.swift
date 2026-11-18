@@ -18,17 +18,17 @@ struct OrderOutput: Sendable {
 @PlainData
 struct OrderModel: TurnMachine {
     enum Input: Sendable {
-        /// External work: parks behind `hold`, scoped to `scope` (sent after the scope's
+        /// External work: queues behind `hold`, scoped to `scope` (sent after the scope's
         /// `scopeEnds`-th end or supersede), withdrawn if `token` ended. `pinned`: queued by a
         /// step, not sent from outside.
-        case work(id: Int, hold: Int?, scope: Int?, scopeEnds: Int?, token: EndToken?, tokenID: Int?, pinned: Bool)
-        case issue(Int)
+        case work(id: Int, hold: Int?, scope: Int?, scopeEnds: Int?, token: WithdrawToken?, tokenID: Int?, pinned: Bool)
+        case start(Int)
         case end(Int)
         case startHold(seq: Int, owner: Int, hold: Int, untilRetire: Bool)
         case completed(seq: Int)
         case cancel(seq: Int)
         case queueBehind(id: Int, hold: Int)
-        case revoke(EndToken, tokenID: Int)
+        case revoke(WithdrawToken, tokenID: Int)
         case noteMarked(tokenID: Int)
         case arm(owner: Int, seq: Int)
         case fired(owner: Int, seq: Int)
@@ -52,7 +52,7 @@ struct OrderModel: TurnMachine {
     var holdOf: [Int: Int] = [:]
     var ownerOf: [Int: Int] = [:]
     var untilRetire: Set<Int> = []
-    /// Abandoned `.untilWorkerRetires` requests whose worker hasn't returned: they keep their hold.
+    /// Abandoned `.untilWorkerReturns` requests whose worker hasn't returned: they keep their hold.
     var retiring: [Int: Int] = [:]
     /// Abandoned and not yet seen stale.
     var abandoned: Set<Int> = []
@@ -61,8 +61,8 @@ struct OrderModel: TurnMachine {
     var closed: Bool = false
     var ended: Bool = false
     var steppedWork: [Int] = []
-    /// How many times each key's scope ended: `end`, a supersede (`issue` over a live key), or
-    /// `endAll` for every key. Each withdraws the parked inputs scoped to the key (rules 4, 7).
+    /// How many times each key's scope ended: `end`, a supersede (`start` over a live key), or
+    /// `endAll` for every key. Each withdraws the queued inputs scoped to the key (rules 4, 7).
     var ends: [Int: Int] = [:]
     /// Steps so far; an output carries the step that emitted it.
     var stepCount: Int = 0
@@ -76,11 +76,11 @@ struct OrderModel: TurnMachine {
     /// Handlers running now; more than one is a step entered from inside a step (invariants 2, 15).
     var depth: Int = 0
 
-    func admission(of input: Input) -> Admission<Int> {
+    func inputPolicy(for input: Input) -> InputPolicy<Int> {
         switch input {
         case .work(_, let hold, let scope, _, let token, _, let pinned):
             // A pinned input reaches the core through `queue`, never through admission.
-            pinned ? .control : .external(hold: hold, scope: scope, unless: token)
+            pinned ? .control : .normal(waitsFor: hold, belongsTo: scope, withdrawnBy: token)
         default:
             .control
         }
@@ -123,8 +123,8 @@ struct OrderModel: TurnMachine {
             if turn.isLive(key) { expectedOutputs.append(id) }
             turn.emit(OrderOutput(id: id, step: stepCount), for: key)
             if let caller = turn.input { turn.reply(to: caller, .success(id)) }
-        case .issue(let key):
-            if turn.issue(key) { ends[key, default: 0] += 1 }
+        case .start(let key):
+            if turn.start(key) { ends[key, default: 0] += 1 }
             timers.removeValue(forKey: key)
             closeTracked(owner: key)
         case .end(let key):
@@ -134,7 +134,7 @@ struct OrderModel: TurnMachine {
             closeTracked(owner: key)
         case .startHold(let seq, let owner, let hold, let retire):
             let holding: Hold<Int> = retire
-                ? .untilWorkerRetires(hold, deadline: .nanoseconds(Int64(seq)))
+                ? .untilWorkerReturns(hold, deadline: .nanoseconds(Int64(seq)))
                 : .untilRequestCloses(hold, deadline: .nanoseconds(Int64(seq)))
             if let id = turn.request(.work(seq: seq), for: owner, holding: holding) {
                 open[seq] = id
@@ -212,7 +212,7 @@ struct OrderModel: TurnMachine {
         turn.run(.notify("abandoned \(seq)"))
     }
 
-    mutating func handleStale(_ input: Input, _ turn: inout Turn<OrderModel>) {
+    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<OrderModel>) {
         enter()
         defer { depth -= 1 }
         guard case .completed(let seq) = input else {

@@ -79,14 +79,14 @@ final class Fixture: @unchecked Sendable {
 
     // MARK: The core's diagnostics
 
-    /// The core's diagnostics hook. A parked input opens "park #n" (n counts every park so
+    /// The core's diagnostics hook. A queued input opens "park #n" (n counts every queued input so
     /// far), a foreign completion opens "foreign", a stale deadline or timer opens "stale
-    /// deadline" or "stale timer"; segment sizes and clock reads are recorded.
+    /// deadline" or "stale timer"; batch sizes and clock reads are recorded.
     func observe(_ event: TurnDiagnostic) {
         switch event {
-        case .parked(let total):
+        case .queued(let total):
             open("park #\(total)")
-        case .segmentEnded(let released):
+        case .batchEnded(let released):
             lock.withLock { segmentSizes.append(released) }
         case .foreignCompletion:
             bump("foreign")
@@ -115,7 +115,7 @@ final class Fixture: @unchecked Sendable {
         lock.withLock { diagnosticCounts[name] ?? 0 }
     }
 
-    /// The released count of every segment that released parked inputs, in order.
+    /// The released count of every batch that released queued inputs, in order.
     var segments: [Int] {
         lock.withLock { segmentSizes }
     }
@@ -191,7 +191,7 @@ enum StepHooks {
 }
 
 /// A call's outcome as text: "success n", "cancelled", or the error ("closed", "withdrawn",
-/// "overloaded", "refused", "abandoned").
+/// "queueFull", "refused", "abandoned").
 func outcome(_ result: Result<Int, any Error>) -> String {
     switch result {
     case .success(let value):

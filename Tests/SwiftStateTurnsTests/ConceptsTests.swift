@@ -1,7 +1,7 @@
 // The examples of the documentation's "Core concepts" article (CoreConcepts.md) that the lobby
 // of WorkedExampleTests.swift doesn't show: a room with an asked seat count, an untracked log
-// line, a save under a worker-retires hold, chat scoped to a player, joins that carry their
-// connection's end token, and an idle timer. Compiled and run here; the rot check in
+// line, a save under a worker-returns hold, chat scoped to a player, joins that carry their
+// connection's withdraw token, and an idle timer. Compiled and run here; the rot check in
 // WorkedExampleTests.swift covers its blocks.
 
 import SwiftStateTurns
@@ -13,7 +13,7 @@ struct Room: TurnMachine {
     // docs:room-input
     enum Input: Sendable {
         /// From a connection; withdrawn if that connection closed before the join stepped.
-        case join(player: Int, connection: EndToken)
+        case join(player: Int, connection: WithdrawToken)
         case chat(player: Int, text: String)
         case saveStats(player: Int)
         case saved(player: Int)
@@ -43,13 +43,13 @@ struct Room: TurnMachine {
     var saving: [RequestID: Int]
 
     // docs:room-admission
-    func admission(of input: Input) -> Admission<Key> {
+    func inputPolicy(for input: Input) -> InputPolicy<Key> {
         switch input {
         // Refused at once if the player's connection already closed.
-        case .join(_, let connection): .external(hold: nil, scope: nil, unless: connection)
+        case .join(_, let connection): .normal(waitsFor: nil, belongsTo: nil, withdrawnBy: connection)
         // Waits while a save holds the database; withdrawn if the player leaves meanwhile.
-        case .chat(let player, _): .external(hold: .database, scope: .player(player))
-        case .saveStats: .external(hold: .database, scope: nil)
+        case .chat(let player, _): .normal(waitsFor: .database, belongsTo: .player(player))
+        case .saveStats: .normal(waitsFor: .database, belongsTo: nil)
         default: .control
         }
     }
@@ -59,7 +59,7 @@ struct Room: TurnMachine {
         switch input {
         // docs:room-join
         case .join(let player, _):
-            turn.issue(.player(player))
+            turn.start(.player(player))
             seats.insert(player)
             // Untracked work: no key owns it, and nothing waits for it.
             turn.run(.log("joined \(player)"))
@@ -74,7 +74,7 @@ struct Room: TurnMachine {
         case .saveStats(let player):
             // The write changes the database while it runs: the hold lasts until the worker
             // returns, even if the request is abandoned first.
-            let hold = Hold.untilWorkerRetires(Key.database, deadline: .seconds(5))
+            let hold = Hold.untilWorkerReturns(Key.database, deadline: .seconds(5))
             if let id = turn.request(.writeStats(player: player), for: .player(player), holding: hold) {
                 saving[id] = player
             }
@@ -92,7 +92,7 @@ struct Room: TurnMachine {
     }
 
     // docs:room-answer
-    /// A synchronous question, answered as a step: `ask` returns the answer.
+    /// A synchronous question, answered as a step: `query` returns the answer.
     mutating func answer(_ query: Query, _ turn: inout Turn<Room>) -> Int {
         switch query {
         case .seatCount: seats.count
@@ -106,7 +106,7 @@ actor RoomActor: TurnActor {
     private(set) var sent: [String] = []
 
     init(clock: some TurnClock) {
-        core = TurnCore(Room(seats: [], saving: [:]), parkedLimit: 64, segmentBudget: 16, clock: clock)
+        core = TurnCore(Room(seats: [], saving: [:]), queueLimit: 64, maxReleasesPerBatch: 16, clock: clock)
     }
 
     @concurrent nonisolated func perform(_ effect: Room.Effect) async -> Room.Input? {
@@ -125,15 +125,15 @@ actor RoomActor: TurnActor {
 
 @Suite("The documentation's core concepts", .timeLimit(.minutes(1)))
 struct ConceptsTests {
-    @Test("A room: ask, run, a scoped chat, a worker-retires save, an end token and an idle timer")
+    @Test("A room: query, run, a scoped chat, a worker-returns save, a withdraw token and an idle timer")
     func room() async throws {
         let f = Fixture()
         let clock = TestClock(fixture: f)
         let room = RoomActor(clock: clock)
         // docs:room-use
-        let connection = EndToken()
-        let seated = try await room.call(.join(player: 7, connection: connection), cancellation: .honoured)
-        let count = await room.ask(.seatCount)
+        let connection = WithdrawToken()
+        let seated = try await room.sendAndWait(.join(player: 7, connection: connection), cancellation: .cancelsCall)
+        let count = await room.query(.seatCount)
         // docs:end
         #expect(seated == 1)
         #expect(count == 1)
@@ -149,19 +149,19 @@ struct ConceptsTests {
 
         // docs:room-token
         // The connection closed before its join stepped: the join is withdrawn.
-        let late = EndToken()
-        late.markEnded()
+        let late = WithdrawToken()
+        late.withdraw()
         await #expect(throws: TurnError.withdrawn) {
-            try await room.call(.join(player: 8, connection: late), cancellation: .honoured)
+            try await room.sendAndWait(.join(player: 8, connection: late), cancellation: .cancelsCall)
         }
         // docs:end
 
         // The idle timer: the test clock moves to the deadline, and the timer's sleep returns.
         clock.set(seconds: 60)
         f.open("deadline 60")
-        for _ in 0 ..< 10_000 where await room.ask(.seatCount) != 0 {
+        for _ in 0 ..< 10_000 where await room.query(.seatCount) != 0 {
             await Task.yield()
         }
-        #expect(await room.ask(.seatCount) == 0)
+        #expect(await room.query(.seatCount) == 0)
     }
 }

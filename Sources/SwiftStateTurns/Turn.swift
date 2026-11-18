@@ -6,7 +6,7 @@
 /// `unowned(unsafe)`: sound only because of that; the core outlives the step that made it.
 public struct Turn<M: TurnMachine>: ~Copyable {
     @usableFromInline unowned(unsafe) let core: TurnCore<M>
-    /// The caller of this step's input, when it came through `call`.
+    /// The caller of this step's input, when it came through `sendAndWait`.
     public let input: InputID?
 
     @inlinable init(core: TurnCore<M>, input: InputID?) {
@@ -14,8 +14,8 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         self.input = input
     }
 
-    /// The core's clock, read at most once per segment: the first use reads it, later uses in
-    /// the same segment (and a `Duration` deadline) see that instant.
+    /// The core's clock, read at most once per batch: the first use reads it, later uses in
+    /// the same batch (and a `Duration` deadline) see that instant.
     @inlinable public var now: TurnInstant {
         mutating get { core.segmentNow() }
     }
@@ -23,14 +23,14 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
-    /// (also ones made earlier in this step), whose timer is dropped, and whose parked inputs
-    /// scoped to `key` are withdrawn, as by `end`: a parked input carries no generation, so one
-    /// sent under the old generation would otherwise step under the new one. Inputs parked
-    /// before the key's first `issue` stay. After `endAll` it does nothing and returns false: a
+    /// (also ones made earlier in this step), whose timer is dropped, and whose queued inputs
+    /// scoped to `key` are withdrawn, as by `end`: a queued input carries no generation, so one
+    /// sent under the old generation would otherwise step under the new one. Inputs queued
+    /// before the key's first `start` stay. After `endAll` it does nothing and returns false: a
     /// handler that runs late (a stale completion) can call it, and then finds no live key to
     /// work under.
     @inlinable @discardableResult
-    public mutating func issue(_ key: M.Key) -> Bool {
+    public mutating func start(_ key: M.Key) -> Bool {
         if core.rt.ended {
             core.rt.ignoredAfterEnd += 1
             return false
@@ -47,7 +47,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     }
 
     /// Ends `key`: its requests close, their `.untilRequestCloses` holds are released, its timer
-    /// is dropped, and parked inputs scoped to it are withdrawn, whether or not the key is live.
+    /// is dropped, and queued inputs scoped to it are withdrawn, whether or not the key is live.
     @inlinable public mutating func end(_ key: M.Key) {
         core.rt.closeRequests(of: key)
         core.rt.dropTimer(of: key)
@@ -55,21 +55,21 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key } }
     }
 
-    /// Ends `token`, in this step: a parked input that carries it is withdrawn now, and one that
+    /// Ends `token`, in this step: a queued input that carries it is withdrawn now, and one that
     /// arrives later is withdrawn when it arrives.
-    @inlinable public mutating func revoke(_ token: EndToken) {
-        token.markEnded()
+    @inlinable public mutating func revoke(_ token: WithdrawToken) {
+        token.withdraw()
         if core.rt.parkedCount != 0 { core.rt.withdraw { $0.token === token } }
     }
 
-    /// Ends every key, for good (a teardown), and closes external intake.
-    /// - Every open request is abandoned. A worker that keeps a hold until it retires still
+    /// Ends every key, for good (a teardown), and closes intake from outside.
+    /// - Every open request is abandoned. A worker that keeps a hold until it returns still
     ///   keeps it, and its completion steps as stale.
-    /// - Parked inputs with a scope are withdrawn, what a step queued (`queue`) is dropped, and
-    ///   every other parked call is answered `closed`, as by `close`. A caller the machine itself
+    /// - Queued inputs with a scope are withdrawn, what a step queued (`queue`) is dropped, and
+    ///   every other queued call is answered `closed`, as by `close`. A caller the machine itself
     ///   keeps waiting is the machine's to answer, in this same step.
-    /// - From here on no key can be issued, so no request is made, no timer armed and no keyed
-    ///   output emitted, and `queue` drops its input. `run`, `ask`, control inputs and the
+    /// - From here on no key can be started, so no request is made, no timer armed and no keyed
+    ///   output emitted, and `queue` drops its input. `run`, `query`, control inputs and the
     ///   completions of work in flight still step, and what this step produced still leaves.
     @inlinable public mutating func endAll() {
         let ids = core.rt.open.keys.sorted { $0.raw < $1.raw }
@@ -94,7 +94,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Work
 
     /// Asynchronous work owned by `key`'s current generation that keeps `holding`'s key busy:
-    /// external inputs that name it as their hold park until the hold ends. The hold carries the
+    /// normal inputs that name it as their hold queue until the hold ends. The hold carries the
     /// request's deadline. Nil: `key` isn't live.
     @inlinable @discardableResult
     public mutating func request(_ effect: M.Effect, for key: M.Key, holding: Hold<M.Key>) -> RequestID? {
@@ -136,13 +136,13 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         core.rt.dirty = true
     }
 
-    /// Queues `input` behind `key`'s hold, after the inputs already parked there: it steps when
+    /// Queues `input` behind `key`'s hold, after the inputs already queued there: it steps when
     /// the hold is free, in that order. For a step's own follow-up that has to keep its place
-    /// among the held work. It can't be refused: `close`, the parked limit, scopes and tokens
+    /// among the held work. It can't be refused: `close`, the queue limit, scopes and tokens
     /// don't apply. Only `endAll` drops it, and after `endAll` this does nothing.
     ///
     /// The core puts no bound on these: the adopter does, by what it queues. They count as
-    /// parked, so a burst of them can make an external input find the parked queue full.
+    /// queued, so a burst of them can make an normal input find the queue full.
     ///
     /// False: the core has ended, and the input was not queued.
     @inlinable @discardableResult
@@ -183,7 +183,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         core.rt.dirty = true
     }
 
-    /// Answers a `call`. `after`: published once that request's completion step has ended, or
+    /// Answers a `sendAndWait`. `after`: published once that request's completion step has ended, or
     /// the request was abandoned.
     @inlinable public mutating func reply(
         to caller: InputID,
@@ -198,8 +198,8 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         }
     }
 
-    /// Closes external intake: parked external calls are answered `closed`, later ones refused.
-    /// Queued inputs, completions, control inputs, `ask` and `run` still step.
+    /// Closes intake from outside: queued normal calls are answered `closed`, later ones refused.
+    /// Queued inputs, completions, control inputs, `query` and `run` still step.
     @inlinable public mutating func close() {
         core.rt.closed = true
         core.rt.closing = true

@@ -1,18 +1,18 @@
 import SwiftStateTurns
 import Testing
 
-/// Caller cancellation, one check per row of the policy table: `.ignored`, and `.honoured`
-/// before entry, while parked, after the step, and for a control input.
+/// Caller cancellation, one check per row of the policy table: `.ignoresCancel`, and `.cancelsCall`
+/// before entry, while queued, after the step, and for a control input.
 @Suite("Turn core: caller cancellation", .timeLimit(.minutes(1)))
 struct CancellationTests {
-    @Test("21: .ignored: a cancelled caller keeps waiting and gets the real result")
+    @Test("21: .ignoresCancel: a cancelled caller keeps waiting and gets the real result")
     func ignoredKeepsWaiting() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
 
         // Cancelled after its input stepped.
         let stepped = Task {
-            try await a.call(.replyAfter(job: 1, gate: "i1", deadline: nil), cancellation: .ignored)
+            try await a.sendAndWait(.replyAfter(job: 1, gate: "i1", deadline: nil), cancellation: .ignoresCancel)
         }
         await f.wait("at i1")
         stepped.cancel()
@@ -22,7 +22,7 @@ struct CancellationTests {
         // Cancelled before it was submitted.
         let early = Task { () async throws -> Int in
             await f.wait("go")
-            return try await a.call(.echo(5), cancellation: .ignored)
+            return try await a.sendAndWait(.echo(5), cancellation: .ignoresCancel)
         }
         early.cancel()
         f.open("go")
@@ -35,13 +35,13 @@ struct CancellationTests {
         #expect(s.stats.pendingWaiters == 0)
     }
 
-    @Test("22: .honoured, external, cancelled before entry: not submitted; CancellationError")
-    func honouredBeforeEntry() async {
+    @Test("22: .cancelsCall, normal, cancelled before entry: not submitted; CancellationError")
+    func cancelsCallBeforeEntry() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         let task = Task { () async throws -> Int in
             await f.wait("go")
-            return try await a.call(.note("submitted"), cancellation: .honoured)
+            return try await a.sendAndWait(.note("submitted"), cancellation: .cancelsCall)
         }
         task.cancel()
         f.open("go")
@@ -54,12 +54,12 @@ struct CancellationTests {
         #expect(s.stats.pendingWaiters == 0)
     }
 
-    @Test("23: .honoured, external, still parked when the cancellation is handled: withdrawn, never steps")
-    func honouredWhileParked() async {
+    @Test("23: .cancelsCall, normal, still queued when the cancellation is handled: withdrawn, never steps")
+    func cancelsCallWhileParked() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "p1"))
-        let parked = Task { try await a.call(.transaction(2, ""), cancellation: .honoured) }
+        let parked = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .cancelsCall) }
         await f.wait("park #1")
         parked.cancel()
         let result = outcome(await parked.result)
@@ -68,19 +68,19 @@ struct CancellationTests {
         await a.waitForLog(2)
         let s = await a.snapshot()
         #expect(result == "cancelled")
-        #expect(mid.stats.parked == 0)
+        #expect(mid.stats.queued == 0)
         #expect(s.log == ["begin 1", "end 1"])
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
         #expect(s.stats.pendingWaiters == 0)
         #expect(s.stats.cancelledCalls == 1)
     }
 
-    @Test("24: .honoured, already stepped: the caller stops waiting; the work goes on and its reply finds no waiter")
-    func honouredAfterStep() async {
+    @Test("24: .cancelsCall, already stepped: the caller stops waiting; the work goes on and its reply finds no waiter")
+    func cancelsCallAfterStep() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         let task = Task {
-            try await a.call(.replyAfter(job: 2, gate: "s2", deadline: nil), cancellation: .honoured)
+            try await a.sendAndWait(.replyAfter(job: 2, gate: "s2", deadline: nil), cancellation: .cancelsCall)
         }
         await f.wait("at s2")
         task.cancel()
@@ -98,13 +98,13 @@ struct CancellationTests {
         #expect(s.stats.cancelledCalls == 1)
     }
 
-    @Test("25: .honoured, control: always submitted and stepped; only the caller stops waiting")
-    func honouredControl() async {
+    @Test("25: .cancelsCall, control: always submitted and stepped; only the caller stops waiting")
+    func cancelsCallControl() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         let task = Task { () async throws -> Int in
             await f.wait("go")
-            return try await a.call(.holdCaller(1), cancellation: .honoured)
+            return try await a.sendAndWait(.holdCaller(1), cancellation: .cancelsCall)
         }
         task.cancel()
         f.open("go")
@@ -121,13 +121,13 @@ struct CancellationTests {
         #expect(s.stats.pendingWaiters == 0)
     }
 
-    @Test("25b: .honoured, control, cancelled before entry, replying in its own step: stepped, and the caller still gets CancellationError")
-    func honouredControlRepliesAtOnce() async {
+    @Test("25b: .cancelsCall, control, cancelled before entry, replying in its own step: stepped, and the caller still gets CancellationError")
+    func cancelsCallControlRepliesAtOnce() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         let task = Task { () async throws -> Int in
             await f.wait("go")
-            return try await a.call(.answerNow(7), cancellation: .honoured)
+            return try await a.sendAndWait(.answerNow(7), cancellation: .cancelsCall)
         }
         task.cancel()
         f.open("go")

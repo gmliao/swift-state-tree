@@ -33,25 +33,25 @@ struct BenchMachine: TurnMachine {
         BenchMachine(counter: 0, holding: nil, ticks: 0, table: Dictionary(uniqueKeysWithValues: (0 ..< 64).map { ($0, $0) }))
     }
 
-    func admission(of input: Input) -> Admission<Int> {
+    func inputPolicy(for input: Input) -> InputPolicy<Int> {
         switch input {
-        case .held: .external(hold: 1, scope: nil)
-        case .lookup: .external(hold: 2, scope: nil)
+        case .held: .normal(waitsFor: 1, belongsTo: nil)
+        case .lookup: .normal(waitsFor: 2, belongsTo: nil)
         case .releaseHold, .done: .control
-        default: .external(hold: nil, scope: nil)
+        default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
 
     mutating func handle(_ input: Input, _ turn: inout Turn<BenchMachine>) {
         switch input {
         case .setup:
-            turn.issue(0)
+            turn.start(0)
         case .noop, .held, .lookup, .done:
             counter &+= 1
         case .emit:
             turn.emit(counter, for: 0)
         case .issueEnd:
-            turn.issue(2)
+            turn.start(2)
             turn.end(2)
         case .now:
             ticks &+= turn.now.nanoseconds

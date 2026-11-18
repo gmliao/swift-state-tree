@@ -19,25 +19,25 @@ struct RuntimeStopTests {
         #expect(Self.standardError(result).contains("TurnCore: the machine was read from inside its own step"))
     }
 
-    @Test("ask from inside a step stops the process")
+    @Test("query from inside a step stops the process")
     func askInsideStep() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             let demo = DemoActor()
             await demo.askFromInsideStep()
         }
-        #expect(Self.standardError(result).contains("TurnCore: ask was called from inside a step"))
+        #expect(Self.standardError(result).contains("TurnCore: query was called from inside a step"))
     }
 
     @Test("a class as the machine stops the process when the core is made")
     func classMachine() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            _ = TurnCore(ClassMachine(), parkedLimit: 1, segmentBudget: 1, clock: TestClock(fixture: Fixture()))
+            _ = TurnCore(ClassMachine(), queueLimit: 1, maxReleasesPerBatch: 1, clock: TestClock(fixture: Fixture()))
         }
         #expect(Self.standardError(result).contains("TurnCore: the machine must be a value type"))
     }
 
     // "A step entered from inside a step" has no test here: every public entry that could
-    // start one from inside a step either queues (`send`, `call`) or stops first with its own
-    // message (`read`, `ask`), so the core's own guard in its step entry can't be reached from
+    // start one from inside a step either queues (`send`, `sendAndWait`) or stops first with its own
+    // message (`read`, `query`), so the core's own guard in its step entry can't be reached from
     // outside the module.
 }

@@ -6,8 +6,8 @@
 // (`replays`). CI runs the fixed seed set; a longer run is `TURNS_SEEDS=<count>`.
 //
 // Every operation waits for its consequence before the next one starts: a `send` returns after
-// its segment; a call is waited for until it has stepped, parked or been answered; a completion,
-// a deadline or a timer is waited for by the `notify` its step starts. With the large segment
+// its batch; a call is waited for until it has stepped, queued or been answered; a completion,
+// a deadline or a timer is waited for by the `notify` its step starts. With the large batch
 // budget a seed gives one order, run after run. Every third seed runs with a budget of 2, so a
 // drain continues in a job of its own and interleaves with the operations that follow; those
 // seeds keep the invariants but not one fixed schedule.
@@ -69,12 +69,12 @@ actor OrderActor: TurnActor {
     private var delivered: [Int] = []
     private var lateFlushes: [String] = []
 
-    init(fixture: Fixture, notes: Notes, parkedLimit: Int, segmentBudget: Int) {
+    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int) {
         self.fixture = fixture
         self.notes = notes
-        core = TurnCore(OrderModel(), parkedLimit: parkedLimit, segmentBudget: segmentBudget, clock: TestClock(fixture: fixture))
+        core = TurnCore(OrderModel(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: TestClock(fixture: fixture))
         core.onDiagnostic = { event in
-            if case .parked = event { notes.post("park") }
+            if case .queued = event { notes.post("park") }
         }
     }
 
@@ -151,7 +151,7 @@ struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
-/// One `call` the harness made.
+/// One `sendAndWait` the harness made.
 struct CallRecord {
     var id: Int
     var box: CallBox
@@ -169,16 +169,16 @@ func settle(_ actor: OrderActor, rounds: Int = 10_000, until done: (OrderActor.V
 }
 
 /// Runs one seed and returns its failures (empty: it passed).
-func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [String] {
+func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> [String] {
     var random = SeededGenerator(seed: seed)
     let fixture = Fixture()
     let notes = Notes()
-    let actor = OrderActor(fixture: fixture, notes: notes, parkedLimit: 6, segmentBudget: segmentBudget)
+    let actor = OrderActor(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch)
     var failures: [String] = []
     var nextSeq = 1
     var nextWork = 1
     var nextToken = 1
-    var tokens: [(Int, EndToken)] = []
+    var tokens: [(Int, WithdrawToken)] = []
     var log: [String] = []
     // The harness's mirror of each scope's ends (end, supersede, endAll) and of the live keys.
     var ends: [Int: Int] = [:]
@@ -186,8 +186,8 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
     var endedAll = false
     var calls: [CallRecord] = []
 
-    await actor.send(.issue(0))
-    await actor.send(.issue(1))
+    await actor.send(.start(0))
+    await actor.send(.start(1))
 
     for step in 0 ..< operations {
         let view = await actor.view()
@@ -197,16 +197,16 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
         var op = ""
         switch choice {
         case 0 ..< 22:
-            // External work, maybe parked, scoped, tokened; sent, or called (with the caller's
-            // cancellation honoured).
+            // External work, maybe queued, scoped, tokened; sent, or called (with the caller's
+            // cancellation cancelsCall).
             let id = nextWork
             nextWork += 1
             let scoped = Bool.random(using: &random)
             let scopeEnds: Int? = scoped ? ends[owner] ?? 0 : nil
-            var token: EndToken?
+            var token: WithdrawToken?
             var tokenID: Int?
             if Int.random(in: 0 ..< 4, using: &random) == 0 {
-                let t = EndToken()
+                let t = WithdrawToken()
                 token = t
                 tokenID = nextToken
                 tokens.append((nextToken, t))
@@ -222,7 +222,7 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
                 let box = CallBox()
                 let task = Task {
                     do {
-                        box.set("success \(try await actor.call(input, cancellation: .honoured))")
+                        box.set("success \(try await actor.sendAndWait(input, cancellation: .cancelsCall))")
                     } catch let error as TurnError {
                         box.set("\(error)")
                     } catch {
@@ -230,7 +230,7 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
                     }
                 }
                 calls.append(CallRecord(id: id, box: box, task: task))
-                // Waited for until it has stepped, parked or been answered.
+                // Waited for until it has stepped, queued or been answered.
                 let entered = await settle(actor) { v in
                     v.stepped.contains(id) || notes.count("park") > parks || box.answer != nil
                 }
@@ -259,7 +259,7 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
             op = "cancel \(seq)"
             await actor.send(.cancel(seq: seq))
         case 63 ..< 67:
-            // A caller's cancellation: answered once it is handled, whether it was parked
+            // A caller's cancellation: answered once it is handled, whether it was queued
             // (withdrawn) or had already stepped (its reply finds no waiter).
             guard let call = calls.filter({ $0.box.answer == nil }).randomElement(using: &random) else { continue }
             op = "cancel call \(call.id)"
@@ -272,13 +272,13 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
             live.remove(owner)
             await actor.send(.end(owner))
         case 71 ..< 76:
-            op = "issue \(owner)"
+            op = "start \(owner)"
             if !endedAll {
                 // Over a live key, a supersede: it ends the old generation's scope.
                 if live.contains(owner) { ends[owner, default: 0] += 1 }
                 live.insert(owner)
             }
-            await actor.send(.issue(owner))
+            await actor.send(.start(owner))
         case 76 ..< 81:
             let id = nextWork
             nextWork += 1
@@ -291,7 +291,7 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
                 await actor.send(.revoke(token, tokenID: tokenID))
             } else {
                 op = "mark \(tokenID)"
-                token.markEnded()
+                token.withdraw()
                 await actor.send(.noteMarked(tokenID: tokenID))
             }
         case 85 ..< 91:
@@ -322,28 +322,28 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
         let after = await actor.view()
         failures += check(after, op: op, parkedBound: 6 + nextWork)
         if !failures.isEmpty {
-            failures.append("seed \(seed), budget \(segmentBudget), operation \(step); the last operations: \(log.suffix(12))")
+            failures.append("seed \(seed), budget \(maxReleasesPerBatch), operation \(step); the last operations: \(log.suffix(12))")
             break
         }
     }
 
     if failures.isEmpty {
-        // Let every worker return, so every hold is released and what is parked or queued steps.
+        // Let every worker return, so every hold is released and what is queued or queued steps.
         let rest = await actor.view()
         for seq in rest.pending {
             fixture.open("work \(seq)")
             await notes.wait("done \(seq)")
         }
-        let drained = await settle(actor) { $0.stats.parked == 0 }
+        let drained = await settle(actor) { $0.stats.queued == 0 }
         let final = await actor.view()
         failures += check(final, op: "the last completions", parkedBound: 6 + nextWork)
-        if !drained { failures.append("parked inputs left after every hold was released: \(final.stats.parked)") }
+        if !drained { failures.append("parked inputs left after every hold was released: \(final.stats.queued)") }
         // Invariant 14: a queued input steps, unless endAll dropped it.
         for id in final.queued.sorted() where !final.stepped.contains(id) && !final.droppedQueued.contains(id) {
             failures.append("queued work \(id) neither stepped nor dropped by endAll")
         }
     }
-    // End everything (cancelling the deadline and timer tasks); every parked call is answered.
+    // End everything (cancelling the deadline and timer tasks); every queued call is answered.
     if !(await actor.view()).ended { await actor.send(.endAll) }
     for call in calls { await call.task.value }
     let final = await actor.view()
@@ -351,15 +351,15 @@ func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [Strin
     for call in calls {
         let answer = call.box.answer ?? "none"
         let stepped = final.stepped.contains(call.id)
-        let refusals = ["\(TurnError.withdrawn)", "\(TurnError.closed)", "\(TurnError.overloaded)"]
+        let refusals = ["\(TurnError.withdrawn)", "\(TurnError.closed)", "\(TurnError.queueFull)"]
         let consistent = (answer == "success \(call.id)" && stepped)
-            || answer == "cancelled"  // withdrawn while parked, or stepped and no longer waited for
+            || answer == "cancelled"  // withdrawn while queued, or stepped and no longer waited for
             || (refusals.contains(answer) && !stepped)
         if !consistent { failures.append("call \(call.id): answered \(answer), stepped \(stepped)") }
     }
     if final.stats.pendingWaiters != 0 { failures.append("\(final.stats.pendingWaiters) waiters left at the end") }
     if !failures.isEmpty, !failures.contains(where: { $0.hasPrefix("seed ") }) {
-        failures.append("seed \(seed), budget \(segmentBudget), at the end; the last operations: \(log.suffix(12))")
+        failures.append("seed \(seed), budget \(maxReleasesPerBatch), at the end; the last operations: \(log.suffix(12))")
     }
     return failures
 }
@@ -374,7 +374,7 @@ func check(_ view: OrderActor.View, op: String, parkedBound: Int) -> [String] {
     if view.stats.heldKeys != view.expectedHeld {
         failures.append("after `\(op)`: the core holds \(view.stats.heldKeys) keys, the machine expects \(view.expectedHeld)")
     }
-    if view.stats.parked > parkedBound { failures.append("after `\(op)`: \(view.stats.parked) parked") }
+    if view.stats.queued > parkedBound { failures.append("after `\(op)`: \(view.stats.queued) parked") }
     if view.ended, view.stats.liveKeys != 0 { failures.append("after `\(op)`: \(view.stats.liveKeys) live keys after endAll") }
     // Invariants 11 and 12: outputs leave before the next step, and only under a live key.
     if !view.lateFlushes.isEmpty { failures.append("after `\(op)`: \(view.lateFlushes)") }
@@ -396,22 +396,22 @@ struct GeneratedOrderTests {
         return (1 ... UInt64(count)).map { $0 }
     }
 
-    /// Every third seed drains in small segments, so continuations interleave with operations.
+    /// Every third seed drains in small batches, so continuations interleave with operations.
     static func budget(for seed: UInt64) -> Int { seed % 3 == 0 ? 2 : 1_000 }
 
     @Test("Seeded orders keep the core's invariants and its counters match the machine's view", arguments: seeds)
     func seededOrder(seed: UInt64) async {
-        let failures = await runOrder(seed: seed, operations: 300, segmentBudget: Self.budget(for: seed))
+        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed))
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 
     /// Seeds that once failed, kept as fixed replays with the budget they ran with. 21, 22 and 25
-    /// stepped an input parked under a scope after that scope's key was superseded (found before
+    /// stepped an input queued under a scope after that scope's key was superseded (found before
     /// a supersede withdrew such inputs); the generator has changed since, so each replays its
     /// seed, not its old order.
     @Test("Fixed replays of seeds that once failed", arguments: [UInt64(21), 22, 25])
     func replays(seed: UInt64) async {
-        let failures = await runOrder(seed: seed, operations: 300, segmentBudget: 1_000)
+        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: 1_000)
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 }

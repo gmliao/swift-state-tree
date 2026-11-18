@@ -4,7 +4,7 @@ import Foundation
 
 // MARK: - Identities
 
-/// Names one `call`'s waiter. A step reads it from `Turn.input` and answers it with `Turn.reply`.
+/// Names one `sendAndWait`'s waiter. A step reads it from `Turn.input` and answers it with `Turn.reply`.
 public struct InputID: Hashable, Sendable {
     @usableFromInline let raw: UInt64
     @inlinable init(raw: UInt64) { self.raw = raw }
@@ -16,74 +16,74 @@ public struct RequestID: Hashable, Sendable {
     @inlinable init(raw: UInt64) { self.raw = raw }
 }
 
-/// One life of a key, from `Turn.issue` to `Turn.end`. For comparisons and logs only: a handler
+/// One life of a key, from `Turn.start` to `Turn.end`. For comparisons and logs only: a handler
 /// never needs one to know whether a result is still wanted, because the core decides that.
 public struct Generation: Hashable, Sendable {
     @usableFromInline let raw: UInt64
     @inlinable init(raw: UInt64) { self.raw = raw }
 }
 
-// MARK: - End tokens
+// MARK: - Withdraw tokens
 
 /// Evidence, owned upstream, that an input is no longer wanted (a router's join attempt that
 /// ended). It travels with the input, so it covers an end that reaches the core before the input
 /// does, which no key can: there is nothing to end yet. It lives as long as the input.
 ///
-/// The core reads it when the input is about to step: on arrival, and on release from parking.
-/// Marking it upstream doesn't remove a parked input; that input keeps its place until it is
+/// The core reads it when the input is about to step: on arrival, and on release from queuing.
+/// Marking it upstream doesn't remove a queued input; that input keeps its place until it is
 /// released (and is then withdrawn), or until a step calls `Turn.revoke`. An end after the read
 /// belongs to the started input, and is the machine's to handle. A machine never stores a token.
-public final class EndToken: @unchecked Sendable {
+public final class WithdrawToken: @unchecked Sendable {
     private let lock = NSLock()
     private var ended = false
 
     public init() {}
 
-    public var isEnded: Bool { lock.withLock { ended } }
+    public var isWithdrawn: Bool { lock.withLock { ended } }
 
-    public func markEnded() { lock.withLock { ended = true } }
+    public func withdraw() { lock.withLock { ended = true } }
 }
 
-// MARK: - Admission, holds, outcomes
+// MARK: - InputPolicy, holds, outcomes
 
 /// How an input is admitted.
-public enum Admission<Key: Hashable & Sendable>: Sendable {
+public enum InputPolicy<Key: Hashable & Sendable>: Sendable {
     /// From outside: refused `closed` after `close`, refused `withdrawn` if `unless` has ended,
-    /// parked while `hold` is blocked (refused `overloaded` over the parked limit). `scope`: the
-    /// key the input belongs to; ending it withdraws the input while it is parked.
-    case external(hold: Key?, scope: Key?, unless: EndToken? = nil)
-    /// Never gated, parked or refused: a disconnect, a stop, a teardown, a `run`'s result.
+    /// queued while `hold` is blocked (refused `queueFull` over the queue limit). `scope`: the
+    /// key the input belongs to; ending it withdraws the input while it is queued.
+    case normal(waitsFor: Key?, belongsTo: Key?, withdrawnBy: WithdrawToken? = nil)
+    /// Never gated, queued or refused: a disconnect, a stop, a teardown, a `run`'s result.
     case control
 }
 
-/// A key that a request keeps busy: external inputs that name it as their hold wait.
+/// A key that a request keeps busy: normal inputs that name it as their hold wait.
 ///
 /// Every holding request has a deadline, and the deadline bounds the request: when it passes,
 /// the request is abandoned, its caller can be answered and `handleAbandoned` runs. An
-/// `.untilRequestCloses` hold ends with the request; an `.untilWorkerRetires` hold ends only when
+/// `.untilRequestCloses` hold ends with the request; an `.untilWorkerReturns` hold ends only when
 /// its worker returns, so the adopter bounds that worker. A request with no bound would leave
-/// every input parked behind its key waiting for as long as its work hangs.
+/// every input queued behind its key waiting for as long as its work hangs.
 public enum Hold<Key: Hashable & Sendable>: Sendable {
     /// Held until the request closes, for any reason.
     case untilRequestCloses(Key, deadline: Duration)
     /// Held until the worker's result arrives, also after the request closed without it: for
     /// work that changes another domain while it runs.
-    case untilWorkerRetires(Key, deadline: Duration)
+    case untilWorkerReturns(Key, deadline: Duration)
 
     @inlinable var key: Key {
         switch self {
-        case .untilRequestCloses(let key, _), .untilWorkerRetires(let key, _): key
+        case .untilRequestCloses(let key, _), .untilWorkerReturns(let key, _): key
         }
     }
 
     @inlinable var deadline: Duration {
         switch self {
-        case .untilRequestCloses(_, let deadline), .untilWorkerRetires(_, let deadline): deadline
+        case .untilRequestCloses(_, let deadline), .untilWorkerReturns(_, let deadline): deadline
         }
     }
 
     @inlinable var untilRetire: Bool {
-        if case .untilWorkerRetires = self { return true }
+        if case .untilWorkerReturns = self { return true }
         return false
     }
 }
@@ -93,25 +93,25 @@ public enum Abandonment: Sendable, Equatable {
     case keyEnded, deadline, cancelled
 }
 
-/// Why an external input never stepped.
+/// Why an normal input never stepped.
 public enum TurnError: Error, Sendable, Equatable {
-    /// The core is closed to external inputs.
+    /// The core is closed to normal inputs.
     case closed
-    /// The parked queue is full.
-    case overloaded
-    /// Its scope ended or was superseded, or its token ended, before it stepped.
+    /// The queue is full.
+    case queueFull
+    /// Its scope ended or was superseded, or its token was withdrawn, before it stepped.
     case withdrawn
 }
 
-/// What a `call` does when its task is cancelled. There is no default: each call states it.
+/// What a `sendAndWait` does when its task is cancelled. There is no default: each call states it.
 public enum CallerCancellation: Sendable {
     /// Nothing: the caller keeps waiting and gets the real result.
-    case ignored
-    /// An external input not yet submitted isn't; one still parked when the cancellation is
+    case ignoresCancel
+    /// An normal input not yet submitted isn't; one still queued when the cancellation is
     /// handled is withdrawn and never steps; one that stepped goes on, and only its caller stops
     /// waiting. A control input is always submitted and stepped. The caller gets
     /// `CancellationError`.
-    case honoured
+    case cancelsCall
 }
 
 // MARK: - Time

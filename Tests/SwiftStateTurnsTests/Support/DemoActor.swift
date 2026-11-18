@@ -23,9 +23,9 @@ actor DemoActor: TurnActor {
     private var flushHook: ((isolated DemoActor, [Int]) -> Void)?
     private var collaboratorSaw: [Int] = []
 
-    init(fixture: Fixture = Fixture(), parkedLimit: Int = 1024, segmentBudget: Int = 64) {
+    init(fixture: Fixture = Fixture(), queueLimit: Int = 1024, maxReleasesPerBatch: Int = 64) {
         let clock = TestClock(fixture: fixture)
-        let core = TurnCore(DemoMachine(), parkedLimit: parkedLimit, segmentBudget: segmentBudget, clock: clock)
+        let core = TurnCore(DemoMachine(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock)
         core.onDiagnostic = { event in fixture.observe(event) }
         self.fixture = fixture
         self.clock = clock
@@ -76,7 +76,7 @@ actor DemoActor: TurnActor {
     /// Returns once the machine's log has `count` lines (a control call, so it also works
     /// after `close` and `endAll`).
     func waitForLog(_ count: Int) async {
-        _ = try? await call(.awaitLog(count), cancellation: .ignored)
+        _ = try? await sendAndWait(.awaitLog(count), cancellation: .ignoresCancel)
     }
 
     // MARK: Reaching the actor from inside a step
@@ -107,7 +107,7 @@ actor DemoActor: TurnActor {
         let me = self
         StepHooks.$duringStep.withValue({
             me.assumeIsolated { owner in // lint-allow: turns-isolated: reaches the actor from inside a step to show ask stops
-                let answer = owner.ask(.steps)
+                let answer = owner.query(.steps)
                 owner.fixture.record("asked \(answer)")
             }
         }) {
@@ -122,7 +122,7 @@ actor DemoActor: TurnActor {
     func collaboratorBetweenSteps() -> [Int] {
         flushHook = { (owner: isolated DemoActor, _: [Int]) in
             let steps = owner.core.read { machine in machine.steps }
-            let asked = owner.ask(.bump)
+            let asked = owner.query(.bump)
             owner.send(.ping)
             owner.collaboratorSaw = [steps, asked]
         }
@@ -132,9 +132,9 @@ actor DemoActor: TurnActor {
         return collaboratorSaw
     }
 
-    /// `count` steps park behind a transaction, which is then aborted. While they drain, the
+    /// `count` steps queue behind a transaction, which is then aborted. While they drain, the
     /// collaborator sends one more when it sees output 3: it must step after every input
-    /// already parked.
+    /// already queued.
     func drainWithLateArrival(count: Int) {
         send(.setup)
         send(.transaction(1, "never"))
@@ -146,7 +146,7 @@ actor DemoActor: TurnActor {
     }
 
     /// When a flush carries `value`: opens `gate`, then sends `input`, which is queued and
-    /// steps in that same segment. Runs once.
+    /// steps in that same batch. Runs once.
     func onOutput(_ value: Int, open gate: String, thenSend input: DemoMachine.Input?) {
         flushHook = { (owner: isolated DemoActor, outputs: [Int]) in
             guard outputs.contains(value) else { return }
@@ -168,7 +168,7 @@ actor ReplaceableCoreActor: TurnActor {
     nonisolated let fixture: Fixture
 
     static func makeCore(_ fixture: Fixture) -> TurnCore<DemoMachine> {
-        let core = TurnCore(DemoMachine(), parkedLimit: 16, segmentBudget: 16, clock: TestClock(fixture: fixture))
+        let core = TurnCore(DemoMachine(), queueLimit: 16, maxReleasesPerBatch: 16, clock: TestClock(fixture: fixture))
         core.onDiagnostic = { event in fixture.observe(event) }
         return core
     }

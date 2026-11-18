@@ -3,7 +3,7 @@
 //
 //   TurnsBench [<bench>|all] [turn|direct|both] [iterations]
 //
-// One bench and one side per run is what an external counter (`perf stat`) wraps. On Darwin the
+// One bench and one side per run is what a normal counter (`perf stat`) wraps. On Darwin the
 // run also prints the process's retired instructions, for development only.
 
 import Foundation
@@ -50,7 +50,7 @@ final class CancelGate: @unchecked Sendable {
 }
 
 actor BenchActor: TurnActor {
-    let core = TurnCore(BenchMachine.make(), parkedLimit: 1 << 20, segmentBudget: 1 << 20, clock: BenchClock())
+    let core = TurnCore(BenchMachine.make(), queueLimit: 1 << 20, maxReleasesPerBatch: 1 << 20, clock: BenchClock())
     var flushed = 0
 
     @concurrent nonisolated func perform(_ effect: Int) async -> BenchMachine.Input? {
@@ -193,8 +193,8 @@ func measure(_ bench: String, _ side: String, _ n: Int) async -> (nanoseconds: D
     let start = ContinuousClock.now
     var sink = 0
     switch (side, bench) {
-    case ("turn", "request"): for _ in 0 ..< n { sink &+= (try? await turn.call(.request, cancellation: .ignored)) ?? 0 }
-    case ("turn", "call"): for _ in 0 ..< n { sink &+= (try? await turn.call(.callNoop, cancellation: .ignored)) ?? 0 }
+    case ("turn", "request"): for _ in 0 ..< n { sink &+= (try? await turn.sendAndWait(.request, cancellation: .ignoresCancel)) ?? 0 }
+    case ("turn", "call"): for _ in 0 ..< n { sink &+= (try? await turn.sendAndWait(.callNoop, cancellation: .ignoresCancel)) ?? 0 }
     case ("direct", "request"): for _ in 0 ..< n { sink &+= await direct.request() }
     case ("direct", "call"): for _ in 0 ..< n { sink &+= await direct.callNoop() }
     case ("turn", _): sink = await turn.run(bench, n)

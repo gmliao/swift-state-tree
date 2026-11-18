@@ -106,10 +106,10 @@ struct ComparisonTests {
     func turnCoreNeedsNoTicket() async throws {
         let f = Fixture()
         let lobby = LobbyActor(profiles: HeldProfiles(fixture: f))
-        let join = Task { try await lobby.call(.join(player: 7), cancellation: .ignored) }
+        let join = Task { try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel) }
         await f.wait("loading 7")
         await lobby.send(.leave(player: 7))
-        // The joiner is answered in the leave's segment, before the load returns.
+        // The joiner is answered in the leave's batch, before the load returns.
         let result = await join.result
         f.open("release 7")
         // The load's result comes back as an input, and steps as stale (a condition, not a delay).

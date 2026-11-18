@@ -3,18 +3,18 @@ import Testing
 
 /// The membership scenarios the core's design closed on, on models of the adapter's membership
 /// path, the keeper and the transport: a hold handed over, `queue(behind:)` on a held key,
-/// `revoke` while parked, `reply(after:)` behind a worker, and `ask` inside an admission. A core
+/// `revoke` while queued, `reply(after:)` behind a worker, and `query` inside an admission. A core
 /// bug that only shows in these combinations surfaces here. Slice 1 repeats each scenario
 /// against the real adapter and keeper.
 @Suite("Turn core: membership model", .timeLimit(.minutes(1)))
 struct MembershipModelTests {
-    @Test("M1: a registration parked behind the hold, then a disconnect: withdrawn by scope")
+    @Test("M1: a registration queued behind the hold, then a disconnect: withdrawn by scope")
     func parkedRegistrationThenDisconnect() async {
         let f = Fixture()
         let a = MembershipActor(fixture: f)
         await a.send(.txn(1, gate: "s1"))
         let registration = Task {
-            try await a.call(.register(session: 5, player: 50, gate: "", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 5, player: 50, gate: "", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("park #1")
         await a.send(.disconnect(5))
@@ -25,19 +25,19 @@ struct MembershipModelTests {
         #expect(result == "withdrawn")
         #expect(s.log == ["begin 1", "disconnect 5", "end 1"])
         #expect(s.players[5] == nil)
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
     }
 
-    @Test("M2: a refused registration withdraws a second one parked behind it")
+    @Test("M2: a refused registration withdraws a second one queued behind it")
     func refusedRegistrationWithdrawsSecond() async {
         let f = Fixture()
         let a = MembershipActor(fixture: f)
         let first = Task {
-            try await a.call(.register(session: 6, player: 60, gate: "k6", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 6, player: 60, gate: "k6", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("at k6")
         let second = Task {
-            try await a.call(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("park #1")
         a.keeper.setEntry(player: 60, session: 7)
@@ -50,7 +50,7 @@ struct MembershipModelTests {
         #expect(secondResult == "withdrawn")
         #expect(s.log == ["register 6", "refuse 6"])
         #expect(s.players[6] == nil)
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
         #expect(s.stats.heldKeys == 0)
     }
 
@@ -59,10 +59,10 @@ struct MembershipModelTests {
         let f = Fixture()
         let a = MembershipActor(fixture: f)
         let registration = Task {
-            try await a.call(.register(session: 8, player: 80, gate: "k8", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 8, player: 80, gate: "k8", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("at k8")
-        let next = Task { try await a.call(.txn(9, gate: ""), cancellation: .ignored) }
+        let next = Task { try await a.sendAndWait(.txn(9, gate: ""), cancellation: .ignoresCancel) }
         await f.wait("park #1")
         await a.send(.disconnect(8))
         let result = outcome(await registration.result)
@@ -85,20 +85,20 @@ struct MembershipModelTests {
         a.transport.connect(1)
         a.transport.connect(3)
         let accepted = outcome(await Task {
-            try await a.call(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignoresCancel)
         }.result)
         await a.send(.startFirstSync(1, gate: "fs1"))
         a.keeper.setEntry(player: 10, session: 2)
         let refused = outcome(await Task {
-            try await a.call(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignoresCancel)
         }.result)
         f.open("fs1")
         await a.waitForLog(7)
-        _ = try? await a.call(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignored)
+        _ = try? await a.sendAndWait(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignoresCancel)
         await a.send(.startFirstSync(3, gate: "fs3"))
-        _ = try? await a.call(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignored)
+        _ = try? await a.sendAndWait(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignoresCancel)
         let openAfterSameBinding = await a.snapshot().stats.openRequests
-        _ = try? await a.call(.register(session: 3, player: 31, gate: "", token: nil), cancellation: .ignored)
+        _ = try? await a.sendAndWait(.register(session: 3, player: 31, gate: "", token: nil), cancellation: .ignoresCancel)
         f.open("fs3")
         await a.waitForLog(20)
         await f.wait("closed 1")
@@ -119,16 +119,16 @@ struct MembershipModelTests {
         #expect(s.generations[3] == 2)
     }
 
-    @Test("M5: teardown answers a reading registration and a parked one")
+    @Test("M5: teardown answers a reading registration and a queued one")
     func teardownAnswersRegistrations() async {
         let f = Fixture()
         let a = MembershipActor(fixture: f)
         let reading = Task {
-            try await a.call(.register(session: 9, player: 90, gate: "k9", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 9, player: 90, gate: "k9", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("at k9")
         let parked = Task {
-            try await a.call(.register(session: 11, player: 110, gate: "", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 11, player: 110, gate: "", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("park #1")
         await a.send(.teardown)
@@ -141,24 +141,24 @@ struct MembershipModelTests {
         #expect(parkedResult == "withdrawn")
         #expect(s.log == ["register 9", "teardown", "registration 9 abandoned keyEnded", "stale read 9"])
         #expect(s.stats.pendingWaiters == 0)
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
         #expect(s.stats.openRequests == 0)
         #expect(s.stats.heldKeys == 0)
     }
 
-    @Test("M6: the end token is marked first: the registration is withdrawn and no keeper request is made")
+    @Test("M6: the withdraw token is marked first: the registration is withdrawn and no keeper request is made")
     func tokenMarkedBeforeRegistration() async {
         let f = Fixture()
         let a = MembershipActor(fixture: f)
         a.transport.connect(5)
         // The session's end reaches the adapter before its registration does. Nothing of the
         // session exists yet, so no key can carry that; the registration's token does.
-        let token = EndToken()
-        token.markEnded()
+        let token = WithdrawToken()
+        token.withdraw()
         a.transport.disconnect(5)
         await a.send(.disconnect(5))
         let result = outcome(await Task {
-            try await a.call(.register(session: 5, player: 50, gate: "", token: token), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 5, player: 50, gate: "", token: token), cancellation: .ignoresCancel)
         }.result)
         let s = await a.snapshot()
         #expect(result == "withdrawn")
@@ -168,42 +168,42 @@ struct MembershipModelTests {
         #expect(a.transport.sessions(of: 50).isEmpty)
     }
 
-    @Test("M7: the join budget: a parked admission is ended and withdrawn, its final frame out at the answer; a started one is left alone")
+    @Test("M7: the join budget: a queued admission is ended and withdrawn, its final frame out at the answer; a started one is left alone")
     func joinBudget() async {
         let f = Fixture()
         let a = MembershipActor(fixture: f)
         a.transport.connect(6)
         await a.send(.txn(1, gate: "b1"))
-        // Not started (parked): the machine ends the token in its own step, answers so, and
+        // Not started (queued): the machine ends the token in its own step, answers so, and
         // the final frame and the close leave that step; the admission never runs.
-        let waiting = EndToken()
+        let waiting = WithdrawToken()
         let parked = Task {
-            try await a.call(.register(session: 5, player: 50, gate: "", token: waiting), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 5, player: 50, gate: "", token: waiting), cancellation: .ignoresCancel)
         }
         await f.wait("park #1")
-        let ended = await a.ask(.endJoinBeforeAdmission(session: 5, token: waiting))
+        let ended = await a.query(.endJoinBeforeAdmission(session: 5, token: waiting))
         let frameAtAnswer = await a.snapshot().flushed
         let parkedResult = outcome(await parked.result)
         await f.wait("closed 5")
         f.open("b1")
         await a.waitForLog(3)
         // Started: the answer says so, and the join goes on to its outcome.
-        let running = EndToken()
+        let running = WithdrawToken()
         let started = Task {
-            try await a.call(.register(session: 6, player: 60, gate: "k6", token: running), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 6, player: 60, gate: "k6", token: running), cancellation: .ignoresCancel)
         }
         await f.wait("at k6")
-        let endedStarted = await a.ask(.endJoinBeforeAdmission(session: 6, token: running))
+        let endedStarted = await a.query(.endJoinBeforeAdmission(session: 6, token: running))
         f.open("k6")
         f.open("tk6")
         let startedResult = outcome(await started.result)
         let s = await a.snapshot()
         #expect(parkedResult == "withdrawn")
-        #expect(waiting.isEnded)
+        #expect(waiting.isWithdrawn)
         #expect(ended == 1)
         #expect(frameAtAnswer == [1005])
         #expect(startedResult == "success 6")
-        #expect(!running.isEnded)
+        #expect(!running.isWithdrawn)
         #expect(endedStarted == 0)
         #expect(s.flushed == [1005])
         #expect(a.transport.closed == [5])
@@ -220,9 +220,9 @@ struct MembershipModelTests {
         let transport = a.transport
         func register(_ session: Int, _ player: Int, _ gate: String, generation: Int? = nil) -> Task<Int, any Error> {
             Task {
-                try await a.call(
+                try await a.sendAndWait(
                     .register(session: session, player: player, gate: gate, token: nil, generation: generation),
-                    cancellation: .ignored
+                    cancellation: .ignoresCancel
                 )
             }
         }
@@ -323,9 +323,9 @@ struct MembershipModelTests {
         let keeper = a.keeper
         func join(_ session: Int, _ player: Int, _ gate: String, _ shape: JoinShape) -> Task<Int, any Error> {
             Task {
-                try await a.call(
+                try await a.sendAndWait(
                     .libraryJoin(session: session, player: player, gate: gate, shape: shape, token: nil),
-                    cancellation: .ignored
+                    cancellation: .ignoresCancel
                 )
             }
         }
@@ -377,12 +377,12 @@ struct MembershipModelTests {
         let keeperAfterFourth = keeper.players
 
         // (e) A member's disconnect while other membership work is in flight: its leave keeps
-        //     its place, behind a registration that was already parked.
+        //     its place, behind a registration that was already queued.
         let fifthResult = outcome(await join(5, 50, "", .callerAdmits).result)
         a.transport.connect(6)
         await a.send(.txn(9, gate: "x9"))
         let registration = Task {
-            try await a.call(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignored)
+            try await a.sendAndWait(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignoresCancel)
         }
         await f.wait("park #1")
         await a.send(.disconnect(5))
@@ -415,10 +415,10 @@ struct MembershipModelTests {
         #expect(midThird.stats.openRequests == 0)
         #expect(midThird.stats.heldKeys == 1)
         #expect(midFifth.players[5] == nil)
-        #expect(midFifth.stats.parked == 2)
+        #expect(midFifth.stats.queued == 2)
         #expect(s.players == [6: 60])
         #expect(s.stats.heldKeys == 0)
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
         #expect(s.stats.openRequests == 0)
         #expect(s.stats.pendingWaiters == 0)
         #expect(s.log == [
@@ -442,14 +442,14 @@ struct MembershipModelTests {
         let keeper = a.keeper
         func join(_ session: Int, _ player: Int, _ gate: String, _ shape: JoinShape) -> Task<Int, any Error> {
             Task {
-                try await a.call(
+                try await a.sendAndWait(
                     .libraryJoin(session: session, player: player, gate: gate, shape: shape, token: nil),
-                    cancellation: .ignored
+                    cancellation: .ignoresCancel
                 )
             }
         }
         func disconnect(_ session: Int) -> Task<Int, any Error> {
-            Task { try await a.call(.disconnect(session), cancellation: .ignored) }
+            Task { try await a.sendAndWait(.disconnect(session), cancellation: .ignoresCancel) }
         }
 
         // (a) No leave is due: answered in the disconnect's own step.
@@ -535,21 +535,21 @@ struct MembershipModelTests {
             "success 2", "success 4", "success 2", "abandoned", "success 2",
         ])
         #expect(waitingFirst.stats.pendingWaiters == 1)
-        #expect(waitingFirst.stats.parked == 1)
+        #expect(waitingFirst.stats.queued == 1)
         #expect(keeperBeforeLeave == [10: 1])
         #expect(keeperAfterLeave.isEmpty)
         #expect(leavesAfterFirst == 1)
         #expect(waitingStop.stats.pendingWaiters == 3)
-        #expect(waitingStop.stats.parked == 3)
+        #expect(waitingStop.stats.queued == 3)
         #expect(leavesBeforeStop == 1)
         #expect(keeperAfterStop.isEmpty)
         #expect(leavesAfterStop == 4)
         #expect(waitingEighth.stats.pendingWaiters == 1)
         #expect(leavesAfterEighth == 5)
-        #expect(beforeEnd.stats.parked == 1)
+        #expect(beforeEnd.stats.queued == 1)
         #expect(beforeEnd.stats.heldKeys == 1)
         #expect(beforeEnd.stats.pendingWaiters == 2)
-        #expect(afterEnd.stats.parked == 0)
+        #expect(afterEnd.stats.queued == 0)
         #expect(afterEnd.stats.heldKeys == 1)
         #expect(afterEnd.stats.liveKeys == 0)
         #expect(afterEnd.stats.openRequests == 0)
@@ -558,7 +558,7 @@ struct MembershipModelTests {
         #expect(afterWorker.stats.ignoredAfterEnd == 1)
         #expect(s.stats.liveKeys == 0)
         #expect(s.stats.openRequests == 0)
-        #expect(s.stats.parked == 0)
+        #expect(s.stats.queued == 0)
         #expect(s.stats.heldKeys == 0)
         #expect(s.stats.ignoredAfterEnd == 2)
         #expect(s.stats.pendingWaiters == 0)

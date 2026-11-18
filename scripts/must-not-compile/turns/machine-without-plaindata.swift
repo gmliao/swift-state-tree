@@ -13,5 +13,5 @@ struct Mach: TurnMachine {
 }
 
 func run() {
-    _ = TurnCore(Mach(collaborator: Collaborator()), parkedLimit: 8, segmentBudget: 8, clock: SnippetClock())
+    _ = TurnCore(Mach(collaborator: Collaborator()), queueLimit: 8, maxReleasesPerBatch: 8, clock: SnippetClock())
 }

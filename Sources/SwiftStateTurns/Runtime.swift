@@ -1,4 +1,4 @@
-// The core's own state: lifetimes, requests, holds, parked inputs and what a step leaves for the
+// The core's own state: lifetimes, requests, holds, queued inputs and what a step leaves for the
 // driver. A value type in a stored property of the core, beside the machine, so a step changes
 // both without an overlapping access.
 
@@ -61,11 +61,11 @@ struct Parked<M: TurnMachine> {
     @usableFromInline var input: M.Input
     @usableFromInline var caller: InputID?
     @usableFromInline var scope: M.Key?
-    @usableFromInline var token: EndToken?
-    /// Queued by a step (`Turn.queue`): `close`, scopes and the parked limit don't apply.
+    @usableFromInline var token: WithdrawToken?
+    /// Queued by a step (`Turn.queue`): `close`, scopes and the queue limit don't apply.
     @usableFromInline var pinned: Bool
 
-    @inlinable init(input: M.Input, caller: InputID?, scope: M.Key?, token: EndToken?, pinned: Bool = false) {
+    @inlinable init(input: M.Input, caller: InputID?, scope: M.Key?, token: WithdrawToken?, pinned: Bool = false) {
         self.input = input
         self.caller = caller
         self.scope = scope
@@ -112,9 +112,9 @@ struct Runtime<M: TurnMachine> {
     // Requests and the holds they own.
     @usableFromInline var nextRequest: UInt64 = 0
     @usableFromInline var open: [RequestID: RequestRecord<M.Key>] = [:]
-    /// Closed requests whose worker still keeps a hold (`Hold.untilWorkerRetires`).
+    /// Closed requests whose worker still keeps a hold (`Hold.untilWorkerReturns`).
     @usableFromInline var retiring: [RequestID: M.Key] = [:]
-    /// Hold key → how many open requests (or unretired workers) own it.
+    /// Hold key → how many open requests (or workers that have not returned) own it.
     @usableFromInline var held: [M.Key: Int] = [:]
     /// Set when a request with a deadline task closed: the driver cancels the closed ones' tasks.
     @usableFromInline var deadlinesToCancel = false
@@ -124,12 +124,12 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var timersToArm: [PendingTimer<M>] = []
     /// Set when a timer was replaced or dropped: the driver cancels the stale ones' tasks.
     @usableFromInline var timersToCancel = false
-    // Parked external inputs, by hold key.
+    // Queued normal inputs, by hold key.
     @usableFromInline var parked: [M.Key: FIFO<Parked<M>>] = [:]
     @usableFromInline var parkedCount = 0
-    /// Inputs parked so far (for the diagnostics hook).
+    /// Inputs queued so far (for the diagnostics hook).
     @usableFromInline var parkEvents = 0
-    /// Hold keys released while inputs were parked behind them.
+    /// Hold keys released while inputs were queued behind them.
     @usableFromInline var releasable: [M.Key] = []
     // What a step leaves for the driver.
     @usableFromInline var effects: [PendingEffect<M>] = []
@@ -143,11 +143,11 @@ struct Runtime<M: TurnMachine> {
     /// Set by anything that leaves work for the driver; the only check after an idle step.
     @usableFromInline var dirty = false
     @usableFromInline var droppedOutputs = 0
-    /// Parked `send`s (no caller) withdrawn or dropped by `close`; `TurnStats.droppedSends`.
+    /// Queued `send`s (no caller) withdrawn or dropped by `close`; `TurnStats.droppedSends`.
     @usableFromInline var droppedParkedSends = 0
-    /// Set by `endAll`: the core is terminal, and no key can be issued again.
+    /// Set by `endAll`: the core is terminal, and no key can be started again.
     @usableFromInline var ended = false
-    /// `issue` and `queue` calls made after the end, and ignored.
+    /// `start` and `queue` calls made after the end, and ignored.
     @usableFromInline var ignoredAfterEnd = 0
 
     @inlinable init() {}
@@ -203,7 +203,7 @@ struct Runtime<M: TurnMachine> {
         if let hold = retiring.removeValue(forKey: id) { releaseHold(hold) }
     }
 
-    /// Removes the parked inputs `predicate` picks. Their callers are answered `withdrawn`, in
+    /// Removes the queued inputs `predicate` picks. Their callers are answered `withdrawn`, in
     /// call order (not the hash order of the hold keys).
     @inlinable mutating func withdraw(where predicate: (Parked<M>) -> Bool) {
         if parkedCount == 0 { return }
@@ -226,7 +226,7 @@ struct Runtime<M: TurnMachine> {
         withdrawn.append(contentsOf: callers.sorted { $0.raw < $1.raw })
     }
 
-    /// Removes a cancelled caller's parked input, if it is still parked.
+    /// Removes a cancelled caller's queued input, if it is still queued.
     @inlinable mutating func withdraw(caller: InputID) -> Bool {
         if parkedCount == 0 { return false }
         for key in Array(parked.keys) {
@@ -240,7 +240,7 @@ struct Runtime<M: TurnMachine> {
         return false
     }
 
-    /// Drops every parked external input (`close`) and returns their callers. What a step
+    /// Drops every queued normal input (`close`) and returns their callers. What a step
     /// queued itself stays, in its order.
     @inlinable mutating func dropAllParked() -> [InputID] {
         var callers: [InputID] = []
@@ -279,7 +279,7 @@ struct Runtime<M: TurnMachine> {
         parkedCount += 1
     }
 
-    /// The next key whose parked inputs may step: released, not held again, not empty.
+    /// The next key whose queued inputs may step: released, not held again, not empty.
     @inlinable mutating func nextReleasable() -> M.Key? {
         while let key = releasable.first {
             if held[key] == nil, let queue = parked[key], !queue.isEmpty { return key }

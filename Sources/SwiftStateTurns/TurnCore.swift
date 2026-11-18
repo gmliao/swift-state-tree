@@ -2,25 +2,25 @@
 
 /// The core's counters, read between steps.
 public struct TurnStats: Sendable, Equatable {
-    /// External inputs parked now.
-    public var parked = 0
+    /// Normal inputs queued now.
+    public var queued = 0
     public var openRequests = 0
     public var heldKeys = 0
     public var liveKeys = 0
-    /// `call`s waiting for their reply.
+    /// `sendAndWait`s waiting for their reply.
     public var pendingWaiters = 0
     /// `emit`s under a key that wasn't live.
     public var droppedOutputs = 0
-    /// `issue` and `queue` calls after `endAll`.
+    /// `start` and `queue` calls after `endAll`.
     public var ignoredAfterEnd = 0
-    /// `send`s refused (closed, withdrawn or over the parked limit), or parked and then withdrawn
+    /// `send`s refused (closed, withdrawn or over the queue limit), or queued and then withdrawn
     /// or closed (`end`, a supersede, `revoke`, `close`, `endAll`), which had no caller to answer.
     public var droppedSends = 0
     /// Completions and deadlines from another core (a replaced one), dropped.
     public var foreignCompletions = 0
-    /// Segments whose released inputs were left for a later segment by the budget.
+    /// Batches whose released inputs were left for a later batch by the budget.
     public var drainContinuations = 0
-    /// Calls answered with `CancellationError` under `.honoured`.
+    /// Calls answered with `CancellationError` under `.cancelsCall`.
     public var cancelledCalls = 0
 
     @inlinable public init() {}
@@ -28,8 +28,8 @@ public struct TurnStats: Sendable, Equatable {
 
 /// What a test may wait for, reported synchronously on the actor where it happens.
 public enum TurnDiagnostic: Sendable, Equatable {
-    case parked(total: Int)
-    case segmentEnded(released: Int)
+    case queued(total: Int)
+    case batchEnded(released: Int)
     case foreignCompletion
     /// A deadline woke (on time, or early because it was cancelled) for a request that had
     /// already closed, and did nothing.
@@ -48,13 +48,13 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline var rt = Runtime<M>()
     @usableFromInline var inStep = false
     @usableFromInline var inSegment = false
-    /// Sends and calls made while a step or a segment was running.
+    /// Sends and calls made while a step or a batch was running.
     @usableFromInline var queued = FIFO<(M.Input, InputID?)>()
     @usableFromInline var waiters: [InputID: CheckedContinuation<M.Reply, any Error>] = [:]
     @usableFromInline var nextInput: UInt64 = 0
     @usableFromInline var drainScheduled = false
     @usableFromInline var counters = TurnStats()
-    /// The segment's clock reading, taken on first use.
+    /// The batch's clock reading, taken on first use.
     @usableFromInline var cachedNow: TurnInstant?
     @usableFromInline var deadlineTasks: [RequestID: Task<Void, Never>] = [:]
     @usableFromInline var timerTasks: [M.Key: (generation: UInt64, task: Task<Void, Never>)] = [:]
@@ -68,26 +68,27 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline package var onDiagnostic: ((TurnDiagnostic) -> Void)?
     /// Tells this core's completions from another core's (a replaced core).
     @usableFromInline let incarnation: UInt64
-    @usableFromInline let parkedLimit: Int
-    @usableFromInline let segmentBudget: Int
+    @usableFromInline let queueLimit: Int
+    @usableFromInline let maxReleasesPerBatch: Int
     @usableFromInline let clock: any TurnClock
 
     /// - Parameters:
     ///   - machine: the machine in its initial state.
-    ///   - parkedLimit: how many external inputs may be parked at once.
-    ///   - segmentBudget: how many released parked inputs step per segment.
+    ///   - queueLimit: how many normal inputs may be queued at once.
+    ///   - maxReleasesPerBatch: how many queued inputs a hold's release lets step per batch;
+    ///     abandonments and sends that arrive during the batch don't count.
     ///   - clock: what `Turn.now`, deadlines and timers read and sleep on.
     ///
     /// Only a `PlainData` machine can be run: `@PlainData` writes that conformance and checks
     /// every stored field, so a machine that stores a class or a closure doesn't compile here.
-    public init(_ machine: M, parkedLimit: Int, segmentBudget: Int, clock: some TurnClock) where M: PlainData {
+    public init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock) where M: PlainData {
         // `fatalError`, not `precondition`: its message prints in release builds too.
         if M.self is AnyClass { fatalError("TurnCore: the machine must be a value type, not \(M.self)") }
-        if parkedLimit < 0 { fatalError("TurnCore: parkedLimit must not be negative") }
-        if segmentBudget < 1 { fatalError("TurnCore: segmentBudget must be at least 1") }
+        if queueLimit < 0 { fatalError("TurnCore: queueLimit must not be negative") }
+        if maxReleasesPerBatch < 1 { fatalError("TurnCore: maxReleasesPerBatch must be at least 1") }
         self.machine = machine
-        self.parkedLimit = parkedLimit
-        self.segmentBudget = segmentBudget
+        self.queueLimit = queueLimit
+        self.maxReleasesPerBatch = maxReleasesPerBatch
         self.clock = clock
         self.incarnation = UInt64.random(in: UInt64.min ... UInt64.max)
     }
@@ -106,7 +107,7 @@ public final class TurnCore<M: TurnMachine> {
 
     public var stats: TurnStats {
         var stats = counters
-        stats.parked = rt.parkedCount
+        stats.queued = rt.parkedCount
         stats.openRequests = rt.open.count
         stats.heldKeys = rt.held.count
         stats.liveKeys = rt.live.count
@@ -172,7 +173,7 @@ public final class TurnCore<M: TurnMachine> {
     @inlinable func stepStale(_ input: M.Input) {
         enterStep(input)
         var turn = Turn<M>(core: self, input: nil)
-        machine.handleStale(input, &turn)
+        machine.handleLateResult(input, &turn)
         leaveStep()
     }
 
@@ -184,7 +185,7 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func stepAnswer(_ query: M.Query) -> M.Answer {
-        if inStep { fatalError("TurnCore: ask was called from inside a step") }
+        if inStep { fatalError("TurnCore: query was called from inside a step") }
         enterStep(nil)
         var turn = Turn<M>(core: self, input: nil)
         let answer = machine.answer(query, &turn)

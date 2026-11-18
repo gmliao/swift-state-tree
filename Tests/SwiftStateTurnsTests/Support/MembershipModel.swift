@@ -21,7 +21,7 @@ struct MembershipModel: TurnMachine {
         /// Other membership work in flight: holds `.membership` until its gate opens.
         case txn(Int, gate: String)
         case txnFinished(Int)
-        case register(session: Int, player: Int, gate: String, token: EndToken?, generation: Int? = nil)
+        case register(session: Int, player: Int, gate: String, token: WithdrawToken?, generation: Int? = nil)
         case keeperEntryRead(session: Int, player: Int, entry: Int?)
         case transportRegistered(session: Int, generation: Int?)
         /// A control input: nothing refuses it. As a call it is answered when the session's
@@ -29,7 +29,7 @@ struct MembershipModel: TurnMachine {
         /// dropped: 2.
         case disconnect(Int)
         /// The keeper's join as one request.
-        case libraryJoin(session: Int, player: Int, gate: String, shape: JoinShape, token: EndToken?)
+        case libraryJoin(session: Int, player: Int, gate: String, shape: JoinShape, token: WithdrawToken?)
         case keeperJoined(session: Int, player: Int, joined: Bool, admitted: Bool)
         /// Queued behind `.membership` by a disconnect.
         case leave(session: Int, player: Int)
@@ -66,7 +66,7 @@ struct MembershipModel: TurnMachine {
         case admit(session: Int, player: Int)
         /// The router's join budget ran out. 1: the join hadn't started and is ended. 0: it
         /// started, and is left alone.
-        case endJoinBeforeAdmission(session: Int, token: EndToken)
+        case endJoinBeforeAdmission(session: Int, token: WithdrawToken)
     }
 
     typealias Output = Int
@@ -108,14 +108,14 @@ struct MembershipModel: TurnMachine {
 
     init() {}
 
-    func admission(of input: Input) -> Admission<Key> {
+    func inputPolicy(for input: Input) -> InputPolicy<Key> {
         switch input {
         case .txn:
-            return .external(hold: .membership, scope: nil)
+            return .normal(waitsFor: .membership, belongsTo: nil)
         case .register(let session, _, _, let token, _):
-            return .external(hold: .membership, scope: .connection(session), unless: token)
+            return .normal(waitsFor: .membership, belongsTo: .connection(session), withdrawnBy: token)
         case .libraryJoin(let session, _, _, _, let token):
-            return .external(hold: .membership, scope: .connection(session), unless: token)
+            return .normal(waitsFor: .membership, belongsTo: .connection(session), withdrawnBy: token)
         default:
             return .control
         }
@@ -126,12 +126,12 @@ struct MembershipModel: TurnMachine {
     }
 
     mutating func ensureLand(_ turn: inout Turn<MembershipModel>) {
-        if !turn.isLive(.land) { turn.issue(.land) }
+        if !turn.isLive(.land) { turn.start(.land) }
     }
 
     /// The admission of a library join's session: membership and its member key, in one step.
     mutating func admitMember(session: Int, player: Int, _ turn: inout Turn<MembershipModel>) {
-        turn.issue(.member(session))
+        turn.start(.member(session))
         sessionToPlayer[session] = player
         libraryMembers.insert(session)
         note("admitted \(session) as \(player)")
@@ -146,7 +146,7 @@ struct MembershipModel: TurnMachine {
         guard let request = turn.request(
             .keeperLeave(session: session, player: player),
             for: .land,
-            holding: .untilWorkerRetires(.membership, deadline: Self.unbounded)
+            holding: .untilWorkerReturns(.membership, deadline: Self.unbounded)
         ) else { return false }
         leaves[request] = session
         note("leave \(session) requested")
@@ -179,7 +179,7 @@ struct MembershipModel: TurnMachine {
         case .txn(let name, let gate):
             note("begin \(name)")
             if let caller = turn.input { txnCaller[name] = caller }
-            turn.issue(.txn(name))
+            turn.start(.txn(name))
             if let request = turn.request(
                 .txnWork(name, gate: gate),
                 for: .txn(name),
@@ -196,9 +196,9 @@ struct MembershipModel: TurnMachine {
         case .register(let session, let player, let gate, _, let generation):
             note("register \(session)")
             // The first registration of a session issues its connection key. One that was
-            // parked when the session disconnected never gets here: the disconnect's `end`
+            // queued when the session disconnected never gets here: the disconnect's `end`
             // withdrew it.
-            if !turn.isLive(.connection(session)) { turn.issue(.connection(session)) }
+            if !turn.isLive(.connection(session)) { turn.start(.connection(session)) }
             if let request = turn.request(
                 .keeperEntry(session: session, player: player, gate: gate),
                 for: .connection(session),
@@ -213,7 +213,7 @@ struct MembershipModel: TurnMachine {
                   let registration = registrations.removeValue(forKey: request) else { return }
             if let entry, entry != session {
                 // The keeper names a newer session of the player: refused, and the connection
-                // is closed. Other parked registrations of this connection are withdrawn. The
+                // is closed. Other queued registrations of this connection are withdrawn. The
                 // session's membership, if it has one, ends when its disconnect arrives.
                 note("refuse \(session)")
                 turn.end(.connection(session))
@@ -223,7 +223,7 @@ struct MembershipModel: TurnMachine {
                 // The member key moves only when the binding changes, and it moves now, when
                 // the decision is applied.
                 if sessionToPlayer[session] != player {
-                    turn.issue(.member(session))
+                    turn.start(.member(session))
                     note("member \(session) issued")
                 }
                 sessionToPlayer[session] = player
@@ -263,7 +263,7 @@ struct MembershipModel: TurnMachine {
             connectionGenerations.removeValue(forKey: session)
             let wasMember = libraryMembers.remove(session) != nil
             // A leave is still due if the session's keeper join is running (what the keeper
-            // has to undo is known when that worker returns, in `handleStale`), or if an
+            // has to undo is known when that worker returns, in `handleLateResult`), or if an
             // earlier disconnect of this session is still waiting for one.
             var leaveDue = joining || leaveWaiters[session] != nil
             if !joining, wasMember, let player {
@@ -278,12 +278,12 @@ struct MembershipModel: TurnMachine {
 
         case .libraryJoin(let session, let player, let gate, let shape, _):
             note("join \(session)")
-            if !turn.isLive(.connection(session)) { turn.issue(.connection(session)) }
+            if !turn.isLive(.connection(session)) { turn.start(.connection(session)) }
             // Nothing else of the membership path runs in the keeper until this worker returns.
             if let request = turn.request(
                 .keeperJoin(session: session, player: player, gate: gate, shape: shape),
                 for: .connection(session),
-                holding: .untilWorkerRetires(.membership, deadline: Self.unbounded)
+                holding: .untilWorkerReturns(.membership, deadline: Self.unbounded)
             ) {
                 joins[request] = Registration(session: session, player: player, caller: turn.input, gate: gate)
             }
@@ -348,7 +348,7 @@ struct MembershipModel: TurnMachine {
         settleLogWaiters(&turn)
     }
 
-    mutating func handleStale(_ input: Input, _ turn: inout Turn<MembershipModel>) {
+    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<MembershipModel>) {
         switch input {
         case .txnFinished(let name): note("stale \(name)")
         case .keeperEntryRead(let session, _, _): note("stale read \(session)")

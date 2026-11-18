@@ -4,7 +4,7 @@ A lobby that loads each player's profile before seating them, one load at a time
 
 ## The machine
 
-The machine's state is three dictionaries and a count, and `@PlainData` checks each field's type. Each player has a binding, the key `.player(id)`. A join is admitted behind a second key, `.store`. While one join's load holds the store, the next join parks until that load closes.
+The machine's state is three dictionaries and a count, and `@PlainData` checks each field's type. Each player has a binding, the key `.player(id)`. A join is admitted behind a second key, `.store`. While one join's load holds the store, the next join queues until that load closes.
 
 ```swift
 /// Where profiles come from: a service in production, a held fake in a test.
@@ -42,11 +42,11 @@ struct Lobby: TurnMachine {
     /// Loads that came back after their join was given up.
     var late: Int
 
-    func admission(of input: Input) -> Admission<Key> {
+    func inputPolicy(for input: Input) -> InputPolicy<Key> {
         switch input {
         // A join waits while another join's load holds the profile store.
-        case .join: .external(hold: .store, scope: nil)
-        default: .external(hold: nil, scope: nil)
+        case .join: .normal(waitsFor: .store, belongsTo: nil)
+        default: .normal(waitsFor: nil, belongsTo: nil)
         }
     }
 
@@ -55,7 +55,7 @@ struct Lobby: TurnMachine {
         case .join(let player):
             // The player's binding. The load is a request it owns, holding the store with a
             // deadline.
-            turn.issue(.player(player))
+            turn.start(.player(player))
             let hold = Hold.untilRequestCloses(Key.store, deadline: .seconds(2))
             guard let id = turn.request(.loadProfile(player: player), for: .player(player), holding: hold) else { return }
             loading[id] = player
@@ -84,7 +84,7 @@ struct Lobby: TurnMachine {
         turn.reply(to: caller, .failure(error))
     }
 
-    mutating func handleStale(_ input: Input, _ turn: inout Turn<Lobby>) {
+    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Lobby>) {
         // A load that returned after its request closed: nothing to seat.
         late += 1
     }
@@ -96,13 +96,13 @@ enum LobbyError: Error {
 }
 ```
 
-In `handle(.join)`, the step issues the player's key and makes the load a request owned by that key. The request holds the store with ``Hold/untilRequestCloses(_:deadline:)``. The deadline is part of the hold, so a holding request can't be written without one. The step stores the request's ID and the caller, and returns. Nothing waits.
+In `handle(.join)`, the step starts the player's key and makes the load a request owned by that key. The request holds the store with ``Hold/untilRequestCloses(_:deadline:)``. The deadline is part of the hold, so a holding request can't be written without one. The step stores the request's ID and the caller, and returns. Nothing waits.
 
 The load's result arrives as `.loaded`, in a later step, and only while its request is open. That step changes the state, emits an output and answers the caller. The other cases:
 
 - The deadline passes first: the request is abandoned. `handleAbandoned` answers the caller with an error, and the store's hold is released.
 - The player leaves first: `.leave` ends the player's key, which abandons the request the same way.
-- A load returns after either of these: it goes to `handleStale`, which only counts it.
+- A load returns after either of these: it goes to `handleLateResult`, which only counts it.
 - A second `.join` for the same player: it supersedes the first. The first load is abandoned, and the new one starts.
 
 ## The actor
@@ -112,8 +112,8 @@ The load's result arrives as `.loaded`, in a later step, and only while its requ
 actor LobbyActor: TurnActor {
     let core = TurnCore(
         Lobby(seats: [:], loading: [:], waiting: [:], late: 0),
-        parkedLimit: 64,
-        segmentBudget: 16,
+        queueLimit: 64,
+        maxReleasesPerBatch: 16,
         clock: ContinuousTurnClock()
     )
     nonisolated let profiles: any ProfileStore
@@ -170,10 +170,10 @@ An adopter in this repository sleeps with its safe sleep helper instead of `Task
 
 ```swift
 let lobby = LobbyActor(profiles: ImmediateProfiles())
-let count = try await lobby.call(.join(player: 7), cancellation: .ignored)
+let count = try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel)
 // count == 1, and the lobby flushed "welcome player 7".
 ```
 
-``TurnActor/send(_:)`` submits an input. It returns once the input's step has run, or once the input parked. ``TurnActor/call(_:cancellation:)`` also waits for the step's ``Turn/reply(to:_:after:)``. Here, the reply comes in the `.loaded` step, after the load. Each `call` says what its task's cancellation does (``CallerCancellation``); there is no default.
+``TurnActor/send(_:)`` submits an input. It returns once the input's step has run, or once the input queued. ``TurnActor/sendAndWait(_:cancellation:)`` also waits for the step's ``Turn/reply(to:_:after:)``. Here, the reply comes in the `.loaded` step, after the load. Each `sendAndWait` says what its task's cancellation does (``CallerCancellation``); there is no default.
 
 The code on this page is compiled and run by `Tests/SwiftStateTurnsTests/WorkedExampleTests.swift`, which also checks that each block here matches it.

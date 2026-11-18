@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 284" width="800" height="284" role="img" aria-label="hold 的時間線：join 7 的載入佔住 store；join 8 排隊，直到載入結果執行">
-  <title>hold 的時間線：join 7 的載入佔住 store；join 8 排隊，直到載入結果執行</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 284" width="800" height="284" role="img" aria-label="hold 的時間線：join 7 的載入佔住 store；join 8 佇列，直到載入結果執行">
+  <title>hold 的時間線：join 7 的載入佔住 store；join 8 佇列，直到載入結果執行</title>
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#24292f"/>
@@ -30,9 +30,9 @@
   <circle cx="260" cy="160" r="5" fill="#24292f"/>
   <text class="s" x="260" y="140" text-anchor="middle">到達</text>
   <rect x="270" y="150" width="220" height="20" rx="4" fill="#f6f8fa" stroke="#8c959f"/>
-  <text class="s" x="380.0" y="164" text-anchor="middle">排隊中</text>
+  <text class="s" x="380.0" y="164" text-anchor="middle">佇列中</text>
   <circle cx="500" cy="160" r="5" fill="#24292f"/>
   <text class="s" x="500" y="140" text-anchor="start">執行</text>
   <line class="d" x1="480" y1="60" x2="480" y2="240"/>
-  <text class="n" x="20" y="222">request 關閉時 hold 結束，join 8 在同一個 segment 裡執行。</text>
+  <text class="n" x="20" y="222">request 關閉時 hold 結束，join 8 在同一個 batch 裡執行。</text>
 </svg>

@@ -7,7 +7,7 @@ struct SnippetClock: TurnClock {
 }
 
 func snippetCore<M: TurnMachine & PlainData>(_ machine: M) -> TurnCore<M> {
-    TurnCore(machine, parkedLimit: 8, segmentBudget: 8, clock: SnippetClock())
+    TurnCore(machine, queueLimit: 8, maxReleasesPerBatch: 8, clock: SnippetClock())
 }
 
 final class Collaborator: Sendable {

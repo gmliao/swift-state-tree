@@ -6,7 +6,7 @@ enum DemoError: Error, Sendable, Equatable {
 }
 
 /// A machine that exercises the core's rules one at a time: jobs (a key each, with work under
-/// it), transactions that hold `.membership`, steps parked behind that hold, scoped and
+/// it), transactions that hold `.membership`, steps queued behind that hold, scoped and
 /// token-guarded inputs, `queue`, timers and the clock. It logs what each step did, so a check
 /// compares the log with the order the rule requires.
 @PlainData
@@ -28,14 +28,14 @@ struct DemoMachine: TurnMachine {
         case holdCaller(Int)             // control: logs, keeps its caller without a reply
         case answerHeld                  // replies to the callers `holdCaller` kept
         case answerNow(Int)              // control: logs, replies to its caller in its own step
-        // Transactions that hold .membership, and what parks behind them.
+        // Transactions that hold .membership, and what queues behind them.
         case txn(Int, gate: String, deadline: Duration?, untilRetire: Bool)
         case txnFinished(Int)
         case abort(Int)
-        case step(Int)                   // parks behind .membership; logs, emits under .io
-        case scoped(Int, scope: Int)     // parks behind .membership, scoped to .job(scope)
-        case guarded(Int, token: EndToken)
-        case revoke(EndToken)
+        case step(Int)                   // queues behind .membership; logs, emits under .io
+        case scoped(Int, scope: Int)     // queues behind .membership, scoped to .job(scope)
+        case guarded(Int, token: WithdrawToken)
+        case revoke(WithdrawToken)
         case enqueue(String)             // queues .mark("queued <label>") behind .membership
         case endKey(Key)
         case relay(Int, first: String, second: String)
@@ -109,16 +109,16 @@ struct DemoMachine: TurnMachine {
 
     init() {}
 
-    func admission(of input: Input) -> Admission<Key> {
+    func inputPolicy(for input: Input) -> InputPolicy<Key> {
         switch input {
         case .ping, .note, .echo, .start, .emit, .replyAfter, .reissue, .emitAndWork:
-            return .external(hold: nil, scope: nil)
+            return .normal(waitsFor: nil, belongsTo: nil)
         case .txn, .step:
-            return .external(hold: .membership, scope: nil)
+            return .normal(waitsFor: .membership, belongsTo: nil)
         case .scoped(_, let scope):
-            return .external(hold: .membership, scope: .job(scope))
+            return .normal(waitsFor: .membership, belongsTo: .job(scope))
         case .guarded(_, let token):
-            return .external(hold: .membership, scope: nil, unless: token)
+            return .normal(waitsFor: .membership, belongsTo: nil, withdrawnBy: token)
         default:
             return .control
         }
@@ -146,15 +146,15 @@ struct DemoMachine: TurnMachine {
     mutating func apply(_ input: Input, _ turn: inout Turn<DemoMachine>) {
         switch input {
         case .setup:
-            turn.issue(.io)
-            turn.issue(.other)
+            turn.start(.io)
+            turn.start(.other)
         case .ping:
             break
         case .note(let text), .mark(let text):
             note(text)
 
         case .start(let job, let gate):
-            turn.issue(.job(job))
+            turn.start(.job(job))
             if let request = turn.request(.work(job: job, gate: gate), for: .job(job)) {
                 jobRequests[request] = job
             }
@@ -167,11 +167,11 @@ struct DemoMachine: TurnMachine {
         case .emit(let job):
             turn.emit(job, for: .job(job))
         case .reissue(let job, let first, let second):
-            turn.issue(.job(job))
+            turn.start(.job(job))
             if let request = turn.request(.work(job: job, gate: first), for: .job(job)) {
                 jobRequests[request] = job
             }
-            let superseded = turn.issue(.job(job))
+            let superseded = turn.start(.job(job))
             note("reissue \(job) superseded \(superseded)")
             if let request = turn.request(.work(job: job, gate: second), for: .job(job)) {
                 jobRequests[request] = job
@@ -181,7 +181,7 @@ struct DemoMachine: TurnMachine {
                 turn.cancel(request)
             }
         case .replyAfter(let job, let gate, let deadline):
-            turn.issue(.job(job))
+            turn.start(.job(job))
             guard let request = turn.request(.work(job: job, gate: gate), for: .job(job), deadline: deadline) else { return }
             jobRequests[request] = job
             if let caller = turn.input { turn.reply(to: caller, .success(job), after: request) }
@@ -197,10 +197,10 @@ struct DemoMachine: TurnMachine {
         case .txn(let name, let gate, let deadline, let untilRetire):
             note("begin \(name)")
             if let caller = turn.input { txnCaller[name] = caller }
-            turn.issue(.txn(name))
+            turn.start(.txn(name))
             let bound = deadline ?? Self.unbounded
             let hold: Hold<Key> = untilRetire
-                ? .untilWorkerRetires(.membership, deadline: bound)
+                ? .untilWorkerReturns(.membership, deadline: bound)
                 : .untilRequestCloses(.membership, deadline: bound)
             if let request = turn.request(.txnWork(name, gate: gate), for: .txn(name), holding: hold) {
                 txnRequest[request] = name
@@ -231,7 +231,7 @@ struct DemoMachine: TurnMachine {
             turn.end(key)
         case .relay(let name, let first, let second):
             note("relay \(name)")
-            turn.issue(.txn(name))
+            turn.start(.txn(name))
             relaySecond[name] = second
             turn.request(
                 .relayWork(name, gate: first, leg: 1),
@@ -257,10 +257,10 @@ struct DemoMachine: TurnMachine {
             turn.run(.traced(number))
 
         case .arm(let job, let instant):
-            if !turn.isLive(.job(job)) { turn.issue(.job(job)) }
+            if !turn.isLive(.job(job)) { turn.start(.job(job)) }
             turn.timer(at: instant, for: .job(job), .tick(job: job, at: instant))
         case .armIn(let job, let after):
-            if !turn.isLive(.job(job)) { turn.issue(.job(job)) }
+            if !turn.isLive(.job(job)) { turn.start(.job(job)) }
             let first = turn.now
             let second = turn.now
             note("arm \(job) now \(first.wholeSeconds) \(second.wholeSeconds)")
@@ -268,7 +268,7 @@ struct DemoMachine: TurnMachine {
         case .tick(let job, let instant):
             note("tick \(job) at \(instant.wholeSeconds)")
         case .startPeriodic(let job, let period):
-            turn.issue(.job(job))
+            turn.start(.job(job))
             let at = turn.now + .seconds(period)
             turn.timer(at: at, for: .job(job), .periodic(job: job, at: at, periodSeconds: period))
         case .periodic(let job, let at, let period):
@@ -284,7 +284,7 @@ struct DemoMachine: TurnMachine {
             note("periodic \(job) at \(at.wholeSeconds) next \(instant.wholeSeconds)")
             turn.timer(at: instant, for: .job(job), .periodic(job: job, at: instant, periodSeconds: period))
         case .nowAndDeadline(let job, let deadline):
-            turn.issue(.job(job))
+            turn.start(.job(job))
             let now = turn.now
             note("now \(now.wholeSeconds)")
             if let request = turn.request(.work(job: job, gate: "never"), for: .job(job), deadline: deadline) {
@@ -294,7 +294,7 @@ struct DemoMachine: TurnMachine {
         case .runMark(let label):
             turn.run(.echoMark(label))
         case .issueKey(let job):
-            let issued = turn.issue(.job(job))
+            let issued = turn.start(.job(job))
             note("issue \(job) \(issued)")
 
         case .shutdown:
@@ -325,7 +325,7 @@ struct DemoMachine: TurnMachine {
         settleLogWaiters(&turn)
     }
 
-    mutating func handleStale(_ input: Input, _ turn: inout Turn<DemoMachine>) {
+    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<DemoMachine>) {
         switch input {
         case .finished(let job): note("stale \(job)")
         case .txnFinished(let name): note("stale \(name)")
