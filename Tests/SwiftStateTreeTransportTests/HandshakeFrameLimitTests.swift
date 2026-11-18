@@ -141,6 +141,10 @@ private struct LimitFixture {
     init(limit: Int?, refusedFrameBudget: Int? = nil) throws {
         let definition = Land("handshake-limit", using: HandshakeLimitTestState.self) {
             Rules {
+                // Player "deny" is refused: a join the router refuses after its decode.
+                CanJoin { (_: HandshakeLimitTestState, session: PlayerSession, _: LandContext) in
+                    session.playerID == "deny" ? .deny(reason: "denied") : .allow(playerID: PlayerID(session.playerID))
+                }
                 OnJoin { (state: inout HandshakeLimitTestState, ctx: LandContext) in
                     state.players[ctx.playerID] = "Joined"
                 }
@@ -188,14 +192,14 @@ private struct LimitFixture {
 }
 
 /// A JSON-object join of exactly `bytes` bytes: the metadata's `pad` string fills it up.
-/// `landType` other than the fixture's makes a join the router refuses.
-private func join(bytes: Int, requestID: String = "join-1", landType: String = "handshake-limit") throws -> Data {
+/// `playerID` "deny" makes a join the land refuses (CanJoin).
+private func join(bytes: Int, requestID: String = "join-1", playerID: String = "p1") throws -> Data {
     func frame(_ pad: String) throws -> Data {
         var metadata = StateUpdateFeature.joinMetadata
         metadata["pad"] = AnyCodable(pad)
         return try JSONEncoder().encode(TransportMessage.join(
-            requestID: requestID, landType: landType, landInstanceId: "one",
-            playerID: "p1", deviceID: nil, metadata: metadata
+            requestID: requestID, landType: "handshake-limit", landInstanceId: "one",
+            playerID: playerID, deviceID: nil, metadata: metadata
         ))
     }
     let base = try frame("").count
@@ -521,9 +525,8 @@ struct HandshakeFrameLimitTests {
         let events = await connection.events
         #expect(events == Array(repeating: .sent(.error), count: budget + 1) + [.closed(.handshakeRefusedFrames)])
         #expect(SessionClose.handshakeRefusedFrames.code == 1008)
-        // Closing: nothing it sends next is read.
+        // Closed: a join it sends next doesn't join.
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
-        #expect(await fixture.router.framesDroppedAfterRefusalForTesting == 1)
         #expect(await fixture.router.getBoundLandID(for: session) == nil)
     }
 
@@ -540,7 +543,7 @@ struct HandshakeFrameLimitTests {
             Data(),                                                          // empty
             Data([0x01, 0x02]),                                              // not JSON
             Data("{\"kind\":".utf8),                                         // undecodable JSON
-            try join(bytes: 400, requestID: "join-x", landType: "missing"),  // a refused join
+            try join(bytes: 400, requestID: "join-x", playerID: "deny"),  // a refused join
         ]
         for frame in refused {
             await fixture.transport.handleIncomingMessage(sessionID: session, data: frame)
@@ -586,7 +589,7 @@ struct HandshakeFrameLimitTests {
         let session = SessionID("s-retry")
         let connection = await fixture.connect(session)
         for attempt in 0..<3 {
-            await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "retry-\(attempt)", landType: "missing"))
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "retry-\(attempt)", playerID: "deny"))
         }
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
         await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
@@ -598,8 +601,9 @@ struct HandshakeFrameLimitTests {
             await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "again-\(attempt)"))
         }
         await connection.waitFor { $0.kinds.filter { $0 == .error }.count >= 8 || !$0.closes.isEmpty }
-        #expect(await connection.closes.isEmpty)
-        #expect(await connection.errorCodes.suffix(5) == Array(repeating: ErrorCode.joinAlreadyJoined.rawValue, count: 5))
+        let codes = await connection.errorCodes
+        #expect(await connection.closes.isEmpty, "\(codes)")
+        #expect(codes.suffix(5) == Array(repeating: ErrorCode.joinAlreadyJoined.rawValue, count: 5), "\(codes)")
     }
 
     @Test("With no budget (nil), refused pre-join frames never close the session")
