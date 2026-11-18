@@ -5,8 +5,10 @@
 // - Depth: an action, a client event and a join, each with its payload nested `depth` levels,
 //   go through the router's and the adapter's decode and then the payload decode, on a task of
 //   the cooperative pool. The parsers' limits bound the depth: JSON parsing throws past 512
-//   levels, the MessagePack unpacker past `messagePackMaxNestingDepth`. Every depth up to the
-//   limit must decode or throw; a stack overflow ends the process.
+//   levels, the MessagePack unpacker past `messagePackMaxNestingDepth`. Up to the limit every
+//   decoder must produce the message and its payload stage must succeed, so the recursive
+//   stages after the parse ran at that depth. One past it, every decoder must refuse with the
+//   parser's nesting error. A stack overflow ends the process.
 //   `SST_FUZZ_DEPTH=<n>` runs one depth only, to find a limit (one process per depth).
 // - Amplification: a frame of one-byte elements (empty maps), decoded, holds no more elements
 //   than the frame has bytes. `SST_FUZZ_AMPLIFICATION_BYTES=<n>` sets the frame size (default
@@ -89,30 +91,96 @@ enum DeepFrames {
     }
 }
 
+/// What one frame did in each stage of the chain: the frame decoders by name, then for each
+/// decoded message its payload stage (`<decoder>/payload`: the action's or client event's
+/// payload through `InboundPayloadDecoding`, or the join's metadata and the join checks).
+struct ChainReport: CustomStringConvertible {
+    var succeeded: [String] = []
+    /// The stage's error, or why it produced no message.
+    var refused: [String: String] = [:]
+
+    var description: String { "succeeded \(succeeded), refused \(refused)" }
+}
+
 enum ClientFrameChain {
+    /// The frame decoders a frame of `encoding` reaches.
+    static func decoders(_ encoding: FrameEncoding) -> [String] {
+        (encoding == .messagepack ? [] : ["handshake"]) + ["router", "pipeline", "pipeline-legacy-join"]
+    }
+
     /// Every decode a frame of `encoding` reaches, ending in the payload decode and the join
     /// checks. Each step may throw; none may trap.
-    static func run(_ data: Data, encoding: FrameEncoding) {
+    static func run(_ data: Data, encoding: FrameEncoding) -> ChainReport {
         let logger = ClientFrameTargets.logger
         let session = ClientFrameTargets.sessionID
-        var messages: [TransportMessage] = []
-        if encoding != .messagepack,
-           case .message(let message)? = try? FuzzRouter.decodeHandshakeFrame(data, sessionID: session, logger: logger) {
-            messages.append(message)
-        }
-        if case .message(let message)? = try? FuzzRouter.decodePostHandshakeFrame(
-            data, codec: ClientFrameTargets.codec(encoding), sessionID: session, logger: logger
-        ) {
-            messages.append(message)
-        }
-        for legacyJoin in [false, true] {
-            if let message = try? ClientFrameTargets.pipeline(encoding, legacyJoin: legacyJoin).decode(data) {
-                messages.append(message)
+        var report = ChainReport()
+        func stage(_ name: String, _ decode: () throws -> TransportMessage?) {
+            do {
+                guard let message = try decode() else {
+                    report.refused[name] = "no message"
+                    return
+                }
+                report.succeeded.append(name)
+                payloadStage("\(name)/payload", message)
+            } catch {
+                report.refused[name] = String(describing: error)
             }
         }
-        for message in messages {
-            ClientFrameTargets.decodePayloads(of: message)
-            ClientFrameTargets.checkJoin(message)
+        func payloadStage(_ name: String, _ message: TransportMessage) {
+            if case .join(let join) = message.payload {
+                ClientFrameTargets.checkJoin(message)
+                if join.metadata?["k"] != nil { report.succeeded.append(name) } else { report.refused[name] = "no metadata" }
+                return
+            }
+            if ClientFrameTargets.decodePayloads(of: message) == true {
+                report.succeeded.append(name)
+            } else {
+                report.refused[name] = "payload didn't decode"
+            }
+        }
+        if encoding != .messagepack {
+            stage("handshake") {
+                guard case .message(let message) = try FuzzRouter.decodeHandshakeFrame(data, sessionID: session, logger: logger) else { return nil }
+                return message
+            }
+        }
+        stage("router") {
+            guard case .message(let message) = try FuzzRouter.decodePostHandshakeFrame(
+                data, codec: ClientFrameTargets.codec(encoding), sessionID: session, logger: logger
+            ) else { return nil }
+            return message
+        }
+        stage("pipeline") { try ClientFrameTargets.pipeline(encoding, legacyJoin: false).decode(data) }
+        stage("pipeline-legacy-join") { try ClientFrameTargets.pipeline(encoding, legacyJoin: true).decode(data) }
+        return report
+    }
+
+    /// At or under the parsers' limit: every decoder produced a message and its payload stage
+    /// succeeded, so the recursive stages after the parse ran at this depth.
+    static func expectReachedPayload(
+        _ report: ChainReport, encoding: FrameEncoding, _ context: String,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let expected = decoders(encoding).flatMap { [$0, "\($0)/payload"] }
+        #expect(report.succeeded == expected, "\(context): \(report)", sourceLocation: sourceLocation)
+    }
+
+    /// Past the limit: every decoder refused the frame, each with the parser's own nesting
+    /// error, not some other failure.
+    static func expectNestingRefusal(
+        _ report: ChainReport, encoding: FrameEncoding, _ context: String,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(report.succeeded.isEmpty, "\(context): \(report)", sourceLocation: sourceLocation)
+        // `JSONSerialization` names the nesting; `JSONDecoder` on Linux reports only that the data
+        // isn't valid JSON. The frame differs from the accepted one by one level, so that's the
+        // parse refusing the depth (`jsonFixtureDepth` checks the reason).
+        let markers = encoding == .messagepack
+            ? ["Nesting deeper than \(messagePackMaxNestingDepth)"]
+            : ["nested", "The given data was not valid JSON."]
+        for name in decoders(encoding) {
+            let error = report.refused[name] ?? "none"
+            #expect(markers.contains { error.localizedCaseInsensitiveContains($0) }, "\(context) \(name): \(error)", sourceLocation: sourceLocation)
         }
     }
 }
@@ -128,7 +196,17 @@ struct ClientFrameDepthTests {
         return [8, 32, 64, 128, 256, limit - 1, limit, limit + 1]
     }
 
-    @Test("Nesting up to the JSON parsers' limit decodes or throws, on the cooperative pool",
+    /// Checks the chain's report at `depth`: up to `limit` every stage through the payload
+    /// succeeded, past it every decoder refused with the parser's nesting error.
+    static func check(_ report: ChainReport, encoding: FrameEncoding, depth: Int, limit: Int, _ context: String) {
+        if depth <= limit {
+            ClientFrameChain.expectReachedPayload(report, encoding: encoding, context)
+        } else {
+            ClientFrameChain.expectNestingRefusal(report, encoding: encoding, context)
+        }
+    }
+
+    @Test("Nesting up to the JSON parsers' limit reaches the payload decode, on the cooperative pool; one past it is refused",
           arguments: [FrameEncoding.json, .opcodeJsonArray], ["action", "clientEvent", "join"])
     func jsonDepth(encoding: FrameEncoding, kind: String) async {
         for depth in Self.depths(upTo: Self.jsonLimit) {
@@ -136,21 +214,40 @@ struct ClientFrameDepthTests {
                 let data = encoding == .json
                     ? DeepFrames.json(kind, depth: depth, objects: objects)
                     : DeepFrames.opcodeJSON(kind, depth: depth, objects: objects)
-                await Task.detached { ClientFrameChain.run(data, encoding: encoding) }.value
+                let report = await Task.detached { ClientFrameChain.run(data, encoding: encoding) }.value
+                Self.check(report, encoding: encoding, depth: depth, limit: Self.jsonLimit,
+                           "\(encoding) \(kind) depth \(depth) \(objects ? "objects" : "arrays")")
             }
         }
     }
 
-    @Test("Nesting up to the MessagePack unpacker's limit decodes or throws, on the cooperative pool",
+    @Test("Nesting up to the MessagePack unpacker's limit reaches the payload decode, on the cooperative pool; one past it is refused",
           arguments: ["action", "clientEvent", "join"])
     func messagePackDepth(kind: String) async throws {
         for depth in Self.depths(upTo: messagePackMaxNestingDepth) {
             let data = DeepFrames.messagePack(kind, depth: depth)
-            await Task.detached { ClientFrameChain.run(data, encoding: .messagepack) }.value
+            let report = await Task.detached { ClientFrameChain.run(data, encoding: .messagepack) }.value
+            Self.check(report, encoding: .messagepack, depth: depth, limit: messagePackMaxNestingDepth,
+                       "messagepack \(kind) depth \(depth)")
         }
-        // The fixture is what it claims: one level past the limit is refused by the unpacker.
-        #expect(throws: (any Error).self) {
-            try unpack(DeepFrames.messagePack(kind, depth: messagePackMaxNestingDepth + 2))
+    }
+
+    @Test("The MessagePack unpacker refuses a container count above the bytes left with its own error, before reserving")
+    func messagePackCountGuard() {
+        // An array claiming 2 elements, then a map claiming 2 entries, with 1 byte (nil) left. Without the
+        // guard the unpacker would reserve, read one element and fail at the end of the data
+        // with a different error.
+        for frame in [Data([0xDC, 0x00, 0x02, 0xC0]), Data([0xDE, 0x00, 0x02, 0xC0])] {
+            do {
+                _ = try unpack(frame)
+                Issue.record("\(Array(frame)) unpacked")
+            } catch MessagePackError.invalidData(let message) {
+                // A map's count is its keys and values: 2 entries are 4 elements.
+                let elements = frame[0] == 0xDC ? 2 : 4
+                #expect(message == "Container count \(elements) exceeds the 1 bytes left", "\(Array(frame))")
+            } catch {
+                Issue.record("\(Array(frame)): \(error)")
+            }
         }
     }
 
@@ -158,7 +255,12 @@ struct ClientFrameDepthTests {
     func jsonFixtureDepth() {
         for kind in ["action", "clientEvent", "join"] {
             #expect((try? JSONSerialization.jsonObject(with: DeepFrames.json(kind, depth: Self.jsonLimit, objects: false))) != nil, "\(kind)")
-            #expect((try? JSONSerialization.jsonObject(with: DeepFrames.json(kind, depth: Self.jsonLimit + 1, objects: false))) == nil, "\(kind)")
+            do {
+                _ = try JSONSerialization.jsonObject(with: DeepFrames.json(kind, depth: Self.jsonLimit + 1, objects: false))
+                Issue.record("\(kind): one past the limit parsed")
+            } catch {
+                #expect(String(describing: error).localizedCaseInsensitiveContains("nest"), "\(kind): \(error)")
+            }
         }
     }
 

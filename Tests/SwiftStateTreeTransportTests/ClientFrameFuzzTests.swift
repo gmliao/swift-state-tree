@@ -2,8 +2,14 @@
 //
 // Decode or throw, never trap (#528). Every decoder a client's bytes reach is fed mutations of
 // real client frames (`ClientFrameCorpus`), and must return or throw for each one. A trap, a
-// crash or a stack overflow ends the test process; a hang fails the suite's time limit. The
-// harness and its environment knobs are in `ClientFrameFuzzSupport.swift`.
+// crash or a stack overflow ends the test process. A hang doesn't fail the suite's time limit:
+// the decoders run synchronously and never check for cancellation, so a hang keeps the process
+// running. Run a long run under an outer process timeout, e.g.
+// `SST_FUZZ_ITERATIONS=1000000 timeout 3000 swift test --filter ClientFrameFuzzTests`; the
+// last `[client-frame-fuzz]` line printed names the targets that finished. Every target prints
+// its seed and outcome counts. Each target also requires that its entry points both decode and
+// refuse some of their inputs, so a target that never reaches its decoder fails. The harness and
+// its environment knobs are in `ClientFrameFuzzSupport.swift`.
 //
 // The targets call the server's own functions: the router's handshake and post-handshake
 // decode (`LandRouter.decodeHandshakeFrame`, `decodePostHandshakeFrame`), the adapter's
@@ -15,7 +21,7 @@ import Foundation
 import Logging
 import Testing
 @testable import SwiftStateTree
-import SwiftStateTreeDeterministicMath
+@testable import SwiftStateTreeDeterministicMath
 @testable import SwiftStateTreeMessagePack
 @testable import SwiftStateTreeTransport
 
@@ -92,6 +98,106 @@ enum FuzzPayloadTypes {
     ]
 }
 
+/// A valid value of each fixture type, encoded by the server's encoders as a client would send
+/// it. Byte mutation can't invent a type's field names: without these seeds every decode into a
+/// fixture type would stop at its first missing key.
+enum T5Seeds {
+    static let leaves = FuzzLeavesAction(
+        bool: true, int: -42, int8: -8, int16: 1600, int32: -320_000, int64: 1 << 40,
+        uint: 7, uint8: 200, uint16: 60_000, uint32: 4_000_000_000, uint64: 1 << 40,
+        float: 1.5, double: -2.25, string: "h\u{E9}llo",
+        player: PlayerID("p1"), client: ClientID("c1"), session: SessionID("s1"),
+        land: LandID(landType: "t", instanceId: "i")
+    )
+    static let math = FuzzMathAction(
+        angle: Angle(degrees: Float(90)),
+        ivec2: IVec2(fixedPointX: 1500, fixedPointY: -2250),
+        ivec3: IVec3(x: 1.5, y: -2, z: 3),
+        position: Position2(v: IVec2(fixedPointX: 10, fixedPointY: 20)),
+        velocity: Velocity2(v: IVec2(fixedPointX: -3, fixedPointY: 4)),
+        acceleration: Acceleration2(v: IVec2(fixedPointX: 0, fixedPointY: -1))
+    )
+    static let containers = FuzzContainersEvent(
+        ints: [1, -2, 3], byName: ["a": 1, "b": 2], byPlayer: [PlayerID("p1"): 5],
+        nested: PFNested(a: 4, b: "x"), optionals: FuzzOptionals(optional: nil, optionalList: ["y"]),
+        any: AnyCodable(["k": AnyCodable([AnyCodable(1), AnyCodable("v")])]),
+        date: Date(timeIntervalSinceReferenceDate: 12), data: Data([1, 2, 3]), decimal: 2.5,
+        uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000528")!, kind: .second,
+        tree: .node([.leaf(1), .node([.leaf(2)])])
+    )
+
+    static let pfClientEvent = PFClientEvent(
+        player: PlayerID("p1"), to: Position2(v: IVec2(fixedPointX: 1500, fixedPointY: -2250)), step: 3
+    )
+
+    static var messages: [(name: String, kind: String, message: TransportMessage)] {
+        // The payload as a client sends it: the value's JSON form, not the Swift value. Wrapped
+        // as `AnyCodable(value)`, a `Decimal` reaches the MessagePack encoder as a keyed struct,
+        // which the JSON-number decode refuses; a client sends a number.
+        func clientShaped<T: Encodable>(_ value: T) -> AnyCodable {
+            (try? JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(value))) ?? AnyCodable(value)
+        }
+        func action<A: ActionPayload>(_ value: A) -> TransportMessage {
+            .action(requestID: "t5", action: ActionEnvelope(typeIdentifier: String(describing: A.self), payload: clientShaped(value)))
+        }
+        func event<E: ClientEventPayload>(_ value: E) -> TransportMessage {
+            .event(event: .fromClient(event: AnyClientEvent(type: String(describing: E.self), payload: clientShaped(value))))
+        }
+        return [
+            ("t5/leaves", "action", action(leaves)),
+            ("t5/math", "action", action(math)),
+            ("t5/containers", "clientEvent", event(containers)),
+            ("t5/pf-client-event", "clientEvent", event(pfClientEvent)),
+        ]
+    }
+
+    /// Each message in all three encodings, written by the server's encoders with no event
+    /// hashes (the event type as a string, as a client sends it) and plain payloads.
+    static let frames: [CorpusFrame] = {
+        let encoders: [(FrameEncoding, any TransportMessageEncoder)] = [
+            (.json, JSONTransportMessageEncoder()),
+            (.opcodeJsonArray, OpcodeTransportMessageEncoder(eventHashes: [:], clientEventHashes: [:], enablePayloadCompression: false)),
+            (.messagepack, MessagePackTransportMessageEncoder(eventHashes: [:], clientEventHashes: [:], enablePayloadCompression: false)),
+        ]
+        return messages.flatMap { entry in
+            encoders.compactMap { encoding, encoder -> CorpusFrame? in
+                guard let data = try? encoder.encode(entry.message) else {
+                    Issue.record("\(entry.name) doesn't encode as \(encoding)")
+                    return nil
+                }
+                return CorpusFrame(name: entry.name, kind: entry.kind, encoding: encoding, bytes: Array(data))
+            }
+        }
+    }()
+}
+
+/// How often each fixture type's decode succeeded and threw in one target (T5).
+struct PayloadOutcomes {
+    var byType: [String: FuzzOutcome] = [:]
+
+    mutating func record(_ type: Any.Type, _ succeeded: Bool) {
+        let name = String(describing: type)
+        if succeeded {
+            byType[name, default: FuzzOutcome()].decoded += 1
+        } else {
+            byType[name, default: FuzzOutcome()].threw += 1
+        }
+    }
+
+    /// Every fixture type with fields saw a fuzzed value it decoded and one it refused.
+    func expectBothOutcomes(_ target: String, sourceLocation: SourceLocation = #_sourceLocation) {
+        let summary = byType.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.decoded)/\($0.value.threw)" }
+        print("[client-frame-fuzz] \(target) payloads decoded/threw: \(summary.joined(separator: " "))")
+        let types: [Any.Type] = FuzzPayloadTypes.actions + FuzzPayloadTypes.clientEvents
+        // A field-less type decodes from any object: it has no refusal to see.
+        for type in types where type != PFEmptyClientEvent.self {
+            let name = String(describing: type)
+            let outcome = byType[name] ?? FuzzOutcome()
+            #expect(outcome.decoded > 0 && outcome.threw > 0, "\(target) \(name): \(outcome)", sourceLocation: sourceLocation)
+        }
+    }
+}
+
 // MARK: - Helpers
 
 /// A log handler that discards everything at `.trace`, so the decoders' debug-only branches run
@@ -138,23 +244,33 @@ enum ClientFrameTargets {
     }
 
     /// T5 on a decoded message: an action's or a client event's payload decoded as every
-    /// fixture type, the way the keeper and the client-event handlers decode it.
-    static func decodePayloads(of message: TransportMessage) {
+    /// fixture type, the way the keeper and the client-event handlers decode it. Each type's
+    /// outcome goes into `outcomes`. Returns whether the payload decoded as `AnyCodable`, or nil
+    /// for a message without an action or client-event payload.
+    @discardableResult
+    static func decodePayloads(of message: TransportMessage, outcomes: inout PayloadOutcomes) -> Bool? {
         let decoder = JSONDecoder()
+        func attempt<T: Decodable>(_ type: T.Type, _ payload: AnyCodable) {
+            outcomes.record(type, (try? InboundPayloadDecoding.decode(type, from: payload, decoder: decoder)) != nil)
+        }
+        let payload: AnyCodable
         switch message.payload {
         case .action(let action):
-            for type in FuzzPayloadTypes.actions {
-                _ = try? InboundPayloadDecoding.decode(type, from: action.action.payload, decoder: decoder)
-            }
-            _ = try? InboundPayloadDecoding.decode(AnyCodable.self, from: action.action.payload, decoder: decoder)
+            payload = action.action.payload
+            for type in FuzzPayloadTypes.actions { attempt(type, payload) }
         case .event(.fromClient(let event)):
-            for type in FuzzPayloadTypes.clientEvents {
-                _ = try? InboundPayloadDecoding.decode(type, from: event.payload, decoder: decoder)
-            }
-            _ = try? InboundPayloadDecoding.decode(AnyCodable.self, from: event.payload, decoder: decoder)
+            payload = event.payload
+            for type in FuzzPayloadTypes.clientEvents { attempt(type, payload) }
         default:
-            break
+            return nil
         }
+        return (try? InboundPayloadDecoding.decode(AnyCodable.self, from: payload, decoder: decoder)) != nil
+    }
+
+    @discardableResult
+    static func decodePayloads(of message: TransportMessage) -> Bool? {
+        var outcomes = PayloadOutcomes()
+        return decodePayloads(of: message, outcomes: &outcomes)
     }
 
     /// T6 on a decoded join: the router's checks on the fields a client builds, before any
@@ -206,78 +322,154 @@ struct ClientFrameFuzzTests {
         }
     }
 
+    @Test("The T5 seeds decode as their own fixture type in every encoding, unmutated", arguments: encodings)
+    func t5SeedsDecode(encoding: FrameEncoding) throws {
+        let expected = [
+            "t5/leaves": "FuzzLeavesAction", "t5/math": "FuzzMathAction",
+            "t5/containers": "FuzzContainersEvent", "t5/pf-client-event": "PFClientEvent",
+        ]
+        let seeds = T5Seeds.frames.filter { $0.encoding == encoding }
+        #expect(seeds.count == expected.count)
+        for frame in seeds {
+            let message = try ClientFrameTargets.pipeline(encoding, legacyJoin: false).decode(Data(frame.bytes))
+            var outcomes = PayloadOutcomes()
+            ClientFrameTargets.decodePayloads(of: message, outcomes: &outcomes)
+            let name = try #require(expected[frame.name])
+            if outcomes.byType[name]?.decoded != 1 {
+                // Say why: the payload's own decode error.
+                let payload: AnyCodable? = switch message.payload {
+                case .action(let action): action.action.payload
+                case .event(.fromClient(let event)): event.payload
+                default: nil
+                }
+                let types: [any Decodable.Type] = [FuzzLeavesAction.self, FuzzMathAction.self, FuzzContainersEvent.self, PFClientEvent.self]
+                let type = try #require(types.first { String(describing: $0) == name })
+                do {
+                    _ = try InboundPayloadDecoding.decode(type, from: try #require(payload), decoder: JSONDecoder())
+                    Issue.record("\(frame.name) \(encoding): decodes alone but not in decodePayloads")
+                } catch {
+                    Issue.record("\(frame.name) \(encoding) as \(name): \(error)")
+                }
+            }
+        }
+    }
+
     @Test("T1: the router's handshake decode (before join, JSON only)")
     func handshakeDecode() {
         let seeds = ClientFrameCorpus.frames.filter { $0.encoding != .messagepack }.map(\.bytes)
+        var messages = 0
         let outcome = ClientFrameFuzzer.run(target: "T1-handshake", seeds: seeds) { data in
             if case .message(let message) = try FuzzRouter.decodeHandshakeFrame(
                 data, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger
             ) {
+                messages += 1
                 ClientFrameTargets.checkJoin(message)
             }
         }
-        #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
+        // `.empty` and `.notJSON` return without throwing, so decoded messages are counted apart.
+        #expect(messages > 0 && outcome.threw > 0, "\(outcome), messages \(messages)")
     }
 
     @Test("T2: the sync-ack parser", arguments: [FrameEncoding.opcodeJsonArray, .messagepack])
     func syncAckParse(encoding: FrameEncoding) {
-        let seeds = ClientFrameCorpus.frames(encoding).map(\.bytes)
-        ClientFrameFuzzer.run(target: "T2-sync-ack-\(encoding)", seeds: seeds) { data in
-            _ = SyncAckFrame.parse(data)
+        let target = "T2-sync-ack-\(encoding)"
+        let seeds = ClientFrameCorpus.frames(encoding).filter { $0.kind == "syncAck" }.map(\.bytes)
+        var parsed = 0
+        var refused = 0
+        ClientFrameFuzzer.run(target: target, seeds: seeds) { data in
+            if SyncAckFrame.parse(data) != nil { parsed += 1 } else { refused += 1 }
         }
+        print("[client-frame-fuzz] \(target) parsed=\(parsed) refused=\(refused)")
+        #expect(parsed > 0 && refused > 0, "parsed \(parsed), refused \(refused)")
     }
 
     @Test("T3: the router's post-handshake decode", arguments: encodings)
     func postHandshakeDecode(encoding: FrameEncoding) {
         let codec = ClientFrameTargets.codec(encoding)
-        let outcome = ClientFrameFuzzer.run(
-            target: "T3-router-\(encoding)", seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)
-        ) { data in
+        let target = "T3-router-\(encoding)"
+        var payloads = PayloadOutcomes()
+        let outcome = ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
             if case .message(let message) = try FuzzRouter.decodePostHandshakeFrame(
                 data, codec: codec, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger
             ) {
-                ClientFrameTargets.decodePayloads(of: message)
+                ClientFrameTargets.decodePayloads(of: message, outcomes: &payloads)
             }
         }
         #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
+        payloads.expectBothOutcomes(target)
     }
 
     @Test("T3: the adapter's decoding pipeline, legacy join off and on", arguments: encodings, [false, true])
     func adapterPipelineDecode(encoding: FrameEncoding, legacyJoin: Bool) {
         let pipeline = ClientFrameTargets.pipeline(encoding, legacyJoin: legacyJoin)
-        let outcome = ClientFrameFuzzer.run(
-            target: "T3-pipeline-\(encoding)-\(legacyJoin)", seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)
-        ) { data in
+        let target = "T3-pipeline-\(encoding)-\(legacyJoin)"
+        var payloads = PayloadOutcomes()
+        let outcome = ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
             let message = try pipeline.decode(data)
-            ClientFrameTargets.decodePayloads(of: message)
+            ClientFrameTargets.decodePayloads(of: message, outcomes: &payloads)
             ClientFrameTargets.checkJoin(message)
         }
         #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
+        payloads.expectBothOutcomes(target)
     }
 
-    @Test("T4: the MessagePack unpacker and decoders")
+    @Test("T4: the MessagePack unpacker and decoders, each entry point counted")
     func messagePackDecoders() {
         let seeds = ClientFrameCorpus.frames(.messagepack).map(\.bytes)
         let serializer = MessagePackSerializer()
-        let outcome = ClientFrameFuzzer.run(target: "T4-messagepack", seeds: seeds) { data in
-            let value = try unpack(data)
-            _ = try? MessagePackDirectDecoder().decodeTransportMessage(from: value)
-            _ = try? serializer.decode(AnyCodable.self, from: data)
-            _ = try serializer.decode(TransportMessage.self, from: data)
+        var direct = FuzzOutcome()
+        var anyCodable = FuzzOutcome()
+        var message = FuzzOutcome()
+        func count(_ outcome: inout FuzzOutcome, _ body: () throws -> Void) {
+            do {
+                try body()
+                outcome.decoded += 1
+            } catch {
+                outcome.threw += 1
+            }
         }
-        #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
+        // The runner's outcome is the unpacker's: the decoders below run on what unpacks.
+        let unpacked = ClientFrameFuzzer.run(target: "T4-messagepack", seeds: seeds) { data in
+            let value = try unpack(data)
+            count(&direct) { _ = try MessagePackDirectDecoder().decodeTransportMessage(from: value) }
+            count(&anyCodable) { _ = try serializer.decode(AnyCodable.self, from: data) }
+            count(&message) { _ = try serializer.decode(TransportMessage.self, from: data) }
+        }
+        print("[client-frame-fuzz] T4-messagepack unpack=\(unpacked) direct=\(direct) anyCodable=\(anyCodable) message=\(message)")
+        for (name, outcome) in [("unpack", unpacked), ("direct", direct), ("message", message), ("anyCodable", anyCodable)] {
+            #expect(outcome.decoded > 0 && outcome.threw > 0, "\(name): \(outcome)")
+        }
     }
 
     @Test("T4: random bytes, not mutated from the corpus", arguments: encodings)
     func randomBytes(encoding: FrameEncoding) {
+        let target = "T4-random-\(encoding)"
         let pipeline = ClientFrameTargets.pipeline(encoding, legacyJoin: false)
-        var generator = FuzzGenerator.forTarget("T4-random-\(encoding)", seed: ClientFrameFuzzConfig.seed)
+        var generator = FuzzGenerator.forTarget(target, seed: ClientFrameFuzzConfig.seed)
+        var recorder = FuzzInputRecorder(target: target)
+        var pipelineOutcome = FuzzOutcome()
+        var handshake = FuzzOutcome()
+        var syncAckRefused = 0
         for _ in 0..<ClientFrameFuzzConfig.iterations {
             let count = Int.random(in: 0...96, using: &generator)
             let data = Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &generator) })
-            _ = try? pipeline.decode(data)
-            _ = try? FuzzRouter.decodeHandshakeFrame(data, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger)
-            _ = SyncAckFrame.parse(data)
+            recorder?.record(data)
+            if (try? pipeline.decode(data)) != nil {
+                pipelineOutcome.decoded += 1
+            } else {
+                pipelineOutcome.threw += 1
+            }
+            let decoded = try? FuzzRouter.decodeHandshakeFrame(data, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger)
+            if case .message? = decoded {
+                handshake.decoded += 1
+            } else {
+                handshake.threw += 1
+            }
+            if SyncAckFrame.parse(data) == nil { syncAckRefused += 1 }
         }
+        print("[client-frame-fuzz] \(target) seed=\(ClientFrameFuzzConfig.seedText) pipeline=\(pipelineOutcome) handshake=\(handshake) syncAckRefused=\(syncAckRefused)")
+        // Random bytes are almost never a frame. This checks that each entry point ran and refused.
+        #expect(pipelineOutcome.threw > 0 && handshake.threw > 0 && syncAckRefused > 0)
+        #expect(pipelineOutcome.decoded + pipelineOutcome.threw == ClientFrameFuzzConfig.iterations)
     }
 }

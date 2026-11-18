@@ -116,6 +116,11 @@ describe('client frames fixture (#528)', () => {
   it('matches what the SDK encoders write', () => {
     const frames = encodeAll()
     if (process.env.SST_REGENERATE_CLIENT_FRAMES === '1') {
+      // Regenerating compares the fixture with itself: an inherited variable in CI would turn
+      // the drift check off without a sign.
+      if (process.env.CI) {
+        throw new Error('SST_REGENERATE_CLIENT_FRAMES is set under CI; regenerate the fixture locally')
+      }
       if (!existsSync(dirname(fixturePath))) mkdirSync(dirname(fixturePath), { recursive: true })
       writeFileSync(fixturePath, JSON.stringify({ frames }, null, 2) + '\n', 'utf-8')
     }

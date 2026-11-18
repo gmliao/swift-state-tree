@@ -1,6 +1,6 @@
 # Fuzz the decoders that read client frames (#528, #362)
 
-Status: plan, rev 1. Branch `test/528-client-frame-fuzz` from main 382814a8.
+Status: implemented in #595 (in review). Branch `test/528-client-frame-fuzz` from main 382814a8.
 
 ## Goal
 

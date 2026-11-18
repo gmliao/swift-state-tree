@@ -6,11 +6,13 @@
 // passes, and a trap ends the test process, which fails the run.
 //
 // Budget: `SST_FUZZ_ITERATIONS` per target (default `ClientFrameFuzzConfig.defaultIterations`).
-// Seed: `SST_FUZZ_SEED`, a decimal or `0x` number, or `random` (picked and printed).
-// `SST_FUZZ_LAST_INPUT=<path>` writes each input to that file before decoding it, so the file
-// holds the crasher after a trap. A file write per input makes a run I/O-bound, so set it
-// when replaying a seed that trapped, not for a long run. The seed and the target name the
-// trap reports are enough to replay it.
+// Seed: `SST_FUZZ_SEED`, a decimal or `0x` number, or `random` (picked). Each target prints
+// the seed it ran with.
+// `SST_FUZZ_LAST_INPUT=<path>` writes each target's input to `<path>.<target>` before decoding
+// it, so after a trap that file holds the crasher. Targets run in parallel, hence one file each.
+// When replaying, run the one target with `--filter`. A file write per input makes a run
+// I/O-bound, so set it when replaying a seed that trapped, not for a long run. The seed and the
+// target name are enough to replay a trap.
 
 import Foundation
 import Testing
@@ -58,14 +60,13 @@ enum ClientFrameFuzzConfig {
 
     static let seed: UInt64 = {
         guard let text = ProcessInfo.processInfo.environment[ClientFrameFuzzEnvKeys.seed] else { return defaultSeed }
-        if text == "random" {
-            let picked = UInt64.random(in: .min ... .max)
-            print("[client-frame-fuzz] \(ClientFrameFuzzEnvKeys.seed)=\(picked)")
-            return picked
-        }
+        if text == "random" { return UInt64.random(in: .min ... .max) }
         if text.hasPrefix("0x"), let value = UInt64(text.dropFirst(2), radix: 16) { return value }
         return UInt64(text) ?? defaultSeed
     }()
+
+    /// The seed as `SST_FUZZ_SEED` takes it, for the lines each target prints.
+    static var seedText: String { "0x" + String(seed, radix: 16) }
 
     static let lastInputPath: String? = ProcessInfo.processInfo.environment[ClientFrameFuzzEnvKeys.lastInput]
 }
@@ -96,7 +97,8 @@ enum ClientFrameCorpus {
         .deletingLastPathComponent()
         .appendingPathComponent("Fixtures")
 
-    static let frames: [CorpusFrame] = sdkFrames() + serverEncodedFrames()
+    /// The T5 seeds (`T5Seeds`) carry a valid value of each fixture payload type.
+    static let frames: [CorpusFrame] = sdkFrames() + serverEncodedFrames() + T5Seeds.frames
 
     static func frames(_ encoding: FrameEncoding) -> [CorpusFrame] {
         frames.filter { $0.encoding == encoding }
@@ -268,13 +270,40 @@ enum FrameMutator {
 
 // MARK: - Runner
 
-struct FuzzOutcome {
+struct FuzzOutcome: CustomStringConvertible {
     var decoded = 0
     var threw = 0
+
+    var description: String { "decoded=\(decoded) threw=\(threw)" }
+}
+
+/// `SST_FUZZ_LAST_INPUT`: writes each input of one target to `<path>.<target>` before it is
+/// decoded. nil when the switch is off. A failed write is recorded once as an issue, and
+/// recording stops.
+struct FuzzInputRecorder {
+    let url: URL
+    let target: String
+    private var failed = false
+
+    init?(target: String) {
+        guard let path = ClientFrameFuzzConfig.lastInputPath else { return nil }
+        self.target = target
+        url = URL(fileURLWithPath: "\(path).\(target)")
+    }
+
+    mutating func record(_ input: Data) {
+        guard !failed else { return }
+        do {
+            try Data("\(target)\n\(input.base64EncodedString())\n".utf8).write(to: url, options: .atomic)
+        } catch {
+            failed = true
+            Issue.record("can't write \(url.path): \(error)")
+        }
+    }
 }
 
 enum ClientFrameFuzzer {
-    /// Runs `decode` on `iterations` inputs mutated from `seeds`: decode or throw. Returns how
+    /// Runs `decode` on each seed, then on `iterations` inputs mutated from `seeds`: decode or throw. Returns how
     /// many inputs decoded and how many threw; a trap ends the process.
     @discardableResult
     static func run(
@@ -287,14 +316,19 @@ enum ClientFrameFuzzer {
         precondition(!seeds.isEmpty, "\(target): no seeds")
         var generator = FuzzGenerator.forTarget(target, seed: seed)
         var outcome = FuzzOutcome()
-        let lastInput = ClientFrameFuzzConfig.lastInputPath.map(URL.init(fileURLWithPath:))
-        for _ in 0..<iterations {
-            let base = seeds.randomElement(using: &generator)!
-            let other = seeds.randomElement(using: &generator)!
-            let input = Data(FrameMutator.mutate(base, other: other, generator: &generator))
-            if let lastInput {
-                try? "\(target)\n\(input.base64EncodedString())\n".write(to: lastInput, atomically: false, encoding: .utf8)
+        var recorder = FuzzInputRecorder(target: target)
+        // Each seed once unmutated, then the mutations: every decoder a seed reaches runs on a
+        // valid input at least once, so each target's "decoded" count can't be zero by chance.
+        for index in 0..<(seeds.count + iterations) {
+            let input: Data
+            if index < seeds.count {
+                input = Data(seeds[index])
+            } else {
+                let base = seeds.randomElement(using: &generator)!
+                let other = seeds.randomElement(using: &generator)!
+                input = Data(FrameMutator.mutate(base, other: other, generator: &generator))
             }
+            recorder?.record(input)
             do {
                 try decode(input)
                 outcome.decoded += 1
@@ -302,6 +336,7 @@ enum ClientFrameFuzzer {
                 outcome.threw += 1
             }
         }
+        print("[client-frame-fuzz] \(target) seed=\(ClientFrameFuzzConfig.seedText) iterations=\(iterations) \(outcome)")
         return outcome
     }
 }

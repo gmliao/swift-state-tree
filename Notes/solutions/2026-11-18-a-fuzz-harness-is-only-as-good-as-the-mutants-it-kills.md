@@ -6,6 +6,7 @@ component: client-frame-fuzz
 symptoms:
   - "a fuzz suite passes with a force cast planted in a wire decoder"
   - "removing a MessagePack container-count check changes no test result"
+  - "a fuzz target passes while every input stops at the same early error"
   - "a long fuzz run sits at low CPU for an hour"
 root_cause: byte_mutations_rarely_reach_a_typed_field
 resolution_type: established_pattern
@@ -43,8 +44,14 @@ the harness was checked with mutants planted in the decoders:
   seldom turn exactly that element into a well-formed non-integer while leaving the rest of the
   frame parseable. In 2,000 iterations spread over every seed, none did.
 - **The count check.** With the check removed, `reserveCapacity` of a claimed count of
-  2^32 − 1 elements succeeds lazily under Linux memory overcommit. The read loop then throws at
-  the end of the data. Nothing a test can observe changes, short of measuring memory.
+  2^32 − 1 elements succeeded lazily on the Linux host the mutant ran on (memory overcommit), and
+  the read loop then threw at the end of the data. "Decode or throw" can't tell the two errors
+  apart. Whether that reservation succeeds depends on the host's overcommit setting: where it is
+  refused, it traps. So the guard matters in production even where this run didn't see it.
+- **Vacuous targets.** Review found that a target can pass while never reaching its decoder.
+  The payload decode into the fixture types (T5) had no seed with those types' field names, so
+  every input stopped at `keyNotFound` on the first field. A target that counts only "decoded
+  or threw" can't see that.
 
 ## Fix
 
@@ -53,8 +60,13 @@ the harness was checked with mutants planted in the decoders:
   number, a string, `null`, a container). It reaches each field of a positional frame directly.
   With it, the force-cast mutant traps the suite at 2,000 iterations ("Unable to bridge NSNumber
   to Int").
-- The count-check mutant is recorded as unobservable on Linux. The check still matters where
-  allocation isn't lazy, and for the time a reservation can take.
+- The count check is tested through its own error: `unpack(Data([0xDC, 0x00, 0x02, 0xC0]))`,
+  an array claiming 2 elements with 1 byte left, must throw `invalidData("Container count 2
+  exceeds the 1 bytes left")`. The same goes for a map. With the guard removed it throws a
+  different error, on every platform and with no large allocation.
+- Each fixture payload type has a seed holding a valid value of it, in all three encodings.
+  Each target counts its outcomes per entry point and per payload type, and requires both
+  outcomes to occur.
 
 ## Prevention
 
@@ -63,7 +75,12 @@ the harness was checked with mutants planted in the decoders:
   doesn't kill means a mutator class is missing.
 - For positional formats (opcode arrays), mutate at the element level as well as at the byte
   level.
-- Don't count an allocation guard as tested by "decode or throw": overcommit hides it.
+- A guard that throws is tested by expecting its own error, not "any error": "decode or throw"
+  passes with the guard gone whenever a later check throws instead.
+- Count each entry point's outcomes, and require that each decoded some inputs and refused
+  others. A target whose inputs all stop at one early error passes "decode or throw" without
+  testing anything. Seed each typed decode with a valid value of its type: byte mutations don't
+  invent field names.
 - Writing each input to a file before decoding it, so a crasher is kept, made a 10^6-iteration
   run I/O-bound: 18% CPU for an hour on a container volume, against 135 s for the whole run
   without it. Keep that switch for replaying a known seed. The seed and the target name are
