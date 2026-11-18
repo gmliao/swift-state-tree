@@ -163,7 +163,7 @@ struct CallRecord {
 func settle(_ actor: OrderActor, rounds: Int = 10_000, until done: (OrderActor.View) -> Bool) async -> Bool {
     for _ in 0 ..< rounds {
         if done(await actor.view()) { return true }
-        await Task.yield()
+        await Task.yield() // wall-clock: not time: yields until the actor's queued jobs have run (the harness's settle)
     }
     return false
 }
