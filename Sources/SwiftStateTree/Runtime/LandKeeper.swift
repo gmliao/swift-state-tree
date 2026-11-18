@@ -2760,8 +2760,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Decode action payload from AnyCodable
-        let payloadData = try JSONEncoder().encode(envelope.payload)
-        let decodedAction = try decoder.decode(actionPayloadType, from: payloadData)
+        let decodedAction = try InboundPayloadDecoding.decode(actionPayloadType, from: envelope.payload, decoder: decoder)
 
         // Intake segment: the sender check, the sequence and the ticket (the sender's entry
         // generation). After the resolvers' await, only `deliverResolvedAction` runs, which
@@ -3361,8 +3360,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Decode action from AnyCodable
             let decoder = JSONDecoder()
-            let payloadData = try JSONEncoder().encode(actionItem.action)
-            let decodedAction = try decoder.decode(actionItem.actionType, from: payloadData)
+            let decodedAction = try InboundPayloadDecoding.decode(actionItem.actionType, from: actionItem.action, decoder: decoder)
 
             // Create context with resolver outputs
             let ctx = makeContext(

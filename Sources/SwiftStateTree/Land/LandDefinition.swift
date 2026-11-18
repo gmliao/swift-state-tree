@@ -339,8 +339,7 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         self.handler = { state, anyEvent, ctx in
             // Decode the event from AnyClientEvent
             let decoder = JSONDecoder()
-            if let data = try? JSONEncoder().encode(anyEvent.payload),
-               let event = try? decoder.decode(E.self, from: data) {
+            if let event = try? InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, decoder: decoder) {
                 try invoke(&state, event, ctx)
             }
         }
