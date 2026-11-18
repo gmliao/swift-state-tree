@@ -606,6 +606,74 @@ struct HandshakeFrameLimitTests {
         #expect(codes.suffix(5) == Array(repeating: ErrorCode.joinAlreadyJoined.rawValue, count: 5), "\(codes)")
     }
 
+    @Test("A session connected again under the same ID starts with a fresh budget")
+    func reconnectGetsFreshBudget() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 3)
+        let session = SessionID("s-reconnect")
+        let first = await fixture.connect(session)
+        for _ in 0..<3 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await first.waitFor { $0.kinds.count >= 3 || !$0.closes.isEmpty }
+        #expect(await first.closes.isEmpty, "the budget isn't spent yet")
+        await fixture.transport.handleDisconnection(sessionID: session)
+
+        // The same ID, a new connection: a whole budget of refused frames gets only their errors.
+        // (An over-budget refusal sends its error too, but drops the session first.)
+        let second = await fixture.connect(session)
+        for _ in 0..<3 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await second.waitFor { $0.kinds.count >= 3 || !$0.closes.isEmpty }
+        #expect(await fixture.router.hasHandshakePhase(session), "the new connection isn't refused")
+        #expect(await second.closes.isEmpty)
+        #expect(await second.errorCodes == Array(repeating: ErrorCode.invalidJSON.rawValue, count: 3))
+    }
+
+    @Test("While the over-budget error is held, the session is already refused: a join and an oversized frame are dropped, then one 1008 close")
+    func overBudgetTerminalWhileErrorHeld() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 2)
+        let session = SessionID("s-held-ninth")
+        let connection = await fixture.connect(session)
+        for _ in 0..<2 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await connection.waitFor { $0.kinds.count >= 2 || !$0.closes.isEmpty }
+        #expect(await fixture.router.hasHandshakePhase(session), "within the budget the session awaits its join")
+        // The drain stops inside the over-budget error's send.
+        await connection.holdSends()
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        await connection.waitFor { $0.sendAttempts >= 3 }
+        #expect(await connection.closes.isEmpty, "no close while the error is held")
+        #expect(await fixture.router.hasHandshakePhase(session) == false, "the session is refused before its error goes out")
+
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "join-late"))
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513, requestID: "join-big"))
+        #expect(await fixture.router.framesDroppedAfterRefusalForTesting == 2)
+
+        await connection.releaseSends()
+        await connection.waitFor { !$0.closes.isEmpty }
+        #expect(await connection.events == [.sent(.error), .sent(.error), .sent(.error), .closed(.handshakeRefusedFrames)])
+        #expect(await fixture.router.getBoundLandID(for: session) == nil)
+        #expect(await fixture.manager.getLand(landID: fixture.landID) == nil, "no land was looked up or created")
+    }
+
+    @Test("A join refused because the land is shutting down (the server's doing) doesn't count against the budget")
+    func serverCausedRefusalNotCounted() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 1)
+        // Creations stopped: the join's land creation throws `landShuttingDown`.
+        await fixture.manager.stopCreations()
+        let session = SessionID("s-shutting-down")
+        let connection = await fixture.connect(session)
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
+        await connection.waitFor { $0.kinds.count >= 2 || !$0.closes.isEmpty }
+        let codes = await connection.errorCodes
+        #expect(codes == [ErrorCode.invalidJSON.rawValue, ErrorCode.joinDenied.rawValue])
+        #expect(await fixture.router.hasHandshakePhase(session), "told to retry, not refused: \(codes)")
+        #expect(await connection.closes.isEmpty)
+    }
+
     @Test("With no budget (nil), refused pre-join frames never close the session")
     func noBudget() async throws {
         let fixture = try LimitFixture(limit: 512, refusedFrameBudget: nil)
