@@ -31,6 +31,18 @@ struct WNPingAction: ActionPayload {
     typealias Response = WireNameAck
 }
 
+// Schema names `WNCasePing` and `WNCASEPING`: they differ only in case, and intake matches a
+// schema name case-insensitively, so `WNCASEPING` reaches whichever is registered first.
+@Payload
+struct WNCasePingAction: ActionPayload {
+    typealias Response = WireNameAck
+}
+
+@Payload
+struct WNCASEPINGAction: ActionPayload {
+    typealias Response = WireNameAck
+}
+
 // Two `Move` and two `Nudge` types under different enclosing types: one last component, and
 // `String(describing:)` names each by it alone.
 enum WNLeft {
@@ -91,6 +103,21 @@ struct WireNameCollisionTests {
         #expect(duplicate.description.contains("are both matched by the name WNPing"), "\(duplicate)")
     }
 
+    @Test("Two schema names that differ only in case: intake's case-insensitive match reaches both")
+    func schemaNamesDifferInCase() throws {
+        let definition = Land("wire-case", using: WireNameState.self) {
+            Rules {
+                HandleAction(WNCasePingAction.self) { (state: inout WireNameState, _: WNCasePingAction, _: LandContext) in WireNameAck(total: state.total) }
+                HandleAction(WNCASEPINGAction.self) { (state: inout WireNameState, _: WNCASEPINGAction, _: LandContext) in WireNameAck(total: -1) }
+            }
+        }
+        let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
+        #expect(duplicate.kind == "action")
+        #expect(duplicate.wireName == "WNCasePing")
+        #expect(duplicate.firstTypeName?.hasSuffix(".WNCasePingAction") == true, "\(duplicate)")
+        #expect(duplicate.typeName.hasSuffix(".WNCASEPINGAction"), "\(duplicate)")
+    }
+
     @Test("Two nested Move types: one last component")
     func nestedTypesShareTheirName() throws {
         let definition = Land("wire-move", using: WireNameState.self) {
@@ -142,6 +169,10 @@ struct WireNameCollisionTests {
         #expect(duplicates.map(\.kind) == ["client event", "server event"])
         #expect(duplicates.map(\.wireName) == ["WNHit", "WNShout"])
         #expect(duplicates.first?.firstTypeName?.hasSuffix(".WNHit") == true)
+        // Event registrations have no declaration site; the message says nothing about one.
+        let message = try #require(duplicates.first).description
+        #expect(!message.contains("unknown"), "\(message)")
+        #expect(message.hasSuffix("are both matched by the name WNHit; give each type its own name"), "\(message)")
     }
 
     @Test("One type registered twice is kept once, and names that only look alike pass")

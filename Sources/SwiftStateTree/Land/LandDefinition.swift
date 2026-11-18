@@ -399,7 +399,9 @@ public struct DuplicateHandlerDeclaration: Sendable, Equatable, CustomStringConv
     public var description: String {
         let sites = "at \(firstSite ?? "unknown") and \(duplicateSite ?? "unknown")"
         if let wireName {
-            return "\(kind) types \(firstTypeName ?? "unknown") and \(typeName) are both matched by the name \(wireName) (\(sites)); give each type its own name"
+            // Event registrations carry no declaration site.
+            let located = firstSite == nil && duplicateSite == nil ? "" : " (\(sites))"
+            return "\(kind) types \(firstTypeName ?? "unknown") and \(typeName) are both matched by the name \(wireName)\(located); give each type its own name"
         }
         return "\(kind) \(typeName) has two handlers (\(sites)); declare one handler per type"
     }

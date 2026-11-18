@@ -223,8 +223,15 @@ func sharedActionName(_ first: Any.Type, _ second: Any.Type) -> String? {
         let last = full.split(separator: ".").last.map(String.init) ?? full
         return [full, last, payloadActionName(for: type)]
     }
-    let firstNames = Set(names(first))
-    return names(second).first { firstNames.contains($0) }
+    let firstNames = names(first)
+    let secondNames = names(second)
+    if let exact = secondNames.first(where: { firstNames.contains($0) }) { return exact }
+    // Intake also matches the schema name case-insensitively (`PING` reaches `PingAction`).
+    let firstSchema = firstNames[2].lowercased()
+    let secondSchema = secondNames[2].lowercased()
+    if secondNames.contains(where: { $0.lowercased() == firstSchema }) { return firstNames[2] }
+    if firstNames.contains(where: { $0.lowercased() == secondSchema }) { return secondNames[2] }
+    return nil
 }
 
 /// Two distinct registered event types with one event name (#599).
