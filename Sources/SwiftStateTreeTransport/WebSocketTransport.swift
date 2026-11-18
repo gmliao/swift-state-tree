@@ -92,6 +92,9 @@ private struct SessionSendQueue: Sendable {
     /// A close marker was yielded: later frames are dropped and counted
     /// (`framesDroppedAfterCloseMarker`), never sent after the marker.
     var closeMarkerYielded = false
+    /// The close the drain sends when it reaches the close marker
+    /// (`closeSessionAfterQueuedFrames(_:with:)`).
+    var markerClose: SessionClose = .normal
 
     /// - Parameter onCloseMarker: Run by the drain when it reaches a close marker, after every
     ///   frame queued before it was handed to the connection.
@@ -420,7 +423,7 @@ public actor WebSocketTransport: Transport {
             logger: logger,
             // In a Task of its own: `closeSession` cancels the drain task this runs on, and the
             // delegate's cleanup must not run in a cancelled task.
-            onCloseMarker: { [weak self] in Task { await self?.closeSession(sessionID) } }
+            onCloseMarker: { [weak self] in Task { await self?.closeSessionAtMarker(sessionID) } }
         )
         lastConnectionGeneration += 1
         queue.generation = lastConnectionGeneration
@@ -547,21 +550,39 @@ public actor WebSocketTransport: Transport {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, generation: generation)
     }
 
+    /// `closeSessionAfterQueuedFrames(_:)`, closing with `close` instead of 1000: the frames
+    /// queued so far (an error explaining the close) reach the connection before the close.
+    package func closeSessionAfterQueuedFrames(_ sessionID: SessionID, with close: SessionClose) async {
+        closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, close: close)
+    }
+
     /// `closeSessionAfterQueuedFrames(_:)` with an explicit bound (tests).
-    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, timeout: Duration, generation: UInt64? = nil) {
+    func closeSessionAfterQueuedFrames(
+        _ sessionID: SessionID,
+        timeout: Duration,
+        generation: UInt64? = nil,
+        close: SessionClose = .normal
+    ) {
         if let generation, sessionQueues[sessionID]?.generation != generation { return }
         guard var queue = sessionQueues[sessionID], !queue.closeMarkerYielded else { return }
         queue.closeMarkerYielded = true
+        queue.markerClose = close
         sessionQueues[sessionID] = queue
         if case .terminated = queue.continuation.yield(.close) {
             // The drain already ended (a failed send): nothing more can be written.
-            Task { [weak self] in await self?.closeSession(sessionID, with: .normal, generation: generation) }
+            Task { [weak self] in await self?.closeSession(sessionID, with: close, generation: generation) }
             return
         }
         Task { [weak self] in
             try? await safeTaskSleep(for: timeout)
-            await self?.closeSession(sessionID, with: .normal, generation: generation)
+            await self?.closeSession(sessionID, with: close, generation: generation)
         }
+    }
+
+    /// The drain reached the session's close marker: close with the close it carries.
+    private func closeSessionAtMarker(_ sessionID: SessionID) async {
+        let close = sessionQueues[sessionID]?.markerClose ?? .normal
+        await closeSession(sessionID, with: close)
     }
 
     /// Closes the session's connection from the server side: the delegate is told the session

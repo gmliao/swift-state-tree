@@ -82,6 +82,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             authenticatesPlayers: configuration.authenticatesPlayers,
             allowAutoCreateOnJoin: configuration.allowAutoCreateOnJoin,
             transportEncoding: configuration.effectiveTransportEncoding.effective(pathHashes: configuration.pathHashes),
+            maxHandshakeFrameBytes: configuration.maxHandshakeFrameBytes,
             logger: configuration.logger
         )
 

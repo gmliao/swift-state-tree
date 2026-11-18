@@ -43,6 +43,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// required of every join and echoed in `joinResponse`.
     private let stateUpdateFeatures: [String]
     private let codec: any TransportCodec
+    /// The largest frame before the join completes (`HandshakeFrameLimit`); `nil`: no limit.
+    private let maxHandshakeFrameBytes: Int?
     private let messageEncoder: any TransportMessageEncoder
     
     // MARK: - Session Management
@@ -234,6 +236,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///     The default, `false`, fails open: a router constructed directly lets a tokenless
     ///     session name any `playerID`, so pass `true` whenever the land authenticates players.
     ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false)
+    ///   - maxHandshakeFrameBytes: The largest frame a session may send before its join completes
+    ///     (`HandshakeFrameLimit`, default from `HANDSHAKE_FRAME_MAX_BYTES`, 64 KiB); `nil`: no
+    ///     limit. A larger frame is refused before it is parsed, and the session is closed (1009).
     ///   - logger: Optional logger instance
     public init(
         landManager: LandManager<State>,
@@ -243,6 +248,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         authenticatesPlayers: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .jsonOpcode,
+        maxHandshakeFrameBytes: Int? = HandshakeFrameLimit.fromEnvironment(),
         logger: Logger? = nil
     ) {
         self.landManager = landManager
@@ -252,6 +258,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         self.authenticatesPlayers = authenticatesPlayers
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.encodingConfig = transportEncoding
+        self.maxHandshakeFrameBytes = maxHandshakeFrameBytes
         self.stateUpdateFeatures = landManager.stateUpdateFeatures
         self.codec = transportEncoding.makeCodec()
         self.messageEncoder = transportEncoding.makeMessageEncoder()
@@ -527,6 +534,24 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             
             // MARK: - Handshake Phase: JSON-only decoding
             if handshakePhase.decodesAsHandshake {
+                // A join is small: a larger frame is refused before it is parsed, and the
+                // session closed (#528's JSON decode cost; `HandshakeFrameLimit`).
+                if let limit = maxHandshakeFrameBytes, message.count > limit {
+                    logger.warning("Frame before join over the limit; closing the session", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "bytes": .string("\(message.count)"),
+                        "limit": .string("\(limit)")
+                    ])
+                    await sendError(
+                        to: sessionID,
+                        code: .invalidMessageFormat,
+                        message: "Frame of \(message.count) bytes before join is over the \(limit)-byte limit"
+                    )
+                    // Behind the error, so the close can't overtake it.
+                    await transport.closeSessionAfterQueuedFrames(sessionID, with: .handshakeFrameTooBig)
+                    return
+                }
+
                 // During handshake, only accept JSON-encoded messages
                 guard let firstByte = message.first else {
                     await sendError(

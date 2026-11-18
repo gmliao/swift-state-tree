@@ -25,6 +25,9 @@ enum TransportEnvKeys {
     static let joinFlipBudget = "JOIN_FLIP_BUDGET"
     /// The end-to-end join budget, ms, from the join request (#104; default 12000, 0 disables).
     static let joinTimeoutMs = "JOIN_TIMEOUT_MS"
+    /// The largest frame before a join completes, bytes (`HandshakeFrameLimit`; default 65536,
+    /// 0 disables).
+    static let handshakeFrameMaxBytes = "HANDSHAKE_FRAME_MAX_BYTES"
     /// `SyncLagPolicy` thresholds (#332), ms or a count; see `SyncLagPolicy.fromEnvironment`.
     static let syncLagResyncMs = "SYNC_LAG_RESYNC_MS"
     static let syncLagSlowConsumerCount = "SYNC_LAG_SLOW_CONSUMER_COUNT"
