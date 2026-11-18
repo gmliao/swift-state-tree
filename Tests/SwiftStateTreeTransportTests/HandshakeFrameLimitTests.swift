@@ -335,23 +335,91 @@ struct HandshakeFrameLimitTests {
         #expect(await fixture.manager.getLand(landID: fixture.landID) == nil, "no land was looked up or created")
     }
 
-    @Test("A session whose drain already ended (a failed send) is still closed with 1009")
+    @Test("A session whose drain already ended (a failed send) is closed with 1009 at once, not at the bound")
     func drainAlreadyEnded() async throws {
-        let fixture = try LimitFixture(limit: 512)
+        let transport = WebSocketTransport()
         let session = SessionID("s-drain-ended")
-        let connection = await fixture.connect(session)
+        let connection = LimitConnection()
+        await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
+        let generation = try #require(await transport.connectionGeneration(for: session))
         await connection.failSends()
-        // A non-JSON frame gets an error; its send fails and ends the drain.
-        await fixture.transport.handleIncomingMessage(sessionID: session, data: Data([0x01]))
-        let drain = try #require(await fixture.transport.sendQueueDrainTaskForTesting(session))
+        // A frame whose send fails ends the drain.
+        await transport.sendSessionFrames([SessionFrame(data: Data([0x01]), sessionID: session, connectionGeneration: generation)])
+        let drain = try #require(await transport.sendQueueDrainTaskForTesting(session))
         await drain.value
-        // The close marker can't be read now (`.terminated`): the close goes out at once.
-        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513))
+        // The close marker can't be read now (`.terminated`), and the bound is out of reach:
+        // only the `.terminated` branch closes, at once.
+        await transport.closeSessionAfterQueuedFrames(session, timeout: .seconds(3600), generation: generation, close: .handshakeFrameTooBig)
         await connection.waitFor { !$0.closes.isEmpty }
         #expect(await connection.closes == [.handshakeFrameTooBig])
-        #expect(await fixture.manager.getLand(landID: fixture.landID) == nil)
     }
 
+    /// Connects `session` again after the delayed close `kind`, for the first connection, is
+    /// held before its check; then lets it run and returns the second connection.
+    private func reconnectUnderHeldClose(
+        _ transport: WebSocketTransport, _ session: SessionID, first: LimitConnection,
+        kind: WebSocketTransport.DelayedClose, start: () async -> Void
+    ) async throws -> LimitConnection {
+        let held = TestGate()
+        let ran = TestGate()
+        ran.open()
+        await transport.setDelayedCloseForTesting { stage in
+            switch stage {
+            case .willCheck(kind): await held.arrive()
+            case .didRun(kind): await ran.arrive()
+            default: break
+            }
+        }
+        await start()
+        #expect(await held.waitForArrivals(1), "the delayed close ran")
+        // The client goes, and a new connection takes the ID before the old close checks it.
+        await transport.handleDisconnection(sessionID: session)
+        let second = LimitConnection()
+        await transport.handleConnection(sessionID: session, connection: second, authInfo: nil)
+        held.open()
+        #expect(await ran.waitForArrivals(1))
+        #expect(await first.closes.isEmpty)
+        return second
+    }
+
+    @Test("The drain's close marker for a connection that has gone leaves a new connection under the ID open")
+    func staleMarkerClose() async throws {
+        let transport = WebSocketTransport()
+        let session = SessionID("s-stale-marker")
+        let first = LimitConnection()
+        await transport.handleConnection(sessionID: session, connection: first, authInfo: nil)
+        let generation = try #require(await transport.connectionGeneration(for: session))
+        let second = try await reconnectUnderHeldClose(transport, session, first: first, kind: .marker) {
+            // Nothing queued: the drain reads the marker at once. The bound is out of reach.
+            await transport.closeSessionAfterQueuedFrames(session, timeout: .seconds(3600), generation: generation, close: .handshakeFrameTooBig)
+        }
+        #expect(await second.closes.isEmpty, "the old connection's marker closed the new one")
+        #expect(await transport.connectionGeneration(for: session) != generation)
+        #expect(await transport.connectionGeneration(for: session) != nil)
+    }
+
+    @Test("The bound's close for a connection that has gone leaves a new connection under the ID open")
+    func staleBoundClose() async throws {
+        let transport = WebSocketTransport()
+        let session = SessionID("s-stale-bound")
+        let first = LimitConnection()
+        await transport.handleConnection(sessionID: session, connection: first, authInfo: nil)
+        let generation = try #require(await transport.connectionGeneration(for: session))
+        await first.holdSends()
+        let second = try await reconnectUnderHeldClose(transport, session, first: first, kind: .bound) {
+            // The drain is held on a frame, so the marker isn't read; the bound runs out at once.
+            await transport.sendSessionFrames([SessionFrame(data: Data([0x01]), sessionID: session, connectionGeneration: generation)])
+            await first.waitFor { $0.sendAttempts >= 1 }
+            await transport.closeSessionAfterQueuedFrames(session, timeout: .zero, generation: generation, close: .handshakeFrameTooBig)
+        }
+        await first.releaseSends()
+        #expect(await second.closes.isEmpty, "the old connection's bound closed the new one")
+        #expect(await transport.connectionGeneration(for: session) != nil)
+    }
+
+    /// Through the router: the refusal ends with the connection. The delayed closes' generation
+    /// checks are covered at the transport (`staleMarkerClose`, `staleBoundClose`): here the
+    /// disconnect cancels the drain, so the marker isn't read.
     @Test("A client that disconnects between the refusal and its close: the new connection under the ID joins and stays open")
     func disconnectBeforeMarker() async throws {
         let fixture = try LimitFixture(limit: 512)
@@ -373,7 +441,10 @@ struct HandshakeFrameLimitTests {
         #expect(await fixture.router.getBoundLandID(for: session) != nil)
     }
 
-    @Test("A join in progress when the frame arrives is ended: it never reaches the land", arguments: [LandRouterHoldPoint.afterLand, .beforeAdmit])
+    /// Only a join not yet in the keeper's join: one already in it (CanJoin, the admission) isn't
+    /// cut, and finishes before the forwarded disconnect removes the player, as on a client
+    /// disconnect at that point (#241).
+    @Test("A join not yet in the keeper when the frame arrives is ended: it never reaches the land", arguments: [LandRouterHoldPoint.afterLand, .beforeAdmit])
     func joinInProgressEnded(point: LandRouterHoldPoint) async throws {
         let fixture = try LimitFixture(limit: 512)
         let session = SessionID("s-in-progress")

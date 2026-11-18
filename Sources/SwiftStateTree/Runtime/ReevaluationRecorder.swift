@@ -153,6 +153,7 @@ public actor ReevaluationRecorder {
     /// - Parameters:
     ///   - sequenceBeforeInputs: Sequence watermark captured before pending inputs were processed (live ticks only).
     ///   - sequenceBeforeTickHandler: Sequence watermark captured before the tick handler ran (live ticks only).
+    ///   - rejected: A tick land's inputs whose handler refused them (`validate` threw, #586).
     public func record(
         tickId: Int64,
         actions: [ReevaluationRecordedAction],
@@ -160,12 +161,14 @@ public actor ReevaluationRecorder {
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
         serverInputs: [ReevaluationRecordedServerInput] = [],
         sequenceBeforeInputs: Int64? = nil,
-        sequenceBeforeTickHandler: Int64? = nil
+        sequenceBeforeTickHandler: Int64? = nil,
+        rejected: [Int64] = []
     ) {
         legacyModel?.record(
             tickId: tickId, actions: actions, clientEvents: clientEvents, lifecycleEvents: lifecycleEvents,
             serverInputs: serverInputs,
-            sequenceBeforeInputs: sequenceBeforeInputs, sequenceBeforeTickHandler: sequenceBeforeTickHandler
+            sequenceBeforeInputs: sequenceBeforeInputs, sequenceBeforeTickHandler: sequenceBeforeTickHandler,
+            rejected: rejected
         )
         submit(ReevaluationTickRecord(
             tickId: tickId,
@@ -174,7 +177,8 @@ public actor ReevaluationRecorder {
             lifecycleEvents: lifecycleEvents,
             sequenceBeforeInputs: sequenceBeforeInputs,
             sequenceBeforeTickHandler: sequenceBeforeTickHandler,
-            serverInputs: serverInputs
+            serverInputs: serverInputs,
+            rejected: rejected
         ))
     }
 
@@ -652,7 +656,8 @@ struct ReevaluationLegacyFrameModel: Sendable {
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
         serverInputs: [ReevaluationRecordedServerInput],
         sequenceBeforeInputs: Int64?,
-        sequenceBeforeTickHandler: Int64?
+        sequenceBeforeTickHandler: Int64?,
+        rejected: [Int64]
     ) {
         let frame = frame(for: tickId)
         currentFrame = frame.replacing(
@@ -661,7 +666,8 @@ struct ReevaluationLegacyFrameModel: Sendable {
             lifecycleEvents: frame.lifecycleEvents + lifecycleEvents,
             sequenceBeforeInputs: sequenceBeforeInputs,
             sequenceBeforeTickHandler: sequenceBeforeTickHandler,
-            serverInputs: frame.serverInputs + serverInputs
+            serverInputs: frame.serverInputs + serverInputs,
+            rejected: frame.rejected + rejected
         )
     }
 

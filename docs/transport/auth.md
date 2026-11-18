@@ -330,6 +330,8 @@ Rules {
 
 It's recommended to implement some limitations in Guest mode:
 
+Handler bodies can't throw, so the guest check goes in the action's `validate` ([Two-Phase Handlers](../core/land-dsl.md#two-phase-handlers)).
+
 ```swift
 struct GuestNotAllowed: Error {}
 
@@ -343,13 +345,17 @@ Rules {
         return .allow(playerID: PlayerID(session.playerID))
     }
     
-    HandleAction(PremiumAction.self) { state, action, ctx in
-        // Guest players cannot perform certain actions
-        if state.players[ctx.playerID]?.isGuest == true {
-            throw GuestNotAllowed()
-        }
-        // Normal processing...
-    }
+    HandleAction(PremiumAction.self,
+        validate: { (state: GameState, action: PremiumAction, ctx: ValidateContext) throws in
+            // Guest players cannot perform certain actions; the throw refuses it, nothing is written
+            if ctx.isGuest {
+                throw GuestNotAllowed()
+            }
+        },
+        apply: { (state: inout GameState, action: PremiumAction, ctx: LandContext) -> PremiumResponse in
+            // Normal processing...
+            return PremiumResponse()
+        })
 }
 ```
 

@@ -1326,14 +1326,15 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionHandshakePhase[sessionID] != nil
     }
 
-    /// A join error frame, JSON as in the handshake: the client hasn't had its JoinResponse.
     /// A frame over the pre-join limit (`HandshakeFrameLimit`): the session is refused.
     ///
     /// In this segment, before any await, the session's router state goes as on a disconnect:
-    /// a join attempt in progress ends (its admission, if on its way, is refused when it runs),
-    /// the session is unbound, and `refusedSessions` drops every later frame, so nothing the
-    /// client sends next can join. Then the error goes out, stamped with the session's
-    /// connection, and the 1009 close behind it.
+    /// the session is unbound, `refusedSessions` drops every later frame, so nothing the client
+    /// sends next can join, and a join attempt in progress ends. That stops a join not yet in
+    /// the keeper. A join already in the keeper's join (CanJoin, the admission) isn't cut: it
+    /// finishes, and the forwarded disconnect then removes the player, as on a client
+    /// disconnect at that point (whether to cut it is #241). Then the error goes out, stamped
+    /// with the session's connection, and the 1009 close behind it.
     private func refuseOversizedHandshakeFrame(_ sessionID: SessionID, bytes: Int, limit: Int) async {
         refusedSessions.insert(sessionID)
         let generation = sessionToConnectionGeneration[sessionID]
@@ -1357,6 +1358,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         await transport.closeSessionAfterQueuedFrames(sessionID, generation: generation, with: .handshakeFrameTooBig)
     }
 
+    /// A join error frame, JSON as in the handshake: the client hasn't had its JoinResponse.
     private func joinErrorData(requestID: String, code: ErrorCode, message: String) -> Data? {
         let payload = ErrorPayload(code: code, message: message, details: ["requestID": AnyCodable(requestID)])
         return try? TransportEncodingConfig.json.makeMessageEncoder().encode(TransportMessage.error(payload))

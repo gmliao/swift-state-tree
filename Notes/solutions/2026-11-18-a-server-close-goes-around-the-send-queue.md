@@ -47,7 +47,12 @@ that path always closed with 1000.
 - Test the order by holding the drain, not by load: a connection whose `send` waits on a gate.
   With the error held, check that no close has arrived, then release it and expect the error
   followed by the close. Also cover a drain that has already ended (the marker can't be read,
-  so the close goes out at once) and a client that leaves between the enqueue and the marker.
+  so the close goes out at once), with a bound the test can't reach, so the ordinary bound
+  can't stand in for that branch.
+- Test a generation pin by making the stale callback run against a reconnected ID, held at
+  the callback (`setDelayedCloseForTesting`). A client that leaves while the drain is held
+  doesn't do it: the disconnect cancels the drain, so the marker is never read, and the bound
+  fires after the test has ended. Remove the pin and check the test turns red.
 - A refusal that closes a session also makes it terminal in the same segment, before the first
   await: until the close goes out, the client can still send, and a frame read in that window
   must not join.

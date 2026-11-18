@@ -253,8 +253,10 @@ StateTree 中的狀態在 Swift 中實作為實作 `StateNodeProtocol` 的 `stru
 Action handler 在 Swift 中的簽名為：
 
 ```swift
-(inout State, ActionPayload, LandContext) throws -> Response
+(inout State, ActionPayload, LandContext) -> ActionPayload.Response
 ```
+
+Handler 不能拋出錯誤。可被拒絕的 action 拆成讀取狀態、可拋出錯誤的 `validate`，以及寫入、不能拋出的 `apply`（[Land DSL：兩段式 Handler](core/land-dsl.zh-TW.md#兩段式-handler)）。
 
 * Action handler 在 `LandKeeper` actor 的隔離上下文中執行
 * Handler 是同步的，但 Resolver 會在執行前並行完成

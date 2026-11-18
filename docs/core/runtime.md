@@ -79,8 +79,7 @@ HandleAction(SomeAction.self) { state, action, ctx in
 `LandKeeper` runs every handler through `withMutableStateSync`, which mutates the actor's state in place:
 
 ```swift
-// Internal implementation (simplified; debug builds also check a throwing handler's writes,
-// see Inputs and Turns)
+// Internal implementation (simplified)
 func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
     // Actor serialization ensures thread safety
     return try operation(&state)
@@ -173,18 +172,16 @@ sequenceDiagram
 
 ### Inputs and Turns
 
-Handlers (actions, client events, lifecycle, `Tick`) are synchronous: `(inout State, …, LandContext) throws`. State changes only inside them, one input at a time, in the order the keeper applied them, and that order is what the reevaluation record keeps. A handler cannot await. Async work (a database read, a call to another service) goes in a resolver: resolvers run before the handler, outside the turn, and their outputs reach the handler through `ctx` and are recorded, so replay reuses them instead of calling the service again. See [Resolver Mechanism](resolver.md).
+Handlers (actions, client events, server inputs, lifecycle, `Tick`) are synchronous: `(inout State, …, LandContext)`. State changes only inside them, one input at a time, in the order the keeper applied them, and that order is what the reevaluation record keeps. A handler cannot await. Async work (a database read, a call to another service) goes in a resolver: resolvers run before the handler, outside the turn, and their outputs reach the handler through `ctx` and are recorded, so replay reuses them instead of calling the service again. See [Resolver Mechanism](resolver.md).
 
-An input whose handler throws fails alone:
+A handler can't throw after it writes (#586). The bodies of `HandleAction`, `HandleEvent`, `HandleServerInput`, `OnJoin` and `OnLeave` don't throw. An input that can be refused declares `validate` and `apply` ([Land DSL: Two-Phase Handlers](land-dsl.md#two-phase-handlers)): `validate` reads the state and may throw, `apply` writes and can't, and the two run back to back in the same turn. An input whose `validate` throws fails alone, with nothing written:
 
 - the inputs after it are applied in the same pass;
-- on a tickless land its caller gets the error. On a tick land the caller already got its acknowledgement when the action was queued (the handler runs in a later tick), so the failure is logged (`Input failed: its handler threw`) and doesn't reach the caller. Errors at intake (an unknown action, a decode failure, a resolver's error, a rejected delivery) reach the caller on both;
-- the server events it emitted are dropped;
-- a join whose `OnJoin` throws is discarded;
-- what the handler wrote to the state before the throw stays, and the next sync sends it (there is no per-input rollback, #87);
-- it is recorded like any other input, so replay runs it again and it fails the same way.
+- on a tickless land the action's caller gets the error (`ACTION_HANDLER_ERROR`). On a tick land the caller already got its acknowledgement when the action was queued (the handler runs in a later tick), so the failure is logged (`Input refused: its validate threw`) and doesn't reach the caller. A client event's error goes to the client as an error payload; a server input's is logged. Errors at intake (an unknown action, a decode failure, a resolver's error, a rejected delivery) reach the caller on both;
+- it emits nothing: `validate` can't emit, and `apply` doesn't run;
+- it is recorded like any other input and listed as rejected, so replay runs its `validate` again and checks that it refuses the same inputs ([Reevaluation: Rejected Inputs](reevaluation.md#rejected-inputs-35)).
 
-**Validate before you mutate.** Check every condition that can throw before the handler's first write to the state, so that a failed input changes nothing. In debug builds the keeper checks this: when a handler throws, it compares the synced state with a copy taken before the handler, and if the handler wrote, it logs a warning naming the input (`action <type>`, `event <type>`, `serverInput <type>`, `OnJoin`, `OnLeave`, `OnInitialize`), once per input type and land. A destroy handler (`OnDestroyWhenEmpty`, `OnFinalize`) is checked only when a later destroy-phase handler reads the state (`OnFinalize`, `AfterFinalize`, `OnShutdown`). Re-evaluation doesn't check. `@Internal` fields are not compared, so writes to them aren't reported. One more blind spot: a `Float` or `Double` NaN compares unequal to itself, so a handler that throws without writing can warn, which spends that input type's one warning. The copy costs a large debug game the first write to each container per input; set `DEBUG_WARN_THROWING_INPUT_WRITES=false` to turn the check off. Release builds don't check and don't copy.
+`OnJoin` and `OnLeave` can't fail: whether a player may join is `CanJoin`'s decision ([Land DSL: Join Checks](land-dsl.md#join-checks)), and a leave always happens. `OnInitialize` and the destroy-phase handlers (`OnFinalize`, `OnDestroyWhenEmpty`) may still throw, and keep what they wrote before the throw.
 
 ### Event Handler Flow
 
@@ -240,8 +237,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // Execute Resolver (if any)
         // Execute handler
-        try withMutableStateSync { state in
-            try onJoinHandler(&state, ctx)
+        withMutableStateSync { state in
+            onJoinHandler(&state, ctx)
         }
     }
 
@@ -257,8 +254,8 @@ When a player leaves, `OnLeave` handler is executed:
 public func leave(playerID: PlayerID, ...) async throws {
     // Execute OnLeave handler (if defined)
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        try withMutableStateSync { state in
-            try onLeaveHandler(&state, ctx)
+        withMutableStateSync { state in
+            onLeaveHandler(&state, ctx)
         }
     }
 
@@ -435,7 +432,7 @@ A join completes in the sync phase of the turn it flips in (#69, #194). The join
 Stated limits:
 
 - The debug freeze settle still runs a `beginSync` / `endSync` cycle.
-- An input whose handler throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it ([validate before you mutate](#inputs-and-turns)).
+- An input whose `validate` throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
 `IN_TURN_SYNC=false` is the kill switch: the adapter keeps its own executor and syncs through `beginSync` / `endSync` ([Sync Flow](#sync-flow)). The adapter decides once, at init, and the keeper follows it.

@@ -26,13 +26,20 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     public let serverEventRegistry: EventRegistry<AnyServerEvent>
     /// Aggregated configuration (access control, lifetime, etc.).
     public let config: LandConfig
-    /// List of registered action handlers.
+    /// List of registered action handlers, one per action type (#586): a later declaration for a
+    /// type is kept in `duplicateHandlers`, not here.
     public let actionHandlers: [AnyActionHandler<State>]
-    /// List of registered client event handlers (type-erased).
+    /// List of registered client event handlers (type-erased), one per event type (#586): a
+    /// later declaration for a type is kept in `duplicateHandlers`, not here.
     public let eventHandlers: [AnyClientEventHandler<State>]
-    /// Server input handlers (`HandleServerInput`), by type identifier. Not part of the client
-    /// schema.
-    let serverInputHandlers: [String: [AnyServerInputHandler<State>]]
+    /// Server input handlers (`HandleServerInput`), one per type identifier. Not part of the
+    /// client schema.
+    let serverInputHandlers: [String: AnyServerInputHandler<State>]
+    /// Handlers declared for an action, client-event or server-input type that already had one
+    /// (#586).
+    /// Registration refuses such a land (`LandRegistrationError.duplicateHandlers`), and so does
+    /// a keeper built without registration, at initialization.
+    package let duplicateHandlers: [DuplicateHandlerDeclaration]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
 }
@@ -57,7 +64,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     ///
     /// This is called after the player has been added to the authoritative state.
     /// Use this to initialize player-specific state or broadcast welcome messages.
-    public var onJoin: (@Sendable (inout State, LandContext) throws -> Void)?
+    public var onJoin: (@Sendable (inout State, LandContext) -> Void)?
     
     /// Resolver executors for the onJoin handler (empty if no resolvers declared).
     public var onJoinResolverExecutors: [any AnyResolverExecutor]
@@ -66,7 +73,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     ///
     /// This is called just before the player is removed from the authoritative state.
     /// Use this to clean up player state or broadcast departure messages.
-    public var onLeave: (@Sendable (inout State, LandContext) throws -> Void)?
+    public var onLeave: (@Sendable (inout State, LandContext) -> Void)?
     
     /// Resolver executors for the onLeave handler (empty if no resolvers declared).
     public var onLeaveResolverExecutors: [any AnyResolverExecutor]
@@ -149,9 +156,9 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     public init(
         canJoin: (@Sendable (State, PlayerSession, LandContext) throws -> JoinDecision)? = nil,
         canJoinResolverExecutors: [any AnyResolverExecutor] = [],
-        onJoin: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
+        onJoin: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onJoinResolverExecutors: [any AnyResolverExecutor] = [],
-        onLeave: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
+        onLeave: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onLeaveResolverExecutors: [any AnyResolverExecutor] = [],
         tickInterval: Duration? = nil,
         tickHandler: (@Sendable (inout State, LandContext) -> Void)? = nil,
@@ -203,21 +210,58 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
 public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
     private let type: Any.Type
     private let responseType: Any.Type?
+    /// Where the handler was declared (`HandleAction`'s `fileID:line`), for the duplicate check.
+    package let site: String?
+    /// The handler's checks and its write, as one call: it throws only from the payload type
+    /// check or `validate`, before anything is written (#586).
     private let handler: @Sendable (inout State, Any, LandContext) throws -> AnyCodable
     /// Resolver executors for this action handler (empty if no resolvers declared)
     public let resolverExecutors: [any AnyResolverExecutor]
 
-    public init(
+    /// A handler in two stages (#586): `validate` reads the state, may throw, and returns the
+    /// plan; `apply` writes, can't throw, and returns the action's declared `Response` (#561).
+    /// There is no public form that takes a throwing body or answers with another type.
+    public init<A: ActionPayload, Plan>(
+        _ type: A.Type,
+        validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
+        apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response,
+        resolverExecutors: [any AnyResolverExecutor] = [],
+        fileID: String = #fileID,
+        line: Int = #line
+    ) {
+        self.init(
+            type: type,
+            responseType: A.Response.self,
+            site: "\(fileID):\(line)",
+            invoke: { state, anyAction, ctx in
+                guard let action = anyAction as? A else {
+                    throw LandError.invalidActionType
+                }
+                let plan = try validate(state, action, ValidateContext(ctx))
+                return AnyCodable(apply(&state, action, plan, ctx))
+            },
+            resolverExecutors: resolverExecutors
+        )
+    }
+
+    /// The DSL's form: `invoke` may throw only before it writes (the payload type check, or
+    /// `validate`), and answers with `responseType`.
+    package init(
         type: Any.Type,
-        responseType: Any.Type? = nil,
-        handler: @escaping @Sendable (inout State, Any, LandContext) throws -> AnyCodable,
-        resolverExecutors: [any AnyResolverExecutor] = []
+        responseType: Any.Type?,
+        site: String? = nil,
+        invoke: @escaping @Sendable (inout State, Any, LandContext) throws -> AnyCodable,
+        resolverExecutors: [any AnyResolverExecutor]
     ) {
         self.type = type
         self.responseType = responseType
-        self.handler = handler
+        self.site = site
+        self.handler = invoke
         self.resolverExecutors = resolverExecutors
     }
+
+    /// The action type, for the one-handler-per-type check.
+    package var handledType: Any.Type { type }
 
     public func canHandle(_ actionType: Any.Type) -> Bool {
         actionType == type
@@ -263,21 +307,43 @@ public struct AnyActionHandler<State: StateNodeProtocol>: LandNode {
 /// invoked for all matching events (or specific enum cases if using the generated helpers).
 public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
     private let eventType: Any.Type
+    /// Where the handler was declared (`HandleEvent`'s `fileID:line`), for the duplicate check.
+    package let site: String?
+    /// Throws only before it writes: from `validate` (#586).
     private let handler: @Sendable (inout State, AnyClientEvent, LandContext) throws -> Void
 
-    public init<E: ClientEventPayload>(
+    /// A handler in two stages (#586): `validate` reads the state, may throw, and returns the
+    /// plan; `apply` writes and can't throw. There is no public form that takes a throwing body.
+    public init<E: ClientEventPayload, Plan>(
         eventType: E.Type,
-        handler: @escaping @Sendable (inout State, E, LandContext) throws -> Void
+        validate: @escaping @Sendable (State, E, ValidateContext) throws -> Plan,
+        apply: @escaping @Sendable (inout State, E, Plan, LandContext) -> Void
+    ) {
+        self.init(eventType: eventType, site: nil, invoke: { state, event, ctx in
+            let plan = try validate(state, event, ValidateContext(ctx))
+            apply(&state, event, plan, ctx)
+        })
+    }
+
+    /// The DSL's form: `invoke` may throw only before it writes (`validate`).
+    package init<E: ClientEventPayload>(
+        eventType: E.Type,
+        site: String?,
+        invoke: @escaping @Sendable (inout State, E, LandContext) throws -> Void
     ) {
         self.eventType = eventType
+        self.site = site
         self.handler = { state, anyEvent, ctx in
             // Decode the event from AnyClientEvent
             let decoder = JSONDecoder()
             if let event = try? InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, decoder: decoder) {
-                try handler(&state, event, ctx)
+                try invoke(&state, event, ctx)
             }
         }
     }
+
+    /// The event type this handler handles.
+    package var handledType: Any.Type { eventType }
 
     public func canHandle(_ eventType: Any.Type) -> Bool {
         self.eventType == eventType
@@ -289,5 +355,31 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         ctx: LandContext
     ) throws {
         try handler(&state, event, ctx)
+    }
+}
+
+// MARK: - Duplicate handlers (#586)
+
+/// A handler declared for an action, client-event or server-input type that already had one
+/// (#586). An input runs exactly one `validate` and one `apply`, so a land declares one handler
+/// per type.
+public struct DuplicateHandlerDeclaration: Sendable, Equatable, CustomStringConvertible {
+    /// `"action"`, `"client event"` or `"server input"`.
+    public let kind: String
+    /// The type's name.
+    public let typeName: String
+    /// Where the kept handler and the duplicate were declared (`fileID:line`), when known.
+    public let firstSite: String?
+    public let duplicateSite: String?
+
+    package init(kind: String, typeName: String, firstSite: String?, duplicateSite: String?) {
+        self.kind = kind
+        self.typeName = typeName
+        self.firstSite = firstSite
+        self.duplicateSite = duplicateSite
+    }
+
+    public var description: String {
+        "\(kind) \(typeName) has two handlers (at \(firstSite ?? "unknown") and \(duplicateSite ?? "unknown")); declare one handler per type"
     }
 }

@@ -32,9 +32,9 @@ import Foundation
 ///   sync while such a cycle is in flight leaves it to a sync-only turn after `endSync`.
 /// - Opcode 107 keeps emit order per frame kind only: per session the merged broadcast frame
 ///   comes first, then targeted event frames, then the per-player frame.
-/// - An input whose handler throws fails alone, as on the legacy path: its caller gets its error,
-///   it is removed and recorded, and the other inputs of the turn are applied. The state keeps
-///   what the throwing handler wrote before the throw, and the next sync sends it (#87).
+/// - An input whose `validate` throws fails alone, as on the legacy path: its caller gets its
+///   error, it is removed and recorded (as rejected), and the other inputs of the turn are
+///   applied. It wrote nothing: handlers throw only before they write (#586).
 /// - Re-evaluation keepers always use the legacy path.
 public enum InTurnSync {
     /// Whether in-turn sync is enabled by the environment: `true` unless `IN_TURN_SYNC` is false.

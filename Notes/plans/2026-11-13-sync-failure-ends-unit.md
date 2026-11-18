@@ -1,5 +1,7 @@
 # A sync failure ends the unit it corrupted (#535)
 
+> **2026-11-18:** #87 is closed by the types of #586 ([two-phase handlers](2026-11-18-two-phase-handlers.md)) instead of PR 4 (#585, parked): an input handler can't throw after it writes. §3.7 and D5 (a) (the handler-write detector) are superseded.
+
 **Status:** rev 11, decided. GO on rev 10 (a0f4de83), with its two shoulds folded in (§8: the join tests' hold, D8's integration backstop). GO on rev 7 (c2a146fc, 2026-11-13); rev 8 (3a55d139) folded in its two shoulds. The maintainer decided D1–D11 and the drain exception on 2026-11-13 (§9); rev 9 updates the plan to match. Two decisions change the mechanism and went to review as a delta: D11 (d), a sync plan's first throw ends the land, and D8 (b), existential fields are refused at registration. Plan only; no code yet.
 - Rev 9 (05223505) got a no-GO on the decisions' delta: 1 must-fix, 5 should. Rev 10 answers them:
   - Must-fix: PR 1 removes only the plan-throw paths; the follow-up limit, `noteFailedPlanForFollowUp` and `startDelayedFollowUpSync`, which the row repair and the first-view retry share, go in PR 2 (§7).
