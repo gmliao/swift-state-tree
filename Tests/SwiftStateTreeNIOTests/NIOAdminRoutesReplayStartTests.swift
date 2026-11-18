@@ -193,10 +193,14 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "minimumRecordVersion") == "2.5")
     }
 
-    @Test("Replay start refuses a record without a schema fingerprint: one before 3.5, or a current one without the field (#521 D15)")
+    @Test("Replay start refuses a record without a schema fingerprint: one before 3.6, or a current one without the field (#521 D15)")
     func replayStartRefusesRecordWithoutFingerprint() async throws {
-        let router = try await makeRouter(liveFingerprint: testRecordFingerprint)
-        for (version, fingerprint) in [("2.6", testRecordFingerprint), ("3.4", testRecordFingerprint), (ReevaluationRecordVersion.current, nil)] as [(String, String?)] {
+        let router = try await makeRouter()
+        let cases: [(String, String?)] = [
+            ("2.6", testRecordFingerprint), ("3.4", testRecordFingerprint), ("3.5", testRecordFingerprint),
+            (ReevaluationRecordVersion.current, nil),
+        ]
+        for (version, fingerprint) in cases {
             let recordFileURL = try writeRecordFile(
                 landType: "hero-defense", landDefinitionID: "hero-defense", version: version, schemaFingerprint: fingerprint
             )
@@ -214,7 +218,7 @@ struct NIOAdminRoutesReplayStartTests {
 
     @Test("Replay start refuses a record whose schema fingerprint differs from the live land type's, with both values (#521 D15)")
     func replayStartRefusesFingerprintMismatch() async throws {
-        let router = try await makeRouter(liveFingerprint: "fedcba9876543210")
+        let router = try await makeRouter(live: .fingerprint("fedcba9876543210"))
         let recordFileURL = try writeRecordFile(
             landType: "hero-defense", landDefinitionID: "hero-defense", version: ReevaluationRecordVersion.current
         )
@@ -228,8 +232,30 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "currentSchemaFingerprint") == "fedcba9876543210")
 
         // The same record against a live land type with its fingerprint is accepted.
-        let matching = try await makeRouter(liveFingerprint: testRecordFingerprint)
+        let matching = try await makeRouter()
         #expect(try await sendReplayStartRequest(body: body, on: matching).status == .ok)
+    }
+
+    @Test("Replay start refuses a record when the land type has no fingerprint to compare with: its server reports none, can't list a type, or isn't registered (#521 D15)")
+    func replayStartRefusesWithoutCurrentFingerprint() async throws {
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense", landDefinitionID: "hero-defense", version: ReevaluationRecordVersion.current
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let body = try JSONSerialization.data(withJSONObject: ["landType": "hero-defense", "recordFilePath": recordFileURL.path])
+        let reasons: [(LiveLand, String)] = [
+            (.reportsNone, "reports one"),
+            (.unbuildable, "Opaque"),
+            (.unregistered, "reports one"),
+        ]
+        for (live, reason) in reasons {
+            let response = try await sendReplayStartRequest(body: body, on: try await makeRouter(live: live))
+            #expect(response.status == .conflict, "\(live)")
+            let decoded = try decodeAdminResponse(from: response)
+            #expect(decoded.error?.code == "RECORD_SCHEMA_FINGERPRINT_UNAVAILABLE", "\(live)")
+            #expect(decoded.error?.message.contains(reason) == true, "\(live): \(decoded.error?.message ?? "")")
+            #expect(detailString(decoded.error?.details, key: "landType") == "hero-defense")
+        }
     }
 
     @Test("Replay start returns land type mismatch conflict with actionable details")
@@ -389,12 +415,29 @@ private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NI
 /// The fingerprint test records carry unless a test names another.
 private let testRecordFingerprint = "0123456789abcdef"
 
-/// With `liveFingerprint`, the live land type is registered too, with that record schema
-/// fingerprint (#521 D15); without it the route has no current fingerprint to compare.
-private func makeRouter(liveFingerprint: String? = nil) async throws -> NIOHTTPRouter {
+/// What the live land type `hero-defense` gives the route as its record schema fingerprint
+/// (#521 D15).
+private enum LiveLand {
+    case fingerprint(String)
+    /// Registered, but its server reports none (the protocol's default).
+    case reportsNone
+    /// Registered, but its definition has a type the fingerprint can't list.
+    case unbuildable
+    /// Not registered.
+    case unregistered
+}
+
+private func makeRouter(live: LiveLand = .fingerprint(testRecordFingerprint)) async throws -> NIOHTTPRouter {
     let landRealm = LandRealm()
-    if let liveFingerprint {
-        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer(fingerprint: liveFingerprint))
+    switch live {
+    case .fingerprint(let fingerprint):
+        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer(fingerprint: fingerprint))
+    case .reportsNone:
+        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer())
+    case .unbuildable:
+        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer(failure: .unbuildableType("Opaque")))
+    case .unregistered:
+        break
     }
     try await landRealm.register(landType: "hero-defense-replay", server: MockReplayLandServer())
     try await landRealm.register(landType: "reevaluation-monitor", server: MockReplayLandServer())
@@ -504,8 +547,12 @@ private struct MockReplayLandServer: LandServerProtocol {
     typealias State = DummyReplayState
 
     var fingerprint: String?
+    var failure: SchemaFingerprintError?
 
-    func recordSchemaFingerprint() throws -> String? { fingerprint }
+    func recordSchemaFingerprint() throws -> String? {
+        if let failure { throw failure }
+        return fingerprint
+    }
 
     func shutdown() async throws {}
 

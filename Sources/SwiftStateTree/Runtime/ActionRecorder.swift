@@ -74,7 +74,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
 
     /// The land's record schema fingerprint (`ReevaluationSchemaFingerprint`, #521 D15): replay
     /// refuses a record whose fingerprint differs from the current definition's, and one without
-    /// it. Nil in records before 3.5, and in a record whose keeper had none.
+    /// it. Nil in records before 3.6, and in a record whose keeper had none.
     public let schemaFingerprint: String?
 
     public init(

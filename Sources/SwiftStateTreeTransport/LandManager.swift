@@ -615,6 +615,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                         required: ReevaluationRecordVersion.current
                     )
                 }
+                // Before the first step, like every replay entry point (#521 D15): a record
+                // without a fingerprint, or of another schema, isn't replayed.
+                try ReevaluationSchemaFingerprint.checkRecord(recordedMetadata, against: landDefinition)
                 reevalServices.register(
                     DeterministicRngService(seed: recordedMetadata.replayRngSeed),
                     as: DeterministicRngService.self

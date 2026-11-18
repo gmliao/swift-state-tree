@@ -17,6 +17,17 @@ struct ReevaluationModeTestState: StateNodeProtocol {
     public init() {}
 }
 
+/// A nested value with required fields and no `@SnapshotConvertible`: the record schema
+/// fingerprint can't list its fields.
+struct ReevaluationModeOpaque: Codable, Sendable {
+    let x: Int
+}
+
+@Payload
+struct ReevaluationModeOpaqueEvent: ServerEventPayload {
+    let inner: ReevaluationModeOpaque
+}
+
 // MARK: - Tests
 
 @Suite("LandManager Reevaluation Mode Tests")
@@ -56,37 +67,16 @@ struct LandManagerReevaluationModeTests {
 
     @Test("Replay instances use .reevaluation keeper mode and source file path")
     func replayInstancesUseReevaluationMode() async throws {
-        let recordFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("land-manager-reeval-test-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: recordFile) }
-
-        let metadata = ReevaluationRecordMetadata(
-            landID: "test-replay:local",
-            landType: "test-replay",
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            metadata: [:],
-            landDefinitionID: "test-replay",
-            version: ReevaluationRecordVersion.current
-        )
-        let frame = ReevaluationTickFrame(
-            tickId: 0,
-            actions: [],
-            clientEvents: [],
-            lifecycleEvents: []
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let recordData = try encoder.encode(ReevaluationRecordFile(
-            recordMetadata: metadata,
-            tickFrames: [frame]
-        ))
-        try recordData.write(to: recordFile)
-
         let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
-            Land(landID.stringValue, using: ReevaluationModeTestState.self) {
+            Land(landID.landType, using: ReevaluationModeTestState.self) {
                 Rules {}
             }
         }
+        let recordFile = try writeModeRecord(
+            version: ReevaluationRecordVersion.current,
+            schemaFingerprint: try ReevaluationSchemaFingerprint.compute(for: landFactory(LandID(landType: "test-replay", instanceId: "x")))
+        )
+        defer { try? FileManager.default.removeItem(at: recordFile) }
         let initialStateFactory: @Sendable (LandID) -> ReevaluationModeTestState = { _ in
             ReevaluationModeTestState()
         }
@@ -157,6 +147,69 @@ struct LandManagerReevaluationModeTests {
         }
     }
 
+    @Test("A replay keeper is not created on a record without the land's schema fingerprint: none, or another (#521 D15)")
+    func replayKeeperChecksFingerprint() async throws {
+        let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
+            Land(landID.landType, using: ReevaluationModeTestState.self) { Rules {} }
+        }
+        let landID = LandID(landType: "test-replay", instanceId: "fingerprint")
+        let current = try ReevaluationSchemaFingerprint.compute(for: landFactory(landID))
+        let cases: [(String?, ReevaluationRecordFingerprintError)] = [
+            (nil, .missing(recordedVersion: ReevaluationRecordVersion.current)),
+            ("0123456789abcdef", .mismatch(recorded: "0123456789abcdef", current: current)),
+        ]
+        for (recorded, expected) in cases {
+            let recordFile = try writeModeRecord(version: ReevaluationRecordVersion.current, schemaFingerprint: recorded)
+            defer { try? FileManager.default.removeItem(at: recordFile) }
+            let manager = LandManager<ReevaluationModeTestState>(
+                landFactory: landFactory,
+                initialStateFactory: { _ in ReevaluationModeTestState() },
+                keeperModeResolver: { _, _ in .reevaluation(recordFilePath: recordFile.path) }
+            )
+            await #expect(throws: expected) {
+                _ = try await manager.getOrCreateLand(
+                    landID: landID,
+                    definition: landFactory(landID),
+                    initialState: ReevaluationModeTestState(),
+                    metadata: [:]
+                )
+            }
+            #expect(await manager.listLands().isEmpty)
+        }
+    }
+
+    @Test("A recording manager refuses a land whose schema fingerprint can't be computed; one that doesn't record creates it (#521 D15)")
+    func recordingManagerChecksFingerprint() async throws {
+        let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
+            Land(landID.landType, using: ReevaluationModeTestState.self) {
+                ServerEvents { Register(ReevaluationModeOpaqueEvent.self) }
+                Rules {}
+            }
+        }
+        let landID = LandID(landType: "test-opaque", instanceId: "a")
+        let recording = LandManager<ReevaluationModeTestState>(
+            landFactory: landFactory,
+            initialStateFactory: { _ in ReevaluationModeTestState() },
+            enableLiveStateHashRecording: true
+        )
+        let error = try await #require(throws: LandRegistrationError.self) {
+            _ = try await recording.getOrCreateLand(
+                landID: landID, definition: landFactory(landID), initialState: ReevaluationModeTestState(), metadata: [:]
+            )
+        }
+        #expect(error.schemaFingerprint == .unbuildableType("ReevaluationModeOpaque"))
+        #expect(await recording.listLands().isEmpty)
+
+        let notRecording = LandManager<ReevaluationModeTestState>(
+            landFactory: landFactory,
+            initialStateFactory: { _ in ReevaluationModeTestState() }
+        )
+        _ = try await notRecording.getOrCreateLand(
+            landID: landID, definition: landFactory(landID), initialState: ReevaluationModeTestState(), metadata: [:]
+        )
+        #expect(await notRecording.listLands() == [landID])
+    }
+
     @Test("Invalid replay session descriptor throws ReevaluationReplayError")
     func invalidReplaySessionThrowsReevaluationReplayError() async throws {
         let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
@@ -201,6 +254,27 @@ struct LandManagerReevaluationModeTests {
             Issue.record("Expected ReevaluationReplayError, got \(type(of: error)): \(error)")
         }
     }
+}
+
+/// A one-frame JSON record of `test-replay` at `version`.
+private func writeModeRecord(version: String, schemaFingerprint: String?) throws -> URL {
+    let recordFile = FileManager.default.temporaryDirectory
+        .appendingPathComponent("land-manager-reeval-test-\(UUID().uuidString).json")
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(ReevaluationRecordFile(
+        recordMetadata: ReevaluationRecordMetadata(
+            landID: "test-replay:local",
+            landType: "test-replay",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            metadata: [:],
+            landDefinitionID: "test-replay",
+            version: version,
+            schemaFingerprint: schemaFingerprint
+        ),
+        tickFrames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
+    )).write(to: recordFile)
+    return recordFile
 }
 
 private struct ReevaluationRecordFile: Codable {

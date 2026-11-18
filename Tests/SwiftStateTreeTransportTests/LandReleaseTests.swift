@@ -456,7 +456,11 @@ struct LandReleaseTests {
                 createdAt: Date(timeIntervalSince1970: 1_700_000_000),
                 metadata: [:],
                 landDefinitionID: "land-release-replay",
-                version: ReevaluationRecordVersion.current
+                version: ReevaluationRecordVersion.current,
+                // The replay land's: the keeper checks it before its first step (#521 D15).
+                schemaFingerprint: try ReevaluationSchemaFingerprint.compute(
+                    for: releaseTestLand(LandID(landType: "land-release-replay", instanceId: "replay-1"))
+                )
             ),
             frames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
         ).write(to: recordFile)

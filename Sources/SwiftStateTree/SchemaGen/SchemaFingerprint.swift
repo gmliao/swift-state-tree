@@ -11,12 +11,19 @@ public enum SchemaFingerprintError: Error, Equatable, Sendable, CustomStringConv
     /// or it is a payload without `@Payload` that has fields. Its schema would be an empty
     /// object, which can't tell its fields apart, so it isn't hashed.
     case unbuildableType(String)
+    /// Two stored properties of a `@Payload` type that the fingerprint names by one wire key: a
+    /// `CodingKeys` raw value that is another property's name. The fingerprint can't tell them
+    /// apart, so it isn't hashed.
+    case wireKeyCollision(type: String, key: String)
 
     public var description: String {
         switch self {
         case .unbuildableType(let type):
             return "the record schema fingerprint can't list the fields of \(type): give it @Payload "
                 + "(a payload or server input) or @SnapshotConvertible (a value in one)"
+        case let .wireKeyCollision(type, key):
+            return "the record schema fingerprint can't tell two fields of \(type) apart: both are named "
+                + "\"\(key)\"; give each its own CodingKeys raw value"
         }
     }
 }
@@ -29,19 +36,25 @@ public enum ReevaluationSchemaFingerprint {
     /// The fingerprint of `definition`: 16 hex digits.
     ///
     /// It covers the shapes on the wire and in the record: the state tree (fields, types, sync
-    /// policies, default values), the actions and their responses, the client and server events,
-    /// and the server inputs. It doesn't cover behavior (handler and tick logic, the tick interval,
-    /// services, configuration, the environment), which replay checks by the state hash per tick.
-    /// It is strict: an added action, event or optional field changes it too.
+    /// policies, and whether a field has a default), the actions, which response each returns,
+    /// the client and server events, the server inputs, a `Set`'s element type and a
+    /// `CaseIterable` raw-value enum's raw values. It doesn't cover behavior (handler and tick
+    /// logic, the tick interval, services, configuration, the environment, a default's value),
+    /// which replay checks by the state hash per tick. It is strict: an added action, event or
+    /// field changes it too.
     ///
     /// Canonical input: every `description` and the root wire form are left out, `required` lists
     /// are sorted, a `@Payload` type's fields are named by their wire key (`_payloadWireKeys`),
-    /// and the elements of a default value that is a set are sorted. A field of a type read
-    /// through the `Codable` sample fallback is named by its Swift property name, so a change of
-    /// its key alone isn't seen here.
+    /// and a default is hashed as present, not by its value, which a macro computes when the
+    /// process runs (`UUID()`, `Date()`).
     ///
-    /// - Throws: `SchemaFingerprintError.unbuildableType` for a type no sample can be built of, and
-    ///   what `SchemaExtractor.extract(from:)` throws for a land that can't be registered.
+    /// What it doesn't see: a field of a type read through the `Codable` sample fallback, or of
+    /// a `@Payload` type whose `CodingKeys` are in an extension or that encodes itself, is named
+    /// by its Swift property name, so a rename changes it and a change of the key alone isn't
+    /// seen; and the cases of a raw-value enum that isn't `CaseIterable`.
+    ///
+    /// - Throws: `SchemaFingerprintError` for a type whose fields it can't list or tell apart,
+    ///   and what `SchemaExtractor.extract(from:)` throws for a land that can't be registered.
     public static func compute<State: StateNodeProtocol>(for definition: LandDefinition<State>) throws -> String {
         let probe = SchemaExtractionProbe()
         let (lands, defs, serverInputs) = try SchemaExtractionProbe.$current.withValue(probe) {
@@ -49,7 +62,8 @@ public enum ReevaluationSchemaFingerprint {
             var definitions = schema.defs
             var visited = Set(definitions.keys)
             var inputs: [String: JSONSchema] = [:]
-            for (name, handler) in definition.serverInputHandlers {
+            // In key order: a def met twice keeps one form, and which depends on the order.
+            for (name, handler) in definition.serverInputHandlers.sorted(by: { $0.key < $1.key }) {
                 inputs[name] = ActionEventExtractor.extractEvent(
                     handler.inputType,
                     definitions: &definitions,
@@ -62,13 +76,27 @@ public enum ReevaluationSchemaFingerprint {
             throw SchemaFingerprintError.unbuildableType(unbuildable)
         }
         let wireKeys = probe.wireKeys
+        let leaves = probe.leaves
+        var canonicalDefs: [String: JSONSchema] = [:]
+        for (name, def) in defs {
+            var def = def
+            if let element = leaves.setElements[name] { def.items = Box(element) }
+            if let cases = leaves.enumCases[name] { def.enumValues = cases.sorted() }
+            canonicalDefs[name] = try canonical(def, wireKeys: wireKeys[name] ?? [:], typeName: name)
+        }
+        // Which response each action returns: a def per type doesn't say.
+        var actionResponses: [String: String] = [:]
+        for handler in definition.actionHandlers {
+            let action = String(describing: handler.getActionType())
+            actionResponses[action] = actionResponses[action]
+                ?? handler.getResponseType().map { String(describing: $0) } ?? ""
+        }
         let input = FingerprintInput(
             format: formatTag,
-            lands: lands.mapValues { canonical($0) },
-            defs: Dictionary(uniqueKeysWithValues: defs.map { name, def in
-                (name, canonical(def, wireKeys: wireKeys[name] ?? [:]))
-            }),
-            serverInputs: serverInputs.mapValues { canonical($0) }
+            lands: try lands.mapValues { try canonical($0) },
+            defs: canonicalDefs,
+            serverInputs: try serverInputs.mapValues { try canonical($0) },
+            actionResponses: actionResponses
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -88,54 +116,54 @@ public enum ReevaluationSchemaFingerprint {
         let lands: [String: LandSchema]
         let defs: [String: JSONSchema]
         let serverInputs: [String: JSONSchema]
+        let actionResponses: [String: String]
     }
 
-    private static func canonical(_ land: LandSchema) -> LandSchema {
+    private static func canonical(_ land: LandSchema) throws -> LandSchema {
         LandSchema(
             stateType: land.stateType,
-            actions: land.actions.mapValues { canonical($0) },
-            clientEvents: land.clientEvents.mapValues { canonical($0) },
-            events: land.events.mapValues { canonical($0) },
-            sync: SyncSchema(snapshot: canonical(land.sync.snapshot), diff: canonical(land.sync.diff)),
+            actions: try land.actions.mapValues { try canonical($0) },
+            clientEvents: try land.clientEvents.mapValues { try canonical($0) },
+            events: try land.events.mapValues { try canonical($0) },
+            sync: SyncSchema(snapshot: try canonical(land.sync.snapshot), diff: try canonical(land.sync.diff)),
             pathHashes: land.pathHashes,
             eventHashes: land.eventHashes,
             clientEventHashes: land.clientEventHashes
         )
     }
 
-    /// `schema` without descriptions, with `required` sorted, set defaults sorted, and its own
-    /// properties renamed to their wire keys (`wireKeys`: property name to key).
-    private static func canonical(_ schema: JSONSchema, wireKeys: [String: String] = [:]) -> JSONSchema {
+    /// `schema` without descriptions, with `required` sorted, a default as present only, and its
+    /// own properties renamed to their wire keys (`wireKeys`: property name to key).
+    ///
+    /// - Throws: `SchemaFingerprintError.wireKeyCollision` when two properties of `typeName` get
+    ///   one key.
+    private static func canonical(
+        _ schema: JSONSchema,
+        wireKeys: [String: String] = [:],
+        typeName: String = ""
+    ) throws -> JSONSchema {
         var result = schema
         result.description = nil
         if let properties = schema.properties {
-            result.properties = Dictionary(uniqueKeysWithValues: properties.map { name, value in
-                (wireKeys[name] ?? name, canonical(value))
-            })
+            var renamed: [String: JSONSchema] = [:]
+            for (name, value) in properties {
+                let key = wireKeys[name] ?? name
+                guard renamed[key] == nil else {
+                    throw SchemaFingerprintError.wireKeyCollision(type: typeName, key: key)
+                }
+                renamed[key] = try canonical(value)
+            }
+            result.properties = renamed
         }
         result.required = schema.required.map { $0.map { wireKeys[$0] ?? $0 }.sorted() }
-        result.items = schema.items.map { Box(canonical($0.value)) }
-        result.additionalProperties = schema.additionalProperties.map { Box(canonical($0.value)) }
-        if let defaultValue = schema.defaultValue {
-            result.defaultValue = isSet(schema) ? sortedElements(defaultValue) : defaultValue
+        result.items = try schema.items.map { Box(try canonical($0.value)) }
+        result.additionalProperties = try schema.additionalProperties.map { Box(try canonical($0.value)) }
+        // A default's value is computed when the process runs (`UUID()`, `Date()`, config): only
+        // whether there is one is part of the shape. Replay's state hash checks the value.
+        if schema.defaultValue != nil {
+            result.defaultValue = .bool(true)
         }
         return result
-    }
-
-    /// A field of a `Set` type refers to its def, which is named after the type.
-    private static func isSet(_ schema: JSONSchema) -> Bool {
-        schema.ref?.hasPrefix("#/defs/Set<") == true
-    }
-
-    /// A set's default with its elements in the order of their canonical JSON.
-    private static func sortedElements(_ value: SnapshotValue) -> SnapshotValue {
-        guard case .array(let elements) = value else { return value }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let keyed = elements.map { element in
-            (String(decoding: (try? encoder.encode(element)) ?? Data(), as: UTF8.self), element)
-        }
-        return .array(keyed.sorted { $0.0 < $1.0 }.map(\.1))
     }
 }
 
@@ -162,15 +190,31 @@ final class SchemaFingerprintCache: @unchecked Sendable {
 final class SchemaExtractionProbe: @unchecked Sendable {
     @TaskLocal static var current: SchemaExtractionProbe?
 
+    /// What a leaf def doesn't hold: a `Set`'s element schema and an enum's raw values, by def name.
+    struct Leaves {
+        var setElements: [String: JSONSchema] = [:]
+        var enumCases: [String: [String]] = [:]
+    }
+
     private let lock = NSLock()
     private var _unbuildable: Set<String> = []
     private var _wireKeys: [String: [String: String]] = [:]
+    private var _leaves = Leaves()
 
     var unbuildableTypes: Set<String> { lock.withLock { _unbuildable } }
     var wireKeys: [String: [String: String]] { lock.withLock { _wireKeys } }
+    var leaves: Leaves { lock.withLock { _leaves } }
 
     func noteUnbuildable(_ typeName: String) {
         lock.withLock { _ = _unbuildable.insert(typeName) }
+    }
+
+    func noteSetElement(of typeName: String, _ element: JSONSchema) {
+        lock.withLock { _leaves.setElements[typeName] = element }
+    }
+
+    func noteEnumCases(of typeName: String, _ rawValues: [String]) {
+        lock.withLock { _leaves.enumCases[typeName] = rawValues }
     }
 
     /// Notes `type`'s wire keys under its def name, when it renames any field. A type whose own

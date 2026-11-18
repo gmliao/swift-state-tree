@@ -13,7 +13,7 @@ import SwiftStateTreeTransport
 import SwiftStateTreeReevaluationMonitor
 
 @StateNodeBuilder
-struct FingerprintHostState: StateNodeProtocol {
+struct FingerprintHostState: StateNodeProtocol, StateFromSnapshotDecodable {
     @Sync(.broadcast) var hp: Int = 0
     init() {}
 }
@@ -68,8 +68,11 @@ struct RecordSchemaFingerprintRegistrationTests {
         }
     }
 
-    @Test("Registering a land for reevaluation refuses one whose fingerprint can't be computed, even without recording")
-    func reevaluationRefusesUnlistable() async throws {
+    @Test(
+        "Registering a land for reevaluation refuses one whose fingerprint can't be computed, even without recording",
+        arguments: ["same land", "separate replay land", "generic replay"]
+    )
+    func reevaluationRefusesUnlistable(overload: String) async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "test-admin-key"))
         let land = Land("fingerprint-reeval", using: FingerprintHostState.self) {
             ServerEvents { Register(FingerprintHostEvent.self) }
@@ -80,15 +83,39 @@ struct RecordSchemaFingerprintRegistrationTests {
             replayEventPolicy: .projectedOnly,
             runnerServiceFactory: { ReevaluationRunnerService(factory: UnusedFingerprintTargetFactory()) }
         )
+        let configuration = NIOLandServerConfiguration(transportEncoding: .json)
         let error = try await #require(throws: LandRegistrationError.self) {
-            try await host.registerWithReevaluationSameLand(
-                landType: "fingerprint-reeval",
-                liveLand: land,
-                liveInitialState: FingerprintHostState(),
-                liveWebSocketPath: "/game/fingerprint-reeval",
-                configuration: NIOLandServerConfiguration(transportEncoding: .json),
-                reevaluation: feature
-            )
+            switch overload {
+            case "same land":
+                try await host.registerWithReevaluationSameLand(
+                    landType: "fingerprint-reeval",
+                    liveLand: land,
+                    liveInitialState: FingerprintHostState(),
+                    liveWebSocketPath: "/game/fingerprint-reeval",
+                    configuration: configuration,
+                    reevaluation: feature
+                )
+            case "separate replay land":
+                try await host.registerWithReevaluation(
+                    landType: "fingerprint-reeval",
+                    liveLand: land,
+                    liveInitialState: FingerprintHostState(),
+                    liveWebSocketPath: "/game/fingerprint-reeval",
+                    replayLand: Land("fingerprint-reeval-replay", using: FingerprintHostState.self) { Rules {} },
+                    replayInitialState: FingerprintHostState(),
+                    configuration: configuration,
+                    reevaluation: feature
+                )
+            default:
+                try await host.registerWithGenericReplay(
+                    landType: "fingerprint-reeval",
+                    liveLand: land,
+                    liveInitialState: FingerprintHostState(),
+                    liveWebSocketPath: "/game/fingerprint-reeval",
+                    configuration: configuration,
+                    reevaluation: feature
+                )
+            }
         }
         #expect(error.schemaFingerprint == .unbuildableType("FingerprintHostInner"))
         #expect(await host.realm.isRegistered(landType: "fingerprint-reeval") == false)

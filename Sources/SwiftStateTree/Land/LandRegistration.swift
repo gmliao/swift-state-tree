@@ -87,9 +87,10 @@ extension LandDefinition {
         let problems = SyncRegistration.cachedProblems(State.self)
         let sync = problems.isEmpty ? nil : SyncRegistrationError(problems: problems)
         // A land whose records will be replayed needs a fingerprint (#521 D15, U3). Computed once
-        // per definition and cached; any error other than the fingerprint's own propagates.
+        // per definition and cached; any error other than the fingerprint's own propagates. Only
+        // when every other row holds: an error from the schema walk would replace those rows.
         var fingerprint: SchemaFingerprintError?
-        if context.recordsForReplay == true, sync == nil {
+        if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty {
             do {
                 _ = try ReevaluationSchemaFingerprint.cached(for: self)
             } catch let error as SchemaFingerprintError {

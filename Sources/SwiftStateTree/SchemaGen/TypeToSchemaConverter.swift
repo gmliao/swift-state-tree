@@ -404,9 +404,22 @@ public struct TypeToSchemaConverter {
                 // The record schema fingerprint refuses such a type (#521 D15): its empty object
                 // can't tell its fields apart. SchemaGen's output is unchanged.
                 // A collection, a raw-value type or a Foundation scalar has no fields to tell
-                // apart, and its def's name carries its element types.
-                if !isOptionalTypeName(typeName), !isFieldlessValueType(type) {
-                    SchemaExtractionProbe.current?.noteUnbuildable(typeName)
+                // apart; the fingerprint notes what its def leaves out: a set's element (whose
+                // fields it then lists, or refuses) and a `CaseIterable` enum's raw values.
+                if let probe = SchemaExtractionProbe.current, !isOptionalTypeName(typeName) {
+                    if !isFieldlessValueType(type) {
+                        probe.noteUnbuildable(typeName)
+                    } else {
+                        if let element = SyncSetHelper.elementType(of: type) {
+                            probe.noteSetElement(
+                                of: typeName,
+                                convert(element, definitions: &definitions, visitedTypes: &visitedTypes)
+                            )
+                        }
+                        if let cases = caseIterableRawValues(of: type) {
+                            probe.noteEnumCases(of: typeName, cases)
+                        }
+                    }
                 }
             }
         }
@@ -458,6 +471,16 @@ public struct TypeToSchemaConverter {
             return false
         }
         return Mirror(reflecting: sample).children.isEmpty
+    }
+
+    /// A `CaseIterable` raw-value enum's raw values, as text; nil for any other type.
+    private static func caseIterableRawValues(of type: Any.Type) -> [String]? {
+        guard let enumType = type as? any (CaseIterable & RawRepresentable).Type else { return nil }
+        return rawValues(of: enumType)
+    }
+
+    private static func rawValues<T: CaseIterable & RawRepresentable>(of _: T.Type) -> [String] {
+        T.allCases.map { "\($0.rawValue)" }
     }
 
     /// Whether `type` is a value whose wire form isn't its stored fields: a collection (`Set`),

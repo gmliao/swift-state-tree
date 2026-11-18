@@ -18,6 +18,9 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
     case schemaFingerprintMismatch(recorded: String, current: String)
     /// The record has no schema fingerprint (#521 D15): re-record it.
     case schemaFingerprintMissing(recordedVersion: String?)
+    /// The land type gives no fingerprint to compare with (#521 D15): its server reports none,
+    /// or its definition has a type the fingerprint can't list (`reason`).
+    case schemaFingerprintUnavailable(landType: String, reason: String)
 
     init(_ error: ReevaluationRecordFingerprintError) {
         switch error {
@@ -40,6 +43,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return "RECORD_SCHEMA_FINGERPRINT_MISMATCH"
         case .schemaFingerprintMissing:
             return "RECORD_SCHEMA_FINGERPRINT_MISSING"
+        case .schemaFingerprintUnavailable:
+            return "RECORD_SCHEMA_FINGERPRINT_UNAVAILABLE"
         }
     }
 
@@ -59,6 +64,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current).description
         case let .schemaFingerprintMissing(recordedVersion):
             return ReevaluationRecordFingerprintError.missing(recordedVersion: recordedVersion).description
+        case let .schemaFingerprintUnavailable(landType, reason):
+            return "Land type \(landType) has no record schema fingerprint to check the record against: \(reason)."
         }
     }
 
@@ -93,6 +100,11 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return [
                 "recordedRecordVersion": AnyCodable(recordedVersion),
                 "minimumReplayableVersion": AnyCodable(ReevaluationRecordVersion.minimumReplayable),
+            ]
+        case let .schemaFingerprintUnavailable(landType, reason):
+            return [
+                "landType": AnyCodable(landType),
+                "reason": AnyCodable(reason),
             ]
         }
     }
@@ -704,8 +716,10 @@ extension NIOAdminRoutes {
         return .accepted(resolvedRecordPath)
     }
 
-    /// Refuses a record without a schema fingerprint, and one whose fingerprint differs from the
-    /// land type's (#521 D15). Replay checks again when the replay land starts.
+    /// Refuses a record without a schema fingerprint, one whose fingerprint differs from the land
+    /// type's, and any record when the land type has no fingerprint to compare with (#521 D15).
+    /// The replay land's runner, or its `.reevaluation` keeper, checks again before its first
+    /// step, against the bytes it reads.
     private func validateSchemaFingerprint(metadata: ReevaluationRecordMetadata, landType: String) async throws {
         let recorded: String
         do {
@@ -713,7 +727,19 @@ extension NIOAdminRoutes {
         } catch let error as ReevaluationRecordFingerprintError {
             throw ReplayStartCompatibilityError(error)
         }
-        if let current = try await landRealm.recordSchemaFingerprint(for: landType), current != recorded {
+        let current: String?
+        do {
+            current = try await landRealm.recordSchemaFingerprint(for: landType)
+        } catch let error as SchemaFingerprintError {
+            throw ReplayStartCompatibilityError.schemaFingerprintUnavailable(landType: landType, reason: error.description)
+        }
+        guard let current else {
+            throw ReplayStartCompatibilityError.schemaFingerprintUnavailable(
+                landType: landType,
+                reason: "no land server registered for it reports one"
+            )
+        }
+        if current != recorded {
             throw ReplayStartCompatibilityError(.mismatch(recorded: recorded, current: current))
         }
     }
