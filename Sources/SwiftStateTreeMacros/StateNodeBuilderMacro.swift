@@ -1032,71 +1032,6 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return false
     }
 
-    /// Returns true if the type is statically known to conform to SnapshotValueDecodable.
-    /// Used by generateFromBroadcastSnapshotInit to avoid generating invalid decode calls.
-    private static func isKnownSnapshotValueDecodable(_ typeName: String?) -> Bool {
-        guard let typeName = typeName else { return false }
-        let normalized = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Check for Optional<T> wrapping a known type
-        if normalized.hasSuffix("?") {
-            let inner = String(normalized.dropLast()).trimmingCharacters(in: .whitespaces)
-            return isKnownSnapshotValueDecodable(inner)
-        }
-        if normalized.hasPrefix("Optional<") && normalized.hasSuffix(">") {
-            let inner = String(normalized.dropFirst("Optional<".count).dropLast())
-                .trimmingCharacters(in: .whitespaces)
-            return isKnownSnapshotValueDecodable(inner)
-        }
-
-        // Check for Array<T> or [T]
-        if normalized.hasPrefix("Array<") && normalized.hasSuffix(">") {
-            let inner = String(normalized.dropFirst("Array<".count).dropLast())
-                .trimmingCharacters(in: .whitespaces)
-            return isKnownSnapshotValueDecodable(inner)
-        }
-        if normalized.hasPrefix("[") && normalized.hasSuffix("]") && !normalized.contains(":") {
-            let inner = String(normalized.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
-            return isKnownSnapshotValueDecodable(inner)
-        }
-
-        // Check for Dictionary<K, V> or [K: V] — requires key to be SnapshotKeyDecodable
-        // and value to be SnapshotValueDecodable.
-        if normalized.hasPrefix("Dictionary<") && normalized.hasSuffix(">") {
-            let content = String(normalized.dropFirst("Dictionary<".count).dropLast())
-            let parts = content.split(separator: ",", maxSplits: 1)
-            if parts.count == 2 {
-                let keyType = String(parts[0]).trimmingCharacters(in: .whitespaces)
-                let valueType = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                return isKnownSnapshotKeyDecodable(keyType) && isKnownSnapshotValueDecodable(valueType)
-            }
-        }
-        if normalized.hasPrefix("[") && normalized.hasSuffix("]") && normalized.contains(":") {
-            let content = String(normalized.dropFirst().dropLast())
-            let parts = content.split(separator: ":", maxSplits: 1)
-            if parts.count == 2 {
-                let keyType = String(parts[0]).trimmingCharacters(in: .whitespaces)
-                let valueType = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                return isKnownSnapshotKeyDecodable(keyType) && isKnownSnapshotValueDecodable(valueType)
-            }
-        }
-
-        // Primitive types with known SnapshotValueDecodable conformance
-        let knownTypes: Set<String> = [
-            "Int", "Int8", "Int16", "Int32", "Int64",
-            "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
-            "Float", "Double", "Bool", "String",
-            "PlayerID"
-        ]
-        return knownTypes.contains(normalized)
-    }
-
-    /// Returns true if the type is statically known to conform to SnapshotKeyDecodable.
-    private static func isKnownSnapshotKeyDecodable(_ typeName: String) -> Bool {
-        let knownKeyTypes: Set<String> = ["String", "Int", "PlayerID"]
-        return knownKeyTypes.contains(typeName.trimmingCharacters(in: .whitespaces))
-    }
-
     /// Generate helper methods for container types (Dictionary, Array, Set)
     /// These methods automatically mark the field as dirty when modifying containers
     private static func generateContainerHelperMethods(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> [DeclSyntax] {
@@ -1470,52 +1405,53 @@ private func capitalizeFirst(_ str: String) -> String {
     return str.prefix(1).uppercased() + str.dropFirst()
 }
 
-/// Detect if a type is a container type and extract its element types
+/// Detect if a type is a container type and extract its element types.
+///
+/// The type is classified from its syntax tree, not by splitting its spelling: a nested
+/// container (`[[String: Int]]`), a labeled tuple element (`[(a: Int, b: Int)]`) or a generic
+/// argument with its own comma (`Dictionary<Pair<A, B>, C>`) has `:` or `,` inside an element,
+/// so a split at the first separator yields broken key and element types (#582).
 private func detectContainerType(from typeName: String?) -> ContainerType {
     guard let typeName = typeName else { return .none }
-
     let normalized = typeName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return .none }
+    return detectContainerType(TypeSyntax(stringLiteral: normalized))
+}
 
-    // Check for Dictionary: [Key: Value] or Dictionary<Key, Value>
-    if normalized.hasPrefix("[") && normalized.contains(":") && normalized.hasSuffix("]") {
-        // Format: [Key: Value]
-        let content = String(normalized.dropFirst().dropLast()) // Remove [ and ]
-        let parts = content.split(separator: ":", maxSplits: 1)
-        if parts.count == 2 {
-            let keyType = String(parts[0]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            let valueType = String(parts[1]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            return .dictionary(keyType: keyType, valueType: valueType)
+/// Classifies a parsed type as `[K: V]` / `Dictionary<K, V>`, `[E]` / `Array<E>` or `Set<E>`.
+private func detectContainerType(_ type: TypeSyntax) -> ContainerType {
+    if let dictionary = type.as(DictionaryTypeSyntax.self) {
+        return .dictionary(keyType: dictionary.key.trimmedDescription, valueType: dictionary.value.trimmedDescription)
+    }
+    if let array = type.as(ArrayTypeSyntax.self) {
+        return .array(elementType: array.element.trimmedDescription)
+    }
+    if let identifier = type.as(IdentifierTypeSyntax.self),
+       let arguments = identifier.genericArgumentClause?.arguments {
+        let argumentTypes = arguments.compactMap(genericArgumentTypeSpelling)
+        guard argumentTypes.count == arguments.count else { return .none }
+        switch (identifier.name.text, argumentTypes.count) {
+        case ("Dictionary", 2):
+            return .dictionary(keyType: argumentTypes[0], valueType: argumentTypes[1])
+        case ("Array", 1):
+            return .array(elementType: argumentTypes[0])
+        case ("Set", 1):
+            return .set(elementType: argumentTypes[0])
+        default:
+            return .none
         }
-    } else if normalized.hasPrefix("Dictionary<") && normalized.hasSuffix(">") {
-        // Format: Dictionary<Key, Value>
-        let content = String(normalized.dropFirst("Dictionary<".count).dropLast())
-        let parts = content.split(separator: ",", maxSplits: 1)
-        if parts.count == 2 {
-            let keyType = String(parts[0]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            let valueType = String(parts[1]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            return .dictionary(keyType: keyType, valueType: valueType)
-        }
     }
-
-    // Check for Array: [Element] or Array<Element>
-    if normalized.hasPrefix("[") && normalized.hasSuffix("]") && !normalized.contains(":") {
-        // Format: [Element]
-        let elementType = String(normalized.dropFirst().dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        return .array(elementType: elementType)
-    } else if normalized.hasPrefix("Array<") && normalized.hasSuffix(">") {
-        // Format: Array<Element>
-        let elementType = String(normalized.dropFirst("Array<".count).dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        return .array(elementType: elementType)
-    }
-
-    // Check for Set: Set<Element>
-    if normalized.hasPrefix("Set<") && normalized.hasSuffix(">") {
-        // Format: Set<Element>
-        let elementType = String(normalized.dropFirst("Set<".count).dropLast()).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        return .set(elementType: elementType)
-    }
-
     return .none
+}
+
+/// The spelling of a generic argument's type, or nil for a non-type argument.
+private func genericArgumentTypeSpelling(_ argument: GenericArgumentSyntax) -> String? {
+    switch argument.argument {
+    case .type(let type):
+        return type.trimmedDescription
+    default:
+        return nil
+    }
 }
 
 /// Macro errors

@@ -111,4 +111,175 @@ struct StateNodeBuilderContainerTypeTests {
         #expect(context.diagnostics.isEmpty)
         #expect(expanded.contains("public mutating func appendItems(_ element: Counts)"))
     }
+
+    @Test("Golden: an array of literal dictionaries gets array helpers only (#582)")
+    func arrayOfLiteralDictionariesGolden() {
+        expectMacroExpansion(
+            """
+            @StateNodeBuilder
+            struct Root: StateNodeProtocol {
+                @Sync(.broadcast) var maps: [[String: Int]] = []
+                init() {}
+            }
+            """,
+            expandedSource: """
+            struct Root: StateNodeProtocol {
+                @Sync(.broadcast) var maps: [[String: Int]] = []
+                init() {}
+
+                public func getSyncFields() -> [SyncFieldInfo] {
+                    return [SyncFieldInfo(name: "maps", policyType: .broadcast)]
+                }
+
+                public func validateSyncFields() -> Bool {
+                    return true
+                }
+
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    var result: [String: SnapshotValue] = [:]
+
+                    // Include maps if no dirtyFields filter or if field is dirty
+                    if dirtyFields == nil || dirtyFields?.contains("maps") == true {
+                        if let value = Self._syncPolicy_maps.filteredValue(self._maps.wrappedValue, for: playerID) {
+                            result["maps"] = try SnapshotValue.make(from: value, for: playerID)
+                        }
+                    }
+
+                    return StateSnapshot(values: result)
+                }
+
+                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    var result: [String: SnapshotValue] = [:]
+
+                    // Include maps if no dirtyFields filter or if field is dirty
+                    if dirtyFields == nil || dirtyFields?.contains("maps") == true {
+                        do {
+                            result["maps"] = try SnapshotValue.make(from: self._maps.wrappedValue)
+                        } catch {
+                            throw error
+                        }
+                    }
+
+                    return StateSnapshot(values: result)
+                }
+
+                public func fullStateSnapshot() throws -> StateSnapshot {
+                    var result: [String: SnapshotValue] = [:]
+                    result.reserveCapacity(1)
+                    result["maps"] = try SnapshotValue.makeFull(from: self._maps.wrappedValue as Any)
+                    return StateSnapshot(values: result)
+                }
+
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                    var broadcastResult: [String: SnapshotValue] = [:]
+                    let perPlayerResult: [PlayerID: [String: SnapshotValue]] = [:]
+
+                    if dirtyFields == nil || dirtyFields?.contains("maps") == true {
+                        do {
+                            broadcastResult["maps"] = try SnapshotValue.make(from: self._maps.wrappedValue)
+                        } catch {
+                            throw error
+                        }
+                    }
+
+                    return (StateSnapshot(values: broadcastResult), perPlayerResult.mapValues {
+                            StateSnapshot(values: $0)
+                        })
+                }
+
+                public func isDirty() -> Bool {
+                    return _maps.isDirty
+                }
+
+                public func getDirtyFields() -> Set<String> {
+                    var dirtyFields: Set<String> = []
+
+                    if _maps.isDirty {
+                        dirtyFields.insert("maps")
+                    }
+
+                    return dirtyFields
+                }
+
+                public mutating func clearDirty() {
+                    _maps.clearDirty()
+                }
+
+                public static func getFieldMetadata() -> [FieldMetadata] {
+                    return [FieldMetadata(
+                    name: "maps",
+                    type: [[String: Int]].self,
+                    policy: .broadcast,
+                    nodeKind: SchemaHelper.determineNodeKind(from: [[String: Int]].self),
+                    defaultValue: try? SnapshotValue.make(from: ([]) as Any)
+                        )]
+                }
+
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(1)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "maps",
+                        policy: .broadcast,
+                        conversion: .standard,
+                        read: {
+                                Self._syncPolicy_maps.filteredValue($0._maps.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                try SnapshotValue.make(from: value)
+                            }
+                        ))
+                    _syncCheck_maps(_syncFieldKind { (node: Self) in
+                            Self._syncPolicy_maps.filteredValue(node._maps.wrappedValue, for: nil)
+                        })
+                    return fields
+                }
+
+                public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? {
+                    let fields: [SyncTableField<Self>] = []
+                    return fields
+                }
+
+                /// Append an element to maps array and mark as dirty
+                /// Note: This method always marks the field as dirty
+                public mutating func appendMaps(_ element: [String: Int]) {
+                    _maps.wrappedValue.append(element)
+                    _maps.markDirty()
+                }
+
+                /// Remove an element from maps array at index and mark as dirty
+                /// Note: This method always marks the field as dirty
+                @discardableResult
+                public mutating func removeMaps(at index: Int) -> [String: Int] {
+                    let result = _maps.wrappedValue.remove(at: index)
+                    _maps.markDirty()
+                    return result
+                }
+
+                /// Insert an element into maps array at index and mark as dirty
+                /// Note: This method always marks the field as dirty
+                public mutating func insertMaps(_ element: [String: Int], at index: Int) {
+                    _maps.wrappedValue.insert(element, at: index)
+                    _maps.markDirty()
+                }
+
+                private static func _syncCheck_maps(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'maps' ([[String: Int]]) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_maps(_: _SyncFallbackField) {
+                }
+
+                private static let _syncPolicy_maps: SyncPolicy<[[String: Int]]> = .broadcast
+
+                private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(Root.self)
+
+                public static var hasPlayerDependentSyncFields: Bool {
+                    _hasPlayerDependentSyncFields
+                }
+            }
+            """,
+            macros: ["StateNodeBuilder": StateNodeBuilderMacro.self]
+        )
+    }
 }
