@@ -140,3 +140,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-18 | [A server close goes around the send queue](2026-11-18-a-server-close-goes-around-the-send-queue.md) | ordering, send, close, session-queue |
 | 2026-11-18 | [A fuzz harness is only as good as the mutants it kills](2026-11-18-a-fuzz-harness-is-only-as-good-as-the-mutants-it-kills.md) | testing, fuzzing, mutants, decoding, messagepack, json |
 | 2026-11-18 | [A soft reset to a moved main stages the reverse of every commit in between](2026-11-18-soft-reset-to-a-moved-main-stages-reverse-commits.md) | git, reset, squash, local-main |
+| 2026-11-18 | [A cache keyed by a name serves a changed definition the old value](2026-11-18-a-cache-keyed-by-a-name-serves-a-changed-definition.md) | caching, fingerprint, replay, testing |
+| 2026-11-18 | [Synthesized `Decodable` ignores `var` defaults, so a `{}` sample fails](2026-11-18-synthesized-decodable-ignores-var-defaults.md) | codable, schemagen, fingerprint, swift |
