@@ -376,11 +376,14 @@ public enum ResolverTest {
                     state.leaves += 1
                 }
 
-                HandleAction(CallServiceAction.self, resolvers: ServiceCallResolver.self) {
-                    (state: inout ResolverTestState, _: CallServiceAction, ctx: LandContext) in
+                // validate checks the resolver output and hands it to apply as the plan (#586).
+                HandleAction(CallServiceAction.self, resolvers: ServiceCallResolver.self, validate: {
+                    (_: ResolverTestState, _: CallServiceAction, ctx: ValidateContext) -> ServiceCall in
                     guard let call = ctx.serviceCall as ServiceCall? else {
                         throw ResolverError.custom("ServiceCallResolver output missing")
                     }
+                    return call
+                }, apply: { (state: inout ResolverTestState, _: CallServiceAction, call: ServiceCall, ctx: LandContext) in
                     state.applied += 1
                     state.lastTag = call.tag
                     state.lastResult = call.result
@@ -388,7 +391,7 @@ public enum ResolverTest {
                     // Outside the state: the response doesn't reach the client (`TickProbe`).
                     ctx.services.get(TickProbe.self)?.noteTickAdvance(state.lastTickAdvance)
                     return CallServiceResponse(applied: state.applied, tickAdvance: state.lastTickAdvance)
-                }
+                })
             }
 
             Lifetime {

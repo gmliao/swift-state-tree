@@ -95,7 +95,8 @@ public enum JoinFlipError: Error, Sendable, Hashable {
     case disconnected
     /// The land was torn down.
     case landClosed
-    /// OnJoin threw: the keeper removed the join's input and player.
+    /// The flip wait ended with an error none of the other cases name. OnJoin can't throw
+    /// (#586), so the keeper no longer reports this; the router keeps it for an unexpected error.
     case onJoinFailed
     /// No committed sync phase flipped it within the join flip timeout.
     case timeout

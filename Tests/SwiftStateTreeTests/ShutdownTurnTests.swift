@@ -512,7 +512,7 @@ struct ShutdownTurnTests {
 
         // The public reader decodes the event's kind as its string.
         let source = try ReevaluationRecordFile.openSource(filePath: file)
-        #expect(try await source.getMetadata().version == "3.4")
+        #expect(try await source.getMetadata().version == "3.5")
         let maxTickId = try await source.getMaxTickId()
         var shutdownEvents: [(tickId: Int64, event: ReevaluationRecordedLifecycleEvent)] = []
         for tickId in 0...max(maxTickId, 0) {

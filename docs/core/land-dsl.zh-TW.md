@@ -52,8 +52,10 @@ server event 是通知，同步的狀態才是真實來源。仍在加入中的 
 
 - `CanJoin`：加入前驗證，回傳 `JoinDecision`
 - `OnJoin` / `OnLeave`：加入或離開後處理
-- `HandleAction`：處理 Action（有回應）
+- `HandleAction`：處理 Action（回傳 action 宣告的 `Response`）
 - `HandleEvent`：處理 Client Event（無回應）
+
+Handler body 不會拋出錯誤；可被拒絕的 input 使用 `validate` 與 `apply`（[兩段式 Handler](#兩段式-handler)）。
 
 ```swift
 Rules {
@@ -74,6 +76,59 @@ Rules {
     }
 }
 ```
+
+### 兩段式 Handler
+
+Input handler 寫入後不能再拋出錯誤（#586）。單一 closure 的 `HandleAction`、`HandleEvent`、`HandleServerInput`、`OnJoin` 與 `OnLeave` 接受的 body 都不會拋出錯誤。可被拒絕的 input 分兩段宣告，`validate` 與 `apply`：
+
+```swift
+HandleAction(BuyAction.self,
+    validate: { (state: ShopState, action: BuyAction, ctx: ValidateContext) throws -> BuyPlan in
+        guard let item = state.shop[action.itemID] else { throw ShopError.notFound }
+        guard (state.players[ctx.playerID]?.gold ?? 0) >= item.price else { throw ShopError.noGold }
+        return BuyPlan(item: item)
+    },
+    apply: { (state: inout ShopState, action: BuyAction, plan: BuyPlan, ctx: LandContext) -> BuyResponse in
+        state.players[ctx.playerID]?.gold -= plan.item.price
+        state.players[ctx.playerID]?.items.append(plan.item)
+        return BuyResponse(ok: true)
+    })
+```
+
+| 步驟 | 何時 | 做什麼 | 不能做 |
+|---|---|---|---|
+| resolve（`resolvers:`） | 非同步，在 turn 之外、之前 | 載入資料（資料庫、遠端呼叫、時鐘）；其輸出會被錄製 | 碰狀態 |
+| `validate` | 同步，在 turn 內 | 讀取狀態（常數）與 context；拋出錯誤表示拒絕；回傳 plan | 寫入狀態、發出 event、要求同步 |
+| `apply` | 同步，在同一個 turn 內、緊接在 `validate` 之後 | 寫入狀態、發出 event、回傳 response | 拋出錯誤 |
+
+- 沒有東西要傳時，`validate` 回傳 `Void`，`apply` 接受 `(inout State, Action, LandContext)`。
+- `HandleEvent(_:validate:apply:)` 與 `HandleServerInput(_:validate:apply:)` 有相同的兩種形式；它們的 `apply` 回傳 `Void`。`HandleAction` 的兩種形式都可加 `resolvers:`，`validate` 從自己的 context 讀取其輸出。
+- `validate` 借用狀態：不會複製。它在同一個 turn 內緊接在 `apply` 之前執行，因此它檢查過的條件在 `apply` 寫入時仍然成立。
+- `validate` 拋出錯誤時只有該 input 失敗，什麼都不寫入、什麼都不發出。Action 的呼叫者收到錯誤（`ACTION_HANDLER_ERROR`；在 tick land 上呼叫者在收件時已收到 ACK），event 的錯誤以 error payload 送給 client（限於 in-turn sync 的 tickless land，event 會在那裡等待自己的 input turn；在 tick land 上 event 於下一個 tick 套用，在 `IN_TURN_SYNC=false` 的 tickless land 上則在 detached task 中套用，因此這兩種情況下拒絕只記錄在 log），server input 的錯誤記錄在 log（[Runtime：Input 與 Turn](runtime.zh-TW.md#input-與-turn)）。
+- Action body 與 `apply` 回傳 action 宣告的 `Response`（#561）。回傳其他型別無法編譯。
+
+#### ValidateContext
+
+`validate` 收到的是 `ValidateContext`，不是 `LandContext`：
+
+- **可用：** `landID`、`playerID`、`clientID`、`sessionID`、`deviceID`、`isGuest`、`metadata`、`tickId`、`playerSlot`、`logger`、依名稱取得的 resolver 輸出（`ctx.productInfo`），以及只限 `ReadOnlyLandService` 型別的 `services`。
+- **不可用：** `emitEvent`、`emitAnyServerEvent`、`requestSyncNow()` / `requestSyncBroadcastOnly()`、server input、亂數、排程。
+
+`ReadOnlyLandService` 是 marker protocol，也是編譯器無法檢查的約定：該 service 只讀取，且相同輸入給出相同答案，因為 replay 會再執行一次 `validate`。不具決定性的資料（時鐘、遠端呼叫、亂數來源）應放在 resolver，其輸出會被錄製。以 existential 型別註冊的 service（`register(x, as: (any P).self)`）無法透過 marker 取得；請以其具體型別註冊。
+
+#### 每種型別一個 Handler
+
+一個 land 對每種 action 型別只宣告一個 `HandleAction`，對每種 client event 型別只宣告一個 `HandleEvent`，對每種 server input 型別只宣告一個 `HandleServerInput`。第二個宣告會在註冊時以 `LandRegistrationError.duplicateHandlers` 拒絕，錯誤中標明型別與兩處宣告的 `fileID:line`。未經註冊直接建立的 keeper 也會在初始化時拒絕。
+
+#### 編譯器擋不住的事
+
+- 不具決定性的 `validate`：讀取全域可變狀態或時鐘，或呼叫遵循 `ReadOnlyLandService` 卻不守約定的 service。Replay 再執行 `validate` 時可能做出不同決定。
+- 透過狀態中持有的 class 參照寫入。同步狀態不能放 class（#464，[Sync](sync.zh-TW.md#同步狀態只能由-value-type-組成)）。
+- `validate` 中的副作用，例如寫 log：replay 會重複它們。
+
+### Join 檢查
+
+`OnJoin` 不會失敗：玩家能否加入由 `CanJoin` 在 join 收件時決定。`OnJoin` 在之後的 turn 才套用，因此 `CanJoin` 對其他 input 會改變的狀態所做的檢查，到那時可能已經過時（turn 內的 join 檢查由 #588 追蹤）。不要把這類依賴狀態的檢查放在 `CanJoin`，改在 `OnJoin` 處理已經不適合加入的 joiner：讓他成為旁觀者，或發出 event 請他離開。`MaxPlayers` 不受影響：它在插入玩家時檢查，並計入仍在等待中的 joiner。`OnLeave` 也不會失敗：離開一定會發生。
 
 ### 必須至多套用一次的 action
 
@@ -123,7 +178,7 @@ struct BuyItemResponse: ResponsePayload {
 let maxAppliedPurchases = 64
 
 // In the land's Rules:
-HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) throws -> BuyItemResponse in
+HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) -> BuyItemResponse in
     let player = ctx.playerID
     let coins = state.coins[player] ?? 0
     var applied = state.appliedPurchases[player] ?? []
@@ -147,7 +202,7 @@ HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemActio
 - `appliedPurchases` 是 `.serverOnly`：client 不需要它，也不佔傳輸量。
 - 歷史以玩家為單位。上限要遠大於「重送仍可能發生的期間內，一個玩家能送出的這類 action 數量」。
 - 在有 tick 的 land 上，client 收到的 `BuyItemResponse` 只是 ACK，`coins` 要從狀態讀。
-- 所有檢查都在第一次寫入之前。拋出錯誤的 handler 會保留拋出前寫入的內容，下一次同步會送出，所以要先驗證再修改；debug build 會在拋出錯誤的 handler 有寫入時發出警告（[Runtime：Input 與 Turn](runtime.zh-TW.md#input-與-turn)）。
+- 這裡的檢查不拒絕 action，而是回答它（`applied: false`），所以一個不會拋出錯誤的 body 就夠了。應以錯誤失敗的 action 改由 `validate` 拋出，它什麼都不寫入（[兩段式 Handler](#兩段式-handler)）。
 
 ## LandContext
 
@@ -171,7 +226,7 @@ Resolver 先並行執行，成功後再同步進入 handler。
 - `StateSync(every:)`：狀態同步（只讀 callback，會被調用）
 - `DestroyWhenEmpty(after:)`：空房間自動關閉
 - `PersistSnapshot(every:)`：快照週期
-- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
+- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`。與 input handler 不同，`OnInitialize` 與 destroy 階段的 handler（`OnFinalize`、`OnDestroyWhenEmpty`）可以拋出錯誤，並保留拋出前寫入的內容
 - `OnInitialize(resolvers:onResolverFailure:)`：resolver 丟錯時預設會讓 land 初始化失敗（`.failLand`）；`.continue` 則在沒有 resolver 輸出的情況下執行 OnInitialize。見 [Resolver 期限](resolver.zh-TW.md#期限)
 
 ```swift

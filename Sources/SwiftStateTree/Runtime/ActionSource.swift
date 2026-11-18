@@ -45,6 +45,10 @@ public protocol ReevaluationSource: Sendable {
     /// Get server inputs for a specific tick (record format 3.2, #387). Empty in older records.
     func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput]
 
+    /// A tick land's refused inputs for a specific tick (record format 3.5, #586,
+    /// `ReevaluationTickFrame.rejected`). Empty when none was, and in older records.
+    func getRejected(for tickId: Int64) async throws -> [Int64]
+
     /// Every recorded sync output and marker, in stream order (`streamIndex`).
     func getSyncStream() async throws -> [ReevaluationSyncStreamEntry]
 
@@ -71,6 +75,11 @@ extension ReevaluationSource {
 
     /// Default for conformers that do not record passes.
     public func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] {
+        []
+    }
+
+    /// Default for conformers that record no refused inputs.
+    public func getRejected(for tickId: Int64) async throws -> [Int64] {
         []
     }
 
@@ -226,6 +235,10 @@ public actor JSONReevaluationSource: ReevaluationSource {
         framesByTickId[tickId]?.passes ?? []
     }
 
+    public func getRejected(for tickId: Int64) async throws -> [Int64] {
+        framesByTickId[tickId]?.rejected ?? []
+    }
+
     public func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)? {
         frames.first { $0.landFailure != nil }.flatMap { frame in frame.landFailure.map { (frame.tickId, $0) } }
     }
@@ -305,6 +318,10 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
 
     public func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] {
         framesByTickId[tickId]?.passes ?? []
+    }
+
+    public func getRejected(for tickId: Int64) async throws -> [Int64] {
+        framesByTickId[tickId]?.rejected ?? []
     }
 
     public func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)? {

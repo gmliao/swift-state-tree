@@ -101,26 +101,30 @@ HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self) { state, acti
 
 ### 在 Event Handler 中處理錯誤
 
-Event handler 不帶 resolver（`HandleEvent` 沒有 `resolvers:` 參數），但可以拋出錯誤，錯誤會自動傳送到客戶端：
+Event handler 不帶 resolver（`HandleEvent` 沒有 `resolvers:` 參數）。Handler body 不能拋出錯誤；可被拒絕的 event 分兩段宣告：`validate` 可以拋出錯誤表示拒絕（什麼都不寫入），`apply` 寫入狀態且不能拋出錯誤（見 [Land DSL：兩段式 Handler](../../../docs/core/land-dsl.zh-TW.md#兩段式-handler)）：
 
 ```swift
-// ✅ 正確：Event handler 可以 throws
+// ✅ 正確：拒絕放在 validate，寫入放在 apply
 enum ChatError: Error { case emptyMessage }
 
-HandleEvent(ChatEvent.self) { state, event, ctx in
-    // 如果處理失敗，可以拋出錯誤
-    guard let message = event.message, !message.isEmpty else {
-        throw ChatError.emptyMessage
-    }
-    state.messages.append(message)
-}
+HandleEvent(ChatEvent.self,
+    validate: { (state: ChatState, event: ChatEvent, ctx: ValidateContext) throws -> String in
+        // 拒絕此 event；什麼都不寫入
+        guard let message = event.message, !message.isEmpty else {
+            throw ChatError.emptyMessage
+        }
+        return message
+    },
+    apply: { (state: inout ChatState, event: ChatEvent, message: String, ctx: LandContext) in
+        state.messages.append(message)
+    })
 ```
 
 **Event 錯誤處理流程**：
-1. Event handler 失敗 → 拋出錯誤
-2. TransportAdapter 捕獲錯誤並發送 `ErrorPayload` 到客戶端
-3. 客戶端收到錯誤訊息，包含錯誤碼和詳細資訊
-4. Event 不會執行（狀態不會被修改）
+1. `validate` 拋出錯誤 → event 被拒絕
+2. `apply` 不會執行（狀態不會被修改，也不會發出 event）
+3. 在 in-turn sync 的 tickless land 上，TransportAdapter 等待該 event 的 input turn，並將 `ErrorPayload` 送到客戶端
+4. 在 tick land 上（event 於下一個 tick 套用）或 `IN_TURN_SYNC=false` 的 tickless land 上（event 在 detached task 中套用），拒絕只記錄在 log
 
 ### 錯誤處理最佳實踐
 

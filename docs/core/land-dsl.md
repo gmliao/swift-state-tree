@@ -52,8 +52,10 @@ Rules block defines Join/Leave and Action/Event behavior:
 
 - `CanJoin`: Validation before joining, returns `JoinDecision`
 - `OnJoin` / `OnLeave`: Processing after joining or leaving
-- `HandleAction`: Handle Action (with response)
+- `HandleAction`: Handle Action (returns the action's declared `Response`)
 - `HandleEvent`: Handle Client Event (no response)
+
+Handler bodies don't throw; an input that can be refused uses `validate` and `apply` ([Two-Phase Handlers](#two-phase-handlers)).
 
 ```swift
 Rules {
@@ -74,6 +76,59 @@ Rules {
     }
 }
 ```
+
+### Two-Phase Handlers
+
+Input handlers can't throw after they write (#586). The single-closure `HandleAction`, `HandleEvent`, `HandleServerInput`, `OnJoin` and `OnLeave` take bodies that don't throw. An input that can be refused is declared in two stages, `validate` and `apply`:
+
+```swift
+HandleAction(BuyAction.self,
+    validate: { (state: ShopState, action: BuyAction, ctx: ValidateContext) throws -> BuyPlan in
+        guard let item = state.shop[action.itemID] else { throw ShopError.notFound }
+        guard (state.players[ctx.playerID]?.gold ?? 0) >= item.price else { throw ShopError.noGold }
+        return BuyPlan(item: item)
+    },
+    apply: { (state: inout ShopState, action: BuyAction, plan: BuyPlan, ctx: LandContext) -> BuyResponse in
+        state.players[ctx.playerID]?.gold -= plan.item.price
+        state.players[ctx.playerID]?.items.append(plan.item)
+        return BuyResponse(ok: true)
+    })
+```
+
+| Step | When | Does | Can't |
+|---|---|---|---|
+| resolve (`resolvers:`) | async, outside the turn, before it | loads data (a database, a remote call, a clock); its output is recorded | touch the state |
+| `validate` | sync, in the turn | reads the state (a constant) and the context; throws to refuse; returns the plan | write the state, emit, request a sync |
+| `apply` | sync, in the same turn, right after `validate` | writes the state, emits events, returns the response | throw |
+
+- With nothing to pass, `validate` returns `Void` and `apply` takes `(inout State, Action, LandContext)`.
+- `HandleEvent(_:validate:apply:)` and `HandleServerInput(_:validate:apply:)` take the same two forms; their `apply` returns `Void`. `HandleAction` takes `resolvers:` in both forms, and `validate` reads their outputs from its context.
+- `validate` borrows the state: no copy is made. It runs right before `apply` in the same turn, so what it checked still holds when `apply` writes.
+- A `validate` throw fails that input alone, with nothing written and nothing emitted. The action's caller gets the error (`ACTION_HANDLER_ERROR`; on a tick land the caller already got its ACK at intake), an event's error goes to the client as an error payload (only on a tickless land with in-turn sync, where the event waits for its input turn; on a tick land the event is applied in the next tick, and on a tickless land with `IN_TURN_SYNC=false` in a detached task, so there the refusal is only logged), and a server input's is logged ([Runtime: Inputs and Turns](runtime.md#inputs-and-turns)).
+- An action body and `apply` return the action's declared `Response` (#561). Returning another type doesn't compile.
+
+#### ValidateContext
+
+`validate` gets a `ValidateContext`, not a `LandContext`:
+
+- **Available:** `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`, `playerSlot`, `logger`, resolver outputs by name (`ctx.productInfo`), and `services`, restricted to `ReadOnlyLandService` types.
+- **Not available:** `emitEvent`, `emitAnyServerEvent`, `requestSyncNow()` / `requestSyncBroadcastOnly()`, server inputs, random numbers, scheduling.
+
+`ReadOnlyLandService` is a marker protocol and a contract the compiler can't check: the service only reads, and answers the same for the same inputs, because replay runs `validate` again. Data that isn't deterministic (a clock, a remote call, a random source) belongs in a resolver, whose output is recorded. A service registered under an existential type (`register(x, as: (any P).self)`) can't be fetched through the marker; register it under its concrete type.
+
+#### One Handler per Type
+
+A land declares one `HandleAction` per action type, one `HandleEvent` per client-event type and one `HandleServerInput` per server-input type. A second declaration is refused at registration with `LandRegistrationError.duplicateHandlers`, which names the type and the `fileID:line` of both declarations. A keeper built without registration refuses it at initialization too.
+
+#### What the Compiler Can't Stop
+
+- A `validate` that isn't deterministic: one that reads global mutable state or a clock, or calls a service that conforms to `ReadOnlyLandService` but doesn't keep its contract. Replay runs `validate` again and can decide differently.
+- A write through a class reference held in the state. Synced state can't hold classes (#464, [Sync](sync.md#synced-state-is-made-of-value-types)).
+- Side effects in `validate`, such as logging: replay repeats them.
+
+### Join Checks
+
+`OnJoin` can't fail: whether a player may join is `CanJoin`'s decision, made at join intake. `OnJoin` applies in a later turn, so a `CanJoin` check on state that other inputs change can be stale by then (an in-turn join check is tracked in #588). Keep such state-dependent checks out of `CanJoin`, and handle a joiner that no longer fits in `OnJoin`: make them a spectator, or emit an event asking them to leave. `MaxPlayers` is unaffected: it is checked when the player is inserted, counting the joiners still pending. `OnLeave` can't fail either: a leave always happens.
 
 ### Actions that must apply at most once
 
@@ -123,7 +178,7 @@ struct BuyItemResponse: ResponsePayload {
 let maxAppliedPurchases = 64
 
 // In the land's Rules:
-HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) throws -> BuyItemResponse in
+HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) -> BuyItemResponse in
     let player = ctx.playerID
     let coins = state.coins[player] ?? 0
     var applied = state.appliedPurchases[player] ?? []
@@ -147,7 +202,7 @@ HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemActio
 - `appliedPurchases` is `.serverOnly`: clients don't need it, and it costs nothing on the wire.
 - The history is per player. Keep the bound well above how many such actions a player can send while a resend is still possible.
 - On a tick land the client sees `BuyItemResponse` only as the ACK. It reads `coins` from state instead.
-- Every check comes before the first write. A handler that throws keeps what it wrote before the throw, and the next sync sends it, so validate before you mutate; debug builds warn when a throwing handler wrote ([Runtime: Inputs and Turns](runtime.md#inputs-and-turns)).
+- The checks here don't refuse the action, they answer it (`applied: false`), so one body that can't throw is enough. An action that should fail with an error throws from `validate` instead, which writes nothing ([Two-Phase Handlers](#two-phase-handlers)).
 
 ## LandContext
 
@@ -171,7 +226,7 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 - `StateSync(every:)`: State synchronization (read-only callback, will be called)
 - `DestroyWhenEmpty(after:)`: Auto-close empty rooms
 - `PersistSnapshot(every:)`: Snapshot period
-- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
+- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`. Unlike the input handlers, `OnInitialize` and the destroy-phase handlers (`OnFinalize`, `OnDestroyWhenEmpty`) may throw, and keep what they wrote before the throw
 - `OnInitialize(resolvers:onResolverFailure:)`: a throwing resolver fails the land's initialization by default (`.failLand`); `.continue` runs OnInitialize without the resolvers' outputs. See [Resolver deadline](resolver.md#deadline)
 
 ```swift

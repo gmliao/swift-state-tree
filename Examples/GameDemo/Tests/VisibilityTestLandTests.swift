@@ -149,4 +149,48 @@ struct VisibilityTestLandTests {
         #expect(twin.viewEntries == perPlayer.viewEntries && twin.viewExits == perPlayer.viewExits)
         #expect(twin.tickCount == perPlayer.tickCount && twin.motion == perPlayer.motion)
     }
+
+    @Test("An unknown entity id is known before the lazy spawn, by the spawn's id scheme")
+    func entityExistsBeforeSpawn() {
+        let settings = VisibilityTestSettings(entityCount: 40)
+        let fresh = VisibilityTestState()
+        #expect(VisibilityTest.entityExists("e0", in: fresh, settings: settings))
+        #expect(VisibilityTest.entityExists("e39", in: fresh, settings: settings))
+        for unknown in ["e40", "e-1", "e03", "x3", "e", ""] {
+            #expect(!VisibilityTest.entityExists(unknown, in: fresh, settings: settings), "\(unknown)")
+        }
+        var spawned = VisibilityTestState()
+        VisibilityTest.spawnEntitiesIfNeeded(&spawned, settings: settings)
+        #expect(VisibilityTest.entityExists("e39", in: spawned, settings: settings))
+        #expect(!VisibilityTest.entityExists("e40", in: spawned, settings: settings))
+    }
+
+    // The pre-#586 body spawned the entities and then threw; the tick spawns them too, so this
+    // can't tell that write apart. That a refused input writes nothing is the core's test
+    // (`TwoPhaseHandlerTests`); this one pins the example's outcome.
+    @Test("PlaceEntity with an unknown id creates no entity and moves none, and a later valid placement in the same tick applies")
+    func unknownPlacementRefusedAlone() async throws {
+        let keeper = LandKeeper<VisibilityTestState>(
+            definition: VisibilityTest.makeLand(VisibilityTestState.self, settings: VisibilityTestSettings(entityCount: 40)),
+            initialState: VisibilityTestState(),
+            autoStartLoops: false
+        )
+        try await keeper.join(playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID(fixed: "s0"))
+        func place(_ id: String, _ position: Position2) async throws {
+            let action = PlaceEntityAction(id: id, positions: [position])
+            let envelope = ActionEnvelope(typeIdentifier: String(describing: PlaceEntityAction.self), payload: AnyCodable(action))
+            _ = try await keeper.handleActionEnvelope(envelope, playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID(fixed: "s0"))
+        }
+        // Motion off, so the tick doesn't move the placed entity after its input applies.
+        let motion = ActionEnvelope(typeIdentifier: String(describing: SetMotionAction.self), payload: AnyCodable(SetMotionAction(enabled: false)))
+        _ = try await keeper.handleActionEnvelope(motion, playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID(fixed: "s0"))
+        // Both apply in the next tick, the unknown one first.
+        try await place("e999", Position2(x: 20, y: 20))
+        try await place("e7", Position2(x: 50, y: 50))
+        await keeper.stepTickOnce()
+        let state = await keeper.currentState()
+        #expect(state.entities.count == 40)
+        #expect(state.entities["e999"] == nil)
+        #expect(state.entities["e7"]?.position == Position2(x: 50, y: 50))
+    }
 }
