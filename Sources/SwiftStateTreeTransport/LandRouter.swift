@@ -846,7 +846,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
         // The client must decode every state-update feature the server's frames use (path
         // indices): an old client would read them as hashes. Checked before any land is created.
-        if let missing = TransportAdapter<State>.missingStateUpdateFeatures(
+        if let missing = StateUpdateFeatureNegotiation.missingStateUpdateFeatures(
             required: stateUpdateFeatures, metadata: metadata
         ) {
             logger.warning("Join request without required state-update features", metadata: [
@@ -858,7 +858,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 refusing: frame,
                 code: .joinStateUpdateFeatureMissing,
-                message: TransportAdapter<State>.missingFeaturesMessage(missing),
+                message: StateUpdateFeatureNegotiation.missingFeaturesMessage(missing),
                 details: [
                     "required": AnyCodable(stateUpdateFeatures),
                     "missing": AnyCodable(missing)
@@ -936,7 +936,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // a land created for this join is left to its destroy-when-empty.
         let landFeatures = container.transportAdapter.stateUpdateFeatures
         if landFeatures != stateUpdateFeatures,
-           let missing = TransportAdapter<State>.missingStateUpdateFeatures(required: landFeatures, metadata: metadata) {
+           let missing = StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: landFeatures, metadata: metadata) {
             endAttempt(sessionID)
             logger.warning("Join request without the land's required state-update features", metadata: [
                 "sessionID": .string(sessionID.rawValue),
@@ -948,7 +948,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 refusing: frame,
                 code: .joinStateUpdateFeatureMissing,
-                message: TransportAdapter<State>.missingFeaturesMessage(missing),
+                message: StateUpdateFeatureNegotiation.missingFeaturesMessage(missing),
                 details: [
                     "required": AnyCodable(landFeatures),
                     "missing": AnyCodable(missing)
