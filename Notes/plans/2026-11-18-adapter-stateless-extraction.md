@@ -12,20 +12,20 @@ The inventory below comes from a script that lists, for every function in the fi
 
 ## 2. Why these, against #551 and #546
 
-- **#551's model** (`Notes/plans/2026-11-18-swift-state-turns-core.md`, and #546's settled design): the adapter's machine holds every decision, while "encoders, the transport and the recorder stay outside, as `let` Sendable tools that `perform` uses". `perform` is `@concurrent nonisolated`, so it can't reach actor state. The extracted encoder is that tool. It is a `Sendable` struct built once in `init`, its methods take every per-cycle value as an argument, and it never touches the adapter. So a turn version's effect can call the same functions unchanged. Nothing #551's PR adds or names is touched here (#551 has no adopter changes), so there is no overlap with Code-1's implementation.
+- **#551's model** (`Notes/plans/2026-11-18-swift-state-turns-core.md`, and #546's settled design): the adapter's machine holds every decision, while "encoders, the transport and the recorder stay outside, as `let` Sendable tools that `perform` uses". `perform` is `@concurrent nonisolated`, so it can't reach actor state. The extracted encoder is that tool. It is a `Sendable` struct built once in `init`, its methods take every per-cycle value as an argument, and it never touches the adapter. So a turn version's effect can call the same functions unchanged. Its one side effect is the shared `UnmappedPathCounter` that the state-update encoders already write when they drop a patch for a path outside the schema. The encoders are built with it today, and it moves with them unchanged. Nothing #551's PR adds or names is touched here (#551 has no adopter changes), so there is no overlap with Code-1's implementation.
 - **#546's order:** this is step 3, before the machine outline (step 4) and slice 1 (membership). It moves nothing that slice 1 or the sync-bookkeeping slice (#553) owns: no membership, joining-session, held-event, sync-engine, table or sync-lag code. Those are state groups the outline decides.
 
 ## 3. The extractions
 
-### X1. Frame encoding: `StateFrameEncoder` (hot)
+### X1. Frame encoding: `EncodingPipeline` grows (hot)
 
-A `Sendable` struct, in a new file `Pipeline/StateFrameEncoder.swift`. It grows today's `EncodingPipeline` (already a `Sendable` struct, `Pipeline/EncodingPipeline.swift`, from #38), which keeps its name or becomes a field of it (decided in the PR by what reads more simply; either way one value). Fields: `stateUpdateEncoder`, `sequencedStateUpdateEncoder`, `messageEncoder`, `landID`.
+Today's `EncodingPipeline` (already a `Sendable` struct, `Pipeline/EncodingPipeline.swift`, from #38) grows in place to hold these functions. A rename to `StateFrameEncoder`, if any, is a `git mv` in its own commit, so the move commits diff as moves. Fields: `stateUpdateEncoder`, `sequencedStateUpdateEncoder`, `messageEncoder`, `landID`.
 
 | Moves | Lines | Change in the move |
 |---|---|---|
 | `encodeStateUpdate(update:playerID:playerSlot:scope:)` | 3315–3335 | takes `syncSeq: UInt64?` instead of reading `planSyncSeq` |
 | `encodePerPlayerUpdate(_:playerID:playerSlot:)` | 5888–5902 | takes `syncSeq` and `resync: Bool`. The `syncEncodeFaultForTesting` check stays in the adapter's wrapper, before the call |
-| `encodeMergedBroadcastFrame(update:playerID:eventBodies:)` | 5031–5073 | takes `syncSeq` and `failsMergedPack: Bool`. The adapter evaluates `mergedBroadcastFrameFaultForTesting` and `mergedEventsPackFaultForTesting` and passes the results, so the fault hooks don't enter the encoder |
+| `encodeMergedBroadcastFrame(update:playerID:eventBodies:)` | 5031–5073 | splits in two on the encoder, so the fault hooks stay in the adapter and are evaluated in today's order: `encodeMergedBroadcastUpdate(update:playerID:syncSeq:)` (the state part, as an array or as `Data`) and `mergeEvents(into:eventBodies:failsPack: Bool)` (the combined frame, or the state frame alone after `refuseLosingMergedEvents`). The adapter's wrapper checks `mergedBroadcastFrameFaultForTesting` first and throws as today, then encodes, then evaluates `mergedEventsPackFaultForTesting` and passes it as `failsPack`. So the pack hook is still not evaluated when the encode throws |
 | `refuseLosingMergedEvents(_:)` | 5082–5089 | becomes `static`, unchanged |
 | `buildStateUpdateWithEventBodies` (both overloads) | 3339–3361 | the adapter's forwarding wrappers are deleted; the encoder already has them |
 | `encodeServerEventBody(_:)` | 3311–3313 | the forwarding wrapper is deleted |
@@ -74,9 +74,9 @@ A caseless `enum SyncPlanning` with `static` functions, in a new file `SyncPlann
 
 ## 4. Size and shape of the change
 
-- About 450 lines move out of `TransportAdapter.swift`, and about 30 are deleted (the dead helpers and the forwarding wrappers). New files: `Pipeline/StateFrameEncoder.swift`, `SyncPlanning.swift`, `SyncStreamCanonical.swift`, `SyncPhaseTypes.swift`, `StateUpdateFeatureNegotiation.swift`, plus the small `Support/` and error-mapping moves.
-- **One PR, one commit per extraction (E1–X4).** Each commit builds and passes the tests, so a gate regression can be bisected by commit without another PR.
-- **Tests:** no new behaviour, so no new behavioural tests. The moved pure functions get unit tests that need no adapter: `replacingRows`, `keyScopeResetUpdate` and `computeSyncModes`, with and without dirty fields. None has a direct test today; the sync suites cover them only through the adapter. The existing suites are the proof of equal behaviour:
+- About 450 lines move out of `TransportAdapter.swift`, and about 30 are deleted (the dead helpers and the forwarding wrappers). `Pipeline/EncodingPipeline.swift` grows (X1). New files: `SyncPlanning.swift`, `SyncStreamCanonical.swift`, `SyncPhaseTypes.swift`, `StateUpdateFeatureNegotiation.swift`, plus the small `Support/` and error-mapping moves.
+- **One PR, one commit per extraction, X1 to X4, X4 last.** Each commit builds and passes the tests, so a gate regression can be bisected by commit without another PR.
+- **Tests:** no new behaviour, so no new behavioural tests. The moved pure functions get unit tests that need no adapter: `replacingRows`, `keyScopeResetUpdate` and `computeSyncModes`, with and without dirty fields. None has a direct test today; the sync suites cover them only through the adapter. One test is written **before** the move, on `main`'s code, and must pass unchanged after it: the bytes of the opcode-103 frame `appendEventFrames` packs for a targeted event, in opcode MessagePack and opcode JSON, so `packEventFrame` is pinned by bytes where the gate can't reach it (§5). The existing suites are the proof of equal behaviour:
   - the sync and encoding suites, the #535 failure rows (every fault hook still fires through the adapter's wrappers), and the row and field-merge tests;
   - `swift test` in the three modes (`USE_SYNC_TABLES=false`, `IN_TURN_SYNC=true` and `false`), and E2E in the three encodings.
 - **Bytes equal:** the gate's runs compare encoded bytes per cell between base and head (§5).
@@ -100,11 +100,13 @@ EncodingBenchmark --game-type hero-defense --rooms 1 --players-per-room 5 --mons
 
 | Cell | Flags | Covers |
 |---|---|---|
-| rows-mp | `--format messagepack-pathhash --join-through-router on --row-addressing on` | the sequenced encoder; the merged broadcast frame (opcode 107) through `encodeToMessagePackArray`; held event frames |
-| rows-json | `--format opcode-json-pathhash --join-through-router on --row-addressing on` | the sequenced encoder in opcode JSON; the merged frame from encoded `Data` |
+| rows-mp | `--format messagepack-pathhash --join-through-router on --row-addressing on` | the sequenced encoder; the merged broadcast frame (opcode 107) through `encodeToMessagePackArray` |
+| rows-json | `--format opcode-json-pathhash --join-through-router on --row-addressing on` | the sequenced encoder in opcode JSON. No merged frame: opcode 107 is used only with opcode MessagePack (`useStateUpdateWithEvents`, `TransportAdapter.swift:1104`) |
 | router-mp | `--format messagepack-pathhash --join-through-router on --row-addressing off` | the per-player and table paths without rows; `computeSyncModes` with dirty tracking |
-| rows-mp-100 | rows-mp with `--players-per-room 100` | the per-recipient loops (`encodeUpdatesSerially`, the event frame pack) at many recipients |
+| rows-mp-100 | rows-mp with `--players-per-room 100` | the per-recipient loop `encodeUpdatesSerially` at many recipients |
 | json-control | `--format json-object` (router join off) | the unsequenced encoder (`encodingPipeline.encodeStateUpdate`); must not move |
+
+**Not measured by any cell.** hero-defense emits only broadcast events, so no cell reaches the per-recipient event frame pack (`packEventFrame`) or the held event frames (`heldEventFramesPacked`). No cell is added for them: those moves rest on byte equality (the test written before the move, §4) and the suites, not on the gate.
 
 **Checked per result** (reported, not judged):
 - the resolved metadata: router join and rows as asked, the encoding, `syncSequence` in effect on the rows cells and off on json-control;
@@ -117,8 +119,8 @@ EncodingBenchmark --game-type hero-defense --rooms 1 --players-per-room 5 --mons
 - It is independent of #551's PR, which adds a new target and doesn't touch the adapter. The extracted encoder's shape (a `Sendable` value, per-cycle values as arguments) is the one §2 gives for `perform`. If Code-1's implementation shows a different need (for example, the encoder as a protocol so the differential harness, #555, can inject one), that is a follow-up, not a reason to hold this.
 - Host brief: drafted from §5 once the PR has a head.
 
-## 7. Open questions for review
+## 7. Decisions (from review)
 
-1. **`EncodingPipeline` grows, or `StateFrameEncoder` wraps it?** Growing it keeps one type; wrapping keeps #38's file unchanged. I'd grow it and rename the file in the same commit, unless Review prefers the smaller diff.
-2. **The fault hooks as booleans** (`failsMergedPack`), rather than closures passed into the encoder. Booleans keep test plumbing out of the tool `perform` will call, at the cost of one evaluation per frame in the adapter. That evaluation is a `nil` check in production, as today.
-3. **X4's error mapping and `HexEncoding`** are small and off the hot path. They could be dropped from this PR if Review wants it limited to the encoding and sync-plan parts.
+1. **`EncodingPipeline` grows in place.** A rename, if any, is a `git mv` in its own commit (X1).
+2. **The fault hooks stay booleans,** evaluated in the adapter in today's order: the merged frame hook before the encode, the pack hook only after it (X1).
+3. **X4 stays in this PR,** as its last commit.
