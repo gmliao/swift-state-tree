@@ -90,6 +90,8 @@ public protocol TurnMachine: Sendable {          // a value type; every stored f
 }
 ```
 
+**Only a `PlainData` machine runs.** `TurnCore.init` requires `M: PlainData` and `TurnActor.M` is `TurnMachine & PlainData`, so a machine without `@PlainData` (one that stores a class, a closure or an `EndToken`) doesn't compile where it would be run. `TurnMachine` doesn't refine `PlainData`: that would give every machine the conformance with no check behind it, and `Turn<Self>` in the requirements would need it on every conformer. The constraint sits on the core's initializer instead, which is the only way to make a core. A hand-written conformance is the remaining way around the macro; the lint refuses it (§7), and the runtime stop for a class machine stays behind it.
+
 ### 3.3 The turn
 
 ```swift
@@ -133,10 +135,13 @@ public struct Turn<M: TurnMachine>: ~Copyable {  // no public init: a handler ca
 
 ```swift
 public final class TurnCore<M: TurnMachine> {    // not Sendable; stops the process for a class machine
-  public init(_ machine: M, parkedLimit: Int, segmentBudget: Int, clock: some TurnClock)  // no defaults
+  public init(_ machine: M, parkedLimit: Int, segmentBudget: Int, clock: some TurnClock) where M: PlainData  // no defaults
   public func read<R>(_ body: (borrowing M) -> R) -> R    // between steps only
   public var stats: TurnStats { get }            // parked, openRequests, heldKeys, liveKeys, pendingWaiters,
-                                                 // droppedOutputs, ignoredAfterEnd, droppedSends, foreignCompletions
+                                                 // droppedOutputs, ignoredAfterEnd, droppedSends, foreignCompletions,
+                                                 // drainContinuations, cancelledCalls
+  public var effectsByInput: [String: Int] { get }        // debug builds; empty in release (rule 20)
+  package var onDiagnostic: ((TurnDiagnostic) -> Void)?  // tests and in-package adopters only
 }
 
 public protocol TurnClock: Sendable {            // injected; no default
@@ -145,7 +150,7 @@ public protocol TurnClock: Sendable {            // injected; no default
 }
 
 public protocol TurnActor: Actor {
-  associatedtype M: TurnMachine
+  associatedtype M: TurnMachine & PlainData
   var core: TurnCore<M> { get }                  // a stored `let` (lint)
   @concurrent nonisolated func perform(_ effect: M.Effect) async -> M.Input?
   func flush(_ outputs: consuming [M.Output])    // synchronous; called between steps
@@ -168,12 +173,11 @@ extension TurnActor {
 
 ```swift
 public protocol PlainData {}
-@attached(extension, conformances: PlainData, names: arbitrary)
-@attached(member, names: named(_plainDataCheck))
+@attached(extension, conformances: PlainData, names: named(_plainDataCheck))
 public macro PlainData() = #externalMacro(module: "SwiftStateTurnsMacros", type: "PlainDataMacro")
 ```
 
-The macro writes the conformance and one check per stored property, which fails to compile unless the property's type is `PlainData`.
+The macro writes the conformance and one check per stored property, which fails to compile unless the property's type is `PlainData`. It is an extension macro only: a generic type's `where T: PlainData` can constrain only an extension, so the checks go in the extension it writes (`_plainDataCheck`), not in a member. Members inside `#if` blocks are read in every clause, and their checks are written under the same conditions, so a member that only one configuration compiles is still checked there.
 
 | Rule | Reason |
 |---|---|
@@ -192,16 +196,16 @@ Each rule says what holds. A rejected alternative listed here was a real bug fou
 1. **A step is synchronous, and nothing enters a running step.** `handle`, `handleAbandoned`, `handleStale` and `answer` aren't `async`. A `send` or `call` made during a step or segment is queued and steps later in that segment. `read`, `ask`, or a step entered from inside a step stops the process with a message (`fatalError`, which prints in release; `precondition` doesn't).
 2. **The core is a reference held in a `let`; the `Turn` points at it.** `TurnCore` is a final, non-`Sendable` class, so it can't leave the actor and `perform` can't reach it. `Turn` holds `unowned(unsafe)` to the core and changes its runtime in place; the machine and the runtime are separate stored properties, so a step has no access conflict. That reference is sound only because a handler can't make, copy or move a `Turn`: the must-fail snippets that prove it stay. Rejected: a value core in `var core` (the adopter could replace it, or copy it across an await); moving the runtime into the `Turn` and back per step (too slow).
 3. **Admission.** An `external` input is refused `closed` after `close`, refused `withdrawn` if its token has ended, parks behind its hold key if that key is blocked (refused `overloaded` over the parked limit), and otherwise steps. A key is blocked while a request holds it or inputs are still parked behind it, which keeps arrival order while a released queue drains. A `control` input is never gated, parked or refused. A request's completion is neither: it's gated only by its request being open. So a stop's own drain completions survive `close`.
-4. **Keys and generations; handlers hold no tickets.** `issue(key)` starts a generation and returns true when it superseded a live one, closing that generation's requests, including ones made earlier in the same step. `end(key)` closes the key's requests, releases their `.untilRequestCloses` holds and withdraws parked inputs scoped to it. Work is `request(effect, for: key)`, nil when the key isn't live. Rejected: `Ticket` values handed to handlers.
+4. **Keys and generations; handlers hold no tickets.** `issue(key)` starts a generation and returns true when it superseded a live one, closing that generation's requests (including ones made earlier in the same step), dropping its timer and withdrawing the external inputs parked under its scope, as `end` does. A parked input carries no generation, so one sent under the old binding would otherwise step under the new one; its caller gets `withdrawn`, which it can retry, instead of a silent misapplication. Inputs parked before the key's first `issue` stay (that isn't a supersede), and so does what a step queued (`queue`). `end(key)` closes the key's requests, releases their `.untilRequestCloses` holds and withdraws parked inputs scoped to it. Work is `request(effect, for: key)`, nil when the key isn't live. Rejected: `Ticket` values handed to handlers.
 5. **A request, its worker and its reply are three states.** A request closes by its completion, its key ending or being superseded, its deadline, or `cancel`. Closed without its completion, `handleAbandoned` steps in that segment. The worker's late result goes to `handleStale`, which is the signal that the worker retired. `handleStale` may `issue` (compensation needs a key). Each core has an incarnation; a completion from another core is dropped and counted.
 6. **A hold belongs to its request.** It exists only as a property of an open request, or of an abandoned one whose worker hasn't retired (`.untilWorkerRetires`). Owners are counted per key; a handover is a new request taking the same hold in the step that closes the old one. A late completion can't release another owner's hold. Rejected: `hold(key)`/`release(key)`, and a separate hold ID.
-7. **Parking is FIFO per hold key, bounded, budgeted and scoped.** `parkedLimit` bounds all parked inputs; a `send` over it has no caller to answer and is dropped and counted. The driver steps released inputs one at a time, never recursively, re-checking the hold before each, at most `segmentBudget` per segment; the rest step in a later segment, as the actor's own job, and the key counts as blocked until then. A parked input carries its scope; `end(scope)` withdraws it with `withdrawn`.
+7. **Parking is FIFO per hold key, bounded, budgeted and scoped.** `parkedLimit` bounds all parked inputs; a `send` over it has no caller to answer and is dropped and counted. The driver steps released inputs one at a time, never recursively, re-checking the hold before each, at most `segmentBudget` per segment; the rest step in a later segment, as the actor's own job, and the key counts as blocked until then. A parked input carries its scope; `end(scope)`, or a supersede of the scope's key (rule 4), withdraws it with `withdrawn`. An adopter that wants inputs to carry over a rebind scopes them to a longer-lived key, or to none. Withdrawn and closed callers are answered in call order.
 8. **End tokens cover the end that arrives first.** The core reads an input's token on arrival and on release from parking; an ended token withdraws it. `turn.revoke(token)` marks it and withdraws the parked inputs that carry it in that step. Scope, the key and the token cover three different orders; all three are needed.
 9. **`queue(input, behind:)` can't be refused.** It places the input after those already parked behind the key, or after the current step if the key isn't held. The parked limit, `close`, scope and tokens don't apply; only `endAll` drops it, and after `endAll` it returns false and is counted. The core sets no bound; the adopter does.
-10. **The driver's order.** After every step, before any other: flush outputs; publish replies without `after:`; answer withdrawn callers; if `close` ran, answer parked external callers `closed`; launch effects (one task each; a deadline is a second task). Then, one step at a time, repeating the list after each: an abandoned request, a queued `send` or `call`, a released parked input within the budget. `reply(to:_:after: r)` is published when `r`'s completion step ends or `r` is abandoned.
+10. **The driver's order.** After every step, before any other: flush outputs; publish replies without `after:`; answer withdrawn callers; if `close` ran, answer parked external callers `closed`; launch effects (one task each; a deadline is a second task). Then, one step at a time, repeating the list after each: an abandoned request, a queued `send` or `call`, a released parked input within the budget. `reply(to:_:after: r)` is published when `r`'s completion step ends or `r` is abandoned. An `ask` from inside a segment (a collaborator the driver called between two steps, from `flush`) runs its answer step at once, and what that step produced leaves when the segment drains, after the `ask` returns: a second `ask` in the same collaborator steps before the first one's outputs are flushed. That is the one exception to "flushed before the next step" (invariant 11).
 11. **Output is checked by key.** `emit(_, for: key)` is dropped and counted unless the key is live.
 12. **Replies.** At most one per `InputID`. `close` answers parked calls only; a call that already stepped gets its real answer. The waiter table is empty when the core is destroyed (a debug assertion).
-13. **Entries.** `send` steps in the caller's segment when the core is idle, queued otherwise. `call` registers its waiter and submits in one segment. `ask` runs `answer` as a step; called outside a segment, what it produced has left the core when it returns. `read` borrows the machine between steps; an adopter's per-message path does one `read` per segment.
+13. **Entries.** `send` steps in the caller's segment when the core is idle, queued otherwise. `call` registers its waiter and submits in one segment. `ask` runs `answer` as a step; called outside a segment, what it produced has left the core when it returns, and called from inside one, it leaves when that segment drains (rule 10). `read` borrows the machine between steps; an adopter's per-message path does one `read` per segment.
 14. **`close`** closes external intake and answers parked external calls; queued inputs, completions, control inputs, `ask` and `run` still step.
 15. **`endAll`** abandons every open request (`.keyEnded`; a `.untilWorkerRetires` hold stays until its worker returns), ends every key, withdraws scoped parked inputs, drops queued ones, and closes intake. Afterwards `issue` does nothing and returns false (counted), so `request` returns nil and `emit` drops; `queue` returns false; `run`, `ask`, control inputs and in-flight completions still step. A debug assertion in `request` checks that no key is live after the end.
 16. **Caller cancellation is a policy per `call`, with no default.**
@@ -212,10 +216,10 @@ Each rule says what holds. A rejected alternative listed here was a real bug fou
     | `.honoured`, external, cancelled before entry | Not submitted; `CancellationError` |
     | `.honoured`, external, still parked when the cancellation is handled | Withdrawn, never steps; `CancellationError` |
     | `.honoured`, already stepped | The caller stops waiting (`CancellationError`); the work goes on and its reply finds no waiter |
-    | `.honoured`, control | Always submitted and stepped; only the caller stops waiting |
+    | `.honoured`, control | Always submitted and stepped; only the caller stops waiting. Cancelled before entry, it is submitted and the caller gets `CancellationError` at once, even when the step replies at once; the reply finds no waiter |
 
     The cancellation is handled as its own job on the actor, so the contract is "withdrawn if still parked when the cancellation is handled". No tombstone is needed: the waiter registers in the call's entry segment.
-17. **`run` and `perform`.** `perform` is `@concurrent nonisolated`, doesn't throw, and returns an optional input (nil: nothing to report; an error is a case of the input). A `run`'s result comes back as a control input. Completion order across effects isn't guaranteed; only keys and holds order work.
+17. **`run` and `perform`.** `perform` is `@concurrent nonisolated`, doesn't throw, and returns an optional input (nil: nothing to report; an error is a case of the input). A `run`'s result comes back as a control input. Completion order across effects isn't guaranteed; only keys and holds order work. A deadline's or a timer's task doesn't keep the actor alive (it holds it weakly), so a periodic timer doesn't outlive the actor's last owner; an effect's task does, until its result has been handled, so launched work is never dropped. A released actor's core cancels its deadline and timer tasks; a `call` still waiting then is a bug (the waiter assertion of rule 12), so an adopter ends its keys and answers its callers before it lets go.
 18. **`timer(at:for:_:)`.** One outstanding fire per key; a new one replaces it. The fire arrives as a control input carrying its scheduled instant, so the handler computes the next one with skip-ahead. Ending the key drops a fire already queued. A waking timer task submits only if it is still the key's current timer (§3.4). The clock is read at most once per segment, lazily (`turn.now`, or a `Duration` deadline, reads it on first use). A replay driver arms no timer. Rejected: `every(interval)`, which builds a backlog when a step overruns.
 19. **The step path is `@inlinable`,** and what it touches `@usableFromInline`, so the client specializes the driver for its machine with no build flag. A script checks that the specializations exist (§7).
 20. **Nothing per message is an effect.** A debug counter of effects per input case lets an adopter's tests assert zero for its hot inputs.
@@ -234,7 +238,7 @@ The checks in §6 and the generated-order harness (§6.4) assert these. None may
 8. A parked input steps after its scope ended or its token was read as ended.
 9. A parked external input steps after `close`.
 10. A caller gets two replies, or none.
-11. Another step runs between a step and the flush of its outputs.
+11. Another step runs between a step and the flush of its outputs (except after an `ask` from inside a segment, rule 10).
 12. An output is delivered under a key that wasn't live at its `emit`.
 13. After `endAll`: a key is issued, a request made, a keyed output emitted, or a queued input survives.
 14. A queued input is refused, withdrawn or dropped by anything but `endAll`.
@@ -269,13 +273,18 @@ Every interleaving is ordered by an event, never by a sleep or a poll: an effect
 | 17 | `endAll`: open requests abandoned, keys ended, scoped inputs withdrawn, queued dropped, intake closed; then `issue`/`queue` return false and are counted, `run` and `ask` still step | 15 |
 | 18 | `endAll` with a `.untilWorkerRetires` hold: the hold outlives it, and a late deadline is ignored | 6, 15 |
 | 19 | `issue` over a live generation closes requests made earlier in the same step | 4 |
+| 19b | A supersede withdraws the inputs parked under the old generation's scope; one parked before the key's first `issue` stays | 4, 7 |
 | 20 | Outputs flush before the next step; a step's effects launch after its flush | 10 |
 | 21–25 | Cancellation, one check per row of rule 16's table | 16 |
+| 25b | `.honoured`, control, cancelled before entry, whose step replies at once: stepped, and the caller gets `CancellationError` | 16 |
 | 26 | Timer: fires once at its instant with that instant in the input; a new timer for the key replaces it; ending the key drops a queued fire; the clock is read at most once per segment (a counting test clock) | 18 |
 | 27 | Timer skip-ahead: a step that overruns two periods schedules the next fire after now, not three fires | 18 |
 | 28 | Hold handover: the step that closes a holding request makes a new one on the same key; an input parked behind the key stays parked throughout (the owner count never reaches zero), and steps when the new request closes | 6 |
 | 29 | Wake re-check: a deadline task woken after its request completed abandons nothing; a timer task of a replaced timer fires nothing; a cancelled sleep submits nothing | 18, §3.4 |
 | 30 | A `Duration` deadline and `turn.now` in one segment take one clock read (a counting test clock) | 18, §3.4 |
+| 31 | A periodic timer doesn't keep a released actor alive; an effect in flight keeps it until its result is handled | 17 |
+
+Check 28 asserts the plan's row: the parked input stays parked through the handover. The momentary zero owner count before the fix couldn't be observed from outside, because the release re-checks the hold before stepping a parked input, so the fix (the completion's hold kept through its step) is defensive.
 
 ### 6.1b Model checks: the membership scenarios on a model machine
 
@@ -310,11 +319,17 @@ Under `scripts/must-not-compile/turns/`, each with its expected diagnostic, plus
 - `perform` touching `core`;
 - replacing `core` (`let`), and a `TurnMachine` that isn't `Sendable`;
 - a holding request without a deadline (`holding: .untilRequestCloses(key)`);
-- `@PlainData` on a struct with a closure, a class, an actor, an `any Error`, a class inside a dictionary, an un-annotated stored property; `@PlainData` on a class; a machine storing an `EndToken`.
+- `@PlainData` on a struct with a closure, a class, an actor, an `any Error`, a class inside a dictionary, an un-annotated stored property; `@PlainData` on a class; a machine storing an `EndToken`; a closure and a class inside `#if` blocks;
+- a machine without `@PlainData` that stores a class, given to `TurnCore`.
 
 ### 6.4 Generated orders
 
-A seeded, deterministic harness: a small machine with two keys, holds, scopes, tokens, `queue`, timers and a test clock; a generator of input, completion, cancellation and clock orders; after every segment, the invariants in §5 that the machine can observe (and the core's counters) are asserted. A failing seed is printed and replayed by a test with that seed. CI runs a fixed seed set; a longer run is a manual command.
+A seeded, deterministic harness: a small machine with two keys, holds, scopes, tokens, `queue`, timers and a test clock; a generator of sends, calls (with caller cancellation), completions, cancellations and clock orders; after every operation, the invariants in §5 that the machine can observe (and the core's counters) are asserted:
+- 2 and 15 (no step inside a step), 5–9, 12 (the sink receives exactly the outputs emitted under a live key), 11 (a flush carries only the latest step's outputs), 13 and 17;
+- 7 as FIFO order per hold key, not just counts;
+- at the end, 10 (each call answered once, consistently with whether it stepped) and 14 (each queued input stepped, unless `endAll` dropped it).
+
+Every third seed runs with a segment budget of 2, so drain continuations interleave with later operations; those keep the invariants but not one fixed schedule. Invariant 16 needs a second core, which one harness core can't produce; check 14 covers it. A failing seed is printed and kept as a fixed replay test. CI runs a fixed seed set; a longer run is a manual command.
 
 ### 6.5 The macro
 
@@ -323,11 +338,12 @@ Expansion tests (`assertMacroExpansion`) for each rule in §3.5, including the d
 ## 7. Lints and scripts
 
 Run in `scripts/pre-push-checks.sh` and CI, each with a self-test of a passing and a failing fixture:
-- **No hand-written `PlainData` conformance** outside `Sources/SwiftStateTurns`: a `: PlainData` or `extension … PlainData` in source that isn't the macro's attribute. It doesn't flag a constraint (`where T: PlainData`, `<T: PlainData>`) or the core target's own conformances.
-- **`let core` in every `TurnActor`:** a type conforming to `TurnActor` declares `let core`, never `var` or a computed property (the protocol can't require a stored `let`).
-- **No `Task {`, `nonisolated(unsafe)` or `@unchecked Sendable` in a file that declares a `TurnMachine`,** outside `Sources/SwiftStateTurns` (whose `EndToken` is `@unchecked Sendable` and whose protocol file declares `TurnMachine`).
+- **No hand-written `PlainData` conformance** outside `Sources/SwiftStateTurns`: a `: PlainData` or `extension … PlainData` in source that isn't the macro's attribute, a protocol that refines `PlainData`, or a typealias that names it (a class could conform through either). It doesn't flag a constraint (`where T: PlainData`, `<T: PlainData>`) or the core target's own conformances.
+- **`let core` in every `TurnActor`:** a type conforming to `TurnActor`, in its declaration or in an extension in any file, declares `let core` as a member of its declaration, and no `var core` member anywhere (the protocol can't require a stored `let`). A local `let core` doesn't count.
+- **No task (`Task {`, `Task(…)`, `Task<…>`, `Task.init`, `Task.detached`), `nonisolated(unsafe)` or `@unchecked Sendable` in a file that declares a `TurnMachine`,** outside `Sources/SwiftStateTurns` (whose `EndToken` is `@unchecked Sendable` and whose protocol file declares `TurnMachine`).
+- A declaration header that spans several lines is read as one. A deliberate site carries `// lint-allow: turns-<rule>: <reason>`: only under `Tests/`, with a reason of ten characters or more, in a file listed with its marker count (the list may only shrink).
 - **No `assumeIsolated` outside named boundary files,** listed in the script with a reason each (the design's "a step doesn't call out"). It applies from this PR: the existing call sites are the initial list, and the list may only shrink.
-- **`check-turns-inlinable.sh`:** two release builds of `TurnsBench`, one with the step path's `@inlinable` attributes stripped by a build define; it fails if the specialized symbols are missing from the normal build. Run in CI on Linux.
+- **`check-turns-inlinable.sh`:** a release build of `TurnsBench` must have a specialization on the bench's types of each named driver function (`TurnCore.step`, `TurnActor.runSegment`); a failed build fails the check. The negative control builds a copy of the three targets with every `@inlinable` in the core removed (internal ones become `@usableFromInline`) and requires the same check to find none of them. Run in CI on Linux.
 
 ## 8. Cost
 
