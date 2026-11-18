@@ -14,6 +14,17 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
     case recordVersionMismatch(expectedVersion: String, recordedVersion: String?)
     /// Older than the oldest version this build reads (#154): re-record, never a replay mismatch.
     case recordVersionUnsupported(recordedVersion: String, minimumVersion: String)
+    /// The record's schema fingerprint differs from the land type's (#521 D15).
+    case schemaFingerprintMismatch(recorded: String, current: String)
+    /// The record has no schema fingerprint (#521 D15): re-record it.
+    case schemaFingerprintMissing(recordedVersion: String?)
+
+    init(_ error: ReevaluationRecordFingerprintError) {
+        switch error {
+        case let .mismatch(recorded, current): self = .schemaFingerprintMismatch(recorded: recorded, current: current)
+        case let .missing(recordedVersion): self = .schemaFingerprintMissing(recordedVersion: recordedVersion)
+        }
+    }
 
     var apiCode: String {
         switch self {
@@ -25,6 +36,10 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return "RECORD_VERSION_MISMATCH"
         case .recordVersionUnsupported:
             return "RECORD_VERSION_UNSUPPORTED"
+        case .schemaFingerprintMismatch:
+            return "RECORD_SCHEMA_FINGERPRINT_MISMATCH"
+        case .schemaFingerprintMissing:
+            return "RECORD_SCHEMA_FINGERPRINT_MISSING"
         }
     }
 
@@ -40,6 +55,10 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return "Replay record version mismatch: expected \(expected), got \(actualValue)."
         case .recordVersionUnsupported(let recorded, _):
             return ReevaluationRecordVersion.unsupportedReason(recorded: recorded) ?? "Unsupported record version \(recorded)."
+        case let .schemaFingerprintMismatch(recorded, current):
+            return ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current).description
+        case let .schemaFingerprintMissing(recordedVersion):
+            return ReevaluationRecordFingerprintError.missing(recordedVersion: recordedVersion).description
         }
     }
 
@@ -64,6 +83,16 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return [
                 "recordedRecordVersion": AnyCodable(recorded),
                 "minimumRecordVersion": AnyCodable(minimum),
+            ]
+        case let .schemaFingerprintMismatch(recorded, current):
+            return [
+                "recordedSchemaFingerprint": AnyCodable(recorded),
+                "currentSchemaFingerprint": AnyCodable(current),
+            ]
+        case let .schemaFingerprintMissing(recordedVersion):
+            return [
+                "recordedRecordVersion": AnyCodable(recordedVersion),
+                "minimumReplayableVersion": AnyCodable(ReevaluationRecordVersion.minimumReplayable),
             ]
         }
     }
@@ -639,6 +668,7 @@ extension NIOAdminRoutes {
                 expectedLandDefinitionID: expectedLandDefinitionID,
                 expectedRecordVersion: expectedRecordVersion
             )
+            try await validateSchemaFingerprint(metadata: metadata, landType: landType)
         } catch let ReevaluationRecordVersionError.unsupported(recorded, minimum) {
             // Rejected when the source opened the record
             let compatibilityError = ReplayStartCompatibilityError.recordVersionUnsupported(
@@ -672,6 +702,20 @@ extension NIOAdminRoutes {
         }
 
         return .accepted(resolvedRecordPath)
+    }
+
+    /// Refuses a record without a schema fingerprint, and one whose fingerprint differs from the
+    /// land type's (#521 D15). Replay checks again when the replay land starts.
+    private func validateSchemaFingerprint(metadata: ReevaluationRecordMetadata, landType: String) async throws {
+        let recorded: String
+        do {
+            recorded = try ReevaluationSchemaFingerprint.recordedFingerprint(of: metadata)
+        } catch let error as ReevaluationRecordFingerprintError {
+            throw ReplayStartCompatibilityError(error)
+        }
+        if let current = try await landRealm.recordSchemaFingerprint(for: landType), current != recorded {
+            throw ReplayStartCompatibilityError(.mismatch(recorded: recorded, current: current))
+        }
     }
 }
 

@@ -17,20 +17,24 @@ struct ServerInputTestState: StateNodeProtocol {
     public init() {}
 }
 
+@Payload
 struct SIProgress: ServerInputPayload {
     let tag: String
 }
 
+@Payload
 struct SIFailing: ServerInputPayload {
     let tag: String
 }
 
+@Payload
 struct SIUndeclared: ServerInputPayload {
     let tag: String
 }
 
 /// A payload whose live value differs from its record form unless live applies the record
 /// form: a fractional `Date` (the record holds whole seconds) and a whole `Double`.
+@Payload
 struct SIDated: ServerInputPayload {
     let at: Date
     let ratio: Double
@@ -38,18 +42,21 @@ struct SIDated: ServerInputPayload {
 }
 
 /// The canonical record encoding refuses a `Set`.
+@Payload
 struct SIUnencodable: ServerInputPayload {
     let ids: Set<Int>
 }
 
 /// A different type with the declared type's name: never the declared one.
 enum SIElsewhere {
+    @Payload
     struct SIProgress: ServerInputPayload {
         let tag: String
     }
 }
 
 /// Arrays nested `depth` deep, for the record's depth limit.
+@Payload
 struct SIDeep: ServerInputPayload {
     let depth: Int
 
@@ -619,7 +626,7 @@ struct ServerInputTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let source = try ReevaluationRecordFile.openSource(filePath: path)
-        #expect(try await source.getMetadata().version == "3.4")
+        #expect(try await source.getMetadata().version == "3.5")
         let result = try await ReevaluationEngine.run(
             definition: makeDefinition(ticking: true),
             initialState: ServerInputTestState(),

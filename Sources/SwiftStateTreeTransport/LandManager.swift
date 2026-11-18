@@ -416,7 +416,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             registrationValidations += 1
             do {
                 try definition.validateForRegistration(
-                    context: LandRegistrationContext(payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray)
+                    context: LandRegistrationContext(
+                        payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray,
+                        recordsForReplay: enableLiveStateHashRecording
+                    )
                 )
                 verdict = nil
             } catch let error as LandRegistrationError {

@@ -868,7 +868,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Initialize recorder if in live mode AND recording is enabled
         // This prevents unnecessary recorder creation in load tests or when recording is not needed
         if mode == .live && enableLiveStateHashRecording {
-            let recorder = ReevaluationRecorder(flushInterval: 60)
+            // The record carries the land's schema fingerprint (#521 D15). A registered land's
+            // was computed, and cached, at registration; a keeper built directly whose definition
+            // has none records without it, and its record is refused at replay.
+            let schemaFingerprint: String?
+            do {
+                schemaFingerprint = try ReevaluationSchemaFingerprint.cached(for: definition)
+            } catch {
+                schemaFingerprint = nil
+                resolvedLogger.warning(
+                    "The land has no record schema fingerprint; its record won't replay",
+                    metadata: ["landDefinitionID": .string(definition.id), "error": .string("\(error)")]
+                )
+            }
+            let recorder = ReevaluationRecorder(flushInterval: 60, schemaFingerprint: schemaFingerprint)
             reevaluationRecorder = recorder
 
             // Register recorder service

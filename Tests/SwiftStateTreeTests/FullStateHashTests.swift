@@ -97,7 +97,7 @@ struct FullStateHashTests {
 
     @Test("The record version picks the hash definition")
     func definitionByVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.4")
+        #expect(ReevaluationRecordVersion.current == "3.5")
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "3.0") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.4") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.9") == .fullState)
@@ -251,6 +251,12 @@ struct NodeHolder: Sendable {
 enum NodeChoice: Sendable {
     case none
     case one(FullHashMonster)
+}
+
+/// So the record schema fingerprint can describe it (#521 D15): an enum with a payload has no
+/// `{}` sample, and the converter can't list its cases.
+extension NodeChoice: SnapshotValueDecodable {
+    init(fromSnapshotValue value: SnapshotValue) throws { self = .none }
 }
 
 @StateNodeBuilder

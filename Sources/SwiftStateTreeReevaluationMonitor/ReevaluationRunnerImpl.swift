@@ -6,6 +6,20 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
     case landTypeMismatch(expected: String, actual: String)
     case schemaMismatch(expectedLandDefinitionID: String, recordedLandDefinitionID: String?)
     case recordVersionMismatch(expectedVersion: String, recordedVersion: String?)
+    /// The record's schema fingerprint differs from the definition's (#521 D15). 2002
+    /// (`schemaMismatch`) compares the land's `id` string; this compares its fields.
+    case schemaFingerprintMismatch(recorded: String, current: String)
+    /// The record has no schema fingerprint: it is older than
+    /// `ReevaluationRecordVersion.minimumReplayable`, or was written without one (#521 D15).
+    case schemaFingerprintMissing(recordedVersion: String?)
+
+    /// The replay error for a record the fingerprint check refused.
+    public init(_ error: ReevaluationRecordFingerprintError) {
+        switch error {
+        case let .mismatch(recorded, current): self = .schemaFingerprintMismatch(recorded: recorded, current: current)
+        case let .missing(recordedVersion): self = .schemaFingerprintMissing(recordedVersion: recordedVersion)
+        }
+    }
 
     public static var errorDomain: String { "ReevaluationReplayCompatibility" }
 
@@ -17,6 +31,10 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
             return 2002
         case .recordVersionMismatch:
             return 2003
+        case .schemaFingerprintMismatch:
+            return 2004
+        case .schemaFingerprintMissing:
+            return 2005
         }
     }
 
@@ -30,6 +48,10 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
         case .recordVersionMismatch(let expected, let actual):
             let actualValue = actual ?? "nil"
             return "Replay record version mismatch: expected \(expected), got \(actualValue)."
+        case let .schemaFingerprintMismatch(recorded, current):
+            return "Replay record " + ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current).description + "."
+        case let .schemaFingerprintMissing(recordedVersion):
+            return "Replay record refused: " + ReevaluationRecordFingerprintError.missing(recordedVersion: recordedVersion).description + "."
         }
     }
 
@@ -52,6 +74,18 @@ public enum ReevaluationReplayCompatibilityError: Error, Sendable, CustomNSError
                 "code": "RECORD_VERSION_MISMATCH",
                 "expectedRecordVersion": expected,
                 "recordedRecordVersion": actual as Any,
+            ]
+        case let .schemaFingerprintMismatch(recorded, current):
+            return [
+                "code": "RECORD_SCHEMA_FINGERPRINT_MISMATCH",
+                "recordedSchemaFingerprint": recorded,
+                "currentSchemaFingerprint": current,
+            ]
+        case let .schemaFingerprintMissing(recordedVersion):
+            return [
+                "code": "RECORD_SCHEMA_FINGERPRINT_MISSING",
+                "recordedRecordVersion": recordedVersion as Any,
+                "minimumReplayableVersion": ReevaluationRecordVersion.minimumReplayable,
             ]
         }
     }
@@ -120,6 +154,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             expectedLandDefinitionID: definition.id,
             requiredRecordVersion: requiredRecordVersion
         )
+        try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         // A land without a tick handler is tickless, as the keeper and the engine decide it: from
@@ -189,6 +224,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             expectedLandDefinitionID: definition.id,
             requiredRecordVersion: requiredRecordVersion
         )
+        try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         // A land without a tick handler is tickless, as the keeper and the engine decide it: from
@@ -365,6 +401,19 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
     public func setPaused(_: Bool) {
         // Not used in step model
+    }
+
+    /// Refuses a record whose schema fingerprint is missing or differs (#521 D15), before the
+    /// first step.
+    private static func validateSchemaFingerprint(
+        metadata: ReevaluationRecordMetadata,
+        definition: LandDefinition<State>
+    ) throws {
+        do {
+            try ReevaluationSchemaFingerprint.checkRecord(metadata, against: definition)
+        } catch let error as ReevaluationRecordFingerprintError {
+            throw ReevaluationReplayCompatibilityError(error)
+        }
     }
 
     private static func validateReplayCompatibility(

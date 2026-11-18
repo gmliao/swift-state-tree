@@ -35,6 +35,9 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     let serverInputHandlers: [String: [AnyServerInputHandler<State>]]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
+    /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
+    /// definition shares it; a definition built again computes its own.
+    let schemaFingerprintCache = SchemaFingerprintCache()
 }
 
 // MARK: - Lifetime Handlers

@@ -72,6 +72,11 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// stream, and in records older than 2.2.
     public let syncConfig: ReevaluationSyncConfig?
 
+    /// The land's record schema fingerprint (`ReevaluationSchemaFingerprint`, #521 D15): replay
+    /// refuses a record whose fingerprint differs from the current definition's, and one without
+    /// it. Nil in records before 3.5, and in a record whose keeper had none.
+    public let schemaFingerprint: String?
+
     public init(
         landID: String,
         landType: String,
@@ -87,7 +92,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         extensions: [String: AnyCodable]? = nil,
         hardwareInfo: HardwareInfo? = nil,
         recordsSyncStream: Bool? = nil,
-        syncConfig: ReevaluationSyncConfig? = nil
+        syncConfig: ReevaluationSyncConfig? = nil,
+        schemaFingerprint: String? = nil
     ) {
         self.landID = landID
         self.landType = landType
@@ -104,10 +110,12 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.hardwareInfo = hardwareInfo
         self.recordsSyncStream = recordsSyncStream
         self.syncConfig = syncConfig
+        self.schemaFingerprint = schemaFingerprint
     }
 
-    /// This metadata with `version` set to the version this build writes.
-    func stampedWithCurrentVersion() -> ReevaluationRecordMetadata {
+    /// This metadata with `version` set to the version this build writes, and the recorder's
+    /// schema fingerprint in place of the caller's when it has one.
+    func stampedWithCurrentVersion(schemaFingerprint recorderFingerprint: String? = nil) -> ReevaluationRecordMetadata {
         ReevaluationRecordMetadata(
             landID: landID,
             landType: landType,
@@ -123,7 +131,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
             extensions: extensions,
             hardwareInfo: hardwareInfo,
             recordsSyncStream: recordsSyncStream,
-            syncConfig: syncConfig
+            syncConfig: syncConfig,
+            schemaFingerprint: recorderFingerprint ?? schemaFingerprint
         )
     }
 
@@ -131,6 +140,7 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         case landID, landType, createdAt, metadata, landDefinitionID, initialStateHash, landConfig
         case rngSeedCoding = "rngSeed"
         case ruleVariantId, ruleParams, version, extensions, hardwareInfo, recordsSyncStream, syncConfig
+        case schemaFingerprint
     }
 }
 
@@ -215,7 +225,18 @@ public enum ReevaluationRecordVersion {
     /// failure that ended the land (`ReevaluationTickFrame.landFailure`, #535 D9). A 3.3 record
     /// is still read: its tickless sync outputs can't be located among the passes, and are
     /// reported as not verified.
-    public static let current = "3.4"
+    /// 3.5 records the land's schema fingerprint (`ReevaluationRecordMetadata.schemaFingerprint`,
+    /// #521 D15). Replay refuses a record before 3.5 (`minimumReplayable`), and one whose
+    /// fingerprint is missing or differs from the current definition's; readers that don't replay
+    /// still read from `minimumSupported` on.
+    public static let current = "3.\(fingerprintMinor)"
+
+    /// The first 3.x minor that records the schema fingerprint (#521 D15).
+    public static let fingerprintMinor = 5
+
+    /// The oldest version replay accepts: records before it carry no schema fingerprint, so they
+    /// can't be shown to match the code (`ReevaluationRecordFingerprintError.missing`).
+    public static let minimumReplayable = "3.\(fingerprintMinor)"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as

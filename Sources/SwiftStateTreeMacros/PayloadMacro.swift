@@ -60,6 +60,7 @@ public struct PayloadMacro: MemberMacro {
         
         // The positional writer, its field forms and the wire name (#521), fields in name order
         members.append(contentsOf: generateWriterMembers(properties: properties))
+        members.append(generateWireKeys(of: structDecl, properties: properties))
         if let wireName = wireName(of: structDecl, in: context) {
             members.append("public static var _payloadWireName: String { \(literal: wireName) }")
         }
@@ -258,6 +259,33 @@ public struct PayloadMacro: MemberMacro {
             "public static var _payloadHasTypedWriter: Bool { true }",
             "public static var _payloadFieldForms: [_PayloadFieldFormEntry] { [\(raw: forms)] }",
         ]
+    }
+
+    /// `_payloadWireKeys` (#521 D15): each stored property whose `CodingKeys` case has a raw
+    /// value other than its name. Only a `CodingKeys` enum in the struct's own body is read; one
+    /// declared in an extension, and a custom `encode(to:)`, are outside the expansion.
+    private static func generateWireKeys(of structDecl: StructDeclSyntax, properties: [PropertyInfo]) -> DeclSyntax {
+        var keys: [(String, String)] = []
+        let stored = Set(properties.map(\.name))
+        for member in structDecl.memberBlock.members {
+            guard let enumDecl = member.decl.as(EnumDeclSyntax.self), enumDecl.name.text == "CodingKeys" else { continue }
+            for caseMember in enumDecl.memberBlock.members {
+                guard let caseDecl = caseMember.decl.as(EnumCaseDeclSyntax.self) else { continue }
+                for element in caseDecl.elements {
+                    let name = String(element.name.text.filter { $0 != "`" })
+                    guard stored.contains(name),
+                          let literal = element.rawValue?.value.as(StringLiteralExprSyntax.self),
+                          let raw = literal.representedLiteralValue,
+                          raw != name
+                    else { continue }
+                    keys.append((name, raw))
+                }
+            }
+        }
+        let entries = keys.sorted { $0.0 < $1.0 }
+            .map { "\(StringLiteralExprSyntax(content: $0.0)): \(StringLiteralExprSyntax(content: $0.1))" }
+        let body = entries.isEmpty ? "[:]" : "[\(entries.joined(separator: ", "))]"
+        return "public static var _payloadWireKeys: [String: String] { \(raw: body) }"
     }
 
     /// The schema's name for the type, fixed at expansion: an event's name without an `Event`

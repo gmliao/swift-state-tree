@@ -20,7 +20,16 @@ import Foundation
 ///     state.processed = input.processed
 /// }
 /// ```
-public protocol ServerInputPayload: Codable, Sendable {}
+///
+/// Give it `@Payload` when it has fields: the record schema fingerprint (#521 D15) lists a
+/// server input's fields from `@Payload`, and refuses a land whose server input has fields it
+/// can't list, when the land records.
+public protocol ServerInputPayload: Codable, Sendable, SchemaMetadataProvider {}
+
+// A server input without `@Payload` lists no fields; see `ServerInputPayload`.
+extension ServerInputPayload {
+    public static func getFieldMetadata() -> [FieldMetadata] { [] }
+}
 
 /// What `LandKeeper.submitServerInput` did with an input. A debug freeze doesn't refuse: the
 /// input is accepted and applied after the resume.

@@ -371,7 +371,10 @@ public actor NIOLandHost {
         // The state's synced-state rows (#464, #179, #535) and the land's payload types in its
         // encoding (EV1, #521), in one throw.
         try land.validateForRegistration(
-            context: LandRegistrationContext(payloadsCompressed: configuration.effectiveTransportEncoding.shouldEncodePayloadAsArray)
+            context: LandRegistrationContext(
+                payloadsCompressed: configuration.effectiveTransportEncoding.shouldEncodePayloadAsArray,
+                recordsForReplay: configuration.enableLiveStateHashRecording
+            )
         )
 
         let initialStateFunc = initialState
