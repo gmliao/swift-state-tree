@@ -1,0 +1,581 @@
+import SwiftStateTurns
+import Testing
+
+/// The membership scenarios the core's design closed on, on models of the adapter's membership
+/// path, the keeper and the transport: a hold handed over, `queue(behind:)` on a held key,
+/// `revoke` while parked, `reply(after:)` behind a worker, and `ask` inside an admission. A core
+/// bug that only shows in these combinations surfaces here. Slice 1 repeats each scenario
+/// against the real adapter and keeper.
+@Suite("Turn core: membership model", .timeLimit(.minutes(1)))
+struct MembershipModelTests {
+    @Test("M1: a registration parked behind the hold, then a disconnect: withdrawn by scope")
+    func parkedRegistrationThenDisconnect() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        await a.send(.txn(1, gate: "s1"))
+        let registration = Task {
+            try await a.call(.register(session: 5, player: 50, gate: "", token: nil), cancellation: .ignored)
+        }
+        await f.wait("park #1")
+        await a.send(.disconnect(5))
+        let result = outcome(await registration.result)
+        f.open("s1")
+        await a.waitForLog(3)
+        let s = await a.snapshot()
+        #expect(result == "withdrawn")
+        #expect(s.log == ["begin 1", "disconnect 5", "end 1"])
+        #expect(s.players[5] == nil)
+        #expect(s.stats.parked == 0)
+    }
+
+    @Test("M2: a refused registration withdraws a second one parked behind it")
+    func refusedRegistrationWithdrawsSecond() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        let first = Task {
+            try await a.call(.register(session: 6, player: 60, gate: "k6", token: nil), cancellation: .ignored)
+        }
+        await f.wait("at k6")
+        let second = Task {
+            try await a.call(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignored)
+        }
+        await f.wait("park #1")
+        a.keeper.setEntry(player: 60, session: 7)
+        f.open("k6")
+        let firstResult = outcome(await first.result)
+        let secondResult = outcome(await second.result)
+        await f.wait("closed 6")
+        let s = await a.snapshot()
+        #expect(firstResult == "refused")
+        #expect(secondResult == "withdrawn")
+        #expect(s.log == ["register 6", "refuse 6"])
+        #expect(s.players[6] == nil)
+        #expect(s.stats.parked == 0)
+        #expect(s.stats.heldKeys == 0)
+    }
+
+    @Test("M3: a disconnect during the keeper read: the request is abandoned, the hold released, the late read stale")
+    func disconnectDuringKeeperRead() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        let registration = Task {
+            try await a.call(.register(session: 8, player: 80, gate: "k8", token: nil), cancellation: .ignored)
+        }
+        await f.wait("at k8")
+        let next = Task { try await a.call(.txn(9, gate: ""), cancellation: .ignored) }
+        await f.wait("park #1")
+        await a.send(.disconnect(8))
+        let result = outcome(await registration.result)
+        let nextResult = outcome(await next.result)
+        f.open("k8")
+        await a.waitForLog(6)
+        let s = await a.snapshot()
+        #expect(result == "abandoned")
+        #expect(nextResult == "success 9")
+        #expect(s.log == [
+            "register 8", "disconnect 8", "registration 8 abandoned keyEnded", "begin 9", "end 9", "stale read 8",
+        ])
+        #expect(s.players[8] == nil)
+    }
+
+    @Test("M4: a refusal leaves the member's first sync running; the same binding doesn't move the member key; a rebind does")
+    func memberKeyMovesOnlyOnRebind() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        a.transport.connect(1)
+        a.transport.connect(3)
+        let accepted = outcome(await Task {
+            try await a.call(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignored)
+        }.result)
+        await a.send(.startFirstSync(1, gate: "fs1"))
+        a.keeper.setEntry(player: 10, session: 2)
+        let refused = outcome(await Task {
+            try await a.call(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignored)
+        }.result)
+        f.open("fs1")
+        await a.waitForLog(7)
+        _ = try? await a.call(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignored)
+        await a.send(.startFirstSync(3, gate: "fs3"))
+        _ = try? await a.call(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignored)
+        let openAfterSameBinding = await a.snapshot().stats.openRequests
+        _ = try? await a.call(.register(session: 3, player: 31, gate: "", token: nil), cancellation: .ignored)
+        f.open("fs3")
+        await a.waitForLog(20)
+        await f.wait("closed 1")
+        let s = await a.snapshot()
+        #expect(accepted == "success 1")
+        #expect(refused == "refused")
+        #expect(openAfterSameBinding == 1)
+        #expect(s.log == [
+            "register 1", "member 1 issued", "registered 1 as 10", "transport 1 generation 1",
+            "register 1", "refuse 1", "first sync 1 done",
+            "register 3", "member 3 issued", "registered 3 as 30", "transport 3 generation 2",
+            "register 3", "registered 3 as 30", "transport 3 generation 2",
+            "register 3", "member 3 issued", "registered 3 as 31", "first sync 3 abandoned keyEnded",
+            "transport 3 generation 2", "stale first sync 3",
+        ])
+        #expect(a.transport.closed == [1])
+        #expect(a.transport.sessions(of: 31) == [3])
+        #expect(s.generations[3] == 2)
+    }
+
+    @Test("M5: teardown answers a reading registration and a parked one")
+    func teardownAnswersRegistrations() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        let reading = Task {
+            try await a.call(.register(session: 9, player: 90, gate: "k9", token: nil), cancellation: .ignored)
+        }
+        await f.wait("at k9")
+        let parked = Task {
+            try await a.call(.register(session: 11, player: 110, gate: "", token: nil), cancellation: .ignored)
+        }
+        await f.wait("park #1")
+        await a.send(.teardown)
+        let readingResult = outcome(await reading.result)
+        let parkedResult = outcome(await parked.result)
+        f.open("k9")
+        await a.waitForLog(4)
+        let s = await a.snapshot()
+        #expect(readingResult == "abandoned")
+        #expect(parkedResult == "withdrawn")
+        #expect(s.log == ["register 9", "teardown", "registration 9 abandoned keyEnded", "stale read 9"])
+        #expect(s.stats.pendingWaiters == 0)
+        #expect(s.stats.parked == 0)
+        #expect(s.stats.openRequests == 0)
+        #expect(s.stats.heldKeys == 0)
+    }
+
+    @Test("M6: the end token is marked first: the registration is withdrawn and no keeper request is made")
+    func tokenMarkedBeforeRegistration() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        a.transport.connect(5)
+        // The session's end reaches the adapter before its registration does. Nothing of the
+        // session exists yet, so no key can carry that; the registration's token does.
+        let token = EndToken()
+        token.markEnded()
+        a.transport.disconnect(5)
+        await a.send(.disconnect(5))
+        let result = outcome(await Task {
+            try await a.call(.register(session: 5, player: 50, gate: "", token: token), cancellation: .ignored)
+        }.result)
+        let s = await a.snapshot()
+        #expect(result == "withdrawn")
+        #expect(s.log == ["disconnect 5"])
+        #expect(s.players[5] == nil)
+        #expect(s.stats.openRequests == 0)
+        #expect(a.transport.sessions(of: 50).isEmpty)
+    }
+
+    @Test("M7: the join budget: a parked admission is ended and withdrawn, its final frame out at the answer; a started one is left alone")
+    func joinBudget() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        a.transport.connect(6)
+        await a.send(.txn(1, gate: "b1"))
+        // Not started (parked): the machine ends the token in its own step, answers so, and
+        // the final frame and the close leave that step; the admission never runs.
+        let waiting = EndToken()
+        let parked = Task {
+            try await a.call(.register(session: 5, player: 50, gate: "", token: waiting), cancellation: .ignored)
+        }
+        await f.wait("park #1")
+        let ended = await a.ask(.endJoinBeforeAdmission(session: 5, token: waiting))
+        let frameAtAnswer = await a.snapshot().flushed
+        let parkedResult = outcome(await parked.result)
+        await f.wait("closed 5")
+        f.open("b1")
+        await a.waitForLog(3)
+        // Started: the answer says so, and the join goes on to its outcome.
+        let running = EndToken()
+        let started = Task {
+            try await a.call(.register(session: 6, player: 60, gate: "k6", token: running), cancellation: .ignored)
+        }
+        await f.wait("at k6")
+        let endedStarted = await a.ask(.endJoinBeforeAdmission(session: 6, token: running))
+        f.open("k6")
+        f.open("tk6")
+        let startedResult = outcome(await started.result)
+        let s = await a.snapshot()
+        #expect(parkedResult == "withdrawn")
+        #expect(waiting.isEnded)
+        #expect(ended == 1)
+        #expect(frameAtAnswer == [1005])
+        #expect(startedResult == "success 6")
+        #expect(!running.isEnded)
+        #expect(endedStarted == 0)
+        #expect(s.flushed == [1005])
+        #expect(a.transport.closed == [5])
+        #expect(s.log == [
+            "begin 1", "join 5 ended before admission", "end 1",
+            "register 6", "join 6 already started", "member 6 issued", "registered 6 as 60", "transport 6 generation 1",
+        ])
+    }
+
+    @Test("M8: the transport registration in five orders against a disconnect")
+    func transportRegistrationOrders() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        let transport = a.transport
+        func register(_ session: Int, _ player: Int, _ gate: String, generation: Int? = nil) -> Task<Int, any Error> {
+            Task {
+                try await a.call(
+                    .register(session: session, player: player, gate: gate, token: nil, generation: generation),
+                    cancellation: .ignored
+                )
+            }
+        }
+
+        // (a) The disconnect wins at the transport: the registration is refused there.
+        transport.connect(7)
+        let lost = register(7, 70, "k7")
+        f.open("k7")
+        await f.wait("at tk7")
+        transport.disconnect(7)
+        await a.send(.disconnect(7))
+        let lostResult = outcome(await lost.result)
+        f.open("tk7")
+        await a.waitForLog(6)
+        let mapAfterLost = transport.sessions(of: 70)
+
+        // (b) The registration wins and is answered; the disconnect then cleans the map.
+        transport.connect(8)
+        let won = register(8, 80, "k8")
+        f.open("k8")
+        f.open("tk8")
+        let wonResult = outcome(await won.result)
+        let mapWhileMember = transport.sessions(of: 80)
+        transport.disconnect(8)
+        await a.send(.disconnect(8))
+        let mapAfterWon = transport.sessions(of: 80)
+
+        // (c) The transport mapped the session, then disconnected it, and the adapter's
+        //     disconnect steps before the registration's completion does.
+        transport.connect(9)
+        transport.holdAfterRegister(9)
+        let between = register(9, 90, "k9")
+        f.open("k9")
+        f.open("tk9")
+        await f.wait("transport answered 9")
+        transport.disconnect(9)
+        await a.send(.disconnect(9))
+        let betweenResult = outcome(await between.result)
+        f.open("post 9")
+        await a.waitForLog(17)
+
+        // (d) The transport refuses (no live queue), and that completion steps before the
+        //     adapter's disconnect: the registration stands without a generation until the
+        //     disconnect arrives.
+        transport.connect(11)
+        let refusedThere = register(11, 110, "k11")
+        f.open("k11")
+        await f.wait("at tk11")
+        transport.disconnect(11)
+        f.open("tk11")
+        let refusedThereResult = outcome(await refusedThere.result)
+        let afterRefusal = await a.snapshot()
+        let mapAfterRefusal = transport.sessions(of: 110)
+        await a.send(.disconnect(11))
+
+        // (e) A generation passed in: the transport registration still runs, and the passed
+        //     one is the one kept.
+        transport.connect(12)
+        let suppliedResult = outcome(await register(12, 120, "", generation: 77).result)
+        let afterSupplied = await a.snapshot()
+        let mapAfterSupplied = transport.sessions(of: 120)
+        transport.disconnect(12)
+        await a.send(.disconnect(12))
+        let s = await a.snapshot()
+
+        #expect(lostResult == "abandoned")
+        #expect(mapAfterLost.isEmpty)
+        #expect(wonResult == "success 8")
+        #expect(mapWhileMember == [8])
+        #expect(mapAfterWon.isEmpty)
+        #expect(betweenResult == "abandoned")
+        #expect(transport.sessions(of: 90).isEmpty)
+        #expect(refusedThereResult == "success 11")
+        #expect(afterRefusal.players[11] == 110)
+        #expect(afterRefusal.generations[11] == nil)
+        #expect(mapAfterRefusal.isEmpty)
+        #expect(suppliedResult == "success 12")
+        #expect(afterSupplied.generations[12] == 77)
+        #expect(mapAfterSupplied == [12])
+        #expect(s.players.isEmpty)
+        #expect(s.generations.isEmpty)
+        #expect(s.stats.heldKeys == 0)
+        #expect(s.log == [
+            "register 7", "member 7 issued", "registered 7 as 70", "disconnect 7", "registration 7 abandoned keyEnded",
+            "stale transport 7",
+            "register 8", "member 8 issued", "registered 8 as 80", "transport 8 generation 2", "disconnect 8",
+            "register 9", "member 9 issued", "registered 9 as 90", "disconnect 9", "registration 9 abandoned keyEnded",
+            "stale transport 9",
+            "register 11", "member 11 issued", "registered 11 as 110", "transport 11 not connected", "disconnect 11",
+            "register 12", "member 12 issued", "registered 12 as 120", "transport 12 generation 77", "disconnect 12",
+        ])
+    }
+
+    @Test("M9: a started library join, then a disconnect, in six orders")
+    func startedJoinThenDisconnect() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        let keeper = a.keeper
+        func join(_ session: Int, _ player: Int, _ gate: String, _ shape: JoinShape) -> Task<Int, any Error> {
+            Task {
+                try await a.call(
+                    .libraryJoin(session: session, player: player, gate: gate, shape: shape, token: nil),
+                    cancellation: .ignored
+                )
+            }
+        }
+
+        // (a) The disconnect lands before the keeper's insert: the admission, asked in the
+        //     segment of the insert, is refused, and nothing is inserted.
+        let first = join(1, 10, "j1", .admitAtInsert)
+        await f.wait("at j1")
+        await a.send(.disconnect(1))
+        let firstResult = outcome(await first.result)
+        f.open("j1")
+        await a.waitForLog(5)
+        let keeperAfterFirst = keeper.players
+
+        // (b) The keeper inserted before its resolvers, and the disconnect lands during them:
+        //     the admission is refused and the keeper rolls its player back in that segment.
+        let second = join(2, 20, "j2", .insertThenAdmit)
+        await f.wait("at j2")
+        let keeperDuringSecond = keeper.players
+        await a.send(.disconnect(2))
+        let secondResult = outcome(await second.result)
+        f.open("j2")
+        await a.waitForLog(10)
+        let keeperAfterSecond = keeper.players
+
+        // (c) The disconnect lands after the admission and before the join returns: the
+        //     member goes at once; the keeper's leave waits for the join's worker, and is
+        //     requested when it has returned.
+        f.open("j3")
+        let third = join(3, 30, "j3", .admitAtInsert)
+        await f.wait("admitted j3")
+        let memberDuringThird = await a.snapshot().players[3]
+        await a.send(.disconnect(3))
+        let thirdResult = outcome(await third.result)
+        let midThird = await a.snapshot()
+        let keeperDuringThird = keeper.players
+        f.open("after j3")
+        await a.waitForLog(17)
+        let keeperAfterThird = keeper.players
+
+        // (d) The keeper doesn't ask (the caller admits when the join returns), and the
+        //     disconnect lands during the join: the stale completion undoes the keeper's player.
+        let fourth = join(4, 40, "j4", .callerAdmits)
+        await f.wait("at j4")
+        await a.send(.disconnect(4))
+        let fourthResult = outcome(await fourth.result)
+        f.open("j4")
+        await a.waitForLog(23)
+        let keeperAfterFourth = keeper.players
+
+        // (e) A member's disconnect while other membership work is in flight: its leave keeps
+        //     its place, behind a registration that was already parked.
+        let fifthResult = outcome(await join(5, 50, "", .callerAdmits).result)
+        a.transport.connect(6)
+        await a.send(.txn(9, gate: "x9"))
+        let registration = Task {
+            try await a.call(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignored)
+        }
+        await f.wait("park #1")
+        await a.send(.disconnect(5))
+        let midFifth = await a.snapshot()
+        let keeperDuringFifth = keeper.players
+        f.open("x9")
+        let registrationResult = outcome(await registration.result)
+        await a.waitForLog(35)
+        let keeperAfterFifth = keeper.players
+
+        // (f) A queued leave outlives `close`.
+        let sixthResult = outcome(await join(7, 70, "", .insertThenAdmit).result)
+        await a.send(.txn(8, gate: "x8"))
+        await a.send(.disconnect(7))
+        await a.send(.shutdown)
+        let keeperDuringSixth = keeper.players
+        f.open("x8")
+        await a.waitForLog(44)
+        let s = await a.snapshot()
+
+        let results = [firstResult, secondResult, thirdResult, fourthResult, fifthResult, registrationResult, sixthResult]
+        #expect(results == ["abandoned", "abandoned", "abandoned", "abandoned", "success 5", "success 6", "success 7"])
+        let keepers = [
+            keeperAfterFirst, keeperDuringSecond, keeperAfterSecond, keeperDuringThird, keeperAfterThird,
+            keeperAfterFourth, keeperDuringFifth, keeperAfterFifth, keeperDuringSixth, keeper.players,
+        ]
+        #expect(keepers == [[:], [20: 2], [:], [30: 3], [:], [:], [50: 5], [:], [70: 7], [:]])
+        #expect(memberDuringThird == 30)
+        #expect(midThird.players[3] == nil)
+        #expect(midThird.stats.openRequests == 0)
+        #expect(midThird.stats.heldKeys == 1)
+        #expect(midFifth.players[5] == nil)
+        #expect(midFifth.stats.parked == 2)
+        #expect(s.players == [6: 60])
+        #expect(s.stats.heldKeys == 0)
+        #expect(s.stats.parked == 0)
+        #expect(s.stats.openRequests == 0)
+        #expect(s.stats.pendingWaiters == 0)
+        #expect(s.log == [
+            "join 1", "disconnect 1", "join 1 abandoned keyEnded", "admission 1 refused", "stale join 1",
+            "join 2", "disconnect 2", "join 2 abandoned keyEnded", "admission 2 refused", "stale join 2",
+            "join 3", "admitted 3 as 30", "disconnect 3", "join 3 abandoned keyEnded", "stale join 3",
+            "leave 3 requested", "left 3",
+            "join 4", "disconnect 4", "join 4 abandoned keyEnded", "stale join 4", "leave 4 requested", "left 4",
+            "join 5", "admitted 5 as 50", "joined 5", "begin 9", "disconnect 5", "end 9",
+            "register 6", "member 6 issued", "registered 6 as 60", "transport 6 generation 1",
+            "leave 5 requested", "left 5",
+            "join 7", "admitted 7 as 70", "joined 7", "begin 8", "disconnect 7", "shutdown", "end 8",
+            "leave 7 requested", "left 7",
+        ])
+    }
+
+    @Test("M10: a disconnect as a call, in six parts, through teardown and after the end")
+    func disconnectAsCall() async {
+        let f = Fixture()
+        let a = MembershipActor(fixture: f)
+        let keeper = a.keeper
+        func join(_ session: Int, _ player: Int, _ gate: String, _ shape: JoinShape) -> Task<Int, any Error> {
+            Task {
+                try await a.call(
+                    .libraryJoin(session: session, player: player, gate: gate, shape: shape, token: nil),
+                    cancellation: .ignored
+                )
+            }
+        }
+        func disconnect(_ session: Int) -> Task<Int, any Error> {
+            Task { try await a.call(.disconnect(session), cancellation: .ignored) }
+        }
+
+        // (a) No leave is due: answered in the disconnect's own step.
+        let noneResult = outcome(await disconnect(99).result)
+
+        // (b) A member's disconnect arrives behind a transaction in flight: its caller waits,
+        //     and is answered after the leave ran against the keeper.
+        let firstResult = outcome(await join(1, 10, "", .callerAdmits).result)
+        await a.send(.txn(9, gate: "x9"))
+        let firstLeft = disconnect(1)
+        await a.waitForLog(6)
+        let waitingFirst = await a.snapshot()
+        let keeperBeforeLeave = keeper.players
+        f.open("x9")
+        let firstLeftResult = outcome(await firstLeft.result)
+        let keeperAfterLeave = keeper.players
+        let leavesAfterFirst = keeper.leaveCalls
+
+        // (c) A stop: three sessions' disconnects arrive in an order of their own, behind work
+        //     in flight. Each is awaited, and each is answered after its leave.
+        let joinResults = [
+            outcome(await join(5, 50, "", .callerAdmits).result),
+            outcome(await join(6, 60, "", .insertThenAdmit).result),
+            outcome(await join(7, 70, "", .admitAtInsert).result),
+        ]
+        await a.send(.txn(8, gate: "x8"))
+        let left7 = disconnect(7)
+        await a.waitForLog(20)
+        let left5 = disconnect(5)
+        await a.waitForLog(21)
+        let left6 = disconnect(6)
+        await a.waitForLog(22)
+        let waitingStop = await a.snapshot()
+        let leavesBeforeStop = keeper.leaveCalls
+        f.open("x8")
+        let stopResults = [outcome(await left5.result), outcome(await left6.result), outcome(await left7.result)]
+        let keeperAfterStop = keeper.players
+        let leavesAfterStop = keeper.leaveCalls
+
+        // (d) The session's own keeper join is still running: the caller is answered when that
+        //     worker has returned and the compensating leave has run.
+        let eighth = join(8, 80, "j8", .callerAdmits)
+        await f.wait("at j8")
+        let left8 = disconnect(8)
+        await a.waitForLog(32)
+        let eighthResult = outcome(await eighth.result)
+        let waitingEighth = await a.snapshot()
+        f.open("j8")
+        let left8Result = outcome(await left8.result)
+        let leavesAfterEighth = keeper.leaveCalls
+
+        // (e) The end. A leave is still queued behind a worker that keeps its hold, with its
+        //     disconnect's caller waiting; the keeper is destroyed (its players cleared); then
+        //     the adapter ends. The caller is answered by the ending step. The worker returns
+        //     afterwards and reports that it joined, so its stale completion asks for a
+        //     compensating leave, which the ended core can't make.
+        let secondResult = outcome(await join(2, 20, "", .insertThenAdmit).result)
+        let fourthResult = outcome(await join(4, 40, "", .callerAdmits).result)
+        let third = join(3, 30, "j3", .callerAdmits)
+        await f.wait("at j3")
+        let left2 = disconnect(2)
+        await a.waitForLog(43)
+        let beforeEnd = await a.snapshot()
+        keeper.stop()
+        await a.send(.teardown)
+        let left2Result = outcome(await left2.result)
+        let thirdResult = outcome(await third.result)
+        let afterEnd = await a.snapshot()
+        f.open("j3")
+        await a.waitForLog(46)
+        let afterWorker = await a.snapshot()
+
+        // (f) A member's disconnect that arrives after the end queues nothing and is answered
+        //     at once.
+        let lateResult = outcome(await disconnect(4).result)
+        let s = await a.snapshot()
+
+        let results = [noneResult, firstResult, firstLeftResult] + joinResults + stopResults
+            + [eighthResult, left8Result, secondResult, fourthResult, left2Result, thirdResult, lateResult]
+        #expect(results == [
+            "success 0", "success 1", "success 1", "success 5", "success 6", "success 7",
+            "success 1", "success 1", "success 1", "abandoned", "success 1",
+            "success 2", "success 4", "success 2", "abandoned", "success 2",
+        ])
+        #expect(waitingFirst.stats.pendingWaiters == 1)
+        #expect(waitingFirst.stats.parked == 1)
+        #expect(keeperBeforeLeave == [10: 1])
+        #expect(keeperAfterLeave.isEmpty)
+        #expect(leavesAfterFirst == 1)
+        #expect(waitingStop.stats.pendingWaiters == 3)
+        #expect(waitingStop.stats.parked == 3)
+        #expect(leavesBeforeStop == 1)
+        #expect(keeperAfterStop.isEmpty)
+        #expect(leavesAfterStop == 4)
+        #expect(waitingEighth.stats.pendingWaiters == 1)
+        #expect(leavesAfterEighth == 5)
+        #expect(beforeEnd.stats.parked == 1)
+        #expect(beforeEnd.stats.heldKeys == 1)
+        #expect(beforeEnd.stats.pendingWaiters == 2)
+        #expect(afterEnd.stats.parked == 0)
+        #expect(afterEnd.stats.heldKeys == 1)
+        #expect(afterEnd.stats.liveKeys == 0)
+        #expect(afterEnd.stats.openRequests == 0)
+        #expect(afterEnd.stats.pendingWaiters == 0)
+        #expect(afterWorker.stats.heldKeys == 0)
+        #expect(afterWorker.stats.ignoredAfterEnd == 1)
+        #expect(s.stats.liveKeys == 0)
+        #expect(s.stats.openRequests == 0)
+        #expect(s.stats.parked == 0)
+        #expect(s.stats.heldKeys == 0)
+        #expect(s.stats.ignoredAfterEnd == 2)
+        #expect(s.stats.pendingWaiters == 0)
+        #expect(keeper.leaveCalls == 5)
+        #expect(keeper.players.isEmpty)
+        #expect(s.log == [
+            "disconnect 99",
+            "join 1", "admitted 1 as 10", "joined 1", "begin 9", "disconnect 1", "end 9",
+            "leave 1 requested", "left 1",
+            "join 5", "admitted 5 as 50", "joined 5", "join 6", "admitted 6 as 60", "joined 6",
+            "join 7", "admitted 7 as 70", "joined 7", "begin 8",
+            "disconnect 7", "disconnect 5", "disconnect 6", "end 8",
+            "leave 7 requested", "left 7", "leave 5 requested", "left 5", "leave 6 requested", "left 6",
+            "join 8", "disconnect 8", "join 8 abandoned keyEnded", "stale join 8", "leave 8 requested", "left 8",
+            "join 2", "admitted 2 as 20", "joined 2", "join 4", "admitted 4 as 40", "joined 4",
+            "join 3", "disconnect 2", "teardown", "join 3 abandoned keyEnded", "stale join 3",
+            "disconnect 4",
+        ])
+    }
+}
