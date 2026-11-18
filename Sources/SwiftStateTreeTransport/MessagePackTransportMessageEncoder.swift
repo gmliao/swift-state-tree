@@ -271,10 +271,11 @@ public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
 
         // Every payload type (ActionPayload, ResponsePayload, ClientEventPayload,
         // ServerEventPayload) is a PayloadCompression; a type without `@Payload` throws from its
-        // writer. A value that isn't a payload type at all (a raw dictionary, array or primitive)
-        // still ends the process here (#544).
+        // writer. A value that isn't a payload type at all (a raw dictionary, array or primitive,
+        // from an untyped event or a record) throws too: a server event that doesn't encode ends
+        // its land, never the process (#544, #538).
         guard let payloadCompression = actualPayload as? any PayloadCompression else {
-            fatalError("Payload type '\(type(of: actualPayload))' must conform to PayloadCompression and use @Payload macro for compression support.")
+            throw UntypedPayloadError(typeName: String(describing: type(of: actualPayload)))
         }
         return AnyCodable(try MessagePackPayloadFieldWriter.positional(payloadCompression))
     }

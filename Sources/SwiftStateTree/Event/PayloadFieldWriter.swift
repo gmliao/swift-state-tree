@@ -103,6 +103,24 @@ public struct PayloadWithoutWriterError: Error, CustomStringConvertible {
     }
 }
 
+/// Thrown by a compressed encoding's positional writer for a payload that isn't a payload type:
+/// a dictionary, an array or a primitive, as an untyped event (`AnyServerEvent(type:payload:)`)
+/// or a record's decoded event carries. Such a value has no positional form. A server event
+/// that throws it reaches no frame, so the land that emitted it ends with
+/// `LandFailure.Kind.eventEncode` (#544, #535); on `json` the value is written as is.
+public struct UntypedPayloadError: Error, CustomStringConvertible, Sendable, Equatable {
+    /// The type of the value that isn't a payload type.
+    public let typeName: String
+
+    public init(typeName: String) {
+        self.typeName = typeName
+    }
+
+    public var description: String {
+        "a \(typeName) payload isn't a payload type: a compressed encoding writes only @Payload types"
+    }
+}
+
 // MARK: - Leaves (core)
 
 extension Bool: _PayloadWireLeaf {

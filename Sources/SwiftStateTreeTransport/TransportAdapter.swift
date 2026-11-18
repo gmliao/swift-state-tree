@@ -6139,14 +6139,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             profilerCounters?.incrementActions()
             await recordProfiling(startTime: handleStart, operation: .handle)
 
-            sendActionResponse(
+            if let failure = sendActionResponse(
                 requestID: requestID,
                 actionType: typeIdentifier,
                 response: response,
                 playerID: playerID,
                 sessionID: sessionID,
                 ticket: ticket
-            )
+            ) {
+                await keeper.submitLandFailure(failure)
+            }
         } catch {
             handleActionError(
                 error: error,
@@ -6222,14 +6224,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             profilerCounters?.incrementActions()
             await recordProfiling(startTime: handleStart, operation: .handle)
             // Checked again after that await, in the send's own segment.
-            sendActionResponse(
+            if let failure = sendActionResponse(
                 requestID: requestID,
                 actionType: envelope.typeIdentifier,
                 response: response,
                 playerID: playerID,
                 sessionID: sessionID,
                 ticket: ticket
-            )
+            ) {
+                await keeper.submitLandFailure(failure)
+            }
         case .failure(let error):
             handleActionError(
                 error: error,
@@ -6264,6 +6268,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Send successful action response to client, if `ticket` is still current (checked in
     /// the same segment as the enqueue).
+    ///
+    /// A response that doesn't encode (a value that isn't a payload type on a compressed
+    /// encoding, #544) would leave its client without an answer: the land ends. The output gate
+    /// closes here, in this segment, and the caller submits the returned failure to the keeper.
     private func sendActionResponse(
         requestID: String,
         actionType: String,
@@ -6271,7 +6279,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerID: PlayerID,
         sessionID: SessionID,
         ticket: Ticket<SessionID>
-    ) {
+    ) -> LandFailure? {
         do {
             let actionResponse = TransportMessage.actionResponse(
                 requestID: requestID,
@@ -6303,12 +6311,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 enqueueOutbound(responseData, to: sessionID)
             }
             if sent == nil { droppedStaleActionAnswer(requestID: requestID, sessionID: sessionID) }
+            return nil
         } catch {
-            logger.error("❌ Failed to send action response", metadata: [
+            logger.error("❌ Action response did not encode; the land ends", metadata: [
                 "requestID": .string(requestID),
                 "actionType": .string(actionType),
                 "error": .string("\(error)")
             ])
+            let failure = LandFailure(
+                kind: .responseEncode,
+                detail: "the response to action \(actionType) did not encode: \(error)",
+                position: LandFailurePosition(stage: .actionResponse)
+            )
+            outputGate.close(failure)
+            return failure
         }
     }
     
