@@ -86,7 +86,7 @@ lint() {  # root
     if [ $in_core -eq 0 ]; then
       # plain-data: the inheritance clause of a type or extension declaration, generics and
       # `where` removed.
-      while IFS=$'\t' read -r n code; do
+      while IFS=$'\t' read -r n _; do
         echo "$rel:$n: [plain-data] a hand-written PlainData conformance; use @PlainData"
         failures=$((failures + 1))
       done < <(awk -F'\t' '
@@ -159,12 +159,12 @@ self_test() {
   dir="$(mktemp -d)"
   trap 'rm -rf "$dir"' RETURN
   mkdir -p "$dir/Sources/App" "$dir/Sources/SwiftStateTurns" "$dir/Tests" "$dir/Examples"
-  for path in $(awk 'NF { print $1 }' <<<"$ISOLATED_BOUNDARIES"); do
+  local path n _reason
+  while read -r path n _reason; do
+    [ -n "$path" ] || continue
     mkdir -p "$dir/$(dirname "$path")"
-    local n
-    n="$(awk -v p="$path" '$1 == p { print $2 }' <<<"$ISOLATED_BOUNDARIES")"
     for _ in $(seq "$n"); do echo 'x.assumeIsolated { _ in }'; done > "$dir/$path"
-  done
+  done <<<"$ISOLATED_BOUNDARIES"
   # Passing fixture.
   cat > "$dir/Sources/App/Good.swift" <<'EOF'
 // struct Fake: PlainData {} in a comment, and "extension X: PlainData" in a string.
