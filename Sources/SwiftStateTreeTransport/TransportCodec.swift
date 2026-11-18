@@ -13,6 +13,9 @@ public protocol TransportCodec: Sendable {
     var encoding: TransportEncoding { get }
     func encode<T: Encodable>(_ value: T) throws -> Data
     func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T
+    /// Decodes a frame a client sent: as `decode`, but refusing data nested deeper than
+    /// `PayloadNesting.clientFrameMaxDepth` before anything walks it recursively (#362).
+    func decodeClientFrame<T: Decodable>(_ type: T.Type, from data: Data) throws -> T
 }
 
 /// JSON-based transport codec.
@@ -60,6 +63,11 @@ public struct JSONTransportCodec: TransportCodec {
         // Reuse per-instance decoder for better performance.
         // The decoder is safe to reuse because JSONDecoder is thread-safe in practice,
         // and each codec instance is typically used by a single actor.
+        return try decoder.decode(type, from: data)
+    }
+
+    public func decodeClientFrame<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        try PayloadNesting.checkJSON(data)
         return try decoder.decode(type, from: data)
     }
 }

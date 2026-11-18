@@ -29,6 +29,11 @@ struct MessageDecodingPipeline: Sendable {
     /// - Returns: Decoded TransportMessage
     /// - Throws: Decoding errors if data cannot be parsed
     func decode(_ data: Data) throws -> TransportMessage {
+        // A frame that starts like JSON is depth-checked before anything parses it (#362). A
+        // MessagePack frame never starts with `[` or `{` (the bare integers 91 and 123).
+        if let first = data.first, first == 0x5b || first == 0x7b {
+            try PayloadNesting.checkJSON(data)
+        }
         // Special handling for legacy join mode:
         // In legacy mode, join messages are always JSON (even if server is MessagePack-configured)
         // So we need to detect JSON format first before falling back to codec
@@ -43,16 +48,16 @@ struct MessageDecodingPipeline: Sendable {
                     return try opcodeDecoder.decode(from: data)
                 } else {
                     // Standard JSON object format (includes Join messages)
-                    return try JSONTransportCodec().decode(TransportMessage.self, from: data)
+                    return try JSONTransportCodec().decodeClientFrame(TransportMessage.self, from: data)
                 }
             }
             // Not JSON, fall back to configured codec (MessagePack)
-            return try codec.decode(TransportMessage.self, from: data)
+            return try codec.decodeClientFrame(TransportMessage.self, from: data)
         }
         
         // Non-legacy mode: use codec-first approach (for performance)
         if codec.encoding == .messagepack {
-            return try codec.decode(TransportMessage.self, from: data)
+            return try codec.decodeClientFrame(TransportMessage.self, from: data)
         }
         
         // Detect JSON opcode array format
@@ -65,6 +70,6 @@ struct MessageDecodingPipeline: Sendable {
         }
         
         // Standard JSON object format
-        return try codec.decode(TransportMessage.self, from: data)
+        return try codec.decodeClientFrame(TransportMessage.self, from: data)
     }
 }

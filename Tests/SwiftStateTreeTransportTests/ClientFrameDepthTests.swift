@@ -4,11 +4,13 @@
 //
 // - Depth: an action, a client event and a join, each with its payload nested `depth` levels,
 //   go through the router's and the adapter's decode and then the payload decode, on a task of
-//   the cooperative pool. The parsers' limits bound the depth: JSON parsing throws past 512
-//   levels, the MessagePack unpacker past `messagePackMaxNestingDepth`. Up to the limit every
-//   decoder must produce the message and its payload stage must succeed, so the recursive
-//   stages after the parse ran at that depth. One past it, every decoder must refuse with the
-//   parser's nesting error. A stack overflow ends the process.
+//   the cooperative pool. One limit bounds the depth in every encoding
+//   (`PayloadNesting.clientFrameMaxDepth`, 32): JSON is refused past it before it is parsed,
+//   MessagePack by its unpacker, given the same limit. Foundation's own JSON limit (512) isn't the
+//   bound: on Darwin's 544 KiB pool stacks the payload's re-encode overflows there (#362). Up to
+//   the limit every decoder must produce the message and its payload stage must succeed, so the
+//   recursive stages after the parse ran at that depth. Past it, up to and beyond Foundation's
+//   limit, every decoder must refuse with the nesting error. A stack overflow ends the process.
 //   `SST_FUZZ_DEPTH=<n>` runs one depth only, to find a limit (one process per depth).
 // - Amplification: a frame of one-byte elements (empty maps), decoded, holds no more elements
 //   than the frame has bytes. `SST_FUZZ_AMPLIFICATION_BYTES=<n>` sets the frame size (default
@@ -177,28 +179,31 @@ enum ClientFrameChain {
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
         #expect(report.succeeded.isEmpty, "\(context): \(report)", sourceLocation: sourceLocation)
-        // `JSONSerialization` names the nesting; `JSONDecoder` on Linux reports only that the data
-        // isn't valid JSON. The frame differs from the accepted one by one level, so that's the
-        // parse refusing the depth (`jsonFixtureDepth` checks the reason).
-        let markers = encoding == .messagepack
-            ? ["Nesting deeper than \(messagePackMaxNestingDepth)"]
-            : ["nested", "The given data was not valid JSON."]
+        // The same refusal in every encoding: JSON's before it is parsed (`PayloadNesting`),
+        // MessagePack's from its unpacker.
+        let marker = "Nesting deeper than \(PayloadNesting.clientFrameMaxDepth)"
         for name in decoders(encoding) {
             let error = report.refused[name] ?? "none"
-            #expect(markers.contains { error.localizedCaseInsensitiveContains($0) }, "\(context) \(name): \(error)", sourceLocation: sourceLocation)
+            #expect(error.contains(marker), "\(context) \(name): \(error)", sourceLocation: sourceLocation)
         }
     }
 }
 
 @Suite("Client frame decoders: deep nesting and amplification (#362, #528)", .serialized, .timeLimit(.minutes(5)))
 struct ClientFrameDepthTests {
-    static let jsonLimit = 512
+    /// The nesting limit of every client frame (#362).
+    static let limit = PayloadNesting.clientFrameMaxDepth
+    /// Foundation's JSON parser limit: the fixtures are checked against it (`jsonFixtureDepth`),
+    /// and the depth tests refuse frames up to and past it.
+    static let foundationJSONLimit = 512
 
+    /// The depths a test runs: around the limit, then deeper ones, up to and past Foundation's
+    /// JSON limit, which must be refused, not overflow.
     static func depths(upTo limit: Int) -> [Int] {
         if let text = ProcessInfo.processInfo.environment[ClientFrameDepthEnvKeys.depth], let depth = Int(text) {
             return [depth]
         }
-        return [8, 32, 64, 128, 256, limit - 1, limit, limit + 1]
+        return Array(Set([8, 32, limit - 1, limit, limit + 1, 128, 256, foundationJSONLimit, foundationJSONLimit + 1])).sorted()
     }
 
     /// Checks the chain's report at `depth`: up to `limit` every stage through the payload
@@ -211,30 +216,38 @@ struct ClientFrameDepthTests {
         }
     }
 
-    @Test("Nesting up to the JSON parsers' limit reaches the payload decode, on the cooperative pool; one past it is refused",
+    @Test("JSON nested up to the limit reaches the payload decode, on the cooperative pool; deeper, up to and past Foundation's limit, is refused",
           arguments: [FrameEncoding.json, .opcodeJsonArray], ["action", "clientEvent", "join"])
     func jsonDepth(encoding: FrameEncoding, kind: String) async {
-        for depth in Self.depths(upTo: Self.jsonLimit) {
+        for depth in Self.depths(upTo: Self.limit) {
             for objects in [false, true] {
                 let data = encoding == .json
                     ? DeepFrames.json(kind, depth: depth, objects: objects)
                     : DeepFrames.opcodeJSON(kind, depth: depth, objects: objects)
                 let report = await Task.detached { await ClientFrameChain.run(data, encoding: encoding) }.value
-                Self.check(report, encoding: encoding, depth: depth, limit: Self.jsonLimit,
+                Self.check(report, encoding: encoding, depth: depth, limit: Self.limit,
                            "\(encoding) \(kind) depth \(depth) \(objects ? "objects" : "arrays")")
             }
         }
     }
 
-    @Test("Nesting up to the MessagePack unpacker's limit reaches the payload decode, on the cooperative pool; one past it is refused",
+    @Test("MessagePack nested up to the limit reaches the payload decode, on the cooperative pool; deeper is refused",
           arguments: ["action", "clientEvent", "join"])
     func messagePackDepth(kind: String) async throws {
-        for depth in Self.depths(upTo: messagePackMaxNestingDepth) {
+        for depth in Self.depths(upTo: Self.limit) {
             let data = DeepFrames.messagePack(kind, depth: depth)
             let report = await Task.detached { await ClientFrameChain.run(data, encoding: .messagepack) }.value
-            Self.check(report, encoding: .messagepack, depth: depth, limit: messagePackMaxNestingDepth,
+            Self.check(report, encoding: .messagepack, depth: depth, limit: Self.limit,
                        "messagepack \(kind) depth \(depth)")
         }
+    }
+
+    @Test("Client frames nest at most 32 deep in every encoding; frames the server builds, 64, the unpacker's default")
+    func limits() {
+        #expect(PayloadNesting.clientFrameMaxDepth == 32)
+        #expect(PayloadNesting.serverFrameMaxDepth == 64)
+        #expect(PayloadNesting.clientFrameMaxDepth < PayloadNesting.serverFrameMaxDepth)
+        #expect(messagePackMaxNestingDepth == PayloadNesting.serverFrameMaxDepth)
     }
 
     @Test("The MessagePack unpacker refuses a container count above the bytes left with its own error, before reserving")
@@ -270,9 +283,13 @@ struct ClientFrameDepthTests {
                             : DeepFrames.opcodeJSON(kind, depth: depth, objects: objects)
                     }
                     let context = "\(encoding) \(kind) \(objects ? "objects" : "arrays")"
-                    #expect((try? JSONSerialization.jsonObject(with: frame(Self.jsonLimit))) != nil, "\(context)")
+                    // The pre-parse check counts as the parser does: it takes the limit and
+                    // refuses one past it.
+                    #expect((try? PayloadNesting.checkJSON(frame(Self.limit))) != nil, "\(context)")
+                    #expect(throws: PayloadNesting.TooDeep.self, "\(context)") { try PayloadNesting.checkJSON(frame(Self.limit + 1)) }
+                    #expect((try? JSONSerialization.jsonObject(with: frame(Self.foundationJSONLimit))) != nil, "\(context)")
                     do {
-                        _ = try JSONSerialization.jsonObject(with: frame(Self.jsonLimit + 1))
+                        _ = try JSONSerialization.jsonObject(with: frame(Self.foundationJSONLimit + 1))
                         Issue.record("\(context): one past the limit parsed")
                     } catch {
                         #expect(String(describing: error).localizedCaseInsensitiveContains("nest"), "\(context): \(error)")

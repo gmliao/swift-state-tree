@@ -556,6 +556,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let transportMsg: TransportMessage
         // Check if message is JSON (starts with { or [)
         if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
+            // Nested deeper than every later stage can walk: refused before it is parsed (#362).
+            try PayloadNesting.checkJSON(message)
             // Try JSON opcode array format first
             if let json = try? JSONSerialization.jsonObject(with: message),
                let array = json as? [Any],
@@ -574,7 +576,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             } else {
                 // JSON object format
                 let jsonCodec = TransportEncodingConfig.json.makeCodec()
-                transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
+                transportMsg = try jsonCodec.decodeClientFrame(TransportMessage.self, from: message)
 
                 if logger.logLevel <= .debug {
                     logger.debug("Handshake: Decoded JSON object format", metadata: [
@@ -597,6 +599,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         logger: Logger
     ) throws -> PostHandshakeFrameDecode {
+        // A frame that starts like JSON is depth-checked before anything parses it (#362). A
+        // MessagePack frame never starts with `[` or `{` (the bare integers 91 and 123).
+        if let first = message.first, first == 0x5b || first == 0x7b {
+            try PayloadNesting.checkJSON(message)
+        }
         // A sync ack (#332) isn't a TransportMessage: it goes to the bound land's adapter
         // as is, never to the keeper. Only a frame that starts like one is parsed.
         if let seq = SyncAckFrame.parse(message) {
@@ -605,7 +612,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let transportMsg: TransportMessage
         if codec.encoding == .messagepack {
             // MessagePack codec handles both map and opcode-array formats.
-            transportMsg = try codec.decode(TransportMessage.self, from: message)
+            transportMsg = try codec.decodeClientFrame(TransportMessage.self, from: message)
         } else if let json = try? JSONSerialization.jsonObject(with: message),
                   let array = json as? [Any],
                   array.count >= 1,
@@ -622,7 +629,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
         } else {
             // Standard JSON object format
-            transportMsg = try codec.decode(TransportMessage.self, from: message)
+            transportMsg = try codec.decodeClientFrame(TransportMessage.self, from: message)
         }
         return .message(transportMsg)
     }

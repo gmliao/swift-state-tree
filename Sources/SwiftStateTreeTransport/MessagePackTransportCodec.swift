@@ -20,4 +20,8 @@ public struct MessagePackTransportCodec: TransportCodec {
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         return try serializer.decode(type, from: data)
     }
+
+    public func decodeClientFrame<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        try serializer.decode(type, from: data, maxDepth: PayloadNesting.clientFrameMaxDepth)
+    }
 }

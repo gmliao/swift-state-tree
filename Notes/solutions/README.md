@@ -140,3 +140,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-18 | [A server close goes around the send queue](2026-11-18-a-server-close-goes-around-the-send-queue.md) | ordering, send, close, session-queue |
 | 2026-11-18 | [A fuzz harness is only as good as the mutants it kills](2026-11-18-a-fuzz-harness-is-only-as-good-as-the-mutants-it-kills.md) | testing, fuzzing, mutants, decoding, messagepack, json |
 | 2026-11-18 | [A soft reset to a moved main stages the reverse of every commit in between](2026-11-18-soft-reset-to-a-moved-main-stages-reverse-commits.md) | git, reset, squash, local-main |
+| 2026-11-18 | [A parser's depth limit isn't the pipeline's: every recursive stage after it needs the bound](2026-11-18-a-parsers-depth-limit-isnt-the-pipelines.md) | decoding, nesting, stack-overflow, darwin, cooperative-pool, json |
