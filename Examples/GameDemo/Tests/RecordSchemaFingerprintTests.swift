@@ -15,15 +15,15 @@ struct RecordSchemaFingerprintTests {
     @Test("every GameDemo land fingerprints, to its pinned value")
     func everyLandFingerprints() throws {
         let fingerprints: [(land: String, value: String, pinned: String)] = [
-            ("hero-defense", try ReevaluationSchemaFingerprint.compute(for: HeroDefense.makeLand()), "cfcbd0f770e31422"),
-            ("visibility-test", try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand()), "f7d54852220db45b"),
+            ("hero-defense", try ReevaluationSchemaFingerprint.compute(for: HeroDefense.makeLand()), "0df25863c8632fb6"),
+            ("visibility-test", try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand()), "83adf34f8aef574d"),
             (
                 "visibility-test broadcast",
                 try ReevaluationSchemaFingerprint.compute(for: VisibilityTest.makeLand(VisibilityTestBroadcastState.self)),
-                "13aa677613d3fe7d"
+                "6cbb6a4dc660168b"
             ),
-            ("resolver-test", try ReevaluationSchemaFingerprint.compute(for: ResolverTest.makeLand()), "05b9d95456055dff"),
-            ("card-game", try ReevaluationSchemaFingerprint.compute(for: CardGame.makeLand()), "98bd582740eb0dd8"),
+            ("resolver-test", try ReevaluationSchemaFingerprint.compute(for: ResolverTest.makeLand()), "b3f9fe2ca2424670"),
+            ("card-game", try ReevaluationSchemaFingerprint.compute(for: CardGame.makeLand()), "1e311682d1720885"),
         ]
         for entry in fingerprints {
             #expect(entry.value == entry.pinned, "\(entry.land): \(entry.value)")

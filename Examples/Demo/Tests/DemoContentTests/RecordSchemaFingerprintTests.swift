@@ -12,9 +12,9 @@ struct RecordSchemaFingerprintTests {
     @Test("every Demo land fingerprints, to its pinned value")
     func everyLandFingerprints() throws {
         let fingerprints: [(land: String, value: String, pinned: String)] = [
-            ("counter", try ReevaluationSchemaFingerprint.compute(for: CounterDemo.makeLand()), "510edc8eabab6901"),
-            ("cookie", try ReevaluationSchemaFingerprint.compute(for: CookieGame.makeLand()), "4923ccae0a167fec"),
-            ("deterministic-math", try ReevaluationSchemaFingerprint.compute(for: DeterministicMathDemo.makeLand()), "8cb5e6b3ad567c97"),
+            ("counter", try ReevaluationSchemaFingerprint.compute(for: CounterDemo.makeLand()), "049c0638291b15ae"),
+            ("cookie", try ReevaluationSchemaFingerprint.compute(for: CookieGame.makeLand()), "795fa32d150755c7"),
+            ("deterministic-math", try ReevaluationSchemaFingerprint.compute(for: DeterministicMathDemo.makeLand()), "28fe1cdba2dcb228"),
         ]
         for entry in fingerprints {
             #expect(entry.value == entry.pinned, "\(entry.land): \(entry.value)")
