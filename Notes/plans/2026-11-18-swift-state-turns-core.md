@@ -61,7 +61,7 @@ public enum Admission<Key: Hashable & Sendable>: Sendable {
   case external(hold: Key?, scope: Key?, unless: EndToken? = nil)
   case control
 }
-public enum Hold<Key: Hashable & Sendable>: Sendable {   // every hold has a deadline
+public enum Hold<Key: Hashable & Sendable>: Sendable {   // every holding request has a deadline
   case untilRequestCloses(Key, deadline: Duration)
   case untilWorkerRetires(Key, deadline: Duration)
 }
@@ -106,11 +106,11 @@ public struct Turn<M: TurnMachine>: ~Copyable {  // no public init: a handler ca
   public func generation(of key: M.Key) -> Generation?
 
   // Work
+  // nil: the key isn't live. Two forms, so a hold and a second deadline can't both be passed:
   @discardableResult
-  public mutating func request(_ effect: M.Effect, for key: M.Key,
-                               holding: Hold<M.Key>? = nil,
-                               deadline: Duration? = nil) -> RequestID?  // nil: key not live; `deadline` is for a
-                                                                         // request that holds nothing (a hold carries its own)
+  public mutating func request(_ effect: M.Effect, for key: M.Key, holding: Hold<M.Key>) -> RequestID?
+  @discardableResult
+  public mutating func request(_ effect: M.Effect, for key: M.Key, deadline: Duration? = nil) -> RequestID?
   public mutating func cancel(_ request: RequestID)
   public mutating func run(_ effect: M.Effect)                           // untracked
   @discardableResult public mutating func queue(_ input: M.Input, behind key: M.Key) -> Bool  // false after endAll
@@ -123,7 +123,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {  // no public init: a handler ca
 }
 ```
 
-**A holding request always has a deadline, and the type says so.** The deadline is part of the `Hold` value, so `request(_, for:, holding:)` without one doesn't compile (a must-fail snippet, §6.3). An unbounded hold parks every later input on its key for as long as its worker hangs; allowing one is a design change, not an option a caller picks. Only an adopter's machine code calls `request(holding:)`: Land, resolver and handler authors never see the core, and replay makes no holding requests, so neither changes. For `.untilWorkerRetires` the deadline abandons the request (its caller is answered, `handleAbandoned` runs) while the hold stays until the worker returns.
+**A holding request always has a deadline, and the type says so.** The deadline is part of the `Hold` value, so `request(_, for:, holding:)` without one doesn't compile (a must-fail snippet, §6.3). **The deadline bounds the request,** not always the hold: an `.untilRequestCloses` hold ends with it, while an `.untilWorkerRetires` hold ends when its worker returns (rule 6), so the adopter bounds that worker (in slice 1, the keeper's own join and leave bounds). A request with no deadline would leave its caller and every input parked behind its key waiting for as long as the work hangs; allowing one is a design change, not an option a caller picks. Only an adopter's machine code calls `request(holding:)`: Land, resolver and handler authors never see the core, and replay makes no holding requests, so neither changes. For `.untilWorkerRetires` the deadline abandons the request (its caller is answered, `handleAbandoned` runs) while the hold stays until the worker returns.
 
 **The instant is one concrete type,** `TurnInstant`: a `PlainData` value holding signed `Int64` nanoseconds (so `-` can give a negative `Duration`), `Comparable`, with `+ Duration` and `- TurnInstant -> Duration`. **Its origin is fixed once per process:** a `ContinuousClock.Instant` captured in a static on first use, from which every production `TurnClock` measures. So an instant a machine stored stays meaningful under a replaced core (check 14) or a second clock. A test clock starts at 0 and is never mixed with a production one.
 - Rejected: `associatedtype Clock: TurnClock` on `TurnMachine`. It puts a clock type in every machine's signature and generic constraint, and buys nothing once the origin is fixed per process: a machine only compares instants and adds durations.
