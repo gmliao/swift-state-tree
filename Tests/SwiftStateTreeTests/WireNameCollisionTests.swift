@@ -32,7 +32,7 @@ struct WNPingAction: ActionPayload {
 }
 
 // Schema names `WNCasePing` and `WNCASEPING`: they differ only in case, and intake matches a
-// schema name case-insensitively, so `WNCASEPING` reaches whichever is registered first.
+// schema name case-insensitively, so `WNCASEPING` reaches both.
 @Payload
 struct WNCasePingAction: ActionPayload {
     typealias Response = WireNameAck
@@ -40,6 +40,13 @@ struct WNCasePingAction: ActionPayload {
 
 @Payload
 struct WNCASEPINGAction: ActionPayload {
+    typealias Response = WireNameAck
+}
+
+// `WNPINGACTIONAction`'s schema name is `WNPINGACTION`, which matches `WNPingAction`'s own type
+// name case-insensitively: a client sending `WNPingAction` reaches both.
+@Payload
+struct WNPINGACTIONAction: ActionPayload {
     typealias Response = WireNameAck
 }
 
@@ -113,9 +120,21 @@ struct WireNameCollisionTests {
         }
         let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
         #expect(duplicate.kind == "action")
-        #expect(duplicate.wireName == "WNCasePing")
+        #expect(duplicate.wireName == "WNCASEPING")
         #expect(duplicate.firstTypeName?.hasSuffix(".WNCasePingAction") == true, "\(duplicate)")
         #expect(duplicate.typeName.hasSuffix(".WNCASEPINGAction"), "\(duplicate)")
+    }
+
+    @Test("The reported name is one both types are matched by: the other type's name, not a schema name it doesn't match")
+    func caseInsensitiveReportsTheSharedName() throws {
+        let definition = Land("wire-case-name", using: WireNameState.self) {
+            Rules {
+                HandleAction(WNPINGACTIONAction.self) { (state: inout WireNameState, _: WNPINGACTIONAction, _: LandContext) in WireNameAck(total: state.total) }
+                HandleAction(WNPingAction.self) { (state: inout WireNameState, _: WNPingAction, _: LandContext) in WireNameAck(total: -1) }
+            }
+        }
+        let duplicate = try #require(try registrationError(definition).duplicateHandlers.first)
+        #expect(duplicate.wireName == "WNPingAction")
     }
 
     @Test("Two nested Move types: one last component")

@@ -229,9 +229,9 @@ func sharedActionName(_ first: Any.Type, _ second: Any.Type) -> String? {
     // Intake also matches the schema name case-insensitively (`PING` reaches `PingAction`).
     let firstSchema = firstNames[2].lowercased()
     let secondSchema = secondNames[2].lowercased()
-    if secondNames.contains(where: { $0.lowercased() == firstSchema }) { return firstNames[2] }
-    if firstNames.contains(where: { $0.lowercased() == secondSchema }) { return secondNames[2] }
-    return nil
+    // The name a client sends that reaches both: the other type's own name.
+    if let name = secondNames.first(where: { $0.lowercased() == firstSchema }) { return name }
+    return firstNames.first { $0.lowercased() == secondSchema }
 }
 
 /// Two distinct registered event types with one event name (#599).
