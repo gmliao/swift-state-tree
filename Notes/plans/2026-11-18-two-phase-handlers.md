@@ -1,6 +1,6 @@
 # Two-phase handlers: validate, then apply (#586, minimal)
 
-Status: open (rev 2, 2026-11-18: D1 and D3 decided). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
+Status: open (rev 3, 2026-11-18: D1–D3 decided). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
 
 ## Decision (maintainer, 2026-11-18)
 
@@ -99,6 +99,7 @@ From a scan of handler bodies that contain `throw`, or a `try` that isn't `try?`
 - `docs/core/land-dsl.md`: the signatures, the `validate`/`apply` section with the resolve/validate/apply table from #586, `ValidateContext`, `ReadOnlyLandService`, and the cases the compiler can't stop.
 - `docs/core/runtime.md`, Inputs and Turns: a handler can't throw after a write. A `validate` throw fails the input alone with nothing written. The debug warning paragraph is removed.
 - `docs/core/failure-handling.md`: the #87 row becomes "impossible by type (#586)".
+- `docs/core/land-dsl.md` and `docs/core/failure-handling.md`: the D2 interim note. `CanJoin` runs at join intake and `OnJoin` in a later turn, so a state-dependent check in `CanJoin` can be stale; `OnJoin` handles a misfit joiner; `maxPlayers` is unaffected; links #588.
 - `docs/core/reevaluation.md`: `validate` reruns and must be deterministic; the rejected marker (D1).
 - `Notes/plans/2026-11-13-sync-failure-ends-unit.md`: a status note that #87 is closed by #586's types instead of PR 4; §3.7 and D5 (a) are superseded. Its row in `Notes/plans/README.md` is updated in the same commit.
 
@@ -135,10 +136,10 @@ From a scan of handler bodies that contain `throw`, or a `try` that isn't `try?`
 - **D1: decided (maintainer, 2026-11-18): the rejected marker.** Record format 3.5, an optional `rejected` on the pass, compared in replay; an older record (nil) isn't compared. Tests:
   - a `validate` divergence (rejected live, applied in replay, and the reverse) is reported with its sequence and tick;
   - a 3.4 record still replays clean.
-- **D2:** `OnJoin` loses its in-turn failure. `CanJoin` runs at join intake, in the segment of the insert, but `OnJoin` is a queued input applied in a later turn. A `CanJoin` state check can be stale by then; that is today's timing for `maxPlayers` too. Options:
-  - (a) Accept and document it: state checks for a join go in `CanJoin`, and `OnJoin` may assume nothing changed.
-  - (b) Also give `OnJoin` a `validate:`/`apply:` form. A rejected join then needs a path that undoes the player insert, which is the in-turn join failure path §5 removes.
-  - I recommend (a).
+- **D2: decided (maintainer, 2026-11-18): (a).** `OnJoin` becomes non-throwing, and the `CanJoin` staleness is accepted and documented in `land-dsl.md` and `failure-handling.md` (en/zh), with an interim note linking #588.
+  - A check that depends on changing state doesn't belong in `CanJoin`. `OnJoin` handles a misfit joiner itself: it makes them a spectator, or emits an event asking them to leave.
+  - `LandConfig.maxPlayers` is checked after the last await (`LandKeeper.swift:1650`), so a plain player cap is unaffected.
+  - The in-turn join validate is tracked as #588, for the turn core's join move.
 - **D3: decided (Main, 2026-11-18):** no `rethrows`-style escape hatch. The single-closure body is non-throwing.
 
 ## PRs
