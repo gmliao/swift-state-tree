@@ -168,4 +168,4 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 
 | Date | Plan | Status | Evidence |
 |---|---|---|---|
-| 2026-11-19 | [Development speed: CI wall-clock and local builds](2026-11-19-dev-speed.md) | open | Measurement and plan; no changes yet. Proposed first: split e2e-game's row-addressing-off step into its own legs, and move the deep-research Python tests out of `examples` |
+| 2026-11-19 | [Development speed: CI wall-clock and local builds](2026-11-19-dev-speed.md) | open | Rev 2. Measurement and plan; no changes yet. Proposed first: split e2e-game's row-addressing-off step into its own legs, with the SwiftPM checkout cache; then the deep-research Python tests in their own job |
