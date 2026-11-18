@@ -237,6 +237,11 @@ public struct LandContext: Sendable {
     ///
     /// This is useful for replay pipelines that already carry `{typeIdentifier, payload}`
     /// envelopes and need to forward events without concrete payload decoding branches.
+    ///
+    /// On a compressed encoding (`messagepack`, `opcodeJsonArray`) the payload must be a payload
+    /// type (`@Payload`). Any other value (a dictionary, an array, a primitive) has no positional
+    /// form: the event is lost and the land ends with `LandFailure.Kind.eventEncode` (#544). On
+    /// `json` it is written as is.
     public func emitAnyServerEvent(_ event: AnyServerEvent, to target: EventTarget) {
         emitEventHandler(event, target)
     }
