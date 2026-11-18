@@ -456,7 +456,7 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
 
 ### 範例 3：錯誤處理
 
-這個範例展示如何處理各種錯誤情況：
+這個範例展示如何處理各種錯誤情況。Handler body 不能拋出錯誤，因此可被拒絕的 action 分成 `validate` 與 `apply`：`validate` 檢查狀態，拋出錯誤表示拒絕（什麼都不寫入）；`apply` 寫入狀態並回傳 response（[兩段式 Handler](core/land-dsl.zh-TW.md#兩段式-handler)）：
 
 ```swift
 // Custom errors
@@ -504,43 +504,48 @@ struct PurchaseResponse: ResponsePayload {
 // Land
 let resourceGameLand = Land("resource-game", using: ResourceGameState.self) {
     Rules {
-        HandleAction(PurchaseAction.self) { state, action, ctx in
-            // Validate player exists
-            guard state.players[action.playerID] != nil else {
-                throw LandError.invalidAction("Player not found")
-            }
-            
-            // Get current resources
-            guard let currentResources = state.resources[action.playerID] else {
-                throw LandError.invalidAction("Player resources not initialized")
-            }
-            
-            // Check if player has enough resources
-            guard currentResources.gold >= action.cost.gold,
-                  currentResources.wood >= action.cost.wood,
-                  currentResources.stone >= action.cost.stone else {
+        HandleAction(PurchaseAction.self,
+            // validate: checks only; a throw refuses the action and nothing is written
+            validate: { (state: ResourceGameState, action: PurchaseAction, ctx: ValidateContext) throws -> ResourceState in
+                // Validate player exists
+                guard state.players[action.playerID] != nil else {
+                    throw GameError.playerNotFound
+                }
+
+                // Get current resources
+                guard let currentResources = state.resources[action.playerID] else {
+                    throw GameError.invalidAction
+                }
+                return currentResources
+            },
+            // apply: writes the state; it can't throw
+            apply: { (state: inout ResourceGameState, action: PurchaseAction, currentResources: ResourceState, ctx: LandContext) -> PurchaseResponse in
+                // Check if player has enough resources (an answer, not a refusal)
+                guard currentResources.gold >= action.cost.gold,
+                      currentResources.wood >= action.cost.wood,
+                      currentResources.stone >= action.cost.stone else {
+                    return PurchaseResponse(
+                        success: false,
+                        message: "Insufficient resources",
+                        newResources: nil
+                    )
+                }
+
+                // Deduct resources
+                var newResources = currentResources
+                newResources.gold -= action.cost.gold
+                newResources.wood -= action.cost.wood
+                newResources.stone -= action.cost.stone
+
+                state.resources[action.playerID] = newResources
+
+                // Return success with updated resources
                 return PurchaseResponse(
-                    success: false,
-                    message: "Insufficient resources",
-                    newResources: nil
+                    success: true,
+                    message: "Purchase successful",
+                    newResources: newResources
                 )
-            }
-            
-            // Deduct resources
-            var newResources = currentResources
-            newResources.gold -= action.cost.gold
-            newResources.wood -= action.cost.wood
-            newResources.stone -= action.cost.stone
-            
-            state.resources[action.playerID] = newResources
-            
-            // Return success with updated resources
-            return PurchaseResponse(
-                success: true,
-                message: "Purchase successful",
-                newResources: newResources
-            )
-        }
+            })
     }
 }
 ```
@@ -596,7 +601,7 @@ let shopLand = Land("shop", using: ShopState.self) {
             resolvers: ProductInfoResolver.self
         ) { state, action, ctx in
             // Resolver has already executed, productInfo is available
-            guard let product = ctx.productInfo else {
+            guard let product: ProductInfo = ctx.productInfo else {
                 return PurchaseResponse(success: false, message: "Product not found")
             }
             

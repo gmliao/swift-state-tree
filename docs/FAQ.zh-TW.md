@@ -145,25 +145,32 @@ Rules {
 
 ### Q: 如何處理錯誤？
 
-A: 在 handler 中拋出錯誤，會被自動包裝成 `ErrorPayload` 回傳給 client：
+A: Handler body 不能拋出錯誤。要拒絕一個 input，就分兩段宣告並在 `validate` 中拋出錯誤：什麼都不寫入、什麼都不發出，`apply` 只在 `validate` 正常回傳時才執行。Action 的呼叫者以 `ErrorPayload`（`ACTION_HANDLER_ERROR`）收到錯誤。Event 與 server input 的錯誤去向請見[兩段式 Handler](core/land-dsl.zh-TW.md#兩段式-handler)。
 
 ```swift
+enum JoinRoomError: Error {
+    case nameRequired
+    case roomFull
+}
+
 Rules {
-    HandleAction(JoinAction.self) { state, action, ctx in
-        // 驗證
-        guard action.playerID != nil else {
-            throw LandError.invalidAction("playerID is required")
-        }
-        
-        // 檢查房間是否已滿
-        if state.players.count >= 4 {
-            throw LandError.joinDenied("Room is full")
-        }
-        
-        // 正常處理
-        state.players[action.playerID] = PlayerState(name: action.name)
-        return JoinResponse(status: "ok")
-    }
+    HandleAction(JoinAction.self,
+        validate: { (state: GameState, action: JoinAction, ctx: ValidateContext) throws in
+            // 驗證：拋出錯誤即拒絕此 action
+            guard !action.name.isEmpty else {
+                throw JoinRoomError.nameRequired
+            }
+
+            // 檢查房間是否已滿
+            if state.players.count >= 4 {
+                throw JoinRoomError.roomFull
+            }
+        },
+        apply: { (state: inout GameState, action: JoinAction, ctx: LandContext) -> JoinResponse in
+            // 正常處理
+            state.players[ctx.playerID] = PlayerState(name: action.name)
+            return JoinResponse(status: "ok")
+        })
 }
 ```
 

@@ -234,7 +234,7 @@ public enum CookieGame {
 
                 // MARK: - Actions
 
-                HandleAction(BuyUpgradeAction.self) { (state: inout CookieGameState, action: BuyUpgradeAction, ctx: LandContext) throws -> BuyUpgradeResponse in
+                HandleAction(BuyUpgradeAction.self) { (state: inout CookieGameState, action: BuyUpgradeAction, ctx: LandContext) -> BuyUpgradeResponse in
                     let playerID = ctx.playerID
 
                     // Ensure player state exists.

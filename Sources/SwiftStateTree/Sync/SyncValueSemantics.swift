@@ -9,11 +9,9 @@ import Foundation
 ///
 /// Everything that compares, copies or diffs state relies on it:
 /// - the typed tables' per-row `==` diff;
-/// - the debug check of a throwing handler's writes (#87), which compares a copy taken before
-///   the handler;
-/// - a rollback of a throwing input.
+/// - replay's state hashes, which compare the replayed state with the live one.
 ///
-/// A write through a shared object escapes all three.
+/// A write through a shared object escapes both.
 ///
 /// The check walks every synced field's type (`.serverOnly` too: it is state the land keeps,
 /// copies and compares) through optionals, dictionary keys and values, array and set elements
@@ -116,7 +114,7 @@ public struct SyncValueSemanticsError: Error, CustomStringConvertible, Equatable
         let lines = violations.map { "- \($0.path): \($0.typeName) is a class; synced state must be value types" }
         return """
         Synced state must be made of value types (#464): a write through a shared object would \
-        escape the diff, the throwing-input check and rollback.
+        escape the diff and replay's state hash.
         \(lines.joined(separator: "\n"))
         Make the type a struct (or an enum), or keep a reference the land doesn't sync in an \
         @Internal field.

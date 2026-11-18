@@ -93,7 +93,7 @@ func testSchemaExtractorBasic() throws {
     ) {
         Rules {
             HandleAction(SimpleAction.self) { (state: inout SimpleState, action: SimpleAction, ctx: LandContext) in
-                return "response"
+                return SimpleActionResponse(value: "response")
             }
         }
     }

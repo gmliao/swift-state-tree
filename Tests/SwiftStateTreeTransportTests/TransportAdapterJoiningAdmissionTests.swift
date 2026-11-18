@@ -71,27 +71,18 @@ private struct Fixture {
     let sent: SentFrames
 }
 
-private enum OnJoinMode { case ok, throwing }
-
-private struct OnJoinFailure: Error {}
-
 private func makeFixture(
     inTurn: Bool,
     tick: Bool = false,
-    onJoin: OnJoinMode = .ok,
     mode: LandMode = .live,
     attachTransport: Bool = true,
     encoding: InTurnEncoding = .json
 ) async -> Fixture {
-    // OnJoin throws only for this player, so a later join of another player shows whether the
-    // failed join's input ran again.
-    let throwingPlayer = onJoin == .throwing ? "bad" : nil
     let definition = tick
         ? Land("joining-admission", using: JoiningAdmissionTestState.self) {
             ServerEvents { Register(JoiningAdmissionTestEvent.self) }
             Rules {
                 OnJoin { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
-                    if ctx.playerID.rawValue == throwingPlayer { throw OnJoinFailure() }
                     state.joins += 1
                 }
             }
@@ -103,7 +94,6 @@ private func makeFixture(
             ServerEvents { Register(JoiningAdmissionTestEvent.self) }
             Rules {
                 OnJoin { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
-                    if ctx.playerID.rawValue == throwingPlayer { throw OnJoinFailure() }
                     state.joins += 1
                 }
             }
@@ -252,41 +242,6 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await fixture.adapter.membershipSessionIDs(for: PlayerID("p1")) == [s1])
     }
 
-    @Test("A join whose tickless OnJoin throws leaves nothing behind, in the adapter or the keeper", arguments: [true, false])
-    func failedJoinAfterAdmissionIsUndone(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, onJoin: .throwing)
-        let adapter = fixture.adapter
-        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("bad")
-        await adapter.onConnect(sessionID: s1, clientID: c1)
-        await #expect(throws: (any Error).self) {
-            _ = try await adapter.performJoin(
-                playerSession: PlayerSession(playerID: p1.rawValue, deviceID: "dev", metadata: [:]),
-                clientID: c1,
-                sessionID: s1,
-                authInfo: nil
-            )
-        }
-        #expect(await adapter.isJoining(s1) == false)
-        #expect(await adapter.membershipSessionIDs(for: p1).isEmpty)
-        #expect(await adapter.getPlayerSlot(for: p1) == nil)
-        // The keeper removed the player (no capacity held, nothing keeps the land alive) and
-        // the failed join's input: the next join doesn't run that OnJoin again.
-        #expect(await fixture.keeper.playerCount() == 0)
-        // The connection itself stays registered: the client can join again on it.
-        #expect(await adapter.isConnected(sessionID: s1))
-        let retry = try await adapter.performJoin(
-            playerSession: PlayerSession(playerID: "retry", deviceID: "dev", metadata: [:]),
-            clientID: c1,
-            sessionID: s1,
-            authInfo: nil
-        )
-        #expect(retry?.playerID == PlayerID("retry"))
-        #expect(await fixture.keeper.playerCount() == 1)
-        _ = try await join(fixture, session: SessionID("s2"), client: ClientID("c2"), player: PlayerID("good"))
-        #expect(await fixture.keeper.playerCount() == 2)
-        #expect(await fixture.keeper.currentState().joins == 2)
-    }
-
     @Test("A disconnect after performJoin returned and before the handover: no firstSync, no per-player state", arguments: [true, false])
     func disconnectBeforeHandover(inTurn: Bool) async throws {
         let fixture = await makeFixture(inTurn: inTurn, tick: true)
@@ -415,72 +370,3 @@ struct TransportAdapterJoiningAdmissionTests {
     }
 }
 
-// MARK: - A failed OnJoin removes only its own entry
-
-/// Holds the first OnJoin resolver call at `gate`; later calls pass. Each output carries its
-/// call index, so OnJoin can fail only the first join.
-private final class HeldJoinResolverControl: @unchecked Sendable {
-    static let shared = HeldJoinResolverControl()
-    let gate = TestGate()
-    private let lock = NSLock()
-    private var calls = 0
-    func nextCall() -> Int {
-        lock.lock(); defer { lock.unlock() }
-        calls += 1
-        return calls - 1
-    }
-}
-
-struct HeldJoinResolver: ContextResolver {
-    typealias Output = HeldJoinResolverOutput
-
-    static func resolve(ctx: ResolverContext) async throws -> HeldJoinResolverOutput {
-        let call = HeldJoinResolverControl.shared.nextCall()
-        if call == 0 {
-            await HeldJoinResolverControl.shared.gate.arrive()
-        }
-        return HeldJoinResolverOutput(call: call)
-    }
-}
-
-struct HeldJoinResolverOutput: ResolverOutput {
-    let call: Int
-}
-
-@Test("A failed OnJoin doesn't remove a later join's entry with the same player, client and session")
-func failedOnJoinKeepsLaterJoinsEntry() async throws {
-    let definition = Land("failed-join-entry", using: JoiningAdmissionTestState.self) {
-        Rules {
-            OnJoin(resolvers: HeldJoinResolver.self) { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
-                // The first join (held, then released) fails; the later one succeeds.
-                if (ctx.heldJoin as HeldJoinResolverOutput?)?.call == 0 { throw OnJoinFailure() }
-                state.joins += 1
-            }
-        }
-    }
-    let keeper = LandKeeper(definition: definition, initialState: JoiningAdmissionTestState(), autoStartLoops: false)
-    let session = PlayerSession(playerID: "p1", deviceID: "dev", metadata: [:])
-    let client = ClientID("c1"), sessionID = SessionID("s1")
-
-    // No resolver deadline: A is held at the gate for as long as the test needs, and the default
-    // 5 s deadline, not A's OnJoin, ended it beside CPU-heavy tests (#447). Tasks created inside
-    // inherit the override.
-    try await ResolverDeadline.$overrideForTesting.withValue(.zero) {
-        // Join A inserts the player, then is held in its OnJoin resolver.
-        let joinA = Task {
-            try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
-        }
-        // Required: if A never arrives, B would make the held first call and wait forever.
-        try #require(await HeldJoinResolverControl.shared.gate.waitForArrivals(1))
-
-        // Join B of the same player, client and session (a reconnect) replaces the entry and completes.
-        _ = try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
-        #expect(await keeper.playerCount() == 1)
-        #expect(await keeper.currentState().joins == 1)
-
-        // A is released and its OnJoin throws: B's entry stays.
-        HeldJoinResolverControl.shared.gate.open()
-        await #expect(throws: OnJoinFailure.self) { _ = try await joinA.value }
-        #expect(await keeper.playerCount() == 1)
-    }
-}

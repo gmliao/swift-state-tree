@@ -330,6 +330,8 @@ Rules {
 
 建議在 Guest 模式下實施一些限制：
 
+Handler body 不能拋出錯誤，因此 guest 檢查放在 action 的 `validate` 中（[兩段式 Handler](../core/land-dsl.zh-TW.md#兩段式-handler)）。
+
 ```swift
 struct GuestNotAllowed: Error {}
 
@@ -343,13 +345,17 @@ Rules {
         return .allow(playerID: PlayerID(session.playerID))
     }
     
-    HandleAction(PremiumAction.self) { state, action, ctx in
-        // Guest players cannot perform certain actions
-        if state.players[ctx.playerID]?.isGuest == true {
-            throw GuestNotAllowed()
-        }
-        // Normal processing...
-    }
+    HandleAction(PremiumAction.self,
+        validate: { (state: GameState, action: PremiumAction, ctx: ValidateContext) throws in
+            // Guest players cannot perform certain actions; the throw refuses it, nothing is written
+            if ctx.isGuest {
+                throw GuestNotAllowed()
+            }
+        },
+        apply: { (state: inout GameState, action: PremiumAction, ctx: LandContext) -> PremiumResponse in
+            // Normal processing...
+            return PremiumResponse()
+        })
 }
 ```
 

@@ -29,7 +29,7 @@ related:
 Both positional message encoders (`OpcodeTransportMessageEncoder`, `MessagePackTransportMessageEncoder`) unwrap a payload from its `AnyCodable` box and cast it, `base as? any PayloadCompression`. Their fallback branch, for a value that isn't a payload type, was a `fatalError`. Three paths reach it:
 - a live land's `emitAnyServerEvent` with a dictionary, an array or a primitive payload (#544);
 - the replay land's re-emit of a recorded event under `.projectedWithFallback` (#538). A record's payload is JSON-decoded into `AnyCodable`, so its base is `[String: Any]`;
-- an action response whose handler body returns a dictionary or a primitive: `HandleAction`'s body returns any `Codable & Sendable` value (#561), and the public `AnyActionHandler` takes any `AnyCodable`.
+- an action response that is a dictionary or a primitive: before #586 `HandleAction`'s body returned any `Codable & Sendable` value (#561) and the public `AnyActionHandler` took any `AnyCodable`; now only the package-level type-erased init can build one.
 
 On a compressed encoding (`messagepack`, the default, or `opcodeJsonArray`), either one ended the server process, and every land on it.
 

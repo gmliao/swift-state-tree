@@ -161,16 +161,21 @@ struct UntypedResponseReply: ResponsePayload {
     let count: Int
 }
 
-/// A tickless land whose action handler returns a dictionary, not its declared response type: the
-/// body's result is any `Codable & Sendable` value (#561).
+/// A tickless land whose action handler answers with a dictionary, not its declared response type.
+/// Every public way to declare a handler returns the action's `Response` (#561, #586), so only the
+/// package-level type-erased init can build one.
 func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
-    Land("untyped-response", using: UntypedPayloadState.self) {
-        Rules {
-            HandleAction(UntypedResponseAction.self) { (state: inout UntypedPayloadState, _: UntypedResponseAction, _: LandContext) in
-                state.round += 1
-                return ["hp": 3] as [String: Int]
-            }
-        }
+    let untyped = AnyActionHandler<UntypedPayloadState>(
+        type: UntypedResponseAction.self,
+        responseType: UntypedResponseReply.self,
+        invoke: { state, _, _ in
+            state.round += 1
+            return AnyCodable(["hp": 3] as [String: Int])
+        },
+        resolverExecutors: []
+    )
+    return Land("untyped-response", using: UntypedPayloadState.self) {
+        Rules { untyped }
     }
 }
 

@@ -16,9 +16,6 @@ struct RouterTestState: StateNodeProtocol {
     var players: [PlayerID: String] = [:]
 }
 
-/// OnJoin of player `bad-join` throws it.
-struct RouterTestJoinFailure: Error {}
-
 // MARK: - Tests
 
 @Suite("LandRouter Tests")
@@ -38,7 +35,6 @@ struct LandRouterTests {
                  return Land("basic-test", using: RouterTestState.self) {
                     Rules {
                         OnJoin { (state: inout RouterTestState, ctx: LandContext) in
-                            if ctx.playerID.rawValue == "bad-join" { throw RouterTestJoinFailure() }
                             state.players[ctx.playerID] = "Joined"
                         }
 
@@ -1008,14 +1004,6 @@ struct LandRouterJoinFlipFailureTests {
         }
         #expect(cleaned, "the failed join left adapter membership or a keeper player behind")
         #expect(await adapter.isJoined(sessionID: SessionID("sess-1")), "the member stays")
-    }
-
-    @Test("OnJoin throws: no membership, joining record or keeper player is left")
-    func onJoinFailedIsCleanedUp() async throws {
-        let (router, container) = try await makeLand()
-        try await joinSecond(router, container, player: "bad-join")
-        await expectCleanedUp(container, player: "bad-join")
-        #expect(await container.transportAdapter.inTurnJoinFailures[.onJoinFailed] == 1)
     }
 
     @Test("Timeout: OnJoin ran, and the cleanup removes the player through OnLeave")

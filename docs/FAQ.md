@@ -145,25 +145,32 @@ Rules {
 
 ### Q: How do I handle errors?
 
-A: Throw errors in handlers, they will be automatically wrapped as `ErrorPayload` and returned to client:
+A: Handler bodies can't throw. To refuse an input, declare it in two stages and throw from `validate`: nothing is written and nothing is emitted, and `apply` runs only when `validate` returns. An action's caller gets the error as an `ErrorPayload` (`ACTION_HANDLER_ERROR`). Where an event's or a server input's error goes is described in [Two-Phase Handlers](core/land-dsl.md#two-phase-handlers).
 
 ```swift
+enum JoinRoomError: Error {
+    case nameRequired
+    case roomFull
+}
+
 Rules {
-    HandleAction(JoinAction.self) { state, action, ctx in
-        // Validation
-        guard action.playerID != nil else {
-            throw LandError.invalidAction("playerID is required")
-        }
-        
-        // Check if room is full
-        if state.players.count >= 4 {
-            throw LandError.joinDenied("Room is full")
-        }
-        
-        // Normal processing
-        state.players[action.playerID] = PlayerState(name: action.name)
-        return JoinResponse(status: "ok")
-    }
+    HandleAction(JoinAction.self,
+        validate: { (state: GameState, action: JoinAction, ctx: ValidateContext) throws in
+            // Validation: a throw refuses the action
+            guard !action.name.isEmpty else {
+                throw JoinRoomError.nameRequired
+            }
+
+            // Check if room is full
+            if state.players.count >= 4 {
+                throw JoinRoomError.roomFull
+            }
+        },
+        apply: { (state: inout GameState, action: JoinAction, ctx: LandContext) -> JoinResponse in
+            // Normal processing
+            state.players[ctx.playerID] = PlayerState(name: action.name)
+            return JoinResponse(status: "ok")
+        })
 }
 ```
 

@@ -167,10 +167,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let metadata: [String: String]
         public let resolverOutputs: [String: any ResolverOutput]
         public let resolvedAtTick: Int64
-        /// For a join's OnJoin: the generation of the player entry that join inserted (`nil`
-        /// otherwise, and in replay). A failed OnJoin removes the entry only while it is still
-        /// that generation (`discardIfFailedJoin`).
-        public let entryGeneration: Epoch?
 
         public init(
             sequence: Int64,
@@ -182,8 +178,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             isGuest: Bool?,
             metadata: [String: String],
             resolverOutputs: [String: any ResolverOutput],
-            resolvedAtTick: Int64,
-            entryGeneration: Epoch? = nil
+            resolvedAtTick: Int64
         ) {
             self.sequence = sequence
             self.kind = kind
@@ -195,7 +190,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             self.metadata = metadata
             self.resolverOutputs = resolverOutputs
             self.resolvedAtTick = resolvedAtTick
-            self.entryGeneration = entryGeneration
         }
     }
 
@@ -972,7 +966,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: resolverOutputs
         )
         do {
-            try withMutableStateSync(throwWriteInput: nil) { state in
+            try withMutableStateSync { state in
                 try handler(&state, ctx)
             }
         } catch {
@@ -990,7 +984,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// The exemption is defensive: today no shutdown reaches a running initialization.
     /// `forceShutdown` waits for it, the empty-room timer is scheduled only after a leave or a
-    /// failed join (both wait for it), and nothing cancels the initialization's task.
+    /// join that didn't complete (both wait for it), and nothing cancels the initialization's task.
     static func initializeResolverFailureFailsLand(
         _ error: any Error,
         policy: InitializeResolverFailure,
@@ -1002,12 +996,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private func performInitialization() async {
         // The backstop for a keeper no registration checked (#535 §4): a state type that fails
-        // the synced-state rows fails initialization, as an OnInitialize resolver timeout does,
-        // before any handler runs. One cached lookup per state type.
+        // the synced-state rows, or a definition with two handlers for one client-event or
+        // server-input type (#586), fails initialization, as an OnInitialize resolver timeout
+        // does, before any handler runs. One cached lookup per state type.
         let problems = SyncRegistration.cachedProblems(State.self)
-        if !problems.isEmpty {
-            let error = LandRegistrationError(landType: definition.id, payload: nil, sync: SyncRegistrationError(problems: problems))
-            logger.error("❌ The land's state type fails the registration check: the land is torn down", metadata: [
+        if !problems.isEmpty || !definition.duplicateHandlers.isEmpty {
+            let error = LandRegistrationError(
+                landType: definition.id,
+                payload: nil,
+                sync: problems.isEmpty ? nil : SyncRegistrationError(problems: problems),
+                duplicateHandlers: definition.duplicateHandlers
+            )
+            logger.error("❌ The land fails the registration check: the land is torn down", metadata: [
                 "error": .string(error.description),
             ])
             initializationFailure = LandInitializationError(underlying: error)
@@ -1081,7 +1081,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             do {
                 // The land runs on with the state OnInitialize left: the check applies.
-                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnInitialize", sequence: sequence)) { state in
+                try withMutableStateSync { state in
                     try handler(&state, ctx)
                 }
             } catch {
@@ -1532,8 +1532,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: session.isGuest,
                 metadata: session.metadata,
                 resolverOutputs: resolverOutputs,
-                resolvedAtTick: resolvedAtTick,
-                entryGeneration: entryGeneration
+                resolvedAtTick: resolvedAtTick
             )
         )
         pendingItems.append(pendingItem)
@@ -1761,8 +1760,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 isGuest: session.isGuest,
                 metadata: session.metadata,
                 resolverOutputs: resolverOutputs,
-                resolvedAtTick: resolvedAtTick,
-                entryGeneration: entryGeneration
+                resolvedAtTick: resolvedAtTick
             )
         )
         pendingItems.append(pendingItem)
@@ -1787,27 +1785,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         return JoinOutcome(decision: decision, admitted: admitted)
-    }
-
-    /// Called in the segment where `item`'s handler threw. A join whose OnJoin threw never
-    /// completed: its input is removed (so no later pass runs that OnJoin again for a player that
-    /// isn't there) and so is the player it inserted, without OnLeave, so the failed join holds
-    /// no capacity and doesn't keep the land alive. The player is removed only if it is still
-    /// that join's entry (its `generation`). OnJoin's partial state changes are not rolled back (no per-input
-    /// savepoints, #87).
-    private func discardIfFailedJoin(_ item: PendingItem) {
-        guard case let .lifecycle(lifecycle) = item, lifecycle.kind == .join,
-              let playerID = lifecycle.playerID else { return }
-        pendingItems.removeAll { $0.sequence == lifecycle.sequence }
-        if let session = players[playerID], let generation = lifecycle.entryGeneration,
-           session.generation == generation {
-            players.removeValue(forKey: playerID)
-            scheduleDestroyIfNeeded()
-        }
-        logger.warning("OnJoin threw: the join's input and player were removed", metadata: [
-            "playerID": .string(playerID.rawValue),
-            "sessionID": .string(lifecycle.sessionID?.rawValue ?? "nil"),
-        ])
     }
 
     /// The transport's admission of a joining session, only on the in-turn path (the transport
@@ -2914,12 +2891,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             throw LandError.eventNotRegistered
         }
 
-        // Find handlers that can handle this event type
-        let matchingHandlers = definition.eventHandlers.filter { handler in
-            handler.canHandle(descriptor.type)
-        }
-
-        guard !matchingHandlers.isEmpty else {
+        // One handler per event type (#586).
+        guard definition.eventHandlers.contains(where: { $0.canHandle(descriptor.type) }) else {
             logger.error(
                 "No handler found for client event type '\(event.type)'",
                 metadata: [
@@ -3010,8 +2983,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let typeIdentifier = String(describing: type(of: input))
         // Declared by identity, not by name alone: a same-named type from another module or
         // scope isn't the declared one.
-        guard let handlers = definition.serverInputHandlers[typeIdentifier],
-              handlers.contains(where: { ObjectIdentifier($0.inputType) == ObjectIdentifier(type(of: input)) })
+        guard let handler = definition.serverInputHandlers[typeIdentifier],
+              ObjectIdentifier(handler.inputType) == ObjectIdentifier(type(of: input))
         else { return .refused(.unknownType) }
         guard !isDraining else { return .refused(.draining) }
         // Live applies the form the record holds, so replay applies the same value (#387).
@@ -3167,78 +3140,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
     /// suspend and the actor's state is mutated directly.
     ///
-    /// A handler that throws keeps what it wrote before the throw (#87). `throwWriteInput` names
-    /// the input (`"action <type>"`, `"OnJoin"`, ...) and its sequence when that matters: in
-    /// debug builds a live
-    /// land then keeps a copy of the state before the handler and, if the handler throws,
-    /// compares the synced state with it and warns once per key when the handler wrote
-    /// (`warnIfThrowWrote`). `nil` skips the check (replay, or a handler whose state nothing
-    /// reads afterwards). Release builds never copy, and never build the input's name.
-    private func withMutableStateSync<R>(
-        throwWriteInput: @autoclosure () -> ThrowWriteInput?,
-        _ body: (inout State) throws -> R
-    ) rethrows -> R {
-        #if DEBUG
-        if warnsThrowingInputWrites, mode == .live, let input = throwWriteInput(),
-           !throwWriteWarnedKeys.contains(input.key) {
-            // Copy-on-write: this retains the state's storage; the handler's first write to a
-            // container then copies that container (debug builds only).
-            let before = state
-            do {
-                return try body(&state)
-            } catch {
-                warnIfThrowWrote(input, before: before, error: error)
-                throw error
-            }
-        }
-        #endif
-        return try body(&state)
-    }
-
-    #if DEBUG
-    /// Keys that already warned (`withMutableStateSync`): each warns once per keeper, and is
-    /// not checked again.
-    private var throwWriteWarnedKeys: Set<String> = []
-
-    /// Warns when a handler that threw changed the synced state (`fullStateSnapshot`, which
-    /// leaves out `@Internal` fields) before the throw.
-    private func warnIfThrowWrote(_ input: ThrowWriteInput, before: State, error: any Error) {
-        let changed: Bool
-        do {
-            changed = try before.fullStateSnapshot() != state.fullStateSnapshot()
-        } catch {
-            logger.debug("Throwing-input write check skipped: the state snapshot failed", metadata: [
-                "input": .string(input.key),
-                "error": .string(String(describing: error)),
-            ])
-            return
-        }
-        guard changed else { return }
-        throwWriteWarnedKeys.insert(input.key)
-        var metadata: Logger.Metadata = [
-            "landID": .string(actualLandID ?? definition.id),
-            "input": .string(input.key),
-            "error": .string(String(describing: error)),
-        ]
-        if let sequence = input.sequence { metadata["sequence"] = .stringConvertible(sequence) }
-        logger.warning(
-            "A handler threw after writing state; its writes are kept and synced. Validate before you mutate (#87). Logged once per input type in debug builds.",
-            metadata: metadata
-        )
-    }
-    #endif
-
-    /// Whether debug builds check a throwing handler for writes (`withMutableStateSync`):
-    /// `EnvKeys.Debug.warnThrowingInputWrites`, default on. Release builds don't read it.
-    #if DEBUG
-    private var warnsThrowingInputWrites = ThrowingInputWriteCheck.isEnabled()
-    #else
-    private var warnsThrowingInputWrites = false
-    #endif
-
-    /// Tests only: turns the throwing-input write check on or off for this keeper.
-    func setWarnsThrowingInputWritesForTesting(_ enabled: Bool) {
-        warnsThrowingInputWrites = enabled
+    /// Input handlers throw only from `validate`, before they write (#586). A lifecycle handler
+    /// that still throws (OnInitialize, the destroy-phase handlers) keeps what it wrote before
+    /// the throw (#87).
+    private func withMutableStateSync<R>(_ body: (inout State) throws -> R) rethrows -> R {
+        try body(&state)
     }
 
     // MARK: - Tick & Lifetime
@@ -3344,6 +3250,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var appliedOrder: [Int64] = []
         /// A leave ran: the legacy path follows with a broadcast-only sync.
         var shouldSyncBroadcastOnly = false
+        /// The inputs whose handler refused them (`validate` threw), in apply order (#586).
+        var rejected: [Int64] = []
 
         init(executingTickId: Int64) {
             self.executingTickId = executingTickId
@@ -3413,8 +3321,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Applies one pending item to the state (synchronous) and appends its record to `applied`.
-    /// The record is appended before the handler runs, so an item whose handler throws is
-    /// recorded too (replay fails it the same way); the error propagates to `applyInputs`.
+    /// The record is appended before the handler runs, so an item whose `validate` throws is
+    /// recorded too (replay refuses it the same way); the error propagates to `applyInputs`.
     private func applyPendingItem(
         _ item: PendingItem,
         executingTickId: Int64,
@@ -3425,14 +3333,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if case .serverInput = item, serverInputsInFlight > 0 {
             serverInputsInFlight -= 1
         }
-        // Every append path checks `isDraining`; this guard keeps the guarantee if one doesn't.
-        guard !destroyHandlersStarted else {
-            inputsSkippedAfterDestroy += 1
-            logger.error("Input skipped: the land's destroy handlers have started", metadata: [
-                "sequence": .stringConvertible(item.sequence),
-            ])
-            return .skipped
-        }
+        if skipsAfterDestroy(item) { return .skipped }
         switch item {
         case let .action(actionItem):
             // Find handler for this action type
@@ -3459,7 +3360,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverOutputs: actionItem.resolverOutputs
             )
 
-            // Recorded before the handler runs: an input whose handler throws is recorded too, so
+            // Recorded before the handler runs: an input whose `validate` throws is recorded too, so
             // replay runs it again and it fails the same way (`applyInputs`).
             let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
                 ReevaluationRecordedResolverOutput(
@@ -3482,9 +3383,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedAction.sequence)
 
             // Execute handler and capture response
-            let response = try withMutableStateSync(
-                throwWriteInput: ThrowWriteInput("action \(String(describing: actionItem.actionType))", sequence: actionItem.sequence)
-            ) { state in
+            // Throws only from the type check or `validate`, before anything is written (#586).
+            let response = try withMutableStateSync { state in
                 try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
@@ -3500,11 +3400,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return .skipped
             }
 
-            let matchingHandlers = definition.eventHandlers.filter { handler in
-                handler.canHandle(descriptor.type)
-            }
-
-            guard !matchingHandlers.isEmpty else {
+            // One handler per event type (#586).
+            guard let handler = definition.eventHandlers.first(where: { $0.canHandle(descriptor.type) }) else {
                 logger.error("No handler found for client event", metadata: [
                     "eventType": .string(eventItem.event.type),
                 ])
@@ -3534,15 +3431,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.recordedClientEvents.append(recordedClientEvent)
             applied.appliedOrder.append(recordedClientEvent.sequence)
 
-            // Execute handlers
-            try withMutableStateSync(throwWriteInput: ThrowWriteInput("event \(eventItem.event.type)", sequence: eventItem.sequence)) { state in
-                for handler in matchingHandlers {
-                    try handler.invoke(&state, event: eventItem.event, ctx: ctx)
-                }
+            // Throws only from `validate`, before anything is written (#586).
+            try withMutableStateSync { state in
+                try handler.invoke(&state, event: eventItem.event, ctx: ctx)
             }
 
         case let .serverInput(inputItem):
-            guard let handlers = definition.serverInputHandlers[inputItem.typeIdentifier] else {
+            guard let handler = definition.serverInputHandlers[inputItem.typeIdentifier] else {
                 // Only replay gets here: live refuses an undeclared type at submit.
                 logger.warning("Server input skipped: the land declares no handler for its type", metadata: [
                     "inputType": .string(inputItem.typeIdentifier),
@@ -3565,12 +3460,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            try withMutableStateSync(
-                throwWriteInput: ThrowWriteInput("serverInput \(inputItem.typeIdentifier)", sequence: inputItem.sequence)
-            ) { state in
-                for handler in handlers {
-                    try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
-                }
+            // Throws only from the decode or `validate`, before anything is written (#586).
+            try withMutableStateSync { state in
+                try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
             }
 
         case .landFailure:
@@ -3600,99 +3492,125 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if mode == .live { players.removeAll() }
 
         case let .lifecycle(lifecycleItem):
-            // Recorded before the handler runs (see the action case).
-            let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
-                ReevaluationRecordedResolverOutput(
-                    typeIdentifier: String(describing: type(of: output)),
-                    value: AnyCodable(output)
-                )
-            }
-            let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
-                kind: lifecycleItem.kind.rawValue,
-                sequence: lifecycleItem.sequence,
+            applyLifecycleItem(lifecycleItem, executingTickId: executingTickId, into: &applied)
+        }
+        return .other
+    }
+
+    /// Skips `item` once the destroy handlers have started. Every append path checks
+    /// `isDraining`; this guard keeps the guarantee if one doesn't.
+    private func skipsAfterDestroy(_ item: PendingItem) -> Bool {
+        guard destroyHandlersStarted else { return false }
+        inputsSkippedAfterDestroy += 1
+        logger.error("Input skipped: the land's destroy handlers have started", metadata: [
+            "sequence": .stringConvertible(item.sequence),
+        ])
+        return true
+    }
+
+    /// Applies a lifecycle input: recorded, then its handler. It can't fail: OnJoin and OnLeave
+    /// don't throw (#586), and a replayed OnInitialize that throws is logged here.
+    private func applyLifecycleItem(_ lifecycleItem: PendingLifecycleItem, executingTickId: Int64, into applied: inout AppliedInputs) {
+        if skipsAfterDestroy(.lifecycle(lifecycleItem)) { return }
+        // Recorded before the handler runs (see the action case).
+        let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
+            ReevaluationRecordedResolverOutput(
+                typeIdentifier: String(describing: type(of: output)),
+                value: AnyCodable(output)
+            )
+        }
+        let recordedLifecycleEvent = ReevaluationRecordedLifecycleEvent(
+            kind: lifecycleItem.kind.rawValue,
+            sequence: lifecycleItem.sequence,
+            tickId: executingTickId,
+            playerID: lifecycleItem.playerID?.rawValue,
+            clientID: lifecycleItem.clientID?.rawValue,
+            sessionID: lifecycleItem.sessionID?.rawValue,
+            deviceID: lifecycleItem.deviceID,
+            isGuest: lifecycleItem.isGuest,
+            metadata: lifecycleItem.metadata,
+            resolverOutputs: resolverOutputsDict,
+            resolvedAtTick: lifecycleItem.resolvedAtTick
+        )
+        applied.recordedLifecycleEvents.append(recordedLifecycleEvent)
+        applied.appliedOrder.append(recordedLifecycleEvent.sequence)
+
+        switch lifecycleItem.kind {
+        case .initialize:
+            guard let handler = definition.lifetimeHandlers.onInitialize,
+                  !replayedInitializeBeforeTickZero else { break }
+            let ctx = makeContext(
+                playerID: systemPlayerID,
+                clientID: systemClientID,
+                sessionID: systemSessionID,
                 tickId: executingTickId,
-                playerID: lifecycleItem.playerID?.rawValue,
-                clientID: lifecycleItem.clientID?.rawValue,
-                sessionID: lifecycleItem.sessionID?.rawValue,
+                resolverOutputs: lifecycleItem.resolverOutputs
+            )
+            // Execute handler synchronously (resolver outputs already injected). Only
+            // re-evaluation queues an initialize item, so the check (live only) never runs.
+            // OnInitialize can still throw; it fails alone, as before, keeping its writes (#87).
+            let sequenceBefore = outputCollector.nextSequence
+            do {
+                try withMutableStateSync { state in
+                    try handler(&state, ctx)
+                }
+            } catch {
+                outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
+                logger.error("❌ OnInitialize handler failed during re-evaluation", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+            }
+        case .join:
+            guard
+                let playerID = lifecycleItem.playerID,
+                let clientID = lifecycleItem.clientID,
+                let sessionID = lifecycleItem.sessionID,
+                let handler = definition.lifetimeHandlers.onJoin
+            else { break }
+            let ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
                 deviceID: lifecycleItem.deviceID,
                 isGuest: lifecycleItem.isGuest,
                 metadata: lifecycleItem.metadata,
-                resolverOutputs: resolverOutputsDict,
-                resolvedAtTick: lifecycleItem.resolvedAtTick
+                tickId: executingTickId,
+                resolverOutputs: lifecycleItem.resolverOutputs
             )
-            applied.recordedLifecycleEvents.append(recordedLifecycleEvent)
-            applied.appliedOrder.append(recordedLifecycleEvent.sequence)
-
-            switch lifecycleItem.kind {
-            case .initialize:
-                guard let handler = definition.lifetimeHandlers.onInitialize,
-                      !replayedInitializeBeforeTickZero else { break }
-                let ctx = makeContext(
-                    playerID: systemPlayerID,
-                    clientID: systemClientID,
-                    sessionID: systemSessionID,
-                    tickId: executingTickId,
-                    resolverOutputs: lifecycleItem.resolverOutputs
-                )
-                // Execute handler synchronously (resolver outputs already injected). Only
-                // re-evaluation queues an initialize item, so the check (live only) never runs.
-                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnInitialize", sequence: lifecycleItem.sequence)) { state in
-                    try handler(&state, ctx)
-                }
-            case .join:
-                guard
-                    let playerID = lifecycleItem.playerID,
-                    let clientID = lifecycleItem.clientID,
-                    let sessionID = lifecycleItem.sessionID,
-                    let handler = definition.lifetimeHandlers.onJoin
-                else { break }
-                let ctx = makeContext(
-                    playerID: playerID,
-                    clientID: clientID,
-                    sessionID: sessionID,
-                    deviceID: lifecycleItem.deviceID,
-                    isGuest: lifecycleItem.isGuest,
-                    metadata: lifecycleItem.metadata,
-                    tickId: executingTickId,
-                    resolverOutputs: lifecycleItem.resolverOutputs
-                )
-                // A discarded join's writes stay and reach the other players: checked.
-                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnJoin", sequence: lifecycleItem.sequence)) { state in
-                    try handler(&state, ctx)
-                }
-            case .leave:
-                guard
-                    let playerID = lifecycleItem.playerID,
-                    let clientID = lifecycleItem.clientID,
-                    let sessionID = lifecycleItem.sessionID,
-                    let handler = definition.lifetimeHandlers.onLeave
-                else { break }
-                let ctx = makeContext(
-                    playerID: playerID,
-                    clientID: clientID,
-                    sessionID: sessionID,
-                    deviceID: lifecycleItem.deviceID,
-                    isGuest: lifecycleItem.isGuest,
-                    metadata: lifecycleItem.metadata,
-                    tickId: executingTickId,
-                    resolverOutputs: lifecycleItem.resolverOutputs
-                )
-                // The player is gone whether OnLeave succeeds or throws: the broadcast-only sync
-                // follows the pass either way. Deferred until after the pending items' removal.
-                applied.shouldSyncBroadcastOnly = true
-                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnLeave", sequence: lifecycleItem.sequence)) { state in
-                    try handler(&state, ctx)
-                }
+            withMutableStateSync { state in
+                handler(&state, ctx)
+            }
+        case .leave:
+            guard
+                let playerID = lifecycleItem.playerID,
+                let clientID = lifecycleItem.clientID,
+                let sessionID = lifecycleItem.sessionID,
+                let handler = definition.lifetimeHandlers.onLeave
+            else { break }
+            let ctx = makeContext(
+                playerID: playerID,
+                clientID: clientID,
+                sessionID: sessionID,
+                deviceID: lifecycleItem.deviceID,
+                isGuest: lifecycleItem.isGuest,
+                metadata: lifecycleItem.metadata,
+                tickId: executingTickId,
+                resolverOutputs: lifecycleItem.resolverOutputs
+            )
+            // The player is gone: the broadcast-only sync follows the pass, deferred until after
+            // the pending items' removal.
+            applied.shouldSyncBroadcastOnly = true
+            withMutableStateSync { state in
+                handler(&state, ctx)
             }
         }
-        return .other
     }
 
     /// Applies the pending inputs that are ready (the legacy path: in-turn sync off, or a tick
     /// land's tick), in order (`applyInputs`), then records them, runs the broadcast-only sync a
     /// leave asks for, and flushes the outputs.
     ///
-    /// An input whose handler throws fails alone and the pass goes on (`applyInputs`). Each
+    /// An input whose `validate` throws fails alone and the pass goes on (`applyInputs`). Each
     /// input's outcome is kept by sequence for the off-path caller waiting for it
     /// (`runLegacyPass`), not returned: one pass can apply several callers' inputs (#88).
     /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
@@ -3744,7 +3662,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 actions: recordedActions,
                 clientEvents: recordedClientEvents,
                 lifecycleEvents: recordedLifecycleEvents,
-                serverInputs: recordedServerInputs
+                serverInputs: recordedServerInputs,
+                // A tickless land records them on its pass instead (#586).
+                rejected: isTickless ? [] : applied.rejected
             )
 
             // Flush if needed
@@ -3802,7 +3722,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if !applied.isEmpty || !events.isEmpty {
                 var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: events)
                 if !applied.appliedOrder.isEmpty {
-                    record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal)]
+                    record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal, rejected: applied.rejected.isEmpty ? nil : applied.rejected)]
                 }
                 submission = enqueueRecorderSubmission(record, endsTurn: true)
             } else {
@@ -3882,16 +3802,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Applies `items` in order (synchronous), on every path (legacy pass, in-turn input turn,
     /// in-turn tick turn), and removes them all from the queue in the same segment.
     ///
-    /// An input P whose handler throws fails alone: its outcome is its error (its caller gets
-    /// it), the events it emitted are dropped, a failed join is discarded
-    /// (`discardIfFailedJoin`), and the inputs after it continue in the same pass with their own
-    /// outcomes. P is not run again and blocks nothing. P is recorded like the others, in order
-    /// (`applyPendingItem` records before the handler runs), so replay runs it again and it
-    /// fails the same way. What P wrote to the state before it threw stays and goes out with the
-    /// next sync like any other change (undoing it needs a per-input savepoint, #87). A throwing
-    /// OnLeave is such a case: the keeper has already removed the player and the broadcast-only
-    /// sync still runs, but whatever OnLeave would have cleaned up after the throw (say, the
-    /// player's entry in the state) stays in the state and is broadcast as it is.
+    /// An input P whose `validate` throws (or whose payload doesn't decode) is refused alone
+    /// (#586): its outcome is its error (its caller gets it), and the inputs after it continue in
+    /// the same pass with their own outcomes. P wrote nothing and emitted nothing: handlers throw
+    /// only before they write. P is not run again and blocks nothing. P is recorded like the
+    /// others, in order (`applyPendingItem` records before the handler runs), and listed as
+    /// rejected (`AppliedInputs.rejected`, record format 3.5), so replay runs it again and checks
+    /// it is refused the same way. Lifecycle inputs can't fail: OnJoin and OnLeave don't throw.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
@@ -3909,22 +3826,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 appliedFailure = failureItem.failure
                 break
             }
-            let sequenceBefore = outputCollector.nextSequence
-            let isJoin: Bool
-            if case let .lifecycle(lifecycle) = item, lifecycle.kind == .join { isJoin = true } else { isJoin = false }
+            // A lifecycle input can't fail: OnJoin and OnLeave don't throw (#586).
+            if case let .lifecycle(lifecycle) = item {
+                applyLifecycleItem(lifecycle, executingTickId: executingTickId, into: &applied)
+                if lifecycle.kind == .join { joinResults.append(JoinInputResult(sequence: item.sequence)) }
+                outcomes[item.sequence] = .success(AnyCodable(()))
+                continue
+            }
             do {
                 switch try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
                 case .action(let response): outcomes[item.sequence] = .success(response)
                 case .other, .skipped: outcomes[item.sequence] = .success(AnyCodable(()))
                 }
-                if isJoin { joinResults.append(JoinInputResult(sequence: item.sequence, failed: false)) }
             } catch {
-                if isJoin { joinResults.append(JoinInputResult(sequence: item.sequence, failed: true)) }
+                // Thrown by `validate` (or a payload check) before anything was written (#586).
                 failureCount += 1
                 outcomes[item.sequence] = .failure(error)
-                outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
-                discardIfFailedJoin(item)
-                logger.error("Input failed: its handler threw; the inputs after it continue", metadata: [
+                // Listed only when it was recorded: a payload that doesn't decode throws before its
+                // record, and the rejected list names recorded inputs only.
+                if applied.appliedOrder.last == item.sequence {
+                    applied.rejected.append(item.sequence)
+                    if mode == .reevaluation { replayRejected.append(item.sequence) }
+                }
+                logger.error("Input refused: its validate threw; the inputs after it continue", metadata: [
                     "sequence": .stringConvertible(item.sequence),
                     "error": .string(String(describing: error)),
                 ])
@@ -3997,6 +3921,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 mismatch = "pass \(index) starts at sequence \(pass.sequenceBefore), before the previous pass's \(previousWatermark)"
             }
             previousWatermark = pass.sequenceBefore
+            if mismatch == nil, replayRecordsRejected, let rejected = pass.rejected {
+                mismatch = Self.malformedRejected(rejected, inputs: Set(pass.inputs), scope: "pass \(index)")
+            }
             for sequence in pass.inputs where mismatch == nil {
                 if bySequence[sequence] == nil {
                     mismatch = "pass \(index) names sequence \(sequence), which is not a recorded input of the tick"
@@ -4034,7 +3961,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if mismatch != nil { break }
             // No await between the restore and the turn: the turn numbers from the watermark.
             restoreSequenceWatermark(pass.sequenceBefore, tickId: tickId, point: "pass")
+            _ = takeReplayRejected()
             let outcome = runInputTurn(batch, removingFromQueue: false)
+            let replayedRejected = takeReplayRejected()
+            if replayRecordsRejected,
+               let divergence = Self.rejectedDivergence(recorded: pass.rejected ?? [], replayed: replayedRejected) {
+                mismatch = "pass \(index): \(divergence)"
+            }
             if outcome.syncBroadcastOnly { syncBroadcastOnly = true }
             // Live, a failure applied as an input in this pass ended it there: its inputs'
             // events were never sent, so the replayed pass sends none either (#535 D9).
@@ -4085,6 +4018,50 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Sets `replayRecordsPassOrdinals` from the record's version (re-evaluation only).
     package func setReplayRecordsPassOrdinals(_ value: Bool) {
         replayRecordsPassOrdinals = value
+    }
+
+    /// Re-evaluation: the record is 3.5 or later, so its passes and tick frames list the inputs
+    /// refused live (`rejected`, #586), and a missing list means none was.
+    private var replayRecordsRejected = false
+
+    /// Sets `replayRecordsRejected` from the record's version (re-evaluation only).
+    package func setReplayRecordsRejected(_ value: Bool) {
+        replayRecordsRejected = value
+    }
+
+    /// Re-evaluation: the inputs refused since the last `takeReplayRejected()`, in apply order.
+    private var replayRejected: [Int64] = []
+
+    private func takeReplayRejected() -> [Int64] {
+        defer { replayRejected = [] }
+        return replayRejected
+    }
+
+    /// Why a recorded `rejected` list is malformed for inputs `inputs` (#586): it names an input
+    /// that isn't one of them, or one twice. Nil when it's well formed.
+    private static func malformedRejected(_ rejected: [Int64], inputs: Set<Int64>, scope: String) -> String? {
+        var seen: Set<Int64> = []
+        for sequence in rejected {
+            if !inputs.contains(sequence) {
+                return "\(scope) lists sequence \(sequence) as rejected, which is not one of its inputs"
+            }
+            if !seen.insert(sequence).inserted {
+                return "\(scope) lists sequence \(sequence) as rejected more than once"
+            }
+        }
+        return nil
+    }
+
+    /// How the inputs refused in replay differ from those refused live (#586), or nil.
+    private static func rejectedDivergence(recorded: [Int64], replayed: [Int64]) -> String? {
+        let live = Set(recorded), again = Set(replayed)
+        if let sequence = live.subtracting(again).min() {
+            return "input \(sequence) was rejected live and applied in replay"
+        }
+        if let sequence = again.subtracting(live).min() {
+            return "input \(sequence) was applied live and rejected in replay"
+        }
+        return nil
     }
 
     /// Installs `replayFailureEnd` (re-evaluation only).
@@ -4209,16 +4186,30 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var replayWatermarks: ReevaluationSequenceWatermarks?
         // A tickless land's recorded passes for this tick (3.1 on; empty otherwise).
         var replayPasses: [ReevaluationRecordedPass] = []
+        // A tick land's inputs refused live in this tick (3.5 on, #586; empty otherwise).
+        var replayFrameRejected: [Int64] = []
 
         // In re-evaluation mode, load actions, client events, and lifecycle events from ReevaluationSource.
         if mode == .reevaluation, let source = reevaluationSource {
             do {
                 replayWatermarks = try await source.getSequenceWatermarks(for: tickId)
                 replayPasses = try await source.getPasses(for: tickId)
+                replayFrameRejected = try await source.getRejected(for: tickId)
                 let recordedActions = try await source.getActions(for: tickId)
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
                 let recordedServerInputs = try await source.getServerInputs(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
+                if replayRecordsRejected, !replayFrameRejected.isEmpty {
+                    let inputs = Set(recordedActions.map(\.sequence) + recordedClientEvents.map(\.sequence)
+                        + recordedServerInputs.map(\.sequence) + recordedLifecycleEvents.map(\.sequence))
+                    if let reason = Self.malformedRejected(replayFrameRejected, inputs: inputs, scope: "tick \(tickId)") {
+                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        logger.error("Re-evaluation: the record's rejected inputs are malformed", metadata: [
+                            "tickId": .stringConvertible(tickId),
+                            "reason": .string(reason),
+                        ])
+                    }
+                }
 
                 // Convert recorded actions to PendingItem
                 for recordedAction in recordedActions {
@@ -4381,7 +4372,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // outputs include state changes from the tick handler
         // A failing input fails alone; the others and the tick handler still run.
         if replayPasses.isEmpty {
+            _ = takeReplayRejected()
             await processPendingActions(flushOutputsImmediately: false)
+            // A tick land's refused inputs are on its frame (#586); a tickless frame without
+            // passes (an older record) has none to compare.
+            if mode == .reevaluation, replayRecordsRejected, !isTickless,
+               let divergence = Self.rejectedDivergence(recorded: replayFrameRejected, replayed: takeReplayRejected()) {
+                let reason = "tick \(tickId): \(divergence)"
+                recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                logger.error("Re-evaluation: an input's validate decided differently than live", metadata: [
+                    "tickId": .stringConvertible(tickId),
+                    "reason": .string(reason),
+                ])
+            }
         } else if await replayRecordedPasses(replayPasses, tickId: tickId) {
             await transport?.syncBroadcastOnlyFromTransport()
         }
@@ -4687,7 +4690,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     target: ReevaluationEventTargetRecord.from(item.target)
                 )
             },
-            serverInputs: applied.recordedServerInputs
+            serverInputs: applied.recordedServerInputs,
+            // A tickless land records them on its pass instead (#586).
+            rejected: isTickless ? [] : applied.rejected
         )
     }
 
@@ -5283,12 +5288,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// sync requests made, and hands them to the transport with the sync phase when requested.
     /// The outcomes of the applied inputs wait in `inputTurnResults` until the record is in.
     ///
-    /// An input P whose handler throws fails alone, as on the legacy path (`applyInputs`): P's
-    /// caller gets P's error, P's events are dropped, and every other input of the batch is
-    /// applied and its caller gets its own outcome. P is recorded in order, so replay fails it
-    /// the same way. The tick's sync requests cannot be split per input: a request P made
-    /// before it threw is consumed by this turn, so P's partial writes are kept and go out with
-    /// it, as with any other change (a per-input savepoint is #87).
+    /// An input P whose `validate` throws is refused alone, as on the legacy path (`applyInputs`):
+    /// P's caller gets P's error, and every other input of the batch is applied and its caller
+    /// gets its own outcome. P wrote nothing and requested nothing (#586). P is recorded in
+    /// order, as rejected, so replay checks it is refused the same way.
     private func runInputTurn(_ batch: [PendingItem], removingFromQueue: Bool = true) -> InputTurnOutcome {
         inTurnProbeForTesting?("turn-begin")
         inTurnProbeForTesting?("input-batch-\(batch.count)")
@@ -5321,7 +5324,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
         // A tickless land's turn is one pass (#325, #321).
         if !applied.appliedOrder.isEmpty {
-            record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal)]
+            record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal, rejected: applied.rejected.isEmpty ? nil : applied.rejected)]
         }
         return InputTurnOutcome(record: record, appliedItems: consumedItems, syncBroadcastOnly: applied.shouldSyncBroadcastOnly)
     }
@@ -5529,9 +5532,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
                 resolvers: handlers.onDestroyWhenEmptyResolverExecutors,
-                handler: onDestroyWhenEmptyHandler,
-                stateReadAfterwards: handlers.onFinalize != nil || handlers.afterFinalize != nil
-                    || handlers.onShutdown != nil
+                handler: onDestroyWhenEmptyHandler
             )
         }
         if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
@@ -5539,8 +5540,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await runDestroyHandler(
                 "OnFinalize",
                 resolvers: handlers.onFinalizeResolverExecutors,
-                handler: onFinalizeHandler,
-                stateReadAfterwards: handlers.afterFinalize != nil || handlers.onShutdown != nil
+                handler: onFinalizeHandler
             )
         }
 
@@ -5587,8 +5587,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],
-        handler: @Sendable (inout State, LandContext) throws -> Void,
-        stateReadAfterwards: Bool
+        handler: @Sendable (inout State, LandContext) throws -> Void
     ) async {
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -5610,9 +5609,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     landContext: ctx
                 )
             }
-            // A throw's writes matter only to a later destroy-phase handler that reads the state
-            // (#87): no sync or record follows the destroy.
-            try withMutableStateSync(throwWriteInput: stateReadAfterwards ? ThrowWriteInput(name, sequence: nil) : nil) { state in
+            try withMutableStateSync { state in
                 try handler(&state, updatedCtx)
             }
         } catch {
@@ -5682,9 +5679,9 @@ private struct InternalPlayerSession: Sendable {
     var lastSessionID: SessionID?
     /// This entry's generation, new on every insert (`LandKeeper.entryGenerations`). Client and
     /// session IDs can repeat across joins of the same player, so work that awaits after
-    /// reading the entry compares this instead: a failed OnJoin removes only its own join's
-    /// entry (`discardIfFailedJoin`), and an action is delivered only to the entry it was sent
-    /// to (`deliverResolvedAction`).
+    /// reading the entry compares this instead: a join whose resolvers end after the land started
+    /// draining removes only its own entry, and an action is delivered only to the entry it was
+    /// sent to (`deliverResolvedAction`).
     var generation = Epoch(rawValue: 0)
     var services: LandServices
     // PlayerSession info (from join request)

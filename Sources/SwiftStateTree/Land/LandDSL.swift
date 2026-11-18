@@ -91,11 +91,11 @@ public func Rules(@LandDSL _ content: () -> [LandNode]) -> RulesNode {
 }
 
 public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
-    public let handler: @Sendable (inout State, LandContext) throws -> Void
+    public let handler: @Sendable (inout State, LandContext) -> Void
     public let resolverExecutors: [any AnyResolverExecutor]
     
     public init(
-        handler: @escaping @Sendable (inout State, LandContext) throws -> Void,
+        handler: @escaping @Sendable (inout State, LandContext) -> Void,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
         self.handler = handler
@@ -105,11 +105,15 @@ public struct OnJoinNode<State: StateNodeProtocol>: LandNode {
 
 /// Registers a handler called when a player joins the Land.
 ///
-/// This handler is executed after the player is added to the state.
+/// This handler is executed after the player is added to the state. It can't throw (#586):
+/// whether a player may join is `CanJoin`'s decision, made at join intake. `OnJoin` applies in a
+/// later turn, so a `CanJoin` check on state that other inputs change can be stale by then (an
+/// in-turn join check is #588). Keep such checks out of `CanJoin`, and handle a joiner that no
+/// longer fits in `OnJoin` itself: make them a spectator, or emit an event asking them to leave.
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnJoin<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(handler: body)  // Single-expression: omit return
 }
@@ -124,7 +128,7 @@ public func OnJoin<State: StateNodeProtocol>(
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(
         handler: body,
@@ -135,7 +139,7 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called when a player joins the Land with multiple resolvers.
 public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(
         handler: body,
@@ -146,7 +150,7 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRes
 /// Registers a handler called when a player joins the Land with multiple resolvers.
 public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnJoinNode<State> {
     OnJoinNode(
         handler: body,
@@ -159,11 +163,11 @@ public func OnJoin<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRes
 }
 
 public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
-    public let handler: @Sendable (inout State, LandContext) throws -> Void
+    public let handler: @Sendable (inout State, LandContext) -> Void
     public let resolverExecutors: [any AnyResolverExecutor]
     
     public init(
-        handler: @escaping @Sendable (inout State, LandContext) throws -> Void,
+        handler: @escaping @Sendable (inout State, LandContext) -> Void,
         resolverExecutors: [any AnyResolverExecutor] = []
     ) {
         self.handler = handler
@@ -173,11 +177,12 @@ public struct OnLeaveNode<State: StateNodeProtocol>: LandNode {
 
 /// Registers a handler called when a player leaves the Land.
 ///
-/// This handler is executed just before the player is removed from the state.
+/// This handler is executed just before the player is removed from the state. It can't throw
+/// (#586): a leave always happens.
 ///
 /// - Parameter body: The synchronous closure to execute.
 public func OnLeave<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(handler: body)  // Single-expression: omit return
 }
@@ -192,7 +197,7 @@ public func OnLeave<State: StateNodeProtocol>(
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(
         handler: body,
@@ -203,7 +208,7 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called when a player leaves the Land with multiple resolvers.
 public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(
         handler: body,
@@ -214,7 +219,7 @@ public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextRe
 /// Registers a handler called when a player leaves the Land with multiple resolvers.
 public func OnLeave<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> OnLeaveNode<State> {
     OnLeaveNode(
         handler: body,
@@ -842,37 +847,55 @@ public enum LandDSL {
 
 // MARK: - DSL Helpers
 
-/// Registers an action handler for a specific Action type.
-///
-/// - Parameters:
-///   - type: The Action type to handle.
-///   - body: The handler closure. It receives the state, the action, and the context.
-///           It must return a `Codable & Sendable` response.
-/// - Returns: A type-erased `AnyActionHandler`.
-///
-/// A handler that throws keeps what it wrote before the throw, and the next sync sends it:
-/// validate before the first write (#87). Debug builds warn when a throwing handler wrote.
-public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
+// Action and event handlers can't throw after they write (#586). The single-closure forms take
+// a non-throwing body. An input that can be refused declares `validate:` and `apply:`:
+// `validate` reads the state (a constant), may throw, and returns a plan; `apply` writes it and
+// can't throw. They run in the same turn, back to back, so the check can't go stale before the
+// write. A `validate` throw fails the input alone with nothing written: an action's caller gets
+// the error (`ACTION_HANDLER_ERROR`; a tick land's caller had its ACK at intake).
+
+/// The type-erased action handler both forms build: `invoke` throws only from the payload type
+/// check or `validate`, before anything is written.
+private func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
-    _ body:
-        @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
+    site: String,
+    executors: [any AnyResolverExecutor],
+    invoke: @escaping @Sendable (inout State, A, LandContext) throws -> A.Response
 ) -> AnyActionHandler<State> {
     // The associated type, which every conformance has: `getResponseType()`'s default ends the
     // process for a type without `@Payload` (#521).
-    let responseType: Any.Type = A.Response.self
-    
-    return AnyActionHandler(
+    AnyActionHandler(
         type: type,
-        responseType: responseType,
-        handler: { state, anyAction, ctx in
+        responseType: A.Response.self,
+        site: site,
+        invoke: { state, anyAction, ctx in
             guard let action = anyAction as? A else {
                 throw LandError.invalidActionType
             }
-            let result = try body(&state, action, ctx)
-            return AnyCodable(result)
+            return AnyCodable(try invoke(&state, action, ctx))
         },
-        resolverExecutors: []
+        resolverExecutors: executors
     )
+}
+
+/// Registers an action handler that can't fail.
+///
+/// - Parameters:
+///   - type: The Action type to handle.
+///   - body: The handler closure. It receives the state, the action, and the context, and
+///           returns the action's declared response (`A.Response`). It can't throw (#586): an
+///           action that can be refused uses `HandleAction(_:validate:apply:)`.
+/// - Returns: A type-erased `AnyActionHandler`.
+///
+/// One handler per action type: a second `HandleAction` for the same type, in any form, is
+/// refused at registration (`LandRegistrationError.duplicateHandlers`).
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: body)
 }
 
 /// Registers an action handler with resolvers for a specific Action type.
@@ -881,94 +904,198 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
 /// the action handler runs. Resolver outputs are available synchronously in the handler
 /// via `ctx.resolverOutputName`.
 ///
-/// - Parameters:
-///   - type: The Action type to handle.
-///   - resolvers: Variadic list of resolver types to execute before the handler.
-///   - body: The handler closure. It receives the state, the action, and the context.
-///           It must return a `Codable & Sendable` response.
-/// - Returns: A type-erased `AnyActionHandler` with resolver support.
-///
 /// Example:
 /// ```swift
-/// HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self, UserProfileResolver.self) { state, action, ctx in
+/// HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
 ///     let productInfo = ctx.productInfo  // Available synchronously
-///     let userProfile = ctx.userProfile  // Available synchronously
 ///     // Use resolver outputs...
 /// }
 /// ```
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: R1.Type,
-    _ body:
-        @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
+    _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    let responseType: Any.Type = A.Response.self
-    let executors = [ResolverExecutor.createExecutor(for: resolvers)]
-    
-    return AnyActionHandler(
-        type: type,
-        responseType: responseType,
-        handler: { state, anyAction, ctx in
-            guard let action = anyAction as? A else {
-                throw LandError.invalidActionType
-            }
-            let result = try body(&state, action, ctx)
-            return AnyCodable(result)
-        },
-        resolverExecutors: executors
-    )
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: body)
 }
 
 /// Registers an action handler with multiple resolvers.
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: (R1.Type, R2.Type),
-    _ body:
-        @escaping @Sendable (inout State, A, LandContext) throws -> some Codable & Sendable
+    _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    let responseType: Any.Type = A.Response.self
-    let executors = [
-        ResolverExecutor.createExecutor(for: resolvers.0),
-        ResolverExecutor.createExecutor(for: resolvers.1)
-    ]
-    
-    return AnyActionHandler(
-        type: type,
-        responseType: responseType,
-        handler: { state, anyAction, ctx in
-            guard let action = anyAction as? A else {
-                throw LandError.invalidActionType
-            }
-            let result = try body(&state, action, ctx)
-            return AnyCodable(result)
-        },
-        resolverExecutors: executors
+    makeActionHandler(
+        type,
+        site: "\(fileID):\(line)",
+        executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
+        invoke: body
     )
 }
 
-/// Registers an event handler for a specific event payload type.
+/// Registers an action handler in two stages (#586).
 ///
-/// This is the base function for event handling. Typically, you might use generated helpers
-/// like `OnReady` or `OnChat` which wrap this function.
+/// Example:
+/// ```swift
+/// HandleAction(BuyAction.self,
+///     validate: { (state: ShopState, action: BuyAction, ctx: ValidateContext) throws -> BuyPlan in
+///         guard let item = state.shop[action.itemID] else { throw ShopError.notFound }
+///         guard (state.players[ctx.playerID]?.gold ?? 0) >= item.price else { throw ShopError.noGold }
+///         return BuyPlan(item: item)
+///     },
+///     apply: { (state: inout ShopState, action: BuyAction, plan: BuyPlan, ctx: LandContext) -> BuyResponse in
+///         state.players[ctx.playerID]?.gold -= plan.item.price
+///         state.players[ctx.playerID]?.items.append(plan.item)
+///         return BuyResponse(ok: true)
+///     })
+/// ```
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, Plan>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: twoStage(validate, apply))
+}
+
+/// The two-stage form with nothing to pass from `validate` to `apply` (#586).
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: twoStage(validate, apply))
+}
+
+/// The two-stage form with a resolver (#586): `validate` reads its output from the context.
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, Plan>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    resolvers: R1.Type,
+    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
+}
+
+/// The two-stage form with a resolver and nothing to pass from `validate` to `apply` (#586).
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    resolvers: R1.Type,
+    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
+}
+
+/// The two-stage form with two resolvers (#586).
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver, Plan>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    resolvers: (R1.Type, R2.Type),
+    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(
+        type,
+        site: "\(fileID):\(line)",
+        executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
+        invoke: twoStage(validate, apply)
+    )
+}
+
+/// The two-stage form with two resolvers and nothing to pass from `validate` to `apply` (#586).
+public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
+    _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    resolvers: (R1.Type, R2.Type),
+    validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
+) -> AnyActionHandler<State> {
+    makeActionHandler(
+        type,
+        site: "\(fileID):\(line)",
+        executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
+        invoke: twoStage(validate, apply)
+    )
+}
+
+/// `validate` then `apply`, as one call that throws only from `validate`.
+private func twoStage<State, Input, Plan, Output>(
+    _ validate: @escaping @Sendable (State, Input, ValidateContext) throws -> Plan,
+    _ apply: @escaping @Sendable (inout State, Input, Plan, LandContext) -> Output
+) -> @Sendable (inout State, Input, LandContext) throws -> Output {
+    { state, input, ctx in
+        let plan = try validate(state, input, ValidateContext(ctx))
+        return apply(&state, input, plan, ctx)
+    }
+}
+
+/// `validate` then `apply`, with no plan.
+private func twoStage<State, Input, Output>(
+    _ validate: @escaping @Sendable (State, Input, ValidateContext) throws -> Void,
+    _ apply: @escaping @Sendable (inout State, Input, LandContext) -> Output
+) -> @Sendable (inout State, Input, LandContext) throws -> Output {
+    { state, input, ctx in
+        try validate(state, input, ValidateContext(ctx))
+        return apply(&state, input, ctx)
+    }
+}
+
+/// Registers an event handler that can't fail, for a specific event payload type.
 ///
 /// - Parameters:
 ///   - type: The Client Event type to handle.
-///   - body: The handler closure. Can throw errors.
+///   - body: The handler closure. It can't throw (#586): an event that can be refused uses
+///           `HandleEvent(_:validate:apply:)`.
 /// - Returns: A type-erased `AnyClientEventHandler`.
 ///
 /// Client events are fire-and-forget and take no resolvers; load data an event needs in an
-/// action instead.
-///
-/// **Error Handling**:
-/// - If the handler throws an error, it will be sent to the client as an ErrorPayload
-/// - Event handlers should throw errors when they cannot process the event
-/// - What the handler wrote before the throw is kept, and the next sync sends it: validate
-///   before the first write (#87). Debug builds warn when a throwing handler wrote.
+/// action instead. One handler per event type: a second `HandleEvent` for the same type is
+/// refused at registration (`LandRegistrationError.duplicateHandlers`).
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     _ type: E.Type,
-    _ body: @escaping @Sendable (inout State, E, LandContext) throws -> Void
+    fileID: String = #fileID,
+    line: Int = #line,
+    _ body: @escaping @Sendable (inout State, E, LandContext) -> Void
 ) -> AnyClientEventHandler<State> {
-    AnyClientEventHandler(eventType: type, handler: body)  // Single-expression: omit return
+    AnyClientEventHandler(eventType: type, site: "\(fileID):\(line)", invoke: body)
+}
+
+/// Registers an event handler in two stages (#586). A `validate` throw fails the event alone with
+/// nothing written. On a tickless land with in-turn sync the error goes back to the client as an
+/// error payload; on a tick land, or tickless with `IN_TURN_SYNC=false`, it is only logged.
+public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload, Plan>(
+    _ type: E.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    validate: @escaping @Sendable (State, E, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, E, Plan, LandContext) -> Void
+) -> AnyClientEventHandler<State> {
+    AnyClientEventHandler(eventType: type, site: "\(fileID):\(line)", invoke: twoStage(validate, apply))
+}
+
+/// The two-stage form with nothing to pass from `validate` to `apply` (#586).
+public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
+    _ type: E.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    validate: @escaping @Sendable (State, E, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, E, LandContext) -> Void
+) -> AnyClientEventHandler<State> {
+    AnyClientEventHandler(eventType: type, site: "\(fileID):\(line)", invoke: twoStage(validate, apply))
 }
 
 // MARK: - Server Event Registration
