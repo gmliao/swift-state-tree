@@ -29,10 +29,18 @@ flags=(-typecheck -I "$build_dir" -load-plugin-executable "$macro_tool#SwiftStat
 if [[ -d "$build_dir/Modules" ]]; then
     flags+=(-I "$build_dir/Modules")
 fi
-# C targets' module maps (dependencies such as swift-nio's), so their modules resolve.
+# C targets' module maps (dependencies such as swift-nio's), so their modules resolve. Only C
+# targets', and only the target builds': on Linux the host builds for the macro tool
+# (`*-tool.build`) hold a second copy of each, and a Swift target's build holds a module map for
+# its generated header; passing either redefines the module.
 while IFS= read -r -d '' modulemap; do
+    target="${modulemap#"$build_dir"/}"
+    target="${target%%.build/*}"
+    if [[ -e "$build_dir/$target.swiftmodule" || -e "$build_dir/Modules/$target.swiftmodule" ]]; then
+        continue
+    fi
     flags+=(-Xcc "-fmodule-map-file=$modulemap")
-done < <(find "$build_dir" -maxdepth 3 -name module.modulemap -print0)
+done < <(find "$build_dir" -maxdepth 3 -name module.modulemap -not -path '*-tool.build/*' -print0)
 
 failures=0
 count=0
