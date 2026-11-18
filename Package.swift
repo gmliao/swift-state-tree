@@ -172,7 +172,9 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
-            path: "Tests/SwiftStateTreeTests"
+            path: "Tests/SwiftStateTreeTests",
+            // Inputs read from the source tree (CanonicalMessagePackTests).
+            exclude: ["Fixtures"]
         ),
 
         // 🔹 Transport tests
