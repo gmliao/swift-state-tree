@@ -3301,17 +3301,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
 
-    /// The held event frames a plan packed for the targeted events it consumed. Every plan that
-    /// consumes targeted events packs them while planning (the full and the broadcast-only plan),
-    /// so a pack failure ends the land there; the commit never packs. A plan that consumed none
-    /// holds none.
-    private func heldEventFramesPacked(by plan: SyncPhasePlan) -> [SessionID: [Data]] {
-        guard plan.consumedEvents.targeted > 0 else { return [:] }
-        assert(plan.heldEvents != nil && plan.heldEventsEnd == plan.consumedEvents.targeted,
-               "a plan that consumes targeted events packs their held frames")
-        return plan.heldEvents ?? [:]
-    }
-
     /// Appends one event frame (opcode 103) per body for `sessionID`. A frame that doesn't
     /// pack ends the land (#535 row 17): the event would be lost.
     private func appendEventFrames(
@@ -3649,27 +3638,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
         syncLag[sessionID]?.ack(seq, at: syncLagNow())
-    }
-
-    /// Moves each resynced session's snapshot (op 3, tagged `isResyncSnapshot`) ahead of its other
-    /// frames of the plan, the merged broadcast frame first among them (#332). The client then
-    /// applies the whole view before anything else at the resync's sequence: it skips the state
-    /// patches of a later frame with that sequence, which the snapshot already holds, and still
-    /// reads its key definitions and events. Its ack of the sequence then follows the snapshot.
-    ///
-    /// With row addressing an unsynced recipient's view (`isFullViewBeforeSharedFrame`) moves the
-    /// same way: it holds the committed tables, which the shared frame then brings to live.
-    private func putResyncSnapshotsFirst(_ plan: inout SyncPhasePlan) {
-        let views = Set(plan.frames.filter(\.isFullViewBeforeSharedFrame).map(\.sessionID))
-        for sessionID in Set(plan.syncLag.resyncs.keys).union(views) {
-            // No snapshot (it didn't encode whole), or it is already the session's first frame.
-            guard let first = plan.frames.firstIndex(where: { $0.sessionID == sessionID }),
-                  let snapshot = plan.frames.firstIndex(where: {
-                      $0.sessionID == sessionID && ($0.isResyncSnapshot || $0.isFullViewBeforeSharedFrame)
-                  }),
-                  snapshot > first else { continue }
-            plan.frames.insert(plan.frames.remove(at: snapshot), at: first)
-        }
     }
 
     /// A session's firstSync committed with `plan`: its lag tracking starts.
@@ -4439,7 +4407,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Before the flips end their joining: what this plan consumes for joining sessions is
         // held for those that hold events (#69), and not delivered to the others.
         let held = plan.heldEvents.flatMap { plan.heldEventsEnd == plan.consumedEvents.targeted ? $0 : nil }
-            ?? heldEventFramesPacked(by: plan)
+            ?? plan.heldEventFramesPacked()
         var overflowed: [SessionID] = []
         for (sessionID, frames) in held where !holdEvents(frames, for: sessionID) {
             overflowed.append(sessionID)
@@ -4602,7 +4570,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let tablesBroadcastDiff {
             broadcastDiff = tablesBroadcastDiff
         } else {
-            broadcastDiff = withoutDroppedFields(
+            broadcastDiff = SyncPlanning.withoutDroppedFields(
                 syncEngine.computeBroadcastDiffFromSnapshot(
                     currentBroadcast: broadcastSnapshot,
                     onlyPaths: nil,
@@ -4760,7 +4728,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
         if useStateUpdateWithEvents && (!plan.syncLag.resyncs.isEmpty || rowAddressing) {
-            putResyncSnapshotsFirst(&plan)
+            plan.putResyncSnapshotsFirst()
         }
 
         if let extractStart, let extractEnd, let broadcastEnd {
@@ -4842,7 +4810,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let patches = syncEngine.computeDiff(from: StateSnapshot(values: [:]), to: snapshot, onlyPaths: nil)
         var sent = patches
         if rowAddressing, let broadcastTables {
-            sent = Self.replacingRows(
+            sent = SyncPlanning.replacingRows(
                 of: patches, with: broadcastTables.viewPatches(staged: stagedTables, useStaged: rowsFromStagedTables)
             )
         }
@@ -4852,43 +4820,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             update: .firstSync(sent)
         )
         return (update, patches)
-    }
-
-    /// `patches` (a view's, from empty) with the patches at or below each root path of `rows`
-    /// replaced by that root's row patches, where the first of them was. A root `patches` doesn't
-    /// hold stays out.
-    static func replacingRows(of patches: [StatePatch], with rows: [String: [StatePatch]]) -> [StatePatch] {
-        guard !rows.isEmpty else { return patches }
-        func root(of path: String) -> String {
-            let utf8 = path.utf8
-            guard utf8.count > 1, let end = utf8.dropFirst().firstIndex(of: UInt8(ascii: "/")) else { return path }
-            return String(path[..<end])
-        }
-        var result: [StatePatch] = []
-        result.reserveCapacity(patches.count)
-        var placed: Set<String> = []
-        for patch in patches {
-            let path = root(of: patch.path)
-            guard let replacement = rows[path] else {
-                result.append(patch)
-                continue
-            }
-            if placed.insert(path).inserted {
-                result.append(contentsOf: replacement)
-            }
-        }
-        return result
-    }
-
-    /// A key scope reset's update: always sent, typed `.firstSync` so the encoder and the client
-    /// reset the scope's dynamic key table; its patches are the diff against the cache.
-    private func keyScopeResetUpdate(_ update: StateUpdate) -> StateUpdate {
-        switch update {
-        case .noChange:
-            return .firstSync([])
-        case .diff(let patches), .firstSync(let patches):
-            return .firstSync(patches)
-        }
     }
 
     /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
@@ -5065,44 +4996,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// The plan's dirty fields when dirty tracking applies (`extractAll` off, tracking on, the
+    /// state dirty), else nil: the argument `SyncPlanning`'s mode functions take.
+    private func dirtyFieldsToDiff(_ state: State, extractAll: Bool) -> Set<String>? {
+        guard !extractAll, enableDirtyTracking, planIsDirty(state) else { return nil }
+        return planDirtyFields(of: state)
+    }
+
     private func computeSyncModes(
         for state: State,
         extractAll: Bool
     ) -> (broadcastMode: SnapshotMode, perPlayerMode: SnapshotMode) {
-        if extractAll {
-            return (.all, .all)
-        }
-
-        if enableDirtyTracking && planIsDirty(state) {
-            let dirtyFields = planDirtyFields(of: state)
-            let syncFields = state.getSyncFields()
-            let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
-            let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
-
-            let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
-            let perPlayerFields = dirtyFields.intersection(perPlayerFieldNames)
-            let broadcastMode: SnapshotMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
-            let perPlayerMode: SnapshotMode = perPlayerFields.isEmpty ? .all : .dirtyTracking(perPlayerFields)
-            return (broadcastMode, perPlayerMode)
-        }
-
-        return (.all, .all)
+        SyncPlanning.computeSyncModes(for: state, dirtyFields: dirtyFieldsToDiff(state, extractAll: extractAll))
     }
 
-    /// The modes today's extraction would use, for the broadcast diff on the tables and the
-    /// per-player extraction beside it: the one-pass extraction's single mode for both, or the
-    /// separate ones.
     private func modesBesideTables(
         for state: State,
         extractAll: Bool,
         broadcastMode: SnapshotMode,
         perPlayerMode: SnapshotMode
     ) -> (broadcast: SnapshotMode, perPlayer: SnapshotMode) {
+        // The dirty fields are read only when the one-pass extraction uses them, as before.
         guard useSnapshotForSync else { return (broadcastMode, perPlayerMode) }
-        let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
-            ? .dirtyTracking(planDirtyFields(of: state))
-            : .all
-        return (fullMode, fullMode)
+        return SyncPlanning.modesBesideTables(
+            useSnapshotForSync: true,
+            dirtyFields: dirtyFieldsToDiff(state, extractAll: extractAll),
+            broadcastMode: broadcastMode,
+            perPlayerMode: perPlayerMode
+        )
     }
 
     private func extractSyncSnapshots(
@@ -5252,7 +5173,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 staged: &staged
             )
             if typesFirstSync {
-                update = keyScopeResetUpdate(update)
+                update = SyncPlanning.keyScopeResetUpdate(update)
             } else if case .noChange = update {
                 continue
             }
@@ -5318,7 +5239,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 update = perPlayerDiff.isEmpty ? .noChange : .diff(perPlayerDiff)
             }
             if typesFirstSync {
-                update = keyScopeResetUpdate(update)
+                update = SyncPlanning.keyScopeResetUpdate(update)
             } else if case .noChange = update {
                 continue
             }
@@ -5356,7 +5277,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 staged: &staged
             )
             if typesFirstSync {
-                update = keyScopeResetUpdate(update)
+                update = SyncPlanning.keyScopeResetUpdate(update)
             } else if case .noChange = update {
                 continue
             }
@@ -5566,25 +5487,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             staged: &staged
         )
 
-        return (withoutDroppedFields(broadcastDiff, dropped: drops.broadcastFields, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
-    }
-
-    /// Under the `.empty` baseline (full-snapshot strategy), `patches` without those of the
-    /// fields the extraction dropped in their scope (`dropped`). A dropped field holds its cached
-    /// value, which keeps the `.empty` diff from deleting it but would otherwise be a real `.set`
-    /// of an older value (a client that already has a newer one, e.g. a joiner's firstSync, would
-    /// roll back). Against the `.cached` baseline the cached value yields no patch, so nothing is
-    /// filtered.
-    private func withoutDroppedFields(
-        _ patches: [StatePatch],
-        dropped: Set<String>,
-        baseline: SyncEngine.DiffBaseline
-    ) -> [StatePatch] {
-        guard case .empty = baseline, !dropped.isEmpty else { return patches }
-        return patches.filter { patch in
-            let field = patch.path.split(separator: "/").first.map(String.init) ?? ""
-            return !dropped.contains(field)
-        }
+        return (SyncPlanning.withoutDroppedFields(broadcastDiff, dropped: drops.broadcastFields, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
     }
 
     /// `withoutDroppedFields` for every pending update, each filtered by the per-player fields
@@ -5606,9 +5509,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             case .noChange:
                 return pending
             case .firstSync(let patches):
-                update = .firstSync(withoutDroppedFields(patches, dropped: dropped, baseline: baseline))
+                update = .firstSync(SyncPlanning.withoutDroppedFields(patches, dropped: dropped, baseline: baseline))
             case .diff(let patches):
-                let kept = withoutDroppedFields(patches, dropped: dropped, baseline: baseline)
+                let kept = SyncPlanning.withoutDroppedFields(patches, dropped: dropped, baseline: baseline)
                 guard !kept.isEmpty else { return nil }
                 update = .diff(kept)
             }
