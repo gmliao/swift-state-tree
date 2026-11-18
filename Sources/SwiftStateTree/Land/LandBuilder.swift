@@ -40,7 +40,7 @@ enum LandBuilder {
         var actionHandlers: [AnyActionHandler<State>] = []
         var eventHandlers: [AnyClientEventHandler<State>] = []
         var serverInputHandlers: [String: AnyServerInputHandler<State>] = [:]
-        // One handler per client-event and server-input type (#586): the first is kept, a later
+        // One handler per action, client-event and server-input type (#586): the first is kept, a later
         // one is recorded and refused by registration (and by an unregistered keeper's
         // initialization).
         var duplicateHandlers: [DuplicateHandlerDeclaration] = []
@@ -72,7 +72,16 @@ enum LandBuilder {
                     onLeave = leave.handler
                     onLeaveResolverExecutors = leave.resolverExecutors
                 case let action as AnyActionHandler<State>:
-                    actionHandlers.append(action)
+                    if let first = actionHandlers.first(where: { $0.canHandle(action.handledType) }) {
+                        duplicateHandlers.append(DuplicateHandlerDeclaration(
+                            kind: "action",
+                            typeName: String(describing: action.handledType),
+                            firstSite: first.site,
+                            duplicateSite: action.site
+                        ))
+                    } else {
+                        actionHandlers.append(action)
+                    }
                 case let handler as AnyClientEventHandler<State>:
                     if let first = eventHandlers.first(where: { $0.canHandle(handler.handledType) }) {
                         duplicateHandlers.append(DuplicateHandlerDeclaration(

@@ -3321,8 +3321,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Applies one pending item to the state (synchronous) and appends its record to `applied`.
-    /// The record is appended before the handler runs, so an item whose handler throws is
-    /// recorded too (replay fails it the same way); the error propagates to `applyInputs`.
+    /// The record is appended before the handler runs, so an item whose `validate` throws is
+    /// recorded too (replay refuses it the same way); the error propagates to `applyInputs`.
     private func applyPendingItem(
         _ item: PendingItem,
         executingTickId: Int64,
@@ -3360,7 +3360,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverOutputs: actionItem.resolverOutputs
             )
 
-            // Recorded before the handler runs: an input whose handler throws is recorded too, so
+            // Recorded before the handler runs: an input whose `validate` throws is recorded too, so
             // replay runs it again and it fails the same way (`applyInputs`).
             let resolverOutputsDict = actionItem.resolverOutputs.mapValues { output in
                 ReevaluationRecordedResolverOutput(
@@ -3610,7 +3610,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// land's tick), in order (`applyInputs`), then records them, runs the broadcast-only sync a
     /// leave asks for, and flushes the outputs.
     ///
-    /// An input whose handler throws fails alone and the pass goes on (`applyInputs`). Each
+    /// An input whose `validate` throws fails alone and the pass goes on (`applyInputs`). Each
     /// input's outcome is kept by sequence for the off-path caller waiting for it
     /// (`runLegacyPass`), not returned: one pass can apply several callers' inputs (#88).
     /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).

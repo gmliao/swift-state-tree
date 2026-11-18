@@ -858,6 +858,7 @@ public enum LandDSL {
 /// check or `validate`, before anything is written.
 private func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
+    site: String,
     executors: [any AnyResolverExecutor],
     invoke: @escaping @Sendable (inout State, A, LandContext) throws -> A.Response
 ) -> AnyActionHandler<State> {
@@ -866,6 +867,7 @@ private func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
     AnyActionHandler(
         type: type,
         responseType: A.Response.self,
+        site: site,
         invoke: { state, anyAction, ctx in
             guard let action = anyAction as? A else {
                 throw LandError.invalidActionType
@@ -884,11 +886,16 @@ private func makeActionHandler<State: StateNodeProtocol, A: ActionPayload>(
 ///           returns the action's declared response (`A.Response`). It can't throw (#586): an
 ///           action that can be refused uses `HandleAction(_:validate:apply:)`.
 /// - Returns: A type-erased `AnyActionHandler`.
+///
+/// One handler per action type: a second `HandleAction` for the same type, in any form, is
+/// refused at registration (`LandRegistrationError.duplicateHandlers`).
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, executors: [], invoke: body)
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: body)
 }
 
 /// Registers an action handler with resolvers for a specific Action type.
@@ -906,20 +913,25 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
 /// ```
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: R1.Type,
     _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: body)
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: body)
 }
 
 /// Registers an action handler with multiple resolvers.
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: (R1.Type, R2.Type),
     _ body: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
     makeActionHandler(
         type,
+        site: "\(fileID):\(line)",
         executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
         invoke: body
     )
@@ -943,50 +955,61 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: Context
 /// ```
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, Plan>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, executors: [], invoke: twoStage(validate, apply))
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: twoStage(validate, apply))
 }
 
 /// The two-stage form with nothing to pass from `validate` to `apply` (#586).
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, executors: [], invoke: twoStage(validate, apply))
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [], invoke: twoStage(validate, apply))
 }
 
 /// The two-stage form with a resolver (#586): `validate` reads its output from the context.
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, Plan>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: R1.Type,
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
 }
 
 /// The two-stage form with a resolver and nothing to pass from `validate` to `apply` (#586).
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: R1.Type,
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
-    makeActionHandler(type, executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
+    makeActionHandler(type, site: "\(fileID):\(line)", executors: [ResolverExecutor.createExecutor(for: resolvers)], invoke: twoStage(validate, apply))
 }
 
 /// The two-stage form with two resolvers (#586).
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver, Plan>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: (R1.Type, R2.Type),
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Plan,
     apply: @escaping @Sendable (inout State, A, Plan, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
     makeActionHandler(
         type,
+        site: "\(fileID):\(line)",
         executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
         invoke: twoStage(validate, apply)
     )
@@ -995,12 +1018,15 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: Context
 /// The two-stage form with two resolvers and nothing to pass from `validate` to `apply` (#586).
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: ContextResolver, R2: ContextResolver>(
     _ type: A.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
     resolvers: (R1.Type, R2.Type),
     validate: @escaping @Sendable (State, A, ValidateContext) throws -> Void,
     apply: @escaping @Sendable (inout State, A, LandContext) -> A.Response
 ) -> AnyActionHandler<State> {
     makeActionHandler(
         type,
+        site: "\(fileID):\(line)",
         executors: [ResolverExecutor.createExecutor(for: resolvers.0), ResolverExecutor.createExecutor(for: resolvers.1)],
         invoke: twoStage(validate, apply)
     )
@@ -1048,8 +1074,9 @@ public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     AnyClientEventHandler(eventType: type, site: "\(fileID):\(line)", invoke: body)
 }
 
-/// Registers an event handler in two stages (#586). A `validate` throw is sent to the client as
-/// an error payload, and the event fails alone with nothing written.
+/// Registers an event handler in two stages (#586). A `validate` throw fails the event alone with
+/// nothing written. On a tickless land with in-turn sync the error goes back to the client as an
+/// error payload; on a tick land, or tickless with `IN_TURN_SYNC=false`, it is only logged.
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload, Plan>(
     _ type: E.Type,
     fileID: String = #fileID,

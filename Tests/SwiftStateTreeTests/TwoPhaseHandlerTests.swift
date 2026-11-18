@@ -1,13 +1,15 @@
 // Tests/SwiftStateTreeTests/TwoPhaseHandlerTests.swift
 //
 // Two-phase handlers (#586): `validate` reads the state and may throw, `apply` writes and can't.
-// A refused input writes nothing; each client-event and server-input type has one handler; the
-// inputs refused live are recorded (record format 3.5) and compared in replay, on tickless and
-// tick lands alike.
+// A refused input writes nothing; each action, client-event and server-input type has one
+// handler; the inputs refused live are recorded (record format 3.5) and compared in replay, on
+// tickless lands (legacy and in-turn passes) and tick lands alike, by the engine and by the
+// monitor's runner.
 
 import Foundation
 import Testing
 @testable import SwiftStateTree
+@testable import SwiftStateTreeReevaluationMonitor
 
 @StateNodeBuilder
 struct TwoPhaseState: StateNodeProtocol {
@@ -146,8 +148,41 @@ private func makeTwoPhaseDefinition(tick: Bool) -> LandDefinition<TwoPhaseState>
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
+/// Where an input is applied: a tickless land's legacy pass, its in-turn input turn (a transport
+/// that runs the sync phase in the turn, whatever `IN_TURN_SYNC` says), or a tick.
+enum TwoPhaseMode: String, CaseIterable, Sendable {
+    case tickless, ticklessInTurn, tick
+    var tick: Bool { self == .tick }
+}
+
+/// A transport that runs the sync phase in the keeper's turn and sends nothing.
+private final class TwoPhaseInTurnTransport: LandKeeperTransport, @unchecked Sendable {
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+    }
+}
+
+private func makeTwoPhaseKeeper(
+    _ mode: TwoPhaseMode,
+    recording: Bool = false,
+    services: LandServices = LandServices()
+) async throws -> LandKeeper<TwoPhaseState> {
+    try await makeTwoPhaseKeeper(tick: mode.tick, inTurn: mode == .ticklessInTurn, recording: recording, services: services)
+}
+
 private func makeTwoPhaseKeeper(
     tick: Bool,
+    inTurn: Bool = false,
     recording: Bool = false,
     services: LandServices = LandServices()
 ) async throws -> LandKeeper<TwoPhaseState> {
@@ -157,8 +192,11 @@ private func makeTwoPhaseKeeper(
         initialState: TwoPhaseState(),
         services: services,
         enableLiveStateHashRecording: recording,
-        autoStartLoops: false
+        autoStartLoops: false,
+        transport: inTurn ? TwoPhaseInTurnTransport() : nil
     )
+    // The transport decides: in-turn whatever `IN_TURN_SYNC` says.
+    #expect(await keeper.isUsingInTurnSync() == inTurn)
     // One land ID per keeper: parallel tests must not share a recorder spool.
     let landID = "\(definition.id):\(UUID().uuidString)"
     await keeper.setLandID(landID)
@@ -217,6 +255,22 @@ private func saveJSONRecord(
     return jsonPath
 }
 
+/// The tick of the frame that recorded input `sequence`.
+private func tickOf(_ sequence: Int64, in path: String) async throws -> Int64 {
+    let json = try #require(try ReevaluationRecordFile.openSource(filePath: path) as? JSONReevaluationSource)
+    return try #require(await json.getAllFrames().first { $0.actions.contains { $0.sequence == sequence } }).tickId
+}
+
+/// The monitor's runner (admin and monitor replays) over the whole record: its pass mismatches.
+private func runnerMismatches(_ path: String, tick: Bool) async throws -> [Int64: String] {
+    let runner = try await ConcreteReevaluationRunner(definition: makeTwoPhaseDefinition(tick: tick), recordFilePath: path)
+    var mismatches: [Int64: String] = [:]
+    while let step = try await runner.step() {
+        if let mismatch = step.recordedPassMismatch { mismatches[step.tickId] = mismatch }
+    }
+    return mismatches
+}
+
 private func replay(_ path: String, tick: Bool) async throws -> ReevaluationEngine.RunResult {
     try await ReevaluationEngine.run(
         definition: makeTwoPhaseDefinition(tick: tick),
@@ -247,19 +301,26 @@ private func editRejected(_ object: inout [String: Any], tick: Bool, _ change: (
 
 @Suite("Two-phase handlers: validate, then apply (#586)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TwoPhaseHandlerTests {
-    @Test("A refusing validate writes nothing; its caller gets the error; the next input applies", arguments: [false, true])
-    func refusedActionWritesNothing(tick: Bool) async throws {
-        let keeper = try await makeTwoPhaseKeeper(tick: tick)
+    @Test("A refusing validate writes nothing and isn't run again; its caller gets the error (a tick land's its intake ACK); the next input applies", arguments: TwoPhaseMode.allCases)
+    func refusedActionWritesNothing(mode: TwoPhaseMode) async throws {
+        let tick = mode.tick
+        let keeper = try await makeTwoPhaseKeeper(mode)
         let key = TwoPhaseRefusals.freshKey()
         TwoPhaseRefusals.refuse(key)
         defer { TwoPhaseRefusals.allow(key) }
         let refused = await sendAndApply(keeper, tick: tick, TwoPhaseAddAction(amount: 5, key: key))
         let state = await keeper.currentState()
         #expect(state.total == 0 && state.log.isEmpty, "a refused input wrote: \(state)")
-        if !tick {
-            // A tick land's caller had its ACK at intake.
+        if tick {
+            #expect((try? refused.get()) != nil, "a tick land's caller keeps its intake ACK")
+        } else {
             #expect(throws: TwoPhaseRefused(reason: "key \(key)")) { try refused.get() }
         }
+        // Allowed from now on: a refused input left in the queue would apply in the next tick or
+        // pass and show in the total.
+        TwoPhaseRefusals.allow(key)
+        if tick { await keeper.stepTickOnce() }
+        #expect(await keeper.currentState().total == 0, "the refused input ran again")
         _ = await sendAndApply(keeper, tick: tick, TwoPhaseAddAction(amount: 2, key: TwoPhaseRefusals.freshKey()))
         #expect(await keeper.currentState().total == 2)
     }
@@ -340,13 +401,66 @@ struct TwoPhaseHandlerTests {
         #expect(error.duplicateHandlers.map(\.typeName) == [String(describing: TwoPhaseInput.self)])
     }
 
-    @Test("A keeper built without registration refuses duplicate handlers at initialization")
+    @Test("Two handlers for one action type, in any forms, are refused at registration, naming both sites")
+    func duplicateActionHandlerRefused() throws {
+        let definition = Land("dup-action", using: TwoPhaseState.self) {
+            Rules {
+                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, action: TwoPhasePlanAction, _: LandContext) in
+                    TwoPhaseAck(total: state.total)
+                }
+                HandleAction(TwoPhasePlanAction.self, validate: { (_: TwoPhaseState, _: TwoPhasePlanAction, _: ValidateContext) in
+                }, apply: { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in
+                    TwoPhaseAck(total: state.total)
+                })
+            }
+        }
+        #expect(definition.actionHandlers.count == 1, "the first is kept")
+        let error = try #require(throws: LandRegistrationError.self) {
+            try definition.validateForRegistration(context: .encodingIndependent)
+        }
+        let duplicate = try #require(error.duplicateHandlers.first)
+        #expect(error.duplicateHandlers.map(\.kind) == ["action"])
+        #expect(duplicate.typeName == String(describing: TwoPhasePlanAction.self))
+        let first = try #require(duplicate.firstSite), second = try #require(duplicate.duplicateSite)
+        #expect(first.hasPrefix("SwiftStateTreeTests/TwoPhaseHandlerTests.swift:") && first != second)
+    }
+
+    @Test("AnyActionHandler's public two-stage init answers with the action's Response and is refused as a duplicate too")
+    func erasedActionHandlerInit() async throws {
+        let handler = AnyActionHandler<TwoPhaseState>(TwoPhasePlanAction.self, validate: { (state: TwoPhaseState, action: TwoPhasePlanAction, _: ValidateContext) -> Int in
+            guard action.amount > 0 else { throw TwoPhaseRefused(reason: "not positive") }
+            return state.total + action.amount
+        }, apply: { (state: inout TwoPhaseState, _: TwoPhasePlanAction, total: Int, _: LandContext) in
+            state.total = total
+            return TwoPhaseAck(total: total)
+        })
+        #expect(handler.getResponseType() == TwoPhaseAck.self)
+        #expect(handler.site?.hasPrefix("SwiftStateTreeTests/TwoPhaseHandlerTests.swift:") == true)
+        let definition = Land("erased-action", using: TwoPhaseState.self) {
+            Rules {
+                handler
+                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in
+                    TwoPhaseAck(total: state.total)
+                }
+            }
+        }
+        let error = try #require(throws: LandRegistrationError.self) {
+            try definition.validateForRegistration(context: .encodingIndependent)
+        }
+        #expect(error.duplicateHandlers.map(\.kind) == ["action"])
+    }
+
+    @Test("A keeper built without registration refuses duplicate handlers of every kind at initialization")
     func duplicateHandlersFailUnregisteredKeeper() async throws {
         let definition = Land("dup-keeper", using: TwoPhaseState.self) {
             ClientEvents { Register(TwoPhaseBumpEvent.self) }
             Rules {
+                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in TwoPhaseAck(total: state.total) }
+                HandleAction(TwoPhasePlanAction.self) { (state: inout TwoPhaseState, _: TwoPhasePlanAction, _: LandContext) in TwoPhaseAck(total: -1) }
                 HandleEvent(TwoPhaseBumpEvent.self) { (state: inout TwoPhaseState, _: TwoPhaseBumpEvent, _: LandContext) in state.total += 1 }
                 HandleEvent(TwoPhaseBumpEvent.self) { (state: inout TwoPhaseState, _: TwoPhaseBumpEvent, _: LandContext) in state.total += 100 }
+                HandleServerInput(TwoPhaseInput.self) { (state: inout TwoPhaseState, _: TwoPhaseInput, _: LandContext) in state.total += 1 }
+                HandleServerInput(TwoPhaseInput.self) { (state: inout TwoPhaseState, _: TwoPhaseInput, _: LandContext) in state.total += 100 }
             }
         }
         let keeper = LandKeeper<TwoPhaseState>(definition: definition, initialState: TwoPhaseState(), autoStartLoops: false)
@@ -356,14 +470,15 @@ struct TwoPhaseHandlerTests {
         let registration = try #require(failure.underlying as? LandRegistrationError)
         #expect(registration.landType == "dup-keeper")
         #expect(registration.sync == nil)
-        #expect(registration.duplicateHandlers.map(\.kind) == ["client event"])
+        #expect(registration.duplicateHandlers.map(\.kind) == ["action", "client event", "server input"])
     }
 
     // MARK: The rejected marker (D1)
 
-    @Test("A live refusal is recorded: on the pass of a tickless land, on the frame of a tick land", arguments: [false, true])
-    func rejectedIsRecorded(tick: Bool) async throws {
-        let keeper = try await makeTwoPhaseKeeper(tick: tick, recording: true)
+    @Test("A live refusal is recorded: on the pass of a tickless land (legacy or in-turn), on the frame of a tick land", arguments: TwoPhaseMode.allCases)
+    func rejectedIsRecorded(mode: TwoPhaseMode) async throws {
+        let tick = mode.tick
+        let keeper = try await makeTwoPhaseKeeper(mode, recording: true)
         let key = TwoPhaseRefusals.freshKey()
         TwoPhaseRefusals.refuse(key)
         defer { TwoPhaseRefusals.allow(key) }
@@ -387,9 +502,32 @@ struct TwoPhaseHandlerTests {
         #expect(try await replay(path, tick: tick).recordedPassMismatches.isEmpty)
     }
 
-    @Test("Rejected live, applied in replay: reported with its sequence and tick", arguments: [false, true])
-    func rejectedLiveAppliedInReplay(tick: Bool) async throws {
-        let keeper = try await makeTwoPhaseKeeper(tick: tick, recording: true)
+    @Test("Two refusals in one tick are both recorded on its frame, in order, and replay matches")
+    func twoRefusalsInOneTick() async throws {
+        let keeper = try await makeTwoPhaseKeeper(tick: true, recording: true)
+        let first = TwoPhaseRefusals.freshKey(), second = TwoPhaseRefusals.freshKey()
+        TwoPhaseRefusals.refuse(first)
+        TwoPhaseRefusals.refuse(second)
+        defer { TwoPhaseRefusals.allow(first); TwoPhaseRefusals.allow(second) }
+        _ = try await send(keeper, TwoPhaseAddAction(amount: 1, key: first))
+        _ = try await send(keeper, TwoPhaseAddAction(amount: 2, key: TwoPhaseRefusals.freshKey()))
+        _ = try await send(keeper, TwoPhaseAddAction(amount: 4, key: second))
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 2)
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let frames = await (try #require(await keeper.getReevaluationRecorder())).getAllFrames()
+        let actions = frames.flatMap(\.actions).map(\.sequence)
+        #expect(actions.count == 3)
+        #expect(frames.flatMap(\.rejected) == [actions[0], actions[2]])
+        let path = try await saveJSONRecord(keeper)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        #expect(try await replay(path, tick: true).recordedPassMismatches.isEmpty)
+    }
+
+    @Test("Rejected live, applied in replay: reported for the input's tick, naming its sequence", arguments: TwoPhaseMode.allCases)
+    func rejectedLiveAppliedInReplay(mode: TwoPhaseMode) async throws {
+        let tick = mode.tick
+        let keeper = try await makeTwoPhaseKeeper(mode, recording: true)
         let key = TwoPhaseRefusals.freshKey()
         TwoPhaseRefusals.refuse(key)
         _ = await sendAndApply(keeper, tick: tick, TwoPhaseAddAction(amount: 5, key: key))
@@ -397,24 +535,45 @@ struct TwoPhaseHandlerTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         let json = try #require(try ReevaluationRecordFile.openSource(filePath: path) as? JSONReevaluationSource)
         let sequence = try #require(await json.getAllFrames().flatMap(\.actions).last).sequence
+        let tickId = try await tickOf(sequence, in: path)
         TwoPhaseRefusals.allow(key)
         let mismatches = try await replay(path, tick: tick).recordedPassMismatches
-        #expect(mismatches.count == 1)
-        #expect(mismatches.values.first?.contains("input \(sequence) was rejected live and applied in replay") == true, "\(mismatches)")
+        #expect(Array(mismatches.keys) == [tickId], "\(mismatches)")
+        #expect(mismatches[tickId]?.contains("input \(sequence) was rejected live and applied in replay") == true, "\(mismatches)")
     }
 
-    @Test("Applied live, rejected in replay: reported with its sequence and tick", arguments: [false, true])
-    func appliedLiveRejectedInReplay(tick: Bool) async throws {
-        let keeper = try await makeTwoPhaseKeeper(tick: tick, recording: true)
+    @Test("Applied live, rejected in replay: reported for the input's tick, naming its sequence", arguments: TwoPhaseMode.allCases)
+    func appliedLiveRejectedInReplay(mode: TwoPhaseMode) async throws {
+        let tick = mode.tick
+        let keeper = try await makeTwoPhaseKeeper(mode, recording: true)
         let key = TwoPhaseRefusals.freshKey()
         _ = await sendAndApply(keeper, tick: tick, TwoPhaseAddAction(amount: 5, key: key))
         let path = try await saveJSONRecord(keeper)
         defer { try? FileManager.default.removeItem(atPath: path) }
+        let json = try #require(try ReevaluationRecordFile.openSource(filePath: path) as? JSONReevaluationSource)
+        let sequence = try #require(await json.getAllFrames().flatMap(\.actions).last).sequence
+        let tickId = try await tickOf(sequence, in: path)
         TwoPhaseRefusals.refuse(key)
         defer { TwoPhaseRefusals.allow(key) }
         let mismatches = try await replay(path, tick: tick).recordedPassMismatches
-        #expect(mismatches.count == 1)
-        #expect(mismatches.values.first?.contains("was applied live and rejected in replay") == true, "\(mismatches)")
+        #expect(Array(mismatches.keys) == [tickId], "\(mismatches)")
+        #expect(mismatches[tickId]?.contains("input \(sequence) was applied live and rejected in replay") == true, "\(mismatches)")
+    }
+
+    @Test("The monitor's runner compares the rejected list too (its 3.5 gate)", arguments: [false, true])
+    func runnerComparesRejected(tick: Bool) async throws {
+        let keeper = try await makeTwoPhaseKeeper(tick: tick, recording: true)
+        let key = TwoPhaseRefusals.freshKey()
+        TwoPhaseRefusals.refuse(key)
+        _ = await sendAndApply(keeper, tick: tick, TwoPhaseAddAction(amount: 5, key: key))
+        let path = try await saveJSONRecord(keeper)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        // Refused again in replay: the runner reports nothing.
+        #expect(try await runnerMismatches(path, tick: tick).isEmpty)
+        TwoPhaseRefusals.allow(key)
+        let mismatches = try await runnerMismatches(path, tick: tick)
+        #expect(mismatches.count == 1, "\(mismatches)")
+        #expect(mismatches.values.first?.contains("was rejected live and applied in replay") == true, "\(mismatches)")
     }
 
     @Test("A malformed rejected list (an unknown or repeated sequence) is reported", arguments: [false, true])

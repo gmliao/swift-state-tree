@@ -357,6 +357,7 @@ struct ServerInputTests {
             #expect(result.tickHashes[tickId] == recorded, "tick \(tickId): replay fails it the same way")
         }
         #expect(result.serverEventVerification == .passed, "its events are dropped live and in replay")
+        #expect(result.recordedPassMismatches.isEmpty, "replay refuses it again, as the frame's rejected list says")
     }
 
     @Test("Live applies the record form: a Date and a Double decode the same live and in replay")

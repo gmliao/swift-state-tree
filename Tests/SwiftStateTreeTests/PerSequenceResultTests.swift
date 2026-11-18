@@ -70,6 +70,22 @@ struct PerSequenceHandlerFailure: Error, Equatable {
     let tag: String
 }
 
+/// Tags refused once, at `validate`'s first attempt (#586). A refused input run again would then
+/// apply and show in the log, where a refusal the state decides (`refusedTags`) can't show it.
+enum PerSequenceRefuseOnce {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var tags: Set<String> = []
+
+    /// A tag no other test uses, refused at its first attempt only.
+    static func fresh() -> String {
+        let tag = "once-\(UUID().uuidString.prefix(8))"
+        lock.withLock { _ = tags.insert(tag) }
+        return tag
+    }
+
+    static func take(_ tag: String) -> Bool { lock.withLock { tags.remove(tag) != nil } }
+}
+
 private func makePerSequenceDefinition(tick: Bool) -> LandDefinition<PerSequenceTestState> {
     if tick {
         return Land("per-sequence-test", using: PerSequenceTestState.self) {
@@ -111,7 +127,7 @@ private func perSequenceRules() -> RulesNode {
         }
         HandleAction(PerSequenceThrowingAction.self, validate: {
             (state: PerSequenceTestState, action: PerSequenceThrowingAction, _: ValidateContext) in
-            if state.refusedTags.contains(action.tag) {
+            if state.refusedTags.contains(action.tag) || PerSequenceRefuseOnce.take(action.tag) {
                 throw PerSequenceHandlerFailure(tag: action.tag)
             }
         }, apply: { (state: inout PerSequenceTestState, action: PerSequenceThrowingAction, _: LandContext) in
@@ -268,25 +284,28 @@ private func outcome(
 struct PerSequenceResultTests {
     @Test("A caller gets its own response, not that of an input run after it (#88)", arguments: [false, true])
     func ownResponse(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(inTurn: inTurn, refusedTags: ["t"])
+        let keeper = await makePerSequenceKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let gateKey = DeliveryGates.freshKey()
+        // Refused at its first attempt only: run again, it would apply.
+        let t = PerSequenceRefuseOnce.fresh()
 
         // Y takes its number, then holds in its resolver; T, numbered after Y, throws.
         let y = Task { try await send(keeper, PerSequenceGatedAction(amount: gateKey), from: p2) }
         guard try await withinDeadline("Y's resolver holds", {
             await DeliveryGates.gate(gateKey).waitUntilEntered()
         }) != nil else { return }
-        #expect(await outcome(keeper, PerSequenceThrowingAction(amount: 7, tag: "t")) == "threw t")
+        #expect(await outcome(keeper, PerSequenceThrowingAction(amount: 7, tag: t)) == "threw \(t)")
 
         DeliveryGates.gate(gateKey).release()
         guard let response = try await withinDeadline("Y returns", { try await y.value }) else { return }
         #expect(ackAmount(response) == gateKey)
-        // T failed and was removed: it never runs again.
+        // T failed and was removed: it doesn't run again, in Y's pass or in a later one.
+        #expect(await outcome(keeper, PerSequencePlainAction(amount: 1)) == "ok 1")
         let state = await keeper.currentState()
-        #expect(state.total == gateKey)
-        #expect(!state.log.contains("throwing:t"))
+        #expect(state.total == gateKey + 1)
+        #expect(!state.log.contains("throwing:\(t)"))
     }
 
     @Test("Tickless: an always-throwing input fails alone and blocks nothing; nothing runs twice", arguments: [false, true])
@@ -311,11 +330,13 @@ struct PerSequenceResultTests {
 
     @Test("Tick land: in one tick, the inputs after a throwing input apply; it doesn't run again next tick", arguments: [false, true])
     func tickPassContinuesPastThrow(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(tick: true, inTurn: inTurn, refusedTags: ["w"])
+        let keeper = await makePerSequenceKeeper(tick: true, inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.stepTickOnce()
+        // Refused at its first attempt only: if it stayed queued, the next tick would apply it.
+        let w = PerSequenceRefuseOnce.fresh()
         _ = try await send(keeper, PerSequencePlainAction(amount: 2))
-        _ = try await send(keeper, PerSequenceThrowingAction(amount: 1, tag: "w"))
+        _ = try await send(keeper, PerSequenceThrowingAction(amount: 1, tag: w))
         _ = try await send(keeper, PerSequencePlainAction(amount: 4))
         await keeper.stepTickOnce()
         await keeper.stepTickOnce()
