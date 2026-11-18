@@ -559,13 +559,29 @@ struct HandshakeFrameLimitTests {
         #expect(await connection.errorCodes.count == refused.count + 1)
     }
 
-    @Test("A frame nested past the client-frame limit is refused before it is parsed, and counts against the budget (#362)")
+    @Test("A valid join nested one past the client-frame limit is refused before it is parsed, and counts against the budget (#362)")
     func tooDeepCountsAgainstBudget() async throws {
         let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 2)
         let session = SessionID("s-budget-deep")
         let connection = await fixture.connect(session)
-        let levels = PayloadNesting.clientFrameMaxDepth + 1
-        let deep = Data((String(repeating: "[", count: levels) + String(repeating: "]", count: levels)).utf8)
+        // A valid join, one level past the limit: its metadata holds nested objects. Without the
+        // check it would be admitted, so the refusals below are the depth's.
+        let limit = PayloadNesting.clientFrameMaxDepth
+        func deepJoin(_ inner: Int) throws -> Data {
+            var value: Any = [String: Any]()
+            for _ in 0..<inner { value = ["a": value] }
+            var metadata = StateUpdateFeature.joinMetadata
+            metadata["deep"] = AnyCodable(value)
+            return try JSONEncoder().encode(TransportMessage.join(
+                requestID: "join-deep", landType: "handshake-limit", landInstanceId: "one",
+                playerID: "p1", deviceID: nil, metadata: metadata
+            ))
+        }
+        // The frame, its payload, the join and its metadata hold the value: 4 levels.
+        let deep = try deepJoin(limit + 1 - 5)
+        try PayloadNesting.checkJSON(deep, limit: limit + 1)
+        #expect(throws: PayloadNesting.TooDeep.self) { try PayloadNesting.checkJSON(deep, limit: limit) }
+        #expect(deep.count <= 512)
         for _ in 0..<2 {
             await fixture.transport.handleIncomingMessage(sessionID: session, data: deep)
         }

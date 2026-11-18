@@ -61,6 +61,8 @@ public enum SyncAckFrame {
     private static func parseJSON(_ data: Data) -> UInt64? {
         // A prefix test in place first: every other text frame is an object or another opcode.
         guard hasJSONPrefix(data) else { return nil }
+        // A sync ack nests one level; anything deeper is refused before it is parsed (#362).
+        guard (try? PayloadNesting.checkClientJSON(data, limit: 1)) != nil else { return nil }
         guard let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any], array.count == 2 else { return nil }
         return syncSequence(array[1])
     }

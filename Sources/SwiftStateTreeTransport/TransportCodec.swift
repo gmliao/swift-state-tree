@@ -14,8 +14,19 @@ public protocol TransportCodec: Sendable {
     func encode<T: Encodable>(_ value: T) throws -> Data
     func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T
     /// Decodes a frame a client sent: as `decode`, but refusing data nested deeper than
-    /// `PayloadNesting.clientFrameMaxDepth` before anything walks it recursively (#362).
+    /// `PayloadNesting.clientFrameMaxDepth` before anything walks it recursively (#362). The
+    /// default checks JSON (any encoding but `.messagepack`) before calling `decode`; a
+    /// MessagePack codec of another module must bound its own unpacking.
     func decodeClientFrame<T: Decodable>(_ type: T.Type, from data: Data) throws -> T
+}
+
+public extension TransportCodec {
+    func decodeClientFrame<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        if encoding != .messagepack {
+            try PayloadNesting.checkClientJSON(data)
+        }
+        return try decode(type, from: data)
+    }
 }
 
 /// JSON-based transport codec.
@@ -67,7 +78,7 @@ public struct JSONTransportCodec: TransportCodec {
     }
 
     public func decodeClientFrame<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        try PayloadNesting.checkJSON(data)
+        try PayloadNesting.checkClientJSON(data)
         return try decoder.decode(type, from: data)
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 /// How deep a client's data may nest, in every encoding (#362).
 ///
@@ -7,8 +8,9 @@ import Foundation
 /// `InboundPayloadDecoding`, the payload type's decode, the recorder's conversion. Swift
 /// Concurrency's cooperative threads on Darwin have a 544 KiB stack, and at Foundation's JSON
 /// limit (512 levels) the re-encode overflows it, in debug and in release. So:
-/// - JSON from a client (a frame, a 2.x record) is refused past `clientFrameMaxDepth` before it
-///   is parsed (`checkJSON`), and MessagePack from a client unpacks at the same limit;
+/// - a client frame that may reach a JSON parser is checked once, before any parse
+///   (`checkClientJSON`), and MessagePack from a client unpacks at the same limit;
+/// - a 2.x JSON record is checked the same way, at the record limit;
 /// - every payload is checked again before its re-encode, whatever its source (`check`).
 ///
 /// Two limits; a test pins both and their relation:
@@ -29,16 +31,60 @@ package enum PayloadNesting {
         package var description: String { "Nesting deeper than \(limit)" }
     }
 
-    /// Throws `TooDeep` when `data`, read as JSON, has arrays or objects nested deeper than
-    /// `limit`: one pass over the bytes, counting `[` and `{` outside strings (where a backslash
-    /// escapes the next byte), with no recursion and no allocation. Nothing else is judged;
-    /// malformed JSON is the parser's to refuse.
+    /// JSON the depth check can't read as UTF-8 JSON: another encoding (UTF-16 or UTF-32, which
+    /// Foundation would decode), or a closer with nothing open.
+    package struct NotCheckableJSON: Error, CustomStringConvertible, Sendable {
+        package let reason: String
+        package var description: String { "Not UTF-8 JSON the nesting check can read: \(reason)" }
+    }
+
+    /// Checks a client frame that may reach a JSON parser, once, before any parse. Foundation
+    /// reads JSON after leading whitespace and a BOM, and in UTF-16 or UTF-32 too; so:
+    /// - leading ASCII whitespace and a UTF-8 BOM are skipped, as the parser does;
+    /// - a frame that then starts like UTF-16 or UTF-32 (a 0x00, 0xFE or 0xFF byte) is refused,
+    ///   since client JSON is UTF-8;
+    /// - one that starts with `[` or `{` is scanned (`checkJSON`);
+    /// - anything else holds no container a parser could open first, and is the decoder's to
+    ///   refuse.
+    /// A MessagePack frame that decodes to a message never starts with any of these bytes (it is
+    /// a map or an array), so a pipeline that tries JSON first (the legacy join) can run this on
+    /// every frame.
+    package static func checkClientJSON(_ data: Data, limit: Int = clientFrameMaxDepth) throws {
+        let first = data.withUnsafeBytes { raw -> UInt8? in
+            var index = 0
+            if raw.count >= 3, raw[0] == 0xEF, raw[1] == 0xBB, raw[2] == 0xBF { index = 3 }
+            while index < raw.count {
+                switch raw[index] {
+                case 0x20, 0x09, 0x0A, 0x0D: index += 1
+                default: return raw[index]
+                }
+            }
+            return nil
+        }
+        switch first {
+        case 0x00, 0xFE, 0xFF:
+            throw NotCheckableJSON(reason: "it starts like UTF-16 or UTF-32")
+        case UInt8(ascii: "["), UInt8(ascii: "{"):
+            try checkJSON(data, limit: limit)
+        default:
+            return
+        }
+    }
+
+    /// Throws `TooDeep` when `data`, read as UTF-8 JSON, has arrays or objects nested deeper
+    /// than `limit`: one pass over the bytes, counting `[` and `{` outside strings (where a
+    /// backslash escapes the next byte), with no recursion and no allocation. A NUL byte (never
+    /// in UTF-8 JSON, always in UTF-16 or UTF-32 JSON, whose escapes this count would misread)
+    /// and a closer with nothing open throw `NotCheckableJSON`. Nothing else is judged; malformed
+    /// JSON is the parser's to refuse.
     package static func checkJSON(_ data: Data, limit: Int = clientFrameMaxDepth) throws {
-        let tooDeep = data.withUnsafeBytes { raw -> Bool in
+        enum Outcome { case fits, tooDeep, notUTF8, unbalanced }
+        let outcome = data.withUnsafeBytes { raw -> Outcome in
             var depth = 0
             var inString = false
             var escaped = false
             for byte in raw {
+                if byte == 0 { return .notUTF8 }
                 if inString {
                     if escaped {
                         escaped = false
@@ -54,33 +100,74 @@ package enum PayloadNesting {
                     inString = true
                 case UInt8(ascii: "["), UInt8(ascii: "{"):
                     depth += 1
-                    if depth > limit { return true }
+                    if depth > limit { return .tooDeep }
                 case UInt8(ascii: "]"), UInt8(ascii: "}"):
                     depth -= 1
+                    if depth < 0 { return .unbalanced }
                 default:
                     break
                 }
             }
-            return false
+            return .fits
         }
-        if tooDeep { throw TooDeep(limit: limit) }
+        switch outcome {
+        case .fits: return
+        case .tooDeep: throw TooDeep(limit: limit)
+        case .notUTF8: throw NotCheckableJSON(reason: "a NUL byte")
+        case .unbalanced: throw NotCheckableJSON(reason: "a closer with nothing open")
+        }
     }
 
     /// Throws `TooDeep` when `value` (an `AnyCodable`'s `base`: arrays, string-keyed
-    /// dictionaries and leaves) has containers nested deeper than `limit`. Iterative, so the
-    /// check itself can't overflow on the value it refuses. A value of any other type is a leaf:
-    /// only the server builds those, and a client's data decodes to arrays and dictionaries.
+    /// dictionaries, `AnyCodable`s and leaves) has containers nested deeper than `limit`. It
+    /// recurses at most `limit + 1` calls deep, so it can't overflow on the value it refuses, and
+    /// allocates nothing for the values a client's data decodes to (`[Any]`, `[String: Any]`).
+    /// An `AnyCodable` counts as its base, at the same depth.
     package static func check(_ value: Any, limit: Int = clientFrameMaxDepth) throws {
-        // Each entry: a value and the depth of the container holding it (0 at the top).
-        var pending: [(value: Any, depth: Int)] = [(value, 0)]
-        while let (current, depth) = pending.popLast() {
-            if let array = current as? [Any] {
-                guard depth < limit else { throw TooDeep(limit: limit) }
-                for element in array { pending.append((element, depth + 1)) }
-            } else if let object = current as? [String: Any] {
-                guard depth < limit else { throw TooDeep(limit: limit) }
-                for element in object.values { pending.append((element, depth + 1)) }
-            }
+        if !fits(value, depth: 0, limit: limit) { throw TooDeep(limit: limit) }
+    }
+
+    /// Whether `value`, a container's element at `depth`, fits under `limit`.
+    private static func fits(_ value: Any, depth: Int, limit: Int) -> Bool {
+        if let wrapped = value as? AnyCodable {
+            return fits(wrapped.base, depth: depth, limit: limit)
         }
+        if let array = value as? [Any] {
+            guard depth < limit else { return false }
+            for element in array where !fits(element, depth: depth + 1, limit: limit) { return false }
+            return true
+        }
+        if let object = value as? [String: Any] {
+            guard depth < limit else { return false }
+            for element in object.values where !fits(element, depth: depth + 1, limit: limit) { return false }
+            return true
+        }
+        return true
+    }
+
+    // MARK: - Client events dropped for their depth
+
+    private static let logger = Logger(label: "com.swiftstatetree.payload-nesting")
+    private static let droppedLock = NSLock()
+    nonisolated(unsafe) private static var dropped = 0
+
+    /// Client events dropped because their payload nested deeper than the limit, in this process.
+    /// A client event whose payload doesn't decode is dropped, live and replayed alike (#537 is
+    /// to reject it instead); one too deep is also logged and counted here.
+    package static var droppedClientEventCount: Int {
+        droppedLock.withLock { dropped }
+    }
+
+    /// Logs and counts a client event of `type` dropped for its depth.
+    package static func noteDroppedClientEvent(type: String, _ error: TooDeep) {
+        let total = droppedLock.withLock { () -> Int in
+            dropped += 1
+            return dropped
+        }
+        logger.warning("Client event dropped: its payload nests too deep", metadata: [
+            "eventType": .string(type),
+            "limit": .stringConvertible(error.limit),
+            "droppedTotal": .stringConvertible(total),
+        ])
     }
 }

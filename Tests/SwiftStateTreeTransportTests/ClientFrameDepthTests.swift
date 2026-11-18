@@ -231,6 +231,54 @@ struct ClientFrameDepthTests {
         }
     }
 
+    @Test("Leading whitespace or a UTF-8 BOM doesn't skip the check: at the limit the payload is reached, past it every parsing decoder refuses",
+          arguments: [FrameEncoding.json, .opcodeJsonArray], ["action", "clientEvent", "join"])
+    func prefixedJSON(encoding: FrameEncoding, kind: String) async {
+        for prefix in [" ", "\n\t ", "\u{FEFF}", "\u{FEFF} "] {
+            for depth in [Self.limit, Self.limit + 1, Self.foundationJSONLimit] {
+                let frame = encoding == .json
+                    ? DeepFrames.json(kind, depth: depth, objects: true)
+                    : DeepFrames.opcodeJSON(kind, depth: depth, objects: true)
+                let data = Data(prefix.utf8) + frame
+                let report = await Task.detached { await ClientFrameChain.run(data, encoding: encoding) }.value
+                let context = "\(encoding) \(kind) depth \(depth) prefix \(Array(prefix.utf8))"
+                // The handshake reads only a frame that starts with `[` or `{`; this one it
+                // refuses unparsed.
+                #expect(report.refused["handshake"] == "no message", "\(context): \(report)")
+                let parsing = ["router", "pipeline", "pipeline-legacy-join"]
+                if depth <= Self.limit {
+                    #expect(report.succeeded == parsing.flatMap { [$0, "\($0)/payload"] }, "\(context): \(report)")
+                } else {
+                    #expect(report.succeeded.isEmpty, "\(context): \(report)")
+                    for name in parsing {
+                        let error = report.refused[name] ?? "none"
+                        #expect(error.contains("Nesting deeper than \(Self.limit)"), "\(context) \(name): \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test("UTF-16 JSON is refused by every decoder, whether or not Foundation would read it",
+          arguments: [FrameEncoding.json, .opcodeJsonArray], [String.Encoding.utf16LittleEndian, .utf16BigEndian, .utf16])
+    func utf16Refused(encoding: FrameEncoding, textEncoding: String.Encoding) async throws {
+        // An escaped quote inside a string, then nesting past the limit: a byte-wise escape
+        // count would end the string early and miss the brackets after it.
+        let utf8 = encoding == .json
+            ? DeepFrames.json("action", depth: Self.foundationJSONLimit, objects: false)
+            : DeepFrames.opcodeJSON("action", depth: Self.foundationJSONLimit, objects: false)
+        let text = try #require(String(data: utf8, encoding: .utf8))
+            .replacingOccurrences(of: "\"r\"", with: "\"r\\\"q\"")
+        let data = try #require(text.data(using: textEncoding))
+        let report = await Task.detached { await ClientFrameChain.run(data, encoding: encoding) }.value
+        let context = "\(encoding) \(textEncoding)"
+        #expect(report.succeeded.isEmpty, "\(context): \(report)")
+        for name in ["router", "pipeline", "pipeline-legacy-join"] {
+            let error = report.refused[name] ?? "none"
+            #expect(error.contains("Not UTF-8 JSON"), "\(context) \(name): \(error)")
+        }
+    }
+
     @Test("MessagePack nested up to the limit reaches the payload decode, on the cooperative pool; deeper is refused",
           arguments: ["action", "clientEvent", "join"])
     func messagePackDepth(kind: String) async throws {

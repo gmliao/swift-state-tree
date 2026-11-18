@@ -29,15 +29,13 @@ struct MessageDecodingPipeline: Sendable {
     /// - Returns: Decoded TransportMessage
     /// - Throws: Decoding errors if data cannot be parsed
     func decode(_ data: Data) throws -> TransportMessage {
-        // A frame that starts like JSON is depth-checked before anything parses it (#362). A
-        // MessagePack frame never starts with `[` or `{` (the bare integers 91 and 123).
-        if let first = data.first, first == 0x5b || first == 0x7b {
-            try PayloadNesting.checkJSON(data)
-        }
         // Special handling for legacy join mode:
         // In legacy mode, join messages are always JSON (even if server is MessagePack-configured)
         // So we need to detect JSON format first before falling back to codec
         if enableLegacyJoin {
+            // Any frame may reach the JSON parser first, so every one is checked, once, before it
+            // (#362); the decodes below don't check again, except MessagePack's unpack.
+            try PayloadNesting.checkClientJSON(data)
             // Try JSON detection first (for join handshake compatibility)
             if let json = try? JSONSerialization.jsonObject(with: data) {
                 if let array = json as? [Any],
@@ -48,17 +46,22 @@ struct MessageDecodingPipeline: Sendable {
                     return try opcodeDecoder.decode(from: data)
                 } else {
                     // Standard JSON object format (includes Join messages)
-                    return try JSONTransportCodec().decodeClientFrame(TransportMessage.self, from: data)
+                    return try JSONTransportCodec().decode(TransportMessage.self, from: data)
                 }
             }
             // Not JSON, fall back to configured codec (MessagePack)
-            return try codec.decodeClientFrame(TransportMessage.self, from: data)
+            return codec.encoding == .messagepack
+                ? try codec.decodeClientFrame(TransportMessage.self, from: data)
+                : try codec.decode(TransportMessage.self, from: data)
         }
         
         // Non-legacy mode: use codec-first approach (for performance)
         if codec.encoding == .messagepack {
             return try codec.decodeClientFrame(TransportMessage.self, from: data)
         }
+
+        // Checked once before anything parses it (#362); the decodes below don't check again.
+        try PayloadNesting.checkClientJSON(data)
         
         // Detect JSON opcode array format
         if let json = try? JSONSerialization.jsonObject(with: data),
@@ -70,6 +73,6 @@ struct MessageDecodingPipeline: Sendable {
         }
         
         // Standard JSON object format
-        return try codec.decodeClientFrame(TransportMessage.self, from: data)
+        return try codec.decode(TransportMessage.self, from: data)
     }
 }

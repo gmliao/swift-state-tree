@@ -18,6 +18,14 @@ public struct OpcodeTransportMessageDecoder: Sendable {
     /// - action: [101, requestID, typeIdentifier, payload(object)]
     /// - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
     /// - event: [103, direction(0=client,1=server), type, payload, rawBody?]
+    /// Decodes a frame a client sent: as `decode(from:)`, but refusing data nested deeper than
+    /// `PayloadNesting.clientFrameMaxDepth` before it is parsed (#362). `decode(from:)` also reads
+    /// frames the server builds, which may nest deeper.
+    public func decodeClientFrame(from data: Data) throws -> TransportMessage {
+        try PayloadNesting.checkClientJSON(data)
+        return try decode(from: data)
+    }
+
     public func decode(from data: Data) throws -> TransportMessage {
         // Parse JSON array
         let json = try JSONSerialization.jsonObject(with: data)
