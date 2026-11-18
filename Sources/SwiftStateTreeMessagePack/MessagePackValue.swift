@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 
 public enum MessagePackValue: Sendable, Equatable, Hashable {
     case `nil`
