@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 import SwiftStateTreeMessagePack
 
 /// MessagePack-based transport codec.

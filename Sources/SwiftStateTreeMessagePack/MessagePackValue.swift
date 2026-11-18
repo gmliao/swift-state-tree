@@ -112,8 +112,12 @@ public func pack(_ value: MessagePackValue) throws -> Data {
 /// `PayloadNesting.clientFrameMaxDepth` (#362).
 let messagePackMaxNestingDepth = PayloadNesting.serverFrameMaxDepth
 
+public func unpack(_ data: Data) throws -> MessagePackValue {
+    try unpack(data, maxDepth: messagePackMaxNestingDepth)
+}
+
 /// Unpacks `data`, refusing arrays and maps nested deeper than `maxDepth`.
-public func unpack(_ data: Data, maxDepth: Int = messagePackMaxNestingDepth) throws -> MessagePackValue {
+package func unpack(_ data: Data, maxDepth: Int) throws -> MessagePackValue {
     var unpacker = MessagePackUnpacker(data: data, maxDepth: maxDepth)
     return try unpacker.unpackValue()
 }
