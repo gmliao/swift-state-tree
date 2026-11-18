@@ -353,7 +353,12 @@ One PR, as #551 says, built in reviewable commits:
 5. The `PlainData` macro, its expansion tests, the conformances; the lints.
 6. The must-fail snippets and the script extension.
 7. The generated-order harness.
-8. `TurnsBench` and `check-turns-inlinable.sh`; DocC.
+8. `TurnsBench` and `check-turns-inlinable.sh`; DocC. The catalog has:
+   - an overview article: what a turn is (the actor-turn sense, in the first paragraph) and the rule the core enforces (state changes only in steps; effects come back as inputs);
+   - a worked example article: a small machine and actor trimmed from `DemoMachine`/`DemoActor`, compiled and run as a test, with a check that the article's code matches the test file. It shows `step`, an effect, `perform`, `flush`, `send` against `call`, and a holding request with its deadline;
+   - why `perform` carries both attributes: `nonisolated` keeps it off the actor's state, and `@concurrent` makes it run off the actor under 6.2's `nonisolated(nonsending)` default. One paragraph, with what goes wrong with each one alone.
+
+   No `docs/` page here: Land authors never see the core. A `docs/` architecture page comes with #546's first slice, when `TransportAdapter` adopts it.
 
 If Review finds the PR too large, the split is (1–4, 6's snippets for `Turn`, `perform` and the holding deadline, 7) then (5, the PlainData snippets, the lints), then (8). Each part is green on 6.2.4 in both configurations; the merge conditions (§8) apply to the last.
 
