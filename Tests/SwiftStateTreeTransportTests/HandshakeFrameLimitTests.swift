@@ -1,9 +1,10 @@
 // Tests/SwiftStateTreeTransportTests/HandshakeFrameLimitTests.swift
 //
-// The pre-handshake frame-size cap (`HandshakeFrameLimit`): before a session's join is admitted,
-// a frame over the limit is refused before it is parsed, with an INVALID_MESSAGE_FORMAT error
-// and a 1009 close, and the land never sees a join. A frame at the limit is decoded as before,
-// and frames after the join aren't limited.
+// The pre-handshake bounds (`HandshakeFrameLimit`): before a session's join is admitted, a frame
+// over the size limit is refused before it is parsed, with an INVALID_MESSAGE_FORMAT error and a
+// 1009 close, and the land never sees a join. A frame at the limit is decoded as before, and
+// frames after the join aren't limited. Refused pre-join frames past the budget close the
+// session with 1008, after the refused frame's own error.
 
 import Foundation
 import Testing
@@ -137,9 +138,13 @@ private struct LimitFixture {
     let router: LandRouter<HandshakeLimitTestState>
     let landID = LandID(landType: "handshake-limit", instanceId: "one")
 
-    init(limit: Int?) throws {
+    init(limit: Int?, refusedFrameBudget: Int? = nil) throws {
         let definition = Land("handshake-limit", using: HandshakeLimitTestState.self) {
             Rules {
+                // Player "deny" is refused: a join the router refuses after its decode.
+                CanJoin { (_: HandshakeLimitTestState, session: PlayerSession, _: LandContext) in
+                    session.playerID == "deny" ? .deny(reason: "denied") : .allow(playerID: PlayerID(session.playerID))
+                }
                 OnJoin { (state: inout HandshakeLimitTestState, ctx: LandContext) in
                     state.players[ctx.playerID] = "Joined"
                 }
@@ -165,7 +170,8 @@ private struct LimitFixture {
             transport: transport,
             allowAutoCreateOnJoin: true,
             transportEncoding: .json,
-            maxHandshakeFrameBytes: limit
+            maxHandshakeFrameBytes: limit,
+            maxRefusedHandshakeFrames: refusedFrameBudget
         )
     }
 
@@ -186,13 +192,14 @@ private struct LimitFixture {
 }
 
 /// A JSON-object join of exactly `bytes` bytes: the metadata's `pad` string fills it up.
-private func join(bytes: Int, requestID: String = "join-1") throws -> Data {
+/// `playerID` "deny" makes a join the land refuses (CanJoin).
+private func join(bytes: Int, requestID: String = "join-1", playerID: String = "p1") throws -> Data {
     func frame(_ pad: String) throws -> Data {
         var metadata = StateUpdateFeature.joinMetadata
         metadata["pad"] = AnyCodable(pad)
         return try JSONEncoder().encode(TransportMessage.join(
             requestID: requestID, landType: "handshake-limit", landInstanceId: "one",
-            playerID: "p1", deviceID: nil, metadata: metadata
+            playerID: playerID, deviceID: nil, metadata: metadata
         ))
     }
     let base = try frame("").count
@@ -204,14 +211,24 @@ private func join(bytes: Int, requestID: String = "join-1") throws -> Data {
 
 @Suite("Pre-handshake frame-size cap", .timeLimit(.minutes(1)))
 struct HandshakeFrameLimitTests {
-    @Test("HANDSHAKE_FRAME_MAX_BYTES: unset, negative or not an integer gives 64 KiB; 0 turns it off")
+    @Test("HANDSHAKE_FRAME_MAX_BYTES: unset, negative or not an integer gives 8 KiB; 0 turns it off")
     func environment() {
         let key = TransportEnvKeys.handshakeFrameMaxBytes
-        #expect(HandshakeFrameLimit.fromEnvironment(environment: [:]) == 64 * 1024)
+        #expect(HandshakeFrameLimit.fromEnvironment(environment: [:]) == 8 * 1024)
         #expect(HandshakeFrameLimit.fromEnvironment(environment: [key: "1000"]) == 1000)
         #expect(HandshakeFrameLimit.fromEnvironment(environment: [key: "0"]) == nil)
-        #expect(HandshakeFrameLimit.fromEnvironment(environment: [key: "-5"]) == 64 * 1024)
-        #expect(HandshakeFrameLimit.fromEnvironment(environment: [key: "64k"]) == 64 * 1024)
+        #expect(HandshakeFrameLimit.fromEnvironment(environment: [key: "-5"]) == 8 * 1024)
+        #expect(HandshakeFrameLimit.fromEnvironment(environment: [key: "8k"]) == 8 * 1024)
+    }
+
+    @Test("HANDSHAKE_REFUSED_FRAME_BUDGET: unset, negative or not an integer gives 8; 0 turns it off")
+    func budgetEnvironment() {
+        let key = TransportEnvKeys.handshakeRefusedFrameBudget
+        #expect(HandshakeFrameLimit.refusedFrameBudgetFromEnvironment(environment: [:]) == 8)
+        #expect(HandshakeFrameLimit.refusedFrameBudgetFromEnvironment(environment: [key: "3"]) == 3)
+        #expect(HandshakeFrameLimit.refusedFrameBudgetFromEnvironment(environment: [key: "0"]) == nil)
+        #expect(HandshakeFrameLimit.refusedFrameBudgetFromEnvironment(environment: [key: "-1"]) == 8)
+        #expect(HandshakeFrameLimit.refusedFrameBudgetFromEnvironment(environment: [key: "many"]) == 8)
     }
 
     @Test("A real join, every state-update feature declared and a metadata object, is far below the default")
@@ -226,7 +243,7 @@ struct HandshakeFrameLimitTests {
         ))
         print("[handshake-frame-limit] real join: \(frame.count) bytes")
         #expect(frame.count < 1024, "\(frame.count) bytes")
-        #expect(frame.count * 64 < HandshakeFrameLimit.defaultMaxBytes)
+        #expect(frame.count * 16 < HandshakeFrameLimit.defaultMaxBytes)
     }
 
     @Test("A join of exactly the limit is decoded and joins")
@@ -467,5 +484,206 @@ struct HandshakeFrameLimitTests {
             // Found or created before the hold: the land exists, but the player never joined it.
             #expect(await container.keeper.currentState().players.isEmpty)
         }
+    }
+
+    @Test("At the default limit a join is decoded and joins; one byte over it is refused with 1009")
+    func defaultLimit() async throws {
+        let limit = HandshakeFrameLimit.defaultMaxBytes
+        let fixture = try LimitFixture(limit: limit)
+        let at = SessionID("s-default-at")
+        let atConnection = await fixture.connect(at)
+        await fixture.transport.handleIncomingMessage(sessionID: at, data: try join(bytes: limit))
+        await atConnection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await atConnection.closes.isEmpty)
+        #expect(await fixture.router.getBoundLandID(for: at) != nil)
+
+        let over = SessionID("s-default-over")
+        let overConnection = await fixture.connect(over)
+        await fixture.transport.handleIncomingMessage(sessionID: over, data: try join(bytes: limit + 1, requestID: "join-2"))
+        await overConnection.waitFor { !$0.closes.isEmpty }
+        #expect(await overConnection.closes == [.handshakeFrameTooBig])
+        #expect(await fixture.router.getBoundLandID(for: over) == nil)
+    }
+
+    @Test("The budget's boundary: 8 refused frames get their errors, the 9th its error and then a 1008 close")
+    func budgetBoundary() async throws {
+        let budget = HandshakeFrameLimit.defaultMaxRefusedFrames
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: budget)
+        let session = SessionID("s-budget")
+        let connection = await fixture.connect(session)
+        // A frame that isn't JSON: refused at its first byte.
+        let notJSON = Data([0x01])
+        for _ in 0..<budget {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: notJSON)
+        }
+        await connection.waitFor { $0.kinds.count >= budget || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty, "within the budget the session stays open")
+        #expect(await connection.errorCodes.count == budget)
+
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: notJSON)
+        await connection.waitFor { !$0.closes.isEmpty }
+        let events = await connection.events
+        #expect(events == Array(repeating: .sent(.error), count: budget + 1) + [.closed(.handshakeRefusedFrames)])
+        #expect(SessionClose.handshakeRefusedFrames.code == 1008)
+        // Closed: a join it sends next doesn't join.
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
+        #expect(await fixture.router.getBoundLandID(for: session) == nil)
+    }
+
+    @Test("Malformed frames, non-join messages and refused joins all count against one budget")
+    func budgetMixesRefusals() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 4)
+        let session = SessionID("s-budget-mix")
+        let connection = await fixture.connect(session)
+        let action = try JSONEncoder().encode(TransportMessage.action(
+            requestID: "a-1",
+            action: ActionEnvelope(typeIdentifier: "HandshakeLimitNoteAction", payload: AnyCodable(["text": "x"]))
+        ))
+        let refused: [Data] = [
+            Data(),                                                          // empty
+            Data([0x01, 0x02]),                                              // not JSON
+            Data("{\"kind\":".utf8),                                         // undecodable JSON
+            try join(bytes: 400, requestID: "join-x", playerID: "deny"),  // a refused join
+        ]
+        for frame in refused {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: frame)
+        }
+        await connection.waitFor { $0.kinds.count >= refused.count || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty)
+        #expect(await connection.errorCodes.count == refused.count)
+
+        // A message other than a join, before join: the fifth refusal.
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: action)
+        await connection.waitFor { !$0.closes.isEmpty }
+        #expect(await connection.closes == [.handshakeRefusedFrames])
+        #expect(await connection.errorCodes.count == refused.count + 1)
+    }
+
+    @Test("Views joining over one connection get JOIN_IN_PROGRESS without reaching the budget; the first join completes")
+    func joinInProgressWithinBudget() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: HandshakeFrameLimit.defaultMaxRefusedFrames)
+        let session = SessionID("s-views")
+        let connection = await fixture.connect(session)
+        let gate = await fixture.hold(at: .afterLand)
+        let first = try join(bytes: 400)
+        let transport = fixture.transport
+        let joining = Task { await transport.handleIncomingMessage(sessionID: session, data: first) }
+        #expect(await gate.waitForArrivals(1))
+
+        // Three more views send their joins while the first is in progress.
+        for view in 2...4 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "join-\(view)"))
+        }
+        await connection.waitFor { $0.kinds.count >= 3 || !$0.closes.isEmpty }
+        #expect(await connection.errorCodes == Array(repeating: ErrorCode.joinInProgress.rawValue, count: 3))
+        gate.open()
+        await joining.value
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty)
+        #expect(await fixture.router.getBoundLandID(for: session) != nil)
+    }
+
+    @Test("A join after a few refusals succeeds and stays open; refusals after the join don't count")
+    func joinAfterRefusals() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 3)
+        let session = SessionID("s-retry")
+        let connection = await fixture.connect(session)
+        for attempt in 0..<3 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "retry-\(attempt)", playerID: "deny"))
+        }
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty)
+        #expect(await fixture.router.getBoundLandID(for: session) != nil)
+
+        // Joined: a second join is refused (`JOIN_ALREADY_JOINED`) but isn't a pre-join frame.
+        for attempt in 0..<5 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "again-\(attempt)"))
+        }
+        await connection.waitFor { $0.kinds.filter { $0 == .error }.count >= 8 || !$0.closes.isEmpty }
+        let codes = await connection.errorCodes
+        #expect(await connection.closes.isEmpty, "\(codes)")
+        #expect(codes.suffix(5) == Array(repeating: ErrorCode.joinAlreadyJoined.rawValue, count: 5), "\(codes)")
+    }
+
+    @Test("A session connected again under the same ID starts with a fresh budget")
+    func reconnectGetsFreshBudget() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 3)
+        let session = SessionID("s-reconnect")
+        let first = await fixture.connect(session)
+        for _ in 0..<3 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await first.waitFor { $0.kinds.count >= 3 || !$0.closes.isEmpty }
+        #expect(await first.closes.isEmpty, "the budget isn't spent yet")
+        await fixture.transport.handleDisconnection(sessionID: session)
+
+        // The same ID, a new connection: a whole budget of refused frames gets only their errors.
+        // (An over-budget refusal sends its error too, but drops the session first.)
+        let second = await fixture.connect(session)
+        for _ in 0..<3 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await second.waitFor { $0.kinds.count >= 3 || !$0.closes.isEmpty }
+        #expect(await fixture.router.hasHandshakePhase(session), "the new connection isn't refused")
+        #expect(await second.closes.isEmpty)
+        #expect(await second.errorCodes == Array(repeating: ErrorCode.invalidJSON.rawValue, count: 3))
+    }
+
+    @Test("While the over-budget error is held, the session is already refused: a join and an oversized frame are dropped, then one 1008 close")
+    func overBudgetTerminalWhileErrorHeld() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 2)
+        let session = SessionID("s-held-ninth")
+        let connection = await fixture.connect(session)
+        for _ in 0..<2 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await connection.waitFor { $0.kinds.count >= 2 || !$0.closes.isEmpty }
+        #expect(await fixture.router.hasHandshakePhase(session), "within the budget the session awaits its join")
+        // The drain stops inside the over-budget error's send.
+        await connection.holdSends()
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        await connection.waitFor { $0.sendAttempts >= 3 }
+        #expect(await connection.closes.isEmpty, "no close while the error is held")
+        #expect(await fixture.router.hasHandshakePhase(session) == false, "the session is refused before its error goes out")
+
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "join-late"))
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513, requestID: "join-big"))
+        #expect(await fixture.router.framesDroppedAfterRefusalForTesting == 2)
+
+        await connection.releaseSends()
+        await connection.waitFor { !$0.closes.isEmpty }
+        #expect(await connection.events == [.sent(.error), .sent(.error), .sent(.error), .closed(.handshakeRefusedFrames)])
+        #expect(await fixture.router.getBoundLandID(for: session) == nil)
+        #expect(await fixture.manager.getLand(landID: fixture.landID) == nil, "no land was looked up or created")
+    }
+
+    @Test("A join refused because the land is shutting down (the server's doing) doesn't count against the budget")
+    func serverCausedRefusalNotCounted() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 1)
+        // Creations stopped: the join's land creation throws `landShuttingDown`.
+        await fixture.manager.stopCreations()
+        let session = SessionID("s-shutting-down")
+        let connection = await fixture.connect(session)
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
+        await connection.waitFor { $0.kinds.count >= 2 || !$0.closes.isEmpty }
+        let codes = await connection.errorCodes
+        #expect(codes == [ErrorCode.invalidJSON.rawValue, ErrorCode.joinDenied.rawValue])
+        #expect(await fixture.router.hasHandshakePhase(session), "told to retry, not refused: \(codes)")
+        #expect(await connection.closes.isEmpty)
+    }
+
+    @Test("With no budget (nil), refused pre-join frames never close the session")
+    func noBudget() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: nil)
+        let session = SessionID("s-no-budget")
+        let connection = await fixture.connect(session)
+        for _ in 0..<20 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
+        }
+        await connection.waitFor { $0.kinds.count >= 20 || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty)
+        #expect(await connection.errorCodes.count == 20)
     }
 }
