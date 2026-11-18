@@ -135,3 +135,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-17 | [A gated test under a wall-clock deadline fails once the suite grows](2026-11-17-a-gated-test-under-a-wall-clock-deadline.md) | testing, resolver, deadline, cooperative-pool, parallel-tests, hold-points |
 | 2026-11-17 | [A hang guard in a task group waits for the hang](2026-11-17-a-hang-guard-in-a-task-group-waits-for-the-hang.md) | testing, hang-bound, deadlock, task-group, mutants |
 | 2026-11-17 | [A land-failure test passes in-turn and hangs on the legacy path](2026-11-17-a-land-failure-test-passes-in-turn-and-hangs-on-legacy.md) | testing, in-turn-sync, legacy-sync, land-failure, tick |
+| 2026-11-18 | [A `fatalError` in a cast's fallback branch is reachable from type-erased data](2026-11-18-a-fatalerror-in-a-casts-fallback-is-reachable-from-type-erased-data.md) | encoding, crash, type-erasure, land-failure, replay |

@@ -135,18 +135,30 @@ func makeUntypedEmitLand(_ id: String, untyped: Bool) -> LandDefinition<UntypedP
 }
 
 /// A record runner with one tick: no event replayed, one recorded with a dictionary payload, as a
-/// record's JSON decodes it.
+/// record's JSON decodes it. The service queues a step's result before it asks for the next
+/// step, so the second `step()` call (`queued`) says the result is in the queue.
 final class UntypedRecordRunner: ReevaluationRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var stepped = false
+    let queued: AsyncStream<Void>
+    private let queuedContinuation: AsyncStream<Void>.Continuation
     var maxTickId: Int64 { 0 }
+
+    init() {
+        (queued, queuedContinuation) = AsyncStream.makeStream()
+    }
+
     func prepare() async throws {}
     func step() async throws -> ReevaluationStepResult? {
         let first = lock.withLock {
             defer { stepped = true }
             return !stepped
         }
-        guard first else { return nil }
+        guard first else {
+            queuedContinuation.yield()
+            queuedContinuation.finish()
+            return nil
+        }
         let snapshot = StateSnapshot(values: ["round": .int(1)])
         let recorded = ReevaluationRecordedServerEvent(
             kind: "serverEvent", sequence: 1, tickId: 0, typeIdentifier: "Recorded",
@@ -162,15 +174,17 @@ final class UntypedRecordRunner: ReevaluationRunnerProtocol, @unchecked Sendable
 }
 
 struct UntypedRecordFactory: ReevaluationTargetFactory {
+    let runner = UntypedRecordRunner()
     func createRunner(landType: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
-        UntypedRecordRunner()
+        runner
     }
 }
 
 /// The replay land of `makeUntypedEmitLand`, with the fallback event policy and a run whose one
 /// tick has its result queued.
 func makeUntypedReplayLand(encoding: UntypedPayloadEncoding) async throws -> UntypedPayloadLand {
-    let runner = ReevaluationRunnerService(factory: UntypedRecordFactory(), projectorResolver: { _ in nil })
+    let factory = UntypedRecordFactory()
+    let runner = ReevaluationRunnerService(factory: factory, projectorResolver: { _ in nil })
     var services = LandServices()
     services.register(runner, as: ReevaluationRunnerService.self)
     services.register(ReevaluationReplayPolicyService(eventPolicy: .projectedWithFallback), as: ReevaluationReplayPolicyService.self)
@@ -178,10 +192,7 @@ func makeUntypedReplayLand(encoding: UntypedPayloadEncoding) async throws -> Unt
     let land = try await UntypedPayloadLand.make(
         GenericReplayLand<UntypedPayloadState>.makeLand(basedOn: base), encoding: encoding, services: services)
     runner.startVerification(landType: "untyped-replay", recordFilePath: "unused")
-    while runner.getStatus().phase != .completed {
-        try Task.checkCancellation()
-        await Task.yield()
-    }
+    for await _ in factory.runner.queued { break }
     return land
 }
 
