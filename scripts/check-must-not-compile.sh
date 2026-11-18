@@ -5,14 +5,19 @@
 #   // expect-error: <text>           the build must fail with an error line containing <text>
 #                                     (not the source excerpt the compiler echoes beside it)
 # Prelude.swift is compiled into every snippet's target. SwiftPM resolves the dependencies'
-# module maps itself, on macOS and Linux alike. The package and its build live under
+# module maps itself, on macOS and Linux alike.
+# Two sets: the snippets in scripts/must-not-compile/ build against SwiftStateTree (Swift 5 mode),
+# and those in scripts/must-not-compile/turns/ against SwiftStateTurns (Swift 6 mode, with their
+# own Prelude.swift). An error inside a macro's expansion (`macro expansion @PlainData:…`, no
+# file path) counts as the snippet's: a snippet's target builds only it and its prelude, and no
+# prelude uses a macro. The package and its build live under
 # .build/must-not-compile/ (the first run builds the library there; later runs are incremental).
 # Usage, from anywhere: scripts/check-must-not-compile.sh
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 snippets_dir="$root/scripts/must-not-compile"
-prelude="$snippets_dir/Prelude.swift"
+turns_dir="$snippets_dir/turns"
 work="$root/.build/must-not-compile"
 package="$work/package"
 scratch="$work/build"
@@ -20,16 +25,20 @@ scratch="$work/build"
 identity="$(basename "$root" | tr '[:upper:]' '[:lower:]')"
 
 snippets=()
-for snippet in "$snippets_dir"/*.swift; do
-    [[ "$snippet" == "$prelude" ]] && continue
-    snippets+=("$snippet")
+for dir in "$snippets_dir" "$turns_dir"; do
+    for snippet in "$dir"/*.swift; do
+        [[ "$(basename "$snippet")" == Prelude.swift ]] && continue
+        snippets+=("$snippet")
+    done
 done
 
-# One target per snippet, named after its file.
+is_turns() { [[ "$(dirname "$1")" == "$turns_dir" ]]; }
+
+# One target per snippet, named after its file and its set.
 target_name() {
     local base
     base="$(basename "$1" .swift)"
-    echo "Snippet_${base//-/_}"
+    if is_turns "$1"; then echo "Turns_${base//-/_}"; else echo "Snippet_${base//-/_}"; fi
 }
 
 rm -rf "$package"
@@ -45,7 +54,11 @@ mkdir -p "$package/Sources"
     echo '    targets: ['
     for snippet in "${snippets[@]}"; do
         name="$(target_name "$snippet")"
-        echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTree\", package: \"$identity\")]),"
+        if is_turns "$snippet"; then
+            echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTurns\", package: \"$identity\")], swiftSettings: [.swiftLanguageMode(.v6)]),"
+        else
+            echo "        .target(name: \"$name\", dependencies: [.product(name: \"SwiftStateTree\", package: \"$identity\")]),"
+        fi
     done
     echo '    ],'
     echo '    swiftLanguageModes: [.v5]'
@@ -56,16 +69,17 @@ cp "$root/Package.resolved" "$package/Package.resolved"
 for snippet in "${snippets[@]}"; do
     name="$(target_name "$snippet")"
     mkdir -p "$package/Sources/$name"
-    cp "$prelude" "$package/Sources/$name/Prelude.swift"
+    cp "$(dirname "$snippet")/Prelude.swift" "$package/Sources/$name/Prelude.swift"
     cp "$snippet" "$package/Sources/$name/$(basename "$snippet")"
 done
 
 failures=0
 for snippet in "${snippets[@]}"; do
     name="$(basename "$snippet")"
+    target="$(target_name "$snippet")"
     header="$(head -n 1 "$snippet")"
     set +e
-    output="$(swift build --package-path "$package" --scratch-path "$scratch" --target "$(target_name "$snippet")" 2>&1)"
+    output="$(swift build --package-path "$package" --scratch-path "$scratch" --target "$target" 2>&1)"
     status=$?
     set -e
     errors="$(grep -F -- "error:" <<<"$output" || true)"
@@ -89,7 +103,7 @@ for snippet in "${snippets[@]}"; do
                 echo "${errors:-$output}" | sed -n 1,5p
                 failures=$((failures + 1))
             # The error must come from the snippet, not from the library or the setup.
-            elif [[ "$(grep -F -- "$expected" <<<"$errors")" != *"/$name:"* ]]; then
+            elif ! grep -F -- "$expected" <<<"$errors" | grep -q -E "/$name:|^macro expansion @"; then
                 echo "FAIL $name: the expected error is not in the snippet; got:"
                 echo "$errors" | sed -n 1,5p
                 failures=$((failures + 1))
