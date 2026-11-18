@@ -118,7 +118,7 @@ HandleAction(BuyAction.self,
 
 #### 每種型別一個 Handler
 
-一個 land 對每種 action 型別只宣告一個 `HandleAction`，對每種 client event 型別只宣告一個 `HandleEvent`，對每種 server input 型別只宣告一個 `HandleServerInput`。第二個宣告會在註冊時以 `LandRegistrationError.duplicateHandlers` 拒絕，錯誤中標明型別與兩處宣告的 `fileID:line`。未經註冊直接建立的 keeper 也會在初始化時拒絕。
+一個 land 對每種 action 型別只宣告一個 `HandleAction`，對每種 client event 型別只宣告一個 `HandleEvent`，對每種 server input 型別只宣告一個 `HandleServerInput`。第二個宣告會在註冊時以 `LandRegistrationError.duplicateHandlers` 拒絕，錯誤中標明型別與兩處宣告的 `fileID:line`。未經註冊直接建立的 keeper 也會在初始化時拒絕。輸入依名稱派送，所以共用同一個名稱的兩種不同型別也會以同樣方式拒絕（#599）：名稱、最後一段或 schema 名稱重疊的兩種 action 型別（`Ping` 與 `PingAction`，或 `A.Move` 與 `B.Move`）、同名的兩種 server input 型別，以及 event 名稱相同的兩種已註冊 client／server event 型別（`Hit` 與 `HitEvent`）。
 
 #### 編譯器擋不住的事
 
