@@ -34,7 +34,7 @@ the connection at once, so a frame still queued is dropped. Under load the drain
 
 ## Fix
 
-Close behind the queued frames: `closeSessionAfterQueuedFrames(_:with:)` yields a close marker
+Close behind the queued frames: `closeSessionAfterQueuedFrames(_:generation:with:)` yields a close marker
 into the session's queue and the drain closes when it reaches it, with the given `SessionClose`
 (bounded by `JoinFlipConfig.finalFrameCloseTimeout` for a client that stopped reading). Before,
 that path always closed with 1000.
@@ -42,6 +42,12 @@ that path always closed with 1000.
 ## Prevention
 
 - An error that explains a close goes out with `closeSessionAfterQueuedFrames`, never
-  `send` + `closeSession`.
-- A test of a refusal checks both the error frame and the close code, and runs in the full
-  suite: the race doesn't show when the test runs alone.
+  `send` + `closeSession`. Pin both to the connection's generation: the bound's timer and the
+  drain's marker callback can outlive the connection, and a reused `SessionID` is a new one.
+- Test the order by holding the drain, not by load: a connection whose `send` waits on a gate.
+  With the error held, check that no close has arrived, then release it and expect the error
+  followed by the close. Also cover a drain that has already ended (the marker can't be read,
+  so the close goes out at once) and a client that leaves between the enqueue and the marker.
+- A refusal that closes a session also makes it terminal in the same segment, before the first
+  await: until the close goes out, the client can still send, and a frame read in that window
+  must not join.
