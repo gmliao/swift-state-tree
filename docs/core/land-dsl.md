@@ -104,7 +104,7 @@ HandleAction(BuyAction.self,
 - With nothing to pass, `validate` returns `Void` and `apply` takes `(inout State, Action, LandContext)`.
 - `HandleEvent(_:validate:apply:)` and `HandleServerInput(_:validate:apply:)` take the same two forms; their `apply` returns `Void`. `HandleAction` takes `resolvers:` in both forms, and `validate` reads their outputs from its context.
 - `validate` borrows the state: no copy is made. It runs right before `apply` in the same turn, so what it checked still holds when `apply` writes.
-- A `validate` throw fails that input alone, with nothing written and nothing emitted. The action's caller gets the error (`ACTION_HANDLER_ERROR`; on a tick land the caller already got its ACK at intake), an event's error goes to the client as an error payload, and a server input's is logged ([Runtime: Inputs and Turns](runtime.md#inputs-and-turns)).
+- A `validate` throw fails that input alone, with nothing written and nothing emitted. The action's caller gets the error (`ACTION_HANDLER_ERROR`; on a tick land the caller already got its ACK at intake), an event's error goes to the client as an error payload (only on a tickless land with in-turn sync, where the event waits for its input turn; on a tick land the event is applied in the next tick, and on a tickless land with `IN_TURN_SYNC=false` in a detached task, so there the refusal is only logged), and a server input's is logged ([Runtime: Inputs and Turns](runtime.md#inputs-and-turns)).
 - An action body and `apply` return the action's declared `Response` (#561). Returning another type doesn't compile.
 
 #### ValidateContext
@@ -118,7 +118,7 @@ HandleAction(BuyAction.self,
 
 #### One Handler per Type
 
-A land declares one `HandleEvent` per client-event type and one `HandleServerInput` per server-input type. A second declaration is refused at registration with `LandRegistrationError.duplicateHandlers`, which names the type and the `fileID:line` of both declarations. A keeper built without registration refuses it at initialization too.
+A land declares one `HandleAction` per action type, one `HandleEvent` per client-event type and one `HandleServerInput` per server-input type. A second declaration is refused at registration with `LandRegistrationError.duplicateHandlers`, which names the type and the `fileID:line` of both declarations. A keeper built without registration refuses it at initialization too.
 
 #### What the Compiler Can't Stop
 

@@ -456,7 +456,7 @@ let lobbyLand = Land("lobby", using: LobbyState.self) {
 
 ### Example 3: Error Handling
 
-This example demonstrates how to handle various error scenarios:
+This example demonstrates how to handle various error scenarios. Handler bodies can't throw, so an action that can be refused is split into `validate`, which checks the state and throws to refuse (nothing is written), and `apply`, which writes the state and returns the response ([Two-Phase Handlers](core/land-dsl.md#two-phase-handlers)):
 
 ```swift
 // Custom errors
@@ -504,43 +504,48 @@ struct PurchaseResponse: ResponsePayload {
 // Land
 let resourceGameLand = Land("resource-game", using: ResourceGameState.self) {
     Rules {
-        HandleAction(PurchaseAction.self) { state, action, ctx in
-            // Validate player exists
-            guard state.players[action.playerID] != nil else {
-                throw LandError.invalidAction("Player not found")
-            }
-            
-            // Get current resources
-            guard let currentResources = state.resources[action.playerID] else {
-                throw LandError.invalidAction("Player resources not initialized")
-            }
-            
-            // Check if player has enough resources
-            guard currentResources.gold >= action.cost.gold,
-                  currentResources.wood >= action.cost.wood,
-                  currentResources.stone >= action.cost.stone else {
+        HandleAction(PurchaseAction.self,
+            // validate: checks only; a throw refuses the action and nothing is written
+            validate: { (state: ResourceGameState, action: PurchaseAction, ctx: ValidateContext) throws -> ResourceState in
+                // Validate player exists
+                guard state.players[action.playerID] != nil else {
+                    throw GameError.playerNotFound
+                }
+
+                // Get current resources
+                guard let currentResources = state.resources[action.playerID] else {
+                    throw GameError.invalidAction
+                }
+                return currentResources
+            },
+            // apply: writes the state; it can't throw
+            apply: { (state: inout ResourceGameState, action: PurchaseAction, currentResources: ResourceState, ctx: LandContext) -> PurchaseResponse in
+                // Check if player has enough resources (an answer, not a refusal)
+                guard currentResources.gold >= action.cost.gold,
+                      currentResources.wood >= action.cost.wood,
+                      currentResources.stone >= action.cost.stone else {
+                    return PurchaseResponse(
+                        success: false,
+                        message: "Insufficient resources",
+                        newResources: nil
+                    )
+                }
+
+                // Deduct resources
+                var newResources = currentResources
+                newResources.gold -= action.cost.gold
+                newResources.wood -= action.cost.wood
+                newResources.stone -= action.cost.stone
+
+                state.resources[action.playerID] = newResources
+
+                // Return success with updated resources
                 return PurchaseResponse(
-                    success: false,
-                    message: "Insufficient resources",
-                    newResources: nil
+                    success: true,
+                    message: "Purchase successful",
+                    newResources: newResources
                 )
-            }
-            
-            // Deduct resources
-            var newResources = currentResources
-            newResources.gold -= action.cost.gold
-            newResources.wood -= action.cost.wood
-            newResources.stone -= action.cost.stone
-            
-            state.resources[action.playerID] = newResources
-            
-            // Return success with updated resources
-            return PurchaseResponse(
-                success: true,
-                message: "Purchase successful",
-                newResources: newResources
-            )
-        }
+            })
     }
 }
 ```

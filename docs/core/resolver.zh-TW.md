@@ -403,6 +403,8 @@ struct ProductInfoResolver: ContextResolver {
 
 ### 場景 2：驗證使用者權限
 
+Handler body 不能拋出錯誤；要依 resolver 輸出拒絕 action，就在 `validate` 中讀取並拋出錯誤（[兩段式 Handler](land-dsl.zh-TW.md#兩段式-handler)）。
+
 ```swift
 struct UserPermissionResolver: ContextResolver {
     typealias Output = UserPermission
@@ -416,13 +418,21 @@ struct UserPermissionResolver: ContextResolver {
     }
 }
 
-// 在 handler 中使用
-HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self) { state, action, ctx in
-    guard let permission = ctx.userPermission, permission.isAdmin else {
-        throw LandError.actionDenied("Admin access required")
-    }
-    // 執行管理員操作
+enum AdminError: Error {
+    case adminRequired
 }
+
+// 在 handler 中使用：validate 讀取 resolver 輸出並拒絕；apply 執行操作
+HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
+    validate: { (state: GameState, action: AdminAction, ctx: ValidateContext) throws in
+        guard let permission = ctx.userPermission, permission.isAdmin else {
+            throw AdminError.adminRequired  // 什麼都不寫入
+        }
+    },
+    apply: { (state: inout GameState, action: AdminAction, ctx: LandContext) -> AdminResponse in
+        // 執行管理員操作
+        return AdminResponse()
+    })
 ```
 
 ### 場景 3：載入多個相關資料

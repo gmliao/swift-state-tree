@@ -403,6 +403,8 @@ struct ProductInfoResolver: ContextResolver {
 
 ### Use Case 2: Verify User Permissions
 
+Handler bodies can't throw; to refuse an action on a resolver's output, read it in `validate` and throw there ([Two-Phase Handlers](land-dsl.md#two-phase-handlers)).
+
 ```swift
 struct UserPermissionResolver: ContextResolver {
     typealias Output = UserPermission
@@ -416,13 +418,21 @@ struct UserPermissionResolver: ContextResolver {
     }
 }
 
-// Use in handler
-HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self) { state, action, ctx in
-    guard let permission = ctx.userPermission, permission.isAdmin else {
-        throw LandError.actionDenied("Admin access required")
-    }
-    // Execute admin operations
+enum AdminError: Error {
+    case adminRequired
 }
+
+// Use in handler: validate reads the resolver output and refuses; apply does the work
+HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
+    validate: { (state: GameState, action: AdminAction, ctx: ValidateContext) throws in
+        guard let permission = ctx.userPermission, permission.isAdmin else {
+            throw AdminError.adminRequired  // nothing is written
+        }
+    },
+    apply: { (state: inout GameState, action: AdminAction, ctx: LandContext) -> AdminResponse in
+        // Execute admin operations
+        return AdminResponse()
+    })
 ```
 
 ### Use Case 3: Load Multiple Related Data

@@ -42,6 +42,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 壓縮編碼（`messagepack`、`opcodeJsonArray`）下，沒有 `@Payload` 的 server event 或宣告的 action response 型別（#521） | 註冊時拒絕：`LandDefinition.validateForRegistration`（`NIOLandHost.swift:366`、`LandManager.swift:406`）；`json` 下以其 `Codable` 形式寫出 | 已符合 |
 | 其他僅由型別就能決定的型別錯誤：不支援的 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 註冊時拒絕：`LandRegistrationError.sync` 的 `.unsupportedKey`、`.policyNesting`（#535）。只有之後的實例才有的值（預設為空的集合中的一般 struct 元素、預設實例沒有採用的 enum case）與手寫 `toSnapshotValue()` 背後的儲存內容，在同步時才發現，處理方式同「結束 land」第一列；直接建立的 keeper 則在初始化時執行同一個檢查 | 已符合 |
 | existential 型別的同步欄位（`Any`、`any P`） | 宣告的型別寫出 `any`、`Any`、`AnyObject` 或 `P & Q` 時在編譯期拒絕，`AnyHashable` 與 `AnyCodable` 依名稱拒絕；在一般 struct 或 `@SnapshotConvertible` 型別中，以集合的元素、key 或 value，或 optional 包住的型別出現的 `Any`、`AnyObject`、`AnyHashable` 與 `AnyCodable`，在註冊時以 `.existentialField` 拒絕。抓不到的有：未加 `any` 的 protocol 名稱、指向 existential 的 typealias、一般 struct 自己宣告為 `Any` 或 `any P` 的 property（只能看到其預設值的型別），以及手寫的轉換；這類欄位在第一次轉換失敗時結束 land（#535） | 已符合 |
+| 同一種 action、client event 或 server input 型別有兩個 handler | 註冊時拒絕：`LandRegistrationError.duplicateHandlers`，指出該型別與兩處宣告的 `fileID:line`；未經註冊直接建立的 keeper 在初始化時拒絕（[Land DSL](land-dsl.zh-TW.md#每種型別一個-handler)） | 已符合（#586） |
 
 ### 結束 land
 
