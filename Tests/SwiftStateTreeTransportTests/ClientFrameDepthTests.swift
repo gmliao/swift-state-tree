@@ -193,9 +193,29 @@ enum ClientFrameChain {
 struct ClientFrameDepthTests {
     /// The nesting limit of every client frame (#362).
     static let limit = PayloadNesting.clientFrameMaxDepth
-    /// Foundation's JSON parser limit: the fixtures are checked against it (`jsonFixtureDepth`),
-    /// and the depth tests refuse frames up to and past it.
+    /// The deepest frame the depth tests send: Linux Foundation's JSON parser limit. Every
+    /// platform's parser reads a frame this deep (`jsonFixtureDepth`), and the depth tests refuse
+    /// frames up to and past it.
     static let foundationJSONLimit = 512
+
+    /// Runs `body` on a thread of its own with an 8 MiB stack and waits for it. Foundation's own
+    /// parse of a 512-level frame recurses about 940 frames deep on Darwin, which overflows a
+    /// cooperative-pool thread's 544 KiB stack and would kill the test bundle.
+    static func onLargeStack(_ body: @escaping @Sendable () -> Bool) -> Bool {
+        final class Box: @unchecked Sendable {
+            var value = false
+            let done = DispatchSemaphore(value: 0)
+        }
+        let box = Box()
+        let thread = Thread {
+            box.value = body()
+            box.done.signal()
+        }
+        thread.stackSize = 8 << 20
+        thread.start()
+        box.done.wait()
+        return box.value
+    }
 
     /// The depths a test runs: around the limit, then deeper ones, up to and past Foundation's
     /// JSON limit, which must be refused, not overflow.
@@ -317,11 +337,13 @@ struct ClientFrameDepthTests {
         }
     }
 
-    @Test("The JSON fixtures are as deep as they claim: the parser accepts the limit and refuses one past it, by nesting")
+    @Test("The JSON fixtures are well-formed at the deepest depth sent, and the check counts them as nested as they claim")
     func jsonFixtureDepth() {
-        // Every JSON frame the depth tests use, nested in arrays and in objects. `JSONDecoder` on
-        // Linux reports only "not valid JSON" one past the limit; `JSONSerialization` names the
-        // nesting, which shows that refusal is the depth's.
+        // Every JSON frame the depth tests use, nested in arrays and in objects. Foundation must
+        // parse the deepest one, so a refusal in the depth tests is the check's, not malformed
+        // JSON. Where Foundation's own limit sits is its business, and it differs: Linux refuses
+        // 513 levels, Darwin accepts them. So only the parse at 512 is asserted, on a thread with
+        // a large stack (`onLargeStack`); the check's refusal past 32 runs here, on the pool.
         for encoding in [FrameEncoding.json, .opcodeJsonArray] {
             for kind in ["action", "clientEvent", "join"] {
                 for objects in [false, true] {
@@ -335,13 +357,9 @@ struct ClientFrameDepthTests {
                     // refuses one past it.
                     #expect((try? PayloadNesting.checkJSON(frame(Self.limit))) != nil, "\(context)")
                     #expect(throws: PayloadNesting.TooDeep.self, "\(context)") { try PayloadNesting.checkJSON(frame(Self.limit + 1)) }
-                    #expect((try? JSONSerialization.jsonObject(with: frame(Self.foundationJSONLimit))) != nil, "\(context)")
-                    do {
-                        _ = try JSONSerialization.jsonObject(with: frame(Self.foundationJSONLimit + 1))
-                        Issue.record("\(context): one past the limit parsed")
-                    } catch {
-                        #expect(String(describing: error).localizedCaseInsensitiveContains("nest"), "\(context): \(error)")
-                    }
+                    let deepest = frame(Self.foundationJSONLimit)
+                    let parsed = Self.onLargeStack { (try? JSONSerialization.jsonObject(with: deepest)) != nil }
+                    #expect(parsed, "\(context)")
                 }
             }
         }
