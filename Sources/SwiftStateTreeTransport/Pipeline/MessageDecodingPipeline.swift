@@ -33,6 +33,9 @@ struct MessageDecodingPipeline: Sendable {
         // In legacy mode, join messages are always JSON (even if server is MessagePack-configured)
         // So we need to detect JSON format first before falling back to codec
         if enableLegacyJoin {
+            // Any frame may reach the JSON parser first, so every one is checked before it
+            // (#362); the decodes below don't check again, except MessagePack's unpack.
+            try PayloadNesting.checkClientJSON(data)
             // Try JSON detection first (for join handshake compatibility)
             if let json = try? JSONSerialization.jsonObject(with: data) {
                 if let array = json as? [Any],
@@ -47,13 +50,18 @@ struct MessageDecodingPipeline: Sendable {
                 }
             }
             // Not JSON, fall back to configured codec (MessagePack)
-            return try codec.decode(TransportMessage.self, from: data)
+            return codec.encoding == .messagepack
+                ? try codec.decodeClientFrame(TransportMessage.self, from: data)
+                : try codec.decode(TransportMessage.self, from: data)
         }
         
         // Non-legacy mode: use codec-first approach (for performance)
         if codec.encoding == .messagepack {
-            return try codec.decode(TransportMessage.self, from: data)
+            return try codec.decodeClientFrame(TransportMessage.self, from: data)
         }
+
+        // Checked before this decode parses it (#362); the decodes below don't check again.
+        try PayloadNesting.checkClientJSON(data)
         
         // Detect JSON opcode array format
         if let json = try? JSONSerialization.jsonObject(with: data),
