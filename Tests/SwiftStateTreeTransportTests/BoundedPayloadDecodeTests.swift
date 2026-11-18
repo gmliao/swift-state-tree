@@ -7,8 +7,9 @@
 // module's codec decoded, or one the JSON scan didn't read, is walked, and so is a payload handed
 // to the keeper's public API.
 //
-// The keeper counts its live decodes as `InboundPayloadDecoding` reports the overload that ran
-// (`livePayloadDecodesForTesting`), so a decode that walks a bounded payload anyway shows too.
+// Each test counts the depth walks themselves (`PayloadNesting.walks`, bound for the test's task
+// and the tasks it starts), so a walk added anywhere on the bounded path shows, whichever decode
+// overload ran.
 
 import Foundation
 import Testing
@@ -208,6 +209,13 @@ private func makeBoundedFixture(_ choice: BoundedCodecChoice, legacyJoin: Bool =
     return fixture
 }
 
+/// Runs `body` with the depth walks counted (`PayloadNesting.walks`) for its task and the tasks
+/// it starts.
+private func countingWalks(_ body: (PayloadNesting.WalkCounter) async throws -> Void) async throws {
+    let walks = PayloadNesting.WalkCounter()
+    try await PayloadNesting.$walks.withValue(walks) { try await body(walks) }
+}
+
 /// `[[...[]...]]`: `levels` arrays.
 private func nestedArrays(_ levels: Int) -> Any {
     var value: Any = [Any]()
@@ -222,88 +230,91 @@ struct BoundedPayloadDecodeTests {
     @Test("A payload from a frame at the client limit decodes with its frame's bound, not walked again",
           arguments: ownEncodings, [false, true])
     func liveInputsComeBounded(encoding: TransportEncoding, legacyJoin: Bool) async throws {
-        let fixture = try await makeBoundedFixture(.config(encoding), legacyJoin: legacyJoin)
-        // The deepest frame the client limit takes: the frame's own levels around `deep`, plus
-        // `deep`'s arrays, total exactly the limit.
-        let limit = PayloadNesting.clientFrameMaxDepth
-        let probe = try fixture.actionFrame("probe", deep: [Any]())
-        let around = try Self.depth(of: probe, encoding: encoding) - 1
-        let action = try fixture.actionFrame("deep", deep: nestedArrays(limit - around))
-        #expect(try Self.depth(of: action, encoding: encoding) == limit)
-        let event = try fixture.eventFrame("deep", deep: nestedArrays(2))
+        try await countingWalks { walks in
+            let fixture = try await makeBoundedFixture(.config(encoding), legacyJoin: legacyJoin)
+            // The deepest frame the client limit takes: the frame's own levels around `deep`, plus
+            // `deep`'s arrays, total exactly the limit.
+            let limit = PayloadNesting.clientFrameMaxDepth
+            let probe = try fixture.actionFrame("probe", deep: [Any]())
+            let around = try Self.depth(of: probe, encoding: encoding) - 1
+            let action = try fixture.actionFrame("deep", deep: nestedArrays(limit - around))
+            #expect(try Self.depth(of: action, encoding: encoding) == limit)
+            let event = try fixture.eventFrame("deep", deep: nestedArrays(2))
 
-        await fixture.adapter.onMessage(event, from: fixture.session)
-        await fixture.adapter.onMessage(action, from: fixture.session)
+            await fixture.adapter.onMessage(event, from: fixture.session)
+            await fixture.adapter.onMessage(action, from: fixture.session)
 
-        #expect(await fixture.keeper.currentState().hits == ["event:deep", "action:deep"])
-        // Every live decode took the bounded overload: the action twice (at intake and when
-        // applied), the event once. A decode that walked anyway, or an adapter that stopped
-        // handing the keeper the bounded form, would count in `walked`.
-        let decodes = await fixture.keeper.livePayloadDecodesForTesting()
-        #expect(decodes.walked == 0, "\(decodes)")
-        #expect(decodes.bounded == 3, "\(decodes)")
+            #expect(await fixture.keeper.currentState().hits == ["event:deep", "action:deep"])
+            // No live decode walked: not the action at intake or when applied, not the event. A
+            // decode that walked anyway, or an adapter that stopped handing the keeper the bounded
+            // form, would count here.
+            #expect(walks.count == 0)
+        }
     }
 
     @Test("An action job keeps its frame's bound through its resolvers to the apply", arguments: ownEncodings)
     func jobKeepsTheBound(encoding: TransportEncoding) async throws {
-        let fixture = try await makeBoundedFixture(.config(encoding))
-        let before = await fixture.sent.frames.count
-        await fixture.adapter.onMessage(try fixture.actionFrame("j", deep: nestedArrays(3), job: true), from: fixture.session)
-        // The job's answer is the frame after the ones sent so far: the action was applied.
-        await fixture.sent.waitForFrames(before + 1)
-        #expect(await fixture.keeper.currentState().hits == ["job:j"])
-        let decodes = await fixture.keeper.livePayloadDecodesForTesting()
-        #expect(decodes.walked == 0, "\(decodes)")
-        #expect(decodes.bounded == 2, "\(decodes)")
+        try await countingWalks { walks in
+            let fixture = try await makeBoundedFixture(.config(encoding))
+            let before = await fixture.sent.frames.count
+            await fixture.adapter.onMessage(try fixture.actionFrame("j", deep: nestedArrays(3), job: true), from: fixture.session)
+            // The job's answer is the frame after the ones sent so far: the action was applied.
+            await fixture.sent.waitForFrames(before + 1)
+            #expect(await fixture.keeper.currentState().hits == ["job:j"])
+            #expect(walks.count == 0)
+        }
     }
 
     @Test("Another module's codec, or a frame the scan didn't read, gets no proof: its payloads are walked",
           arguments: [BoundedCodecChoice.foreignMessagePack, .foreignJSON5], [false, true])
     func foreignCodecsAreWalked(choice: BoundedCodecChoice, legacyJoin: Bool) async throws {
-        let fixture = try await makeBoundedFixture(choice, legacyJoin: legacyJoin)
-        await fixture.adapter.onMessage(try fixture.eventFrame("ok", deep: nestedArrays(2)), from: fixture.session)
-        await fixture.adapter.onMessage(try fixture.actionFrame("ok", deep: nestedArrays(2)), from: fixture.session)
-        #expect(await fixture.keeper.currentState().hits == ["event:ok", "action:ok"])
-        let decodes = await fixture.keeper.livePayloadDecodesForTesting()
-        #expect(decodes.bounded == 0, "\(decodes)")
-        #expect(decodes.walked == 3, "\(decodes)")
+        try await countingWalks { walks in
+            let fixture = try await makeBoundedFixture(choice, legacyJoin: legacyJoin)
+            await fixture.adapter.onMessage(try fixture.eventFrame("ok", deep: nestedArrays(2)), from: fixture.session)
+            await fixture.adapter.onMessage(try fixture.actionFrame("ok", deep: nestedArrays(2)), from: fixture.session)
+            #expect(await fixture.keeper.currentState().hits == ["event:ok", "action:ok"])
+            // The event once, the action at intake and when applied.
+            #expect(walks.count == 3)
+        }
     }
 
     @Test("Through another module's codec, a payload past the client limit is still refused, at every granting site",
           arguments: [BoundedCodecChoice.foreignMessagePack, .foreignJSON5], [false, true])
     func foreignDeepRefused(choice: BoundedCodecChoice, legacyJoin: Bool) async throws {
-        let fixture = try await makeBoundedFixture(choice, legacyJoin: legacyJoin)
-        // 40 levels in all: past the client limit, under what the foreign decoders take.
-        let deep = nestedArrays(PayloadNesting.clientFrameMaxDepth + 8)
-        let droppedBefore = PayloadNesting.droppedClientEventCount
-        await fixture.adapter.onMessage(try fixture.eventFrame("deep", deep: deep), from: fixture.session)
-        await fixture.adapter.onMessage(try fixture.actionFrame("deep", deep: deep), from: fixture.session)
-        // A shallow action after them: its apply (a turn, or the legacy pass) applies the queued
-        // event too, so the event's drop has happened when it returns.
-        await fixture.adapter.onMessage(try fixture.actionFrame("after", deep: nestedArrays(2)), from: fixture.session)
-        #expect(await fixture.keeper.currentState().hits == ["action:after"])
-        #expect(PayloadNesting.droppedClientEventCount >= droppedBefore + 1)
-        let decodes = await fixture.keeper.livePayloadDecodesForTesting()
-        #expect(decodes.bounded == 0, "\(decodes)")
+        try await countingWalks { walks in
+            let fixture = try await makeBoundedFixture(choice, legacyJoin: legacyJoin)
+            // 40 levels in all: past the client limit, under what the foreign decoders take.
+            let deep = nestedArrays(PayloadNesting.clientFrameMaxDepth + 8)
+            let droppedBefore = PayloadNesting.droppedClientEventCount
+            await fixture.adapter.onMessage(try fixture.eventFrame("deep", deep: deep), from: fixture.session)
+            await fixture.adapter.onMessage(try fixture.actionFrame("deep", deep: deep), from: fixture.session)
+            // A shallow action after them: its apply (a turn, or the legacy pass) applies the queued
+            // event too, so the event's drop has happened when it returns.
+            await fixture.adapter.onMessage(try fixture.actionFrame("after", deep: nestedArrays(2)), from: fixture.session)
+            #expect(await fixture.keeper.currentState().hits == ["action:after"])
+            #expect(PayloadNesting.droppedClientEventCount >= droppedBefore + 1)
+            // The deep event and action were each walked and refused; the shallow one walked twice.
+            #expect(walks.count == 4)
+        }
     }
 
     @Test("A payload handed to the keeper's public API, without its frame, is walked")
     func directCallsAreWalked() async throws {
-        let fixture = try await makeBoundedFixture(.config(.json))
-        let envelope = ActionEnvelope(
-            typeIdentifier: String(describing: BoundedDeepAction.self),
-            payload: AnyCodable(["tag": "direct", "deep": [Any]()] as [String: Any])
-        )
-        _ = try await fixture.keeper.handleActionEnvelope(
-            envelope,
-            playerID: PlayerID("p-bounded"),
-            clientID: ClientID("c-bounded"),
-            sessionID: fixture.session
-        )
-        #expect(await fixture.keeper.currentState().hits == ["action:direct"])
-        let decodes = await fixture.keeper.livePayloadDecodesForTesting()
-        #expect(decodes.bounded == 0, "\(decodes)")
-        #expect(decodes.walked == 2, "\(decodes)")
+        try await countingWalks { walks in
+            let fixture = try await makeBoundedFixture(.config(.json))
+            let envelope = ActionEnvelope(
+                typeIdentifier: String(describing: BoundedDeepAction.self),
+                payload: AnyCodable(["tag": "direct", "deep": [Any]()] as [String: Any])
+            )
+            _ = try await fixture.keeper.handleActionEnvelope(
+                envelope,
+                playerID: PlayerID("p-bounded"),
+                clientID: ClientID("c-bounded"),
+                sessionID: fixture.session
+            )
+            #expect(await fixture.keeper.currentState().hits == ["action:direct"])
+            #expect(walks.count == 2)
+        }
     }
 
     @Test("A payload past the client limit on the public API is refused by the walk")
@@ -324,9 +335,12 @@ struct BoundedPayloadDecodeTests {
         #expect(await fixture.keeper.currentState().hits.isEmpty)
     }
 
-    @Test("Only the decode pipeline builds the proof: no other source file calls its initializer")
+    @Test("Only the decode pipeline builds the proof: no other source file names its initializer")
     func proofBuiltOnlyByThePipeline() throws {
-        // The initializer is `package`, so this rule is kept by review and by this test.
+        // The initializer is `package`, so this rule is kept by review and by this test. It
+        // matches the label alone, so a call split across lines is caught too. It can't see
+        // `DepthBounded.map` used to wrap another value (`map { _ in other }`): review keeps
+        // `map` to projections (`DepthBounded`'s doc).
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let sources = root.appendingPathComponent("Sources")
         let allowed: Set<String> = ["SwiftStateTree/Support/DepthBounded.swift", "SwiftStateTreeTransport/Pipeline/MessageDecodingPipeline.swift"]
@@ -334,7 +348,7 @@ struct BoundedPayloadDecodeTests {
         let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
         for case let url as URL in files where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
-            if text.contains("decodedFromBoundedFrame:") {
+            if text.contains("decodedFromBoundedFrame") {
                 callers.append(String(url.path.dropFirst(sources.path.count + 1)))
             }
         }

@@ -134,7 +134,30 @@ package enum PayloadNesting {
     /// refuses; only server code builds longer chains of wrappers. It builds no intermediate
     /// values; a Foundation container bridged to `[Any]` or `[String: Any]` may still allocate.
     package static func check(_ value: Any, limit: Int = clientFrameMaxDepth) throws {
+        walks?.add()
         if !fits(value, depth: 0, limit: limit) { throw TooDeep(limit: limit) }
+    }
+
+    /// Counts the walks (`check`) made in the task that binds it, and in the tasks it starts.
+    /// Tests only: unbound (nil) everywhere else, where a walk reads the task-local and does
+    /// nothing more. A decode that skips the walk (`DepthBounded`) reads nothing.
+    @TaskLocal package static var walks: WalkCounter?
+
+    /// The count `walks` keeps.
+    package final class WalkCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        package init() {}
+
+        package var count: Int {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+
+        func add() {
+            lock.lock(); value += 1; lock.unlock()
+        }
     }
 
     /// Whether `value`, a container's element at `depth`, fits under `limit`.

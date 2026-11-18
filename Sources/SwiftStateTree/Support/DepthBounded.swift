@@ -11,8 +11,12 @@ import Foundation
 /// Build one only where this package's own code enforced the client limit on the exact bytes the
 /// value came from: the adapter's decode pipeline (`MessageDecodingPipeline`). The proof is a type,
 /// not a flag, so a caller can't claim the bound by passing `true`; a value can only be narrowed to
-/// a part of itself (`map`). The initializer is `package`, so that rule is kept by review and by a
-/// test (`BoundedPayloadDecodeTests`) that fails on a call outside the pipeline and this file.
+/// a part of itself (`map`). Both rules are kept by review, not by the compiler:
+/// - the initializer is `package`. A test (`BoundedPayloadDecodeTests`) fails on a call outside
+///   the pipeline and this file, but it matches text, so a call split across lines gets past it;
+/// - `map` and `compactMap` wrap whatever their closure returns, so `bounded.map { _ in other }`
+///   would prove a value never bounded. Call them only to project a part of the value (a
+///   message's envelope, an envelope's payload), as the adapter's decode sites do.
 package struct DepthBounded<Value: Sendable>: Sendable {
     package let value: Value
 

@@ -63,6 +63,11 @@ struct MessageDecodingPipeline: Sendable {
     /// module's decoder parsed (`OpcodeTransportMessageDecoder`, `JSONTransportCodec`), or a
     /// MessagePack frame that `MessagePackTransportCodec` unpacked. Anything else, another
     /// module's codec or a frame the scan didn't read, is `.unchecked`, and its payloads are walked.
+    ///
+    /// The `scanned` half of the JSON condition is defensive: this module's JSON decoders parse no
+    /// frame the scan skips (it reads past a BOM and whitespace to the `[` or `{`, and a top-level
+    /// scalar isn't a `TransportMessage`), so no test can tell it from its removal. It keeps the
+    /// rule true if either changes. The codec half is tested (`BoundedPayloadDecodeTests`).
     func decodeClientFrame(_ data: Data) throws -> DecodedClientFrame {
         // Special handling for legacy join mode:
         // In legacy mode, join messages are always JSON (even if server is MessagePack-configured)
