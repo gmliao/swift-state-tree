@@ -47,6 +47,12 @@ jobs:
         scripts/lint-lessons.sh --self-test
         scripts/lint-lessons.sh
 
+    # The turn core's rules the compiler can't check (Notes/plans/2026-11-18-swift-state-turns-core.md §7).
+    - name: Lint turns
+      run: |
+        scripts/lint-turns.sh --self-test
+        scripts/lint-turns.sh
+
     - name: Clean build artifacts
       run: |
         rm -rf .build
@@ -80,6 +86,26 @@ jobs:
           exit 1
         fi
       timeout-minutes: 5
+
+  # The turn core in release (its debug run is the build job's `swift test`): the ordered,
+  # model and runtime-stop checks, and the step path's specialization for a client's machine.
+  turns-release:
+    name: turns (release)
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.2.4-noble
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Show toolchain
+      run: swift --version
+
+    - name: Run the turn core's tests in release
+      run: swift test -c release --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
+      timeout-minutes: 40
+
+    - name: Check the step path's specialization
+      run: scripts/check-turns-inlinable.sh
 
   # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
   # job runs the whole suite again with both opted out (USE_SYNC_TABLES=false,
