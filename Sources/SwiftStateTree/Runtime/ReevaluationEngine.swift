@@ -63,7 +63,8 @@ public enum ReevaluationEngine {
         /// unverified, not compared.
         public var recordCompleteness: ReevaluationRecordCompleteness = .complete
         /// Ticks whose recorded passes (a tickless land's, 3.1 on) didn't match the tick's
-        /// inputs, with the reason. None of the tick's inputs after the mismatch was found were
+        /// inputs, with the reason; also the tick of a live `.handlerWrite` failure whose input
+        /// didn't throw after mutable access in replay (#535 §3.7). None of the tick's inputs after the mismatch was found were
         /// applied (it is found before any, unless an input left the queue between passes):
         /// each such tick fails server-event verification.
         public var recordedPassMismatches: [Int64: String] = [:]
@@ -304,7 +305,11 @@ public enum ReevaluationEngine {
         let landFailure = try await source.getLandFailure()
         // Where the failure ended its turn among its inputs, replay ends that tick or pass too.
         if let landFailure, landFailure.failure.position.endsInputs == true {
-            await keeper.setReplayFailureEnd(tickId: landFailure.tickId, pass: landFailure.failure.position.pass.map(Int64.init))
+            await keeper.setReplayFailureEnd(
+                tickId: landFailure.tickId,
+                pass: landFailure.failure.position.pass.map(Int64.init),
+                handlerWriteSequence: landFailure.failure.handlerWriteSequence
+            )
         }
         let lastTickId = landFailure.map { min(maxTickId, $0.tickId) } ?? maxTickId
         

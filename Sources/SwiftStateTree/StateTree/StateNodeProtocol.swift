@@ -225,6 +225,16 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// field's view for `playerID` and `convert` the conversion `snapshot(for: playerID)` uses.
     /// Nil (the default) means no typed description: each such field takes today's snapshot diff.
     static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]?
+
+    /// Emitted by `@StateNodeBuilder`; not for hand adoption, and not a stable API. The wrapping
+    /// sum of the root `@Sync` fields' write marks (`Sync._syncWriteMark`): a nested node's or a
+    /// container element's write goes through its root field's `_modify`, so it moves the sum.
+    /// The keeper compares it before an input handler and after it throws (#535 §3.7). Nil (the
+    /// default, a hand-written conformance): not checked, the input fails alone. A sum, so it
+    /// misses a hand-replaced backing wrapper (`_x = Sync(...)`) whose fresh mark cancels another
+    /// field's write, and 65,536 or more writes whose 16-bit marks wrap back to the old sum; an
+    /// explicit `clearDirty()` in a handler moves it on a state with nested nodes.
+    func _syncWriteMark() -> UInt64?
 }
 
 extension StateNodeProtocol {
@@ -238,6 +248,9 @@ extension StateNodeProtocol {
 
     /// Default: no typed description (hand-written conformances).
     public static func _syncTablePerPlayerFields(for playerID: PlayerID) -> [SyncTableField<Self>]? { nil }
+
+    /// Default: no write mark (hand-written conformances); a throwing handler fails alone.
+    public func _syncWriteMark() -> UInt64? { nil }
 }
 
 // MARK: - Default Implementation for snapshotForSync

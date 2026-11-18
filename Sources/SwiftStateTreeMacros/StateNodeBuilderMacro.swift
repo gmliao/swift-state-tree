@@ -76,6 +76,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(fullStateSnapshotMethod),
             DeclSyntax(snapshotForSyncMethod),
             DeclSyntax(isDirtyMethod),
+            DeclSyntax(try generateSyncWriteMarkMethod(propertiesWithNodes: propertiesWithNodes)),
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
             DeclSyntax(try generateGetFieldMetadata(properties: properties)),
@@ -742,6 +743,20 @@ public struct StateNodeBuilderMacro: MemberMacro {
         if isPrimitiveType(typeName) { return false }
         if case .none = detectContainerType(from: typeName) { return true }
         return false
+    }
+
+    /// Generate `_syncWriteMark()`: the wrapping sum of the root `@Sync` fields' write marks
+    /// (#535 §3.7).
+    private static func generateSyncWriteMarkMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let terms = propertiesWithNodes.filter { $0.0.hasSync }.map { "UInt64(_\($0.0.name)._syncWriteMark)" }
+        let body = terms.isEmpty ? "return 0" : "var mark: UInt64 = 0\n" + terms.map { "mark &+= \($0)" }.joined(separator: "\n") + "\nreturn mark"
+        return try FunctionDeclSyntax(
+            """
+            public func _syncWriteMark() -> UInt64? {
+                \(raw: body)
+            }
+            """
+        )
     }
 
     /// Generate isDirty() method

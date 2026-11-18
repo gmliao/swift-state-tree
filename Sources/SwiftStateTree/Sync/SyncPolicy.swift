@@ -141,14 +141,37 @@ public extension SyncPolicy {
 /// typed `Any` or `any P`, and a hand-written conversion aren't seen: a value there that can't
 /// be converted ends the land at its first sync. See
 /// `docs/core/sync.md#what-registration-refuses`.
+///
+/// **A handler that throws after mutable access ends the land (#535 §3.7).** The setter,
+/// `_modify` and `updateValueWithoutMarkingDirty(_:)` bump the wrapper's write mark
+/// (`_syncWriteMark`); the keeper compares the state's sum of its root fields' marks
+/// (`StateNodeProtocol._syncWriteMark()`) before an input handler and after it throws, and a
+/// change ends the land with `LandFailure.Kind.handlerWrite`. Access counts, not change: validate
+/// before taking `inout` access. Not seen: storage without `@Sync`, a hand-written conformance,
+/// a hand replacement of a backing wrapper (`_x = Sync(...)`), whose fresh mark can cancel another
+/// field's write in the sum, and a handler making 65,536 or more writes whose wrapped marks sum to
+/// the old value. A whole-state replacement is seen unless the replacement's marks happen to sum
+/// to the same value. An explicit `clearDirty()` inside a handler counts as a write on a state
+/// with nested nodes (it rewrites them through `updateValueWithoutMarkingDirty(_:)`). See
+/// `docs/core/runtime.md#inputs-and-turns`.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     private var _wrappedValue: Value
     private var _isDirty: Bool = false
+    /// Bumped (wrapping) by every mutable access: the #87 detector (#535 §3.7) compares marks, so
+    /// a write isn't a call and the accessors stay inlinable. 16 bits fit the padding after
+    /// `_isDirty` for most values; a handler hides its writes only with at least 65,536 of them.
+    private var _writeMark: UInt16 = 0
+
+    /// Implementation detail of `@StateNodeBuilder`'s `_syncWriteMark()`, not a stable API: how
+    /// many mutable accesses this wrapper has taken, wrapping.
+    public var _syncWriteMark: UInt16 { _writeMark }
     
     public var wrappedValue: Value {
         get { _wrappedValue }
         set {
+            // A mutable access, for the #87 detector (#535 §3.7).
+            _writeMark &+= 1
             // Mark as dirty whenever value is set (no comparison needed)
             _wrappedValue = newValue
             _isDirty = true
@@ -161,6 +184,7 @@ public struct Sync<Value: Sendable>: Sendable {
         // doesn't run the code after the yield, and a write made before the throw is kept (#87),
         // so it must be synced.
         _modify {
+            _writeMark &+= 1
             _isDirty = true
             yield &_wrappedValue
         }
@@ -199,8 +223,12 @@ public struct Sync<Value: Sendable>: Sendable {
     /// internal usage (e.g. recursively clearing nested StateNode dirty flags).
     /// Regular application code should rarely need to call this directly.
     ///
+    /// It bumps the write mark like any write (#535 §3.7): a handler that throws after it ends
+    /// the land.
+    ///
     /// - Parameter newValue: The new value to set.
     public mutating func updateValueWithoutMarkingDirty(_ newValue: Value) {
+        _writeMark &+= 1
         _wrappedValue = newValue
         // Note: We intentionally do NOT set _isDirty = true here
     }

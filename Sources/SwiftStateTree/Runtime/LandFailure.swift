@@ -35,6 +35,12 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
         self.position = position
     }
 
+    /// The input whose handler threw after writing synced state, for a `.handlerWrite` at stage
+    /// `.input` (replay checks it threw the same way).
+    package var handlerWriteSequence: Int64? {
+        kind == .handlerWrite && position.stage == .input ? position.sequence : nil
+    }
+
     public var description: String {
         var text = "land failed (\(kind.rawValue)"
         if let field { text += ", field \(field)" }

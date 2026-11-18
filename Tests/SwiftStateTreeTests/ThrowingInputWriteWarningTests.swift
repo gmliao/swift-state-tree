@@ -2,7 +2,9 @@
 //
 // #87: a handler that throws keeps what it wrote before the throw. Debug builds warn, once per
 // input type and keeper, when a throwing handler changed the synced state; a handler that
-// throws before its first write doesn't warn.
+// throws before its first write doesn't warn. A write the #535 §3.7 detector sees ends the land
+// instead; these tests turn the detector off to exercise the warning, which is what remains for
+// the writes it doesn't see.
 
 import Foundation
 import Logging
@@ -156,6 +158,8 @@ private struct ThrowWriteFixture {
         )
         // Independent of a `DEBUG_WARN_THROWING_INPUT_WRITES` the developer exported.
         await keeper.setWarnsThrowingInputWritesForTesting(true)
+        // The warning on its own, as for a write the detector doesn't see (#535 §3.7).
+        await keeper.setDetectsHandlerWritesForTesting(false)
         let fixture = ThrowWriteFixture(keeper: keeper, records: records)
         if join {
             try await keeper.join(playerID: fixture.player, clientID: fixture.client, sessionID: fixture.session)

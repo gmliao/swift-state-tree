@@ -1,7 +1,8 @@
 // Tests/SwiftStateTreeTests/PerSequenceResultTests.swift
 //
 // Each input's caller gets that input's own outcome (#88), and an input whose handler throws
-// fails alone: it is removed and recorded, its caller gets its error, and every later input
+// before any mutable access to synced state fails alone (one that throws after it ends the land,
+// #535 §3.7; see HandlerWriteTests): it is removed and recorded, its caller gets its error, and every later input
 // continues with its own outcome. Same on the legacy path (in-turn sync off) and the in-turn
 // path, tickless and tick lands.
 
@@ -14,18 +15,22 @@ struct PerSequenceTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var total: Int = 0
 
-    /// How many more times each throwing action (by tag) throws before it applies.
-    @Sync(.broadcast)
+    /// How many more times each throwing action (by tag) throws before it applies. Not synced:
+    /// a throwing handler writes it without ending the land (#535 §3.7 counts `@Sync` access).
+    @Internal
     var failuresLeft: [String: Int] = [:]
 
-    /// How many times each throwing action (by tag) ran, throws included (written before the
-    /// throw, so it is a partial write that replay must reproduce).
-    @Sync(.broadcast)
+    /// How many times each throwing action (by tag) ran, throws included (not synced, as above).
+    @Internal
     var attempts: [String: Int] = [:]
 
-    /// Players whose OnLeave throws (after logging "leaveFailed:<id>", a partial write).
+    /// Players whose OnLeave throws (after noting it in `leaveFailures`).
     @Sync(.broadcast)
     var failLeave: [String] = []
+
+    /// The players whose OnLeave threw, in order (not synced, as above).
+    @Internal
+    var leaveFailures: [String] = []
 
     /// What ran, in order.
     @Sync(.broadcast)
@@ -107,7 +112,7 @@ private func perSequenceRules() -> RulesNode {
         }
         OnLeave { (state: inout PerSequenceTestState, ctx: LandContext) in
             if state.failLeave.contains(ctx.playerID.rawValue) {
-                state.log.append("leaveFailed:\(ctx.playerID.rawValue)")
+                state.leaveFailures.append(ctx.playerID.rawValue)
                 throw PerSequenceHandlerFailure(tag: "leave")
             }
             state.log.append("leave:\(ctx.playerID.rawValue)")
@@ -473,8 +478,8 @@ struct PerSequenceResultTests {
         }
         #expect(await keeper.playerCount() == 1)
         #expect(await spy.broadcastSyncs == before + 1)
-        // Its write before the throw stays in the state (and goes out with that sync; #87).
-        #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
+        #expect(await keeper.currentState().log == ["join:p1", "join:p2"])
+        #expect(await keeper.currentState().leaveFailures == ["p2"])
         // The land goes on: the next input applies.
         #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
     }
@@ -494,7 +499,8 @@ struct PerSequenceResultTests {
         // The leave's broadcast-only request (set before the handler) makes its input turn run
         // the sync phase (takeSyncRequest), so the removal goes out in that turn's frames.
         #expect(spy.syncPhases == before + 1)
-        #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
+        #expect(await keeper.currentState().log == ["join:p1", "join:p2"])
+        #expect(await keeper.currentState().leaveFailures == ["p2"])
         #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
     }
 
@@ -514,7 +520,8 @@ struct PerSequenceResultTests {
 
         #expect(await keeper.playerCount() == 1)
         #expect(await keeper.currentState().log
-            == ["join:p1", "join:p2", "tick", "plain:2", "leaveFailed:p2", "plain:4", "tick", "tick"])
+            == ["join:p1", "join:p2", "tick", "plain:2", "plain:4", "tick", "tick"])
+        #expect(await keeper.currentState().leaveFailures == ["p2"])
 
         let recorder = try #require(await keeper.getReevaluationRecorder())
         let frames = await recorder.getAllFrames()

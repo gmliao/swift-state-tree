@@ -585,25 +585,26 @@ struct LandKeeperInputTurnTests {
         #expect(f.log.batchSizes.count == 4, "join, action, client event, leave: \(f.log.snapshot)")
     }
 
-    @Test("a throwing input fails alone: same errors, nothing pending and same state, ON vs OFF")
+    @Test("a throw after a write ends the land: same errors, nothing pending, same state and failure, ON vs OFF (#535 §3.7)")
     func throwSemanticsMatchLegacy() async throws {
-        var outcomes: [(errors: Int, pending: [Int64], total: Int)] = []
+        var outcomes: [(errors: Int, pending: [Int64], total: Int, failure: LandFailure.Kind?)] = []
         for inTurn in [true, false] {
             let f = try await InputTurnFixture.make(inTurn: inTurn)
             var errors = 0
             try await f.add(1)
-            do { try await f.add(-5) } catch { errors += 1 }  // partial write, then throw
-            do { try await f.add(2) } catch { errors += 1 }   // -5 is not run again: this applies
-            outcomes.append((errors, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total))
+            do { try await f.add(-5) } catch { errors += 1 }  // a write, then a throw: the land ends
+            do { try await f.add(2) } catch { errors += 1 }   // refused: landClosed
+            outcomes.append((errors, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total, f.keeper.failure?.kind))
         }
         let on = outcomes[0], off = outcomes[1]
         #expect(on.errors == off.errors, "errors ON \(on.errors) vs OFF \(off.errors)")
         #expect(on.pending == off.pending, "pending ON \(on.pending) vs OFF \(off.pending)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
-        #expect(on.errors == 1, "only the throwing input's caller gets an error")
-        #expect(on.pending.isEmpty, "the throwing input was removed; the one after it applied")
-        // 1, then -5's write before its throw (kept, #87), then 2.
-        #expect(on.total == -2, "state \(on.total)")
+        #expect(on.errors == 2, "the throwing input's caller and the later one")
+        #expect(on.pending.isEmpty)
+        #expect(on.failure == .handlerWrite && off.failure == .handlerWrite)
+        // 1, then -5's write before its throw; 2 never applied.
+        #expect(on.total == -4, "state \(on.total)")
     }
 
     @Test("a throw at P in a batch: the input before P succeeds, P fails and is removed (ON vs OFF)")
@@ -640,6 +641,29 @@ struct LandKeeperInputTurnTests {
         // 1, then P's write before its throw (kept, #87).
         #expect(on.total == -4, "state \(on.total)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
+    }
+
+    @Test("in-turn, one batch A, B, C where B throws after a write: A gets its response, B its error, C landClosed (#535 §3.7)")
+    func handlerWriteMidBatch() async throws {
+        let f = try await InputTurnFixture.make(inTurn: true)
+        let gate = InputTurnGate()
+        // The three inputs wait in the queue, so one turn applies them together.
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.wait() })
+        let a = Task { try await f.add(1) }
+        try await f.waitForPending(1) // wall-clock: a tickless caller waits for its turn inside the call, and no hold marks the enqueue
+        let b = Task { try await f.add(-5) }
+        try await f.waitForPending(2) // wall-clock: a tickless caller waits for its turn inside the call, and no hold marks the enqueue
+        let c = Task { try await f.add(2) }
+        try await f.waitForPending(3) // wall-clock: a tickless caller waits for its turn inside the call, and no hold marks the enqueue
+        await f.keeper.installHolds(nil)
+        await gate.release()
+
+        #expect(try await a.value == 1, "A's own response")
+        await #expect(throws: InputTurnHandlerError.self) { try await b.value }
+        await #expect(throws: LandInputRejection.landClosed) { try await c.value }
+        #expect(f.keeper.failure?.kind == .handlerWrite)
+        #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
+        #expect(await f.keeper.currentState().total == -4, "A, then B's write; C never applied")
     }
 
     @Test("a failed in-turn plan on a tickless land ends the land at its first throw (#535 row 15)")

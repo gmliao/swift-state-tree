@@ -108,6 +108,13 @@ final class StateNodeBuilderMacroTests {
                     return _players.isDirty || _hiddenData.isDirty
                 }
 
+                public func _syncWriteMark() -> UInt64? {
+                    var mark: UInt64 = 0
+                    mark &+= UInt64(_players._syncWriteMark)
+                    mark &+= UInt64(_hiddenData._syncWriteMark)
+                    return mark
+                }
+
                 public func getDirtyFields() -> Set<String> {
                     var dirtyFields: Set<String> = []
 
@@ -290,6 +297,12 @@ final class StateNodeBuilderMacroTests {
 
                 public func isDirty() -> Bool {
                     return _secret.isDirty
+                }
+
+                public func _syncWriteMark() -> UInt64? {
+                    var mark: UInt64 = 0
+                    mark &+= UInt64(_secret._syncWriteMark)
+                    return mark
                 }
 
                 public func getDirtyFields() -> Set<String> {

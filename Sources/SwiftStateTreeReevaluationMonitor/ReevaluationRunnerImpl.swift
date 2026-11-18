@@ -245,7 +245,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // Where the recorded failure ended its turn among its inputs, replay ends that tick or
         // pass the same way (`LandFailurePosition.endsInputs`).
         if let landFailure, landFailure.failure.position.endsInputs == true {
-            await keeper.setReplayFailureEnd(tickId: landFailure.tickId, pass: landFailure.failure.position.pass.map(Int64.init))
+            await keeper.setReplayFailureEnd(
+                tickId: landFailure.tickId,
+                pass: landFailure.failure.position.pass.map(Int64.init),
+                handlerWriteSequence: landFailure.failure.handlerWriteSequence
+            )
         }
         if tickless {
             await keeper.setReplayPassObserver { [weak self] ordinal, state in
