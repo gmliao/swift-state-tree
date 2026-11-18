@@ -139,3 +139,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-18 | [A `fatalError` in a cast's fallback branch is reachable from type-erased data](2026-11-18-a-fatalerror-in-a-casts-fallback-is-reachable-from-type-erased-data.md) | encoding, crash, type-erasure, land-failure, replay |
 | 2026-11-18 | [A server close goes around the send queue](2026-11-18-a-server-close-goes-around-the-send-queue.md) | ordering, send, close, session-queue |
 | 2026-11-18 | [A fuzz harness is only as good as the mutants it kills](2026-11-18-a-fuzz-harness-is-only-as-good-as-the-mutants-it-kills.md) | testing, fuzzing, mutants, decoding, messagepack, json |
+| 2026-11-18 | [A soft reset to a moved main stages the reverse of every commit in between](2026-11-18-soft-reset-to-a-moved-main-stages-reverse-commits.md) | git, reset, squash, local-main |
