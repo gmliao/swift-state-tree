@@ -29,14 +29,53 @@ struct HandshakeLimitNoteAction: ActionPayload {
     let text: String
 }
 
-/// Records what the transport sends to one session, and how it was closed.
+/// Records what the transport sends to one session, and how it was closed. Tests wait on these
+/// events (`waitFor`), not on time: each send and close resumes the waiters whose condition holds.
 private actor LimitConnection: WebSocketConnection {
     private(set) var messages: [Data] = []
     private(set) var closes: [SessionClose] = []
+    private var waiters: [UInt64: (condition: @Sendable (Snapshot) -> Bool, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextWaiter: UInt64 = 0
 
-    func send(_ data: Data) async throws { messages.append(data) }
-    func close() async throws { closes.append(.normal) }
-    func close(with close: SessionClose) async throws { closes.append(close) }
+    struct Snapshot: Sendable {
+        let kinds: [MessageKind]
+        let closes: [SessionClose]
+    }
+
+    func send(_ data: Data) async throws { messages.append(data); resumeWaiters() }
+    func close() async throws { closes.append(.normal); resumeWaiters() }
+    func close(with close: SessionClose) async throws { closes.append(close); resumeWaiters() }
+
+    /// Returns once `condition` holds for what the connection has received, or once the task is
+    /// cancelled: the suite's time limit cancels a test whose event never comes, and the
+    /// expectations after the wait then fail.
+    func waitFor(_ condition: @escaping @Sendable (Snapshot) -> Bool) async {
+        if condition(snapshot) || Task.isCancelled { return }
+        nextWaiter += 1
+        let id = nextWaiter
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume(); return }
+                waiters[id] = (condition, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    private func cancelWaiter(_ id: UInt64) {
+        waiters.removeValue(forKey: id)?.continuation.resume()
+    }
+
+    private var snapshot: Snapshot { Snapshot(kinds: kinds, closes: closes) }
+
+    private func resumeWaiters() {
+        let now = snapshot
+        for (id, waiter) in waiters where waiter.condition(now) {
+            waiters.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
+    }
 
     var errorCodes: [String] {
         messages.compactMap { data in
@@ -114,7 +153,7 @@ private func join(bytes: Int, requestID: String = "join-1") throws -> Data {
     return data
 }
 
-@Suite("Pre-handshake frame-size cap")
+@Suite("Pre-handshake frame-size cap", .timeLimit(.minutes(1)))
 struct HandshakeFrameLimitTests {
     @Test("HANDSHAKE_FRAME_MAX_BYTES: unset, negative or not an integer gives 64 KiB; 0 turns it off")
     func environment() {
@@ -149,11 +188,13 @@ struct HandshakeFrameLimitTests {
         let connection = await fixture.connect(session)
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: limit))
 
-        #expect(await pollUntil { await fixture.router.getBoundLandID(for: session) != nil }, "the session joined")
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await fixture.router.getBoundLandID(for: session) != nil, "the session joined")
         #expect(await connection.closes.isEmpty)
         #expect(await connection.errorCodes.isEmpty)
         let container = try #require(await fixture.manager.getLand(landID: fixture.landID))
-        #expect(await pollUntil { await container.keeper.currentState().players[PlayerID("p1")] != nil })
+        // The join response follows OnJoin.
+        #expect(await container.keeper.currentState().players[PlayerID("p1")] != nil)
     }
 
     @Test("One byte over the limit is refused before it is parsed: error, 1009 close, and no join reaches the land")
@@ -164,7 +205,7 @@ struct HandshakeFrameLimitTests {
         let connection = await fixture.connect(session)
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: limit + 1))
 
-        #expect(await pollUntil { await !connection.closes.isEmpty }, "the session is closed")
+        await connection.waitFor { !$0.closes.isEmpty }
         #expect(await connection.closes == [.handshakeFrameTooBig])
         #expect(SessionClose.handshakeFrameTooBig.code == 1009)
         #expect(await connection.errorCodes == [ErrorCode.invalidMessageFormat.rawValue])
@@ -180,7 +221,7 @@ struct HandshakeFrameLimitTests {
         let connection = await fixture.connect(session)
         await fixture.transport.handleIncomingMessage(sessionID: session, data: Data(repeating: 0x7B, count: limit + 1))
 
-        #expect(await pollUntil { await !connection.closes.isEmpty })
+        await connection.waitFor { !$0.closes.isEmpty }
         #expect(await connection.errorCodes == [ErrorCode.invalidMessageFormat.rawValue])
     }
 
@@ -191,7 +232,8 @@ struct HandshakeFrameLimitTests {
         let session = SessionID("s-after-join")
         let connection = await fixture.connect(session)
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: limit))
-        #expect(await pollUntil { await fixture.router.getBoundLandID(for: session) != nil })
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty, "the join at the limit was accepted")
 
         let text = String(repeating: "y", count: 4 * limit)
         let action = try JSONEncoder().encode(TransportMessage.action(
@@ -202,7 +244,8 @@ struct HandshakeFrameLimitTests {
         await fixture.transport.handleIncomingMessage(sessionID: session, data: action)
 
         let container = try #require(await fixture.manager.getLand(landID: fixture.landID))
-        #expect(await pollUntil { await container.keeper.currentState().notes == 1 }, "the action ran")
+        await connection.waitFor { $0.kinds.contains(.actionResponse) || !$0.closes.isEmpty }
+        #expect(await container.keeper.currentState().notes == 1, "the action ran")
         #expect(await connection.closes.isEmpty)
         #expect(await connection.errorCodes.isEmpty)
     }
@@ -214,7 +257,8 @@ struct HandshakeFrameLimitTests {
         let connection = await fixture.connect(session)
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 128 * 1024))
 
-        #expect(await pollUntil { await fixture.router.getBoundLandID(for: session) != nil })
+        await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await fixture.router.getBoundLandID(for: session) != nil)
         #expect(await connection.closes.isEmpty)
     }
 }
