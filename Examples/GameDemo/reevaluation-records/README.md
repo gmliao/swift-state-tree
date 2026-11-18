@@ -48,6 +48,9 @@ The scenario's client leaves at the end, the land is destroyed and the server wr
 `3-hero-defense.sstr` and check it with
 `swift run -c release ReevaluationRunner --input reevaluation-records/3-hero-defense.sstr --verify`.
 
+A capture's length depends on when the scenario's steps land against the server's ticks, so a new
+capture differs in length: the current file has 390 ticks, the capture it replaced 314.
+
 The JSON records these replaced (format 2.5) have no fingerprint and no longer replay; the one the
 canonical MessagePack tests encode is kept as `Tests/SwiftStateTreeTests/Fixtures/hero-defense-record-2.5.json`.
 Other `*.json` and `*.sstr` files in this directory are local recordings and are not tracked.
