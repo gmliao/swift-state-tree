@@ -1,6 +1,6 @@
 # Two-phase handlers: validate, then apply (#586, minimal)
 
-Status: open (rev 3, 2026-11-18: D1–D3 decided). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
+Status: open (rev 4, 2026-11-18: Review on rev 3 folded in, except M1, which waits for the maintainer). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
 
 ## Decision (maintainer, 2026-11-18)
 
@@ -14,24 +14,31 @@ Status: open (rev 3, 2026-11-18: D1–D3 decided). Issue: #586. Replaces #535 PR
 | Entry point | Today | After |
 |---|---|---|
 | `HandleAction(A.self) { state, action, ctx in ... }` (no resolvers, `resolvers: R1.self`, `resolvers: (R1, R2)`) | body `throws -> some Codable & Sendable` | body non-throwing |
-| `HandleAction(A.self, [resolvers:], validate:, apply:)` | none | new, for each resolver arity: `validate: (State, A, ValidateContext) throws -> Plan`, `apply: (inout State, A, Plan, LandContext) -> Response` |
-| the same with a `Void` plan | none | new, for each resolver arity: `validate: (State, A, ValidateContext) throws -> Void`, `apply: (inout State, A, LandContext) -> Response` |
+| `HandleAction(A.self, [resolvers:], validate:, apply:)` | none | new, for each resolver arity: `validate: (State, A, ValidateContext) throws -> Plan`, `apply: (inout State, A, Plan, LandContext) -> A.Response` |
+| the same with a `Void` plan | none | new, for each resolver arity: `validate: (State, A, ValidateContext) throws -> Void`, `apply: (inout State, A, LandContext) -> A.Response` |
 | `HandleEvent(E.self) { ... }` | body `throws -> Void` | body non-throwing, plus `validate:`/`apply:` (Plan and Void forms; events take no resolvers) |
 | `HandleServerInput(I.self) { ... }` | body `throws -> Void` | body non-throwing, plus `validate:`/`apply:` (Plan and Void forms) |
 | `OnJoin` / `OnLeave` (each with 0–3 resolvers) | body `throws -> Void` | body non-throwing. `CanJoin` stays the join check. |
-| `OnInitialize`, `OnFinalize`, `Tick`, `DestroyWhenEmpty` | throwing | unchanged: not inputs |
+| `OnInitialize`, `OnFinalize`, `Tick`, `DestroyWhenEmpty` | throwing | unchanged: not inputs, and outside the guarantee (OnInitialize keeps its own failure path) |
 
 - `validate` and `apply` sit in one call, so Swift infers `Plan` from `validate`'s return type.
 - They run back to back in the same synchronous turn segment, so nothing runs between the check and the write.
-- The type-erased handlers (`AnyActionHandler`, `AnyClientEventHandler`, `AnyServerInputHandler`) keep a throwing invoke internally, used for the payload type check and for `validate`. Their public `init(handler:)` now takes the non-throwing body.
+- **Return type (Main, 2026-11-18): closes #561.** Every action body and `apply` returns `A.Response`, not `some Codable & Sendable`, so a handler can't return a type other than its declared response. A compile test checks that a wrong response type doesn't compile.
+- **Erased shapes (S2).**
+  - `AnyActionHandler` and `AnyClientEventHandler` keep their throwing invoke as a non-public (`package`) stored closure, used for the payload type check and for `validate`.
+  - Their public inits take the two stages: a throwing `validate` that returns the plan, and a non-throwing `apply`. The single-closure form is the Void-plan case with an empty `validate`.
+  - No public init that takes a throwing body remains, since it would be an escape hatch around the rule.
+  - `AnyServerInputHandler`'s init is already internal and stays so.
+- **Several handlers for one event or server-input type (M1): pending, the maintainer's decision.** The keeper runs them in sequence in one input (`LandKeeper.swift:3538-3541`, `3568-3573`), so handler 1's `apply`, then handler 2's `validate` throw, is still a half-write. This section is filled in when the decision lands.
 
 ### 2. `ValidateContext` and `ReadOnlyLandService`
 
 - `public struct ValidateContext`, `@dynamicMemberLookup`. It wraps the input's `LandContext` privately, so building one is a stored copy and adds no allocation.
 - Exposed: `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`, `playerSlot`, `logger`, and the resolver outputs through the same `subscript(dynamicMember:)` as `LandContext`.
 - `services` is a `ReadOnlyLandServices` view whose `get<S: ReadOnlyLandService>(_:)` only accepts conforming types.
-- Not exposed: `emitEvent`, `serverInputs`, `random`, scheduling.
-- `public protocol ReadOnlyLandService: Sendable {}` is a marker. Its doc states the promise: the service only reads, and the same inputs give the same answer, because replay runs `validate` again.
+- Not exposed: `emitEvent`, `emitAnyServerEvent`, `requestSyncNow`, `requestSyncBroadcastOnly`, `serverInputs`, `random`, scheduling.
+- `public protocol ReadOnlyLandService: Sendable {}` is a marker, and a trust contract the compiler can't check. Its doc states the promise: the service only reads, and the same inputs give the same answer, because replay runs `validate` again. A read that isn't deterministic (a clock, a remote call) belongs in a resolver, whose output is recorded.
+- A service registered under an existential type (`services.register(x, as: (any P).self)`) can't be fetched through `get<S: ReadOnlyLandService>`, because an existential doesn't conform to the marker. Register it under a concrete type to use it from `validate`; the docs say so.
 
 ### 3. Errors
 
@@ -44,15 +51,29 @@ Status: open (rev 3, 2026-11-18: D1–D3 decided). Issue: #586. Replaces #535 PR
 
 - Replay applies the recorded inputs, so `validate` runs again. It must be deterministic: the same state and payload give the same plan or the same error.
 - **There is no rejected/applied marker in the record today.** `ReevaluationRecordedPass.inputs` lists every input the pass applied, failed ones included. A divergence shows up only as a state hash or server event mismatch at the tick. A `validate` that rejects live and passes in replay (or the reverse) is missed when `apply` writes nothing the hash covers.
-- **Proposal (D1):** record format 3.5 adds `rejected: [Int64]?` to `ReevaluationRecordedPass`: the sequences in `inputs` whose handler threw (validate, or the payload type check). The field is additive and optional, and an older record decodes it as nil.
-  - `replayRecordedPasses` collects the sequences that throw in replay and compares them with the recorded set. A difference goes into `recordedPassMismatches[tickId]` ("input <seq> was rejected live and applied in replay", or the reverse), with the same verdict path as a pass mismatch.
-  - A nil field (older record) isn't compared.
-  - Cost: one append per rejected input, nothing on the success path.
+- **The marker (D1, approved).** Record format 3.5 carries the rejected sequences: the inputs whose handler threw (`validate`, or the payload type check).
+  - **Tickless lands:** `rejected: [Int64]?` on `ReevaluationRecordedPass`, as a subset of that pass's `inputs`.
+  - **Tick lands (M3):** `ReevaluationTickFrame.passes` is empty there (`ActionRecorder.swift:477`). The frame itself carries `rejected: [Int64]?`, a subset of the inputs it applied before the tick handler.
+- **Nil (M2).** Nil means "nothing rejected" from 3.5 on, and is written that way (the field is omitted when empty, so there's no append on success). Comparison is gated on the record version, the way the 3.4 ordinal check is (`replayRecordsPassOrdinals`, `LandKeeper.swift:3992`):
+  - a 3.5 record's nil is `[]` and is compared;
+  - an older record's nil isn't compared.
+- **Checks.** On a 3.5 record, each listed sequence must be in the pass's or the frame's inputs and appear once; otherwise the record is malformed, reported as a mismatch.
+- **Compare.** Replay collects the sequences that throw and compares them with the recorded set. A difference goes into `recordedPassMismatches[tickId]` ("input <seq> was rejected live and applied in replay", or the reverse) on both land kinds, through the verdict path a pass mismatch already takes on each.
+- **Tests (D1), each on a tickless and a tick land** (the #563 class, `Notes/solutions/2026-11-14-a-verdict-never-checked-on-one-land-kind`):
+  - rejected live and applied in replay, and the reverse, are reported with their sequence and tick;
+  - a malformed list (an unknown or duplicate sequence) is reported;
+  - a 3.4 record replays clean.
+- **Validate's state (S4).** `validate` reads the existing `inout` binding inside the same `withMutableStateSync`. It gets a borrow, not a copy: no copy-on-write and no snapshot.
 
 ### 5. Removed as dead
 
 - The debug write-then-throw warning: `Sources/SwiftStateTree/Runtime/ThrowingInputWriteCheck.swift` (`warnIfThrowWrote`), the `DEBUG_WARN_THROWING_INPUT_WRITES` key in `EnvKeys.swift`, `setWarnsThrowingInputWritesForTesting`, the `throwWriteInput:` parameter of `withMutableStateSync` and its call sites, `Tests/SwiftStateTreeTests/ThrowingInputWriteWarningTests.swift`, and its paragraphs in `docs/core/runtime.md` (en/zh). `validate` gets a `let` state, so there's nothing to warn about.
-- The in-turn OnJoin and OnLeave failure handling: the join input's failure branch (`discardIfFailedJoin` for a handler throw, a `JoinInputResult` with `failed: true` from the handler) and the OnLeave failure log. Each is removed only where the compiler confirms it's unreachable: a `try` over a non-throwing call warns. Join rejections from resolvers and from `CanJoin` stay.
+- **The in-turn join and leave failure (S1), removed structurally.**
+  - The lifecycle item's apply becomes a non-throwing function that calls the non-throwing OnJoin or OnLeave, outside `applyInputs`' shared `catch`.
+  - The `isJoin` failure branch in that `catch` (`LandKeeper.swift:3921-3926`: the failed `JoinInputResult` and `discardIfFailedJoin`) is then deleted, and so is the OnLeave failure log.
+  - **`JoinInputResult.failed`:** removed (public break, §8). An applied join input can no longer fail, so `noteJoinInputsConsumed` reports only sequences.
+  - In `TransportAdapter`, the `inTurn.failed` flag (`TransportAdapter.swift:2064`) and the `joinFailed:` path of `deferInbound` (`:2597`) go with it.
+  - Join rejections from resolvers and from `CanJoin` stay; they happen before the input is queued.
 - Doc text that says "a handler that throws keeps what it wrote before the throw" (the `HandleAction`/`HandleEvent` docs, `runtime.md`, `land-dsl.md`, `failure-handling.md`).
 
 ### 6. Migration
@@ -108,14 +129,16 @@ From a scan of handler bodies that contain `throw`, or a `try` that isn't `try?`
 - **Breaks:**
   - The non-throwing body for `HandleAction` (3 overloads), `HandleEvent`, `HandleServerInput`, `OnJoin` (4), `OnLeave` (4).
   - The handler types of `OnJoinNode`/`OnLeaveNode`.
-  - The public inits of `AnyActionHandler`/`AnyClientEventHandler`/`AnyServerInputHandler`.
+  - The public inits of `AnyActionHandler`/`AnyClientEventHandler`: two-stage, with no throwing-body init left (§1). `AnyServerInputHandler`'s init is internal: no public change.
+  - An action body and `apply` return `A.Response` instead of `some Codable & Sendable` (closes #561).
+  - `JoinInputResult.failed` and the `failed:` init parameter are removed (§5).
   - A body that throws, or calls a throwing function with `try`, stops compiling.
   - The `DEBUG_WARN_THROWING_INPUT_WRITES` env var is removed.
 - **Additions:**
   - `HandleAction(_:resolvers:validate:apply:)`: 3 arities × Plan/Void = 6 overloads.
   - `HandleEvent(_:validate:apply:)` and `HandleServerInput(_:validate:apply:)`: 2 overloads each.
   - `ValidateContext`, `ReadOnlyLandService`, `ReadOnlyLandServices`.
-- **Record:** format 3.5's optional `rejected` (D1). An older record replays as before, without the comparison.
+- **Record:** format 3.5's optional `rejected` on the pass and on the tick frame (D1). An older record replays as before, without the comparison.
 - **Wire, schema and client SDK:** unchanged.
 
 ### 9. Measured path and A/B
@@ -138,7 +161,7 @@ From a scan of handler bodies that contain `throw`, or a `try` that isn't `try?`
   - a 3.4 record still replays clean.
 - **D2: decided (maintainer, 2026-11-18): (a).** `OnJoin` becomes non-throwing, and the `CanJoin` staleness is accepted and documented in `land-dsl.md` and `failure-handling.md` (en/zh), with an interim note linking #588.
   - A check that depends on changing state doesn't belong in `CanJoin`. `OnJoin` handles a misfit joiner itself: it makes them a spectator, or emits an event asking them to leave.
-  - `LandConfig.maxPlayers` is checked after the last await (`LandKeeper.swift:1650`), so a plain player cap is unaffected.
+  - `LandConfig.maxPlayers` is checked in the segment of the insert, after the last await (`LandKeeper.swift:1650`). Pending joiners count, because `players` is inserted at intake (`LandKeeper.swift:1685`). So a plain player cap is unaffected.
   - The in-turn join validate is tracked as #588, for the turn core's join move.
 - **D3: decided (Main, 2026-11-18):** no `rethrows`-style escape hatch. The single-closure body is non-throwing.
 
@@ -151,6 +174,11 @@ One PR, with commits split by kind:
 
 Verification:
 - `swift test` on both `IN_TURN_SYNC` settings, and GameDemo `swift test`.
+- Compile tests:
+  - each `HandleAction` arity × Plan/Void, and the `HandleEvent`/`HandleServerInput` forms;
+  - a throw-only `validate` (returns Void);
+  - multi-statement `validate` and `apply` closures (the inference of `Plan`);
+  - must-not-compile checks for a throw in `apply` or in a single-closure body, and for a wrong response type (#561). These are kept as typecheck snippets run by a test, in the repo's existing style for such checks; if there is none, as a build-script check. The PR names which.
 - Mutants:
   - `validate`'s error not routed (an input applied after a rejection);
   - `apply` running after a rejection;
