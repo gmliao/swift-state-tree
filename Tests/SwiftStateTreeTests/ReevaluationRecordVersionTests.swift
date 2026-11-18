@@ -8,11 +8,11 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 3.5, reads 2.5 and later, and replays 3.5 and later")
+    @Test("The producer writes 3.6, reads 2.5 and later, and replays 3.6 and later")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.5")
+        #expect(ReevaluationRecordVersion.current == "3.6")
         #expect(ReevaluationRecordVersion.minimumSupported == "2.5")
-        #expect(ReevaluationRecordVersion.minimumReplayable == "3.5")
+        #expect(ReevaluationRecordVersion.minimumReplayable == "3.6")
     }
 
     @Test("Only an affected land's record older than 2.3 has a not-comparable hash (#175)")

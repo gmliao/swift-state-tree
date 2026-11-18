@@ -253,8 +253,10 @@ State is modified through `inout` parameters in Action handlers.
 Action handler signature in Swift is:
 
 ```swift
-(inout State, ActionPayload, LandContext) throws -> Response
+(inout State, ActionPayload, LandContext) -> ActionPayload.Response
 ```
+
+The handler can't throw. An action that can be refused splits into a `validate` that reads the state and may throw, and an `apply` that writes and can't ([Land DSL: Two-Phase Handlers](core/land-dsl.md#two-phase-handlers)).
 
 * Action handlers execute in `LandKeeper` actor's isolated context
 * Handler is synchronous, but Resolver completes in parallel before execution

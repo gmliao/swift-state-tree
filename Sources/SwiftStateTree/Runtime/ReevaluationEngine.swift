@@ -305,6 +305,10 @@ public enum ReevaluationEngine {
         await keeper.setReplayRecordsPassOrdinals(
             !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor)
         )
+        // From 3.5 the refused inputs are recorded and compared (#586).
+        await keeper.setReplayRecordsRejected(
+            !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.rejectedMinor)
+        )
         let landFailure = try await source.getLandFailure()
         // Where the failure ended its turn among its inputs, replay ends that tick or pass too.
         if let landFailure, landFailure.failure.position.endsInputs == true {

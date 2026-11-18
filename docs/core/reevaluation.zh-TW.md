@@ -47,7 +47,7 @@ let keeper = LandKeeper(
 3. 用相同的輸入執行 handlers
 4. 每個 tick 後比對 state hash
 
-Input 在其 handler 執行前就被錄製，因此 handler 拋出錯誤的 input 也會依序出現在錄製中；replay 會再執行它，並以相同方式失敗。
+Input 在其 handler 執行前就被錄製，因此 `validate` 拋出錯誤的 input 也會依序出現在錄製中，並列為 rejected（[被拒絕的 input](#被拒絕的-input35)）。Replay 會再執行它的 `validate`，因此 `validate` 必須具決定性，並檢查拒絕的是相同的 input。
 
 > **沒有 tick 的 land。** 沒有 tick handler 的 land 把所有 input 都錄在 tick 0，replay 會在該 tick 依序套用它們（#167、#268），因此會比對其 server event。從錄製格式 3.1 起，它的 frame 也記錄 live 的每一次處理：處理前的序號計數器，以及依序套用的 input（`passes`）。Replay 把每一次處理當成一個 input turn 執行，執行前先還原它的計數器，因此即使某個 input 超前另一個（等待 resolver 的 action，#325），input 仍依 live 的順序套用，event 序號也與 live 相同（#321）；結果是 `passed` 或 `failed`。若 passes 沒有恰好一次列出 frame 的每個 input、列出不是該 frame input 的序號，或計數器遞減，該 tick 失敗：發現不相符之後，該 tick 不再套用任何 input（檢查在任何一次處理之前執行，因此未通過檢查的錄製一個 input 都不套用）。Hosted replay（`ReevaluationStepResult.recordedPassMismatch`）會把這樣的 tick 回報為不相符，replay land 也不會改送錄到的 event。3.0 或 2.x 的 tickless record 沒有 passes：replay 依序號套用 input，該 tick 的結果是 `passedIgnoringSequence`：比對型別、payload、對象與順序，但不比對序號。沒有 tick 的 land 不錄製每個 tick 的 state hash，因此只驗證它的 event。錄到的空清單也會比對：replay 在 live 沒有送出 event 的地方送出 event，就會失敗。2.5 或 2.6 的 record 每個 tick 只保留最後錄到的那份 server event 清單，所以舊的 tickless record 若有多次處理都送出 event，replay 會失敗；請用目前的 server 重新錄製。
 
@@ -81,8 +81,8 @@ await keeper.stepTickOnce()
 | `RecordedClientEvent`    | `sequence`、`typeIdentifier`、`payload`、`playerID`、`clientID`、`sessionID`、`resolvedAtTick`                    |
 | `RecordedLifecycleEvent` | `kind`、`sequence`、`tickId`、`playerID`、`resolverOutputs`、`resolvedAtTick`                                     |
 | `RecordedServerEvent`    | `sequence`、`tickId`、`typeIdentifier`、`payload`、`target`                                                       |
-| `ReevaluationTickFrame`  | `tickId`、`stateHash`、`actions`、`clientEvents`、`lifecycleEvents`、`serverEvents`、選填的 `sequenceBeforeInputs` / `sequenceBeforeTickHandler`、選填的 `landFailure`（3.4） |
-| `ReevaluationRecordedPass` | `sequenceBefore`、`inputs`（依套用順序的序號）、選填的 `ordinal`（3.4）；位於沒有 tick 的 frame 的選填 `passes`（3.1） |
+| `ReevaluationTickFrame`  | `tickId`、`stateHash`、`actions`、`clientEvents`、`lifecycleEvents`、`serverEvents`、選填的 `sequenceBeforeInputs` / `sequenceBeforeTickHandler`、選填的 `landFailure`（3.4）、選填的 `rejected`（3.5） |
+| `ReevaluationRecordedPass` | `sequenceBefore`、`inputs`（依套用順序的序號）、選填的 `ordinal`（3.4）、選填的 `rejected`（3.5）；位於沒有 tick 的 frame 的選填 `passes`（3.1） |
 | `ReevaluationRecordedServerInput` | `sequence`、`typeIdentifier`、`payload`、`resolvedAtTick`；位於 frame 的選填 `serverInputs`（3.2） |
 
 ## 使用 ReevaluationMonitor
@@ -169,6 +169,10 @@ await client.sendAction("resumeVerification", {});
 錄製格式 3.4（#563、#535）新增三個選填 key。沒有 tick 的 land 從 1 開始為 pass 編號（`ReevaluationRecordedPass.ordinal`），每個 sync output 與 sync marker 錄製它是在哪個 pass 之後讀取的（`afterPass`；0 表示在任何 pass 之前）。序號在套用該 pass 的 turn 片段中取得，早於 sync phase 讀取，因此在 turn 外 commit 的 output（debug freeze 的 settle、之後的 resume）也會標出它讀到的是哪個 pass 的 state。讀取時的 sequence 無法定位 output：一個沒有送出 event 的 pass，其 output 讀到的 sequence 就是該 pass 開始時的值，同一個值同時代表該 pass 之前與之後。Replay 檢查序號是否無缺口地接續它自己的計數（不符時該 tick 失敗，與其他 pass 不符相同），並依 `afterPass` 定位每個沒有 tick 的 output 與 seed，因此沒有 tick 的 land 的 sync output 也會被驗證。早於 3.4 的沒有 tick 的錄製沒有序號：其 sync-output 判定為 `skipped`，並附上原因。有 tick 的 land 一如既往依 tick 定位 output。
 
 因失敗而結束的 land（#535）會把失敗錄在其 tick 的 frame 中（`ReevaluationTickFrame.landFailure`，型別為 `LandFailure`：kind、field、detail，以及位置：tick、pass、sequence 與 stage）。它只錄一次，就在結束 land 的同一個 turn 片段中。Sync stream 也在此結束：失敗之後不再錄製任何 sync output、seed 或 clear，包括失敗的拆除所關閉的 session 的 clear，以及讀取 state 期間 land 已失敗的 firstSync。失敗的 turn 在失敗之前的條目照常保留。transport 回報的失敗會當作輸入套用，並在該處結束其 turn 的批次；它的位置會標明這點（`LandFailurePosition.endsInputs`），replay 也以同樣方式結束該 tick：不執行 tick handler，也不送出該 turn 的任何 event（沒有 tick 的 land 則是該 pass 的 event）。Replay 與 live 執行一樣停在該 tick，並回報該失敗（`RunResult.liveFailure`、`ReevaluationSource.getLandFailure()`）；在它之前的部分照常驗證。3.3 版本會拒絕 3.4 錄製（minor 較新）。
+
+### 被拒絕的 input（3.5）
+
+錄製格式 3.5（#586）把 `validate` 拋出錯誤的 input 列為 `rejected`：沒有 tick 的 land 記在 `ReevaluationRecordedPass.rejected`，有 tick 的 land 記在 `ReevaluationTickFrame.rejected`，為空時省略。從 3.5 起，沒有這份清單表示沒有 input 被拒絕。Replay 會再執行 `validate`，因此它必須具決定性（[Land DSL：編譯器擋不住的事](land-dsl.zh-TW.md#編譯器擋不住的事)）。Replay 比對它拒絕的序號與錄製的序號，不同時回報為該 tick 的 pass mismatch：「input <seq> was rejected live and applied in replay」或「applied live and rejected in replay」。格式錯誤的清單（列出不是其 pass 或 tick 之 input 的序號，或重複列出同一個序號）也是 mismatch。3.4 錄製沒有這份清單，replay 時不做此比對。3.4 版本會拒絕 3.5 錄製（minor 較新）。
 
 ### 錄製所含的 Hash
 

@@ -352,15 +352,13 @@ public enum JoinAdmission: Sendable, Equatable {
 }
 
 /// A join input (OnJoin) a keeper turn applied (`LandKeeperTransport.noteJoinInputsConsumed`).
+/// OnJoin can't throw (#586), so an applied join always completed.
 public struct JoinInputResult: Sendable, Equatable {
     /// The input's sequence, as passed to `admitJoiningSession(joinSequence:)`.
     public let sequence: Int64
-    /// OnJoin threw: the keeper removed the input and the player it inserted.
-    public let failed: Bool
 
-    public init(sequence: Int64, failed: Bool) {
+    public init(sequence: Int64) {
         self.sequence = sequence
-        self.failed = failed
     }
 }
 

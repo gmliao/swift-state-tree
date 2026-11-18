@@ -578,15 +578,49 @@ public actor WebSocketTransport: Transport {
         }
         Task { [weak self] in
             try? await safeTaskSleep(for: timeout)
-            await self?.closeSession(sessionID, with: close, generation: generation)
+            await self?.closeSessionAtBound(sessionID, with: close, generation: generation)
         }
+    }
+
+    /// The bound of `closeSessionAfterQueuedFrames` ran out: close, unless the connection with
+    /// `generation` has gone (nil: any). A newer connection under the same ID is left alone.
+    private func closeSessionAtBound(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
+        if let hook = delayedCloseForTesting { await hook(.willCheck(.bound)) }
+        await closeSession(sessionID, with: close, generation: generation)
+        if let hook = delayedCloseForTesting { await hook(.didRun(.bound)) }
     }
 
     /// The drain of the connection with `generation` reached its close marker: close with the
     /// close the marker carries. A newer connection under the same ID is left alone.
     private func closeSessionAtMarker(_ sessionID: SessionID, generation: UInt64) async {
-        guard let queue = sessionQueues[sessionID], queue.generation == generation else { return }
-        await closeSession(sessionID, with: queue.markerClose)
+        if let hook = delayedCloseForTesting { await hook(.willCheck(.marker)) }
+        if let queue = sessionQueues[sessionID], queue.generation == generation {
+            await closeSession(sessionID, with: queue.markerClose)
+        }
+        if let hook = delayedCloseForTesting { await hook(.didRun(.marker)) }
+    }
+
+    /// The two closes `closeSessionAfterQueuedFrames` leaves behind, which can run after the
+    /// connection they were for has gone (tests).
+    enum DelayedClose: Sendable {
+        case marker
+        case bound
+    }
+
+    enum DelayedCloseStage: Sendable {
+        /// Before the close checks which connection the session has.
+        case willCheck(DelayedClose)
+        /// After it closed, or left the session alone.
+        case didRun(DelayedClose)
+    }
+
+    /// Awaited by a delayed close before its check and after it ran (tests: a hold at
+    /// `willCheck` lets the test end the connection and reconnect the ID first). Nil outside
+    /// tests, where the close doesn't suspend for it.
+    private var delayedCloseForTesting: (@Sendable (DelayedCloseStage) async -> Void)?
+
+    func setDelayedCloseForTesting(_ hook: (@Sendable (DelayedCloseStage) async -> Void)?) {
+        delayedCloseForTesting = hook
     }
 
     /// Closes the session's connection from the server side: the delegate is told the session

@@ -225,14 +225,21 @@ public enum ReevaluationRecordVersion {
     /// failure that ended the land (`ReevaluationTickFrame.landFailure`, #535 D9). A 3.3 record
     /// is still read: its tickless sync outputs can't be located among the passes, and are
     /// reported as not verified.
-    /// 3.5 records the land's schema fingerprint (`ReevaluationRecordMetadata.schemaFingerprint`,
-    /// #521 D15). Replay refuses a record before 3.5 (`minimumReplayable`), and one whose
+    /// 3.5 records the inputs whose handler refused them (`validate` threw, #586): `rejected` on
+    /// a tickless land's pass and on a tick land's frame, omitted when empty. Replay compares
+    /// them from 3.5 on (`rejectedMinor`).
+    /// 3.6 records the land's schema fingerprint (`ReevaluationRecordMetadata.schemaFingerprint`,
+    /// #521 D15). Replay refuses a record before 3.6 (`minimumReplayable`), and one whose
     /// fingerprint is missing or differs from the current definition's; readers that don't replay
     /// still read from `minimumSupported` on.
     public static let current = "3.\(fingerprintMinor)"
 
+    /// The first 3.x minor whose records carry `rejected` (#586): from it a missing list means
+    /// nothing was rejected, and replay compares it.
+    public static let rejectedMinor = 5
+
     /// The first 3.x minor that records the schema fingerprint (#521 D15).
-    public static let fingerprintMinor = 5
+    public static let fingerprintMinor = 6
 
     /// The oldest version replay accepts: records before it carry no schema fingerprint, so they
     /// can't be shown to match the code (`ReevaluationRecordFingerprintError.missing`).
@@ -462,11 +469,15 @@ public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
     /// The pass's number on its land, from 1 (record format 3.4, #563): the number a sync output
     /// read after it records as `afterPass`. Nil in an older record.
     public let ordinal: Int64?
+    /// The inputs of `inputs` whose handler refused them (`validate` threw), in apply order
+    /// (record format 3.5, #586). Nil when none was, and in an older record.
+    public let rejected: [Int64]?
 
-    public init(sequenceBefore: Int64, inputs: [Int64], ordinal: Int64? = nil) {
+    public init(sequenceBefore: Int64, inputs: [Int64], ordinal: Int64? = nil, rejected: [Int64]? = nil) {
         self.sequenceBefore = sequenceBefore
         self.inputs = inputs
         self.ordinal = ordinal
+        self.rejected = rejected
     }
 }
 
@@ -499,6 +510,10 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     /// The failure that ended the land (3.4 on, #535 D9), in the frame of its tick (frame 0 on
     /// a tickless land, with its pass). Replay stops at its position. Nil otherwise.
     public let landFailure: LandFailure?
+    /// A tick land's inputs whose handler refused them (`validate` threw), in apply order
+    /// (record format 3.5, #586). Empty when none was, in an older record, and on a tickless
+    /// land (its passes carry them).
+    public let rejected: [Int64]
 
     public init(
         tickId: Int64,
@@ -514,7 +529,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         initialize: ReevaluationRecordedInitialize? = nil,
         passes: [ReevaluationRecordedPass] = [],
         serverInputs: [ReevaluationRecordedServerInput] = [],
-        landFailure: LandFailure? = nil
+        landFailure: LandFailure? = nil,
+        rejected: [Int64] = []
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -530,6 +546,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         self.passes = passes
         self.serverInputs = serverInputs
         self.landFailure = landFailure
+        self.rejected = rejected
     }
 
     public init(from decoder: Decoder) throws {
@@ -548,6 +565,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         passes = try container.decodeIfPresent([ReevaluationRecordedPass].self, forKey: .passes) ?? []
         serverInputs = try container.decodeIfPresent([ReevaluationRecordedServerInput].self, forKey: .serverInputs) ?? []
         landFailure = try container.decodeIfPresent(LandFailure.self, forKey: .landFailure)
+        rejected = try container.decodeIfPresent([Int64].self, forKey: .rejected) ?? []
     }
 
     /// The frame's sequence watermarks, or nil when the frame carries none (older records, tickless lands).
@@ -573,7 +591,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         initialize: ReevaluationRecordedInitialize? = nil,
         passes: [ReevaluationRecordedPass]? = nil,
         serverInputs: [ReevaluationRecordedServerInput]? = nil,
-        landFailure: LandFailure? = nil
+        landFailure: LandFailure? = nil,
+        rejected: [Int64]? = nil
     ) -> ReevaluationTickFrame {
         ReevaluationTickFrame(
             tickId: tickId,
@@ -589,14 +608,15 @@ public struct ReevaluationTickFrame: Codable, Sendable {
             initialize: initialize ?? self.initialize,
             passes: passes ?? self.passes,
             serverInputs: serverInputs ?? self.serverInputs,
-            landFailure: landFailure ?? self.landFailure
+            landFailure: landFailure ?? self.landFailure,
+            rejected: rejected ?? self.rejected
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
         case sequenceBeforeInputs, sequenceBeforeTickHandler
-        case syncOutputs, syncMarkers, initialize, passes, serverInputs, landFailure
+        case syncOutputs, syncMarkers, initialize, passes, serverInputs, landFailure, rejected
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -618,6 +638,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         // Omitted when empty, so frames without server inputs stay as before.
         if !serverInputs.isEmpty { try container.encode(serverInputs, forKey: .serverInputs) }
         try container.encodeIfPresent(landFailure, forKey: .landFailure)
+        // Omitted when empty, so a frame with nothing rejected stays as before.
+        if !rejected.isEmpty { try container.encode(rejected, forKey: .rejected) }
     }
 }
 
@@ -642,6 +664,8 @@ public struct ReevaluationTickRecord: Sendable {
     public var serverInputs: [ReevaluationRecordedServerInput]
     /// The failure that ended the land (#535 D9), recorded once, in the failing segment.
     public var landFailure: LandFailure?
+    /// A tick land's refused inputs in this record (#586; a tickless land's are on its pass).
+    public var rejected: [Int64]
 
     public init(
         tickId: Int64,
@@ -658,7 +682,8 @@ public struct ReevaluationTickRecord: Sendable {
         initialize: ReevaluationRecordedInitialize? = nil,
         passes: [ReevaluationRecordedPass] = [],
         serverInputs: [ReevaluationRecordedServerInput] = [],
-        landFailure: LandFailure? = nil
+        landFailure: LandFailure? = nil,
+        rejected: [Int64] = []
     ) {
         self.tickId = tickId
         self.actions = actions
@@ -675,6 +700,7 @@ public struct ReevaluationTickRecord: Sendable {
         self.passes = passes
         self.serverInputs = serverInputs
         self.landFailure = landFailure
+        self.rejected = rejected
     }
 }
 
@@ -684,7 +710,7 @@ extension ReevaluationTickRecord {
         actions.isEmpty && clientEvents.isEmpty && lifecycleEvents.isEmpty && serverEvents.isEmpty
             && stateHash == nil && sequenceBeforeInputs == nil && sequenceBeforeTickHandler == nil
             && syncOutputs.isEmpty && syncMarkers.isEmpty && initialize == nil && passes.isEmpty
-            && serverInputs.isEmpty && landFailure == nil
+            && serverInputs.isEmpty && landFailure == nil && rejected.isEmpty
     }
 }
 
@@ -705,7 +731,8 @@ extension ReevaluationTickFrame {
             initialize: record.initialize,
             passes: passes + record.passes,
             serverInputs: serverInputs + record.serverInputs,
-            landFailure: record.landFailure
+            landFailure: record.landFailure,
+            rejected: rejected + record.rejected
         )
     }
 }

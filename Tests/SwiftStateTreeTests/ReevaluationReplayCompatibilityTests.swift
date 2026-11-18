@@ -634,11 +634,11 @@ struct ReevaluationRecordVersionCompatibilityTests {
         #expect(runner.syncStreamPresence == .absent(reason: "recorded with in-turn sync off"))
     }
 
-    /// 2.5 and 2.6 are still read, but a record before 3.5 has no schema fingerprint, so the
+    /// 2.5 and 2.6 are still read, but a record before 3.6 has no schema fingerprint, so the
     /// runner refuses it before the first step (#521 D15), whatever version it requires.
-    @Test("A record before 3.5 is refused by the runner as having no schema fingerprint", arguments: [nil, "2.5"] as [String?])
+    @Test("A record before 3.6 is refused by the runner as having no schema fingerprint", arguments: [nil, "2.5"] as [String?])
     func recordWithoutFingerprintIsRefused(required: String?) async throws {
-        for old in ["2.5", "2.6", "3.4"] where required == nil || old.hasPrefix("2.") {
+        for old in ["2.5", "2.6", "3.4", "3.5"] where required == nil || old.hasPrefix("2.") {
             do {
                 _ = try await runner(recorded: old, required: required, recordsSyncStream: true)
                 Issue.record("\(old): expected the record to be refused")

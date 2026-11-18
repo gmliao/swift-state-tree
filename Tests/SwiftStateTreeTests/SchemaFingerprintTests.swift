@@ -259,7 +259,8 @@ private func fpLand<S: StateNodeProtocol, E: ServerEventPayload, A: ActionPayloa
         ClientEvents { Register(FPv1.FPNote.self) }
         ServerEvents { Register(E.self) }
         Rules {
-            HandleAction(A.self) { (_: inout S, _: A, _: LandContext) in true }
+            // No action is sent in these tests: the handler only declares the action and its response.
+            HandleAction(A.self) { (_: inout S, _: A, _: LandContext) -> A.Response in fatalError("no action is sent") }
             HandleServerInput(I.self) { (_: inout S, _: I, _: LandContext) in }
         }
         Lifetime {
@@ -277,8 +278,8 @@ private func fpWithExtraAction() -> LandDefinition<FPv1.FPState> {
         ClientEvents { Register(FPv1.FPNote.self) }
         ServerEvents { Register(FPv1.FPEvent.self) }
         Rules {
-            HandleAction(FPv1.FPAction.self) { (_: inout FPv1.FPState, _: FPv1.FPAction, _: LandContext) in true }
-            HandleAction(FPExtraAction.self) { (_: inout FPv1.FPState, _: FPExtraAction, _: LandContext) in true }
+            HandleAction(FPv1.FPAction.self) { (_: inout FPv1.FPState, _: FPv1.FPAction, _: LandContext) in FPv1.FPResponse(ok: true) }
+            HandleAction(FPExtraAction.self) { (_: inout FPv1.FPState, _: FPExtraAction, _: LandContext) in FPv1.FPResponse(ok: true) }
             HandleServerInput(FPv1.FPInput.self) { (_: inout FPv1.FPState, _: FPv1.FPInput, _: LandContext) in }
         }
         Lifetime {
@@ -360,7 +361,7 @@ struct SchemaFingerprintTests {
                 Register(FPAnyEvent.self)
             }
             Rules {
-                HandleAction(FPFieldlessAction.self) { (_: inout FPv1.FPState, _: FPFieldlessAction, _: LandContext) in true }
+                HandleAction(FPFieldlessAction.self) { (_: inout FPv1.FPState, _: FPFieldlessAction, _: LandContext) in FPv1.FPResponse(ok: true) }
             }
         }
         #expect(try fingerprint(land).count == 16)
@@ -399,12 +400,12 @@ struct SchemaFingerprintTests {
         try fpBase().validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
     }
 
-    @Test("A recorded land's record holds its fingerprint and version 3.5")
+    @Test("A recorded land's record holds its fingerprint and version 3.6")
     func recordHoldsFingerprint() async throws {
         let path = try await recordFixtureLand(fpBase(), initialState: FPv1.FPState())
         defer { try? FileManager.default.removeItem(atPath: path) }
         let metadata = try await ReevaluationRecordFile.openSource(filePath: path).getMetadata()
-        #expect(metadata.version == "3.5")
+        #expect(metadata.version == "3.6")
         #expect(metadata.schemaFingerprint == (try fingerprint(fpBase())))
     }
 
@@ -414,7 +415,7 @@ struct SchemaFingerprintTests {
         let path = try await recordFixtureLand(land, initialState: FPv1.FPState())
         defer { try? FileManager.default.removeItem(atPath: path) }
         #expect(try await ReevaluationRecordFile.openSource(filePath: path).getMetadata().schemaFingerprint == nil)
-        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.5")) {
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.6")) {
             _ = try await ReevaluationEngine.run(definition: fpBase(), initialState: FPv1.FPState(), recordFilePath: path)
         }
     }

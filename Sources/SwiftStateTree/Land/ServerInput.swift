@@ -86,19 +86,24 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
     let inputType: Any.Type
     /// The type identifier recorded with the input: `String(describing: I.self)`.
     let typeIdentifier: String
+    /// Where the handler was declared (`fileID:line`), for the duplicate check (#586).
+    let site: String?
+    /// Throws only before it writes: from the payload decode or `validate` (#586).
     private let handler: @Sendable (inout State, AnyCodable, LandContext) throws -> Void
 
     init<I: ServerInputPayload>(
         inputType: I.Type,
-        handler: @escaping @Sendable (inout State, I, LandContext) throws -> Void
+        site: String?,
+        invoke: @escaping @Sendable (inout State, I, LandContext) throws -> Void
     ) {
         self.inputType = inputType
         self.typeIdentifier = String(describing: inputType)
+        self.site = site
         self.handler = { state, payload, ctx in
             // Live and replay take the same path: the payload in its record form, decoded to `I`
             // by the record codec.
             let input = try ServerInputCodec.decode(I.self, from: payload)
-            try handler(&state, input, ctx)
+            try invoke(&state, input, ctx)
         }
     }
 
@@ -117,10 +122,13 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 /// canonical record encoding and decoded back (`ServerInputCodec`). A `Date` arrives at whole
 /// seconds, as the record holds it: fractional seconds are truncated live, the same as in replay.
 ///
-/// A throwing handler fails that input alone, as for any input: it stays recorded (replay fails
-/// it the same way), the state it wrote before throwing is kept, and its events are dropped
-/// (outputs of a failed input: #374). Validate before the first write (#87); debug builds warn
-/// when a throwing handler wrote.
+/// The handler can't throw (#586). An input that can be refused declares `validate:` and
+/// `apply:` instead: `validate` reads the state and may throw, which fails that input alone with
+/// nothing written (it stays recorded, and replay refuses it the same way); `apply` writes and
+/// can't throw.
+///
+/// One handler per type: a second `HandleServerInput` for the same type is refused at
+/// registration (`LandRegistrationError.duplicateHandlers`).
 ///
 /// A land declares each type name once: types are keyed by `String(describing:)`, so two
 /// types with the same name in different modules can't both be declared. A submit matches the
@@ -131,9 +139,41 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 /// applied before it, with a higher sequence; the record keeps that order and replay follows it.
 public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload>(
     _ type: I.Type,
-    _ body: @escaping @Sendable (inout State, I, LandContext) throws -> Void
+    fileID: String = #fileID,
+    line: Int = #line,
+    _ body: @escaping @Sendable (inout State, I, LandContext) -> Void
 ) -> AnyServerInputHandler<State> {
-    AnyServerInputHandler(inputType: type, handler: body)
+    AnyServerInputHandler(inputType: type, site: "\(fileID):\(line)", invoke: body)
+}
+
+/// Declares a server input type with a handler in two stages (#586): `validate` reads the state,
+/// may throw (the input fails alone, nothing written), and returns the plan; `apply` writes it
+/// and can't throw. Both run in the same turn, back to back.
+public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload, Plan>(
+    _ type: I.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    validate: @escaping @Sendable (State, I, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, I, Plan, LandContext) -> Void
+) -> AnyServerInputHandler<State> {
+    AnyServerInputHandler(inputType: type, site: "\(fileID):\(line)", invoke: { state, input, ctx in
+        let plan = try validate(state, input, ValidateContext(ctx))
+        apply(&state, input, plan, ctx)
+    })
+}
+
+/// The two-stage form with nothing to pass from `validate` to `apply` (#586).
+public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload>(
+    _ type: I.Type,
+    fileID: String = #fileID,
+    line: Int = #line,
+    validate: @escaping @Sendable (State, I, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, I, LandContext) -> Void
+) -> AnyServerInputHandler<State> {
+    AnyServerInputHandler(inputType: type, site: "\(fileID):\(line)", invoke: { state, input, ctx in
+        try validate(state, input, ValidateContext(ctx))
+        apply(&state, input, ctx)
+    })
 }
 
 // MARK: - Record form

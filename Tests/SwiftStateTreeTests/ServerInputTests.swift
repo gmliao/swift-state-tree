@@ -122,10 +122,11 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
                 HandleServerInput(SIProgress.self) { (state: inout ServerInputTestState, input: SIProgress, ctx: LandContext) in
                     appendEntry("server:\(input.tag):\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
                 }
-                HandleServerInput(SIFailing.self) { (state: inout ServerInputTestState, input: SIFailing, ctx: LandContext) in
-                    appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
+                HandleServerInput(SIFailing.self, validate: { (_: ServerInputTestState, _: SIFailing, _: ValidateContext) in
                     throw SIError()
-                }
+                }, apply: { (state: inout ServerInputTestState, input: SIFailing, ctx: LandContext) in
+                    appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
+                })
                 HandleServerInput(SIDated.self) { (state: inout ServerInputTestState, input: SIDated, ctx: LandContext) in
                     appendEntry("dated:\(input.at.timeIntervalSince1970):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
                 }
@@ -338,16 +339,18 @@ struct ServerInputTests {
         #expect(clientSequences.min()! < serverSequence && serverSequence < clientSequences.max()!)
     }
 
-    @Test("A throwing handler fails that server input alone: its write is kept, it is recorded, and replay matches")
+    @Test("A refusing validate fails that server input alone: nothing is written, it is recorded as rejected, and replay matches")
     func throwingHandlerFailsOnlyItsInput() async throws {
         let keeper = try await makeKeeper(ticking: true)
         let failing = try accepted(await keeper.submitServerInput(SIFailing(tag: "x")))
         let next = try accepted(await keeper.submitServerInput(SIProgress(tag: "y")))
         await keeper.stepTickOnce()
-        // The write before the throw is kept (no per-input savepoint, #87); the next input runs.
-        #expect(await keeper.currentState().log == ["failing:x", "server:y:\(LandContext.systemPlayerID.rawValue)"])
+        // Refused before anything was written (#586); the next input runs.
+        #expect(await keeper.currentState().log == ["server:y:\(LandContext.systemPlayerID.rawValue)"])
         #expect(await keeper.serverInputsInFlightForTesting() == 0)
         #expect(try await allRecordedServerInputs(keeper).map(\.sequence) == [failing, next], "the failed input is recorded")
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        #expect(await recorder.getAllFrames().flatMap(\.rejected) == [failing], "and marked rejected on its tick frame")
 
         let path = try await saveRecord(keeper, name: "server-input-throw")
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -361,6 +364,7 @@ struct ServerInputTests {
             #expect(result.tickHashes[tickId] == recorded, "tick \(tickId): replay fails it the same way")
         }
         #expect(result.serverEventVerification == .passed, "its events are dropped live and in replay")
+        #expect(result.recordedPassMismatches.isEmpty, "replay refuses it again, as the frame's rejected list says")
     }
 
     @Test("Live applies the record form: a Date and a Double decode the same live and in replay")
@@ -428,20 +432,26 @@ struct ServerInputTests {
         }
     }
 
-    @Test("Replaying a recorded server input the land doesn't declare fails the replay")
+    /// The land without the input has another schema fingerprint (its server inputs are part of
+    /// it), so replay refuses the record before its first step (#521 D15) rather than failing on
+    /// the input's tick.
+    @Test("Replaying a record against a land that doesn't declare its server input is refused before the first step")
     func undeclaredRecordedInputFailsReplay() async throws {
         let keeper = try await makeKeeper(ticking: true)
         _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
         await keeper.stepTickOnce()
         let path = try await saveRecord(keeper, name: "server-input-undeclared")
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let result = try await ReevaluationEngine.run(
-            definition: makeTickDefinitionWithoutServerInputs(),
-            initialState: ServerInputTestState(),
-            recordFilePath: path
-        )
-        #expect(result.recordedPassMismatches.values.contains { $0.contains("SIProgress") }, "\(result.recordedPassMismatches)")
-        #expect(result.serverEventVerification != .passed)
+        let recorded = try ReevaluationSchemaFingerprint.compute(for: makeDefinition(ticking: true))
+        let current = try ReevaluationSchemaFingerprint.compute(for: makeTickDefinitionWithoutServerInputs())
+        #expect(recorded != current)
+        await #expect(throws: ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current)) {
+            _ = try await ReevaluationEngine.run(
+                definition: makeTickDefinitionWithoutServerInputs(),
+                initialState: ServerInputTestState(),
+                recordFilePath: path
+            )
+        }
     }
 
     @Test("Refusals queue nothing: undeclared type, no record form, not live, draining")
@@ -626,7 +636,7 @@ struct ServerInputTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let source = try ReevaluationRecordFile.openSource(filePath: path)
-        #expect(try await source.getMetadata().version == "3.5")
+        #expect(try await source.getMetadata().version == "3.6")
         let result = try await ReevaluationEngine.run(
             definition: makeDefinition(ticking: true),
             initialState: ServerInputTestState(),

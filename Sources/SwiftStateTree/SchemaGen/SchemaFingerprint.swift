@@ -49,10 +49,9 @@ public enum ReevaluationSchemaFingerprint {
             var definitions = schema.defs
             var visited = Set(definitions.keys)
             var inputs: [String: JSONSchema] = [:]
-            for (name, handlers) in definition.serverInputHandlers {
-                guard let inputType = handlers.first?.inputType else { continue }
+            for (name, handler) in definition.serverInputHandlers {
                 inputs[name] = ActionEventExtractor.extractEvent(
-                    inputType,
+                    handler.inputType,
                     definitions: &definitions,
                     visitedTypes: &visited
                 )

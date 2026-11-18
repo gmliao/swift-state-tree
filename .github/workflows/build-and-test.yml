@@ -57,6 +57,11 @@ jobs:
     
     - name: Build
       run: swift build
+
+    # Handler bodies that must not compile (#586): a throw after the write, a wrong response type,
+    # validate's context. Each snippet builds as a target of a generated package under .build/.
+    - name: Must-not-compile snippets
+      run: scripts/check-must-not-compile.sh
     
     - name: Run tests
       run: swift test

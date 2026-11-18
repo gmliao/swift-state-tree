@@ -79,7 +79,7 @@ HandleAction(SomeAction.self) { state, action, ctx in
 `LandKeeper` 透過 `withMutableStateSync` 執行每個 handler，直接修改 actor 的狀態：
 
 ```swift
-// 內部實作（簡化版；debug build 另外檢查拋出錯誤的 handler 是否寫入，見 Input 與 Turn）
+// 內部實作（簡化版）
 func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
     // Actor 序列化確保線程安全
     return try operation(&state)
@@ -172,18 +172,16 @@ sequenceDiagram
 
 ### Input 與 Turn
 
-Handler（action、client event、lifecycle、`Tick`）都是同步的：`(inout State, …, LandContext) throws`。狀態只在 handler 內改變，一次一個 input，依 keeper 套用的順序，而 reevaluation 錄製保留的正是這個順序。Handler 不能 await。非同步工作（讀資料庫、呼叫其他服務）請放在 resolver：resolver 在 handler 之前、turn 之外執行，其輸出透過 `ctx` 交給 handler 並被錄製，因此 replay 會重用輸出，而不是再呼叫一次服務。見 [Resolver 機制](resolver.zh-TW.md)。
+Handler（action、client event、server input、lifecycle、`Tick`）都是同步的：`(inout State, …, LandContext)`。狀態只在 handler 內改變，一次一個 input，依 keeper 套用的順序，而 reevaluation 錄製保留的正是這個順序。Handler 不能 await。非同步工作（讀資料庫、呼叫其他服務）請放在 resolver：resolver 在 handler 之前、turn 之外執行，其輸出透過 `ctx` 交給 handler 並被錄製，因此 replay 會重用輸出，而不是再呼叫一次服務。見 [Resolver 機制](resolver.zh-TW.md)。
 
-Handler 拋出錯誤的 input 單獨失敗：
+Handler 寫入後不能再拋出錯誤（#586）。`HandleAction`、`HandleEvent`、`HandleServerInput`、`OnJoin` 與 `OnLeave` 的 body 都不會拋出錯誤。可被拒絕的 input 宣告 `validate` 與 `apply`（[Land DSL：兩段式 Handler](land-dsl.zh-TW.md#兩段式-handler)）：`validate` 讀取狀態且可拋出錯誤，`apply` 寫入且不能拋出，兩者在同一個 turn 內接連執行。`validate` 拋出錯誤的 input 單獨失敗，什麼都不寫入：
 
 - 其後的 input 在同一輪照常套用；
-- 在 tickless land 上，呼叫者收到錯誤。在 tick land 上，呼叫者在 action 排入佇列時就已收到確認（handler 在之後的 tick 執行），所以失敗只會記錄在 log（`Input failed: its handler threw`），不會傳回呼叫者。在收件階段發生的錯誤（未註冊的 action、解碼失敗、resolver 的錯誤、遞送被拒）在兩種 land 上都會傳回呼叫者；
-- 它發出的 server event 會被丟棄；
-- `OnJoin` 拋出錯誤的 join 會被捨棄；
-- handler 在拋出前寫入狀態的內容會保留，下一次同步會送出（沒有逐 input 的 rollback，#87）；
-- 它和其他 input 一樣被錄製，因此 replay 會再執行它，並以相同方式失敗。
+- 在 tickless land 上，action 的呼叫者收到錯誤（`ACTION_HANDLER_ERROR`）。在 tick land 上，呼叫者在 action 排入佇列時就已收到確認（handler 在之後的 tick 執行），所以失敗只會記錄在 log（`Input refused: its validate threw`），不會傳回呼叫者。Client event 的錯誤以 error payload 送給 client；server input 的錯誤記錄在 log。在收件階段發生的錯誤（未註冊的 action、解碼失敗、resolver 的錯誤、遞送被拒）在兩種 land 上都會傳回呼叫者；
+- 它不發出任何東西：`validate` 不能發出 event，`apply` 也不會執行；
+- 它和其他 input 一樣被錄製，並列為 rejected，因此 replay 會再執行它的 `validate`，並檢查拒絕的是相同的 input（[Reevaluation：被拒絕的 input](reevaluation.zh-TW.md#被拒絕的-input35)）。
 
-**先驗證再修改。** 在 handler 第一次寫入狀態之前，先檢查所有可能拋出錯誤的條件，失敗的 input 就不會改變任何東西。Debug build 的 keeper 會檢查這件事：handler 拋出錯誤時，keeper 拿 handler 執行前的狀態副本比對同步狀態；若 handler 有寫入，就記錄一則警告，標明是哪個 input（`action <type>`、`event <type>`、`serverInput <type>`、`OnJoin`、`OnLeave`、`OnInitialize`），每個 land 的每種 input 只記一次。Destroy handler（`OnDestroyWhenEmpty`、`OnFinalize`）只在之後還有 destroy 階段的 handler 會讀取狀態時（`OnFinalize`、`AfterFinalize`、`OnShutdown`）才檢查。Re-evaluation 不檢查。`@Internal` 欄位不在比對範圍內，寫入它們不會被回報。另有一個盲點：`Float` 或 `Double` 的 NaN 與自身比較不相等，所以沒有寫入就拋出錯誤的 handler 也可能發出警告，並用掉該 input 類型唯一的一次警告。這份副本讓大型 debug 遊戲每個 input 多付一次「第一次寫入各容器時的複製」；設 `DEBUG_WARN_THROWING_INPUT_WRITES=false` 可關閉檢查。Release build 不檢查，也不複製。
+`OnJoin` 與 `OnLeave` 不會失敗：玩家能否加入由 `CanJoin` 決定（[Land DSL：Join 檢查](land-dsl.zh-TW.md#join-檢查)），離開則一定會發生。`OnInitialize` 與 destroy 階段的 handler（`OnFinalize`、`OnDestroyWhenEmpty`）仍可拋出錯誤，並保留拋出前寫入的內容。
 
 ### Event Handler 流程
 
@@ -239,8 +237,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
     if let onJoinHandler = definition.lifetimeHandlers.onJoin {
         // 執行 Resolver（如果有的話）
         // 執行 handler
-        try withMutableStateSync { state in
-            try onJoinHandler(&state, ctx)
+        withMutableStateSync { state in
+            onJoinHandler(&state, ctx)
         }
     }
 
@@ -256,8 +254,8 @@ public func join(session: PlayerSession, ...) async throws -> JoinDecision {
 public func leave(playerID: PlayerID, ...) async throws {
     // 執行 OnLeave handler（如果定義）
     if let onLeaveHandler = definition.lifetimeHandlers.onLeave {
-        try withMutableStateSync { state in
-            try onLeaveHandler(&state, ctx)
+        withMutableStateSync { state in
+            onLeaveHandler(&state, ctx)
         }
     }
 
@@ -434,7 +432,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 已知限制：
 
 - Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。
-- Handler 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄，同一 turn 的其他 input 照常套用。狀態保留 handler 在拋出前寫入的內容，下一次同步會送出（[先驗證再修改](#input-與-turn)）。
+- `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
 `IN_TURN_SYNC=false` 是 kill switch：adapter 保留自己的 executor，透過 `beginSync` / `endSync` 同步（[同步流程](#同步流程)）。Adapter 在 init 時決定一次，keeper 跟隨它。

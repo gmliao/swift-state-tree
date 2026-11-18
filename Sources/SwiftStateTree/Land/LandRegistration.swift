@@ -47,6 +47,9 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// first two were thrown on their own, as `SyncValueSemanticsError` and
     /// `SyncPolicyNestingError`; each is now this field's associated value.
     public let sync: SyncRegistrationError?
+    /// Client-event or server-input types declared with more than one handler (#586): an input
+    /// runs exactly one `validate` and one `apply`. Empty when there are none.
+    public let duplicateHandlers: [DuplicateHandlerDeclaration]
     /// Why a land whose records will be replayed has no record schema fingerprint (#521 D15).
     /// Checked only under `LandRegistrationContext.recordsForReplay`, and only when `sync` is nil.
     public let schemaFingerprint: SchemaFingerprintError?
@@ -55,18 +58,21 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         landType: String,
         payload: PayloadRegistrationError?,
         sync: SyncRegistrationError? = nil,
+        duplicateHandlers: [DuplicateHandlerDeclaration] = [],
         schemaFingerprint: SchemaFingerprintError? = nil
     ) {
         self.landType = landType
         self.payload = payload
         self.sync = sync
+        self.duplicateHandlers = duplicateHandlers
         self.schemaFingerprint = schemaFingerprint
     }
 
     public var description: String {
         "land type '\(landType)' can't be registered: "
-            + [payload?.description, sync?.description, schemaFingerprint?.description]
-                .compactMap { $0 }.joined(separator: "; ")
+            + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description)
+                + [schemaFingerprint?.description].compactMap { $0 })
+            .joined(separator: "; ")
     }
 }
 
@@ -90,14 +96,19 @@ extension LandDefinition {
                 fingerprint = error
             }
         }
-        if payload != nil || sync != nil || fingerprint != nil {
-            throw LandRegistrationError(landType: id, payload: payload, sync: sync, schemaFingerprint: fingerprint)
+        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil {
+            throw LandRegistrationError(
+                landType: id, payload: payload, sync: sync,
+                duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint
+            )
         }
     }
 
     /// EV1: the types the server writes positionally (its events, and each action's declared
-    /// `Response` type) that have no positional writer, which would throw at their first send. A
-    /// handler body that returns some other type isn't seen here.
+    /// `Response` type) that have no positional writer, which would throw at their first send.
+    /// Every public way to declare an action handler (the `HandleAction` forms and
+    /// `AnyActionHandler`'s generic init) returns the action's declared `Response` (#586, #561),
+    /// so this covers them all.
     func payloadsWithoutWriter() -> PayloadRegistrationError? {
         var problems: [String] = []
         for descriptor in serverEventRegistry.registered where !hasWriter(descriptor.type) {

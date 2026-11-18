@@ -383,17 +383,20 @@ public enum VisibilityTest {
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }
 
-                HandleAction(PlaceEntityAction.self) { (state: inout State, action: PlaceEntityAction, _: LandContext) in
-                    spawnEntitiesIfNeeded(&state, settings: settings)
-                    guard state.entities[action.id] != nil else {
+                // validate refuses an unknown id before anything is written (#586): before the
+                // lazy spawn, by the id scheme `spawnEntitiesIfNeeded` uses.
+                HandleAction(PlaceEntityAction.self, validate: { (state: State, action: PlaceEntityAction, _: ValidateContext) in
+                    guard entityExists(action.id, in: state, settings: settings) else {
                         throw VisibilityTestError.unknownEntity(action.id)
                     }
+                }, apply: { (state: inout State, action: PlaceEntityAction, _: LandContext) in
+                    spawnEntitiesIfNeeded(&state, settings: settings)
                     for position in action.positions {
                         state.entities[action.id]?.position = position
                         updateVisibility(&state, settings: settings)
                     }
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
-                }
+                })
 
                 HandleEvent(MoveViewerEvent.self) { (state: inout State, event: MoveViewerEvent, ctx: LandContext) in
                     guard state.viewers[ctx.playerID] != nil else { return }
@@ -416,6 +419,14 @@ public enum VisibilityTest {
                 }
             }
         }
+    }
+
+    /// Whether `id` names an entity, also before the lazy spawn has created them: `e<i>` with
+    /// `i` below the entity count, as `spawnEntitiesIfNeeded` names them.
+    static func entityExists<State: VisibilityTestStateShape>(_ id: String, in state: State, settings: VisibilityTestSettings) -> Bool {
+        guard state.entities.isEmpty else { return state.entities[id] != nil }
+        guard id.hasPrefix("e"), let index = Int(id.dropFirst()), String(index) == id.dropFirst() else { return false }
+        return index >= 0 && index < settings.entityCount
     }
 
     /// Creates the entities on first use, at deterministic positions and steps.

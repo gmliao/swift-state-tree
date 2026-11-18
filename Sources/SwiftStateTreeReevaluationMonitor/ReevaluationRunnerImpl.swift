@@ -135,6 +135,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     private var syncOutputDriver: SyncOutputReplayDriver<State>
     private let tickless: Bool
     private let recordsPassOrdinals: Bool
+    /// The record is 3.5 or later: replay compares the inputs refused live (#586).
+    private let recordsRejected: Bool
     private let landFailure: (tickId: Int64, failure: LandFailure)?
     /// A tickless land's events taken after each replayed pass, for the tick's event check.
     private var passEvents: [ReevaluationRecordedServerEvent] = []
@@ -161,6 +163,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // record 3.4 its sync outputs are located by pass, stepped after each replayed pass (#563).
         tickless = definition.lifetimeHandlers.tickHandler == nil
         recordsPassOrdinals = !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor)
+        recordsRejected = !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.rejectedMinor)
         syncOutputDriver = SyncOutputReplayDriver(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
             incomparability: ReevaluationRecordVersion.hashIncomparability(
@@ -231,6 +234,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // record 3.4 its sync outputs are located by pass, stepped after each replayed pass (#563).
         tickless = definition.lifetimeHandlers.tickHandler == nil
         recordsPassOrdinals = !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.passOrdinalMinor)
+        recordsRejected = !ReevaluationRecordVersion.isBefore3(metadata.version, minor: ReevaluationRecordVersion.rejectedMinor)
         syncOutputDriver = SyncOutputReplayDriver(
             metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
             incomparability: ReevaluationRecordVersion.hashIncomparability(
@@ -278,6 +282,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         guard !prepared else { return }
         prepared = true
         await keeper.setReplayRecordsPassOrdinals(recordsPassOrdinals)
+        await keeper.setReplayRecordsRejected(recordsRejected)
         // Where the recorded failure ended its turn among its inputs, replay ends that tick or
         // pass the same way (`LandFailurePosition.endsInputs`).
         if let landFailure, landFailure.failure.position.endsInputs == true {
