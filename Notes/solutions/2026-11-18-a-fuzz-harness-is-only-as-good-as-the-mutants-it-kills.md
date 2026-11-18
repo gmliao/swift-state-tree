@@ -81,6 +81,13 @@ the harness was checked with mutants planted in the decoders:
   others. A target whose inputs all stop at one early error passes "decode or throw" without
   testing anything. Seed each typed decode with a valid value of its type: byte mutations don't
   invent field names.
+- Count the seeds and the mutations apart. Replayed unmutated, the seeds alone make "decoded
+  and refused" hold: a type's own seed decodes, every other seed fails as `keyNotFound`. What
+  shows that a fuzzed value reached a field is, among the mutations, a refusal from the field's
+  own decoder (`typeMismatch`, `dataCorrupted`). For a type whose seed is one frame among many,
+  mutate from its seeds alone, or few mutations reach it.
+- Print the seed before the first input. With a random seed, a trap or a hang ends the process
+  before a summary line, and then nothing names the seed to replay.
 - Writing each input to a file before decoding it, so a crasher is kept, made a 10^6-iteration
   run I/O-bound: 18% CPU for an hour on a container volume, against 135 s for the whole run
   without it. Keep that switch for replaying a known seed. The seed and the target name are

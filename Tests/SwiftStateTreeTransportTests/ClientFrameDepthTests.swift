@@ -256,15 +256,28 @@ struct ClientFrameDepthTests {
         }
     }
 
-    @Test("The JSON fixtures are as deep as they claim: the parser accepts the limit and refuses one past it")
+    @Test("The JSON fixtures are as deep as they claim: the parser accepts the limit and refuses one past it, by nesting")
     func jsonFixtureDepth() {
-        for kind in ["action", "clientEvent", "join"] {
-            #expect((try? JSONSerialization.jsonObject(with: DeepFrames.json(kind, depth: Self.jsonLimit, objects: false))) != nil, "\(kind)")
-            do {
-                _ = try JSONSerialization.jsonObject(with: DeepFrames.json(kind, depth: Self.jsonLimit + 1, objects: false))
-                Issue.record("\(kind): one past the limit parsed")
-            } catch {
-                #expect(String(describing: error).localizedCaseInsensitiveContains("nest"), "\(kind): \(error)")
+        // Every JSON frame the depth tests use, nested in arrays and in objects. `JSONDecoder` on
+        // Linux reports only "not valid JSON" one past the limit; `JSONSerialization` names the
+        // nesting, which shows that refusal is the depth's.
+        for encoding in [FrameEncoding.json, .opcodeJsonArray] {
+            for kind in ["action", "clientEvent", "join"] {
+                for objects in [false, true] {
+                    func frame(_ depth: Int) -> Data {
+                        encoding == .json
+                            ? DeepFrames.json(kind, depth: depth, objects: objects)
+                            : DeepFrames.opcodeJSON(kind, depth: depth, objects: objects)
+                    }
+                    let context = "\(encoding) \(kind) \(objects ? "objects" : "arrays")"
+                    #expect((try? JSONSerialization.jsonObject(with: frame(Self.jsonLimit))) != nil, "\(context)")
+                    do {
+                        _ = try JSONSerialization.jsonObject(with: frame(Self.jsonLimit + 1))
+                        Issue.record("\(context): one past the limit parsed")
+                    } catch {
+                        #expect(String(describing: error).localizedCaseInsensitiveContains("nest"), "\(context): \(error)")
+                    }
+                }
             }
         }
     }

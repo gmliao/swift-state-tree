@@ -172,28 +172,106 @@ enum T5Seeds {
 }
 
 /// How often each fixture type's decode succeeded and threw in one target (T5).
-struct PayloadOutcomes {
-    var byType: [String: FuzzOutcome] = [:]
+/// How one payload decode as a fixture type ended.
+enum PayloadDecodeResult {
+    case decoded
+    /// A field the type needs is missing: the payload is another type's, or a key was mutated.
+    case keyNotFound
+    /// A field's value was refused (`typeMismatch`, `dataCorrupted`): a fuzzed value reached the
+    /// field's decoder.
+    case fieldRefused
+    case otherError
 
-    mutating func record(_ type: Any.Type, _ succeeded: Bool) {
-        let name = String(describing: type)
-        if succeeded {
-            byType[name, default: FuzzOutcome()].decoded += 1
-        } else {
-            byType[name, default: FuzzOutcome()].threw += 1
+    init(_ decode: () throws -> Void) {
+        do {
+            try decode()
+            self = .decoded
+        } catch DecodingError.keyNotFound {
+            self = .keyNotFound
+        } catch DecodingError.typeMismatch, DecodingError.dataCorrupted {
+            self = .fieldRefused
+        } catch {
+            self = .otherError
+        }
+    }
+}
+
+struct PayloadCounts: CustomStringConvertible {
+    var decoded = 0
+    var keyNotFound = 0
+    var fieldRefused = 0
+    var otherError = 0
+
+    var refused: Int { keyNotFound + fieldRefused + otherError }
+
+    mutating func add(_ result: PayloadDecodeResult) {
+        switch result {
+        case .decoded: decoded += 1
+        case .keyNotFound: keyNotFound += 1
+        case .fieldRefused: fieldRefused += 1
+        case .otherError: otherError += 1
         }
     }
 
-    /// Every fixture type with fields saw a fuzzed value it decoded and one it refused.
-    func expectBothOutcomes(_ target: String, sourceLocation: SourceLocation = #_sourceLocation) {
-        let summary = byType.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.decoded)/\($0.value.threw)" }
-        print("[client-frame-fuzz] \(target) payloads decoded/threw: \(summary.joined(separator: " "))")
+    var description: String { "\(decoded)/\(keyNotFound)/\(fieldRefused)/\(otherError)" }
+}
+
+/// Payload decodes per fixture type, the seeds (replayed unmutated) and the mutations apart:
+/// a seed shows that a type's decoder is reached, only a mutation that it is fuzzed.
+struct PayloadOutcomes {
+    var seeds: [String: PayloadCounts] = [:]
+    var mutations: [String: PayloadCounts] = [:]
+    /// Whether the input being decoded is a mutation; set by the target before each one.
+    var mutated = false
+
+    mutating func record(_ type: Any.Type, _ result: PayloadDecodeResult) {
+        let name = String(describing: type)
+        if mutated {
+            mutations[name, default: PayloadCounts()].add(result)
+        } else {
+            seeds[name, default: PayloadCounts()].add(result)
+        }
+    }
+
+    func all(_ name: String) -> PayloadCounts {
+        let seed = seeds[name] ?? PayloadCounts()
+        let mutation = mutations[name] ?? PayloadCounts()
+        return PayloadCounts(
+            decoded: seed.decoded + mutation.decoded, keyNotFound: seed.keyNotFound + mutation.keyNotFound,
+            fieldRefused: seed.fieldRefused + mutation.fieldRefused, otherError: seed.otherError + mutation.otherError
+        )
+    }
+
+    func printSummary(_ target: String) {
+        func line(_ counts: [String: PayloadCounts]) -> String {
+            counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        }
+        print("[client-frame-fuzz] \(target) payloads decoded/keyNotFound/fieldRefused/other: seeds \(line(seeds)); mutations \(line(mutations))")
+    }
+
+    /// Every fixture type with fields was reached: seeds and mutations together, it decoded a
+    /// payload and refused one. This doesn't show that a mutation reached a field
+    /// (`expectFuzzedFields` does).
+    func expectReached(_ target: String, sourceLocation: SourceLocation = #_sourceLocation) {
+        printSummary(target)
         let types: [Any.Type] = FuzzPayloadTypes.actions + FuzzPayloadTypes.clientEvents
         // A field-less type decodes from any object: it has no refusal to see.
         for type in types where type != PFEmptyClientEvent.self {
             let name = String(describing: type)
-            let outcome = byType[name] ?? FuzzOutcome()
-            #expect(outcome.decoded > 0 && outcome.threw > 0, "\(target) \(name): \(outcome)", sourceLocation: sourceLocation)
+            let counts = all(name)
+            #expect(counts.decoded > 0 && counts.refused > 0, "\(target) \(name): \(counts)", sourceLocation: sourceLocation)
+        }
+    }
+
+    /// Among the mutations alone, each of `types` decoded a payload and refused a field's value
+    /// (`typeMismatch` or `dataCorrupted`, not a missing key): a fuzzed value reached a field
+    /// decoder.
+    func expectFuzzedFields(_ target: String, types: [Any.Type], sourceLocation: SourceLocation = #_sourceLocation) {
+        printSummary(target)
+        for type in types {
+            let name = String(describing: type)
+            let counts = mutations[name] ?? PayloadCounts()
+            #expect(counts.decoded > 0 && counts.fieldRefused > 0, "\(target) \(name) mutations: \(counts)", sourceLocation: sourceLocation)
         }
     }
 }
@@ -251,7 +329,7 @@ enum ClientFrameTargets {
     static func decodePayloads(of message: TransportMessage, outcomes: inout PayloadOutcomes) -> Bool? {
         let decoder = JSONDecoder()
         func attempt<T: Decodable>(_ type: T.Type, _ payload: AnyCodable) {
-            outcomes.record(type, (try? InboundPayloadDecoding.decode(type, from: payload, decoder: decoder)) != nil)
+            outcomes.record(type, PayloadDecodeResult { _ = try InboundPayloadDecoding.decode(type, from: payload, decoder: decoder) })
         }
         let payload: AnyCodable
         switch message.payload {
@@ -335,7 +413,7 @@ struct ClientFrameFuzzTests {
             var outcomes = PayloadOutcomes()
             ClientFrameTargets.decodePayloads(of: message, outcomes: &outcomes)
             let name = try #require(expected[frame.name])
-            if outcomes.byType[name]?.decoded != 1 {
+            if outcomes.seeds[name]?.decoded != 1 {
                 // Say why: the payload's own decode error.
                 let payload: AnyCodable? = switch message.payload {
                 case .action(let action): action.action.payload
@@ -388,7 +466,8 @@ struct ClientFrameFuzzTests {
         let codec = ClientFrameTargets.codec(encoding)
         let target = "T3-router-\(encoding)"
         var payloads = PayloadOutcomes()
-        let outcome = await ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
+        let outcome = await ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data, mutated in
+            payloads.mutated = mutated
             if case .message(let message) = try FuzzRouter.decodePostHandshakeFrame(
                 data, codec: codec, sessionID: ClientFrameTargets.sessionID, logger: ClientFrameTargets.logger
             ) {
@@ -396,7 +475,7 @@ struct ClientFrameFuzzTests {
             }
         }
         #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
-        payloads.expectBothOutcomes(target)
+        payloads.expectReached(target)
     }
 
     @Test("T3: the adapter's decoding pipeline, legacy join off and on", arguments: encodings, [false, true])
@@ -404,13 +483,29 @@ struct ClientFrameFuzzTests {
         let pipeline = ClientFrameTargets.pipeline(encoding, legacyJoin: legacyJoin)
         let target = "T3-pipeline-\(encoding)-\(legacyJoin)"
         var payloads = PayloadOutcomes()
-        let outcome = await ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data in
+        let outcome = await ClientFrameFuzzer.run(target: target, seeds: ClientFrameCorpus.frames(encoding).map(\.bytes)) { data, mutated in
+            payloads.mutated = mutated
             let message = try pipeline.decode(data)
             ClientFrameTargets.decodePayloads(of: message, outcomes: &payloads)
             ClientFrameTargets.checkJoin(message)
         }
         #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
-        payloads.expectBothOutcomes(target)
+        payloads.expectReached(target)
+    }
+
+    @Test("T5: mutations of the fixture payloads reach their field decoders", arguments: encodings)
+    func fixturePayloadFields(encoding: FrameEncoding) async {
+        let pipeline = ClientFrameTargets.pipeline(encoding, legacyJoin: false)
+        let target = "T5-fields-\(encoding)"
+        var payloads = PayloadOutcomes()
+        // Mutated from the T5 seeds only: in the whole corpus a fixture type's seed is one frame
+        // in about seventy, so few mutations of it reach its payload decode.
+        let outcome = await ClientFrameFuzzer.run(target: target, seeds: T5Seeds.frames.filter { $0.encoding == encoding }.map(\.bytes)) { data, mutated in
+            payloads.mutated = mutated
+            ClientFrameTargets.decodePayloads(of: try pipeline.decode(data), outcomes: &payloads)
+        }
+        #expect(outcome.decoded > 0 && outcome.threw > 0, "\(outcome)")
+        payloads.expectFuzzedFields(target, types: [FuzzLeavesAction.self, FuzzMathAction.self, FuzzContainersEvent.self, PFClientEvent.self])
     }
 
     @Test("T4: the MessagePack unpacker and decoders, each entry point counted")
@@ -450,6 +545,7 @@ struct ClientFrameFuzzTests {
         var pipelineOutcome = FuzzOutcome()
         var handshake = FuzzOutcome()
         var syncAckRefused = 0
+        print("[client-frame-fuzz] \(target) seed=\(ClientFrameFuzzConfig.seedText) iterations=\(ClientFrameFuzzConfig.iterations) started")
         for index in 0..<ClientFrameFuzzConfig.iterations {
             if index % ClientFrameFuzzer.inputsPerYield == 0 { await Task.yield() }
             let count = Int.random(in: 0...96, using: &generator)
@@ -468,7 +564,7 @@ struct ClientFrameFuzzTests {
             }
             if SyncAckFrame.parse(data) == nil { syncAckRefused += 1 }
         }
-        print("[client-frame-fuzz] \(target) seed=\(ClientFrameFuzzConfig.seedText) pipeline=\(pipelineOutcome) handshake=\(handshake) syncAckRefused=\(syncAckRefused)")
+        print("[client-frame-fuzz] \(target) pipeline=\(pipelineOutcome) handshake=\(handshake) syncAckRefused=\(syncAckRefused)")
         // Random bytes are almost never a frame. This checks that each entry point ran and refused.
         #expect(pipelineOutcome.threw > 0 && handshake.threw > 0 && syncAckRefused > 0)
         #expect(pipelineOutcome.decoded + pipelineOutcome.threw == ClientFrameFuzzConfig.iterations)

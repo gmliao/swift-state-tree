@@ -7,7 +7,7 @@
 //
 // Budget: `SST_FUZZ_ITERATIONS` per target (default `ClientFrameFuzzConfig.defaultIterations`).
 // Seed: `SST_FUZZ_SEED`, a decimal or `0x` number, or `random` (picked). Each target prints
-// the seed it ran with.
+// the seed before its first input, so a trap or a hang still leaves it in the output.
 // `SST_FUZZ_LAST_INPUT=<path>` writes each target's input to `<path>.<target>` before decoding
 // it, so after a trap that file holds the crasher: one file per target.
 // When replaying, run the one target with `--filter`. A file write per input makes a run
@@ -319,7 +319,23 @@ enum ClientFrameFuzzer {
         seed: UInt64 = ClientFrameFuzzConfig.seed,
         decode: (Data) throws -> Void
     ) async -> FuzzOutcome {
+        await run(target: target, seeds: seeds, iterations: iterations, seed: seed) { data, _ in try decode(data) }
+    }
+
+    /// `run(target:seeds:iterations:seed:decode:)`, telling `decode` whether the input is a
+    /// mutation (true) or a seed replayed unmutated (false), so a target can count them apart.
+    @discardableResult
+    static func run(
+        target: String,
+        seeds: [[UInt8]],
+        iterations: Int = ClientFrameFuzzConfig.iterations,
+        seed: UInt64 = ClientFrameFuzzConfig.seed,
+        decode: (_ data: Data, _ mutated: Bool) throws -> Void
+    ) async -> FuzzOutcome {
         precondition(!seeds.isEmpty, "\(target): no seeds")
+        // Before the loop: with `SST_FUZZ_SEED=random`, a trap or a hang in this target ends the
+        // process, and this line is what names the seed to replay.
+        print("[client-frame-fuzz] \(target) seed=\(ClientFrameFuzzConfig.seedText) iterations=\(iterations) started")
         var generator = FuzzGenerator.forTarget(target, seed: seed)
         var outcome = FuzzOutcome()
         var recorder = FuzzInputRecorder(target: target)
@@ -337,13 +353,13 @@ enum ClientFrameFuzzer {
             }
             recorder?.record(input)
             do {
-                try decode(input)
+                try decode(input, index >= seeds.count)
                 outcome.decoded += 1
             } catch {
                 outcome.threw += 1
             }
         }
-        print("[client-frame-fuzz] \(target) seed=\(ClientFrameFuzzConfig.seedText) iterations=\(iterations) \(outcome)")
+        print("[client-frame-fuzz] \(target) \(outcome)")
         return outcome
     }
 }
