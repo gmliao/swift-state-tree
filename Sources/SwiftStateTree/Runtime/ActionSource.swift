@@ -142,6 +142,11 @@ public actor JSONReevaluationSource: ReevaluationSource {
     /// Initialize from the bytes of a 2.x JSON record (`ReevaluationRecordFile.openSource`
     /// picks this for anything without the 3.x magic).
     public init(data: Data) throws {
+        // Refused before it is parsed when it nests deeper than a 3.x record can
+        // (`CanonicalMessagePack.maxDepth`): the decode and `holdsNonNFCText` below recurse per
+        // level (#362). A recorded payload is checked again at its own limit when it is
+        // replayed (`InboundPayloadDecoding`).
+        try PayloadNesting.checkJSON(data, limit: CanonicalMessagePack.maxDepth)
         let decoder = JSONDecoder()
 
         decoder.dateDecodingStrategy = .iso8601
