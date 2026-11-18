@@ -3079,7 +3079,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) -> InTurnSyncResult {
         let digestsEvents = useStateUpdateWithEvents && !events.isEmpty && recording != nil
         for item in events {
-            let digest = digestsEvents ? Self.canonicalEvent(item) : nil
+            let digest = digestsEvents ? SyncStreamCanonical.canonicalEvent(item) : nil
             let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
             if outcome == .lost {
                 // An event that reached no frame ends the land (#535 row 17). One sent alone
@@ -4043,11 +4043,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for playerID in digest.resyncPlayers.filter({ digest.seeds[$0] != nil }).sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
             syncStreamUnverifiedPlayers.remove(playerID)
             syncStreamViewPlayers.remove(playerID)
-            drafts.append(Self.clearDraft(playerID))
+            drafts.append(SyncStreamCanonical.clearDraft(playerID))
         }
         if !digest.isFirstSync {
             let broadcastHash = broadcastCommitted
-                ? digest.broadcastPatches.map { Self.scopeHash($0, scope: SyncOutputDigestInput.broadcastScope) }
+                ? digest.broadcastPatches.map { SyncStreamCanonical.scopeHash($0, scope: SyncOutputDigestInput.broadcastScope) }
                 : nil
             var perPlayerHash: UInt64?
             var perPlayerUnverified: [String]?
@@ -4062,7 +4062,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // the same as no update for the verifier.
                 let hashed = digest.perPlayerPatches
                     .filter { digest.seeds[$0.key] == nil && !$0.value.isEmpty && !syncStreamUnverifiedPlayers.contains($0.key) }
-                let pairs = hashed.map { ($0.key.rawValue, Self.scopeHash($0.value, scope: $0.key.rawValue)) }
+                let pairs = hashed.map { ($0.key.rawValue, SyncStreamCanonical.scopeHash($0.value, scope: $0.key.rawValue)) }
                 perPlayerHash = CanonicalPatchList.combinedHash(pairs)
                 if syncStreamDetail.contains(.perPlayerHashes) {
                     perPlayerHashes = Dictionary(pairs, uniquingKeysWith: { first, _ in first })
@@ -4082,8 +4082,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     !recipients.contains($0) && digest.seeds[$0] == nil && membershipCoordinator.sessionIDs(for: $0).isEmpty
                 }
                 let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) } + Array(departed)
-                perPlayerUnverified = unverified.isEmpty ? nil : Self.sortedIDs(unverified)
-                perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : Self.sortedIDs(Array(digest.uncommitted))
+                perPlayerUnverified = unverified.isEmpty ? nil : SyncStreamCanonical.sortedIDs(unverified)
+                perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : SyncStreamCanonical.sortedIDs(Array(digest.uncommitted))
             }
             let eventsHash = digest.events.map(CanonicalSyncEvent.hash)
             let eventsThroughSequence = digest.eventsThroughSequence
@@ -4128,7 +4128,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             } else {
                 syncStreamUnverifiedPlayers.insert(playerID)
             }
-            let viewHash = viewDrops.isEmpty ? Self.scopeHash(seed.patches, scope: playerID.rawValue) : nil
+            let viewHash = viewDrops.isEmpty ? SyncStreamCanonical.scopeHash(seed.patches, scope: playerID.rawValue) : nil
             let dropFields = Array(Set(seed.dropFields)).sorted { SnapshotValue.utf8Less($0, $1) }
             drafts.append(SyncStreamDraft(.marker { streamIndex, _ in
                 ReevaluationRecordedSyncMarker(
@@ -4147,14 +4147,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// The canonical form of an in-turn event: its keeper sequence, type and payload. Nil when it
-    /// has no sequence or its payload does not convert (the events scope is then unverifiable).
-    private static func canonicalEvent(_ item: InTurnServerEvent) -> CanonicalSyncEvent? {
-        guard let sequence = item.sequence,
-              let payload = try? SnapshotValue.make(from: item.event.payload.base) else { return nil }
-        return CanonicalSyncEvent(sequence: sequence, type: item.event.type, payload: payload)
-    }
-
     /// Records a clear marker: the player's per-player cache and firstSync mark were dropped.
     /// `outsideTurn`: recorded after the leave's turn, outside any keeper turn (a disconnect);
     /// a tickless land then closes it as its own turn record (#327). A superseded session's
@@ -4163,31 +4155,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard keeperRecordsSyncStream() else { return }
         syncStreamUnverifiedPlayers.remove(playerID)
         syncStreamViewPlayers.remove(playerID)
-        let draft = Self.clearDraft(playerID)
+        let draft = SyncStreamCanonical.clearDraft(playerID)
         keeper.assumeIsolated { $0.submitSyncStream([draft], outsideTurn: outsideTurn) }
-    }
-
-    /// A clear marker's draft; where the keeper would read the state at numbering is its
-    /// position (its sequence and, tickless, its `afterPass`).
-    private static func clearDraft(_ playerID: PlayerID) -> SyncStreamDraft {
-        SyncStreamDraft(.marker { streamIndex, position in
-            ReevaluationRecordedSyncMarker(
-                kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex,
-                sequence: position.sequence, afterPass: position.afterPass
-            )
-        })
-    }
-
-    /// The canonical hash of one scope's patches. The diff never puts a path and one of its
-    /// descendants in one scope; debug builds check it.
-    private static func scopeHash(_ patches: [StatePatch], scope: String) -> UInt64 {
-        let list = CanonicalPatchList(patches)
-        assert(!list.hasPrefixPairs, "sync scope \(scope) has a path and one of its descendants")
-        return list.hash
-    }
-
-    private static func sortedIDs(_ players: [PlayerID]) -> [String] {
-        players.map(\.rawValue).sorted { SnapshotValue.utf8Less($0, $1) }
     }
 
     /// The dirty fields a plan diffs: the state's, plus those carried from failed plans.
