@@ -116,9 +116,9 @@ class ServerEnvTests(unittest.TestCase):
         # transport bounds: the topics record the send backlog themselves (sendBacklogEnv)
         "WS_PONG_TIMEOUT_MS", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS",
         "WS_INBOUND_BACKLOG_MAX_MESSAGES", "WS_INBOUND_BACKLOG_MAX_BYTES", "FINAL_FRAME_CLOSE_TIMEOUT_MS",
-        # the pre-join frame-size cap: over it a session is refused before it joins, as with the
-        # join bounds below; a joined session's frames aren't limited
-        "HANDSHAKE_FRAME_MAX_BYTES",
+        # the pre-join frame-size cap and refused-frame budget: over them a session is refused
+        # before it joins, as with the join bounds below; a joined session's frames aren't limited
+        "HANDSHAKE_FRAME_MAX_BYTES", "HANDSHAKE_REFUSED_FRAME_BUDGET",
         # joins (JOIN_FLIP_BUDGET changes what a sync sends: it's in SERVER_ENV). The held-event and
         # deferred-inbound bounds decide whether a join succeeds: over them the join fails
         # (eventOverflow, inboundOverflow) or a flipped session is closed with an error frame, all

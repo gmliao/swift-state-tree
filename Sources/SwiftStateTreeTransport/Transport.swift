@@ -228,6 +228,10 @@ public struct SessionClose: Sendable, Equatable {
     /// still be sending.
     package static let handshakeFrameTooBig = SessionClose(code: 1009, reason: "frame before join too big", closeGrace: .milliseconds(500))
 
+    /// 1008 Policy Violation: the session's pre-join frames were refused more often than
+    /// `HandshakeFrameLimit`'s budget allows. The same short close grace.
+    package static let handshakeRefusedFrames = SessionClose(code: 1008, reason: "too many refused frames before join", closeGrace: .milliseconds(500))
+
     /// 4014: the session's land was stopped (#102). The same short close grace as `goingAway`.
     package static let landStopped = SessionClose(code: Code.landStopped, reason: "land stopped", closeGrace: .milliseconds(500))
 
