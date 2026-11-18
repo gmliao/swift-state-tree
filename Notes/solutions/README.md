@@ -143,3 +143,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-18 | [A cache keyed by a name serves a changed definition the old value](2026-11-18-a-cache-keyed-by-a-name-serves-a-changed-definition.md) | caching, fingerprint, replay, testing |
 | 2026-11-18 | [Synthesized `Decodable` ignores `var` defaults, so a `{}` sample fails](2026-11-18-synthesized-decodable-ignores-var-defaults.md) | codable, schemagen, fingerprint, swift |
 | 2026-11-18 | [A macro that names a property from `identifier.text` keeps its backticks](2026-11-18-macro-names-from-identifier-text-keep-backticks.md) | macros, swift-syntax, codable, schemagen, fingerprint |
+| 2026-11-18 | [A parser's depth limit isn't the pipeline's: every recursive stage after it needs the bound](2026-11-18-a-parsers-depth-limit-isnt-the-pipelines.md) | decoding, nesting, stack-overflow, darwin, cooperative-pool, json |
