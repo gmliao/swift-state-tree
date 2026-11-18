@@ -4,6 +4,9 @@
 // MessagePack, the only encoding that sends them (state updates and broadcast events merge into
 // opcode 107; targeted events go as their own frames). Written before #554 moves the pack out of
 // the adapter: no benchmark cell reaches it, so these bytes are what pins the move.
+//
+// The merged frame (opcode 107) of a state change and a broadcast event is pinned the same way,
+// end to end through the adapter's merge: its literal was taken from main's code before the move.
 
 import Foundation
 import Testing
@@ -38,10 +41,23 @@ private actor PinFrames: Transport {
 
     /// The event frames (opcode 103) `sessionID` received, as hex, in order.
     func eventFrames(for sessionID: SessionID) -> [String] {
+        frames(for: sessionID, opcode: Int64(MessageKindOpcode.event.rawValue))
+    }
+
+    /// The merged frames (opcode 107) `sessionID` received, as hex, in order.
+    func mergedFrames(for sessionID: SessionID) -> [String] {
+        frames(for: sessionID, opcode: MessageKindOpcode.stateUpdateWithEvents)
+    }
+
+    private func frames(for sessionID: SessionID, opcode wanted: Int64) -> [String] {
         frames.compactMap { frame in
-            guard case .session(let s) = frame.target, s == sessionID,
-                  case .array(let array)? = try? unpack(frame.data),
-                  case .int(let opcode)? = array.first, opcode == Int64(MessageKindOpcode.event.rawValue)
+            switch frame.target {
+            case .session(let s) where s == sessionID: break
+            case .broadcast: break
+            default: return nil
+            }
+            guard case .array(let array)? = try? unpack(frame.data),
+                  case .int(let opcode)? = array.first, opcode == wanted
             else { return nil }
             return frame.data.map { String(format: "%02x", $0) }.joined()
         }
@@ -109,6 +125,30 @@ struct EventFramePackBytesTests {
     static let heldFrame = "946701ad4576656e744672616d6550696e9207a468656c64"
     /// A `.player` event to a joined player, packed by the full sync plan.
     static let targetedFrame = "946701ad4576656e744672616d6550696e92fda87461726765746564"
+
+    /// The merged frames p0 gets after the opcode-107 path's first sync: the second join's state
+    /// change (`joins` 2, no events), then the broadcast event beside no state change. Taken
+    /// from main's code before the move (e7eca5c1).
+    static let mergedFrames = [
+        "936b920293a62f6a6f696e73010290",
+        "936b9100919301ad4576656e744672616d6550696e9202a3616c6c",
+    ]
+
+    @Test("A state change and a broadcast event merge into the same opcode-107 bytes as before the move")
+    func mergedBytes() async throws {
+        let fixture = await makePinFixture()
+        let s0 = SessionID("s0")
+        try await joinPin(fixture, session: s0, player: "p0")
+        let before = await fixture.sent.mergedFrames(for: s0).count
+        // A second join changes `joins`, a broadcast field, for p0, in its turn's sync; the
+        // broadcast event goes in the sync after it.
+        try await joinPin(fixture, session: SessionID("s1"), player: "p1")
+        await fixture.adapter.sendEvent(AnyServerEvent(EventFramePinEvent(note: "all", count: 2)), to: .all)
+        await fixture.adapter.syncNow()
+        await fixture.adapter.waitForOutboundIdleForTesting()
+        let merged = Array(await fixture.sent.mergedFrames(for: s0).dropFirst(before))
+        #expect(merged == Self.mergedFrames, "\(merged)")
+    }
 
     @Test("A joiner's held event and a joined player's targeted event pack to the same bytes as before the move")
     func bytes() async throws {

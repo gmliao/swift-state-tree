@@ -78,16 +78,11 @@ enum SyncPlanning {
         return (broadcastMode, perPlayerMode)
     }
 
-    /// The modes today's extraction would use, for the broadcast diff on the tables and the
-    /// per-player extraction beside it: the one-pass extraction's single mode for both
-    /// (`useSnapshotForSync`), or the separate ones. `dirtyFields` as for `computeSyncModes`.
-    static func modesBesideTables(
-        useSnapshotForSync: Bool,
-        dirtyFields: Set<String>?,
-        broadcastMode: SnapshotMode,
-        perPlayerMode: SnapshotMode
-    ) -> (broadcast: SnapshotMode, perPlayer: SnapshotMode) {
-        guard useSnapshotForSync else { return (broadcastMode, perPlayerMode) }
+    /// The one-pass extraction's single mode (`useSnapshotForSync`), for both the broadcast diff
+    /// on the tables and the per-player extraction beside it: the dirty fields, or all. Without
+    /// the one-pass extraction the caller keeps its separate modes and doesn't call this.
+    /// `dirtyFields` as for `computeSyncModes`.
+    static func onePassModes(dirtyFields: Set<String>?) -> (broadcast: SnapshotMode, perPlayer: SnapshotMode) {
         let fullMode: SnapshotMode = dirtyFields.map { .dirtyTracking($0) } ?? .all
         return (fullMode, fullMode)
     }

@@ -4676,12 +4676,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) -> (broadcast: SnapshotMode, perPlayer: SnapshotMode) {
         // The dirty fields are read only when the one-pass extraction uses them, as before.
         guard useSnapshotForSync else { return (broadcastMode, perPlayerMode) }
-        return SyncPlanning.modesBesideTables(
-            useSnapshotForSync: true,
-            dirtyFields: dirtyFieldsToDiff(state, extractAll: extractAll),
-            broadcastMode: broadcastMode,
-            perPlayerMode: perPlayerMode
-        )
+        return SyncPlanning.onePassModes(dirtyFields: dirtyFieldsToDiff(state, extractAll: extractAll))
     }
 
     private func extractSyncSnapshots(

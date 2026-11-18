@@ -68,24 +68,12 @@ struct SyncPlanningTests {
         #expect(fields(broadcastOnly.perPlayerMode) == nil)
     }
 
-    @Test("modesBesideTables: the separate modes without the one-pass extraction; with it, the dirty fields or all for both")
-    func modesBesideTables() {
-        let separate = SyncPlanning.modesBesideTables(
-            useSnapshotForSync: false, dirtyFields: ["round"],
-            broadcastMode: .dirtyTracking(["round"]), perPlayerMode: .all
-        )
-        #expect(fields(separate.broadcast) == ["round"] && fields(separate.perPlayer) == nil)
-
-        let onePass = SyncPlanning.modesBesideTables(
-            useSnapshotForSync: true, dirtyFields: ["round", "inventories"],
-            broadcastMode: .all, perPlayerMode: .all
-        )
+    @Test("onePassModes: the dirty fields, or all, for both scopes")
+    func onePassModes() {
+        let onePass = SyncPlanning.onePassModes(dirtyFields: ["round", "inventories"])
         #expect(fields(onePass.broadcast) == ["round", "inventories"] && fields(onePass.perPlayer) == ["round", "inventories"])
 
-        let clean = SyncPlanning.modesBesideTables(
-            useSnapshotForSync: true, dirtyFields: nil,
-            broadcastMode: .dirtyTracking(["round"]), perPlayerMode: .all
-        )
+        let clean = SyncPlanning.onePassModes(dirtyFields: nil)
         #expect(fields(clean.broadcast) == nil && fields(clean.perPlayer) == nil)
     }
 }

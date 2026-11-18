@@ -12,8 +12,8 @@ import SwiftStateTreeMessagePack
 /// during the handshake phase (always JSON). This pipeline focuses on state updates and
 /// events sent after join completes.
 ///
-/// **Performance**: This is a value type (struct) with zero allocation overhead. All logic remains
-/// within TransportAdapter's actor isolation domain (no actor hopping).
+/// **Performance**: This is a value type (struct) with zero allocation overhead. It has no isolation
+/// of its own; it runs in its caller's (no actor hopping).
 ///
 /// It reads none of the adapter's state: every per-cycle value (the sync sequence, a resync, the
 /// fault hooks' results) is an argument (#554), so code outside the actor can call it as is. Its

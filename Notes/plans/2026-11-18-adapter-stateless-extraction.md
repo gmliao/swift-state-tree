@@ -60,7 +60,7 @@ A caseless `enum SyncPlanning` with `static` functions, in a new file `SyncPlann
 ### X4. Plain types and helpers (not hot)
 
 - The file-level sync-phase types (30–293: `SyncPhaseConsumedEvents` through `SyncOutputRead`, and the `StateUpdate` extension at 106) move to `SyncPhaseTypes.swift` unchanged. `TransportAdapterHoldPoint` (294–339) and `SessionPerPlayerPolicy` (341–360) stay, since they are the adapter's own.
-- `missingStateUpdateFeatures` and `missingFeaturesMessage` (1466–1486, `nonisolated static`) move to an `enum StateUpdateFeatureNegotiation`. Its callers are the adapter (6496, 6502) and `LandRouter` (809, 820, 898, 909), which drops the `TransportAdapter<State>.` prefix. This is internal: neither function is public.
+- `missingStateUpdateFeatures` and `missingFeaturesMessage` (1466–1486, `nonisolated static`) move to an `enum StateUpdateFeatureNegotiation`. Its callers are the adapter (6496, 6502), `LandRouter` (809, 820, 898, 909) and the GameDemo test `LoadTestJoinTests` (39, through `@testable import`); the router and the test drop the `TransportAdapter<State>.` prefix. This is internal: neither function is public, so search `Examples/`, `Tools/` and `deep-research/` too.
 - `mapActionError` and `mapJoinFailure` (6384–6395, 6634–6639) become `static` on an `enum AdapterErrorMapping`.
 - `HexEncoding` (6–27) moves to `Support/` beside the other helpers. It is used once, at trace level (3235).
 - **Deleted:** `messagePackValueToJSON` and `messagePackMapToJSON` (6739–6766). Nothing calls them except each other.
