@@ -79,6 +79,17 @@ enum LandBuilder {
                             firstSite: first.site,
                             duplicateSite: action.site
                         ))
+                    } else if let (first, name) = actionHandlers.lazy.compactMap({ other in
+                        sharedActionName(other.handledType, action.handledType).map { (other, $0) }
+                    }).first {
+                        duplicateHandlers.append(DuplicateHandlerDeclaration(
+                            kind: "action",
+                            typeName: String(reflecting: action.handledType),
+                            firstSite: first.site,
+                            duplicateSite: action.site,
+                            firstTypeName: String(reflecting: first.handledType),
+                            wireName: name
+                        ))
                     } else {
                         actionHandlers.append(action)
                     }
@@ -95,14 +106,16 @@ enum LandBuilder {
                     }
                 case let handler as AnyServerInputHandler<State>:
                     if let other = serverInputHandlers[handler.typeIdentifier] {
-                        if ObjectIdentifier(other.inputType) != ObjectIdentifier(handler.inputType) {
-                            preconditionFailure("Two server input types are named \(handler.typeIdentifier): a land declares each type name once (they are recorded by name)")
-                        }
+                        // Recorded and dispatched by name: two types with one name are refused
+                        // like one type declared twice (#599).
+                        let distinct = ObjectIdentifier(other.inputType) != ObjectIdentifier(handler.inputType)
                         duplicateHandlers.append(DuplicateHandlerDeclaration(
                             kind: "server input",
-                            typeName: handler.typeIdentifier,
+                            typeName: distinct ? String(reflecting: handler.inputType) : handler.typeIdentifier,
                             firstSite: other.site,
-                            duplicateSite: handler.site
+                            duplicateSite: handler.site,
+                            firstTypeName: distinct ? String(reflecting: other.inputType) : nil,
+                            wireName: distinct ? handler.typeIdentifier : nil
                         ))
                     } else {
                         serverInputHandlers[handler.typeIdentifier] = handler
@@ -166,6 +179,11 @@ enum LandBuilder {
             onShutdown: lifetimeConfig.onShutdown
         )
 
+        // The registries are keyed by event name: two registered types with one name would leave
+        // one of them unreachable, so they are refused (#599). A type registered twice is kept once.
+        duplicateHandlers += sharedEventNames(clientEventRegistrations, kind: "client event")
+        duplicateHandlers += sharedEventNames(serverEventRegistrations, kind: "server event")
+
         // Build client EventRegistry from registrations
         var clientRegistry = EventRegistry<AnyClientEvent>(registered: [])
         for eventType in clientEventRegistrations {
@@ -193,4 +211,42 @@ enum LandBuilder {
             lifetimeHandlers: lifetimeHandlers
         )
     }
+}
+
+/// The name an envelope could reach both action types by, if any (#599). Action intake matches an
+/// envelope's `typeIdentifier` against a handler's type name, its last dotted component, or its
+/// schema name (`payloadActionName`), first handler first; so two types collide exactly when
+/// those name sets meet.
+func sharedActionName(_ first: Any.Type, _ second: Any.Type) -> String? {
+    func names(_ type: Any.Type) -> [String] {
+        let full = String(describing: type)
+        let last = full.split(separator: ".").last.map(String.init) ?? full
+        return [full, last, payloadActionName(for: type)]
+    }
+    let firstNames = Set(names(first))
+    return names(second).first { firstNames.contains($0) }
+}
+
+/// Two distinct registered event types with one event name (#599).
+func sharedEventNames(_ types: [Any.Type], kind: String) -> [DuplicateHandlerDeclaration] {
+    var byName: [String: Any.Type] = [:]
+    var shared: [DuplicateHandlerDeclaration] = []
+    for type in types {
+        let name = payloadEventName(for: type)
+        if let first = byName[name] {
+            if ObjectIdentifier(first) != ObjectIdentifier(type) {
+                shared.append(DuplicateHandlerDeclaration(
+                    kind: kind,
+                    typeName: String(reflecting: type),
+                    firstSite: nil,
+                    duplicateSite: nil,
+                    firstTypeName: String(reflecting: first),
+                    wireName: name
+                ))
+            }
+        } else {
+            byName[name] = type
+        }
+    }
+    return shared
 }

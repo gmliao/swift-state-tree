@@ -362,25 +362,45 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
 // MARK: - Duplicate handlers (#586)
 
 /// A handler declared for an action, client-event or server-input type that already had one
-/// (#586). An input runs exactly one `validate` and one `apply`, so a land declares one handler
-/// per type.
+/// (#586), or a type whose wire name another type of the same kind already has (#599). An input
+/// runs exactly one `validate` and one `apply`, and is dispatched by name, so a land declares one
+/// handler per type and gives each type its own name.
 public struct DuplicateHandlerDeclaration: Sendable, Equatable, CustomStringConvertible {
-    /// `"action"`, `"client event"` or `"server input"`.
+    /// `"action"`, `"client event"`, `"server input"` or `"server event"` (a registered server
+    /// event type, named on the wire like a client event).
     public let kind: String
-    /// The type's name.
+    /// The type's name: the duplicate's, or for a shared wire name the second type's.
     public let typeName: String
+    /// For a shared wire name: the first type that has it.
+    public let firstTypeName: String?
+    /// For a shared wire name: the name both types are matched by (#599); nil for one type
+    /// declared twice.
+    public let wireName: String?
     /// Where the kept handler and the duplicate were declared (`fileID:line`), when known.
     public let firstSite: String?
     public let duplicateSite: String?
 
-    package init(kind: String, typeName: String, firstSite: String?, duplicateSite: String?) {
+    package init(
+        kind: String,
+        typeName: String,
+        firstSite: String?,
+        duplicateSite: String?,
+        firstTypeName: String? = nil,
+        wireName: String? = nil
+    ) {
         self.kind = kind
         self.typeName = typeName
+        self.firstTypeName = firstTypeName
+        self.wireName = wireName
         self.firstSite = firstSite
         self.duplicateSite = duplicateSite
     }
 
     public var description: String {
-        "\(kind) \(typeName) has two handlers (at \(firstSite ?? "unknown") and \(duplicateSite ?? "unknown")); declare one handler per type"
+        let sites = "at \(firstSite ?? "unknown") and \(duplicateSite ?? "unknown")"
+        if let wireName {
+            return "\(kind) types \(firstTypeName ?? "unknown") and \(typeName) are both matched by the name \(wireName) (\(sites)); give each type its own name"
+        }
+        return "\(kind) \(typeName) has two handlers (\(sites)); declare one handler per type"
     }
 }
