@@ -7,6 +7,7 @@ symptoms:
   - "a timeout that never fires on CI"
   - "closeSessionAfterQueuedFrames never sees the close"
   - "fails on a branch, never on its base, only on Linux runners"
+  - "freeze returned while a tick was still running"
 root_cause: cpu_bound_parameterized_tests_hold_every_pool_thread
 resolution_type: established_pattern
 severity: medium
@@ -20,6 +21,7 @@ related:
   - "#483"
   - "#488"
   - "#513"
+  - "#528"
 ---
 
 **Problem.** After a branch added a byte report test, `WebSocketTransportSessionIDTests.closeSessionAfterQueuedFrames` failed in 4 of 5 CI runs on that branch and never on its base. It never failed on the Mac. The test ran 10.5 s, and neither the drain's close nor the transport's own 5 s close timeout ran in that time.
@@ -34,3 +36,5 @@ related:
 - Print what the failing test saw. Here, entries `[one, error]` with no close is what showed that nothing in the transport ran.
 
 **Second instance (2026-11-12, #513).** A branch doubled two parameterized random-mutation tests in `SyncTableDiffTests` from 2 to 4 cases each, and `closeSessionAfterQueuedFrames` failed in both build jobs with the same `[one, error]`. The same fix applied: the differential runner yields every 64 steps, and both tests are `.serialized`. Adding cases to a parameterized CPU-bound test counts as adding a CPU-bound test.
+
+**Third instance (2026-11-18, #528).** A branch added the client-frame fuzz and depth suites: about 15 cases (parameterized targets of 2,000 decodes each, and deep frames decoded in stages), all synchronous, none suspending. In `build (sync tables off)`, `LandKeeperDebugFreezeTests` failed two tests: `debugFreeze(timeout: 10 s)` had already returned `false` when the test, starved for the same 10 to 23 s, got to check that it was still waiting. The fix is the same: both suites are `.serialized`, the fuzz runner yields every 32 inputs, and the deep-frame chain yields between decode stages. A wall-clock deadline is a victim here, never the cause: look for the CPU-bound suites that ran in the same window (the test log's timestamps show the overlap).

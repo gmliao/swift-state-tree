@@ -536,6 +536,108 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     var closingEpochCountForTesting: Int { closingEpochs.count }
 
     // MARK: - Message Handling
+
+    /// What a handshake-phase frame decodes to (`decodeHandshakeFrame`).
+    enum HandshakeFrameDecode {
+        /// An empty frame.
+        case empty
+        /// A frame that doesn't start like JSON (`{` or `[`); only JSON is accepted before join.
+        case notJSON
+        case message(TransportMessage)
+    }
+
+    /// What a frame after the handshake decodes to (`decodePostHandshakeFrame`).
+    enum PostHandshakeFrameDecode {
+        /// A sync ack (#332), forwarded to the bound land's adapter as is.
+        case syncAck(UInt64)
+        case message(TransportMessage)
+    }
+
+    /// Decodes a frame received before the handshake completes: JSON only, either the opcode
+    /// array format or the JSON object format. A static function of the client's bytes, so the
+    /// decoder fuzz tests (#528) run this exact code; `onMessage` acts on the result.
+    static func decodeHandshakeFrame(
+        _ message: Data,
+        sessionID: SessionID,
+        logger: Logger
+    ) throws -> HandshakeFrameDecode {
+        guard let firstByte = message.first else {
+            return .empty
+        }
+
+        let transportMsg: TransportMessage
+        // Check if message is JSON (starts with { or [)
+        if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
+            // Try JSON opcode array format first
+            if let json = try? JSONSerialization.jsonObject(with: message),
+               let array = json as? [Any],
+               array.count >= 1,
+               let firstElement = array[0] as? Int,
+               firstElement >= 101 && firstElement <= 106 {
+                // JSON opcode array format
+                transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+
+                if logger.logLevel <= .debug {
+                    logger.debug("Handshake: Decoded JSON opcode array format", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "opcode": .string("\(firstElement)")
+                    ])
+                }
+            } else {
+                // JSON object format
+                let jsonCodec = TransportEncodingConfig.json.makeCodec()
+                transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
+
+                if logger.logLevel <= .debug {
+                    logger.debug("Handshake: Decoded JSON object format", metadata: [
+                        "sessionID": .string(sessionID.rawValue),
+                        "kind": .string(transportMsg.kind.rawValue)
+                    ])
+                }
+            }
+        } else {
+            return .notJSON
+        }
+        return .message(transportMsg)
+    }
+
+    /// Decodes a frame received after the handshake, in the configured encoding. A static
+    /// function of the client's bytes, so the decoder fuzz tests (#528) run this exact code.
+    static func decodePostHandshakeFrame(
+        _ message: Data,
+        codec: any TransportCodec,
+        sessionID: SessionID,
+        logger: Logger
+    ) throws -> PostHandshakeFrameDecode {
+        // A sync ack (#332) isn't a TransportMessage: it goes to the bound land's adapter
+        // as is, never to the keeper. Only a frame that starts like one is parsed.
+        if let seq = SyncAckFrame.parse(message) {
+            return .syncAck(seq)
+        }
+        let transportMsg: TransportMessage
+        if codec.encoding == .messagepack {
+            // MessagePack codec handles both map and opcode-array formats.
+            transportMsg = try codec.decode(TransportMessage.self, from: message)
+        } else if let json = try? JSONSerialization.jsonObject(with: message),
+                  let array = json as? [Any],
+                  array.count >= 1,
+                  let firstElement = array[0] as? Int,
+                  firstElement >= 101 && firstElement <= 106
+        {
+            // JSON opcode array format
+            if logger.logLevel <= .debug {
+                logger.debug("Detected opcode array format message", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "opcode": .string("\(firstElement)")
+                ])
+            }
+            transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
+        } else {
+            // Standard JSON object format
+            transportMsg = try codec.decode(TransportMessage.self, from: message)
+        }
+        return .message(transportMsg)
+    }
     
     /// Called when a message is received from a client.
     ///
@@ -567,46 +669,15 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     return
                 }
 
-                // During handshake, only accept JSON-encoded messages
-                guard let firstByte = message.first else {
+                switch try Self.decodeHandshakeFrame(message, sessionID: sessionID, logger: logger) {
+                case .empty:
                     await sendError(
                         to: sessionID,
                         code: .invalidJSON,
                         message: "Empty message received"
                     )
                     return
-                }
-                
-                // Check if message is JSON (starts with { or [)
-                if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
-                    // Try JSON opcode array format first
-                    if let json = try? JSONSerialization.jsonObject(with: message),
-                       let array = json as? [Any],
-                       array.count >= 1,
-                       let firstElement = array[0] as? Int,
-                       firstElement >= 101 && firstElement <= 106 {
-                        // JSON opcode array format
-                        transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
-                        
-                        if logger.logLevel <= .debug {
-                            logger.debug("Handshake: Decoded JSON opcode array format", metadata: [
-                                "sessionID": .string(sessionID.rawValue),
-                                "opcode": .string("\(firstElement)")
-                            ])
-                        }
-                    } else {
-                        // JSON object format
-                        let jsonCodec = TransportEncodingConfig.json.makeCodec()
-                        transportMsg = try jsonCodec.decode(TransportMessage.self, from: message)
-                        
-                        if logger.logLevel <= .debug {
-                            logger.debug("Handshake: Decoded JSON object format", metadata: [
-                                "sessionID": .string(sessionID.rawValue),
-                                "kind": .string(transportMsg.kind.rawValue)
-                            ])
-                        }
-                    }
-                } else {
+                case .notJSON:
                     // Non-JSON format during handshake not allowed
                     await sendError(
                         to: sessionID,
@@ -614,6 +685,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                         message: "Handshake not completed. Only JSON-encoded join messages are accepted."
                     )
                     return
+                case .message(let decoded):
+                    transportMsg = decoded
                 }
                 
                 // During handshake, only process join messages
@@ -628,32 +701,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 
             // MARK: - Post-Handshake: Use configured encoding
             } else {
-                // A sync ack (#332) isn't a TransportMessage: it goes to the bound land's adapter
-                // as is, never to the keeper. Only a frame that starts like one is parsed.
-                if let seq = SyncAckFrame.parse(message) {
+                switch try Self.decodePostHandshakeFrame(message, codec: codec, sessionID: sessionID, logger: logger) {
+                case .syncAck(let seq):
                     await forwardSyncAck(seq, sessionID: sessionID)
                     return
-                }
-                if codec.encoding == .messagepack {
-                    // MessagePack codec handles both map and opcode-array formats.
-                    transportMsg = try codec.decode(TransportMessage.self, from: message)
-                } else if let json = try? JSONSerialization.jsonObject(with: message),
-                          let array = json as? [Any],
-                          array.count >= 1,
-                          let firstElement = array[0] as? Int,
-                          firstElement >= 101 && firstElement <= 106
-                {
-                    // JSON opcode array format
-                    if logger.logLevel <= .debug {
-                        logger.debug("Detected opcode array format message", metadata: [
-                            "sessionID": .string(sessionID.rawValue),
-                            "opcode": .string("\(firstElement)")
-                        ])
-                    }
-                    transportMsg = try OpcodeTransportMessageDecoder().decode(from: message)
-                } else {
-                    // Standard JSON object format
-                    transportMsg = try codec.decode(TransportMessage.self, from: message)
+                case .message(let decoded):
+                    transportMsg = decoded
                 }
             }
             

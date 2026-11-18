@@ -1,6 +1,6 @@
 # SwiftStateTurns: the turn core target (#551)
 
-**Status:** open. Plan for review before any code. Part of #546; milestone "Turn core (SwiftStateTurns)".
+**Status:** open, rev 2 (answers the plan review: model checks ported, the holding deadline in the type, the clock contract, merge conditions). Plan for review before any code. Part of #546; milestone "Turn core (SwiftStateTurns)".
 
 **Scope:** a new library target, `SwiftStateTurns`, with no dependency on the rest of the package, plus its macro, lints, tests, must-fail snippets and benches. No adopter changes. `TransportAdapter` adopts it slice by slice later (#546), after #554 and the machine outline.
 
@@ -61,9 +61,9 @@ public enum Admission<Key: Hashable & Sendable>: Sendable {
   case external(hold: Key?, scope: Key?, unless: EndToken? = nil)
   case control
 }
-public enum Hold<Key: Hashable & Sendable>: Sendable {
-  case untilRequestCloses(Key)
-  case untilWorkerRetires(Key)
+public enum Hold<Key: Hashable & Sendable>: Sendable {   // every holding request has a deadline
+  case untilRequestCloses(Key, deadline: Duration)
+  case untilWorkerRetires(Key, deadline: Duration)
 }
 public enum Abandonment: Sendable, Equatable { case keyEnded, deadline, cancelled }
 public enum TurnError: Error, Sendable, Equatable { case closed, overloaded, withdrawn }
@@ -106,9 +106,11 @@ public struct Turn<M: TurnMachine>: ~Copyable {  // no public init: a handler ca
   public func generation(of key: M.Key) -> Generation?
 
   // Work
+  // nil: the key isn't live. Two forms, so a hold and a second deadline can't both be passed:
   @discardableResult
-  public mutating func request(_ effect: M.Effect, for key: M.Key,
-                               holding: Hold<M.Key>? = nil, deadline: Duration? = nil) -> RequestID?  // nil: key not live
+  public mutating func request(_ effect: M.Effect, for key: M.Key, holding: Hold<M.Key>) -> RequestID?
+  @discardableResult
+  public mutating func request(_ effect: M.Effect, for key: M.Key, deadline: Duration? = nil) -> RequestID?
   public mutating func cancel(_ request: RequestID)
   public mutating func run(_ effect: M.Effect)                           // untracked
   @discardableResult public mutating func queue(_ input: M.Input, behind key: M.Key) -> Bool  // false after endAll
@@ -121,7 +123,11 @@ public struct Turn<M: TurnMachine>: ~Copyable {  // no public init: a handler ca
 }
 ```
 
-**The instant is one concrete type,** `TurnInstant` (a `PlainData` value of nanoseconds since the clock's own origin, `Comparable`, with `+ Duration` and `- TurnInstant -> Duration`). The alternative, `associatedtype Clock: TurnClock` on `TurnMachine`, puts a clock type in every machine's signature and every generic constraint for no gain: the machine only compares instants and adds durations, and the injected clock decides the origin. Review: object here if you'd rather have the associated type, since it changes a public protocol.
+**A holding request always has a deadline, and the type says so.** The deadline is part of the `Hold` value, so `request(_, for:, holding:)` without one doesn't compile (a must-fail snippet, §6.3). **The deadline bounds the request,** not always the hold: an `.untilRequestCloses` hold ends with it, while an `.untilWorkerRetires` hold ends when its worker returns (rule 6), so the adopter bounds that worker (in slice 1, the keeper's own join and leave bounds). A request with no deadline would leave its caller and every input parked behind its key waiting for as long as the work hangs; allowing one is a design change, not an option a caller picks. Only an adopter's machine code calls `request(holding:)`: Land, resolver and handler authors never see the core, and replay makes no holding requests, so neither changes. For `.untilWorkerRetires` the deadline abandons the request (its caller is answered, `handleAbandoned` runs) while the hold stays until the worker returns.
+
+**The instant is one concrete type,** `TurnInstant`: a `PlainData` value holding signed `Int64` nanoseconds (so `-` can give a negative `Duration`), `Comparable`, with `+ Duration` and `- TurnInstant -> Duration`. **Its origin is fixed once per process:** a `ContinuousClock.Instant` captured in a static on first use, from which every production `TurnClock` measures. So an instant a machine stored stays meaningful under a replaced core (check 14) or a second clock. A test clock starts at 0 and is never mixed with a production one.
+- Rejected: `associatedtype Clock: TurnClock` on `TurnMachine`. It puts a clock type in every machine's signature and generic constraint, and buys nothing once the origin is fixed per process: a machine only compares instants and adds durations.
+- **The keeper's `TickLoopClock` maps onto it later** at no cost: its `now` (a `ContinuousClock.Instant`) is the process origin plus an offset, and its `sleepUntil(_:)`, which returns early on cancellation, is the same contract as `TurnClock.sleep(until:)` below. Nothing in the keeper changes in this PR.
 
 ### 3.4 The core and the adopter
 
@@ -151,7 +157,12 @@ extension TurnActor {
 }
 ```
 
-`sleep(until:)` replaces a sleep by duration so a deadline or timer computed from one clock read doesn't drift. The adapter's clock wraps `safeTaskSleep`; this target can't depend on that helper, so the clock is where it comes in.
+**The clock's contract:**
+- `sleep(until:)` replaces a sleep by duration, so a deadline or timer computed from one clock read doesn't drift.
+- **It returns early when its task is cancelled** (the same contract as `TickLoopClock.sleepUntil`). The core cancels a deadline's or timer's task when its request closes or its timer is replaced.
+- **A task that wakes re-checks before it submits:** the deadline's request must still be open and the same one, and the timer must still be the key's current one. So an early wake (cancellation), a late one, or one that races a completion can't abandon a request that already closed or fire a replaced timer. The check is in the core, by request ID and timer generation, not in the clock.
+- **A `Duration` deadline becomes an instant from the segment's single clock read** (the lazy read of rule 18), so a deadline never takes a second read.
+- The adapter's production clock uses `safeTaskSleep(for: until - now)`, the repository's safe sleep. It must not copy `TickLoopClock.continuous`, which calls `Task.sleep(until:clock:)`. This target can't depend on that helper, so the adopter's clock is where it comes in.
 
 ### 3.5 `PlainData`
 
@@ -205,7 +216,7 @@ Each rule says what holds. A rejected alternative listed here was a real bug fou
 
     The cancellation is handled as its own job on the actor, so the contract is "withdrawn if still parked when the cancellation is handled". No tombstone is needed: the waiter registers in the call's entry segment.
 17. **`run` and `perform`.** `perform` is `@concurrent nonisolated`, doesn't throw, and returns an optional input (nil: nothing to report; an error is a case of the input). A `run`'s result comes back as a control input. Completion order across effects isn't guaranteed; only keys and holds order work.
-18. **`timer(at:for:_:)`.** One outstanding fire per key; a new one replaces it. The fire arrives as a control input carrying its scheduled instant, so the handler computes the next one with skip-ahead. Ending the key drops a fire already queued. The clock is read at most once per segment, lazily (`turn.now` reads it on first use). A replay driver arms no timer. Rejected: `every(interval)`, which builds a backlog when a step overruns.
+18. **`timer(at:for:_:)`.** One outstanding fire per key; a new one replaces it. The fire arrives as a control input carrying its scheduled instant, so the handler computes the next one with skip-ahead. Ending the key drops a fire already queued. A waking timer task submits only if it is still the key's current timer (§3.4). The clock is read at most once per segment, lazily (`turn.now`, or a `Duration` deadline, reads it on first use). A replay driver arms no timer. Rejected: `every(interval)`, which builds a backlog when a step overruns.
 19. **The step path is `@inlinable`,** and what it touches `@usableFromInline`, so the client specializes the driver for its machine with no build flag. A script checks that the specializations exist (§7).
 20. **Nothing per message is an effect.** A debug counter of effects per input case lets an adopter's tests assert zero for its hot inputs.
 
@@ -262,8 +273,30 @@ Every interleaving is ordered by an event, never by a sleep or a poll: an effect
 | 21–25 | Cancellation, one check per row of rule 16's table | 16 |
 | 26 | Timer: fires once at its instant with that instant in the input; a new timer for the key replaces it; ending the key drops a queued fire; the clock is read at most once per segment (a counting test clock) | 18 |
 | 27 | Timer skip-ahead: a step that overruns two periods schedules the next fire after now, not three fires | 18 |
+| 28 | Hold handover: the step that closes a holding request makes a new one on the same key; an input parked behind the key stays parked throughout (the owner count never reaches zero), and steps when the new request closes | 6 |
+| 29 | Wake re-check: a deadline task woken after its request completed abandons nothing; a timer task of a replaced timer fires nothing; a cancelled sleep submits nothing | 18, §3.4 |
+| 30 | A `Duration` deadline and `turn.now` in one segment take one clock read (a counting test clock) | 18, §3.4 |
 
-The membership scenarios (a registration and a disconnect in each order, the library join, the disconnect answered after its leave, teardown) are the adopter's tests, against the real adapter and keeper, in slice 1.
+### 6.1b Model checks: the membership scenarios on a model machine
+
+These are the combinations the design closed on: a hold handed over, `queue(behind:)` on a held key, `revoke` while parked, `reply(after:)` behind a worker, and `ask` inside an admission. A core bug that only shows in them must surface here, before the core is merged, not in slice 1. They run on **models** in `SwiftStateTurnsTests`, named as models: a membership machine with connection, member and land keys; a keeper model (`player → session`, with no entry generation, destroy timer or drain); a transport model with a connection generation. Slice 1 repeats each scenario against the real adapter and keeper.
+
+| # | Scenario on the models | Rules |
+|---|---|---|
+| M1 | A registration parked behind the hold, then a disconnect: withdrawn by scope | 7 |
+| M2 | A refused registration withdraws a second one parked behind it | 7 |
+| M3 | A disconnect during the keeper read: the request is abandoned, the hold released, the late read stale | 5, 6 |
+| M4 | A refusal leaves the member's first sync running; registering the same binding doesn't move the member key; a rebind does | 4 |
+| M5 | Teardown answers a reading registration and a parked one | 12, 15 |
+| M6 | The end token is marked first: the registration is withdrawn, and no keeper request is made | 8 |
+| M7 | The join budget: a parked admission is ended and withdrawn, with its final frame out at the answer; a started one is left alone | 8, 10 |
+| M8 | The transport registration in five orders: the disconnect wins; the registration wins; mapped then disconnected; a guarded nil; a supplied generation | 4, 11 |
+| M9 | A started library join, then a disconnect, in six orders: before the insert; during resolvers; after the admission; the keeper doesn't ask; a member's leave behind work in flight; a queued leave then `close` | 9, 13, 14 |
+| M10 | A disconnect as a call, in six parts: nothing due; behind work in flight; a stop of three sessions; the session's own join running; teardown drops a queued leave and answers its caller; after the end | 9, 12, 15 |
+
+With §6.1 these are the 24 ordered checks and 2 cancellation checks the design closed on, plus the checks for what it added since (timer, the clock, `reply(after:)`, `cancel(request)`, handover).
+
+**Ordering for adopters.** A holding request can now be abandoned by its deadline, which makes the disconnect's per-worker rule reachable in an adopter. Slice 1's tests for that rule under a deadline, for a join and for a leave, must exist before the adapter relies on it. This PR covers the core side (checks 3, 4, 18 and 28).
 
 ### 6.2 Runtime stops (exit tests)
 
@@ -276,6 +309,7 @@ Under `scripts/must-not-compile/turns/`, each with its expected diagnostic, plus
 - a `Turn` escaped into a stored property, made with an init, copied, or consumed and used again;
 - `perform` touching `core`;
 - replacing `core` (`let`), and a `TurnMachine` that isn't `Sendable`;
+- a holding request without a deadline (`holding: .untilRequestCloses(key)`);
 - `@PlainData` on a struct with a closure, a class, an actor, an `any Error`, a class inside a dictionary, an un-annotated stored property; `@PlainData` on a class; a machine storing an `EndToken`.
 
 ### 6.4 Generated orders
@@ -289,9 +323,10 @@ Expansion tests (`assertMacroExpansion`) for each rule in §3.5, including the d
 ## 7. Lints and scripts
 
 Run in `scripts/pre-push-checks.sh` and CI, each with a self-test of a passing and a failing fixture:
-- **No hand-written `PlainData` conformance** outside `Sources/SwiftStateTurns`: a `: PlainData` or `extension … PlainData` in source that isn't the macro's attribute.
+- **No hand-written `PlainData` conformance** outside `Sources/SwiftStateTurns`: a `: PlainData` or `extension … PlainData` in source that isn't the macro's attribute. It doesn't flag a constraint (`where T: PlainData`, `<T: PlainData>`) or the core target's own conformances.
 - **`let core` in every `TurnActor`:** a type conforming to `TurnActor` declares `let core`, never `var` or a computed property (the protocol can't require a stored `let`).
-- **No `Task {`, `nonisolated(unsafe)` or `@unchecked Sendable` in a file that declares a `TurnMachine`.**
+- **No `Task {`, `nonisolated(unsafe)` or `@unchecked Sendable` in a file that declares a `TurnMachine`,** outside `Sources/SwiftStateTurns` (whose `EndToken` is `@unchecked Sendable` and whose protocol file declares `TurnMachine`).
+- **No `assumeIsolated` outside named boundary files,** listed in the script with a reason each (the design's "a step doesn't call out"). It applies from this PR: the existing call sites are the initial list, and the list may only shrink.
 - **`check-turns-inlinable.sh`:** two release builds of `TurnsBench`, one with the step path's `@inlinable` attributes stripped by a build define; it fails if the specialized symbols are missing from the normal build. Run in CI on Linux.
 
 ## 8. Cost
@@ -300,20 +335,27 @@ Run in `scripts/pre-push-checks.sh` and CI, each with a self-test of a passing a
 
 - On the Mac it prints time and in-process instruction counts, for development only.
 - The judged numbers come from the measurement host, on the pinned toolchain, under the repository's instruction gate (`Notes/plans/2026-11-13-off-path-instruction-gate.md`): `instructions:u` from `perf stat` around one bench and one side. The figure slice 1 depends on is `read`'s cost per call, which becomes its per-message budget; the PR reports it, and the A/B of slice 1 confirms it in the adapter.
-- There is no base to compare against (a new target), so this PR's host run is a measurement, not an A/B: it records the numbers the later slices are judged by. Main briefs it after Review's GO.
+- There is no base to compare against (a new target), so this PR's host run is a measurement, not an A/B: it records the numbers the later slices are judged by.
+
+**Merge conditions** (#546's order: the core lands after its checks pass on the pinned toolchain, with instruction counts):
+1. CI green on 6.2.4, debug and release, Linux;
+2. the host's 6.2.4 instruction counts for every bench in this section, reported in the PR;
+3. Review's GO on the code.
+The host run is briefed when the code is GO, and the PR doesn't merge before it reports.
 
 ## 9. Steps and PRs
 
 One PR, as #551 says, built in reviewable commits:
-1. Package targets, values, `TurnMachine`, `Turn`, `TurnCore`, the driver; checks 1–20; the exit tests.
+1. Package targets, values, `TurnMachine`, `Turn`, `TurnCore`, the driver; checks 1–20 and 28; the exit tests.
 2. Cancellation (checks 21–25).
-3. `TurnClock`, `TurnInstant`, `timer` (checks 26–27).
-4. The `PlainData` macro, its expansion tests, the conformances; the lints.
-5. The must-fail snippets and the script extension.
-6. The generated-order harness.
-7. `TurnsBench` and `check-turns-inlinable.sh`; DocC.
+3. `TurnClock`, `TurnInstant`, `timer` (checks 26–27, 29–30).
+4. The model checks (§6.1b).
+5. The `PlainData` macro, its expansion tests, the conformances; the lints.
+6. The must-fail snippets and the script extension.
+7. The generated-order harness.
+8. `TurnsBench` and `check-turns-inlinable.sh`; DocC.
 
-If Review finds the PR too large, the split is (1–3, 5's snippets for `Turn` and `perform`, 6) then (4, the PlainData snippets, the lints), then (7).
+If Review finds the PR too large, the split is (1–4, 6's snippets for `Turn`, `perform` and the holding deadline, 7) then (5, the PlainData snippets, the lints), then (8). Each part is green on 6.2.4 in both configurations; the merge conditions (§8) apply to the last.
 
 **#554** (the adapter's stateless encode extraction) is independent of this target and touches only `TransportAdapter`'s hot paths under the instruction gate. It can run in parallel in another session; I'd leave it there and keep this PR to the core.
 
@@ -334,9 +376,10 @@ All new, in a new product: everything in §3. Nothing existing changes.
 - **The pinned toolchain.** `~Copyable` structs passed `inout` with generic parameters, `borrowing` closure parameters, `@concurrent`, and exit tests are all Swift 6.2 features; their diagnostics and codegen on 6.2.4 may differ from newer compilers. The must-fail snippets' expected wording is 6.2.4's. The design's ordered checks, runtime stops and compile-time rules were checked on 6.2.4 in a release build before this plan, and held; the debug build wasn't checked there (the compile ran out of memory in a 1 GB container). The PR's CI runs both configurations on 6.2.4, and the debug run is the first evidence for it.
 - **Specialization across the module boundary on 6.2.4.** If `@inlinable` doesn't specialize the driver for an external machine on 6.2.4, the per-step cost rises several times. `check-turns-inlinable.sh` is the guard; the fallback is fewer generic layers on the step path, not a build flag.
 - **`unowned(unsafe)` in `Turn`.** Sound only while the must-fail snippets for escaping, making and moving a `Turn` hold. If a toolchain accepts one of them, the rule is broken, not just the test.
-- **The `TurnInstant` choice** changes a public protocol if reversed later; decided in this review.
+- **CI's 6.2.4 debug build fails on memory or time.** A blocker, not a follow-up: the debug run is a merge condition. The first response is the CI job's settings (one job's parallelism) and the test target's size; if neither suffices, the fallback split of §9 lands the core first and the model checks next, each green in both configurations.
+- **The `TurnInstant` choice** changes a public protocol if reversed later; settled in this review.
 - **Macro and swift-syntax.** The macro builds on the package's swift-syntax pin (602.0.0 on CI's 6.2.4); no new dependency.
 
 ## 13. Not in this PR
 
-Any adopter change (#546's slices), `PendingSet` (for the keeper, after #522), the public changes listed on #546 for slice 1 (`JoinAdmission.refused`, the required `EndToken` on `registerSession`, the `Transport` defaults), and turning caller cancellation on anywhere.
+Any adopter change (#546's slices); slice 1's tests of the disconnect's per-worker rule under a holding deadline, which must exist before the adapter relies on it (§6.1b); `PendingSet` (for the keeper, after #522), the public changes listed on #546 for slice 1 (`JoinAdmission.refused`, the required `EndToken` on `registerSession`, the `Transport` defaults), and turning caller cancellation on anywhere.

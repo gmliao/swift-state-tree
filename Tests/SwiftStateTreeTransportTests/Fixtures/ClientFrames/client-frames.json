@@ -1,0 +1,274 @@
+{
+  "frames": [
+    {
+      "name": "join-minimal",
+      "kind": "join",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiam9pbiIsInBheWxvYWQiOnsiam9pbiI6eyJyZXF1ZXN0SUQiOiJqLTEiLCJsYW5kVHlwZSI6ImRlbW8iLCJsYW5kSW5zdGFuY2VJZCI6bnVsbH19fQ=="
+    },
+    {
+      "name": "join-instance",
+      "kind": "join",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiam9pbiIsInBheWxvYWQiOnsiam9pbiI6eyJyZXF1ZXN0SUQiOiJqLTIiLCJsYW5kVHlwZSI6Imhlcm8tZGVmZW5zZSIsImxhbmRJbnN0YW5jZUlkIjoicm9vbS0wMSJ9fX0="
+    },
+    {
+      "name": "join-full",
+      "kind": "join",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiam9pbiIsInBheWxvYWQiOnsiam9pbiI6eyJyZXF1ZXN0SUQiOiJqLTMiLCJsYW5kVHlwZSI6ImRlbW8iLCJsYW5kSW5zdGFuY2VJZCI6InJvb20tMDIiLCJwbGF5ZXJJRCI6InBsYXllci3DqSIsImRldmljZUlEIjoiZGV2aWNlLTEiLCJtZXRhZGF0YSI6eyJuYW1lIjoiQWxpY2UiLCJsZXZlbCI6MywidGFncyI6WyJhIiwiYiJdLCJwcmVmcyI6eyJzb3VuZCI6ZmFsc2UsInZvbHVtZSI6MC41fX19fX0="
+    },
+    {
+      "name": "action-empty",
+      "kind": "action",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiYWN0aW9uIiwicGF5bG9hZCI6eyJyZXF1ZXN0SUQiOiJhLTEiLCJ0eXBlSWRlbnRpZmllciI6IlBpbmciLCJwYXlsb2FkIjp7fX19"
+    },
+    {
+      "name": "action-scalars",
+      "kind": "action",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiYWN0aW9uIiwicGF5bG9hZCI6eyJyZXF1ZXN0SUQiOiJhLTIiLCJ0eXBlSWRlbnRpZmllciI6IkFkZEdvbGQiLCJwYXlsb2FkIjp7ImFtb3VudCI6MTAwLCJyZWFzb24iOiJxdWVzdCJ9fX0="
+    },
+    {
+      "name": "action-rich",
+      "kind": "action",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiYWN0aW9uIiwicGF5bG9hZCI6eyJyZXF1ZXN0SUQiOiJhLTMiLCJ0eXBlSWRlbnRpZmllciI6Ik1vZHVsZS5SaWNoIiwicGF5bG9hZCI6eyJpbnQiOjQyLCJuZWdhdGl2ZSI6LTcsIm1heFNhZmUiOjkwMDcxOTkyNTQ3NDA5OTEsIm1pblNhZmUiOi05MDA3MTk5MjU0NzQwOTkxLCJmcmFjdGlvbiI6MS41LCJ0aW55Ijo1ZS0zMjQsImZsYWciOnRydWUsIm5vdGhpbmciOm51bGwsInRleHQiOiJjYWbDqSDinJMg8J+OriIsImVtcHR5IjoiIiwibGlzdCI6WzEsInR3byIsZmFsc2UsbnVsbCxbMyxbNF1dLHsiZml2ZSI6NX1dLCJtYXAiOnsiYSI6eyJiIjp7ImMiOltdfX0sImtleSB3aXRoIHNwYWNlIjp7fX19fX0="
+    },
+    {
+      "name": "action-positional",
+      "kind": "action",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiYWN0aW9uIiwicGF5bG9hZCI6eyJyZXF1ZXN0SUQiOiJhLTQiLCJ0eXBlSWRlbnRpZmllciI6Ik1vdmUiLCJwYXlsb2FkIjpbWzEwMDAsLTIwMDBdLDMsInJ1biJdfX0="
+    },
+    {
+      "name": "event-empty",
+      "kind": "clientEvent",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiZXZlbnQiLCJwYXlsb2FkIjp7ImZyb21DbGllbnQiOnsidHlwZSI6IkhlYXJ0YmVhdCIsInBheWxvYWQiOnt9fX19"
+    },
+    {
+      "name": "event-scalars",
+      "kind": "clientEvent",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiZXZlbnQiLCJwYXlsb2FkIjp7ImZyb21DbGllbnQiOnsidHlwZSI6IkNoYXQiLCJwYXlsb2FkIjp7Im1lc3NhZ2UiOiJoZWxsbyIsImNoYW5uZWwiOjJ9fX19"
+    },
+    {
+      "name": "event-rich",
+      "kind": "clientEvent",
+      "encoding": "json",
+      "base64": "eyJraW5kIjoiZXZlbnQiLCJwYXlsb2FkIjp7ImZyb21DbGllbnQiOnsidHlwZSI6IlJpY2giLCJwYXlsb2FkIjp7ImludCI6NDIsIm5lZ2F0aXZlIjotNywibWF4U2FmZSI6OTAwNzE5OTI1NDc0MDk5MSwibWluU2FmZSI6LTkwMDcxOTkyNTQ3NDA5OTEsImZyYWN0aW9uIjoxLjUsInRpbnkiOjVlLTMyNCwiZmxhZyI6dHJ1ZSwibm90aGluZyI6bnVsbCwidGV4dCI6ImNhZsOpIOKckyDwn46uIiwiZW1wdHkiOiIiLCJsaXN0IjpbMSwidHdvIixmYWxzZSxudWxsLFszLFs0XV0seyJmaXZlIjo1fV0sIm1hcCI6eyJhIjp7ImIiOnsiYyI6W119fSwia2V5IHdpdGggc3BhY2UiOnt9fX19fX0="
+    },
+    {
+      "name": "sync-ack-0",
+      "kind": "syncAck",
+      "encoding": "json",
+      "base64": "WzEwOCwwXQ=="
+    },
+    {
+      "name": "sync-ack-1",
+      "kind": "syncAck",
+      "encoding": "json",
+      "base64": "WzEwOCwxXQ=="
+    },
+    {
+      "name": "sync-ack-255",
+      "kind": "syncAck",
+      "encoding": "json",
+      "base64": "WzEwOCwyNTVd"
+    },
+    {
+      "name": "sync-ack-65536",
+      "kind": "syncAck",
+      "encoding": "json",
+      "base64": "WzEwOCw2NTUzNl0="
+    },
+    {
+      "name": "sync-ack-9007199254740991",
+      "kind": "syncAck",
+      "encoding": "json",
+      "base64": "WzEwOCw5MDA3MTk5MjU0NzQwOTkxXQ=="
+    },
+    {
+      "name": "join-minimal",
+      "kind": "join",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwNCwiai0xIiwiZGVtbyJd"
+    },
+    {
+      "name": "join-instance",
+      "kind": "join",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwNCwiai0yIiwiaGVyby1kZWZlbnNlIiwicm9vbS0wMSJd"
+    },
+    {
+      "name": "join-full",
+      "kind": "join",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwNCwiai0zIiwiZGVtbyIsInJvb20tMDIiLCJwbGF5ZXItw6kiLCJkZXZpY2UtMSIseyJuYW1lIjoiQWxpY2UiLCJsZXZlbCI6MywidGFncyI6WyJhIiwiYiJdLCJwcmVmcyI6eyJzb3VuZCI6ZmFsc2UsInZvbHVtZSI6MC41fX1d"
+    },
+    {
+      "name": "action-empty",
+      "kind": "action",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMSwiYS0xIiwiUGluZyIse31d"
+    },
+    {
+      "name": "action-scalars",
+      "kind": "action",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMSwiYS0yIiwiQWRkR29sZCIseyJhbW91bnQiOjEwMCwicmVhc29uIjoicXVlc3QifV0="
+    },
+    {
+      "name": "action-rich",
+      "kind": "action",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMSwiYS0zIiwiTW9kdWxlLlJpY2giLHsiaW50Ijo0MiwibmVnYXRpdmUiOi03LCJtYXhTYWZlIjo5MDA3MTk5MjU0NzQwOTkxLCJtaW5TYWZlIjotOTAwNzE5OTI1NDc0MDk5MSwiZnJhY3Rpb24iOjEuNSwidGlueSI6NWUtMzI0LCJmbGFnIjp0cnVlLCJub3RoaW5nIjpudWxsLCJ0ZXh0IjoiY2Fmw6kg4pyTIPCfjq4iLCJlbXB0eSI6IiIsImxpc3QiOlsxLCJ0d28iLGZhbHNlLG51bGwsWzMsWzRdXSx7ImZpdmUiOjV9XSwibWFwIjp7ImEiOnsiYiI6eyJjIjpbXX19LCJrZXkgd2l0aCBzcGFjZSI6e319fV0="
+    },
+    {
+      "name": "action-positional",
+      "kind": "action",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMSwiYS00IiwiTW92ZSIsW1sxMDAwLC0yMDAwXSwzLCJydW4iXV0="
+    },
+    {
+      "name": "event-empty",
+      "kind": "clientEvent",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMywwLCJIZWFydGJlYXQiLHt9XQ=="
+    },
+    {
+      "name": "event-scalars",
+      "kind": "clientEvent",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMywwLCJDaGF0Iix7Im1lc3NhZ2UiOiJoZWxsbyIsImNoYW5uZWwiOjJ9XQ=="
+    },
+    {
+      "name": "event-rich",
+      "kind": "clientEvent",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwMywwLCJSaWNoIix7ImludCI6NDIsIm5lZ2F0aXZlIjotNywibWF4U2FmZSI6OTAwNzE5OTI1NDc0MDk5MSwibWluU2FmZSI6LTkwMDcxOTkyNTQ3NDA5OTEsImZyYWN0aW9uIjoxLjUsInRpbnkiOjVlLTMyNCwiZmxhZyI6dHJ1ZSwibm90aGluZyI6bnVsbCwidGV4dCI6ImNhZsOpIOKckyDwn46uIiwiZW1wdHkiOiIiLCJsaXN0IjpbMSwidHdvIixmYWxzZSxudWxsLFszLFs0XV0seyJmaXZlIjo1fV0sIm1hcCI6eyJhIjp7ImIiOnsiYyI6W119fSwia2V5IHdpdGggc3BhY2UiOnt9fX1d"
+    },
+    {
+      "name": "sync-ack-0",
+      "kind": "syncAck",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwOCwwXQ=="
+    },
+    {
+      "name": "sync-ack-1",
+      "kind": "syncAck",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwOCwxXQ=="
+    },
+    {
+      "name": "sync-ack-255",
+      "kind": "syncAck",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwOCwyNTVd"
+    },
+    {
+      "name": "sync-ack-65536",
+      "kind": "syncAck",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwOCw2NTUzNl0="
+    },
+    {
+      "name": "sync-ack-9007199254740991",
+      "kind": "syncAck",
+      "encoding": "opcodeJsonArray",
+      "base64": "WzEwOCw5MDA3MTk5MjU0NzQwOTkxXQ=="
+    },
+    {
+      "name": "join-minimal",
+      "kind": "join",
+      "encoding": "messagepack",
+      "base64": "k2ijai0xpGRlbW8="
+    },
+    {
+      "name": "join-instance",
+      "kind": "join",
+      "encoding": "messagepack",
+      "base64": "lGijai0yrGhlcm8tZGVmZW5zZadyb29tLTAx"
+    },
+    {
+      "name": "join-full",
+      "kind": "join",
+      "encoding": "messagepack",
+      "base64": "l2ijai0zpGRlbW+ncm9vbS0wMqlwbGF5ZXItw6moZGV2aWNlLTGEpG5hbWWlQWxpY2WlbGV2ZWwDpHRhZ3OSoWGhYqVwcmVmc4Klc291bmTCpnZvbHVtZcs/4AAAAAAAAA=="
+    },
+    {
+      "name": "action-empty",
+      "kind": "action",
+      "encoding": "messagepack",
+      "base64": "lGWjYS0xpFBpbmeA"
+    },
+    {
+      "name": "action-scalars",
+      "kind": "action",
+      "encoding": "messagepack",
+      "base64": "lGWjYS0yp0FkZEdvbGSCpmFtb3VudGSmcmVhc29upXF1ZXN0"
+    },
+    {
+      "name": "action-rich",
+      "kind": "action",
+      "encoding": "messagepack",
+      "base64": "lGWjYS0zq01vZHVsZS5SaWNojKNpbnQqqG5lZ2F0aXZl+adtYXhTYWZlzwAf////////p21pblNhZmXT/+AAAAAAAAGoZnJhY3Rpb27LP/gAAAAAAACkdGluecsAAAAAAAAAAaRmbGFnw6dub3RoaW5nwKR0ZXh0rmNhZsOpIOKckyDwn46upWVtcHR5oKRsaXN0lgGjdHdvwsCSA5EEgaRmaXZlBaNtYXCCoWGBoWKBoWOQrmtleSB3aXRoIHNwYWNlgA=="
+    },
+    {
+      "name": "action-positional",
+      "kind": "action",
+      "encoding": "messagepack",
+      "base64": "lGWjYS00pE1vdmWTks0D6NH4MAOjcnVu"
+    },
+    {
+      "name": "event-empty",
+      "kind": "clientEvent",
+      "encoding": "messagepack",
+      "base64": "lGcAqUhlYXJ0YmVhdIA="
+    },
+    {
+      "name": "event-scalars",
+      "kind": "clientEvent",
+      "encoding": "messagepack",
+      "base64": "lGcApENoYXSCp21lc3NhZ2WlaGVsbG+nY2hhbm5lbAI="
+    },
+    {
+      "name": "event-rich",
+      "kind": "clientEvent",
+      "encoding": "messagepack",
+      "base64": "lGcApFJpY2iMo2ludCqobmVnYXRpdmX5p21heFNhZmXPAB////////+nbWluU2FmZdP/4AAAAAAAAahmcmFjdGlvbss/+AAAAAAAAKR0aW55ywAAAAAAAAABpGZsYWfDp25vdGhpbmfApHRleHSuY2Fmw6kg4pyTIPCfjq6lZW1wdHmgpGxpc3SWAaN0d2/CwJIDkQSBpGZpdmUFo21hcIKhYYGhYoGhY5Cua2V5IHdpdGggc3BhY2WA"
+    },
+    {
+      "name": "sync-ack-0",
+      "kind": "syncAck",
+      "encoding": "messagepack",
+      "base64": "kmwA"
+    },
+    {
+      "name": "sync-ack-1",
+      "kind": "syncAck",
+      "encoding": "messagepack",
+      "base64": "kmwB"
+    },
+    {
+      "name": "sync-ack-255",
+      "kind": "syncAck",
+      "encoding": "messagepack",
+      "base64": "kmzM/w=="
+    },
+    {
+      "name": "sync-ack-65536",
+      "kind": "syncAck",
+      "encoding": "messagepack",
+      "base64": "kmzOAAEAAA=="
+    },
+    {
+      "name": "sync-ack-9007199254740991",
+      "kind": "syncAck",
+      "encoding": "messagepack",
+      "base64": "kmzPAB////////8="
+    }
+  ]
+}
