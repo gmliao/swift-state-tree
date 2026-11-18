@@ -292,9 +292,9 @@ struct TwoPhaseHandlerTests {
         try? await keeper.handleClientEvent(bump(4), playerID: p1, clientID: c1, sessionID: s1)
         _ = await keeper.submitServerInput(TwoPhaseInput(amount: 6))
         if tick { await keeper.stepTickOnce() }
-        let applied = await waitUntil { await keeper.currentState().total == 10 }
+        await keeper.waitForInFlightWorkForTesting()
         let state = await keeper.currentState()
-        #expect(applied, "total \(state.total)")
+        #expect(state.total == 10)
         #expect(state.log == ["input:6"])
     }
 
@@ -460,14 +460,4 @@ struct TwoPhaseHandlerTests {
         #expect(try await source.getMetadata().version == "3.4")
         #expect(try await replay(path, tick: tick).recordedPassMismatches.isEmpty)
     }
-}
-
-/// Polls `condition` until it holds (at most ~5 s), for inputs applied by the keeper's own turns.
-private func waitUntil(_ condition: () async -> Bool) async -> Bool {
-    for _ in 0..<500 {
-        if await condition() { return true }
-        await Task.yield()
-        try? await safeTaskSleep(for: .milliseconds(10))
-    }
-    return false
 }
