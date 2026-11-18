@@ -216,7 +216,7 @@ public struct PayloadMacro: MemberMacro {
                 expression: ExprSyntax(
                     """
                     FieldMetadata(
-                        name: "\(raw: property.name)",
+                        name: "\(raw: property.wireName)",
                         type: \(raw: typeName).self,
                         policy: nil,
                         nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self),
@@ -266,7 +266,7 @@ public struct PayloadMacro: MemberMacro {
     /// declared in an extension, and a custom `encode(to:)`, are outside the expansion.
     private static func generateWireKeys(of structDecl: StructDeclSyntax, properties: [PropertyInfo]) -> DeclSyntax {
         var keys: [(String, String)] = []
-        let stored = Set(properties.map(\.name))
+        let stored = Set(properties.map(\.wireName))
         for member in structDecl.memberBlock.members {
             guard let enumDecl = member.decl.as(EnumDeclSyntax.self), enumDecl.name.text == "CodingKeys" else { continue }
             for caseMember in enumDecl.memberBlock.members {
@@ -324,6 +324,10 @@ private struct PropertyInfo {
     let name: String
     let typeName: String?
     let initializer: String?
+
+    /// The name a synthesized `Codable` gives the property: without the backticks a keyword
+    /// name (`` `default` ``) is declared with.
+    var wireName: String { String(name.filter { $0 != "`" }) }
 }
 
 private struct PayloadDiagnostics: DiagnosticMessage, @unchecked Sendable {

@@ -121,7 +121,8 @@ enum FPEventField {
     }
 }
 
-/// An event field given a default: whether a field has one is part of the shape.
+/// An event field given a default: not part of the shape, since a synthesized `Decodable` reads
+/// the key whether or not the property has a default.
 enum FPEventDefaulted {
     @Payload
     struct FPEvent: ServerEventPayload {
@@ -474,7 +475,7 @@ struct SchemaFingerprintTests {
     @Test("The fixture land's fingerprint is pinned: the same in every process and on every platform")
     func pinned() throws {
         let value = try fingerprint(fpBase())
-        #expect(value == "d32250693a062956", "\(value)")
+        #expect(value == "7f24c179d65684ff", "\(value)")
         #expect(value.count == 16)
         #expect(try fingerprint(fpBase()) == value)
     }
@@ -492,7 +493,7 @@ struct SchemaFingerprintTests {
         #expect(try token(build()) != token(build()))
         let value = try fingerprint(build())
         #expect(try fingerprint(build()) == value)
-        #expect(value == "0000000000000000", "\(value)")
+        #expect(value == "ca5b2ce4acf4e548", "\(value)")
     }
 
     @Test("Each one-part change gives a new fingerprint")
@@ -502,7 +503,6 @@ struct SchemaFingerprintTests {
             ("a state field added", try fingerprint(fpLand(FPStateAdded.FPState.self, event: FPv1.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self))),
             ("a state field's type", try fingerprint(fpLand(FPStateTyped.FPState.self, event: FPv1.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self))),
             ("a sync policy", try fingerprint(fpLand(FPStatePolicy.FPState.self, event: FPv1.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self))),
-            ("a field given a default", try fingerprint(fpWithEvent(FPEventDefaulted.FPEvent.self))),
             ("an event field", try fingerprint(fpLand(FPv1.FPState.self, event: FPEventField.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self))),
             ("an event field with a default", try fingerprint(fpLand(FPv1.FPState.self, event: FPEventOptional.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self))),
             ("a response field", try fingerprint(fpLand(FPv1.FPState.self, event: FPv1.FPEvent.self, action: FPResponseField.FPAction.self, input: FPv1.FPInput.self))),
@@ -546,10 +546,11 @@ struct SchemaFingerprintTests {
         #expect(Self.thrownError { try fingerprint(fpWithEvent(FPSetUnbuildable.FPEvent.self)) } as? SchemaFingerprintError == .unbuildableType("FPTag"))
     }
 
-    @Test("A property renamed under the same wire key, fields reordered, and a default's value changed keep the fingerprint")
+    @Test("A property renamed under the same wire key, fields reordered, a default's value changed and a payload field given a default keep the fingerprint")
     func stable() throws {
         let base = try fingerprint(fpBase())
         #expect(try fingerprint(fpLand(FPStateDefault.FPState.self, event: FPv1.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self)) == base)
+        #expect(try fingerprint(fpWithEvent(FPEventDefaulted.FPEvent.self)) == base)
         #expect(try fingerprint(fpLand(FPv1.FPState.self, event: FPv1.FPEvent.self, action: FPActionRenamedSameKey.FPAction.self, input: FPv1.FPInput.self)) == base)
         #expect(try fingerprint(fpLand(FPStateReordered.FPState.self, event: FPv1.FPEvent.self, action: FPv1.FPAction.self, input: FPv1.FPInput.self)) == base)
     }
