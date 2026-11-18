@@ -499,8 +499,12 @@ struct ClientFrameFuzzTests {
         let target = "T5-fields-\(encoding)"
         var payloads = PayloadOutcomes()
         // Mutated from the T5 seeds only: in the whole corpus a fixture type's seed is one frame
-        // in about seventy, so few mutations of it reach its payload decode.
-        let outcome = await ClientFrameFuzzer.run(target: target, seeds: T5Seeds.frames.filter { $0.encoding == encoding }.map(\.bytes)) { data, mutated in
+        // in about seventy, so few mutations of it reach its payload decode. At least 20,000
+        // inputs: most mutations of a JSON-object frame break the frame (at 2,000, about 3%
+        // decoded, and `FuzzMathAction` saw no field refusal). About a second in a debug build.
+        let iterations = max(ClientFrameFuzzConfig.iterations, 20_000)
+        let seeds = T5Seeds.frames.filter { $0.encoding == encoding }.map(\.bytes)
+        let outcome = await ClientFrameFuzzer.run(target: target, seeds: seeds, iterations: iterations) { data, mutated in
             payloads.mutated = mutated
             ClientFrameTargets.decodePayloads(of: try pipeline.decode(data), outcomes: &payloads)
         }
