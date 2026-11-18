@@ -83,9 +83,9 @@ struct SyncPolicyPerTypeTests {
     @Test("A node whose field values are trivially copyable is trivially copyable, whatever its policies")
     func trivialNode() {
         #expect(_isPOD(PolicyTrivialNode.self))
-        // Three `Sync<Int>` of size 16 (value, dirty flag, write mark at 12) and alignment 8:
+        // Three `Sync<Int>` of size 12 (value, dirty flag, write mark at 10) and alignment 8:
         // offsets 0, 16 and 32.
-        #expect(MemoryLayout<PolicyTrivialNode>.size == 48)
+        #expect(MemoryLayout<PolicyTrivialNode>.size == 44)
         #expect(MemoryLayout<PolicyTrivialNode>.stride == 48)
     }
 

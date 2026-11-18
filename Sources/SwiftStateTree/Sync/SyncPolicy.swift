@@ -147,20 +147,23 @@ public extension SyncPolicy {
 /// (`_syncWriteMark`); the keeper compares the state's sum of its root fields' marks
 /// (`StateNodeProtocol._syncWriteMark()`) before an input handler and after it throws, and a
 /// change ends the land with `LandFailure.Kind.handlerWrite`. Access counts, not change: validate
-/// before taking `inout` access. Not seen: storage without `@Sync` and a hand-written
-/// conformance; a whole-state replacement is seen unless the replacement's marks happen to sum to
-/// the same value. See `docs/core/runtime.md#inputs-and-turns`.
+/// before taking `inout` access. Not seen: storage without `@Sync`, a hand-written conformance,
+/// a hand replacement of a backing wrapper (`_x = Sync(...)`), whose fresh mark can cancel another
+/// field's write in the sum, and a handler making 65,536 or more writes whose wrapped marks sum to
+/// the old value. A whole-state replacement is seen unless the replacement's marks happen to sum
+/// to the same value. See `docs/core/runtime.md#inputs-and-turns`.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     private var _wrappedValue: Value
     private var _isDirty: Bool = false
     /// Bumped (wrapping) by every mutable access: the #87 detector (#535 §3.7) compares marks, so
-    /// a write isn't a call and the accessors stay inlinable.
-    private var _writeMark: UInt32 = 0
+    /// a write isn't a call and the accessors stay inlinable. 16 bits fit the padding after
+    /// `_isDirty` for most values; a handler hides its writes only with at least 65,536 of them.
+    private var _writeMark: UInt16 = 0
 
     /// Implementation detail of `@StateNodeBuilder`'s `_syncWriteMark()`, not a stable API: how
     /// many mutable accesses this wrapper has taken, wrapping.
-    public var _syncWriteMark: UInt32 { _writeMark }
+    public var _syncWriteMark: UInt16 { _writeMark }
     
     public var wrappedValue: Value {
         get { _wrappedValue }
