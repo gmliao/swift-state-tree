@@ -1,6 +1,6 @@
 # Typed server events and client actions, without AnyCodable (#521)
 
-**Status:** rev 10, for review: D14 and D15 decided (2026-11-18), with a new PR 1f before PR 1b. Rev 6 reviewed GO (2026-11-13). PR 0 (#540) and PR 1a (#559) are merged. No PR 1b code before rev 8 is reviewed.
+**Status:** rev 12, for a delta review of U1–U3: answers review of rev 11. D14 and D15 decided (2026-11-18); PR 1f before PR 1b; the N3 scan dropped. Rev 6 reviewed GO (2026-11-13). PR 0 (#540) and PR 1a (#559) are merged. No PR 1b code before rev 8 is reviewed.
 - Read at `main` 882cabe7; the cited lines are unchanged at 06125d40. Each fact is marked **checked** (read in the code or run) or **inferred** (reasoned, to be pinned by a test in the PR).
 - **Rev 2** answers review of rev 1: the handler lookup (M1), record payloads (M2), non-finite numbers (M3), replay loading (M4), the replay land's registry (M5), `Sendable` (M6), `PendingActionItem` (M7), the unit for untyped events (M8), EV5's bound (M9), what a failed cycle has already sent (M10), and the shoulds. Decisions review settled are recorded as such (§10). Those left to the maintainer are D1, D7, D9, D13 and the compatibility exceptions N3, N7–N10.
 - **Rev 3** answers review of rev 2:
@@ -46,8 +46,30 @@
   - **D14:** review proposes (a′): resolve the recorded payloads in the runner's async `step()`, so the tick gets typed values and can't fail. It is with the decision-maker, together with a sub-point: decode every recorded event, or only those the policy selects. M1 (an in-flight step still queues after `failRun`) and S3 (a synchronous seam for the stale-ticket test) belong to (a) and wait for it. §4's run-failure text is (a)'s until then.
 - **Rev 10** records two decisions of 2026-11-18 (§10):
   - **D14 = (a′), every recorded event decoded.** The runner resolves the tick in its async `step()`: its state, every recorded server event (not only the ones the policy selects) and the projected events. A mismatch throws a typed error, and the service's existing catch sets `.failed` under the run's ticket, so the loop stops and nothing after that tick is queued. The result carries typed values, so the replay tick can't fail (§4). This drops `consumeNextResultWithTicket`, `failRun` and the stale-ticket seam, and with them M1 and S3. A9, A10 and A11 fail in the same place, the same way. By decision, a record with any event that doesn't decode now fails even under `.projectedOnly`.
-  - **D15 = a strict schema fingerprint in the record** (§4.1). A stable hash of the land's types and fields, compared before the first step; a mismatch refuses the replay. It is a record-format change (3.5). Records without it are refused (reasoning in §4.1). It lands as **PR 1f**, its own small PR before PR 1b (§9).
+  - **D15 = a strict schema fingerprint in the record** (§4.1). A stable hash of the land's types and fields, compared before the first step; a mismatch refuses the replay. It is a record-format change: the next record minor when PR 1f merges, called **F** below (§4.1). Records without it are refused (reasoning in §4.1). It lands as **PR 1f**, its own small PR before PR 1b (§9).
   - **Found while writing it (checked):** the record-and-code check today is `validateReplayCompatibility` (`ReevaluationRunnerImpl.swift:369-396`). It compares the land type, `landDefinitionID` (the land's `id` string) and the format version. The admin replay start has its own copy (`NIOAdminRoutes.swift:708-730`), and `ReevaluationEngine.run` checks the version only (:219). SchemaGen doesn't cover server inputs (`git grep -i serverInput Sources/SwiftStateTree/SchemaGen` finds nothing), so the fingerprint adds them (§4.1).
+- **Rev 11** answers review of rev 10:
+  - **M1:** minor 3.5 is taken by #591 (open: `current = "3.5"`, `rejectedMinor = 5`). The plan names the fingerprint's minor **F**, whichever minor is next when PR 1f merges. If #591 lands first, its records at 3.5 have no fingerprint and are refused, and its `rejectedMinor` gating joins the follow-up issue's pre-F branches.
+  - **M2:** `processResult` rebuilds the result field by field when a replay projector is registered (`ReevaluationRunnerService.swift:228-240`). It already drops `recordedPassMismatch`, an existing bug, and the default for hero-defense, and it would drop `replayFrame` too. PR 1b replaces it with a copy, `with(projectedFrame:)`, that keeps every field, and tests with a projector (§4).
+  - **S1:** `as? State` is reachable. `ReevaluationTargetFactory` is public and picks the runner's `State` at run time; the GameDemo factory picks between VisibilityTest states from the environment. The service now checks the frame's state type when the result is queued (§4).
+  - **S2:** the fingerprint's input is canonical (§4.1):
+    - `required` lists are sorted;
+    - fields are named by their wire key, not the Swift property name;
+    - a type whose sample can't be built isn't fingerprinted;
+    - `Set` defaults are sorted;
+    - the macOS goldens are checked on Linux.
+  - **S3:** §4.1 says what the fingerprint excludes, and that strict refuses additive changes too.
+  - **S4:** the Public API rows are corrected and completed (§6).
+  - **S5:** PR 1f updates the tests that replay pre-F records, named in §7. The replay minimum becomes F; `minimumSupported` stays for readers (§4.1).
+  - **Nits:** the docs say which of 2002 and 2004 is which (§4.1). The codes 2004 and 2005 are free on main (checked: the enum ends at 2003).
+  - **Q4:** review agrees to drop the N3 scan. PR 1f's body lists every record it makes unreplayable (§4.1, §9).
+- **Rev 12** answers review of rev 11 (§4.1):
+  - **U1:** "unbuildable" is detected where the converter fails to build a sample, not from an empty-object shape. Field-less types are empty objects too: hero-defense's `PlayAction`, `ShootEvent` and `UpgradeWeaponEvent`, VisibilityTest's `ParkEntitiesAction` (`VisibilityTestLand.swift:284`), and Demo's `IncrementAction`. So a shape check would refuse every hero-defense record, the E2E replay's included. Field-less types and the `Any` def are hashed as they are, and a test fingerprints every land in the repository.
+  - **U2:** the Mirror and key limit is restated: such a change isn't seen by the fingerprint, and replay catches it only where a required field fails to decode.
+  - **U3:** an unbuildable definition is refused at registration when recording or reevaluation is on, instead of logged.
+  - **Nits:**
+    - a `resolveEvents` frame, which has no state, fails the `State` compare for a `GenericReplayLand`;
+    - two cases `@Payload`'s key list can't see are named: `CodingKeys` declared in an extension, and a custom `encode(to:)`.
 - **Order (#521):** after the `@Sync` wrapper changes (#519 merged; #520 merged as #527) and a fresh profile of main (§0).
 - **Error rule:** #535 and its scope decision (2026-11-13). A failure that can't be brought back to fully correct ends the smallest unit it corrupted: a session when only that session's output is wrong, the land when every recipient's output or the land's state is wrong. A type error knowable at registration is refused there. No absorb-and-continue path is added. A malformed input from a client is a client input error: the input is rejected as today, and nothing else ends.
 
@@ -275,7 +297,7 @@ package protocol PayloadDecodingSource: Sendable {
 **Can't hold, by design (named, each pinned).** N1, N2, N4, N5 and N6 follow from the rule or from review's settled decisions. N3 and N7–N10 are compatibility exceptions the maintainer decided (§10).
 - **(N1) MessagePack action and client-event decode differs where the differential finds it (D7).** `MessagePackValueDecoder` is exact. It refuses an integer field sent as a float (`decodeInteger` takes only `.int`/`.uint`, `MessagePackValueDecoder.swift:431-445`). Today's round trip can accept such an input, depending on how `JSONEncoder` writes the double (inferred). The TypeScript SDK sends integers as MessagePack integers, so SDK clients are unaffected (inferred, pinned by the E2E). Every difference, in either direction, is listed by the differential test (§7) and named in the PR.
 - **(N2) A malformed client event is rejected with an error,** and not recorded. Today it is accepted, recorded and silently not applied (§1.3).
-- **(N3) Records written before this change that hold a malformed client event fail replay (N3 (b)).** The staged batch (§4) refuses the event as any undecodable recorded input: the tick fails and the run stops failed, with the sequence and type. No version gate. A new record never holds one, since intake rejects it (N2). The count in the cited record sets is measured before PR 2 merges (§9).
+- **(N3) Records written before this change that hold a malformed client event fail replay (N3 (b)).** The staged batch (§4) refuses the event as any undecodable recorded input: the tick fails and the run stops failed, with the sequence and type. No version gate. A new record never holds one, since intake rejects it (N2). Since rev 11, D15 refuses every record from before PR 1f at replay, so this case can't be reached by replay, and the scan is dropped (§4.1).
 - **(N4) Types that crash today are refused instead** (EV1 for a type without the writer). Today the process hits `fatalError` at that type's first send.
 - **(N5) The replay land re-emits recorded server events typed** (the decision on #521, 2026-11-18). Each recorded name is resolved through the base land's registry, its payload is decoded into that type, and the event goes out through `emitEvent`. So its frame is byte-identical to the live one on every encoding (§4). Before #590, a recorded dictionary reached the positional encoders' `fatalError`; with #590 it ends the replay land with `.eventEncode`. An unregistered name or a payload that doesn't decode is a record/code mismatch (EV7): the run fails with the reason, and nothing of that tick is sent.
 - **(N6) The failure outputs** change as §5 says.
@@ -320,8 +342,13 @@ package protocol PayloadDecodingSource: Sendable {
   1. it sets `state` to the frame's state;
   2. it calls `ctx.requestSyncBroadcastOnly()`;
   3. it emits each event `selectReplayEventsToEmit` picks from the frame's resolved lists with `ctx.emitEvent(_:to:)`, in record order, each with its target.
-  - **The state box:** `GenericReplayLand<State>`, the runner and `registerWithGenericReplay<State>` share one `State` type. The box's state is made by the generic resolver for that `State`, and the land reads it with `as? State`. That cast is the one erased step left. A failure is unreachable, and a test asserts it.
-  - **A result without a frame,** from a custom runner that didn't resolve, is refused by the service when it is queued: the run fails with "result not resolved". So the land never sees one.
+  - **The state box, checked when queued (S1).** The runner's `State` is chosen at run time by a public `ReevaluationTargetFactory`; the GameDemo factory picks between the VisibilityTest states from the environment. So it can differ from the replay land's `State`.
+    - The frame records `ObjectIdentifier(State.self)` and the type's name.
+    - `registerWithGenericReplay<State>` gives the service the replay land's expected `ObjectIdentifier`.
+    - `processResult` compares the two under the lock, before it queues. A mismatch fails the run with "runner state X, replay land Y" and queues nothing.
+    - So the land's `as? State` can't fail for a queued result. A test asserts that, and another asserts the queue-time refusal with a factory that returns the other VisibilityTest state.
+  - **A result without a frame,** from a custom runner that didn't resolve, is refused by the same queue-time check: the run fails with "result not resolved", and the land never sees one. A frame from `resolveEvents` carries no state, so it fails the `State` compare for a `GenericReplayLand` the same way.
+  - **The projector copy (M2).** With a replay projector registered, `processResult` builds a new `ReevaluationStepResult` field by field (`ReevaluationRunnerService.swift:228-240`). That already drops `recordedPassMismatch`, so with a projector a tick whose passes didn't match falls back to the recorded events, which `selectReplayEventsToEmit` exists to prevent. It would drop `replayFrame` too. PR 1b replaces it with `ReevaluationStepResult.with(projectedFrame:)`, a copy that keeps every other field. A test runs with a projector and checks both fields survive.
 - **Every replay entry point fails the same way:**
   - the admin replay start: the record's fingerprint, before a land exists (§4.1);
   - the runner: the fingerprint before the first step, then the frame in each `step()`;
@@ -333,32 +360,61 @@ package protocol PayloadDecodingSource: Sendable {
 
 **Why.** Today a record is checked against the code by land type, `landDefinitionID` and format version only (`ReevaluationRunnerImpl.swift:369-396`). `landDefinitionID` is the land's `id` string, not its shape. So a change to an event's, an action's or the state's fields passes the check, and the replay then fails partway through, or passes on a meaning that changed. The fingerprint refuses such a record before the first step. The per-event decode of D14 stays as the last guard, for framework bugs and corrupt records.
 
-**What it hashes.** It is derived from the source SchemaGen uses, so it is deterministic across processes and platforms:
+**What it hashes.** It is derived from the source SchemaGen uses, and its input is made canonical, so it is deterministic across processes and platforms:
 - **The schema:** the land's `ProtocolSchema` from `SchemaExtractor.extract(from:)` for the definition, with a fixed version string. That covers the state tree (the types, the fields, their sync policies and their default values), the actions and their responses, the client events, the server events and their `defs`.
 - **Server inputs:** each registered server input's name and the JSON schema of its payload type, through the same `TypeToSchemaConverter`. SchemaGen leaves them out (above).
 - **Left out:**
   - every `description`, since documentation text doesn't change what replays;
   - the root `x-stateTree` wire form, since it describes the build's wire and not the land.
+- **Canonical input (S2).** SchemaGen's own output stays byte-identical (§3); these rules apply only to the fingerprint's copy:
+  - **`required` is sorted.** SchemaGen lists it in declaration order (`TypeToSchemaConverter.swift:209`, `:336`), so a reorder alone would change the fingerprint.
+  - **Fields are named by their wire key, not their Swift property name.** A record holds payloads and snapshots by key, so a property renamed under the same key replays and a changed key doesn't.
+    - **State fields:** the key is the snapshot key, which is the `@Sync` field name.
+    - **`@Payload` types:** `@Payload` emits a package list of the wire keys, read from the type's `CodingKeys` raw values, or the property name where there are none. The macro sees only the type's own declaration, so two cases are past it: `CodingKeys` declared in an extension, and a custom `encode(to:)`. For those the list holds the property names, and the limit below applies.
+    - **Types read through the Mirror fallback** (`:357-400`; nested `Codable` structs of a payload, response types without `@Payload`): their fields are Mirror's property labels. **The limit (U2):** a change to a key alone isn't seen by the fingerprint. Replay catches it only where decoding a **required** field fails:
+      - an optional field whose key changed decodes as nil, with no error;
+      - action responses are never decoded at replay;
+      - nested structs in action payloads are decoded at replay only from PR 2 on.
+
+      The docs state the limit in these words.
+  - **A type whose sample can't be built isn't fingerprinted (U1).** The test is the converter's own failed-sample branch: neither the `{}` sample (`createSampleInstance`, `TypeToSchemaConverter.swift:461`) nor the snapshot sample (`createSnapshotDecodableSampleInstance`, :454) decoded (:370-371, the `else` at :396-400).
+    - The converter reports that branch to the fingerprint (a package flag on the extraction), and the fingerprint throws `SchemaFingerprintError.unbuildableType`.
+    - The schema's shape isn't the test. A field-less type is an empty object too, and it is hashed as it is: hero-defense's `PlayAction`, `ShootEvent` and `UpgradeWeaponEvent`, VisibilityTest's `ParkEntitiesAction` (`VisibilityTestLand.swift:284`), and Demo's `IncrementAction`. So is the `Any` def.
+    - SchemaGen's output doesn't change; only the fingerprint looks at the flag.
+  - **Refused at registration when it would record (U3).** When recording or reevaluation is on for the land (`enableLiveStateHashRecording`, `NIOLandHost.swift:190`, `LandManager.swift:199`; or a reevaluation keeper), registration computes the fingerprint. An `unbuildableType` throws `LandRegistrationError`, naming the type, from the same entry points as the other registration rows (§5). So no record that can never replay is made. With recording off, the fingerprint isn't computed, and nothing changes.
+  - **`Set` defaults are sorted** by each element's canonical JSON, since a `Set`'s iteration order depends on the hash seed.
+- **What it doesn't cover (S3).** It describes the shapes on the wire and in the record, not the behavior. Handler and tick logic, the tick interval, services, the land's configuration and the environment aren't in it. Replay still checks those through the state hash per tick, as today.
+- **Strict means additive changes are refused too.** A new action, a new event, or a new optional field changes the fingerprint, so older records of that land stop replaying, by decision (D15).
 - **The hash:** sorted-key JSON of the parts above, then `DeterministicHash.fnv1a64` as 16 hex digits, the same function as `ProtocolSchema.computeHash()`.
   - A format tag, `"fp1"`, is part of the hashed input. A change to the rule bumps the tag, and the new value can never equal an old one.
   - The fingerprint is cached per definition type and computed once per recorded land, off the tick path.
 
 **Written and checked:**
-- The recorder writes `ReevaluationRecordMetadata.schemaFingerprint` from the keeper's definition, in the same place it forces `version` (`ReevaluationRecorder.setMetadata`). A definition whose schema can't be extracted can't be registered either, so this is unreachable for a hosted land. A directly built keeper whose schema throws gets no fingerprint, logs it, and its record is refused at replay.
+- The recorder writes `ReevaluationRecordMetadata.schemaFingerprint` from the keeper's definition, in the same place it forces `version` (`ReevaluationRecorder.setMetadata`). For a registered land the fingerprint was already computed at registration (U3), so this can't fail. A directly built keeper, which skips registration, whose fingerprint throws gets none, and its record is refused at replay. That is the one path left without a registration refusal, as for the other rows (§5, "`LandKeeper` used directly").
 - The check runs at the admin replay start (`NIOAdminRoutes.swift:708-730`), in the runner before the first step (`ReevaluationRunnerImpl.swift:117`, `:186`), and in `ReevaluationEngine.run` (:219). Each compares the record's fingerprint with the current definition's. On a mismatch it throws `ReevaluationReplayCompatibilityError.schemaFingerprintMismatch(recorded:current:)`, and the admin route returns it as its replay-start error.
+- **The two codes (nit):** the docs name both. 2002 `schemaMismatch` compares `landDefinitionID`, the land's `id` string, and its name stays for compatibility. 2004 `schemaFingerprintMismatch` compares the fields. 2005 is `schemaFingerprintMissing`. The admin route's error `code` strings are `RECORD_SCHEMA_FINGERPRINT_MISMATCH` and `RECORD_SCHEMA_FINGERPRINT_MISSING`, next to today's codes.
 
-**Format: 3.5.** `ReevaluationRecordVersion.current` becomes 3.5, with the field. A 3.4 build already refuses a newer minor (`isReadable`, since 3.2).
+**Format: the fingerprint minor, F (M1).** F is the next minor when PR 1f merges: 3.5 if it merges before #591, 3.6 if after (#591 takes 3.5 with `rejectedMinor = 5`). `ReevaluationRecordVersion.current` becomes F, with the field, and `ReevaluationRecordVersion.fingerprintMinor = F` names it. An older build already refuses a newer minor (`isReadable`, since 3.2).
 
-**Records without a fingerprint (before 3.5, or a 3.5 record without the field): refused.** They are refused with `ReevaluationReplayCompatibilityError.schemaFingerprintMissing(recordedVersion:)`, kept apart from the mismatch, so a tool can tell "re-record" from "the code changed". The reasoning:
+**The replay minimum becomes F (S5).**
+- **Replay:** a new `ReevaluationRecordVersion.minimumReplayable`, equal to F, is checked first at each replay entry point. A record below it is refused with `schemaFingerprintMissing` before anything else is read.
+- **Readers that don't replay** keep `minimumSupported` (2.5): the record log reader and the JSONL exporter.
+- **If #591 merges first,** its 3.5 records are below F and refused. Its `rejectedMinor` branch can then be reached only by readers, and it joins the follow-up issue.
+
+**Records without a fingerprint (before F, or an F record without the field): refused.** They are refused with `ReevaluationReplayCompatibilityError.schemaFingerprintMissing(recordedVersion:)`, kept apart from the mismatch, so a tool can tell "re-record" from "the code changed". The reasoning:
 - **It is the failure D15 exists to stop.** A record without a fingerprint can't be shown to match the code. Replaying it with a warning would print a verdict on a record nobody can check, which is the absorb-and-continue path #535's rule forbids.
 - **The precedent:** records before 2.5 are already refused as unsupported, "not comparable, never a mismatch: re-record them" (`ReevaluationRecordVersion.minimumSupported`). This is the same class.
 - **Foundation before release:** no record outside this repository and its measurement data needs to keep replaying. Published experiment data names its git SHA (`meta.git_sha`), and is reproduced by replaying at that SHA, not with a later build.
-- **The cost, stated:**
-  - the committed record fixtures are re-recorded in PR 1f: `Examples/GameDemo/reevaluation-records/{1,2,3}-hero-defense.json`, plus every record a test builds in code (the PR lists them);
-  - the version-dependent replay branches before 3.5 can no longer be reached from replay. Readers that don't replay still use them (the JSONL exporter, the record log reader). Removing them is a follow-up issue, not this PR.
+- **The cost, stated (Q4).** PR 1f's body lists every record it makes unreplayable. Those in the repository are re-recorded at F in PR 1f:
+  - `Examples/GameDemo/reevaluation-records/{1,2,3}-hero-defense.json`, which the GameDemo E2E replay uses;
+  - the five `Tests/SwiftStateTreeTransportTests/Fixtures/SyncOutputGoldens/*.reeval.sstr`;
+  - every record a test builds in code (named in §7).
+
+  Records outside the repository, such as the measurement data's record sets and any record the tools replay, are listed as unreplayable at the head. They are reproduced at their recorded git SHA.
+  - the version-dependent replay branches before F can no longer be reached from replay. Readers that don't replay still use them (the JSONL exporter, the record log reader). Removing them is a follow-up issue, not this PR.
 - **The rejected alternative, allowing with a warning,** is what today's `landDefinitionID` check amounts to for a changed field.
 
-**Its effect on N3 (an open point for review).** Under D15, a record from before PR 2 has no fingerprint (PR 1f is earlier), so it is refused whatever client events it holds. So N3 (b)'s case can't be reached by replay any more, and PR 2's scan of the cited record sets (§9) no longer guards anything replay does. **Proposed:** drop the scan from PR 2. Keep N3's intake rule, and a test that a pre-3.5 record is refused as `schemaFingerprintMissing`.
+**Its effect on N3 (settled in review of rev 10).** Under D15, a record from before PR 2 has no fingerprint (PR 1f is earlier), so it is refused whatever client events it holds. N3 (b)'s case can't be reached by replay any more, so **PR 2's scan is dropped**. N3's intake rule stays, and so does a test that a record below F is refused as `schemaFingerprintMissing`.
 
 **PR 1f, before PR 1b, on its own. Why:**
 - it is a record-format change with its own review surface: the version bump, refusing old records, the re-recorded fixtures and the admin route's error;
@@ -423,13 +479,16 @@ package protocol PayloadDecodingSource: Sendable {
 | `ActionEnvelope` | package `source`; `payload` becomes computed get-only; `init(typeIdentifier:payload:)` kept | reads compile; `Codable` unchanged |
 | `LandKeeper.PendingActionItem` | `action` becomes computed get-only; package `decoded`, `source`, a package init and `with(resolverOutputs:resolvedAtTick:)`; **the public init kept**, non-throwing, decoding at apply as today (§2.4) | reads and the public init compile |
 | `LandContext.emitAnyServerEvent(_:to:)` | **removed** in PR 1b (the decision on #521, 2026-11-18). Its only caller, the replay land, emits typed (§4) | source break, with no deprecation: a caller outside the repository stops compiling and moves to `emitEvent(_:to:)` with a typed payload. There is none in the repository after PR 1b (checked at a42b481c; #590's tests move to the transport, §7) |
-| `AnyEventDescriptor` (server events) | a package `decode` closure, built at registration (§4) | additive. The public init is unchanged and builds a descriptor without `decodeServerEvent`. The DSL never builds one that way, so a re-emit through it is unreachable from the DSL; a test asserts that every descriptor the builder makes has the closure. A hand-built registry that reaches one gets EV7 |
-| `ReevaluationStepResult` | gains `public let replayFrame: ReevaluationReplayFrame?` (init parameter, default nil) | additive. A result without a frame fails the run when queued (§4): a custom runner calls `ReevaluationReplayFrame.resolve(...)` |
-| `ReevaluationReplayFrame` | new public struct with package storage, made only by its public throwing `resolve(...)` | additive |
+| `AnyEventDescriptor` (server events) | a package `decodeServerEvent` closure, built at registration (§4) | additive. The public init is unchanged and builds a descriptor without `decodeServerEvent`. The DSL never builds one that way, so a re-emit through it is unreachable from the DSL; a test asserts that every descriptor the builder makes has the closure. A hand-built registry that reaches one gets EV7 |
+| `ReevaluationStepResult` | gains `public let replayFrame: ReevaluationReplayFrame?` (init parameter, default nil) and `with(projectedFrame:)`, a copy that keeps every other field (M2) | the field is additive |
+| `ReevaluationRunnerProtocol` (behavior) | **a result without `replayFrame`, or with a frame of another `State`, fails the run when the service queues it** (§4). A custom runner calls `ReevaluationReplayFrame.resolve(...)` | **behavior break** for custom runners that build results by hand: their runs fail until they resolve. Listed next to the 2004/2005 switch break |
+| `ReevaluationReplayFrame` | new public struct with package storage, made only by `public static func resolve<State: StateFromSnapshotDecodable>(tickId: Int64, snapshot: StateSnapshot, recordedServerEvents: [ReevaluationRecordedServerEvent], emittedServerEvents: [ReevaluationRecordedServerEvent], definition: LandDefinition<State>) throws -> ReevaluationReplayFrame` (throws `ReevaluationReplayResolutionError`). A runner whose `State` isn't `StateFromSnapshotDecodable` calls `resolveEvents(tickId:recordedServerEvents:emittedServerEvents:definition:)`, which builds a frame without a state | additive |
 | `ReevaluationReplayResolutionError` | new public error: the tick, sequence, name and error of an event that doesn't resolve, or which read, encode or state decode failed (A9–A11) | additive |
 | `ReevaluationRecordMetadata.schemaFingerprint` (PR 1f) | new `String?` field and init parameter (default nil) | additive; Codable reads records without it |
 | `ReevaluationReplayCompatibilityError` (PR 1f) | new cases `schemaFingerprintMismatch(recorded:current:)` and `schemaFingerprintMissing(recordedVersion:)`, with error codes 2004 and 2005 | an exhaustive `switch` outside the package must add them: the package isn't built for library evolution |
-| `ReevaluationRecordVersion.current` (PR 1f) | `"3.4"` → `"3.5"`; records without a fingerprint are refused at replay (§4.1) | a behavior change: every record before 3.5 is refused at replay |
+| `ReevaluationRecordVersion.current` (PR 1f) | becomes F, the fingerprint minor (§4.1); new `fingerprintMinor` and `minimumReplayable` (both F). `minimumSupported` stays for readers | a behavior change: every record below F is refused at replay |
+| `SchemaFingerprintError` (PR 1f) | new public error: `unbuildableType(String)` | additive |
+| Admin replay-start error codes (PR 1f) | new `code` strings `RECORD_SCHEMA_FINGERPRINT_MISMATCH` and `RECORD_SCHEMA_FINGERPRINT_MISSING`, with the recorded and current values in `details` | additive for clients that pass unknown codes through |
 | `ReevaluationSchemaFingerprint` (PR 1f) | new public `compute(for:)` on a `LandDefinition`, for tools and tests | additive |
 | Registration refusals (EV1–EV3, A4, A8) | rows in `LandDefinition.validateForRegistration(context:) throws`, shared with #535 (whichever PR merges first adds it). This plan's failures are `PayloadRegistrationError`, one case per row with the type and the reason, all failures in one error. Called at each entry point as §5 lists | new public types; the calling entry points already throw |
 | `EventRegistry.eventName(for:)` | kept, the single runtime event rule | unchanged |
@@ -504,7 +563,7 @@ package protocol PayloadDecodingSource: Sendable {
 
 **Records:**
 - Action and client-event records are byte-identical to today's for inputs from each encoding.
-- The committed record fixtures (`ReevaluationReplayCompatibilityTests`, `ReevaluationRecordVersionTests`, the `SyncOutputGoldens` records), re-recorded at 3.5 by PR 1f, replay unchanged. None of them holds a client event the new decode rejects (inferred; asserted in a test by decoding each one's client events through its land's registry).
+- The committed record fixtures (`ReevaluationReplayCompatibilityTests`, `ReevaluationRecordVersionTests`, the `SyncOutputGoldens` records), re-recorded at F by PR 1f, replay unchanged. None of them holds a client event the new decode rejects (inferred; asserted in a test by decoding each one's client events through its land's registry).
 - An old-version record holding a malformed client event fails replay at that tick, with the sequence and type (N3 (b)).
 - No record is built without a recorder or reevaluation mode (a counting hook), and `appliedOrder` still drives the tickless pass record.
 
@@ -515,18 +574,37 @@ package protocol PayloadDecodingSource: Sendable {
 - **mismatch refused (EV7):** a recorded payload that doesn't decode into its registered type, and an unregistered name, each make `step()` throw `ReevaluationReplayResolutionError` with the tick, sequence, name and error. The run's status is `.failed` with that message, the queue holds only the ticks before it, the replay land sends nothing for that tick or after, and it stays up;
 - **every recorded event decoded:** the same mismatch under `.projectedOnly`, on a tick whose projected events would have been chosen, still fails the run;
 - **custom runners:** a result without `replayFrame` fails the run when queued;
+- **state type (S1):** a factory that returns the other VisibilityTest state fails the run when its first result is queued, with both type names, and nothing is queued;
+- **with a projector (M2):** a tick whose passes didn't match keeps `recordedPassMismatch` and `replayFrame` through `processResult`, and sends only its projected events. On main today it falls back to the recorded ones; this test is red first;
 - **A9:** a source whose `getServerEvents` throws fails the run, and so does one whose `getStateHash` throws (M2). A source that returns nil for the hash without throwing still passes the tick, as today;
 - **A10, A11:** a snapshot encode that throws (a fault hook on the runner's encoder) and a state that doesn't build back (a fault hook on the resolver) each throw from `step()` and fail the run, and the tick sends nothing;
 - **the state box:** the land's `as? State` never fails across the repository's replay lands (asserted);
 
 **Schema fingerprint (PR 1f):**
 - **deterministic:** the fingerprint of each example land equals a committed golden. The goldens are written on macOS and checked on CI's Linux image, so the two platforms agree. It is the same in two processes, and under `SWIFT_DETERMINISTIC_HASHING` on and off;
-- **sensitive:** a fixture land changed by one field each (a state field added, a field's type, a sync policy, a default value, an event field, an action's response field, a server input's field) gives a new fingerprint every time. A changed `description` doesn't;
+- **sensitive:** a fixture land changed by one thing each (a state field added, a field's type, a sync policy, a default value, an event field, an action's response field, a server input's field, a new action, a new optional field) gives a new fingerprint every time;
+- **stable:** each of these leaves the fingerprint unchanged:
+  - a changed `description`;
+  - fields reordered;
+  - a property renamed under the same `CodingKey`, in a `@Payload` type.
+
+  A changed `CodingKey` raw value changes it;
+- **canonical:** a fixture with a non-empty `Set` default gives the same fingerprint with `SWIFT_DETERMINISTIC_HASHING` on and off, and in two processes;
+- **unbuildable (U1, U3):** a payload field whose type has no buildable sample makes the fingerprint throw `unbuildableType`. That land's registration is refused with recording on, and accepted with it off. A field-less action and event, and a field typed `AnyCodable`, fingerprint without error;
+- **every land fingerprints (U1):** every land definition in the repository (Sources, Examples, Tools, and the test lands that record) gets a fingerprint without error. That includes hero-defense, with its field-less actions and events, and Demo;
+- **the key-list blind spots:** a `@Payload` type with `CodingKeys` in an extension, and one with a custom `encode(to:)`, give the property-name list. A test pins that, so a later macro that sees them changes the test on purpose;
 - **refused:**
   - a record whose fingerprint differs is refused before the first step, at each entry point (the admin start, the runner, `ReevaluationEngine.run`), with `schemaFingerprintMismatch` holding both values;
-  - a 3.4 record, and a 3.5 record without the field, are refused with `schemaFingerprintMissing`;
+  - a record below F, and an F record without the field, are refused with `schemaFingerprintMissing`;
 - **written:** a recorded land's record holds the current fingerprint; a keeper whose schema throws writes none and logs it;
-- **fixtures:** the re-recorded example records replay, and pass the E2E replay check.
+- **fixtures:** the re-recorded example records replay, and pass the E2E replay check;
+- **tests that replay pre-F records (S5)**, updated by PR 1f. Each replay below F becomes "refused with `schemaFingerprintMissing`". A check of a version branch that a reader still uses keeps calling that branch directly:
+  - `TicklessPassOrdinalTests`: `olderTicklessRecordIsSkipped` (3.3, 3.0); "A 3.4 tickless record's sync outputs and seeds verify against the pass they read after", and "A 3.4 tickless pass without its ordinal is a record error", both re-recorded at F;
+  - `TicklessReplayPassTests`: "A 3.0 tickless record without passes still replays…" and "The JSON view keeps a 3.1 record's passes; a 2.x JSON tickless record replays…";
+  - `SyncOutputVerifierTests.olderRecordWithNonNFCTextIsNotComparable` (3.3);
+  - `NIOAdminRoutesReplayStartTests`: the cases writing 2.5 records;
+  - the `current == "3.4"` checks in `FullStateHashTests`, `NFCKeyTests`, `ReevaluationRecordLogTests` and `ReevaluationRecordVersionTests`, and `NFCKeyTests`' old-version loop;
+  - if #591 merged first, its `rejectedMinor` gate tests.
 - EV1–EV3 on the replay land pass and fail as on the base;
 - **the backstop:** #590's `UntypedEventPayloadTests` emitted through `emitAnyServerEvent`. They now hand an untyped `AnyServerEvent` straight to the adapter's `sendEventToTransport(_:to:)`, as a framework bug would, and still expect `.eventEncode` and 4016.
 
@@ -625,7 +703,10 @@ package protocol PayloadDecodingSource: Sendable {
 3. **PR 1f, the record's schema fingerprint (D15, §4.1), before PR 1b:**
    - the fingerprint, written by the recorder;
    - checked at the three entry points;
-   - record format 3.5, with records lacking it refused;
+   - record format F (the next minor, §4.1), `minimumReplayable = F`, with records lacking a fingerprint refused;
+   - the canonical input: sorted `required`, wire keys (`@Payload`'s key list), `Set` defaults, the unbuildable refusal from the converter's failed-sample branch, refused at registration when recording is on (U1, U3);
+   - the tests that replay pre-F records, updated (§7);
+   - **the body lists every record PR 1f makes unreplayable** (§4.1);
    - the two new error cases;
    - the re-recorded fixtures;
    - the docs, both languages:
@@ -650,15 +731,7 @@ package protocol PayloadDecodingSource: Sendable {
    - the replay staged batch (A5);
    - `docs/core/failure-handling.md` and `.zh-TW.md`: the client-event row ("A client event whose payload doesn't decode…", #537) and the replay-loading row ("Replay can't load or match a recorded input") flip to current;
    - the differential tests.
-   - **Before it merges, the N3 scan (M4).** It may not report an all-clear it can't back.
-     - **The check:** every client event in the published and cited record sets is decoded by **the same recorded-input decoder A5 uses** (§4), through its land's registry.
-     - **The tool:** a `--scan-client-events <manifest>` mode of `ReevaluationRunner` (`Examples/GameDemo/Sources/ReevaluationRunner`), added in PR 2. It reads records only and changes nothing. It runs on the host's archive through a brief, and the report is posted on #521.
-     - **The manifest:** the list of record files to scan, from the record sets the tags cite. The tool scans the list, not a directory walk, so a file that is missing from disk is reported, not passed over.
-     - **Totals, all printed:** files listed, found, opened and scanned; client events decoded, rejected (per set and type, with the first sequence of each), of an unknown land type, and of an unknown event type; read errors; and, for information, ticks excluded. The log reader leaves out the newest tick of an incomplete record (`ReevaluationRecordLog.swift:286-305`), and replay never verifies that tick (:300-305), so a malformed event there can't make a record stop verifying. Excluded ticks are counted and listed, not blockers.
-     - **Known gaps are blockers:** the runner knows only the `hero-defense`, VisibilityTest and ResolverTest land types (`main.swift:225-291`). A record of another type counts as unknown land.
-     - **The verdict** is "zero rejected" only when rejected, unknown land, unknown type, read errors, missing and unopened files, are all zero; excluded ticks don't block. Otherwise it prints what blocks it, and exits nonzero.
-     - **Fixtures** prove each blocker prints no all-clear: an unknown land type, an unknown event type, an unreadable file, and a listed file that is missing. An incomplete record with client events in its newest tick prints the excluded count and still gives the verdict of the rest. Also one record with a malformed client event (rejected 1).
-     - A nonzero rejected count, or any blocker, goes to the maintainer before merge, since those records would stop verifying (N3 (b)).
+   - **The N3 scan: dropped (rev 11).** D15 refuses every record from before PR 1f, so no record the scan would read can replay. N3's intake rule and the refused-below-F test stay.
 6. **PR 3: folded (rev 8).** #535's mechanism merged first (#580), and EV4 is current. EV7 is PR 1b's run failure. No PR 3.
 7. **Host A/B** per PR (1a and 1b together if they merge close together), base = main at run time, head = the PR merged with it. PR 0's knobs are on both sides.
 8. **Solutions:**
@@ -684,7 +757,7 @@ package protocol PayloadDecodingSource: Sendable {
 - **D7 (a): the exact typed decode.** Today's whole-tree refusals (non-finite numbers, non-string keys) are kept; every other difference is listed in N1.
 - **D9 (b): an event encode failure always ends the land**, whatever the target, at the first throw. No per-session close and no bound for event encode.
 - **D13 (b): `encodeAsArray()` is removed now,** not deprecated (§6.1, PR 1a).
-- **N3 (b): old records holding a malformed client event are refused:** their replay fails. This change adds no version-dependent reading and no record-version step; the scan before PR 2 merges reports the count (§9).
+- **N3 (b): old records holding a malformed client event are refused:** their replay fails. This change adds no version-dependent reading and no record-version step. Since rev 11 the case can't be reached by replay (D15), and the scan is dropped (§4.1).
 - **N7: settled by D13 (b).** A hand-written `encodeAsArray()` is an unused method; a type without the writer (`_writePayloadFields` and `_payloadHasTypedWriter = true`) is refused at registration (EV1).
 - **N8 (a):** a registered event missing from `eventHashes` is refused at registration (EV3).
 - **N9: yes.** Lands that are ambiguous today are refused at registration (A4).
@@ -702,8 +775,7 @@ package protocol PayloadDecodingSource: Sendable {
 - **Records without a fingerprint are refused,** not replayed with a warning (§4.1 gives the reasons).
 - **PR 1f is its own PR, before PR 1b** (§4.1).
 
-**Open, for review of rev 10:**
-- **N3's scan.** With D15 refusing every record from before PR 1f, N3 (b) can't be reached by replay. The proposal is to drop the scan from PR 2 (§4.1).
+**Settled in review of rev 10:** the N3 scan is dropped from PR 2 (§4.1).
 
 ## 11. Related issues
 
@@ -712,7 +784,7 @@ package protocol PayloadDecodingSource: Sendable {
 - **#590:** the encoders' refusal of a value that isn't a payload type; a backstop after PR 1b.
 - **#586 (#591):** handler results constrained to `A.Response`.
 - **#593:** the client-event decode failure, in PR 2.
-- **A follow-up issue** (filed with PR 1f): remove the pre-3.5 replay branches that D15 makes unreachable from replay.
+- **A follow-up issue** (filed with PR 1f): remove the pre-F replay branches that D15 makes unreachable from replay, #591's `rejectedMinor` gate included if it merged first.
 - **#532:** a per-session frame failure, as EV6.
 - **#517:** the off-path gate this measurement uses.
 - **#519, #520 (#527):** done; the order #521 asks for.
