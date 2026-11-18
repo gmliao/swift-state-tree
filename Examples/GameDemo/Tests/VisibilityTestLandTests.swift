@@ -165,7 +165,10 @@ struct VisibilityTestLandTests {
         #expect(!VisibilityTest.entityExists("e40", in: spawned, settings: settings))
     }
 
-    @Test("PlaceEntity with an unknown id is refused alone: nothing is written, and a later valid placement in the same tick applies (#586)")
+    // The pre-#586 body spawned the entities and then threw; the tick spawns them too, so this
+    // can't tell that write apart. That a refused input writes nothing is the core's test
+    // (`TwoPhaseHandlerTests`); this one pins the example's outcome.
+    @Test("PlaceEntity with an unknown id creates no entity and moves none, and a later valid placement in the same tick applies")
     func unknownPlacementRefusedAlone() async throws {
         let keeper = LandKeeper<VisibilityTestState>(
             definition: VisibilityTest.makeLand(VisibilityTestState.self, settings: VisibilityTestSettings(entityCount: 40)),
