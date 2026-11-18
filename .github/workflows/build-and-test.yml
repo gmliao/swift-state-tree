@@ -41,14 +41,15 @@ jobs:
     - uses: actions/checkout@v4
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and every
-    # Package.resolved. actions/cache saves in its post step only when the job succeeded and the
-    # key wasn't an exact hit. .build is not cached.
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
     - name: SwiftPM shared cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('**/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
           swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
@@ -121,14 +122,15 @@ jobs:
     - uses: actions/checkout@v4
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and every
-    # Package.resolved. actions/cache saves in its post step only when the job succeeded and the
-    # key wasn't an exact hit. .build is not cached.
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
     - name: SwiftPM shared cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('**/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
           swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
@@ -167,14 +169,15 @@ jobs:
     - uses: actions/checkout@v4
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and every
-    # Package.resolved. actions/cache saves in its post step only when the job succeeded and the
-    # key wasn't an exact hit. .build is not cached.
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
     - name: SwiftPM shared cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('**/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
           swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
@@ -209,14 +212,15 @@ jobs:
         fetch-depth: 0
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and every
-    # Package.resolved. actions/cache saves in its post step only when the job succeeded and the
-    # key wasn't an exact hit. .build is not cached.
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
     - name: SwiftPM shared cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('**/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
           swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 

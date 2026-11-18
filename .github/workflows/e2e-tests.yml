@@ -39,14 +39,15 @@ jobs:
     - uses: actions/checkout@v4
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and every
-    # Package.resolved. actions/cache saves in its post step only when the job succeeded and the
-    # key wasn't an exact hit. .build is not cached.
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
     - name: SwiftPM shared cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('**/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
           swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
@@ -256,14 +257,15 @@ jobs:
     - uses: actions/checkout@v4
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and every
-    # Package.resolved. actions/cache saves in its post step only when the job succeeded and the
-    # key wasn't an exact hit. .build is not cached.
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
     - name: SwiftPM shared cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('**/Package.resolved') }}
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
         restore-keys: |
           swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
@@ -309,11 +311,11 @@ jobs:
           ./check-row-addressing-run.sh --expect-off /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
         fi
 
-    # The opt-out (ROW_ADDRESSING=false) on both in-turn sync legs, in all three encodings: today's entries
-    # keep an E2E run while the old forms stay. This step also runs the tables-off variant
-    # (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false), the snapshot-diff fallback, which is an
-    # opt-out only with row addressing off; on the in-turn-off leg that is the legacy sync with
-    # the fallback. No join negotiates rowAddressing (--expect-off).
+    # The opt-out (ROW_ADDRESSING=false) on both in-turn sync legs, in all three encodings:
+    # today's entries keep an E2E run while the old forms stay. This step also runs the
+    # tables-off variant (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false), the snapshot-diff
+    # fallback, which is an opt-out only with row addressing off; on the in-turn-off leg that is
+    # the legacy sync with the fallback. No join negotiates rowAddressing (--expect-off).
     - name: Run GameServer E2E tests with row addressing off (opt-out)
       if: matrix.row_addressing == 'off'
       shell: bash
