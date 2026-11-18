@@ -262,8 +262,12 @@ private func tickOf(_ sequence: Int64, in path: String) async throws -> Int64 {
 }
 
 /// The monitor's runner (admin and monitor replays) over the whole record: its pass mismatches.
-private func runnerMismatches(_ path: String, tick: Bool) async throws -> [Int64: String] {
-    let runner = try await ConcreteReevaluationRunner(definition: makeTwoPhaseDefinition(tick: tick), recordFilePath: path)
+/// `initialState` picks the initializer that takes the state (each reads the record's version).
+private func runnerMismatches(_ path: String, tick: Bool, initialState: Bool = false) async throws -> [Int64: String] {
+    let definition = makeTwoPhaseDefinition(tick: tick)
+    let runner = initialState
+        ? try await ConcreteReevaluationRunner(definition: definition, initialState: TwoPhaseState(), recordFilePath: path)
+        : try await ConcreteReevaluationRunner(definition: definition, recordFilePath: path)
     var mismatches: [Int64: String] = [:]
     while let step = try await runner.step() {
         if let mismatch = step.recordedPassMismatch { mismatches[step.tickId] = mismatch }
@@ -312,7 +316,8 @@ struct TwoPhaseHandlerTests {
         let state = await keeper.currentState()
         #expect(state.total == 0 && state.log.isEmpty, "a refused input wrote: \(state)")
         if tick {
-            #expect((try? refused.get()) != nil, "a tick land's caller keeps its intake ACK")
+            // Returned at intake, before the tick ran: the ACK, never a handler's response.
+            #expect((try? refused.get())?.base is Void, "a tick land's caller keeps its intake ACK: \(refused)")
         } else {
             #expect(throws: TwoPhaseRefused(reason: "key \(key)")) { try refused.get() }
         }
@@ -618,5 +623,8 @@ struct TwoPhaseHandlerTests {
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getMetadata().version == "3.4")
         #expect(try await replay(path, tick: tick).recordedPassMismatches.isEmpty)
+        // The runner's version gate too, through both of its initializers.
+        #expect(try await runnerMismatches(path, tick: tick).isEmpty)
+        #expect(try await runnerMismatches(path, tick: tick, initialState: true).isEmpty)
     }
 }
