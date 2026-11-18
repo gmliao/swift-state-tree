@@ -3934,8 +3934,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// sequence. P was recorded, so replay applies it, sees it throw after access again
     /// (`checkReplayHandlerWrite`), and ends the tick there. Replay itself never ends a batch on
     /// this rule: it follows the record, which for an older record may continue past such an
-    /// input. Not seen (the input fails alone, as before): storage without `@Sync` and a
-    /// hand-written conformance; a whole-state replacement whose marks sum to the old value.
+    /// input. Not seen (the input fails alone, as before): storage without `@Sync`, a hand-written
+    /// conformance, a hand-replaced backing wrapper (`_x = Sync(...)`) whose fresh mark cancels
+    /// another field's write, 65,536 or more writes whose 16-bit marks wrap back to the old sum,
+    /// and a whole-state replacement whose marks sum to the old value. An explicit `clearDirty()`
+    /// in a handler counts as a write on a state with nested nodes.
     private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]

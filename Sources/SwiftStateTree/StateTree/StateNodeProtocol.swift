@@ -230,7 +230,10 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// sum of the root `@Sync` fields' write marks (`Sync._syncWriteMark`): a nested node's or a
     /// container element's write goes through its root field's `_modify`, so it moves the sum.
     /// The keeper compares it before an input handler and after it throws (#535 §3.7). Nil (the
-    /// default, a hand-written conformance): not checked, the input fails alone.
+    /// default, a hand-written conformance): not checked, the input fails alone. A sum, so it
+    /// misses a hand-replaced backing wrapper (`_x = Sync(...)`) whose fresh mark cancels another
+    /// field's write, and 65,536 or more writes whose 16-bit marks wrap back to the old sum; an
+    /// explicit `clearDirty()` in a handler moves it on a state with nested nodes.
     func _syncWriteMark() -> UInt64?
 }
 

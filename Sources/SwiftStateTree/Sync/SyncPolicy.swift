@@ -151,7 +151,9 @@ public extension SyncPolicy {
 /// a hand replacement of a backing wrapper (`_x = Sync(...)`), whose fresh mark can cancel another
 /// field's write in the sum, and a handler making 65,536 or more writes whose wrapped marks sum to
 /// the old value. A whole-state replacement is seen unless the replacement's marks happen to sum
-/// to the same value. See `docs/core/runtime.md#inputs-and-turns`.
+/// to the same value. An explicit `clearDirty()` inside a handler counts as a write on a state
+/// with nested nodes (it rewrites them through `updateValueWithoutMarkingDirty(_:)`). See
+/// `docs/core/runtime.md#inputs-and-turns`.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     private var _wrappedValue: Value
