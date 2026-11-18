@@ -55,7 +55,6 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 單一玩家的狀態 frame 或 broadcast-only frame 完全無法編碼 | land 結束；失敗的 cycle 不送任何東西，其 session 以 4016 關閉（`planPerPlayerFrames`、`planBroadcastOnlySeparateFrames`） | 已符合（#535 第 10、12 列） |
 | resync 或第一次 view 的完整 view 無法編碼 | 第一次失敗就結束 land，不重試；不再送出 4012（`planPerPlayerFrames`、`planFirstSync`） | 已符合（#535 第 11、13 列） |
 | 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event、event frame 無法 pack，或合併 state 與 event 的 frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`、`encodeMergedBroadcastFrame`）。未使用 opcode 107：frame 無法編碼的 event 結束 land；目標目前沒有接收者的 event 不算遺失 | 已符合（#535 第 17 列） |
-| 寫入狀態後才拋出錯誤的 handler | 該輸入單獨失敗，之後的輸入繼續；它的寫入保留並同步出去，debug build 會發出警告（`LandKeeper.swift:3836-3837`、`:3189`） | 目標：關閉 land（#535）；部分寫入由 #87 追蹤 |
 | replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:277`、`TransportMessageEncoder.swift:346`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
 | replay 無法載入或對應錄製的輸入 | 以警告略過該輸入，該 tick 在沒有它的情況下執行（`LandKeeper.swift:4126-4139`、`:4250-4256`） | 目標：驗證執行失敗，並附上 tick 與原因（#521；規則由 #535 追蹤） |
 
@@ -70,6 +69,8 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | payload 無法解碼的 action | 在 intake 拒絕；client 收到錯誤（`LandKeeper.swift:2721`、`TransportAdapter.swift:6079`） | 已符合 |
+| 寫入狀態後才拋出錯誤的 input handler | 不會發生：`HandleAction`、`HandleEvent`、`HandleServerInput`、`OnJoin` 與 `OnLeave` 的 body 都不會拋出錯誤，因此沒有輸入會留下部分寫入（#87）。輸入以其 `validate` 拋出錯誤來拒絕，此時什麼都還沒寫入；它單獨失敗，之後的輸入繼續，並被記錄為 rejected（[Runtime](runtime.zh-TW.md#input-與-turn)）。`OnInitialize` 與 destroy 階段的 handler（`OnFinalize`、`OnDestroyWhenEmpty`）仍可拋出錯誤，並保留寫入的內容 | 已符合（#586） |
+| `CanJoin` 允許、但在 `OnJoin` 套用時已不適合的 join | `OnJoin` 無法拒絕它：`CanJoin` 在 join intake 時決定，`OnJoin` 在之後的 turn 才套用，因此 `CanJoin` 對其他輸入會改變的狀態所做的檢查可能已過時。玩家照常加入，由 `OnJoin` 處理不適合的 joiner（讓他成為旁觀者，或發出 event 請他離開）；見 [Land DSL](land-dsl.zh-TW.md#join-檢查)。`MaxPlayers` 不受影響：它在插入玩家時檢查，並計入等待中的 joiner | 目標：turn 內的 join 檢查（#588） |
 | payload 無法解碼的 client event | 直接丟棄，不回錯誤給 client（`LandDefinition.swift:276-277`），卻仍被記錄為已套用，因為記錄發生在 handler 執行之前（`LandKeeper.swift:3487-3498`） | 目標：比照 action 拒絕，且不記錄（#537） |
 
 ### land 因失敗結束時
