@@ -160,6 +160,12 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Allow auto-creating land when join with instanceId but land doesn't exist (default: false).
     public var allowAutoCreateOnJoin: Bool
 
+    /// The largest frame a session may send before its join is admitted, in bytes; `nil`: no
+    /// limit. Defaults to the environment (`HandshakeFrameLimit.fromEnvironment()`,
+    /// `HANDSHAKE_FRAME_MAX_BYTES`, 64 KiB). A larger frame is refused before it is parsed, and
+    /// the session is closed with 1009.
+    public var maxHandshakeFrameBytes: Int?
+
     /// Encoding configuration for transport messages and state updates.
     public var transportEncoding: TransportEncodingConfig
 
@@ -229,9 +235,11 @@ public struct NIOLandServerConfiguration: Sendable {
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         inTurnSync: Bool = true,
-        syncLag: SyncLagPolicy = .fromEnvironment()
+        syncLag: SyncLagPolicy = .fromEnvironment(),
+        maxHandshakeFrameBytes: Int? = HandshakeFrameLimit.fromEnvironment()
     ) {
         self.logger = logger
+        self.maxHandshakeFrameBytes = maxHandshakeFrameBytes
         self.syncLag = syncLag
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync

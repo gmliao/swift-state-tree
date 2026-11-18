@@ -137,3 +137,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-17 | [A land-failure test passes in-turn and hangs on the legacy path](2026-11-17-a-land-failure-test-passes-in-turn-and-hangs-on-legacy.md) | testing, in-turn-sync, legacy-sync, land-failure, tick |
 | 2026-11-18 | [A macro that splits a type's spelling breaks on nested types](2026-11-18-a-macro-that-splits-a-type-spelling-breaks-on-nested-types.md) | macros, swift-syntax, type-spelling, container-helpers, goldens |
 | 2026-11-18 | [A `fatalError` in a cast's fallback branch is reachable from type-erased data](2026-11-18-a-fatalerror-in-a-casts-fallback-is-reachable-from-type-erased-data.md) | encoding, crash, type-erasure, land-failure, replay |
+| 2026-11-18 | [A server close goes around the send queue](2026-11-18-a-server-close-goes-around-the-send-queue.md) | ordering, send, close, session-queue |
