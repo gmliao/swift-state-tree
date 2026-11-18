@@ -1,6 +1,6 @@
 # Two-phase handlers: validate, then apply (#586, minimal)
 
-Status: open (rev 4, 2026-11-18: Review on rev 3 folded in, except M1, which waits for the maintainer). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
+Status: open (rev 4, 2026-11-18: Review on rev 3 folded in; M1 decided by the maintainer). Issue: #586. Replaces #535 PR 4 (#585, parked) as the fix for #87: a handler can no longer write and then throw, because the closure that writes can't throw.
 
 ## Decision (maintainer, 2026-11-18)
 
@@ -29,7 +29,16 @@ Status: open (rev 4, 2026-11-18: Review on rev 3 folded in, except M1, which wai
   - Their public inits take the two stages: a throwing `validate` that returns the plan, and a non-throwing `apply`. The single-closure form is the Void-plan case with an empty `validate`.
   - No public init that takes a throwing body remains, since it would be an escape hatch around the rule.
   - `AnyServerInputHandler`'s init is already internal and stays so.
-- **Several handlers for one event or server-input type (M1): pending, the maintainer's decision.** The keeper runs them in sequence in one input (`LandKeeper.swift:3538-3541`, `3568-3573`), so handler 1's `apply`, then handler 2's `validate` throw, is still a half-write. This section is filled in when the decision lands.
+- **One handler per client-event type and per server-input type (M1, maintainer, 2026-11-18: (a)).** Today the keeper runs several handlers for one type in sequence in one input (`LandKeeper.swift:3538-3541`, `3568-3573`). Handler 1's `apply`, then handler 2's `validate` throw, would still be a half-write. So a land may declare only one handler per type, and an input is exactly one `validate` plus one `apply`, as for actions.
+  - **Storage.** `LandBuilder` keeps the first handler per type and records the later ones as duplicates. `LandDefinition` holds one handler per type: `eventHandlers` becomes keyed by type, and `serverInputHandlers` maps to a single handler.
+  - **Refusal.** `validateForRegistration` refuses a land with duplicates, beside the other #535 checks, through a new `duplicateHandlers` part of `LandRegistrationError`. It names the type and both declaration sites: `HandleEvent` and `HandleServerInput` gain defaulted `fileID:`/`line:` parameters (additive), stored in the erased handler.
+  - **The keeper.** The per-type loops in `applyPendingItem` become one call. A keeper built without registration (tests) uses the first handler; registration is the gate.
+  - **Inventory.** The examples have one handler per event type. Test files that declare `HandleEvent` or `HandleServerInput` for one type more than once (per file; the build and the refusal show which are in one land):
+    - `ActionEventSyncTests`, `LandDSLTests`, `LandKeeperClientEventQueueTests`, `ServerInputTests` (events and server inputs), `SyncTablesLandCellTests`, `ThrowingInputWriteWarningTests` (deleted), `TicklessReplayPassTests`;
+    - `PerPlayerSyncTablesScenarioTests`, `TransportAdapterOpcode107Tests`.
+
+    The ones that are one land get their handlers merged, or the test moves to what it meant to test; the PR lists each.
+  - **Tests:** a land with two handlers for one event type is refused, and so is one for a server-input type, with the type and both sites in the error.
 
 ### 2. `ValidateContext` and `ReadOnlyLandService`
 
@@ -132,12 +141,14 @@ From a scan of handler bodies that contain `throw`, or a `try` that isn't `try?`
   - The public inits of `AnyActionHandler`/`AnyClientEventHandler`: two-stage, with no throwing-body init left (§1). `AnyServerInputHandler`'s init is internal: no public change.
   - An action body and `apply` return `A.Response` instead of `some Codable & Sendable` (closes #561).
   - `JoinInputResult.failed` and the `failed:` init parameter are removed (§5).
+  - **Behavior:** a land that declares two handlers for one client-event or server-input type is refused at registration (M1). `LandDefinition.eventHandlers` changes shape.
   - A body that throws, or calls a throwing function with `try`, stops compiling.
   - The `DEBUG_WARN_THROWING_INPUT_WRITES` env var is removed.
 - **Additions:**
   - `HandleAction(_:resolvers:validate:apply:)`: 3 arities × Plan/Void = 6 overloads.
   - `HandleEvent(_:validate:apply:)` and `HandleServerInput(_:validate:apply:)`: 2 overloads each.
   - `ValidateContext`, `ReadOnlyLandService`, `ReadOnlyLandServices`.
+  - `LandRegistrationError.duplicateHandlers`, and defaulted `fileID:`/`line:` on `HandleEvent`/`HandleServerInput`.
 - **Record:** format 3.5's optional `rejected` on the pass and on the tick frame (D1). An older record replays as before, without the comparison.
 - **Wire, schema and client SDK:** unchanged.
 
