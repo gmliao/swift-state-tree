@@ -170,7 +170,9 @@ let package = Package(
         ),
         .testTarget(
             name: "SwiftStateTurnsTests",
-            dependencies: ["SwiftStateTurns"],
+            // SwiftStateTree only for the documentation's comparison (a hand-fixed actor with
+            // GenerationTable); the turn core itself doesn't depend on it.
+            dependencies: ["SwiftStateTurns", "SwiftStateTree"],
             path: "Tests/SwiftStateTurnsTests"
         ),
         .testTarget(

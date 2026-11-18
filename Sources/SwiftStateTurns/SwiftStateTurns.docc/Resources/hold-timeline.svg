@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 284" width="800" height="284" role="img" aria-label="A hold over time: join 7's load holds the store; join 8 parks until the load's result steps">
+  <title>A hold over time: join 7's load holds the store; join 8 parks until the load's result steps</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#24292f"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, "PingFang TC", "Noto Sans CJK TC", sans-serif; fill: #24292f; }
+    .lane { font-size: 13px; font-weight: 600; }
+    .s { font-size: 12px; }
+    .n { font-size: 12px; fill: #57606a; }
+    .l { stroke: #24292f; stroke-width: 1.5; fill: none; marker-end: url(#a); }
+    .d { stroke: #8c959f; stroke-width: 1; stroke-dasharray: 4 4; }
+  </style>
+  <rect x="0" y="0" width="800" height="284" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+  <text class="lane" x="20" y="52">join 7</text>
+  <text class="lane" x="20" y="108">store hold</text>
+  <text class="lane" x="20" y="164">join 8</text>
+  <path class="l" d="M150,250 L780,250"/>
+  <text class="n" x="780" y="270" text-anchor="end">time →</text>
+  <circle cx="170" cy="48" r="5" fill="#24292f"/>
+  <text class="s" x="170" y="28" text-anchor="start">step: request</text>
+  <rect x="180" y="38" width="290" height="20" rx="4" fill="#eef4ff" stroke="#0550ae"/>
+  <text class="s" x="325.0" y="52" text-anchor="middle">load in flight</text>
+  <circle cx="480" cy="48" r="5" fill="#24292f"/>
+  <text class="s" x="480" y="28" text-anchor="start">step: .loaded</text>
+  <rect x="170" y="94" width="310" height="20" rx="4" fill="#fff8e6" stroke="#9a6700"/>
+  <text class="s" x="325.0" y="108" text-anchor="middle">held by join 7’s request</text>
+  <circle cx="260" cy="160" r="5" fill="#24292f"/>
+  <text class="s" x="260" y="140" text-anchor="middle">arrives</text>
+  <rect x="270" y="150" width="220" height="20" rx="4" fill="#f6f8fa" stroke="#8c959f"/>
+  <text class="s" x="380.0" y="164" text-anchor="middle">parked</text>
+  <circle cx="500" cy="160" r="5" fill="#24292f"/>
+  <text class="s" x="500" y="140" text-anchor="start">steps</text>
+  <line class="d" x1="480" y1="60" x2="480" y2="240"/>
+  <text class="n" x="20" y="222">When the request closes, the hold ends, and join 8 steps in the same segment.</text>
+</svg>

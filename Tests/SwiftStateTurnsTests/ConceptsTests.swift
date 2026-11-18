@@ -1,0 +1,167 @@
+// The examples of the documentation's "Core concepts" article (CoreConcepts.md) that the lobby
+// of WorkedExampleTests.swift doesn't show: a room with an asked seat count, an untracked log
+// line, a save under a worker-retires hold, chat scoped to a player, joins that carry their
+// connection's end token, and an idle timer. Compiled and run here; the rot check in
+// WorkedExampleTests.swift covers its blocks.
+
+import SwiftStateTurns
+import Testing
+
+/// A room: the lobby's ideas, plus the rest of the core's tools.
+@PlainData
+struct Room: TurnMachine {
+    // docs:room-input
+    enum Input: Sendable {
+        /// From a connection; withdrawn if that connection closed before the join stepped.
+        case join(player: Int, connection: EndToken)
+        case chat(player: Int, text: String)
+        case saveStats(player: Int)
+        case saved(player: Int)
+        case idleKick(player: Int)
+    }
+    // docs:end
+
+    enum Effect: Sendable {
+        case writeStats(player: Int)
+        case log(String)
+    }
+
+    enum Key: Hashable, Sendable {
+        case player(Int)
+        case database
+    }
+
+    enum Query: Sendable {
+        case seatCount
+    }
+
+    typealias Output = String
+    typealias Reply = Int
+    typealias Answer = Int
+
+    var seats: Set<Int>
+    var saving: [RequestID: Int]
+
+    // docs:room-admission
+    func admission(of input: Input) -> Admission<Key> {
+        switch input {
+        // Refused at once if the player's connection already closed.
+        case .join(_, let connection): .external(hold: nil, scope: nil, unless: connection)
+        // Waits while a save holds the database; withdrawn if the player leaves meanwhile.
+        case .chat(let player, _): .external(hold: .database, scope: .player(player))
+        case .saveStats: .external(hold: .database, scope: nil)
+        default: .control
+        }
+    }
+    // docs:end
+
+    mutating func handle(_ input: Input, _ turn: inout Turn<Room>) {
+        switch input {
+        // docs:room-join
+        case .join(let player, _):
+            turn.issue(.player(player))
+            seats.insert(player)
+            // Untracked work: no key owns it, and nothing waits for it.
+            turn.run(.log("joined \(player)"))
+            // Kicked after a minute without a word; each chat line re-arms it.
+            turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: player))
+            if let caller = turn.input { turn.reply(to: caller, .success(seats.count)) }
+        // docs:end
+        case .chat(let player, let text):
+            turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: player))
+            turn.emit("\(player): \(text)", for: .player(player))
+        // docs:room-save
+        case .saveStats(let player):
+            // The write changes the database while it runs: the hold lasts until the worker
+            // returns, even if the request is abandoned first.
+            let hold = Hold.untilWorkerRetires(Key.database, deadline: .seconds(5))
+            if let id = turn.request(.writeStats(player: player), for: .player(player), holding: hold) {
+                saving[id] = player
+            }
+        // docs:end
+        case .saved(let player):
+            saving = saving.filter { $0.value != player }
+        case .idleKick(let player):
+            turn.end(.player(player))
+            seats.remove(player)
+        }
+    }
+
+    mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<Room>) {
+        saving.removeValue(forKey: request)
+    }
+
+    // docs:room-answer
+    /// A synchronous question, answered as a step: `ask` returns the answer.
+    mutating func answer(_ query: Query, _ turn: inout Turn<Room>) -> Int {
+        switch query {
+        case .seatCount: seats.count
+        }
+    }
+    // docs:end
+}
+
+actor RoomActor: TurnActor {
+    let core: TurnCore<Room>
+    private(set) var sent: [String] = []
+
+    init(clock: some TurnClock) {
+        core = TurnCore(Room(seats: [], saving: [:]), parkedLimit: 64, segmentBudget: 16, clock: clock)
+    }
+
+    @concurrent nonisolated func perform(_ effect: Room.Effect) async -> Room.Input? {
+        switch effect {
+        case .writeStats(let player): .saved(player: player)
+        case .log: nil
+        }
+    }
+
+    func flush(_ outputs: consuming [String]) {
+        sent.append(contentsOf: outputs)
+    }
+
+    func heldKeys() -> Int { core.stats.heldKeys }
+}
+
+@Suite("The documentation's core concepts", .timeLimit(.minutes(1)))
+struct ConceptsTests {
+    @Test("A room: ask, run, a scoped chat, a worker-retires save, an end token and an idle timer")
+    func room() async throws {
+        let f = Fixture()
+        let clock = TestClock(fixture: f)
+        let room = RoomActor(clock: clock)
+        // docs:room-use
+        let connection = EndToken()
+        let seated = try await room.call(.join(player: 7, connection: connection), cancellation: .honoured)
+        let count = await room.ask(.seatCount)
+        // docs:end
+        #expect(seated == 1)
+        #expect(count == 1)
+
+        await room.send(.chat(player: 7, text: "hi"))
+        #expect(await room.sent == ["7: hi"])
+
+        await room.send(.saveStats(player: 7))
+        for _ in 0 ..< 10_000 where await room.heldKeys() != 0 {
+            await Task.yield()
+        }
+        #expect(await room.heldKeys() == 0)
+
+        // docs:room-token
+        // The connection closed before its join stepped: the join is withdrawn.
+        let late = EndToken()
+        late.markEnded()
+        await #expect(throws: TurnError.withdrawn) {
+            try await room.call(.join(player: 8, connection: late), cancellation: .honoured)
+        }
+        // docs:end
+
+        // The idle timer: the test clock moves to the deadline, and the timer's sleep returns.
+        clock.set(seconds: 60)
+        f.open("deadline 60")
+        for _ in 0 ..< 10_000 where await room.ask(.seatCount) != 0 {
+            await Task.yield()
+        }
+        #expect(await room.ask(.seatCount) == 0)
+    }
+}

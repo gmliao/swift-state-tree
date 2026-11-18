@@ -21,6 +21,7 @@ If this is your first time with SwiftStateTree, we recommend reading in the foll
 - **[Overview](overview.md)** - System architecture, module composition, core concepts
 - **[Architecture Overview](programming-model.md)** - Complete conceptual explanation of StateTree architecture (state layer, action layer, Resolver, semantic model, etc.)
 - **[Architecture Layers](architecture.md)** - Component layered architecture and relationship descriptions
+- **[The Turn Core](turns/README.md)** - SwiftStateTurns: actors whose state changes only in synchronous steps, and why
 - **[Quick Start](quickstart.md)** - Build your first server from scratch
 
 ### Core Concepts

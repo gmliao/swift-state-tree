@@ -374,7 +374,12 @@ One PR, as #551 says, built in reviewable commits:
    - a worked example article: a small machine and actor trimmed from `DemoMachine`/`DemoActor`, compiled and run as a test, with a check that the article's code matches the test file. It shows `step`, an effect, `perform`, `flush`, `send` against `call`, and a holding request with its deadline;
    - why `perform` carries both attributes: `nonisolated` keeps it off the actor's state, and `@concurrent` makes it run off the actor under 6.2's `nonisolated(nonsending)` default. One paragraph, with what goes wrong with each one alone.
 
-   No `docs/` page here: Land authors never see the core. A `docs/` architecture page comes with #546's first slice, when `TransportAdapter` adopts it.
+   - a "How the pieces fit" section near the top, with a diagram (one hand-written SVG, shared by the DocC catalog and `docs/turns/`), naming the pattern (functional core, imperative shell);
+   - a core-concepts article: each concept in the order it builds on the others, why it exists, a compiled example, the API it maps to, and a summary table; a timeline picture for a hold and for a supersede;
+   - a comparison article: the lobby as a plain actor (the hazard, forced with a hold and asserted), fixed by hand with a `GenerationTable` ticket, and on the core; all three compiled as tests;
+   - a "How it's tested" section that introduces representative tests as examples.
+
+   A bilingual pair `docs/turns/README.md` and `docs/turns/README.zh-TW.md` summarizes the DocC (the maintainer asked for a Chinese version), with its excerpts under the same check. A `docs/` architecture page for the adapter comes with #546's first slice, when `TransportAdapter` adopts the core.
 
 If Review finds the PR too large, the split is (1–4, 6's snippets for `Turn`, `perform` and the holding deadline, 7) then (5, the PlainData snippets, the lints), then (8). Each part is green on 6.2.4 in both configurations; the merge conditions (§8) apply to the last.
 
