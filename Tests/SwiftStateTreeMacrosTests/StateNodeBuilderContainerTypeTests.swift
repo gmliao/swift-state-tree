@@ -5,6 +5,11 @@
 // dictionary, a labeled tuple, a generic argument with two parameters) was split at the first
 // separator, so the helpers got broken key and element types and the expansion didn't parse
 // (#582). Each spelling here must expand to valid Swift with the helpers typed as written.
+//
+// Before the fix four of these cases failed: `[[String: Int]]`, `[(a: Int, b: Int)]`,
+// `Dictionary<Pair<Int, Int>, Int>` and `[[String: Int]: Int]`. In the others the first separator
+// is the top-level one, or the type isn't a container (an optional, a qualified `Swift.` name),
+// so they guard that the syntax-tree classification matches the old one.
 
 import SwiftSyntaxMacros
 import Testing
@@ -72,6 +77,23 @@ struct StateNodeBuilderContainerTypeTests {
             fieldType: "Set<Pair<Int, Int>>",
             helpers: ["public mutating func insertItems(_ element: Pair<Int, Int>) -> (inserted: Bool, memberAfterInsert: Pair<Int, Int>)"],
             absentHelpers: ["func appendItems", "func updateItems"]
+        ),
+        Case(
+            fieldType: "[[String: Int]: Int]",
+            helpers: ["public mutating func updateItems(_ value: Int, forKey key: [String: Int])"],
+            absentHelpers: ["func appendItems"]
+        ),
+        // Not a container field: an optional gets no helpers.
+        Case(
+            fieldType: "[[String: Int]]?",
+            helpers: [],
+            absentHelpers: ["func appendItems", "func updateItems", "func insertItems"]
+        ),
+        // A module-qualified name isn't matched (unchanged behavior).
+        Case(
+            fieldType: "Swift.Dictionary<String, Int>",
+            helpers: [],
+            absentHelpers: ["func appendItems", "func updateItems", "func insertItems"]
         ),
     ]
 

@@ -1,8 +1,15 @@
 // Tests/SwiftStateTreeTests/NestedContainerFieldTests.swift
 //
-// Compiled fixture for #582: @StateNodeBuilder fields whose element type is itself a literal
-// container (or has its own `:` / `,`) must expand to helpers that compile with the element
-// and key types as written, mark the field dirty, and survive a broadcast snapshot round trip.
+// Compiled fixture for #582. Each @StateNodeBuilder field here has an element type that is
+// itself a literal container, or that has its own `:` or `,`. The fixture checks four things:
+// - the generated helpers compile with the element and key types as written;
+// - each helper marks its field dirty, and `clearDirty()` clears it;
+// - `snapshotForSync`'s broadcast part equals `broadcastSnapshot()` (its container branch);
+// - a broadcast snapshot decodes back to the same values.
+// Together these reach every caller of the macro's container classification: the helpers,
+// `snapshotForSync` and `clearDirty`. For a container both of `snapshotForSync`'s branches
+// give the same values at run time, and so do both `clearDirty` choices. Which branch was
+// generated is pinned by the expansion golden in `StateNodeBuilderContainerTypeTests`.
 
 import Testing
 @testable import SwiftStateTree
@@ -22,39 +29,73 @@ struct NestedContainerFieldState: StateNodeProtocol, StateFromSnapshotDecodable 
 
 @Suite("Nested container fields (#582)")
 struct NestedContainerFieldTests {
-    @Test("Array helpers take the inner dictionary as the element type")
+    /// Runs `mutate` on a clean state and expects exactly `field` dirty afterwards.
+    private func expectMarksOnly(
+        _ field: String,
+        _ state: inout NestedContainerFieldState,
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ mutate: (inout NestedContainerFieldState) -> Void
+    ) {
+        state.clearDirty()
+        #expect(state.getDirtyFields().isEmpty, sourceLocation: sourceLocation)
+        mutate(&state)
+        #expect(state.getDirtyFields() == [field], sourceLocation: sourceLocation)
+    }
+
+    @Test("Array helpers take the inner dictionary as the element type, and each marks its field")
     func arrayOfDictionariesHelpers() {
         var state = NestedContainerFieldState()
-        state.appendMaps(["a": 1])
-        state.insertMaps(["b": 2], at: 0)
-        state.appendGenericMaps(["c": 3])
+        expectMarksOnly("maps", &state) { $0.appendMaps(["a": 1]) }
+        expectMarksOnly("maps", &state) { $0.insertMaps(["b": 2], at: 0) }
         #expect(state.maps == [["b": 2], ["a": 1]])
-        #expect(state.removeMaps(at: 0) == ["b": 2])
+        expectMarksOnly("maps", &state) { #expect($0.removeMaps(at: 0) == ["b": 2]) }
+        expectMarksOnly("genericMaps", &state) { $0.appendGenericMaps(["c": 3]) }
+        #expect(state.maps == [["a": 1]])
         #expect(state.genericMaps == [["c": 3]])
-        #expect(state.getDirtyFields().isSuperset(of: ["maps", "genericMaps"]))
     }
 
-    @Test("Dictionary helpers take the inner container as the value type")
+    @Test("Dictionary helpers take the inner container as the value type, and each marks its field")
     func dictionaryOfContainersHelpers() {
         var state = NestedContainerFieldState()
-        state.updateGrid([1: 10], forKey: "row")
-        state.setBuckets([["x": 1]], forKey: "k")
-        state.updateNested(["y": 2], forKey: "n")
+        expectMarksOnly("grid", &state) { $0.updateGrid([1: 10], forKey: "row") }
+        expectMarksOnly("grid", &state) { $0.setGrid([2: 20], forKey: "col") }
+        expectMarksOnly("grid", &state) { #expect($0.removeGrid(forKey: "col") == [2: 20]) }
+        expectMarksOnly("buckets", &state) { $0.setBuckets([["x": 1]], forKey: "k") }
+        expectMarksOnly("nested", &state) { $0.updateNested(["y": 2], forKey: "n") }
         #expect(state.grid == ["row": [1: 10]])
-        #expect(state.removeGrid(forKey: "row") == [1: 10])
         #expect(state.buckets == ["k": [["x": 1]]])
         #expect(state.nested == ["n": ["y": 2]])
-        #expect(state.getDirtyFields().isSuperset(of: ["grid", "buckets", "nested"]))
     }
 
-    @Test("Labeled tuple elements and values keep their labels")
+    @Test("Labeled tuple elements and values keep their labels, and each helper marks its field")
     func labeledTupleHelpers() {
         var state = NestedContainerFieldState()
-        state.appendPairs((a: 1, b: 2))
-        state.updateLabeled((a: 3, b: 4), forKey: 7)
+        expectMarksOnly("pairs", &state) { $0.appendPairs((a: 1, b: 2)) }
+        expectMarksOnly("labeled", &state) { $0.updateLabeled((a: 3, b: 4), forKey: 7) }
         #expect(state.pairs.count == 1 && state.pairs[0].a == 1 && state.pairs[0].b == 2)
         #expect(state.labeled[7]?.b == 4)
-        #expect(state.getDirtyFields().isSuperset(of: ["pairs", "labeled"]))
+    }
+
+    @Test("snapshotForSync's broadcast part equals broadcastSnapshot, and clearDirty clears every field")
+    func snapshotForSyncAndClearDirty() throws {
+        var state = NestedContainerFieldState()
+        state.appendMaps(["a": 1])
+        state.appendGenericMaps(["c": 3])
+        state.updateGrid([1: 10], forKey: "row")
+        state.updateBuckets([["x": 1], [:]], forKey: "k")
+        state.updateNested(["y": 2], forKey: "n")
+        state.appendPairs((a: 1, b: 2))
+        state.updateLabeled((a: 3, b: 4), forKey: 7)
+
+        let sync = try state.snapshotForSync(playerIDs: [], dirtyFields: nil)
+        let broadcast = try state.broadcastSnapshot()
+        #expect(sync.broadcast.values == broadcast.values)
+        #expect(Set(broadcast.values.keys) == ["maps", "genericMaps", "grid", "buckets", "nested"])
+
+        #expect(state.getDirtyFields() == ["maps", "genericMaps", "grid", "buckets", "nested", "pairs", "labeled"])
+        state.clearDirty()
+        #expect(state.getDirtyFields().isEmpty)
+        #expect(!state.isDirty())
     }
 
     @Test("Broadcast snapshot of nested containers decodes back to the same values")
