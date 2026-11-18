@@ -47,8 +47,8 @@ The parser's limit was sized for the parser, not for the stages after it. Their 
 - One nesting limit for every client frame and encoding: `PayloadNesting.clientFrameMaxDepth`, 32. A client's MessagePack frames unpack at it too (`TransportCodec.decodeClientFrame`). Frames the server builds keep the unpacker's default of 64 (`serverFrameMaxDepth`): that's the developer's own state, and a lower limit there would restrict what a game can model. A test pins both and their relation.
   - The edge, measured on macOS (Swift 6.3.x, debug, a 544 KiB cooperative-pool stack, one process per depth): the decode chain survives JSON nested 112 deep and overflows at 128. MessagePack at 64 survived. 64 would have left under 2× headroom; 32 leaves about 3.5×.
   - The deepest real frame in the example lands is 7 levels: a 4-level payload in 3 levels of frame.
-- JSON from a client is depth-checked before it is parsed. `PayloadNesting.checkJSON` is a one-pass byte scan that counts `[` and `{` outside strings. It runs at the router's handshake and post-handshake decodes and in the adapter's decode pipeline, and for a 2.x JSON record at the 3.x record limit.
-- Every payload is checked again before its re-encode (`PayloadNesting.check`, an iterative walk), whatever its source: a frame, or a recorded action replayed.
+- JSON from a client is depth-checked before it is parsed, once per decode. `PayloadNesting.checkClientJSON` skips what the parser skips, then `checkJSON` runs a one-pass byte scan that counts `[` and `{` outside strings. It runs at the router's handshake and post-handshake decodes and in the adapter's decode pipeline, so a frame the router forwards is scanned twice, once for each of its two parses. A 2.x JSON record is scanned at the 3.x record limit.
+- Every payload is checked again before its re-encode (`PayloadNesting.check`, a walk that stops past the limit), whatever its source: a frame, or a recorded action replayed.
 
 ## Prevention
 

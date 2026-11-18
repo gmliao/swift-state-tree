@@ -584,7 +584,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let transportMsg: TransportMessage
         // Check if message is JSON (starts with { or [)
         if firstByte == 0x7b || firstByte == 0x5b {  // '{' or '['
-            // Checked once before anything parses it (#362); the decodes below don't check again.
+            // Checked before this decode parses it (#362); the decodes below don't check again.
             try PayloadNesting.checkClientJSON(message)
             // Try JSON opcode array format first
             if let json = try? JSONSerialization.jsonObject(with: message),
@@ -627,9 +627,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         logger: Logger
     ) throws -> PostHandshakeFrameDecode {
-        // With a JSON codec every frame is checked once, before anything parses it (#362), and
-        // the decodes below don't check again. A MessagePack codec unpacks at the client limit
-        // (`decodeClientFrame`); the sync ack parser checks its own JSON form.
+        // With a JSON codec every frame is checked before this decode parses it (#362), and the
+        // decodes below don't check again. A forwarded frame is checked again by the adapter's
+        // pipeline, which decodes it again: once per decode, not once per frame. A MessagePack
+        // codec unpacks at the client limit (`decodeClientFrame`); the sync ack parser checks its
+        // own JSON form.
         if codec.encoding != .messagepack {
             try PayloadNesting.checkClientJSON(message)
         }

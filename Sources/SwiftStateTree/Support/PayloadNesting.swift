@@ -8,8 +8,9 @@ import Logging
 /// `InboundPayloadDecoding`, the payload type's decode, the recorder's conversion. Swift
 /// Concurrency's cooperative threads on Darwin have a 544 KiB stack, and at Foundation's JSON
 /// limit (512 levels) the re-encode overflows it, in debug and in release. So:
-/// - a client frame that may reach a JSON parser is checked once, before any parse
-///   (`checkClientJSON`), and MessagePack from a client unpacks at the same limit;
+/// - a client frame that may reach a JSON parser is checked once per decode, before the parse
+///   (`checkClientJSON`): a frame the router forwards is checked by the router and again by the
+///   adapter's pipeline. MessagePack from a client unpacks at the same limit;
 /// - a 2.x JSON record is checked the same way, at the record limit;
 /// - every payload is checked again before its re-encode, whatever its source (`check`).
 ///
@@ -38,7 +39,7 @@ package enum PayloadNesting {
         package var description: String { "Not UTF-8 JSON the nesting check can read: \(reason)" }
     }
 
-    /// Checks a client frame that may reach a JSON parser, once, before any parse. Foundation
+    /// Checks a client frame that may reach a JSON parser, before the parse. Foundation
     /// reads JSON after leading whitespace and a BOM, and in UTF-16 or UTF-32 too; so:
     /// - leading ASCII whitespace and a UTF-8 BOM are skipped, as the parser does;
     /// - a frame that then starts like UTF-16 or UTF-32 (a 0x00, 0xFE or 0xFF byte) is refused,
@@ -120,9 +121,11 @@ package enum PayloadNesting {
 
     /// Throws `TooDeep` when `value` (an `AnyCodable`'s `base`: arrays, string-keyed
     /// dictionaries, `AnyCodable`s and leaves) has containers nested deeper than `limit`. It
-    /// recurses at most `limit + 1` calls deep, so it can't overflow on the value it refuses, and
-    /// allocates nothing for the values a client's data decodes to (`[Any]`, `[String: Any]`).
-    /// An `AnyCodable` counts as its base, at the same depth.
+    /// recurses once per container level and once per `AnyCodable` wrapper, which counts as its
+    /// base, at the same depth. A client's decoded data wraps each element at most once, so on it
+    /// the recursion stays within about twice the limit and can't overflow on the value it
+    /// refuses; only server code builds longer chains of wrappers. It builds no intermediate
+    /// values; a Foundation container bridged to `[Any]` or `[String: Any]` may still allocate.
     package static func check(_ value: Any, limit: Int = clientFrameMaxDepth) throws {
         if !fits(value, depth: 0, limit: limit) { throw TooDeep(limit: limit) }
     }
