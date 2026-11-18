@@ -1,6 +1,6 @@
 # Typed server events and client actions, without AnyCodable (#521)
 
-**Status:** rev 7; rev 6 reviewed GO (2026-11-13). No code before this plan is reviewed.
+**Status:** rev 10, for review: D14 and D15 decided (2026-11-18), with a new PR 1f before PR 1b. Rev 6 reviewed GO (2026-11-13). PR 0 (#540) and PR 1a (#559) are merged. No PR 1b code before rev 8 is reviewed.
 - Read at `main` 882cabe7; the cited lines are unchanged at 06125d40. Each fact is marked **checked** (read in the code or run) or **inferred** (reasoned, to be pinned by a test in the PR).
 - **Rev 2** answers review of rev 1: the handler lookup (M1), record payloads (M2), non-finite numbers (M3), replay loading (M4), the replay land's registry (M5), `Sendable` (M6), `PendingActionItem` (M7), the unit for untyped events (M8), EV5's bound (M9), what a failed cycle has already sent (M10), and the shoulds. Decisions review settled are recorded as such (§10). Those left to the maintainer are D1, D7, D9, D13 and the compatibility exceptions N3, N7–N10.
 - **Rev 3** answers review of rev 2:
@@ -25,6 +25,29 @@
   - the N3 scan has a manifest and totals, and can't report "zero rejected" with anything unscanned (M4);
   - the shoulds, and `position` on each `LandFailure` this plan builds.
 - **Rev 7**, after the GO: the `Void` ACK pinned per encoding, excluded ticks reported as information, and the `docs/core/failure-handling.md` row each PR flips (§9).
+- **Rev 8**, before PR 1b. It records the decision of 2026-11-18 on #521 (§10) and the drift since rev 7, read at `main` a42b481c:
+  - **The decision:** the replay land re-emits recorded server events typed. It resolves each recorded name through the land definition's event registry, decodes the payload into that type and emits it with `emitEvent`. A payload that doesn't decode is a record/code mismatch: it is reported and fails fast, never forwarded. `LandContext.emitAnyServerEvent` is deleted in the same PR, with no deprecation. So land code has no way left to emit an untyped server event (N5, EV7, §4, §6).
+  - **#535's mechanism is merged** (#580): `LandFailure`, `submitLandFailure`, 4016 and the loss path for an event that reaches no frame (#535 row 17). The event-encode row of `docs/core/failure-handling.md` is current (EV4). So PR 3 folds into PRs 1b and 2, as §9 already allowed.
+  - **#590** (open, GO, closes #544) makes the positional encoders throw `UntypedPayloadError` instead of trapping on a value that isn't a payload type. An untyped event ends its land with `.eventEncode`; an action response that isn't a payload type ends it with `.responseEncode`. The crash EV7 and N5 kept until PR 3 is gone. Under this decision #590's refusal stays as a backstop for framework bugs only.
+  - **Action responses:** #586 (#591, open) constrains a handler's result to `A.Response`. That is not in this plan's PRs.
+  - **#593:** the client-event decode failure handling folds into PR 2 (A3), not PR 1b.
+  - **New in the same path (checked):** the runner reads a tick's recorded events with `(try? await source.getServerEvents(for: tickId)) ?? []` (`ReevaluationRunnerImpl.swift:352`). A read error therefore looks like a tick with no recorded events. PR 1b fails the run on it (A9).
+  - **Where the mismatch is reported (D14, for review):** a tick handler is non-throwing (`LandDefinition.swift:85`) and has no way to end its land. So the replay land fails the verification run through its runner service; it doesn't end itself (§4).
+- **Rev 9** answers review of rev 8. These parts don't depend on D14:
+  - **M2:** A9 also covers the recorded state hash. `try? await source.getStateHash(for:)` (`ReevaluationRunnerImpl.swift:332`) turns a read error into nil, and a nil recorded hash counts as a match (:338-346). Both reads now fail the run.
+  - **S1:** two more silent skips in the same tick are now rows:
+    - A10, the runner's snapshot encode (`try?`, :324);
+    - A11, the replay land's state decode (`GenericReplayLand.swift:89-107`).
+  - **S2:** the two descriptor closures get distinct names, `decodeServerEvent` (PR 1b) and `decodeClientEvent` (PR 2), and one rule: both take `any PayloadDecodingSource`. PR 1b adds the protocol and its `AnyCodable` source; PR 2 adds the MessagePack source (§2.4, §4).
+  - **S4:** `requestSyncBroadcastOnly()` is listed among the steps after the events resolve.
+  - **Nits:**
+    - a descriptor without `decodeServerEvent` is unreachable from the DSL, and a test asserts it;
+    - PR 1b is cut from `main` after #590 (85c9c297).
+  - **D14:** review proposes (a′): resolve the recorded payloads in the runner's async `step()`, so the tick gets typed values and can't fail. It is with the decision-maker, together with a sub-point: decode every recorded event, or only those the policy selects. M1 (an in-flight step still queues after `failRun`) and S3 (a synchronous seam for the stale-ticket test) belong to (a) and wait for it. §4's run-failure text is (a)'s until then.
+- **Rev 10** records two decisions of 2026-11-18 (§10):
+  - **D14 = (a′), every recorded event decoded.** The runner resolves the tick in its async `step()`: its state, every recorded server event (not only the ones the policy selects) and the projected events. A mismatch throws a typed error, and the service's existing catch sets `.failed` under the run's ticket, so the loop stops and nothing after that tick is queued. The result carries typed values, so the replay tick can't fail (§4). This drops `consumeNextResultWithTicket`, `failRun` and the stale-ticket seam, and with them M1 and S3. A9, A10 and A11 fail in the same place, the same way. By decision, a record with any event that doesn't decode now fails even under `.projectedOnly`.
+  - **D15 = a strict schema fingerprint in the record** (§4.1). A stable hash of the land's types and fields, compared before the first step; a mismatch refuses the replay. It is a record-format change (3.5). Records without it are refused (reasoning in §4.1). It lands as **PR 1f**, its own small PR before PR 1b (§9).
+  - **Found while writing it (checked):** the record-and-code check today is `validateReplayCompatibility` (`ReevaluationRunnerImpl.swift:369-396`). It compares the land type, `landDefinitionID` (the land's `id` string) and the format version. The admin replay start has its own copy (`NIOAdminRoutes.swift:708-730`), and `ReevaluationEngine.run` checks the version only (:219). SchemaGen doesn't cover server inputs (`git grep -i serverInput Sources/SwiftStateTree/SchemaGen` finds nothing), so the fingerprint adds them (§4.1).
 - **Order (#521):** after the `@Sync` wrapper changes (#519 merged; #520 merged as #527) and a fresh profile of main (§0).
 - **Error rule:** #535 and its scope decision (2026-11-13). A failure that can't be brought back to fully correct ends the smallest unit it corrupted: a session when only that session's output is wrong, the land when every recipient's output or the land's state is wrong. A type error knowable at registration is refused there. No absorb-and-continue path is added. A malformed input from a client is a client input error: the input is rejected as today, and nothing else ends.
 
@@ -101,7 +124,7 @@ Each event is encoded once, before fan-out, on every path except the hybrid conf
 | Replay comparison | `ReevaluationEngine.serverEventsMatch` (`ReevaluationEngine.swift:389-410`) | sorted-key JSON of recorded vs emitted payloads. An encode failure becomes `Data()` on both sides, so two unencodable payloads compare equal |
 | Replay input loading | `LandKeeper.swift:4099-4256` | a recorded action whose type has no handler, or whose handler type isn't an `ActionPayload`, is logged and skipped (`continue`, :4126-4139). Any error while loading the tick's inputs is logged and the tick runs without them (:4251-4256). Unknown server inputs and lifecycle kinds, by contrast, fail the tick (`recordedPassMismatches`, :4189-4194, :4217-4222) |
 | Replay land | `GenericReplayLand.makeLand` (`GenericReplayLand.swift:47-70`) | a new `Land` with the base's ID, access control and tick; **no `ServerEvents` registry** |
-| Replay re-emit | `GenericReplayLand` (:126-129) → `emitAnyServerEvent` | `AnyServerEvent(type:payload:)` from a result. With `replayEventPolicy: .projectedWithFallback` (public, `ReevaluationFeature.swift:8-27`; the examples use `.projectedOnly`), a tick that emitted no events re-emits the recorded ones (`selectReplayEventsToEmit`, :11-24). Those come from the record source (`ReevaluationRunnerImpl.swift:306`), so the payload is a decoded dictionary. On a compressed encoding it reaches `encodePayloadAsArray`'s `fatalError` (inferred; pinned by a red exit test, §7) |
+| Replay re-emit (until PR 1b; §4 has the typed re-emit) | `GenericReplayLand` (:126-129) → `emitAnyServerEvent` | `AnyServerEvent(type:payload:)` from a result. With `replayEventPolicy: .projectedWithFallback` (public, `ReevaluationFeature.swift:8-27`; the examples use `.projectedOnly`), a tick that emitted no events re-emits the recorded ones (`selectReplayEventsToEmit`, :11-24). Those come from the record source (`ReevaluationRunnerImpl.swift:306`), so the payload is a decoded dictionary. On a compressed encoding it reaches `encodePayloadAsArray`'s `fatalError` (inferred; pinned by a red exit test, §7) |
 | Sync-stream digest | `TransportAdapter.canonicalEvent` (:3988-3992), `SyncOutputVerifier.addEvents` (`SyncOutputVerifier.swift:292-299`) | `SnapshotValue.make(from: payload.base)`, only when the keeper records the sync stream |
 | Schema | `SchemaExtractor.swift:106-143` | event types and names only; no payload values |
 
@@ -232,7 +255,7 @@ package protocol PayloadDecodingSource: Sendable {
 - **Replay keeps its own two predicates.** A recorded action is matched with the exact and basename indexes only, on `name(h)`, as :4110-4124 does today.
 - **Erased handlers are validated at registration.** Each action handler's `getActionType()` must be an `ActionPayload` type, and each client-event handler's type must match its registry descriptor. Today the first check runs per input (:2715-2717, `actionNotRegistered`) and in replay (:4133-4139, a skip). It becomes a registration refusal (A8). The per-input check stays as an invariant (A7).
 
-**Client events (D2, settled (a))** take the same source and decode, at intake, through a decode closure the registry captures at `Register<E>`: `AnyEventDescriptor` (`EventRegistry.swift:6`) gains a package-level `decode: @Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload`. The handler receives the typed value. A payload that doesn't decode is rejected at intake with an error to the client, as for an action. Today it is silently skipped at apply (§1.3).
+**Client events (D2, settled (a))** take the same source and decode, at intake, through a decode closure the registry captures at `Register<E>`: `AnyEventDescriptor` (`EventRegistry.swift:6`) gains a package-level `decodeClientEvent: @Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload` (PR 2; the server-event closure is `decodeServerEvent`, PR 1b, §4). The handler receives the typed value. A payload that doesn't decode is rejected at intake with an error to the client, as for an action. Today it is silently skipped at apply (§1.3).
 
 **Records are built only when something reads them.** Today the action and client-event records are built on every apply (:3434-3445, :3488-3498), recording or not. They are built when the keeper has a recorder or runs in reevaluation mode, from the record payload made at intake. `appliedOrder` is kept either way, since the tickless pass record and the turn's emptiness use it (:3751-3753, :5007).
 
@@ -254,7 +277,7 @@ package protocol PayloadDecodingSource: Sendable {
 - **(N2) A malformed client event is rejected with an error,** and not recorded. Today it is accepted, recorded and silently not applied (§1.3).
 - **(N3) Records written before this change that hold a malformed client event fail replay (N3 (b)).** The staged batch (§4) refuses the event as any undecodable recorded input: the tick fails and the run stops failed, with the sequence and type. No version gate. A new record never holds one, since intake rejects it (N2). The count in the cited record sets is measured before PR 2 merges (§9).
 - **(N4) Types that crash today are refused instead** (EV1 for a type without the writer). Today the process hits `fatalError` at that type's first send.
-- **(N5) Replay re-emit of a recorded event as a dictionary** works on compressed encodings, through the base land's registry (§4). Today it is a `fatalError` (inferred). PR 1b removes the crash only for records whose event name is registered and whose payload decodes. An unregistered name or an undecodable dictionary is EV7, which keeps today's crash until #535's stop exists (PR 3).
+- **(N5) The replay land re-emits recorded server events typed** (the decision on #521, 2026-11-18). Each recorded name is resolved through the base land's registry, its payload is decoded into that type, and the event goes out through `emitEvent`. So its frame is byte-identical to the live one on every encoding (§4). Before #590, a recorded dictionary reached the positional encoders' `fatalError`; with #590 it ends the replay land with `.eventEncode`. An unregistered name or a payload that doesn't decode is a record/code mismatch (EV7): the run fails with the reason, and nothing of that tick is sent.
 - **(N6) The failure outputs** change as §5 says.
 - **(N7) A hand-written `encodeAsArray()` (settled by D13 (b)).** The protocol requirement is gone, so such a method is an unused method of the type. A type without the writer is refused at registration where EV1 applies; the refusal names the fix: add `@Payload`, or implement both `_writePayloadFields(into:)` and `static var _payloadHasTypedWriter: Bool { true }` (the default is `false`, so a writer alone is still refused).
 - **(N8) A registered event missing from the host's `eventHashes` (EV3, N8 (a)).** Today it is sent with its string name, which a client built from that schema doesn't know. Under this plan it is refused at registration.
@@ -274,11 +297,74 @@ package protocol PayloadDecodingSource: Sendable {
 - **`serverEventsMatch`:** compares as today, sorted-key JSON of both payloads. Under #535's rule, an encode failure on either side is a mismatch with its error as the reason, not `Data()` on both sides (§1.4).
 - **The replay land's event registry (M5).** `GenericReplayLand.makeLand(basedOn:)` copies the base definition's server-event descriptors into the replay land's `serverEventRegistry`, through a package-level hook on the land builder. So the replay land registers the same event types, names and decode closures as the base.
   - **Registration checks EV1–EV3** run on the replay land as on any land. Its registry equals the base's, and `registerWithGenericReplay` gives it the live land's configuration and `eventHashes` (`ReevaluationFeature.swift:225-250`). So it passes exactly when the base did. `makeLand` called on its own is checked against the configuration it is registered with.
-- **Replay re-emit:** `emitAnyServerEvent` resolves an untyped event once, at emit:
-  - If its payload is a concrete payload value, it is cast once to `any ServerEventPayload` and written typed.
-  - If it is a dictionary, it is looked up by name in the land's registry (the base's, above), decoded into that type, then written typed.
-  - A name the registry doesn't know, or a dictionary that doesn't decode, ends the land (EV7).
+- **The decode closure (S2).** Each server-event descriptor gains a package `decodeServerEvent: @Sendable (any PayloadDecodingSource) throws -> any ServerEventPayload`. It follows the same rule as the client-event closure of PR 2, `decodeClientEvent` (§2.4): both decode through a `PayloadDecodingSource`.
+  - **What PR 1b adds:** the protocol and its `AnyCodable` source, today's JSON semantics, the one a record's payload needs. PR 2 adds the MessagePack source and the client-event closure.
+  - **How it is built:** the builder registers server events through `registerErased(_:)` with an `Any.Type` (`LandBuilder.swift:149`). So the closure is made by opening the type as `any ServerEventPayload.Type` and calling a generic helper. A type that doesn't open isn't a server event and gets no closure; on a compressed encoding, EV1 already refuses it.
+  - **The `AnyCodable` source for `E`:**
+    - a payload whose base is already `E` is taken as is, with no round trip; the projected events of an in-process run hold the typed value (`LandKeeper.swift:521-546`);
+    - otherwise it encodes the payload with `JSONEncoder` and decodes `E` with `JSONDecoder`. A record's payload is the event's own JSON, so this is the record's semantics.
+  - **Pinned:** the frames this gives are byte-identical to the live ones (§7). Any type for which they differ is named in the PR as an N item.
+- **Resolving in the runner's `step()` (D14 (a′)).** `ConcreteReevaluationRunner.step()` already reads the record (the hash at :332, the events at :352) in its async body. After those reads it resolves the tick, through one public throwing function, `ReevaluationReplayFrame.resolve(...)`. Custom runners call the same function (the repository's test fakes do).
+  - **Events:** every recorded server event, and every projected one, is looked up by `typeIdentifier` in the base definition's registry (the runner's keeper holds the definition, `LandKeeper.swift:290`). Its payload goes through that descriptor's `decodeServerEvent`, with an `AnyCodable` source. A projected event already holds its typed value, so it is taken without a round trip. Every recorded event is decoded, not only the ones the policy would select (the decision): a record that holds one that doesn't decode fails under `.projectedOnly` too.
+  - **State:** the snapshot of the runner's state is encoded (A10) and then built back as `State(fromBroadcastSnapshot:)` (A11), in `step()`.
+    - The runner is generic over `StateNodeProtocol`, and `GenericReplayLand` needs `StateFromSnapshotDecodable`. So the runner opens `State.self as? any StateFromSnapshotDecodable.Type`, a cast on a metatype, not on data, and calls the generic resolver.
+    - A state type that doesn't conform has no replay land (`GenericReplayLand<State: StateFromSnapshotDecodable>`), so its frame carries the events and no state.
+  - **A mismatch throws** `ReevaluationReplayResolutionError`, with the tick, the event's sequence and name, and the decode error; for A9–A11 it names the read, the encode or the state decode instead.
+    - It leaves `step()` and reaches the service's existing catch (`ReevaluationRunnerService.swift:166-172`). That catch sets `phase = .failed` and `errorMessage` under the run's ticket, and the loop ends.
+    - Nothing after that tick is queued, and the tick itself isn't queued either.
+    - The replay land stays up and gets no further results. The admin status reports the failed run and its reason.
+  - **The result carries the frame:** `ReevaluationStepResult` gains a public optional `replayFrame: ReevaluationReplayFrame?`. The frame's stored members are package:
+    - the resolved recorded events and the resolved projected events, each with its target;
+    - the decoded state, in a package box.
+- **Replay re-emit (typed); the tick can't fail.** The tick takes the frame and does three things, in this order (S4):
+  1. it sets `state` to the frame's state;
+  2. it calls `ctx.requestSyncBroadcastOnly()`;
+  3. it emits each event `selectReplayEventsToEmit` picks from the frame's resolved lists with `ctx.emitEvent(_:to:)`, in record order, each with its target.
+  - **The state box:** `GenericReplayLand<State>`, the runner and `registerWithGenericReplay<State>` share one `State` type. The box's state is made by the generic resolver for that `State`, and the land reads it with `as? State`. That cast is the one erased step left. A failure is unreachable, and a test asserts it.
+  - **A result without a frame,** from a custom runner that didn't resolve, is refused by the service when it is queued: the run fails with "result not resolved". So the land never sees one.
+- **Every replay entry point fails the same way:**
+  - the admin replay start: the record's fingerprint, before a land exists (§4.1);
+  - the runner: the fingerprint before the first step, then the frame in each `step()`;
+  - `ReevaluationEngine.run`: the fingerprint, and the same frame resolution for the events it compares.
+- **`emitAnyServerEvent` is removed** in PR 1b (§6). Its only caller is the replay land (checked: `git grep emitAnyServerEvent` at a42b481c finds `LandContext.swift:240` and `GenericReplayLand.swift:129`).
 - **Sync-stream digests** (`canonicalEvent`, `SyncOutputVerifier.addEvents`): unchanged. They read `payload.base`, which is still the event.
+
+### 4.1 The record's schema fingerprint (D15, PR 1f)
+
+**Why.** Today a record is checked against the code by land type, `landDefinitionID` and format version only (`ReevaluationRunnerImpl.swift:369-396`). `landDefinitionID` is the land's `id` string, not its shape. So a change to an event's, an action's or the state's fields passes the check, and the replay then fails partway through, or passes on a meaning that changed. The fingerprint refuses such a record before the first step. The per-event decode of D14 stays as the last guard, for framework bugs and corrupt records.
+
+**What it hashes.** It is derived from the source SchemaGen uses, so it is deterministic across processes and platforms:
+- **The schema:** the land's `ProtocolSchema` from `SchemaExtractor.extract(from:)` for the definition, with a fixed version string. That covers the state tree (the types, the fields, their sync policies and their default values), the actions and their responses, the client events, the server events and their `defs`.
+- **Server inputs:** each registered server input's name and the JSON schema of its payload type, through the same `TypeToSchemaConverter`. SchemaGen leaves them out (above).
+- **Left out:**
+  - every `description`, since documentation text doesn't change what replays;
+  - the root `x-stateTree` wire form, since it describes the build's wire and not the land.
+- **The hash:** sorted-key JSON of the parts above, then `DeterministicHash.fnv1a64` as 16 hex digits, the same function as `ProtocolSchema.computeHash()`.
+  - A format tag, `"fp1"`, is part of the hashed input. A change to the rule bumps the tag, and the new value can never equal an old one.
+  - The fingerprint is cached per definition type and computed once per recorded land, off the tick path.
+
+**Written and checked:**
+- The recorder writes `ReevaluationRecordMetadata.schemaFingerprint` from the keeper's definition, in the same place it forces `version` (`ReevaluationRecorder.setMetadata`). A definition whose schema can't be extracted can't be registered either, so this is unreachable for a hosted land. A directly built keeper whose schema throws gets no fingerprint, logs it, and its record is refused at replay.
+- The check runs at the admin replay start (`NIOAdminRoutes.swift:708-730`), in the runner before the first step (`ReevaluationRunnerImpl.swift:117`, `:186`), and in `ReevaluationEngine.run` (:219). Each compares the record's fingerprint with the current definition's. On a mismatch it throws `ReevaluationReplayCompatibilityError.schemaFingerprintMismatch(recorded:current:)`, and the admin route returns it as its replay-start error.
+
+**Format: 3.5.** `ReevaluationRecordVersion.current` becomes 3.5, with the field. A 3.4 build already refuses a newer minor (`isReadable`, since 3.2).
+
+**Records without a fingerprint (before 3.5, or a 3.5 record without the field): refused.** They are refused with `ReevaluationReplayCompatibilityError.schemaFingerprintMissing(recordedVersion:)`, kept apart from the mismatch, so a tool can tell "re-record" from "the code changed". The reasoning:
+- **It is the failure D15 exists to stop.** A record without a fingerprint can't be shown to match the code. Replaying it with a warning would print a verdict on a record nobody can check, which is the absorb-and-continue path #535's rule forbids.
+- **The precedent:** records before 2.5 are already refused as unsupported, "not comparable, never a mismatch: re-record them" (`ReevaluationRecordVersion.minimumSupported`). This is the same class.
+- **Foundation before release:** no record outside this repository and its measurement data needs to keep replaying. Published experiment data names its git SHA (`meta.git_sha`), and is reproduced by replaying at that SHA, not with a later build.
+- **The cost, stated:**
+  - the committed record fixtures are re-recorded in PR 1f: `Examples/GameDemo/reevaluation-records/{1,2,3}-hero-defense.json`, plus every record a test builds in code (the PR lists them);
+  - the version-dependent replay branches before 3.5 can no longer be reached from replay. Readers that don't replay still use them (the JSONL exporter, the record log reader). Removing them is a follow-up issue, not this PR.
+- **The rejected alternative, allowing with a warning,** is what today's `landDefinitionID` check amounts to for a changed field.
+
+**Its effect on N3 (an open point for review).** Under D15, a record from before PR 2 has no fingerprint (PR 1f is earlier), so it is refused whatever client events it holds. So N3 (b)'s case can't be reached by replay any more, and PR 2's scan of the cited record sets (§9) no longer guards anything replay does. **Proposed:** drop the scan from PR 2. Keep N3's intake rule, and a test that a pre-3.5 record is refused as `schemaFingerprintMissing`.
+
+**PR 1f, before PR 1b, on its own. Why:**
+- it is a record-format change with its own review surface: the version bump, refusing old records, the re-recorded fixtures and the admin route's error;
+- it is independent of the event writer, and PR 1b's decode doesn't depend on it to be correct, since the decode is the last guard;
+- landing it first means PR 1b's mismatch tests build records that pass the fingerprint and carry a corrupt payload, which is the case the decode guards;
+- the fixtures' re-recorded diff would otherwise bury PR 1b's logic.
 
 ## 5. Error paths under #535's scope rule
 
@@ -289,7 +375,10 @@ package protocol PayloadDecodingSource: Sendable {
 | EV3 | The host passes `eventHashes`, and a registered event type is missing from it | sent with its string name (N8) | refused at land registration (the table and the land disagree) | registration |
 | EV4 | A registered event's value fails to encode (a fallback field that throws; a non-finite number under `JSONEncoder`; an unsupported value or map key), any target | 107: no body, then the standalone frame fails too: logged, `.lost`. Otherwise logged and dropped (TA :3026-3032) | the failing event and everything after it in that cycle (its later events, its state update) aren't sent. Events of the cycle enqueued before it may already be out (§1.1). The land is stopped through #535's path (`LandFailure`, kind `.eventEncode`; its sessions closed with 4016 `landFailed`) | **the land**: the value is encoded once, before fan-out, so the failure is a fact about the value, a type error in #535's table (D9 (b), decided) |
 | EV6 | The merged 107 broadcast frame, or a per-session frame carrying targeted events, fails to encode | #535's classes 2–3 | as #535 decides | #535's |
-| EV7 | An untyped event (`emitAnyServerEvent`) whose name isn't in the land's registry, or whose dictionary doesn't decode into the registered type | a dictionary payload on a compressed encoding: `fatalError` (inferred) | the land is stopped through #535's path, whatever the target | **the land**: the land's own code or its record emitted an event the land doesn't define, so it isn't a per-recipient fault (M8) |
+| EV7 | A recorded server event the replay land re-emits (§4) whose name isn't in the base land's registry, or whose payload doesn't decode into the registered type | with #590: the re-emit is untyped, and on a compressed encoding it ends the replay land with `.eventEncode`; on `json` it is sent as recorded | a record/code mismatch: the runner's `step()` throws `ReevaluationReplayResolutionError` (tick, sequence, name, error), the run fails, and nothing from that tick on is queued (D14 (a′)). That holds whatever the policy, every recorded event decoded. A field change is refused earlier, before the first step, by the fingerprint (§4.1). Live land code can't emit an untyped event (`emitAnyServerEvent` is removed); a framework bug that builds one still meets #590's refusal (`.eventEncode`) | **the replay run**: the record and the code disagree, so later ticks would compare against events the code can't produce |
+| A9 | The runner can't read a tick's recorded server events or its recorded state hash (M2) | events: `(try? …) ?? []` (`ReevaluationRunnerImpl.swift:352`), so the tick looks as if it recorded none, and under `.projectedWithFallback` a tick that emitted none falls back to nothing. Hash: `try?` (:332) gives nil, and a nil recorded hash is a match (:338-346), so a read error passes the tick | either read error throws from `step()` and fails the run, with the tick, which read, and the error (D14 (a′)). A record that holds no hash for the tick (the source returns nil without throwing) is unchanged | the replay run |
+| A10 | The runner's snapshot of the replayed state doesn't encode (S1) | `try?` (:324): `actualState` is nil, so the replay land can't decode the tick and skips it silently (A11) | the encode error throws from `step()` and fails the run, with the tick | the replay run |
+| A11 | The replay land can't decode a result's state: `decodeReplayState` returns nil, or `State(fromBroadcastSnapshot:)` throws (S1) | the tick returns with no state and no events (`GenericReplayLand.swift:89-107`), logged only with `GENERIC_REPLAY_DEBUG` | the runner builds the state in `step()` (D14 (a′)), and a failure there fails the run like EV7. The tick only reads a decoded state and can't meet it | the replay run |
 | A1 | An unknown action or client-event name | `actionNotRegistered` / `eventNotRegistered` thrown, an error frame to the client | unchanged | the input (rejected) |
 | A2 | A malformed action payload, including one that can't be recorded (§2.4) or holds a non-finite number | the round trip throws at intake, or the wire decode throws, an error frame (the catch in `handleActionRequest`, TA :5912-5921, and `handleActionError`, :6079) | the typed decode or the record check throws at intake, the same error frame | the input (rejected) |
 | A3 | A malformed client-event payload | silently skipped at apply, recorded (§1.3) | rejected at intake with an error frame, not recorded (N2) | the input (rejected) |
@@ -315,7 +404,7 @@ package protocol PayloadDecodingSource: Sendable {
 **How EV4 and EV7 stop things (depends on #535).** No keeper state is mutated after an await to stop a land:
 - **In-turn sync:** the encode runs in the adapter's synchronous sync phase. A failure ends that phase's plan and returns `InTurnSyncResult.landFailed(LandFailure)` (kind `.eventEncode`, `position` the `LandFailurePosition` #535 defines for the in-turn sync phase) to the keeper's turn, which stops the land as #535 does.
 - **The legacy flush** (`flushOutputs`, :491-492) awaits per event. A failure there doesn't stop the land from the flush's frame. The adapter submits a `LandFailure` (kind `.eventEncode`, `position` #535's value for the legacy flush) through the package `LandKeeper.submitLandFailure(_:ticket:)`, with the ticket captured when the flush began; it arrives as a turn input. The keeper's handler re-reads the land's state and validates the ticket, as the reentrancy rule requires. The flush stops sending the rest of its batch.
-- **Until #535's stop and session-close paths exist,** this plan's PRs keep today's EV4 handling unchanged. They add no new absorb path, and they remove the hybrid per-event fallback (D10). EV7 on a compressed encoding keeps today's crash until then: N5 in PR 1b removes the crash only for registered, decodable records. That interim is no worse than today, and #535's stop is the fix. The EV4 and EV7 rows land with #535's mechanism (§9, PR 3).
+- **#535's stop and session-close paths exist** (#580), and EV4 is current (#535 row 17). PR 1b removes the hybrid per-event fallback (D10) and adds no absorb path. EV7 isn't a land stop any more: under the 2026-11-18 decision it fails the replay run (§4, D14).
 
 **Logs and counters** follow #535's fields: land type and ID, class (`eventEncode` / `actionDecode`), event or action name, target, error text, sync sequence. A malformed client input (A2, A3) is counted per land type and logged at debug, so a flood of bad inputs doesn't flood the log.
 
@@ -330,10 +419,18 @@ package protocol PayloadDecodingSource: Sendable {
 | `AnyServerEvent` | package `wireForm: (any ServerEventPayload)?`; no public signature change | `Codable` and `Sendable` unchanged |
 | `AnyClientEvent` | package `source`; `payload` becomes a computed get-only property (it is a `let` today) | reads compile; `Codable` unchanged |
 | `AnyClientEventHandler` | a package invocation that takes the value decoded at intake. The `try?` round trip is removed; The public `invoke(_:event: AnyClientEvent, ctx:)` (`LandDefinition.swift:287-293`) stays. The handler holds only its event type and closure, and `invoke` gets no registry or descriptor (:264-293), so the public `init<E>` captures its own decode closure for `E`. `invoke` decodes the event's payload through it (the event's source, or an `AnyCodable` source for a hand-built event), throws the decode error without calling the handler, and otherwise calls the handler. It no longer skips silently | its public init, used by `HandleEvent`, and `invoke`'s signature unchanged; a malformed event now throws from `invoke` |
-| `AnyEventDescriptor` | package `decode` closure, captured by `Register<E>` (§2.4) | additive |
+| `AnyEventDescriptor` (client events, PR 2) | package `decodeClientEvent` closure, captured by `Register<E>` (§2.4) | additive |
 | `ActionEnvelope` | package `source`; `payload` becomes computed get-only; `init(typeIdentifier:payload:)` kept | reads compile; `Codable` unchanged |
 | `LandKeeper.PendingActionItem` | `action` becomes computed get-only; package `decoded`, `source`, a package init and `with(resolverOutputs:resolvedAtTick:)`; **the public init kept**, non-throwing, decoding at apply as today (§2.4) | reads and the public init compile |
-| `LandContext.emitAnyServerEvent(_:to:)` | stays non-throwing. An event it can't resolve (EV7) ends the land through #535's stop, delivered as a turn input; the caller isn't told synchronously | signature unchanged; behavior per EV7 |
+| `LandContext.emitAnyServerEvent(_:to:)` | **removed** in PR 1b (the decision on #521, 2026-11-18). Its only caller, the replay land, emits typed (§4) | source break, with no deprecation: a caller outside the repository stops compiling and moves to `emitEvent(_:to:)` with a typed payload. There is none in the repository after PR 1b (checked at a42b481c; #590's tests move to the transport, §7) |
+| `AnyEventDescriptor` (server events) | a package `decode` closure, built at registration (§4) | additive. The public init is unchanged and builds a descriptor without `decodeServerEvent`. The DSL never builds one that way, so a re-emit through it is unreachable from the DSL; a test asserts that every descriptor the builder makes has the closure. A hand-built registry that reaches one gets EV7 |
+| `ReevaluationStepResult` | gains `public let replayFrame: ReevaluationReplayFrame?` (init parameter, default nil) | additive. A result without a frame fails the run when queued (§4): a custom runner calls `ReevaluationReplayFrame.resolve(...)` |
+| `ReevaluationReplayFrame` | new public struct with package storage, made only by its public throwing `resolve(...)` | additive |
+| `ReevaluationReplayResolutionError` | new public error: the tick, sequence, name and error of an event that doesn't resolve, or which read, encode or state decode failed (A9–A11) | additive |
+| `ReevaluationRecordMetadata.schemaFingerprint` (PR 1f) | new `String?` field and init parameter (default nil) | additive; Codable reads records without it |
+| `ReevaluationReplayCompatibilityError` (PR 1f) | new cases `schemaFingerprintMismatch(recorded:current:)` and `schemaFingerprintMissing(recordedVersion:)`, with error codes 2004 and 2005 | an exhaustive `switch` outside the package must add them: the package isn't built for library evolution |
+| `ReevaluationRecordVersion.current` (PR 1f) | `"3.4"` → `"3.5"`; records without a fingerprint are refused at replay (§4.1) | a behavior change: every record before 3.5 is refused at replay |
+| `ReevaluationSchemaFingerprint` (PR 1f) | new public `compute(for:)` on a `LandDefinition`, for tools and tests | additive |
 | Registration refusals (EV1–EV3, A4, A8) | rows in `LandDefinition.validateForRegistration(context:) throws`, shared with #535 (whichever PR merges first adds it). This plan's failures are `PayloadRegistrationError`, one case per row with the type and the reason, all failures in one error. Called at each entry point as §5 lists | new public types; the calling entry points already throw |
 | `EventRegistry.eventName(for:)` | kept, the single runtime event rule | unchanged |
 | Behavior | a malformed client event gets an error frame (N2); EV1–EV7, A2–A8 | named in the PR and in `docs/core` |
@@ -365,7 +462,7 @@ package protocol PayloadDecodingSource: Sendable {
 
 **Red first, where they can be:**
 - the silent client-event skip (A3): a malformed client event gets no error today, and is recorded;
-- the replay re-emit of a recorded dictionary on a compressed encoding (N5), as an exit test (`#expect(processExitsWith: .failure)`) on base, with `.projectedWithFallback`;
+- the replay re-emit of a recorded dictionary on a compressed encoding (N5), with `.projectedWithFallback`: on base (with #590), the replay land ends with `.eventEncode` instead of sending the event; after PR 1b its frame equals the live frame. #590's exit test already covers the old crash;
 - `serverEventsMatch` with two unencodable payloads (A6): equal today;
 - a hand-written `ServerEventPayload` without `@Payload` on `messagepack` (EV1), as an exit test on base;
 - replay loading with a recorded action whose type has no handler, and with a source that throws (A5): the run passes today with the input missing.
@@ -407,15 +504,35 @@ package protocol PayloadDecodingSource: Sendable {
 
 **Records:**
 - Action and client-event records are byte-identical to today's for inputs from each encoding.
-- The committed record fixtures (`ReevaluationReplayCompatibilityTests`, `ReevaluationRecordVersionTests`, the `SyncOutputGoldens` records) replay unchanged. None of them holds a client event the new decode rejects (inferred; asserted by running the scan of §9 over them in a test).
+- The committed record fixtures (`ReevaluationReplayCompatibilityTests`, `ReevaluationRecordVersionTests`, the `SyncOutputGoldens` records), re-recorded at 3.5 by PR 1f, replay unchanged. None of them holds a client event the new decode rejects (inferred; asserted in a test by decoding each one's client events through its land's registry).
 - An old-version record holding a malformed client event fails replay at that tick, with the sequence and type (N3 (b)).
 - No record is built without a recorder or reevaluation mode (a counting hook), and `appliedOrder` still drives the tickless pass record.
 
-**Replay land:** the replay land's registry lists the base's event types; a re-emitted recorded event is byte-identical to the live frame; EV1–EV3 on the replay land pass and fail as on the base.
+**Replay land:**
+- the replay land's registry lists the base's event types;
+- **typed re-emit:** for every event type in the repository and each leaf and fallback fixture of §7's event frames, a recorded event (written by a live recorder, then read back from its JSON) re-emitted under `.projectedWithFallback` gives a frame byte-identical to the live frame, on `messagepack`, `opcodeJsonArray` and `json`, `.all` and targeted;
+- a projected event (the in-process run's typed value) is taken without a round trip (a counting hook on the JSON path);
+- **mismatch refused (EV7):** a recorded payload that doesn't decode into its registered type, and an unregistered name, each make `step()` throw `ReevaluationReplayResolutionError` with the tick, sequence, name and error. The run's status is `.failed` with that message, the queue holds only the ticks before it, the replay land sends nothing for that tick or after, and it stays up;
+- **every recorded event decoded:** the same mismatch under `.projectedOnly`, on a tick whose projected events would have been chosen, still fails the run;
+- **custom runners:** a result without `replayFrame` fails the run when queued;
+- **A9:** a source whose `getServerEvents` throws fails the run, and so does one whose `getStateHash` throws (M2). A source that returns nil for the hash without throwing still passes the tick, as today;
+- **A10, A11:** a snapshot encode that throws (a fault hook on the runner's encoder) and a state that doesn't build back (a fault hook on the resolver) each throw from `step()` and fail the run, and the tick sends nothing;
+- **the state box:** the land's `as? State` never fails across the repository's replay lands (asserted);
+
+**Schema fingerprint (PR 1f):**
+- **deterministic:** the fingerprint of each example land equals a committed golden. The goldens are written on macOS and checked on CI's Linux image, so the two platforms agree. It is the same in two processes, and under `SWIFT_DETERMINISTIC_HASHING` on and off;
+- **sensitive:** a fixture land changed by one field each (a state field added, a field's type, a sync policy, a default value, an event field, an action's response field, a server input's field) gives a new fingerprint every time. A changed `description` doesn't;
+- **refused:**
+  - a record whose fingerprint differs is refused before the first step, at each entry point (the admin start, the runner, `ReevaluationEngine.run`), with `schemaFingerprintMismatch` holding both values;
+  - a 3.4 record, and a 3.5 record without the field, are refused with `schemaFingerprintMissing`;
+- **written:** a recorded land's record holds the current fingerprint; a keeper whose schema throws writes none and logs it;
+- **fixtures:** the re-recorded example records replay, and pass the E2E replay check.
+- EV1–EV3 on the replay land pass and fail as on the base;
+- **the backstop:** #590's `UntypedEventPayloadTests` emitted through `emitAnyServerEvent`. They now hand an untyped `AnyServerEvent` straight to the adapter's `sendEventToTransport(_:to:)`, as a framework bug would, and still expect `.eventEncode` and 4016.
 
 **Error paths** (fault injection through `eventEncodingFaultForTesting`, extended with a target and an event type; holds, not timing):
 - **EV4:** with an `.all` target and with a targeted one, the land is stopped (`InTurnSyncResult.landFailed` in-turn, `submitLandFailure` on the legacy flush), its sessions closed with 4016, and another land keeps syncing. Nothing after the failing event in that cycle is sent; events enqueued before it are, on the immediate path and on the legacy flush.
-- **EV7:** an unregistered name and an undecodable dictionary, each with a targeted and an `.all` target: the land ends in all four.
+- **EV7:** in the replay land tests above.
 - **Legacy flush:** the stop arrives as a turn input with a ticket; a stale ticket (the land restarted under a hold at the flush's await) is ignored.
 - **EV1–EV3, A4 and A8:** refused at registration, all failures in one `PayloadRegistrationError`, with the reasons, at each entry point of §5: `register` throws, `getOrCreateLand` throws and creates nothing, the replay engine and runner throw before a keeper exists.
 - **A2/A3:** an error frame, the land and session alive, nothing recorded.
@@ -445,7 +562,16 @@ package protocol PayloadDecodingSource: Sendable {
 - the replay land built without the base's registry (replay land);
 - an event encode failure logged and dropped (EV4);
 - a failure that closes only sessions, for either target (EV4);
-- EV7 by target instead of the land (EV7);
+- the replay land re-emitting the recorded payload untyped, as today (typed re-emit: the frame differs, and on a compressed encoding the land ends);
+- a payload that doesn't decode forwarded, or skipped with the rest of the tick sent (EV7);
+- the state written before the events are resolved (EV7: the tick's state frame goes out);
+- only the policy-selected events decoded (`.projectedOnly` mismatch);
+- the resolution moved back into the tick (the tick then has to handle a failure: the A11 fault test fails);
+- the fingerprint without the server inputs, or with the descriptions (fingerprint sensitivity);
+- a missing fingerprint replayed with a warning (refused);
+- one of the three entry points left without the check (refused, per entry point);
+- `?? []` restored on the recorded-event read, or `try?` on the hash read (A9);
+- `try?` restored on the snapshot encode (A10), or the land's silent `return` on a state that doesn't decode (A11);
 - the apply-time decode kept, or `decoded` dropped by the copy (decode once);
 - records built from the decoded value instead of the source, or built without a recorder (records);
 - a 107 body built in a hybrid config (hybrid);
@@ -496,12 +622,30 @@ package protocol PayloadDecodingSource: Sendable {
    - EV1 in `validateForRegistration` (events and response types), since a type without the writer would otherwise fail at its first send;
    - the docs, both languages. No `docs/core/failure-handling.md` row flips in PR 1a.
    - **Size (inferred, from the parts listed; the PR states the real count):** about +1,200 / −200 lines, half of it tests and goldens.
-3. **PR 1b, events around the writer:** the hybrid decision at init (D10); EV2 and EV3 in `validateForRegistration`; the replay land's registry and the re-emit resolution (N5); `serverEventsMatch` (A6). It flips the re-emit row of `docs/core/failure-handling.md` ("The replay land re-emits a recorded event…", #538) and its `.zh-TW.md` row to say: fixed for registered, decodable records, and the rest under EV7 (PR 3). About +600 lines (inferred). Splitting keeps the byte-identity change, which removes a public method, reviewable on its own.
-4. **PR 2, decode:**
+3. **PR 1f, the record's schema fingerprint (D15, §4.1), before PR 1b:**
+   - the fingerprint, written by the recorder;
+   - checked at the three entry points;
+   - record format 3.5, with records lacking it refused;
+   - the two new error cases;
+   - the re-recorded fixtures;
+   - the docs, both languages:
+     - the record format section of the reevaluation docs;
+     - `docs/core/failure-handling.md` and its `.zh-TW.md`, a row "A record whose schema fingerprint differs from the code, or that has none";
+   - **Size:** about +400 lines plus the re-recorded fixtures (inferred).
+4. **PR 1b, events around the writer** (rev 10; cut from `main` after #590, 85c9c297, and after PR 1f):
+   - the hybrid decision at init (D10);
+   - EV2 and EV3 in `validateForRegistration`;
+   - the replay land's registry (M5), `PayloadDecodingSource` with its `AnyCodable` source, the descriptors' `decodeServerEvent`, and the typed re-emit (N5);
+   - `ReevaluationReplayFrame` resolved in the runner's `step()`, with every recorded event decoded (D14 (a′)): the mismatch (EV7), the source reads (A9), the snapshot encode (A10) and the state decode (A11) fail the run there;
+   - `emitAnyServerEvent` removed, with #590's tests moved to the transport;
+   - `serverEventsMatch` (A6).
+   - **Docs, both languages:** in `docs/core/failure-handling.md` the re-emit row ("The replay land re-emits a recorded event…", #538) becomes current: typed, byte-identical, and a mismatch fails the run. #590's untyped-event row becomes "no API; a framework bug meets the encoder's refusal". The `UntypedPayloadError` doc drops its mention of `AnyServerEvent(type:payload:)` as a land's path. PR 1b closes #538.
+   - **Size:** about +700 lines (inferred).
+5. **PR 2, decode:**
    - decode sources, with the record check and the non-finite rule;
    - the three-index lookup, with A4 and A8 in `validateForRegistration`;
    - decode once, through `PendingActionItem`'s package init and copy;
-   - client events (D2, N2, N3 (b));
+   - client events (D2, N2, N3 (b)), with #593's client-event decode failure item;
    - records built from the intake tree, only when read;
    - the replay staged batch (A5);
    - `docs/core/failure-handling.md` and `.zh-TW.md`: the client-event row ("A client event whose payload doesn't decode…", #537) and the replay-loading row ("Replay can't load or match a recorded input") flip to current;
@@ -515,9 +659,9 @@ package protocol PayloadDecodingSource: Sendable {
      - **The verdict** is "zero rejected" only when rejected, unknown land, unknown type, read errors, missing and unopened files, are all zero; excluded ticks don't block. Otherwise it prints what blocks it, and exits nonzero.
      - **Fixtures** prove each blocker prints no all-clear: an unknown land type, an unknown event type, an unreadable file, and a listed file that is missing. An incomplete record with client events in its newest tick prints the excluded count and still gives the verdict of the rest. Also one record with a malformed client event (rejected 1).
      - A nonzero rejected count, or any blocker, goes to the maintainer before merge, since those records would stop verifying (N3 (b)).
-5. **PR 3, failure units:** EV4 and EV7 on #535's stop path, after #535's mechanism merges. It flips the event-encode row ("A server event that fails to encode") in both languages to current, and finishes the re-emit row. If #535 merges first, this folds into PRs 1b and 2.
-6. **Host A/B** per PR (1a and 1b together if they merge close together), base = main at run time, head = the PR merged with it. PR 0's knobs are on both sides.
-7. **Solutions:**
+6. **PR 3: folded (rev 8).** #535's mechanism merged first (#580), and EV4 is current. EV7 is PR 1b's run failure. No PR 3.
+7. **Host A/B** per PR (1a and 1b together if they merge close together), base = main at run time, head = the PR merged with it. PR 0's knobs are on both sides.
+8. **Solutions:**
    - "the positional event payload is name-sorted, not declaration order", if the review agrees it is a trap (#521's text had it the other way);
    - "a lookup that replaces a predicate scan needs one index per predicate, keyed by what the predicate compares" (M1's trap);
    - another entry if the work finds a reusable lesson about encoders that must reproduce a cast chain's per-type forms.
@@ -546,10 +690,29 @@ package protocol PayloadDecodingSource: Sendable {
 - **N9: yes.** Lands that are ambiguous today are refused at registration (A4).
 - **N10 (a):** compression off keeps today's keyed `Codable` path.
 
+**Decided on #521 (2026-11-18):**
+- **N5 typed:** the replay land re-emits recorded server events typed, through the land definition's registry. A payload that doesn't decode is a record/code mismatch: it is reported and fails fast, never forwarded.
+- **`emitAnyServerEvent` removed** in PR 1b, with no deprecation: its only caller is the replay land.
+- **#590's refusal** stays as a backstop for framework bugs only.
+
+- **D14 = (a′), every recorded event decoded.** Rev 8 offered (a), a tick that fails the run through the service with a ticket, and (b), ending the replay land too. Review's (a′) was chosen instead: the runner resolves in its async `step()`, and a mismatch fails the run through the existing catch (§4). A record with any event that doesn't decode fails even under `.projectedOnly`.
+- **D15 = a strict schema fingerprint** in the record (§4.1, PR 1f). The per-event decode stays as the last guard.
+
+**Chosen in rev 10, for review:**
+- **Records without a fingerprint are refused,** not replayed with a warning (§4.1 gives the reasons).
+- **PR 1f is its own PR, before PR 1b** (§4.1).
+
+**Open, for review of rev 10:**
+- **N3's scan.** With D15 refusing every record from before PR 1f, N3 (b) can't be reached by replay. The proposal is to drop the scan from PR 2 (§4.1).
+
 ## 11. Related issues
 
 - **#535:** the failure rule and its scope decision; EV4 and EV7 use its stop path. Its sweep gains `serverEventsMatch` (A6), the client-event skip (A3) and replay input loading (A5).
-- **#537** (the client-event skip) and **#538** (the replay re-emit crash) are filed on their own, so they are tracked if this plan's PRs move. PR 2 closes #537. #538 stays open until PR 3: PR 1b fixes it for registered, decodable records only, and EV7 (PR 3) covers the rest.
+- **#537** (the client-event skip) and **#538** (the replay re-emit crash) are filed on their own, so they are tracked if this plan's PRs move. PR 2 closes #537. #590 ends the crash, and PR 1b closes #538 with the typed re-emit.
+- **#590:** the encoders' refusal of a value that isn't a payload type; a backstop after PR 1b.
+- **#586 (#591):** handler results constrained to `A.Response`.
+- **#593:** the client-event decode failure, in PR 2.
+- **A follow-up issue** (filed with PR 1f): remove the pre-3.5 replay branches that D15 makes unreachable from replay.
 - **#532:** a per-session frame failure, as EV6.
 - **#517:** the off-path gate this measurement uses.
 - **#519, #520 (#527):** done; the order #521 asks for.

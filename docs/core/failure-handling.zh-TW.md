@@ -55,8 +55,10 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 單一玩家的狀態 frame 或 broadcast-only frame 完全無法編碼 | land 結束；失敗的 cycle 不送任何東西，其 session 以 4016 關閉（`planPerPlayerFrames`、`planBroadcastOnlySeparateFrames`） | 已符合（#535 第 10、12 列） |
 | resync 或第一次 view 的完整 view 無法編碼 | 第一次失敗就結束 land，不重試；不再送出 4012（`planPerPlayerFrames`、`planFirstSync`） | 已符合（#535 第 11、13 列） |
 | 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event、event frame 無法 pack，或合併 state 與 event 的 frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`、`encodeMergedBroadcastFrame`）。未使用 opcode 107：frame 無法編碼的 event 結束 land；目標目前沒有接收者的 event 不算遺失 | 已符合（#535 第 17 列） |
+| 壓縮編碼下的無型別 server event：`emitAnyServerEvent` 的 payload 不是 payload 型別（dictionary、array、基本型別） | encoder 拋出 `UntypedPayloadError`，event 沒有進入任何 frame，land 如上一列以 `eventEncode` 結束；其 session 以 4016 關閉，process 與其他 land 繼續執行。`json` 下 payload 照原樣寫出。已註冊的 event 名稱搭配可解碼成該型別的 dictionary，目前尚未透過 land 的 registry 解析 | 已符合（#544）；解析已註冊的 dictionary：#521 |
+| 壓縮編碼下不是 payload 型別的 action response：handler 本體回傳 dictionary、array 或基本型別（本體的回傳值可以是任何 `Codable & Sendable`，#561），或 `AnyActionHandler` 建出這種值 | encoder 拋出 `UntypedPayloadError`；client 會收不到回覆，因此 land 以 `responseEncode`（stage `actionResponse`）結束，其 session 以 4016 關閉。該 action 的寫入保留。output gate 在失敗的那個 segment 內關閉；process 與其他 land 繼續執行。`json` 下回應照原樣寫出 | 已符合（#544） |
 | 寫入狀態後才拋出錯誤的 handler | 該輸入單獨失敗，之後的輸入繼續；它的寫入保留並同步出去，debug build 會發出警告（`LandKeeper.swift:3836-3837`、`:3189`） | 目標：關閉 land（#535）；部分寫入由 #87 追蹤 |
-| replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | `fatalError`，整個 process 停止（`MessagePackTransportMessageEncoder.swift:277`、`TransportMessageEncoder.swift:346`） | 目標：透過 land 的 registry 重送；無法解析的 event 結束 replay land，絕不是 process（#538、#521） |
+| replay land 在壓縮編碼下重送錄製的 event，且使用需明確啟用的 `.projectedWithFallback` event policy（`GenericReplayLand.swift:21`；非預設） | 錄製檔的 payload 解碼後是 dictionary，所以重送是無型別 event（上一列）：replay land 以 `eventEncode` 結束，其 session 以 4016 關閉；process 與其他 land 繼續執行 | process 部分已符合（#538）；目標：透過 land 的 registry 重送已註冊、可解碼的錄製 event，與 live event 位元組相同（#521） |
 | replay 無法載入或對應錄製的輸入 | 以警告略過該輸入，該 tick 在沒有它的情況下執行（`LandKeeper.swift:4126-4139`、`:4250-4256`） | 目標：驗證執行失敗，並附上 tick 與原因（#521；規則由 #535 追蹤） |
 
 ### 結束 session
