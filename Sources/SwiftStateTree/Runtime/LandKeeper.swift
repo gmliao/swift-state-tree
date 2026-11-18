@@ -2769,11 +2769,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Live payload decodes, by whether the payload came with its frame's bound (`DepthBounded`)
-    /// or was walked (tests only: a live input from the adapter must come bounded).
+    /// or was walked, as `InboundPayloadDecoding` reports the overload that ran. Counted in
+    /// production too (two integers, read only by tests): a live input from the adapter must
+    /// come bounded, and the tests see it from the decode itself.
     private var livePayloadDecodes: (bounded: Int, walked: Int) = (0, 0)
 
-    private func noteLivePayloadDecode(bounded: Bool) {
-        if bounded { livePayloadDecodes.bounded += 1 } else { livePayloadDecodes.walked += 1 }
+    private func noteLivePayloadDecode(walked: Bool) {
+        if walked { livePayloadDecodes.walked += 1 } else { livePayloadDecodes.bounded += 1 }
+    }
+
+    /// The observer for a decode in the apply: live mode only (replay's decodes aren't counted).
+    private var livePayloadObserver: InboundPayloadDecoding.Observer? {
+        guard mode == .live else { return nil }
+        return { walked in self.noteLivePayloadDecode(walked: walked) }
     }
 
     /// Tests only: the live payload decodes so far, bounded and walked (`noteLivePayloadDecode`).
@@ -2888,8 +2896,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Decode action payload from AnyCodable: walked for its depth first unless its frame's
         // decode bounded it (#362).
         let boundedAction = bounded?.map(\.payload)
-        noteLivePayloadDecode(bounded: boundedAction != nil)
-        let decodedAction = try InboundPayloadDecoding.decode(actionPayloadType, from: envelope.payload, bounded: boundedAction, decoder: decoder)
+        let decodedAction = try InboundPayloadDecoding.decode(
+            actionPayloadType, from: envelope.payload, bounded: boundedAction, decoder: decoder,
+            observe: { walked in self.noteLivePayloadDecode(walked: walked) }
+        )
 
         // Intake segment: the sender check, the sequence and the ticket (the sender's entry
         // generation). After the resolvers' await, only `deliverResolvedAction` runs, which
@@ -3518,8 +3528,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Decode action from AnyCodable
             let decoder = JSONDecoder()
-            if mode == .live { noteLivePayloadDecode(bounded: actionItem.boundedAction != nil) }
-            let decodedAction = try InboundPayloadDecoding.decode(actionItem.actionType, from: actionItem.action, bounded: actionItem.boundedAction, decoder: decoder)
+            let decodedAction = try InboundPayloadDecoding.decode(
+                actionItem.actionType, from: actionItem.action, bounded: actionItem.boundedAction, decoder: decoder,
+                observe: livePayloadObserver
+            )
 
             // Create context with resolver outputs
             let ctx = makeContext(
@@ -3602,9 +3614,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedClientEvent.sequence)
 
             // Throws only from `validate`, before anything is written (#586).
-            if mode == .live { noteLivePayloadDecode(bounded: eventItem.boundedPayload != nil) }
+            let observe = livePayloadObserver
             try withMutableStateSync { state in
-                try handler.invoke(&state, event: eventItem.event, boundedPayload: eventItem.boundedPayload, ctx: ctx)
+                try handler.invoke(&state, event: eventItem.event, boundedPayload: eventItem.boundedPayload, observe: observe, ctx: ctx)
             }
 
         case let .serverInput(inputItem):

@@ -8,9 +8,11 @@ import Foundation
 /// so its walk is skipped when the payload comes with this proof. A payload without it (a
 /// recorded action replayed, a direct call of the keeper's public API) is walked.
 ///
-/// Build one only in a decoder that enforced the client limit on the whole frame: the adapter's
-/// decode pipeline (`MessageDecodingPipeline`). The proof is a type, not a flag, so a caller can't
-/// claim the bound by passing `true`; a value can only be narrowed to a part of itself (`map`).
+/// Build one only where this package's own code enforced the client limit on the exact bytes the
+/// value came from: the adapter's decode pipeline (`MessageDecodingPipeline`). The proof is a type,
+/// not a flag, so a caller can't claim the bound by passing `true`; a value can only be narrowed to
+/// a part of itself (`map`). The initializer is `package`, so that rule is kept by review and by a
+/// test (`BoundedPayloadDecodeTests`) that fails on a call outside the pipeline and this file.
 package struct DepthBounded<Value: Sendable>: Sendable {
     package let value: Value
 

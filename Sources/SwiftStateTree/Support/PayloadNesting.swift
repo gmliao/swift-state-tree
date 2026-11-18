@@ -53,7 +53,10 @@ package enum PayloadNesting {
     /// A MessagePack frame that decodes to a message never starts with any of these bytes (it is
     /// a map or an array), so a pipeline that tries JSON first (the legacy join) can run this on
     /// every frame.
-    package static func checkClientJSON(_ data: Data, limit: Int = clientFrameMaxDepth) throws {
+    /// Returns whether it scanned the frame: `false` when the frame doesn't start like a JSON
+    /// container, which a decoder that gets it may still read some other way (#616 review).
+    @discardableResult
+    package static func checkClientJSON(_ data: Data, limit: Int = clientFrameMaxDepth) throws -> Bool {
         let first = data.withUnsafeBytes { raw -> UInt8? in
             var index = 0
             if raw.count >= 3, raw[0] == 0xEF, raw[1] == 0xBB, raw[2] == 0xBF { index = 3 }
@@ -70,8 +73,9 @@ package enum PayloadNesting {
             throw NotCheckableJSON(reason: "it starts like UTF-16 or UTF-32")
         case UInt8(ascii: "["), UInt8(ascii: "{"):
             try checkJSON(data, limit: limit)
+            return true
         default:
-            return
+            return false
         }
     }
 

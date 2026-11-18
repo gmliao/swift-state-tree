@@ -57,6 +57,12 @@ struct MessageDecodingPipeline: Sendable {
     }
 
     /// `decode`, with the frame's depth bound when the decode enforced it (`DecodedClientFrame`).
+    ///
+    /// The proof is granted only where this module's own code bounded these exact bytes at the
+    /// client limit (#362, review of #616): a JSON frame that `checkClientJSON` scanned and this
+    /// module's decoder parsed (`OpcodeTransportMessageDecoder`, `JSONTransportCodec`), or a
+    /// MessagePack frame that `MessagePackTransportCodec` unpacked. Anything else, another
+    /// module's codec or a frame the scan didn't read, is `.unchecked`, and its payloads are walked.
     func decodeClientFrame(_ data: Data) throws -> DecodedClientFrame {
         // Special handling for legacy join mode:
         // In legacy mode, join messages are always JSON (even if server is MessagePack-configured)
@@ -64,7 +70,7 @@ struct MessageDecodingPipeline: Sendable {
         if enableLegacyJoin {
             // Any frame may reach the JSON parser first, so every one is checked before it
             // (#362); the decodes below don't check again, except MessagePack's unpack.
-            try PayloadNesting.checkClientJSON(data)
+            let scanned = try PayloadNesting.checkClientJSON(data)
             // Try JSON detection first (for join handshake compatibility)
             if let json = try? JSONSerialization.jsonObject(with: data) {
                 if let array = json as? [Any],
@@ -72,17 +78,19 @@ struct MessageDecodingPipeline: Sendable {
                    let opcode = array[0] as? Int,
                    opcode >= 101 && opcode <= 106 {
                     // JSON opcode array format
-                    return .bounded(DepthBounded(decodedFromBoundedFrame: try opcodeDecoder.decode(from: data)))
+                    return Self.proven(try opcodeDecoder.decode(from: data), if: scanned)
                 } else {
                     // Standard JSON object format (includes Join messages)
-                    return .bounded(DepthBounded(decodedFromBoundedFrame: try JSONTransportCodec().decode(TransportMessage.self, from: data)))
+                    return Self.proven(try JSONTransportCodec().decode(TransportMessage.self, from: data), if: scanned)
                 }
             }
-            // Not JSON, fall back to configured codec (MessagePack). The frame was scanned above,
-            // whatever the codec.
-            return .bounded(DepthBounded(decodedFromBoundedFrame: codec.encoding == .messagepack
-                ? try codec.decodeClientFrame(TransportMessage.self, from: data)
-                : try codec.decode(TransportMessage.self, from: data)))
+            // Not JSON to Foundation: the configured codec decodes it. Its scan above (if any)
+            // doesn't cover what another module's decoder reads, so only this module's decoders
+            // get the proof.
+            if codec.encoding == .messagepack {
+                return try decodeMessagePack(data)
+            }
+            return Self.proven(try codec.decode(TransportMessage.self, from: data), if: scanned && codec is JSONTransportCodec)
         }
         
         // Non-legacy mode: use codec-first approach (for performance)
@@ -91,7 +99,7 @@ struct MessageDecodingPipeline: Sendable {
         }
 
         // Checked before this decode parses it (#362); the decodes below don't check again.
-        try PayloadNesting.checkClientJSON(data)
+        let scanned = try PayloadNesting.checkClientJSON(data)
         
         // Detect JSON opcode array format
         if let json = try? JSONSerialization.jsonObject(with: data),
@@ -99,11 +107,17 @@ struct MessageDecodingPipeline: Sendable {
            array.count >= 1,
            let opcode = array[0] as? Int,
            opcode >= 101 && opcode <= 106 {
-            return .bounded(DepthBounded(decodedFromBoundedFrame: try opcodeDecoder.decode(from: data)))
+            return Self.proven(try opcodeDecoder.decode(from: data), if: scanned)
         }
         
         // Standard JSON object format
-        return .bounded(DepthBounded(decodedFromBoundedFrame: try codec.decode(TransportMessage.self, from: data)))
+        return Self.proven(try codec.decode(TransportMessage.self, from: data), if: scanned && codec is JSONTransportCodec)
+    }
+
+    /// `.bounded` when `bounded` (this module's code bounded the bytes `message` came from),
+    /// else `.unchecked`.
+    private static func proven(_ message: TransportMessage, if bounded: Bool) -> DecodedClientFrame {
+        bounded ? .bounded(DepthBounded(decodedFromBoundedFrame: message)) : .unchecked(message)
     }
         
     /// A MessagePack frame: bounded only when this module's codec unpacked it, at the client
@@ -111,9 +125,6 @@ struct MessageDecodingPipeline: Sendable {
     /// doesn't for MessagePack), so its payloads are walked.
     private func decodeMessagePack(_ data: Data) throws -> DecodedClientFrame {
         let message = try codec.decodeClientFrame(TransportMessage.self, from: data)
-        if codec is MessagePackTransportCodec {
-            return .bounded(DepthBounded(decodedFromBoundedFrame: message))
-        }
-        return .unchecked(message)
+        return Self.proven(message, if: codec is MessagePackTransportCodec)
     }
 }

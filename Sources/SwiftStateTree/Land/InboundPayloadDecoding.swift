@@ -12,23 +12,29 @@ import Foundation
 /// A payload whose frame was bounded at decode (`DepthBounded`) is already no deeper than that,
 /// and isn't walked again: each live input is checked once, by its frame's decode.
 enum InboundPayloadDecoding {
-    static func decode<T: Decodable>(_ type: T.Type, from payload: AnyCodable, decoder: JSONDecoder) throws -> T {
+    /// Told, by the overload that ran, whether the payload was walked (`true`) or came with its
+    /// bound (`false`): the keeper counts its live decodes with it (`livePayloadDecodesForTesting`).
+    typealias Observer = (_ walked: Bool) -> Void
+
+    static func decode<T: Decodable>(_ type: T.Type, from payload: AnyCodable, decoder: JSONDecoder, observe: Observer? = nil) throws -> T {
+        observe?(true)
         try PayloadNesting.check(payload.base)
         return try reencoded(type, from: payload, decoder: decoder)
     }
 
     /// A payload from a frame its decoder bounded (`DepthBounded`): no deeper than the client
     /// limit already, so it isn't walked again.
-    static func decode<T: Decodable>(_ type: T.Type, from payload: DepthBounded<AnyCodable>, decoder: JSONDecoder) throws -> T {
-        try reencoded(type, from: payload.value, decoder: decoder)
+    static func decode<T: Decodable>(_ type: T.Type, from payload: DepthBounded<AnyCodable>, decoder: JSONDecoder, observe: Observer? = nil) throws -> T {
+        observe?(false)
+        return try reencoded(type, from: payload.value, decoder: decoder)
     }
 
     /// Walks `payload` (`decode(_:from:decoder:)`) unless it comes with its bound.
-    static func decode<T: Decodable>(_ type: T.Type, from payload: AnyCodable, bounded: DepthBounded<AnyCodable>?, decoder: JSONDecoder) throws -> T {
+    static func decode<T: Decodable>(_ type: T.Type, from payload: AnyCodable, bounded: DepthBounded<AnyCodable>?, decoder: JSONDecoder, observe: Observer? = nil) throws -> T {
         if let bounded {
-            return try decode(type, from: bounded, decoder: decoder)
+            return try decode(type, from: bounded, decoder: decoder, observe: observe)
         }
-        return try decode(type, from: payload, decoder: decoder)
+        return try decode(type, from: payload, decoder: decoder, observe: observe)
     }
 
     private static func reencoded<T: Decodable>(_ type: T.Type, from payload: AnyCodable, decoder: JSONDecoder) throws -> T {

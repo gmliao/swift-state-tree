@@ -310,7 +310,7 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
     /// Where the handler was declared (`HandleEvent`'s `fileID:line`), for the duplicate check.
     package let site: String?
     /// Throws only before it writes: from `validate` (#586).
-    private let handler: @Sendable (inout State, AnyClientEvent, DepthBounded<AnyCodable>?, LandContext) throws -> Void
+    private let handler: @Sendable (inout State, AnyClientEvent, DepthBounded<AnyCodable>?, InboundPayloadDecoding.Observer?, LandContext) throws -> Void
 
     /// A handler in two stages (#586): `validate` reads the state, may throw, and returns the
     /// plan; `apply` writes and can't throw. There is no public form that takes a throwing body.
@@ -333,14 +333,14 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
     ) {
         self.eventType = eventType
         self.site = site
-        self.handler = { state, anyEvent, bounded, ctx in
+        self.handler = { state, anyEvent, bounded, observe, ctx in
             // Decode the event from AnyClientEvent
             // A payload that doesn't decode drops the event, live and replayed alike (#537 is to
             // reject it). One nested too deep is also logged and counted (#362).
             let decoder = JSONDecoder()
             let event: E
             do {
-                event = try InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, bounded: bounded, decoder: decoder)
+                event = try InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, bounded: bounded, decoder: decoder, observe: observe)
             } catch let tooDeep as PayloadNesting.TooDeep {
                 PayloadNesting.noteDroppedClientEvent(type: String(describing: E.self), tooDeep)
                 return
@@ -363,18 +363,20 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         event: AnyClientEvent,
         ctx: LandContext
     ) throws {
-        try handler(&state, event, nil, ctx)
+        try handler(&state, event, nil, nil, ctx)
     }
 
     /// `invoke`, with the event's payload bound when its frame's decode enforced the client
-    /// limit (`DepthBounded`): then its depth isn't walked again.
-    package func invoke(
+    /// limit (`DepthBounded`): then its depth isn't walked again. `observe` is told which decode
+    /// ran (`InboundPayloadDecoding.Observer`). Internal: only the keeper calls it.
+    func invoke(
         _ state: inout State,
         event: AnyClientEvent,
         boundedPayload: DepthBounded<AnyCodable>?,
+        observe: InboundPayloadDecoding.Observer?,
         ctx: LandContext
     ) throws {
-        try handler(&state, event, boundedPayload, ctx)
+        try handler(&state, event, boundedPayload, observe, ctx)
     }
 }
 
