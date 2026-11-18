@@ -26,9 +26,10 @@ related:
 
 ## Problem
 
-Both positional message encoders (`OpcodeTransportMessageEncoder`, `MessagePackTransportMessageEncoder`) unwrap a payload from its `AnyCodable` box and cast it, `base as? any PayloadCompression`. Their fallback branch, for a value that isn't a payload type, was a `fatalError`. Two paths reach it:
+Both positional message encoders (`OpcodeTransportMessageEncoder`, `MessagePackTransportMessageEncoder`) unwrap a payload from its `AnyCodable` box and cast it, `base as? any PayloadCompression`. Their fallback branch, for a value that isn't a payload type, was a `fatalError`. Three paths reach it:
 - a live land's `emitAnyServerEvent` with a dictionary, an array or a primitive payload (#544);
-- the replay land's re-emit of a recorded event under `.projectedWithFallback` (#538). A record's payload is JSON-decoded into `AnyCodable`, so its base is `[String: Any]`.
+- the replay land's re-emit of a recorded event under `.projectedWithFallback` (#538). A record's payload is JSON-decoded into `AnyCodable`, so its base is `[String: Any]`;
+- an action response whose handler body returns a dictionary or a primitive: `HandleAction`'s body returns any `Codable & Sendable` value (#561), and the public `AnyActionHandler` takes any `AnyCodable`.
 
 On a compressed encoding (`messagepack`, the default, or `opcodeJsonArray`), either one ended the server process, and every land on it.
 
@@ -38,10 +39,15 @@ The cast's failure looked impossible: every registered event, action and respons
 
 ## Fix
 
-The fallback branch throws `UntypedPayloadError` (the value's type name) instead of trapping. The adapter already treats an event that reaches no frame as lost and ends the land with `LandFailure.Kind.eventEncode` (#535 row 17), so the land that emitted the value ends, its sessions close with 4016, and the process and the other lands keep running. `UntypedEventPayloadTests` covers both paths on both compressed encodings, with exit tests that fail on a build that still traps.
+The fallback branch throws `UntypedPayloadError` (the value's type name) instead of trapping. Each caller's failure path then decides the scope:
+- An event: the adapter already treats an event that reaches no frame as lost and ends the land with `LandFailure.Kind.eventEncode` (#535 row 17).
+- An action response: its catch logged and dropped the response, so the first version of the fix turned the crash into a client waiting forever on a land that kept running. It now ends the land with `LandFailure.Kind.responseEncode`, closing the output gate in the segment that failed.
+
+Either way the land ends, its sessions close with 4016, and the process and the other lands keep running. `UntypedEventPayloadTests` covers the three paths on both compressed encodings, with exit tests that fail on a build that still traps.
 
 ## Prevention
 
 - **No trap on a value that crossed a type erasure.** A `fatalError`, `precondition`, `!` or `as!` on a value that came out of `Any`, `AnyCodable` or another existential is reachable from whoever filled the box, not only from our typed callers. Throw a named error and let the caller's failure path decide its scope.
 - **Find the public entry points that fill the box.** Before calling a cast's failure "impossible", list who constructs the erased value: public initializers (`AnyServerEvent(type:payload:)`), decoders (a record, a client frame), and test helpers.
+- **Check every caller of a newly throwing function for catch-and-continue.** Before turning a trap into a throw, list the callers of the function that now throws, and read each `catch`. One that logs and goes on trades the crash for a silent drop, which the failure rule forbids as much as the trap. Route each one to a failure path that ends the unit the value corrupted.
 - **Test it as a crash.** A test of such a site passes the untyped value through the public path. Run it as an exit test (`#expect(processExitsWith: .success)`), so a trapping build fails the test instead of ending the test run.

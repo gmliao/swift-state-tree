@@ -1,7 +1,8 @@
-// An untyped event payload (a dictionary, an array, a primitive) on a compressed message encoding
+// An untyped payload (a dictionary, an array, a primitive) on a compressed message encoding
 // (#544, #538). The positional encoders write only payload types; any other value used to reach a
-// `fatalError` and end the process. It now throws `UntypedPayloadError`, so the event is lost and
-// the land that emitted it ends with `.eventEncode` (#535 row 17), never the process.
+// `fatalError` and end the process. It now throws `UntypedPayloadError`: an event that throws it is
+// lost and the land that emitted it ends with `.eventEncode` (#535 row 17); an action response
+// that throws it ends its land with `.responseEncode`. Never the process.
 //
 // The exit tests are the regression on the process: a trap ends the child, so each fails on a
 // build that still traps. The other tests give the details in process.
@@ -71,11 +72,12 @@ struct UntypedPayloadState: StateNodeProtocol, StateFromSnapshotDecodable {
 actor UntypedPayloadTransport: Transport {
     var delegate: TransportDelegate?
     private(set) var closes: [UInt16] = []
-    private(set) var sends = 0
+    private(set) var sent: [Data] = []
+    var sends: Int { sent.count }
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
     func stop() async throws {}
-    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) { sends += 1 }
+    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) { sent.append(message) }
     func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
         closes.append(close.code)
     }
@@ -86,6 +88,9 @@ struct UntypedPayloadLand {
     let keeper: LandKeeper<UntypedPayloadState>
     let adapter: TransportAdapter<UntypedPayloadState>
     let transport: UntypedPayloadTransport
+    let encoding: UntypedPayloadEncoding
+    static let session = SessionID("s1")
+    static let player = PlayerID("p1")
 
     static func make(
         _ definition: LandDefinition<UntypedPayloadState>,
@@ -99,10 +104,21 @@ struct UntypedPayloadLand {
             keeper: keeper, transport: transport, landID: definition.id, encodingConfig: encoding.config)
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
-        let session = SessionID("s1"), client = ClientID("c1")
+        let client = ClientID("c1")
         await adapter.onConnect(sessionID: session, clientID: client)
-        try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: PlayerID("p1"))
-        return UntypedPayloadLand(keeper: keeper, adapter: adapter, transport: transport)
+        try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
+        return UntypedPayloadLand(keeper: keeper, adapter: adapter, transport: transport, encoding: encoding)
+    }
+
+    /// Sends one `UntypedResponseAction` from the session, as a client frame; returns once the
+    /// adapter has handled it (answered it or ended the land).
+    func sendAction(requestID: String) async throws {
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: UntypedResponseAction.self),
+            payload: AnyCodable(UntypedResponseAction(tag: requestID))
+        )
+        let frame = try encoding.config.makeCodec().encode(TransportMessage.action(requestID: requestID, action: envelope))
+        await adapter.onMessage(frame, from: Self.session)
     }
 
     /// One tick, and with legacy sync the next one too: legacy sync submits its failure, which
@@ -113,15 +129,15 @@ struct UntypedPayloadLand {
     }
 }
 
-/// A land whose tick emits `payload` untyped (`emitAnyServerEvent`), when `untyped` is set, and
-/// syncs.
-func makeUntypedEmitLand(_ id: String, untyped: Bool) -> LandDefinition<UntypedPayloadState> {
+/// A land whose tick emits a dictionary payload untyped (`emitAnyServerEvent`) to `target`, when
+/// `untyped` is set (a typed event otherwise), and syncs.
+func makeUntypedEmitLand(_ id: String, untyped: Bool, target: SwiftStateTree.EventTarget = .all) -> LandDefinition<UntypedPayloadState> {
     Land(id, using: UntypedPayloadState.self) {
         Lifetime {
             Tick(every: .seconds(3600)) { (state: inout UntypedPayloadState, ctx: LandContext) in
                 state.round += 1
                 if untyped {
-                    ctx.emitAnyServerEvent(AnyServerEvent(type: "Untyped", payload: UntypedPayloadKind.dictionary.payload), to: .all)
+                    ctx.emitAnyServerEvent(AnyServerEvent(type: "Untyped", payload: UntypedPayloadKind.dictionary.payload), to: target)
                 } else {
                     ctx.emitEvent(UntypedPayloadTypedEvent(hp: state.round), to: .all)
                 }
@@ -130,6 +146,30 @@ func makeUntypedEmitLand(_ id: String, untyped: Bool) -> LandDefinition<UntypedP
         }
         ServerEvents {
             Register(UntypedPayloadTypedEvent.self)
+        }
+    }
+}
+
+@Payload
+struct UntypedResponseAction: ActionPayload {
+    typealias Response = UntypedResponseReply
+    let tag: String
+}
+
+@Payload
+struct UntypedResponseReply: ResponsePayload {
+    let count: Int
+}
+
+/// A tickless land whose action handler returns a dictionary, not its declared response type: the
+/// body's result is any `Codable & Sendable` value (#561).
+func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
+    Land("untyped-response", using: UntypedPayloadState.self) {
+        Rules {
+            HandleAction(UntypedResponseAction.self) { (state: inout UntypedPayloadState, _: UntypedResponseAction, _: LandContext) in
+                state.round += 1
+                return ["hp": 3] as [String: Int]
+            }
         }
     }
 }
@@ -201,7 +241,7 @@ func makeUntypedReplayLand(encoding: UntypedPayloadEncoding) async throws -> Unt
 @Suite("An untyped event payload on a compressed encoding ends the land, not the process (#544, #538)", .serialized, .timeLimit(.minutes(1)))
 struct UntypedEventPayloadTests {
     // Exit codes of the children: 0 pass; 10 + n the n-th case encoded; 30 + n it threw another error;
-    // 50 + n the land didn't end with .eventEncode.
+    // 50 + n the land didn't end with .eventEncode (.responseEncode for the response test).
 
     @Test("the process survives encoding an untyped payload on each compressed encoding (exit test)")
     func encodeDoesNotTrap() async {
@@ -239,6 +279,22 @@ struct UntypedEventPayloadTests {
         }
     }
 
+    @Test("the process survives an action response that isn't a payload type on each compressed encoding (exit test)")
+    func untypedResponseDoesNotTrap() async {
+        await #expect(processExitsWith: .success) {
+            var n = 0
+            for encoding in UntypedPayloadEncoding.compressed {
+                n += 1
+                guard let land = try? await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding),
+                      (try? await land.sendAction(requestID: "r1")) != nil
+                else { exit(Int32(30 + n)) }
+                guard await land.keeper.waitForFailureForTesting(), land.keeper.failure?.kind == .responseEncode
+                else { exit(Int32(50 + n)) }
+            }
+            exit(0)
+        }
+    }
+
     @Test("the process survives the replay land re-emitting a recorded dictionary on each compressed encoding (exit test, #538)")
     func replayReEmitDoesNotTrap() async {
         await #expect(processExitsWith: .success) {
@@ -270,11 +326,14 @@ struct UntypedEventPayloadTests {
         }
     }
 
-    @Test("a live land's untyped emit ends that land with .eventEncode and 4016; a second land in the process keeps syncing; on JSON nothing ends (#544)",
-          arguments: UntypedPayloadEncoding.allCases)
-    func liveEmitEndsTheLand(encoding: UntypedPayloadEncoding) async throws {
-        let failing = try await UntypedPayloadLand.make(makeUntypedEmitLand("untyped-live", untyped: true), encoding: encoding)
+    @Test("a live land's untyped emit, to everyone or to one player, ends that land with .eventEncode and 4016, sending nothing in the failing tick; a second land in the process keeps syncing; on JSON nothing ends (#544)",
+          arguments: UntypedPayloadEncoding.allCases, [false, true])
+    func liveEmitEndsTheLand(encoding: UntypedPayloadEncoding, targeted: Bool) async throws {
+        let target: SwiftStateTree.EventTarget = targeted ? .player(UntypedPayloadLand.player) : .all
+        let failing = try await UntypedPayloadLand.make(makeUntypedEmitLand("untyped-live", untyped: true, target: target), encoding: encoding)
         let healthy = try await UntypedPayloadLand.make(makeUntypedEmitLand("typed-live", untyped: false), encoding: encoding)
+        await failing.adapter.waitForOutboundIdleForTesting()
+        let sentBefore = await failing.transport.sends
         await failing.tick()
         if encoding == .json {
             await failing.adapter.waitForOutboundIdleForTesting()
@@ -286,6 +345,8 @@ struct UntypedEventPayloadTests {
         #expect(failing.keeper.failure?.kind == .eventEncode, "\(encoding)")
         #expect(failing.keeper.failure?.detail.contains("Untyped") == true, "\(encoding): \(String(describing: failing.keeper.failure))")
         #expect(await failing.transport.closes == [SessionClose.Code.landFailed], "\(encoding)")
+        await failing.adapter.waitForOutboundIdleForTesting()
+        #expect(await failing.transport.sends == sentBefore, "\(encoding) targeted \(targeted): the failing tick sends nothing")
 
         let before = await healthy.transport.sends
         await healthy.tick()
@@ -293,6 +354,32 @@ struct UntypedEventPayloadTests {
         #expect(healthy.keeper.failure == nil, "\(encoding): the other land is unaffected")
         #expect(await healthy.transport.sends > before, "\(encoding): the other land still sends")
         #expect(await healthy.transport.closes.isEmpty, "\(encoding)")
+    }
+
+    @Test("an action response that isn't a payload type ends the land with .responseEncode and 4016, and its client gets no answer; on JSON it is sent",
+          arguments: UntypedPayloadEncoding.allCases)
+    func untypedResponseEndsTheLand(encoding: UntypedPayloadEncoding) async throws {
+        let land = try await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let sentBefore = await land.transport.sends
+        try await land.sendAction(requestID: "r1")
+        await land.adapter.waitForOutboundIdleForTesting()
+        if encoding == .json {
+            #expect(land.keeper.failure == nil, "JSON writes a dictionary response")
+            let answers = await land.transport.sent.dropFirst(sentBefore).filter { String(decoding: $0, as: UTF8.self).contains("r1") }
+            #expect(answers.count == 1, "the response reached the client")
+            return
+        }
+        try #require(await land.keeper.waitForFailureForTesting(), "\(encoding): the land failed")
+        await land.keeper.waitUntilDrained()
+        #expect(land.keeper.failure?.kind == .responseEncode, "\(encoding)")
+        #expect(land.keeper.failure?.position.stage == .actionResponse, "\(encoding)")
+        #expect(land.keeper.failure?.detail.contains("UntypedResponseAction") == true, "\(encoding): \(String(describing: land.keeper.failure))")
+        #expect(land.keeper.failure?.detail.contains("UntypedPayloadError") == true || land.keeper.failure?.detail.contains("isn't a payload type") == true,
+                "\(encoding): \(String(describing: land.keeper.failure))")
+        #expect(land.adapter.outputGate.isClosed, "\(encoding)")
+        #expect(await land.transport.sends == sentBefore, "\(encoding): no answer and no frame after the failure")
+        #expect(await land.transport.closes == [SessionClose.Code.landFailed], "\(encoding)")
     }
 
     @Test("the replay land's re-emit of a recorded dictionary under .projectedWithFallback ends the replay land with .eventEncode and 4016 (#538)",

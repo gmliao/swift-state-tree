@@ -2,9 +2,9 @@ import Foundation
 
 /// Why a land was ended by a failure (#535).
 ///
-/// A sync conversion, a frame or event encode, a sync plan, or a handler that threw after
-/// writing synced state can't be brought back to a fully correct state, so the land ends: its
-/// sessions close with 4016 (`landFailed`), and its destroy handlers and save see
+/// A sync conversion, a frame, event or action-response encode, a sync plan, or a handler that
+/// threw after writing synced state can't be brought back to a fully correct state, so the land
+/// ends: its sessions close with 4016 (`landFailed`), and its destroy handlers and save see
 /// `LandDestructionCause.failed`. The keeper keeps the first failure (`LandKeeper.failure`).
 public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConvertible {
     public enum Kind: String, Sendable, Codable {
@@ -16,6 +16,8 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
         case syncPlan
         /// A server event didn't encode.
         case eventEncode
+        /// An action's response didn't encode, so its client would get no answer (#544).
+        case responseEncode
         /// A handler threw after mutable access to synced state (#87).
         case handlerWrite
     }
@@ -54,6 +56,8 @@ public struct LandFailurePosition: Sendable, Equatable, Codable, CustomStringCon
         case syncPhase
         /// In the legacy event flush after the turn.
         case eventFlush
+        /// After the action's turn, while its response was encoded for the client.
+        case actionResponse
     }
 
     /// The tick of the turn, for a tick land.
