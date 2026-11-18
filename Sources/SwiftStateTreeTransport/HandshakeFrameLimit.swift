@@ -1,6 +1,6 @@
 // Sources/SwiftStateTreeTransport/HandshakeFrameLimit.swift
 //
-// The largest frame a session may send before its join completes. Until then the router decodes
+// The largest frame a session may send before its join is admitted. Until then the router decodes
 // every frame as JSON, whatever the land's encoding, and the JSON object format's decode costs
 // far more per element than the frame's size suggests (`AnyCodable`'s decode, #528). A join is a
 // few hundred bytes, so a frame over the limit is refused before it is parsed, and the session

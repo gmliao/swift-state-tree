@@ -160,7 +160,7 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Allow auto-creating land when join with instanceId but land doesn't exist (default: false).
     public var allowAutoCreateOnJoin: Bool
 
-    /// The largest frame a session may send before its join completes, in bytes; `nil`: no
+    /// The largest frame a session may send before its join is admitted, in bytes; `nil`: no
     /// limit. Defaults to the environment (`HandshakeFrameLimit.fromEnvironment()`,
     /// `HANDSHAKE_FRAME_MAX_BYTES`, 64 KiB). A larger frame is refused before it is parsed, and
     /// the session is closed with 1009.

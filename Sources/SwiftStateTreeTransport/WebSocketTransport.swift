@@ -417,16 +417,18 @@ public actor WebSocketTransport: Transport {
             try? await connection.close()
             return .rejected(.sessionIDInUse)
         }
+        lastConnectionGeneration += 1
+        let generation = lastConnectionGeneration
         var queue = SessionSendQueue.create(
             sessionID: sessionID,
             connection: connection,
             logger: logger,
             // In a Task of its own: `closeSession` cancels the drain task this runs on, and the
-            // delegate's cleanup must not run in a cancelled task.
-            onCloseMarker: { [weak self] in Task { await self?.closeSessionAtMarker(sessionID) } }
+            // delegate's cleanup must not run in a cancelled task. Pinned to this connection:
+            // the callback can outlive it.
+            onCloseMarker: { [weak self] in Task { await self?.closeSessionAtMarker(sessionID, generation: generation) } }
         )
-        lastConnectionGeneration += 1
-        queue.generation = lastConnectionGeneration
+        queue.generation = generation
         sessionQueues[sessionID] = queue
         lastMissingSessionLogAt.removeValue(forKey: sessionID)
         // Generate short client ID (6 characters) for better identification
@@ -550,10 +552,11 @@ public actor WebSocketTransport: Transport {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, generation: generation)
     }
 
-    /// `closeSessionAfterQueuedFrames(_:)`, closing with `close` instead of 1000: the frames
-    /// queued so far (an error explaining the close) reach the connection before the close.
-    package func closeSessionAfterQueuedFrames(_ sessionID: SessionID, with close: SessionClose) async {
-        closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, close: close)
+    /// `closeSessionAfterQueuedFrames(_:generation:)`, closing with `close` instead of 1000: the
+    /// frames queued so far (an error explaining the close) reach the connection before the
+    /// close. Only while the session's connection is the one with `generation` (nil: any).
+    package func closeSessionAfterQueuedFrames(_ sessionID: SessionID, generation: UInt64?, with close: SessionClose) async {
+        closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout, generation: generation, close: close)
     }
 
     /// `closeSessionAfterQueuedFrames(_:)` with an explicit bound (tests).
@@ -579,10 +582,11 @@ public actor WebSocketTransport: Transport {
         }
     }
 
-    /// The drain reached the session's close marker: close with the close it carries.
-    private func closeSessionAtMarker(_ sessionID: SessionID) async {
-        let close = sessionQueues[sessionID]?.markerClose ?? .normal
-        await closeSession(sessionID, with: close)
+    /// The drain of the connection with `generation` reached its close marker: close with the
+    /// close the marker carries. A newer connection under the same ID is left alone.
+    private func closeSessionAtMarker(_ sessionID: SessionID, generation: UInt64) async {
+        guard let queue = sessionQueues[sessionID], queue.generation == generation else { return }
+        await closeSession(sessionID, with: queue.markerClose)
     }
 
     /// Closes the session's connection from the server side: the delegate is told the session

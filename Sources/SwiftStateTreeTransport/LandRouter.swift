@@ -43,7 +43,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// required of every join and echoed in `joinResponse`.
     private let stateUpdateFeatures: [String]
     private let codec: any TransportCodec
-    /// The largest frame before the join completes (`HandshakeFrameLimit`); `nil`: no limit.
+    /// The largest frame before the join is admitted (`HandshakeFrameLimit`); `nil`: no limit.
     private let maxHandshakeFrameBytes: Int?
     private let messageEncoder: any TransportMessageEncoder
     
@@ -54,6 +54,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Connection generation read when the session's connection was accepted (passed to the
     /// land's adapter on join, so its frames are stamped for that connection).
     private var sessionToConnectionGeneration: [SessionID: UInt64] = [:]
+    /// Sessions refused for a frame over the pre-join limit (`HandshakeFrameLimit`), until their
+    /// close is reported: every later frame from them is dropped.
+    private var refusedSessions: Set<SessionID> = []
+    /// Frames dropped from refused sessions (tests).
+    private(set) var framesDroppedAfterRefusalForTesting = 0
     
     /// The land instance each session is bound to, from the bind on (#390).
     private var sessionToBound: [SessionID: BoundLand] = [:]
@@ -236,7 +241,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///     The default, `false`, fails open: a router constructed directly lets a tokenless
     ///     session name any `playerID`, so pass `true` whenever the land authenticates players.
     ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false)
-    ///   - maxHandshakeFrameBytes: The largest frame a session may send before its join completes
+    ///   - maxHandshakeFrameBytes: The largest frame a session may send before its join is admitted
     ///     (`HandshakeFrameLimit`, default from `HANDSHAKE_FRAME_MAX_BYTES`, 64 KiB); `nil`: no
     ///     limit. A larger frame is refused before it is parsed, and the session is closed (1009).
     ///   - logger: Optional logger instance
@@ -310,10 +315,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - clientID: The client identifier
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
         await holds.at(.disconnectEntry)
+        refusedSessions.remove(sessionID)
         let bound = removeSession(sessionID)
+        await forwardDisconnect(bound, sessionID: sessionID, clientID: clientID)
+    }
 
-        // If the session was bound to a land instance, notify that instance's adapter, a
-        // detached one included (#390).
+    /// Tells the adapter of the instance `bound` names that the session is gone; a detached
+    /// one included (#390). Call in the segment that removed the session.
+    private func forwardDisconnect(_ bound: BoundLand?, sessionID: SessionID, clientID: ClientID) async {
         if let bound {
             let landID = bound.landID
             // Counted in the removal's segment, so a shutdown that snapshots the sessions after
@@ -526,6 +535,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - message: The raw message data
     ///   - sessionID: The session that sent the message
     public func onMessage(_ message: Data, from sessionID: SessionID) async {
+        // A refused session is closing: nothing it sends is read.
+        if refusedSessions.contains(sessionID) {
+            framesDroppedAfterRefusalForTesting += 1
+            return
+        }
         // Get handshake phase for this session
         let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
         
@@ -537,18 +551,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 // A join is small: a larger frame is refused before it is parsed, and the
                 // session closed (#528's JSON decode cost; `HandshakeFrameLimit`).
                 if let limit = maxHandshakeFrameBytes, message.count > limit {
-                    logger.warning("Frame before join over the limit; closing the session", metadata: [
-                        "sessionID": .string(sessionID.rawValue),
-                        "bytes": .string("\(message.count)"),
-                        "limit": .string("\(limit)")
-                    ])
-                    await sendError(
-                        to: sessionID,
-                        code: .invalidMessageFormat,
-                        message: "Frame of \(message.count) bytes before join is over the \(limit)-byte limit"
-                    )
-                    // Behind the error, so the close can't overtake it.
-                    await transport.closeSessionAfterQueuedFrames(sessionID, with: .handshakeFrameTooBig)
+                    await refuseOversizedHandshakeFrame(sessionID, bytes: message.count, limit: limit)
                     return
                 }
 
@@ -1271,6 +1274,36 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// A join error frame, JSON as in the handshake: the client hasn't had its JoinResponse.
+    /// A frame over the pre-join limit (`HandshakeFrameLimit`): the session is refused.
+    ///
+    /// In this segment, before any await, the session's router state goes as on a disconnect:
+    /// a join attempt in progress ends (its admission, if on its way, is refused when it runs),
+    /// the session is unbound, and `refusedSessions` drops every later frame, so nothing the
+    /// client sends next can join. Then the error goes out, stamped with the session's
+    /// connection, and the 1009 close behind it.
+    private func refuseOversizedHandshakeFrame(_ sessionID: SessionID, bytes: Int, limit: Int) async {
+        refusedSessions.insert(sessionID)
+        let generation = sessionToConnectionGeneration[sessionID]
+        let clientID = sessionToClient[sessionID] ?? ClientID("")
+        let bound = removeSession(sessionID)
+        // Counted in flight in this segment, as `onDisconnect` does (`closeSessionsForShutdown`).
+        await forwardDisconnect(bound, sessionID: sessionID, clientID: clientID)
+        logger.warning("Frame before join over the limit; closing the session", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "bytes": .string("\(bytes)"),
+            "limit": .string("\(limit)")
+        ])
+        let payload = ErrorPayload(
+            code: .invalidMessageFormat,
+            message: "Frame of \(bytes) bytes before join is over the \(limit)-byte limit"
+        )
+        if let data = try? TransportEncodingConfig.json.makeMessageEncoder().encode(TransportMessage.error(payload)) {
+            await transport.sendSessionFrames([SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)])
+        }
+        // Behind the error, so the close can't overtake it.
+        await transport.closeSessionAfterQueuedFrames(sessionID, generation: generation, with: .handshakeFrameTooBig)
+    }
+
     private func joinErrorData(requestID: String, code: ErrorCode, message: String) -> Data? {
         let payload = ErrorPayload(code: code, message: message, details: ["requestID": AnyCodable(requestID)])
         return try? TransportEncodingConfig.json.makeMessageEncoder().encode(TransportMessage.error(payload))

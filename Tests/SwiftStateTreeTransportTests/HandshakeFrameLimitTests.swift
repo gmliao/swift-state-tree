@@ -1,6 +1,6 @@
 // Tests/SwiftStateTreeTransportTests/HandshakeFrameLimitTests.swift
 //
-// The pre-handshake frame-size cap (`HandshakeFrameLimit`): before a session's join completes,
+// The pre-handshake frame-size cap (`HandshakeFrameLimit`): before a session's join is admitted,
 // a frame over the limit is refused before it is parsed, with an INVALID_MESSAGE_FORMAT error
 // and a 1009 close, and the land never sees a join. A frame at the limit is decoded as before,
 // and frames after the join aren't limited.
@@ -29,22 +29,63 @@ struct HandshakeLimitNoteAction: ActionPayload {
     let text: String
 }
 
-/// Records what the transport sends to one session, and how it was closed. Tests wait on these
-/// events (`waitFor`), not on time: each send and close resumes the waiters whose condition holds.
+/// Records what the transport sends to one session, and how it was closed, in order. Tests wait
+/// on these events (`waitFor`), not on time: each send, send attempt and close resumes the waiters
+/// whose condition holds. `holdSends` stops the session's drain inside `send` until
+/// `releaseSends`; `failSends` makes every send throw, which ends the drain.
 private actor LimitConnection: WebSocketConnection {
+    enum Event: Equatable, Sendable {
+        case sent(MessageKind?)
+        case closed(SessionClose)
+    }
+
+    struct SendFailed: Error {}
+
     private(set) var messages: [Data] = []
     private(set) var closes: [SessionClose] = []
+    private(set) var events: [Event] = []
+    private(set) var sendAttempts = 0
+    private var holding = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var failing = false
     private var waiters: [UInt64: (condition: @Sendable (Snapshot) -> Bool, continuation: CheckedContinuation<Void, Never>)] = [:]
     private var nextWaiter: UInt64 = 0
 
     struct Snapshot: Sendable {
         let kinds: [MessageKind]
         let closes: [SessionClose]
+        let sendAttempts: Int
     }
 
-    func send(_ data: Data) async throws { messages.append(data); resumeWaiters() }
-    func close() async throws { closes.append(.normal); resumeWaiters() }
-    func close(with close: SessionClose) async throws { closes.append(close); resumeWaiters() }
+    func holdSends() { holding = true }
+
+    func releaseSends() {
+        holding = false
+        let resumed = held
+        held = []
+        for continuation in resumed { continuation.resume() }
+    }
+
+    func failSends() { failing = true }
+
+    func send(_ data: Data) async throws {
+        sendAttempts += 1
+        resumeWaiters()
+        if failing { throw SendFailed() }
+        if holding { await withCheckedContinuation { held.append($0) } }
+        messages.append(data)
+        events.append(.sent(try? JSONDecoder().decode(TransportMessage.self, from: data).kind))
+        resumeWaiters()
+    }
+
+    func close() async throws { record(.normal) }
+    func close(with close: SessionClose) async throws { record(close) }
+
+    private func record(_ close: SessionClose) {
+        closes.append(close)
+        events.append(.closed(close))
+        resumeWaiters()
+    }
 
     /// Returns once `condition` holds for what the connection has received, or once the task is
     /// cancelled: the suite's time limit cancels a test whose event never comes, and the
@@ -67,7 +108,7 @@ private actor LimitConnection: WebSocketConnection {
         waiters.removeValue(forKey: id)?.continuation.resume()
     }
 
-    private var snapshot: Snapshot { Snapshot(kinds: kinds, closes: closes) }
+    private var snapshot: Snapshot { Snapshot(kinds: kinds, closes: closes, sendAttempts: sendAttempts) }
 
     private func resumeWaiters() {
         let now = snapshot
@@ -126,6 +167,14 @@ private struct LimitFixture {
             transportEncoding: .json,
             maxHandshakeFrameBytes: limit
         )
+    }
+
+    /// Holds the router once at `point`; the test opens the gate.
+    func hold(at point: LandRouterHoldPoint) async -> TestGate {
+        let gate = TestGate()
+        let registry = HoldRegistry<LandRouterHoldPoint>().on(point, arrival: 1) { await gate.arrive() }
+        await router.installHolds(registry.hook)
+        return gate
     }
 
     func connect(_ session: SessionID) async -> LimitConnection {
@@ -260,5 +309,92 @@ struct HandshakeFrameLimitTests {
         await connection.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
         #expect(await fixture.router.getBoundLandID(for: session) != nil)
         #expect(await connection.closes.isEmpty)
+    }
+
+    @Test("The error reaches the connection before the 1009 close, and a join sent after the refusal is dropped")
+    func errorBeforeCloseAndTerminal() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-ordered")
+        let connection = await fixture.connect(session)
+        // The drain stops inside the first send: the error is held at the connection.
+        await connection.holdSends()
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513))
+        await connection.waitFor { $0.sendAttempts >= 1 }
+        // The router's handling of the frame has returned, and the close was requested: it waits
+        // behind the held error. (`send` + `closeSession` would have closed by now.)
+        #expect(await connection.closes.isEmpty, "no close while the error is held")
+
+        // A valid join sent before the close goes out is dropped, not handled.
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "join-2"))
+        #expect(await fixture.router.framesDroppedAfterRefusalForTesting == 1)
+
+        await connection.releaseSends()
+        await connection.waitFor { !$0.closes.isEmpty }
+        #expect(await connection.events == [.sent(.error), .closed(.handshakeFrameTooBig)])
+        #expect(await fixture.router.getBoundLandID(for: session) == nil)
+        #expect(await fixture.manager.getLand(landID: fixture.landID) == nil, "no land was looked up or created")
+    }
+
+    @Test("A session whose drain already ended (a failed send) is still closed with 1009")
+    func drainAlreadyEnded() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-drain-ended")
+        let connection = await fixture.connect(session)
+        await connection.failSends()
+        // A non-JSON frame gets an error; its send fails and ends the drain.
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: Data([0x01]))
+        let drain = try #require(await fixture.transport.sendQueueDrainTaskForTesting(session))
+        await drain.value
+        // The close marker can't be read now (`.terminated`): the close goes out at once.
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513))
+        await connection.waitFor { !$0.closes.isEmpty }
+        #expect(await connection.closes == [.handshakeFrameTooBig])
+        #expect(await fixture.manager.getLand(landID: fixture.landID) == nil)
+    }
+
+    @Test("A client that disconnects between the refusal and its close: the new connection under the ID joins and stays open")
+    func disconnectBeforeMarker() async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-reconnect")
+        let first = await fixture.connect(session)
+        await first.holdSends()
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513))
+        await first.waitFor { $0.sendAttempts >= 1 }
+        // The client goes before the drain reaches the close marker.
+        await fixture.transport.handleDisconnection(sessionID: session)
+        await first.releaseSends()
+        #expect(await !first.closes.contains(.handshakeFrameTooBig), "the old connection's close isn't sent after it left")
+
+        // The refusal ended with that connection: a new one under the same ID is read again.
+        let second = await fixture.connect(session)
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400))
+        await second.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
+        #expect(await second.closes.isEmpty)
+        #expect(await fixture.router.getBoundLandID(for: session) != nil)
+    }
+
+    @Test("A join in progress when the frame arrives is ended: it never reaches the land", arguments: [LandRouterHoldPoint.afterLand, .beforeAdmit])
+    func joinInProgressEnded(point: LandRouterHoldPoint) async throws {
+        let fixture = try LimitFixture(limit: 512)
+        let session = SessionID("s-in-progress")
+        let connection = await fixture.connect(session)
+        let gate = await fixture.hold(at: point)
+        let joinFrame = try join(bytes: 400)
+        let transport = fixture.transport
+        let joining = Task { await transport.handleIncomingMessage(sessionID: session, data: joinFrame) }
+        #expect(await gate.waitForArrivals(1))
+
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513, requestID: "join-2"))
+        gate.open()
+        await joining.value
+        await connection.waitFor { !$0.closes.isEmpty }
+
+        #expect(await connection.closes == [.handshakeFrameTooBig])
+        #expect(await !connection.kinds.contains(.joinResponse))
+        #expect(await fixture.router.getBoundLandID(for: session) == nil)
+        if let container = await fixture.manager.getLand(landID: fixture.landID) {
+            // Found or created before the hold: the land exists, but the player never joined it.
+            #expect(await container.keeper.currentState().players.isEmpty)
+        }
     }
 }

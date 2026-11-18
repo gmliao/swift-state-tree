@@ -223,7 +223,7 @@ public struct SessionClose: Sendable, Equatable {
     /// and the step ends by its deadline whether or not every grace has finished.
     package static let goingAway = SessionClose(code: 1001, reason: "server shutting down", closeGrace: .milliseconds(500))
 
-    /// 1009 Message Too Big: a frame before the join completed was over
+    /// 1009 Message Too Big: a frame before the join was admitted was over
     /// `HandshakeFrameLimit`. The same short close grace as `goingAway`, since the client may
     /// still be sending.
     package static let handshakeFrameTooBig = SessionClose(code: 1009, reason: "frame before join too big", closeGrace: .milliseconds(500))
