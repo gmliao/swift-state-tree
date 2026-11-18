@@ -76,7 +76,7 @@ struct ProductInfo: ResolverOutput, Codable, Sendable {
 Rules {
     HandleAction(UpdateCartAction.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
         // Resolver 已經執行完成，可以直接使用
-        let productInfo = ctx.productInfo  // 型別：ProductInfo?
+        let productInfo: ProductInfo? = ctx.productInfo
         
         guard let product = productInfo else {
             // 理論上不會發生，因為 resolver 失敗會中止 handler
@@ -109,8 +109,8 @@ Rules {
         resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)
     ) { state, action, ctx in
         // 兩個 resolver 已經並行執行完成
-        let productInfo = ctx.productInfo
-        let userBalance = ctx.userBalance
+        let productInfo: ProductInfo? = ctx.productInfo
+        let userBalance: UserBalance? = ctx.userBalance
         
         guard let product = productInfo, let balance = userBalance else {
             return PurchaseResponse(success: false)
@@ -425,7 +425,7 @@ enum AdminError: Error {
 // 在 handler 中使用：validate 讀取 resolver 輸出並拒絕；apply 執行操作
 HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
     validate: { (state: GameState, action: AdminAction, ctx: ValidateContext) throws in
-        guard let permission = ctx.userPermission, permission.isAdmin else {
+        guard let permission: UserPermission = ctx.userPermission, permission.isAdmin else {
             throw AdminError.adminRequired  // 什麼都不寫入
         }
     },

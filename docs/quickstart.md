@@ -601,7 +601,7 @@ let shopLand = Land("shop", using: ShopState.self) {
             resolvers: ProductInfoResolver.self
         ) { state, action, ctx in
             // Resolver has already executed, productInfo is available
-            guard let product = ctx.productInfo else {
+            guard let product: ProductInfo = ctx.productInfo else {
                 return PurchaseResponse(success: false, message: "Product not found")
             }
             

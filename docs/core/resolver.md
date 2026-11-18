@@ -76,7 +76,7 @@ Declare resolver in Land DSL:
 Rules {
     HandleAction(UpdateCartAction.self, resolvers: ProductInfoResolver.self) { state, action, ctx in
         // Resolver has already executed, can use directly
-        let productInfo = ctx.productInfo  // Type: ProductInfo?
+        let productInfo: ProductInfo? = ctx.productInfo
         
         guard let product = productInfo else {
             // Theoretically won't happen, as resolver failure aborts handler
@@ -109,8 +109,8 @@ Rules {
         resolvers: (ProductInfoResolver.self, UserBalanceResolver.self)
     ) { state, action, ctx in
         // Both resolvers have executed in parallel
-        let productInfo = ctx.productInfo
-        let userBalance = ctx.userBalance
+        let productInfo: ProductInfo? = ctx.productInfo
+        let userBalance: UserBalance? = ctx.userBalance
         
         guard let product = productInfo, let balance = userBalance else {
             return PurchaseResponse(success: false)
@@ -425,7 +425,7 @@ enum AdminError: Error {
 // Use in handler: validate reads the resolver output and refuses; apply does the work
 HandleAction(AdminAction.self, resolvers: UserPermissionResolver.self,
     validate: { (state: GameState, action: AdminAction, ctx: ValidateContext) throws in
-        guard let permission = ctx.userPermission, permission.isAdmin else {
+        guard let permission: UserPermission = ctx.userPermission, permission.isAdmin else {
             throw AdminError.adminRequired  // nothing is written
         }
     },
