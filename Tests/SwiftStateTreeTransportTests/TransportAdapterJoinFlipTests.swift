@@ -93,10 +93,10 @@ private struct Fixture {
     let sent: FlipFrames
 }
 
-private struct OnJoinFailure: Error {}
+private struct SyncPlanFault: Error {}
 
 /// `tick`: a land with an hourly tick and its loops started (periodic sync, stepped by hand);
-/// otherwise tickless with no periodic sync. OnJoin throws for the player "bad".
+/// otherwise tickless with no periodic sync.
 private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
     let definition: LandDefinition<JoinFlipTestState>
     switch (tick, onJoin) {
@@ -105,7 +105,6 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
             ServerEvents { Register(JoinFlipTestEvent.self) }
             Rules {
                 OnJoin { (state: inout JoinFlipTestState, ctx: LandContext) in
-                    if ctx.playerID.rawValue == "bad" { throw OnJoinFailure() }
                     state.joins += 1
                 }
             }
@@ -117,7 +116,6 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
         definition = Land("join-flip", using: JoinFlipTestState.self) {
             Rules {
                 OnJoin { (state: inout JoinFlipTestState, ctx: LandContext) in
-                    if ctx.playerID.rawValue == "bad" { throw OnJoinFailure() }
                     state.joins += 1
                 }
             }
@@ -249,19 +247,6 @@ struct TransportAdapterJoinFlipTests {
         #expect(try #require(s0Last) < (try #require(s1First)))
     }
 
-    @Test("OnJoin throws: the join fails with onJoinFailed at once, and the session got nothing")
-    func onJoinThrowFailsTheJoin() async throws {
-        let fixture = await makeFixture(tick: false)
-        let s1 = SessionID("s1")
-        await #expect(throws: JoinFlipError.onJoinFailed) {
-            _ = try await joinInTurn(fixture, session: s1, player: PlayerID("bad"))
-        }
-        #expect(await fixture.keeper.playerCount() == 0)
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == [])
-        #expect(await fixture.adapter.inTurnJoinFailures[.onJoinFailed] == 1)
-    }
-
     @Test("No committed sync within the flip timeout: the join fails with timeout")
     func joinTimesOut() async throws {
         let fixture = await makeFixture(tick: true)
@@ -359,7 +344,7 @@ struct TransportAdapterJoinFlipTests {
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
         // The tick's sync phase (run for the ready join) throws: the first throw ends the land.
-        await fixture.adapter.setSyncPlanFaultForTesting { throw OnJoinFailure() }
+        await fixture.adapter.setSyncPlanFaultForTesting { throw SyncPlanFault() }
         await fixture.keeper.stepTickOnce()
         #expect(fixture.keeper.failure?.kind == .syncPlan)
         #expect(fixture.keeper.destructionCause == .failed)
@@ -371,7 +356,7 @@ struct TransportAdapterJoinFlipTests {
     @Test("Tickless land: a plan that throws while a join waits ends the land at once, with no retry (#535 row 15)")
     func failingPlanOnTicklessJoinEndsTheLand() async throws {
         let fixture = await makeFixture(tick: false)
-        await fixture.adapter.setSyncPlanFaultForTesting { throw OnJoinFailure() }
+        await fixture.adapter.setSyncPlanFaultForTesting { throw SyncPlanFault() }
         let join = Task { try await joinInTurn(fixture, session: SessionID("s1"), player: PlayerID("p1")) }
         await #expect(throws: (any Error).self) { _ = try await join.value }
         #expect(fixture.keeper.failure?.kind == .syncPlan)

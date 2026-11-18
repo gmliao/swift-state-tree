@@ -77,25 +77,28 @@ private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
             OnLeave { (state: inout InputTurnTestState, _: LandContext) in
                 state.joined -= 1
             }
-            HandleAction(InputTurnAddAction.self) { (state: inout InputTurnTestState, action: InputTurnAddAction, ctx: LandContext) in
-                state.total += action.amount
+            HandleAction(InputTurnAddAction.self, validate: { (_: InputTurnTestState, action: InputTurnAddAction, _: ValidateContext) in
+                // A negative amount is refused before anything is written (#586).
                 if action.amount < 0 {
                     throw InputTurnHandlerError()
                 }
+            }, apply: { (state: inout InputTurnTestState, action: InputTurnAddAction, ctx: LandContext) in
+                state.total += action.amount
                 ctx.emitEvent(InputTurnEvent(message: "added-\(action.amount)"), to: .all)
                 if action.sync {
                     ctx.requestSyncNow()
                 }
                 return InputTurnAddResponse(amount: action.amount)
-            }
-            HandleEvent(InputTurnBumpEvent.self) { (state: inout InputTurnTestState, event: InputTurnBumpEvent, _: LandContext) in
-                // A negative bump throws before it writes anything (its run is counted).
+            })
+            HandleEvent(InputTurnBumpEvent.self, validate: { (_: InputTurnTestState, event: InputTurnBumpEvent, _: ValidateContext) in
+                // A negative bump is refused (its validate runs are counted).
                 if event.amount < 0 {
                     InputTurnEventRuns.shared.increment(event.amount)
                     throw InputTurnHandlerError()
                 }
+            }, apply: { (state: inout InputTurnTestState, event: InputTurnBumpEvent, _: LandContext) in
                 state.total += event.amount
-            }
+            })
         }
     }
 }
@@ -592,7 +595,7 @@ struct LandKeeperInputTurnTests {
             let f = try await InputTurnFixture.make(inTurn: inTurn)
             var errors = 0
             try await f.add(1)
-            do { try await f.add(-5) } catch { errors += 1 }  // partial write, then throw
+            do { try await f.add(-5) } catch { errors += 1 }  // refused by validate, nothing written
             do { try await f.add(2) } catch { errors += 1 }   // -5 is not run again: this applies
             outcomes.append((errors, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total))
         }
@@ -602,8 +605,8 @@ struct LandKeeperInputTurnTests {
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
         #expect(on.errors == 1, "only the throwing input's caller gets an error")
         #expect(on.pending.isEmpty, "the throwing input was removed; the one after it applied")
-        // 1, then -5's write before its throw (kept, #87), then 2.
-        #expect(on.total == -2, "state \(on.total)")
+        // 1, then 2: -5 was refused before it wrote (#586).
+        #expect(on.total == 3, "state \(on.total)")
     }
 
     @Test("a throw at P in a batch: the input before P succeeds, P fails and is removed (ON vs OFF)")
@@ -637,8 +640,8 @@ struct LandKeeperInputTurnTests {
         #expect(on.first == 1 && off.first == 1, "the input before P succeeds: ON \(String(describing: on.first)) OFF \(String(describing: off.first))")
         #expect(on.failed && off.failed, "P's caller gets its error")
         #expect(on.pending.isEmpty && off.pending.isEmpty, "P is removed, not left pending: ON \(on.pending) vs OFF \(off.pending)")
-        // 1, then P's write before its throw (kept, #87).
-        #expect(on.total == -4, "state \(on.total)")
+        // 1 only: P was refused before it wrote (#586).
+        #expect(on.total == 1, "state \(on.total)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
     }
 

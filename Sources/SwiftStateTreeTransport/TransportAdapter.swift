@@ -2112,11 +2112,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             guard let (sessionID, _) = joiningSessions.first(where: { $0.value.inTurn?.joinSequence == result.sequence }) else {
                 continue
             }
-            if result.failed {
-                failInTurnJoin(sessionID: sessionID, reason: .onJoinFailed)
-            } else {
-                joiningSessions[sessionID]?.inTurn?.consumed = true
-            }
+            joiningSessions[sessionID]?.inTurn?.consumed = true
         }
     }
 

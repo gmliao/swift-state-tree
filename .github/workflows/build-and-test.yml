@@ -57,6 +57,10 @@ jobs:
     
     - name: Build
       run: swift build
+
+    # Handler bodies that must not compile (#586): a throw after the write, a wrong response type.
+    - name: Must-not-compile snippets
+      run: scripts/check-must-not-compile.sh
     
     - name: Run tests
       run: swift test

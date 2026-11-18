@@ -14,18 +14,9 @@ struct PerSequenceTestState: StateNodeProtocol {
     @Sync(.broadcast)
     var total: Int = 0
 
-    /// How many more times each throwing action (by tag) throws before it applies.
+    /// Tags whose throwing action is refused by its `validate` (#586): nothing is written.
     @Sync(.broadcast)
-    var failuresLeft: [String: Int] = [:]
-
-    /// How many times each throwing action (by tag) ran, throws included (written before the
-    /// throw, so it is a partial write that replay must reproduce).
-    @Sync(.broadcast)
-    var attempts: [String: Int] = [:]
-
-    /// Players whose OnLeave throws (after logging "leaveFailed:<id>", a partial write).
-    @Sync(.broadcast)
-    var failLeave: [String] = []
+    var refusedTags: [String] = []
 
     /// What ran, in order.
     @Sync(.broadcast)
@@ -56,7 +47,7 @@ struct PerSequenceGatedAction: ActionPayload {
 struct PerSequenceThrowingAction: ActionPayload {
     typealias Response = PerSequenceAck
     let amount: Int
-    /// Key into `failuresLeft` and `attempts`.
+    /// Refused when it is in `refusedTags`.
     let tag: String
 }
 
@@ -78,9 +69,6 @@ struct PerSequenceGatedResolver: ContextResolver {
 struct PerSequenceHandlerFailure: Error, Equatable {
     let tag: String
 }
-
-/// Always throws: `failuresLeft` this high is never used up in a test.
-private let alwaysThrows = 1_000
 
 private func makePerSequenceDefinition(tick: Bool) -> LandDefinition<PerSequenceTestState> {
     if tick {
@@ -106,10 +94,6 @@ private func perSequenceRules() -> RulesNode {
             state.log.append("join:\(ctx.playerID.rawValue)")
         }
         OnLeave { (state: inout PerSequenceTestState, ctx: LandContext) in
-            if state.failLeave.contains(ctx.playerID.rawValue) {
-                state.log.append("leaveFailed:\(ctx.playerID.rawValue)")
-                throw PerSequenceHandlerFailure(tag: "leave")
-            }
             state.log.append("leave:\(ctx.playerID.rawValue)")
         }
         HandleAction(PerSequencePlainAction.self) {
@@ -125,19 +109,16 @@ private func perSequenceRules() -> RulesNode {
             state.log.append("gated:\(action.amount)")
             return PerSequenceAck(amount: action.amount)
         }
-        HandleAction(PerSequenceThrowingAction.self) {
-            (state: inout PerSequenceTestState, action: PerSequenceThrowingAction, ctx: LandContext) in
-            state.attempts[action.tag, default: 0] += 1
-            // Emitted before the throw: dropped with the failed input.
-            ctx.emitEvent(PerSequenceEvent(amount: -action.amount), to: .all)
-            if let left = state.failuresLeft[action.tag], left > 0 {
-                state.failuresLeft[action.tag] = left - 1
+        HandleAction(PerSequenceThrowingAction.self, validate: {
+            (state: PerSequenceTestState, action: PerSequenceThrowingAction, _: ValidateContext) in
+            if state.refusedTags.contains(action.tag) {
                 throw PerSequenceHandlerFailure(tag: action.tag)
             }
+        }, apply: { (state: inout PerSequenceTestState, action: PerSequenceThrowingAction, _: LandContext) in
             state.total += action.amount
             state.log.append("throwing:\(action.tag)")
             return PerSequenceAck(amount: action.amount)
-        }
+        })
     }
 }
 
@@ -214,14 +195,12 @@ private let perSequenceLandID = "per-sequence-test:local"
 private func makePerSequenceKeeper(
     tick: Bool = false,
     inTurn: Bool,
-    failuresLeft: [String: Int] = [:],
-    failLeave: [String] = [],
+    refusedTags: [String] = [],
     recording: Bool = false,
     transport: (any LandKeeperTransport)? = nil
 ) async -> LandKeeper<PerSequenceTestState> {
     var initial = PerSequenceTestState()
-    initial.failuresLeft = failuresLeft
-    initial.failLeave = failLeave
+    initial.refusedTags = refusedTags
     let keeper = LandKeeper<PerSequenceTestState>(
         definition: makePerSequenceDefinition(tick: tick),
         initialState: initial,
@@ -289,7 +268,7 @@ private func outcome(
 struct PerSequenceResultTests {
     @Test("A caller gets its own response, not that of an input run after it (#88)", arguments: [false, true])
     func ownResponse(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(inTurn: inTurn, failuresLeft: ["t": 1])
+        let keeper = await makePerSequenceKeeper(inTurn: inTurn, refusedTags: ["t"])
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let gateKey = DeliveryGates.freshKey()
@@ -307,12 +286,12 @@ struct PerSequenceResultTests {
         // T failed and was removed: it never runs again.
         let state = await keeper.currentState()
         #expect(state.total == gateKey)
-        #expect(state.attempts["t"] == 1)
+        #expect(!state.log.contains("throwing:t"))
     }
 
     @Test("Tickless: an always-throwing input fails alone and blocks nothing; nothing runs twice", arguments: [false, true])
     func throwingInputFailsAlone(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(inTurn: inTurn, failuresLeft: ["w": alwaysThrows])
+        let keeper = await makePerSequenceKeeper(inTurn: inTurn, refusedTags: ["w"])
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         var outcomes: [String] = []
         for action: any ActionPayload in [
@@ -327,13 +306,12 @@ struct PerSequenceResultTests {
         #expect(outcomes == ["ok 3", "threw w", "ok 5", "threw w", "ok 7"])
         let state = await keeper.currentState()
         #expect(state.total == 15)
-        #expect(state.attempts["w"] == 2)
         #expect(state.log == ["join:p1", "plain:3", "plain:5", "plain:7"])
     }
 
     @Test("Tick land: in one tick, the inputs after a throwing input apply; it doesn't run again next tick", arguments: [false, true])
     func tickPassContinuesPastThrow(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(tick: true, inTurn: inTurn, failuresLeft: ["w": alwaysThrows])
+        let keeper = await makePerSequenceKeeper(tick: true, inTurn: inTurn, refusedTags: ["w"])
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.stepTickOnce()
         _ = try await send(keeper, PerSequencePlainAction(amount: 2))
@@ -344,7 +322,6 @@ struct PerSequenceResultTests {
 
         let state = await keeper.currentState()
         #expect(state.total == 6)
-        #expect(state.attempts["w"] == 1)
         #expect(state.log == ["join:p1", "tick", "plain:2", "plain:4", "tick", "tick"])
     }
 
@@ -352,7 +329,7 @@ struct PerSequenceResultTests {
     func legacyAndInTurnAgree() async throws {
         var runs: [[String]] = []
         for inTurn in [false, true] {
-            let keeper = await makePerSequenceKeeper(inTurn: inTurn, failuresLeft: ["w": alwaysThrows, "t": 1])
+            let keeper = await makePerSequenceKeeper(inTurn: inTurn, refusedTags: ["w", "t"])
             try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
             var log: [String] = []
             for action: any ActionPayload in [
@@ -366,19 +343,19 @@ struct PerSequenceResultTests {
                 log.append(await outcome(keeper, action))
             }
             let state = await keeper.currentState()
-            log.append("total \(state.total) attempts \(state.attempts.sorted { $0.key < $1.key })")
+            log.append("total \(state.total)")
             runs.append(log)
         }
         #expect(runs[0] == runs[1])
-        #expect(runs[0].dropLast() == ["ok 3", "threw w", "threw t", "ok 5", "ok 100", "ok 7"])
-        #expect(runs[0].last == "total 115 attempts [(key: \"t\", value: 2), (key: \"w\", value: 1)]")
+        #expect(runs[0].dropLast() == ["ok 3", "threw w", "threw t", "ok 5", "threw t", "ok 7"])
+        #expect(runs[0].last == "total 15")
     }
 
     @Test("Legacy tick: a leave applied before a throwing input still gets its broadcast-only sync")
     func leaveBeforeThrowStillBroadcasts() async throws {
         let spy = BroadcastSpyTransport()
         let keeper = await makePerSequenceKeeper(
-            tick: true, inTurn: false, failuresLeft: ["w": alwaysThrows], transport: spy
+            tick: true, inTurn: false, refusedTags: ["w"], transport: spy
         )
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
@@ -396,7 +373,7 @@ struct PerSequenceResultTests {
     @Test("Tick land with a recorder: a pass with OnJoin, OnLeave and a throwing input is recorded once, in order, and replays (ON and OFF)", arguments: [false, true])
     func recordedPassReplays(inTurn: Bool) async throws {
         let keeper = await makePerSequenceKeeper(
-            tick: true, inTurn: inTurn, failuresLeft: ["w": alwaysThrows], recording: true
+            tick: true, inTurn: inTurn, refusedTags: ["w"], recording: true
         )
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.stepTickOnce()
@@ -425,18 +402,19 @@ struct PerSequenceResultTests {
             String(describing: PerSequencePlainAction.self),
         ])
         #expect(passFrame.lifecycleEvents.map(\.kind) == ["join", "leave"])
-        // The failed input's event (emitted before its throw) is dropped; the others' go out.
+        // The plain actions' events go out; the refused input emitted none.
         #expect(passFrame.serverEvents.count == 2)
         #expect(passFrame.serverEvents.map(\.sequence) == passFrame.serverEvents.map(\.sequence).sorted())
-        #expect(!String(describing: passFrame.serverEvents.map(\.payload)).contains("-1"))
+        // A tick land records the refused input on its frame (record format 3.5, #586).
+        #expect(passFrame.rejected == [passFrame.actions[1].sequence])
         #expect(frames.filter { !$0.actions.isEmpty }.count == 1)
 
-        try await expectReplayMatches(recorder, failuresLeft: ["w": alwaysThrows])
+        try await expectReplayMatches(recorder, refusedTags: ["w"])
     }
 
     @Test("Tickless: a drain starting after a throwing input's pass: its caller gets its error, a later caller landClosed", arguments: [false, true])
     func throwingInputAcrossDrain(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(inTurn: inTurn, failuresLeft: ["w": alwaysThrows])
+        let keeper = await makePerSequenceKeeper(inTurn: inTurn, refusedTags: ["w"])
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
 
         // P fails in its pass (or turn), which then holds before its record.
@@ -460,80 +438,13 @@ struct PerSequenceResultTests {
         #expect(await keeper.currentState().total == 0)
     }
 
-    @Test("Legacy tickless: a throwing OnLeave fails its caller, the player is removed and the broadcast runs")
-    func throwingOnLeaveStillBroadcasts() async throws {
-        let spy = BroadcastSpyTransport()
-        let keeper = await makePerSequenceKeeper(inTurn: false, failLeave: ["p2"], transport: spy)
-        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let before = await spy.broadcastSyncs
-
-        await #expect(throws: PerSequenceHandlerFailure(tag: "leave")) {
-            try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
-        }
-        #expect(await keeper.playerCount() == 1)
-        #expect(await spy.broadcastSyncs == before + 1)
-        // Its write before the throw stays in the state (and goes out with that sync; #87).
-        #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
-        // The land goes on: the next input applies.
-        #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
-    }
-
-    @Test("In-turn tickless: a throwing OnLeave fails its caller, the player is removed and its turn runs the sync phase")
-    func throwingOnLeaveInTurnSyncs() async throws {
-        let spy = InTurnSyncSpyTransport()
-        let keeper = await makePerSequenceKeeper(inTurn: true, failLeave: ["p2"], transport: spy)
-        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let before = spy.syncPhases
-
-        await #expect(throws: PerSequenceHandlerFailure(tag: "leave")) {
-            try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
-        }
-        #expect(await keeper.playerCount() == 1)
-        // The leave's broadcast-only request (set before the handler) makes its input turn run
-        // the sync phase (takeSyncRequest), so the removal goes out in that turn's frames.
-        #expect(spy.syncPhases == before + 1)
-        #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leaveFailed:p2"])
-        #expect(await outcome(keeper, PerSequencePlainAction(amount: 3)) == "ok 3")
-    }
-
-    @Test("Tick land with a recorder: a throwing OnLeave is recorded once, in order, and replays (ON and OFF)", arguments: [false, true])
-    func throwingOnLeaveRecordedAndReplays(inTurn: Bool) async throws {
-        let keeper = await makePerSequenceKeeper(
-            tick: true, inTurn: inTurn, failLeave: ["p2"], recording: true
-        )
-        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        await keeper.stepTickOnce()
-        _ = try await send(keeper, PerSequencePlainAction(amount: 2))
-        try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
-        _ = try await send(keeper, PerSequencePlainAction(amount: 4))
-        await keeper.stepTickOnce()
-        await keeper.stepTickOnce()
-
-        #expect(await keeper.playerCount() == 1)
-        #expect(await keeper.currentState().log
-            == ["join:p1", "join:p2", "tick", "plain:2", "leaveFailed:p2", "plain:4", "tick", "tick"])
-
-        let recorder = try #require(await keeper.getReevaluationRecorder())
-        let frames = await recorder.getAllFrames()
-        let leaves = frames.flatMap(\.lifecycleEvents).filter { $0.kind == "leave" }
-        #expect(leaves.count == 1)
-        let passFrame = try #require(frames.first { !$0.actions.isEmpty })
-        #expect(passFrame.lifecycleEvents.map(\.kind) == ["leave"])
-        let order = (passFrame.actions.map(\.sequence) + passFrame.lifecycleEvents.map(\.sequence)).sorted()
-        #expect(order.count == 3 && passFrame.lifecycleEvents[0].sequence == order[1])
-        try await expectReplayMatches(recorder, failLeave: ["p2"])
-    }
 }
 
 /// Saves `recorder`'s record and replays it on a tick land; the replay must match the live
 /// state hashes and server events.
 private func expectReplayMatches(
     _ recorder: ReevaluationRecorder,
-    failuresLeft: [String: Int] = [:],
-    failLeave: [String] = [],
+    refusedTags: [String] = [],
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
     let path = FileManager.default.temporaryDirectory
@@ -541,8 +452,7 @@ private func expectReplayMatches(
     defer { try? FileManager.default.removeItem(atPath: path) }
     try await recorder.save(to: path)
     var initial = PerSequenceTestState()
-    initial.failuresLeft = failuresLeft
-    initial.failLeave = failLeave
+    initial.refusedTags = refusedTags
     let result = try await ReevaluationEngine.run(
         definition: makePerSequenceDefinition(tick: true),
         initialState: initial,

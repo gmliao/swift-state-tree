@@ -42,15 +42,26 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// first two were thrown on their own, as `SyncValueSemanticsError` and
     /// `SyncPolicyNestingError`; each is now this field's associated value.
     public let sync: SyncRegistrationError?
+    /// Client-event or server-input types declared with more than one handler (#586): an input
+    /// runs exactly one `validate` and one `apply`. Empty when there are none.
+    public let duplicateHandlers: [DuplicateHandlerDeclaration]
 
-    init(landType: String, payload: PayloadRegistrationError?, sync: SyncRegistrationError? = nil) {
+    init(
+        landType: String,
+        payload: PayloadRegistrationError?,
+        sync: SyncRegistrationError? = nil,
+        duplicateHandlers: [DuplicateHandlerDeclaration] = []
+    ) {
         self.landType = landType
         self.payload = payload
         self.sync = sync
+        self.duplicateHandlers = duplicateHandlers
     }
 
     public var description: String {
-        "land type '\(landType)' can't be registered: " + [payload?.description, sync?.description].compactMap { $0 }.joined(separator: "; ")
+        "land type '\(landType)' can't be registered: "
+            + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description))
+            .joined(separator: "; ")
     }
 }
 
@@ -64,14 +75,14 @@ extension LandDefinition {
         let payload = context.payloadsCompressed == true ? payloadsWithoutWriter() : nil
         let problems = SyncRegistration.cachedProblems(State.self)
         let sync = problems.isEmpty ? nil : SyncRegistrationError(problems: problems)
-        if payload != nil || sync != nil {
-            throw LandRegistrationError(landType: id, payload: payload, sync: sync)
+        if payload != nil || sync != nil || !duplicateHandlers.isEmpty {
+            throw LandRegistrationError(landType: id, payload: payload, sync: sync, duplicateHandlers: duplicateHandlers)
         }
     }
 
     /// EV1: the types the server writes positionally (its events, and each action's declared
-    /// `Response` type) that have no positional writer, which would throw at their first send. A
-    /// handler body that returns some other type isn't seen here.
+    /// `Response` type) that have no positional writer, which would throw at their first send.
+    /// A handler returns its action's declared `Response` (#586, #561), so this covers them all.
     func payloadsWithoutWriter() -> PayloadRegistrationError? {
         var problems: [String] = []
         for descriptor in serverEventRegistry.registered where !hasWriter(descriptor.type) {

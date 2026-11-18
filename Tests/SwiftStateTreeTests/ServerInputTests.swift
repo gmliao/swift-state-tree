@@ -115,10 +115,11 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
                 HandleServerInput(SIProgress.self) { (state: inout ServerInputTestState, input: SIProgress, ctx: LandContext) in
                     appendEntry("server:\(input.tag):\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
                 }
-                HandleServerInput(SIFailing.self) { (state: inout ServerInputTestState, input: SIFailing, ctx: LandContext) in
-                    appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
+                HandleServerInput(SIFailing.self, validate: { (_: ServerInputTestState, _: SIFailing, _: ValidateContext) in
                     throw SIError()
-                }
+                }, apply: { (state: inout ServerInputTestState, input: SIFailing, ctx: LandContext) in
+                    appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
+                })
                 HandleServerInput(SIDated.self) { (state: inout ServerInputTestState, input: SIDated, ctx: LandContext) in
                     appendEntry("dated:\(input.at.timeIntervalSince1970):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
                 }
@@ -331,16 +332,18 @@ struct ServerInputTests {
         #expect(clientSequences.min()! < serverSequence && serverSequence < clientSequences.max()!)
     }
 
-    @Test("A throwing handler fails that server input alone: its write is kept, it is recorded, and replay matches")
+    @Test("A refusing validate fails that server input alone: nothing is written, it is recorded as rejected, and replay matches")
     func throwingHandlerFailsOnlyItsInput() async throws {
         let keeper = try await makeKeeper(ticking: true)
         let failing = try accepted(await keeper.submitServerInput(SIFailing(tag: "x")))
         let next = try accepted(await keeper.submitServerInput(SIProgress(tag: "y")))
         await keeper.stepTickOnce()
-        // The write before the throw is kept (no per-input savepoint, #87); the next input runs.
-        #expect(await keeper.currentState().log == ["failing:x", "server:y:\(LandContext.systemPlayerID.rawValue)"])
+        // Refused before anything was written (#586); the next input runs.
+        #expect(await keeper.currentState().log == ["server:y:\(LandContext.systemPlayerID.rawValue)"])
         #expect(await keeper.serverInputsInFlightForTesting() == 0)
         #expect(try await allRecordedServerInputs(keeper).map(\.sequence) == [failing, next], "the failed input is recorded")
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        #expect(await recorder.getAllFrames().flatMap(\.rejected) == [failing], "and marked rejected on its tick frame")
 
         let path = try await saveRecord(keeper, name: "server-input-throw")
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -619,7 +622,7 @@ struct ServerInputTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let source = try ReevaluationRecordFile.openSource(filePath: path)
-        #expect(try await source.getMetadata().version == "3.4")
+        #expect(try await source.getMetadata().version == "3.5")
         let result = try await ReevaluationEngine.run(
             definition: makeDefinition(ticking: true),
             initialState: ServerInputTestState(),

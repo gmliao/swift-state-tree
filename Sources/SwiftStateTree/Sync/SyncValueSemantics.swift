@@ -9,8 +9,7 @@ import Foundation
 ///
 /// Everything that compares, copies or diffs state relies on it:
 /// - the typed tables' per-row `==` diff;
-/// - the debug check of a throwing handler's writes (#87), which compares a copy taken before
-///   the handler;
+/// - replay's state hashes, which compare the replayed state with the live one;
 /// - a rollback of a throwing input.
 ///
 /// A write through a shared object escapes all three.

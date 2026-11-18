@@ -33,13 +33,17 @@ enum LandBuilder {
 
         var canJoin: (@Sendable (State, PlayerSession, LandContext) throws -> JoinDecision)?
         var canJoinResolverExecutors: [any AnyResolverExecutor] = []
-        var onJoin: (@Sendable (inout State, LandContext) throws -> Void)?
+        var onJoin: (@Sendable (inout State, LandContext) -> Void)?
         var onJoinResolverExecutors: [any AnyResolverExecutor] = []
-        var onLeave: (@Sendable (inout State, LandContext) throws -> Void)?
+        var onLeave: (@Sendable (inout State, LandContext) -> Void)?
         var onLeaveResolverExecutors: [any AnyResolverExecutor] = []
         var actionHandlers: [AnyActionHandler<State>] = []
         var eventHandlers: [AnyClientEventHandler<State>] = []
-        var serverInputHandlers: [String: [AnyServerInputHandler<State>]] = [:]
+        var serverInputHandlers: [String: AnyServerInputHandler<State>] = [:]
+        // One handler per client-event and server-input type (#586): the first is kept, a later
+        // one is recorded and refused by registration (and by an unregistered keeper's
+        // initialization).
+        var duplicateHandlers: [DuplicateHandlerDeclaration] = []
         var clientEventRegistrations: [Any.Type] = []
         var serverEventRegistrations: [Any.Type] = []
 
@@ -70,12 +74,30 @@ enum LandBuilder {
                 case let action as AnyActionHandler<State>:
                     actionHandlers.append(action)
                 case let handler as AnyClientEventHandler<State>:
-                    eventHandlers.append(handler)
-                case let handler as AnyServerInputHandler<State>:
-                    if let other = serverInputHandlers[handler.typeIdentifier]?.first, ObjectIdentifier(other.inputType) != ObjectIdentifier(handler.inputType) {
-                        preconditionFailure("Two server input types are named \(handler.typeIdentifier): a land declares each type name once (they are recorded by name)")
+                    if let first = eventHandlers.first(where: { $0.canHandle(handler.handledType) }) {
+                        duplicateHandlers.append(DuplicateHandlerDeclaration(
+                            kind: "client event",
+                            typeName: String(describing: handler.handledType),
+                            firstSite: first.site,
+                            duplicateSite: handler.site
+                        ))
+                    } else {
+                        eventHandlers.append(handler)
                     }
-                    serverInputHandlers[handler.typeIdentifier, default: []].append(handler)
+                case let handler as AnyServerInputHandler<State>:
+                    if let other = serverInputHandlers[handler.typeIdentifier] {
+                        if ObjectIdentifier(other.inputType) != ObjectIdentifier(handler.inputType) {
+                            preconditionFailure("Two server input types are named \(handler.typeIdentifier): a land declares each type name once (they are recorded by name)")
+                        }
+                        duplicateHandlers.append(DuplicateHandlerDeclaration(
+                            kind: "server input",
+                            typeName: handler.typeIdentifier,
+                            firstSite: other.site,
+                            duplicateSite: handler.site
+                        ))
+                    } else {
+                        serverInputHandlers[handler.typeIdentifier] = handler
+                    }
                 case let lifetime as LifetimeNode<State>:
                     var cfg = lifetimeConfig
                     lifetime.configure(&cfg)
@@ -158,6 +180,7 @@ enum LandBuilder {
             actionHandlers: actionHandlers,
             eventHandlers: eventHandlers,
             serverInputHandlers: serverInputHandlers,
+            duplicateHandlers: duplicateHandlers,
             lifetimeHandlers: lifetimeHandlers
         )
     }
