@@ -117,6 +117,48 @@ struct PlainDataMacroTests {
         #expect(text.contains("PlainDataCheck.field((Int).self)"))
     }
 
+    @Test("Members inside `#if` are checked under the same conditions, in every clause")
+    func ifConfigMembers() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct Room {
+                var n: Int
+                #if DEBUG
+                var trace: [String]
+                #elseif os(Linux)
+                var linuxOnly: UInt32
+                #else
+                #endif
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("PlainDataCheck.field((Int).self) #if DEBUG PlainDataCheck.field(([String]).self) #elseif os(Linux) PlainDataCheck.field((UInt32).self) #else #endif"))
+    }
+
+    @Test("A closure inside `#if` is refused like one outside it; so is an enum case inside `#if`")
+    func ifConfigRefusals() {
+        let structResult = expand("""
+            @PlainData
+            struct Room {
+                #if DEBUG
+                var hook: @Sendable () -> Void = {}
+                #endif
+            }
+            """)
+        #expect(structResult.messages.contains { $0.contains("a function type isn't plain data") })
+        #expect(!structResult.text.contains("extension Room"))
+        let enumResult = expand("""
+            @PlainData
+            enum Phase {
+                case idle
+                #if DEBUG
+                case traced(any Error)
+                #endif
+            }
+            """)
+        #expect(enumResult.messages.contains { $0.contains("an existential or opaque type isn't plain data") })
+    }
+
     @Test("Refused: a class, an actor and a protocol", arguments: ["class", "actor", "protocol"])
     func refusesNonValueKinds(_ kind: String) {
         let body = kind == "protocol" ? "var n: Int { get }" : "var n: Int = 0"

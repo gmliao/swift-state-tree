@@ -143,6 +143,8 @@ struct Runtime<M: TurnMachine> {
     /// Set by anything that leaves work for the driver; the only check after an idle step.
     @usableFromInline var dirty = false
     @usableFromInline var droppedOutputs = 0
+    /// Parked `send`s (no caller) withdrawn or dropped by `close`; `TurnStats.droppedSends`.
+    @usableFromInline var droppedParkedSends = 0
     /// Set by `endAll`: the core is terminal, and no key can be issued again.
     @usableFromInline var ended = false
     /// `issue` and `queue` calls made after the end, and ignored.
@@ -201,20 +203,27 @@ struct Runtime<M: TurnMachine> {
         if let hold = retiring.removeValue(forKey: id) { releaseHold(hold) }
     }
 
-    /// Removes the parked inputs `predicate` picks. Their callers are answered `withdrawn`.
+    /// Removes the parked inputs `predicate` picks. Their callers are answered `withdrawn`, in
+    /// call order (not the hash order of the hold keys).
     @inlinable mutating func withdraw(where predicate: (Parked<M>) -> Bool) {
         if parkedCount == 0 { return }
+        var callers: [InputID] = []
         for key in Array(parked.keys) {
             guard var queue = parked[key] else { continue }
             let removed = queue.remove(where: predicate)
             if removed.isEmpty { continue }
             parkedCount -= removed.count
             for item in removed {
-                if let caller = item.caller { withdrawn.append(caller) }
+                if let caller = item.caller {
+                    callers.append(caller)
+                } else if !item.pinned {
+                    droppedParkedSends += 1
+                }
             }
             parked[key] = queue.isEmpty ? nil : queue
             dirty = true
         }
+        withdrawn.append(contentsOf: callers.sorted { $0.raw < $1.raw })
     }
 
     /// Removes a cancelled caller's parked input, if it is still parked.
@@ -245,6 +254,8 @@ struct Runtime<M: TurnMachine> {
                     keptCount += 1
                 } else if let caller = item.caller {
                     callers.append(caller)
+                } else {
+                    droppedParkedSends += 1
                 }
             }
             if !keep.isEmpty { kept[key] = keep }
@@ -252,7 +263,8 @@ struct Runtime<M: TurnMachine> {
         parked = kept
         parkedCount = keptCount
         releasable.removeAll { kept[$0] == nil }
-        return callers
+        // In call order, not the hash order of the hold keys.
+        return callers.sorted { $0.raw < $1.raw }
     }
 
     @inlinable func isBlocked(_ key: M.Key) -> Bool {

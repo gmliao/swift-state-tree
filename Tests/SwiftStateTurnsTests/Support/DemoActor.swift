@@ -197,8 +197,10 @@ actor ReplaceableCoreActor: TurnActor {
     }
 }
 
-/// A machine that is a class: the core stops the process when it is created with one.
-final class ClassMachine: TurnMachine {
+/// A machine that is a class: the core stops the process when it is created with one. The
+/// compiler only lets a PlainData machine reach the core, and `@PlainData` refuses a class, so
+/// this one declares the conformance by hand: the runtime stop is the backstop behind it.
+final class ClassMachine: TurnMachine, PlainData { // lint-allow: turns-plain-data: the class-machine stop needs a class that reaches the core
     typealias Input = Int
     typealias Effect = Int
     typealias Output = Int

@@ -120,4 +120,24 @@ struct CancellationTests {
         #expect(s.steps == 2)
         #expect(s.stats.pendingWaiters == 0)
     }
+
+    @Test("25b: .honoured, control, cancelled before entry, replying in its own step: stepped, and the caller still gets CancellationError")
+    func honouredControlRepliesAtOnce() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        let task = Task { () async throws -> Int in
+            await f.wait("go")
+            return try await a.call(.answerNow(7), cancellation: .honoured)
+        }
+        task.cancel()
+        f.open("go")
+        let result = outcome(await task.result)
+        let s = await a.snapshot()
+        // On an idle core the input steps at once and replies; the cancelled caller doesn't wait
+        // for that reply, which finds no waiter.
+        #expect(result == "cancelled")
+        #expect(s.log == ["answered 7"])
+        #expect(s.stats.cancelledCalls == 1)
+        #expect(s.stats.pendingWaiters == 0)
+    }
 }

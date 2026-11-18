@@ -1,18 +1,26 @@
 // The machine the generated-order harness drives (GeneratedOrderTests). Two owner keys (0, 1),
-// two hold keys (10, 11), scoped and tokened work, holding requests with deadlines, cancellation,
-// `queue(behind:)`, timers, `close` and `endAll`. It keeps its own view of what is open, live,
-// held and armed, and records a violation whenever a step contradicts an invariant (§5) that it
-// can observe. A step that resolves asynchronous work (a completion, an abandonment, a timer)
-// starts a `notify` effect, which is how the harness learns that the step happened (a machine
-// can't call out). Everything else the harness sends steps inside its own `send`.
+// two hold keys (10, 11), scoped and tokened work sent or called, holding requests with
+// deadlines, cancellation, `queue(behind:)`, timers, `close` and `endAll`. It keeps its own view
+// of what is open, live, held, armed and queued, and records a violation whenever a step
+// contradicts an invariant (§5) that it can observe. A step that resolves asynchronous work (a
+// completion, an abandonment, a timer) starts a `notify` effect, which is how the harness learns
+// that the step happened (a machine can't call out). Everything else the harness sends steps
+// inside its own `send`.
 
 import SwiftStateTurns
 
+/// An output: the work it reports, and the step that emitted it (invariant 11).
+struct OrderOutput: Sendable {
+    var id: Int
+    var step: Int
+}
+
+@PlainData
 struct OrderModel: TurnMachine {
     enum Input: Sendable {
         /// External work: parks behind `hold`, scoped to `scope` (sent after the scope's
-        /// `scopeEnds`-th `end`), withdrawn if `token` ended. `pinned`: queued by a step, not sent
-        /// from outside.
+        /// `scopeEnds`-th end or supersede), withdrawn if `token` ended. `pinned`: queued by a
+        /// step, not sent from outside.
         case work(id: Int, hold: Int?, scope: Int?, scopeEnds: Int?, token: EndToken?, tokenID: Int?, pinned: Bool)
         case issue(Int)
         case end(Int)
@@ -33,7 +41,7 @@ struct OrderModel: TurnMachine {
         case notify(String)
     }
 
-    typealias Output = Int
+    typealias Output = OrderOutput
     typealias Key = Int
     typealias Reply = Int
 
@@ -42,6 +50,7 @@ struct OrderModel: TurnMachine {
     var open: [Int: RequestID] = [:]
     var seqOf: [RequestID: Int] = [:]
     var holdOf: [Int: Int] = [:]
+    var ownerOf: [Int: Int] = [:]
     var untilRetire: Set<Int> = []
     /// Abandoned `.untilWorkerRetires` requests whose worker hasn't returned: they keep their hold.
     var retiring: [Int: Int] = [:]
@@ -49,12 +58,23 @@ struct OrderModel: TurnMachine {
     var abandoned: Set<Int> = []
     var timers: [Int: Int] = [:]
     var markedTokens: Set<Int> = []
-    var closed = false
-    var ended = false
+    var closed: Bool = false
+    var ended: Bool = false
     var steppedWork: [Int] = []
-    /// How many times each key was ended (`end`, or `endAll` for every key). Superseding a key
-    /// with `issue` doesn't end it: a scope is a key, and only `end` withdraws (rules 4 and 7).
+    /// How many times each key's scope ended: `end`, a supersede (`issue` over a live key), or
+    /// `endAll` for every key. Each withdraws the parked inputs scoped to the key (rules 4, 7).
     var ends: [Int: Int] = [:]
+    /// Steps so far; an output carries the step that emitted it.
+    var stepCount: Int = 0
+    /// The IDs of the outputs emitted under a live key, in order: what the sink must receive.
+    var expectedOutputs: [Int] = []
+    /// Per hold key, the last work ID that stepped behind it (rule 7: FIFO per hold key).
+    var lastSteppedBehind: [Int: Int] = [:]
+    /// Queued with `queue(behind:)` and accepted; and those `endAll` dropped before they stepped.
+    var queued: Set<Int> = []
+    var droppedQueued: Set<Int> = []
+    /// Handlers running now; more than one is a step entered from inside a step (invariants 2, 15).
+    var depth: Int = 0
 
     func admission(of input: Input) -> Admission<Int> {
         switch input {
@@ -73,18 +93,38 @@ struct OrderModel: TurnMachine {
 
     mutating func violate(_ text: String) { violations.append(text) }
 
+    mutating func enter() {
+        if depth != 0 { violate("a step entered while another ran") }
+        depth += 1
+        stepCount += 1
+    }
+
     mutating func handle(_ input: Input, _ turn: inout Turn<OrderModel>) {
+        enter()
+        defer { depth -= 1 }
         switch input {
-        case .work(let id, _, let scope, let scopeEnds, _, let tokenID, let pinned):
+        case .work(let id, let hold, let scope, let scopeEnds, _, let tokenID, let pinned):
             if ended { violate("work \(id) stepped after endAll") }
             if closed, !pinned { violate("external work \(id) stepped after close") }
             if let scope, (ends[scope] ?? 0) != scopeEnds {
-                violate("work \(id) stepped after its scope \(scope) ended")
+                violate("work \(id) stepped after its scope \(scope) ended or was superseded")
             }
             if let tokenID, markedTokens.contains(tokenID) { violate("work \(id) stepped after its token ended") }
+            if let hold {
+                if let last = lastSteppedBehind[hold], last > id {
+                    violate("work \(id) stepped behind \(hold) after work \(last), which came later")
+                }
+                lastSteppedBehind[hold] = id
+            }
+            if droppedQueued.contains(id) { violate("queued work \(id) stepped after endAll dropped it") }
             steppedWork.append(id)
+            // One output, under its scope (or owner 0); delivered only if that key is live.
+            let key = scope ?? 0
+            if turn.isLive(key) { expectedOutputs.append(id) }
+            turn.emit(OrderOutput(id: id, step: stepCount), for: key)
+            if let caller = turn.input { turn.reply(to: caller, .success(id)) }
         case .issue(let key):
-            turn.issue(key)
+            if turn.issue(key) { ends[key, default: 0] += 1 }
             timers.removeValue(forKey: key)
             closeTracked(owner: key)
         case .end(let key):
@@ -110,7 +150,13 @@ struct OrderModel: TurnMachine {
         case .cancel(let seq):
             if let id = open[seq] { turn.cancel(id) }
         case .queueBehind(let id, let hold):
-            turn.queue(.work(id: id, hold: hold, scope: nil, scopeEnds: nil, token: nil, tokenID: nil, pinned: true), behind: hold)
+            let work = Input.work(id: id, hold: hold, scope: nil, scopeEnds: nil, token: nil, tokenID: nil, pinned: true)
+            if turn.queue(work, behind: hold) {
+                if ended { violate("queue \(id) accepted after endAll") }
+                queued.insert(id)
+            } else if !ended {
+                violate("queue \(id) refused before endAll")
+            }
         case .revoke(let token, let tokenID):
             turn.revoke(token)
             markedTokens.insert(tokenID)
@@ -135,11 +181,10 @@ struct OrderModel: TurnMachine {
             closed = true
             ended = true
             timers.removeAll()
+            droppedQueued.formUnion(queued.subtracting(steppedWork))
             for seq in open.keys.sorted() { markAbandoned(seq) }
         }
     }
-
-    var ownerOf: [Int: Int] = [:]
 
     /// The core closes an ended or superseded key's requests; mirror it.
     mutating func closeTracked(owner: Int) {
@@ -153,6 +198,8 @@ struct OrderModel: TurnMachine {
     }
 
     mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<OrderModel>) {
+        enter()
+        defer { depth -= 1 }
         guard let seq = seqOf[request] else {
             violate("an abandonment for a request this machine never made")
             return
@@ -166,6 +213,8 @@ struct OrderModel: TurnMachine {
     }
 
     mutating func handleStale(_ input: Input, _ turn: inout Turn<OrderModel>) {
+        enter()
+        defer { depth -= 1 }
         guard case .completed(let seq) = input else {
             violate("a stale input that isn't a completion")
             return

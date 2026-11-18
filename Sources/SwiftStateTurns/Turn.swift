@@ -23,9 +23,12 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
-    /// (also ones made earlier in this step) and whose timer is dropped. After `endAll` it does
-    /// nothing and returns false: a handler that runs late (a stale completion) can call it, and
-    /// then finds no live key to work under.
+    /// (also ones made earlier in this step), whose timer is dropped, and whose parked inputs
+    /// scoped to `key` are withdrawn, as by `end`: a parked input carries no generation, so one
+    /// sent under the old generation would otherwise step under the new one. Inputs parked
+    /// before the key's first `issue` stay. After `endAll` it does nothing and returns false: a
+    /// handler that runs late (a stale completion) can call it, and then finds no live key to
+    /// work under.
     @inlinable @discardableResult
     public mutating func issue(_ key: M.Key) -> Bool {
         if core.rt.ended {
@@ -36,6 +39,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         if superseded {
             core.rt.closeRequests(of: key)
             core.rt.dropTimer(of: key)
+            if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key && !$0.pinned } }
         }
         core.rt.counter &+= 1
         core.rt.live[key] = core.rt.counter

@@ -1,6 +1,7 @@
 // expect-error: 'machine' is inaccessible due to 'internal' protection level
 import SwiftStateTurns
 
+@PlainData
 struct Mach: TurnMachine {
     typealias Input = Int
     typealias Effect = Int

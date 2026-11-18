@@ -99,7 +99,7 @@ public enum TurnError: Error, Sendable, Equatable {
     case closed
     /// The parked queue is full.
     case overloaded
-    /// Its scope ended, or its token, before it stepped.
+    /// Its scope ended or was superseded, or its token ended, before it stepped.
     case withdrawn
 }
 

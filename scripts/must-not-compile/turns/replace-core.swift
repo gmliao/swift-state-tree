@@ -1,6 +1,7 @@
 // expect-error: cannot assign to property: 'core' is a 'let' constant
 import SwiftStateTurns
 
+@PlainData
 struct Mach: TurnMachine {
     typealias Input = Int
     typealias Effect = Int

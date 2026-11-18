@@ -1,8 +1,15 @@
 // The adopter's side: the actor that owns a core, its entries, and the driver.
 
 /// An actor that runs a machine on a `TurnCore`.
+///
+/// A deadline's or a timer's task doesn't keep the actor alive: it holds it weakly, so a periodic
+/// timer doesn't outlive the actor's last owner. An effect's task does, until its result has been
+/// handled, so launched work is never dropped. Released with no effect in flight, the actor and
+/// its core go away, and the core cancels its deadline and timer tasks. A `call` still waiting then is a bug (a debug
+/// assertion), so an adopter ends its keys (`endAll`) and answers its callers first.
 public protocol TurnActor: Actor {
-    associatedtype M: TurnMachine
+    /// `PlainData`: only a machine that `@PlainData` checked can be run.
+    associatedtype M: TurnMachine & PlainData
     /// A stored `let` (a lint checks it; the core's incarnation covers what a replaced core
     /// could otherwise do).
     var core: TurnCore<M> { get }
@@ -35,6 +42,13 @@ extension TurnActor {
         case .honoured:
             let isControl: Bool
             if case .control = core.machine.admission(of: input) { isControl = true } else { isControl = false }
+            if Task.isCancelled, isControl {
+                // Cancelled before entry: a control input is still submitted and stepped (rule 16),
+                // but its caller doesn't wait. A reply from its step finds no waiter.
+                core.counters.cancelledCalls += 1
+                submit(input, caller: id)
+                throw CancellationError()
+            }
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<M.Reply, any Error>) in
                     if Task.isCancelled, !isControl {
@@ -336,16 +350,18 @@ extension TurnActor {
         let incarnation = core.incarnation
         let effect = pending.effect
         let id = pending.request
+        // Held strongly: an effect, once launched, runs and its result is handled (a weak
+        // capture would drop an effect whose task hadn't started when the actor was released).
         Task {
             let input = await self.perform(effect)
             self.complete(id, input, incarnation: incarnation)
         }
         if let id, let instant = pending.deadline, core.rt.open[id] != nil {
             let clock = core.clock
-            core.deadlineTasks[id] = Task {
+            core.deadlineTasks[id] = Task { [weak self] in
                 // Woken early (cancelled) or on time, the core re-checks the request.
                 await clock.sleep(until: instant)
-                self.deadlineFired(id, incarnation: incarnation)
+                await self?.deadlineFired(id, incarnation: incarnation)
             }
         }
     }
@@ -359,10 +375,11 @@ extension TurnActor {
         let instant = timer.instant
         let input = timer.input
         core.timerTasks[key]?.task.cancel()
-        core.timerTasks[key] = (generation, Task {
-            // Woken early (cancelled) or on time, the core re-checks the timer.
+        core.timerTasks[key] = (generation, Task { [weak self] in
+            // Woken early (cancelled) or on time, the core re-checks the timer. Held weakly: a
+            // periodic timer doesn't keep a released actor alive.
             await clock.sleep(until: instant)
-            self.timerFired(key, generation: generation, input, incarnation: incarnation)
+            await self?.timerFired(key, generation: generation, input, incarnation: incarnation)
         })
     }
 }

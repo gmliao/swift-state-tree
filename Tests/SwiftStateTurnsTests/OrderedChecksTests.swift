@@ -345,6 +345,24 @@ struct OrderedChecksTests {
         #expect(afterEnd.stats.parked == 0)
         #expect(t.log == ["begin 1", "enqueue c true", "teardown", "abandoned 1 keyEnded", "enqueue d false", "stale 1"])
         #expect(t.stats.ignoredAfterEnd == 1)
+
+        // The queued input steps after the inputs already parked behind the key, which survive
+        // here and step first, in their order.
+        let h = Fixture()
+        let c = DemoActor(fixture: h)
+        await c.send(.transaction(1, "y1"))
+        await c.send(.step(5))
+        await h.wait("park #1")
+        await c.send(.step(6))
+        await h.wait("park #2")
+        await c.send(.enqueue("e"))
+        await c.send(.step(7))
+        h.open("y1")
+        await c.waitForLog(7)
+        let u = await c.snapshot()
+        // `step 7` arrived after the queue and parks after it.
+        #expect(u.log == ["begin 1", "enqueue e true", "end 1", "step 5", "step 6", "queued e", "step 7"])
+        #expect(u.stats.parked == 0)
     }
 
     @Test("17: endAll abandons, ends, withdraws, drops and closes; then issue and queue are ignored, run and ask still step")
@@ -429,6 +447,36 @@ struct OrderedChecksTests {
         #expect(mid.stats.openRequests == 1)
         #expect(s.log == ["reissue 5 superseded true", "abandoned job 5 keyEnded", "stale 5", "finished 5"])
         #expect(s.stats.openRequests == 0)
+    }
+
+    @Test("19b: a supersede withdraws the inputs parked under the old generation's scope; one parked before the key's first issue stays")
+    func supersedeWithdrawsScopedParked() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        // Job 1 is bound (its key is live); job 2's key isn't issued yet.
+        await a.send(.issueKey(1))
+        // A transaction holds .membership; a call scoped to job 1 and a send scoped to job 2 park
+        // behind it.
+        await a.send(.transaction(1, "t1"))
+        let scopedCall = Task { try await a.call(.scoped(9, scope: 1), cancellation: .ignored) }
+        await f.wait("park #1")
+        await a.send(.scoped(10, scope: 2))
+        await f.wait("park #2")
+        // The rebind: job 1's key is superseded, which withdraws the call parked under it. Job 2's
+        // first issue isn't a supersede: its parked send stays.
+        await a.send(.issueKey(1))
+        await a.send(.issueKey(2))
+        let callResult = outcome(await scopedCall.result)
+        let mid = await a.snapshot()
+        // The hold is released: only what stayed parked steps, under the new generation.
+        f.open("t1")
+        await a.waitForLog(6)
+        let s = await a.snapshot()
+        #expect(callResult == "\(TurnError.withdrawn)")
+        #expect(mid.stats.parked == 1)
+        #expect(s.log == ["issue 1 false", "begin 1", "issue 1 true", "issue 2 false", "end 1", "scoped 10"])
+        #expect(!s.log.contains("scoped 9"))
+        #expect(s.stats.parked == 0)
     }
 
     @Test("20: outputs flush before the next step; a step's effects launch after its flush")

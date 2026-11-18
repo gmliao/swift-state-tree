@@ -34,6 +34,9 @@ struct ClockAndTimerTests {
         await a.onOutput(3, open: "deadline 8", thenSend: .endJob(3))
         await a.send(.emit(3))
         await f.wait("woke deadline 8")
+        // The woken task's trip back into the actor is ordered before the next arm: the drop is
+        // the second stale timer (the replaced timer 6 was the first).
+        await f.wait("stale timer #2")
 
         // A later timer still fires.
         await a.send(.arm(job: 4, at: .seconds(9)))
@@ -46,6 +49,7 @@ struct ClockAndTimerTests {
         // Only the arming step read the clock: a fire and a step that doesn't ask read nothing.
         #expect(a.clock.reads == 1)
         #expect(f.count(of: "clock read") == 1)
+        #expect(f.count(of: "stale timer") == 2)
     }
 
     @Test("27: timer skip-ahead: a fire that overran two periods schedules the next one after now, not a backlog")

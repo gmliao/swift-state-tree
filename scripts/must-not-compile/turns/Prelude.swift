@@ -6,7 +6,7 @@ struct SnippetClock: TurnClock {
     func sleep(until instant: TurnInstant) async {}
 }
 
-func snippetCore<M: TurnMachine>(_ machine: M) -> TurnCore<M> {
+func snippetCore<M: TurnMachine & PlainData>(_ machine: M) -> TurnCore<M> {
     TurnCore(machine, parkedLimit: 8, segmentBudget: 8, clock: SnippetClock())
 }
 

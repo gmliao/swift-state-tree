@@ -13,7 +13,8 @@ public struct TurnStats: Sendable, Equatable {
     public var droppedOutputs = 0
     /// `issue` and `queue` calls after `endAll`.
     public var ignoredAfterEnd = 0
-    /// `send`s refused (closed, withdrawn or over the parked limit), which had no caller to answer.
+    /// `send`s refused (closed, withdrawn or over the parked limit), or parked and then withdrawn
+    /// or closed (`end`, a supersede, `revoke`, `close`, `endAll`), which had no caller to answer.
     public var droppedSends = 0
     /// Completions and deadlines from another core (a replaced one), dropped.
     public var foreignCompletions = 0
@@ -62,8 +63,9 @@ public final class TurnCore<M: TurnMachine> {
     /// The case name of the input stepping now.
     @usableFromInline var stepCase: String?
     @usableFromInline var effectCounts: [String: Int] = [:]
-    /// Test-only: called on the actor, synchronously, where the event happens.
-    public var onDiagnostic: ((TurnDiagnostic) -> Void)?
+    /// Test-only: called on the actor, synchronously, where the event happens. Package access:
+    /// the adopters that set it are in this package.
+    @usableFromInline package var onDiagnostic: ((TurnDiagnostic) -> Void)?
     /// Tells this core's completions from another core's (a replaced core).
     @usableFromInline let incarnation: UInt64
     @usableFromInline let parkedLimit: Int
@@ -71,13 +73,18 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline let clock: any TurnClock
 
     /// - Parameters:
+    ///   - machine: the machine in its initial state.
     ///   - parkedLimit: how many external inputs may be parked at once.
     ///   - segmentBudget: how many released parked inputs step per segment.
     ///   - clock: what `Turn.now`, deadlines and timers read and sleep on.
-    public init(_ machine: M, parkedLimit: Int, segmentBudget: Int, clock: some TurnClock) {
+    ///
+    /// Only a `PlainData` machine can be run: `@PlainData` writes that conformance and checks
+    /// every stored field, so a machine that stores a class or a closure doesn't compile here.
+    public init(_ machine: M, parkedLimit: Int, segmentBudget: Int, clock: some TurnClock) where M: PlainData {
+        // `fatalError`, not `precondition`: its message prints in release builds too.
         if M.self is AnyClass { fatalError("TurnCore: the machine must be a value type, not \(M.self)") }
-        precondition(parkedLimit >= 0, "TurnCore: parkedLimit must not be negative")
-        precondition(segmentBudget >= 1, "TurnCore: segmentBudget must be at least 1")
+        if parkedLimit < 0 { fatalError("TurnCore: parkedLimit must not be negative") }
+        if segmentBudget < 1 { fatalError("TurnCore: segmentBudget must be at least 1") }
         self.machine = machine
         self.parkedLimit = parkedLimit
         self.segmentBudget = segmentBudget
@@ -105,6 +112,7 @@ public final class TurnCore<M: TurnMachine> {
         stats.liveKeys = rt.live.count
         stats.pendingWaiters = waiters.count
         stats.droppedOutputs = rt.droppedOutputs
+        stats.droppedSends += rt.droppedParkedSends
         stats.ignoredAfterEnd = rt.ignoredAfterEnd
         return stats
     }

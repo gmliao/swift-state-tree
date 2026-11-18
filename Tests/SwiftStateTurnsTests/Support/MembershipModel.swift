@@ -15,6 +15,7 @@ enum JoinShape: Sendable {
 /// `.membership`, library joins whose keeper worker calls back into the machine, and
 /// disconnects that leave the keeper. It is a model, not the adapter: it keeps only what the
 /// scenarios need. Slice 1 repeats each scenario against the real adapter and keeper.
+@PlainData
 struct MembershipModel: TurnMachine {
     enum Input: Sendable {
         /// Other membership work in flight: holds `.membership` until its gate opens.
@@ -50,6 +51,7 @@ struct MembershipModel: TurnMachine {
         case close(session: Int)
     }
 
+    @PlainData
     enum Key: Hashable, Sendable {
         case txn(Int)
         case membership
@@ -71,6 +73,7 @@ struct MembershipModel: TurnMachine {
     typealias Reply = Int
     typealias Answer = Int
 
+    @PlainData
     struct Registration: Sendable {
         var session: Int
         var player: Int
@@ -79,6 +82,7 @@ struct MembershipModel: TurnMachine {
         var generation: Int? = nil
     }
 
+    @PlainData
     struct CountWaiter: Sendable {
         var count: Int
         var caller: InputID

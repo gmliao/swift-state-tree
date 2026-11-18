@@ -1,6 +1,7 @@
 // expect-error: actor-isolated property 'core' cannot be accessed from outside of the actor
 import SwiftStateTurns
 
+@PlainData
 struct Mach: TurnMachine {
     typealias Input = Int
     typealias Effect = Int

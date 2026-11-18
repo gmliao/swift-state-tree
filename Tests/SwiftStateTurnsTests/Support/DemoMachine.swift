@@ -9,6 +9,7 @@ enum DemoError: Error, Sendable, Equatable {
 /// it), transactions that hold `.membership`, steps parked behind that hold, scoped and
 /// token-guarded inputs, `queue`, timers and the clock. It logs what each step did, so a check
 /// compares the log with the order the rule requires.
+@PlainData
 struct DemoMachine: TurnMachine {
     enum Input: Sendable {
         case setup                       // issues .io and .other
@@ -26,6 +27,7 @@ struct DemoMachine: TurnMachine {
         case echo(Int)
         case holdCaller(Int)             // control: logs, keeps its caller without a reply
         case answerHeld                  // replies to the callers `holdCaller` kept
+        case answerNow(Int)              // control: logs, replies to its caller in its own step
         // Transactions that hold .membership, and what parks behind them.
         case txn(Int, gate: String, deadline: Duration?, untilRetire: Bool)
         case txnFinished(Int)
@@ -68,6 +70,7 @@ struct DemoMachine: TurnMachine {
         case echoMark(String)
     }
 
+    @PlainData
     enum Key: Hashable, Sendable {
         case io
         case other
@@ -85,6 +88,7 @@ struct DemoMachine: TurnMachine {
     typealias Reply = Int
     typealias Answer = Int
 
+    @PlainData
     struct CountWaiter: Sendable {
         var count: Int
         var caller: InputID
@@ -93,8 +97,8 @@ struct DemoMachine: TurnMachine {
     /// A holding request's deadline where a check never lets one pass: its gate is never opened.
     static let unbounded: Duration = .seconds(3600)
 
-    var steps = 0
-    var asks = 0
+    var steps: Int = 0
+    var asks: Int = 0
     var log: [String] = []
     var logWaiters: [CountWaiter] = []
     var txnCaller: [Int: InputID] = [:]
@@ -305,6 +309,9 @@ struct DemoMachine: TurnMachine {
             note("hook end")
         case .awaitLog(let count):
             if let caller = turn.input { logWaiters.append(CountWaiter(count: count, caller: caller)) }
+        case .answerNow(let value):
+            note("answered \(value)")
+            if let caller = turn.input { turn.reply(to: caller, .success(value)) }
         }
     }
 

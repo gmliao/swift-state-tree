@@ -16,53 +16,15 @@ public struct PlainDataMacro: ExtensionMacro {
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
         let generics: GenericParameterClauseSyntax?
-        var checked: [TypeSyntax] = []
         var failed = false
+        let checks: String
 
         if let structDecl = declaration.as(StructDeclSyntax.self) {
             generics = structDecl.genericParameterClause
-            for member in structDecl.memberBlock.members {
-                guard let variable = member.decl.as(VariableDeclSyntax.self) else { continue }
-                if variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) { continue }
-                if let weak = variable.modifiers.first(where: {
-                    $0.name.tokenKind == .keyword(.weak) || $0.name.tokenKind == .keyword(.unowned)
-                }) {
-                    context.diagnose(Diagnostic(node: weak, message: PlainDataDiagnostic.reference))
-                    failed = true
-                    continue
-                }
-                if let wrapper = variable.attributes.first {
-                    context.diagnose(Diagnostic(node: wrapper, message: PlainDataDiagnostic.wrapper))
-                    failed = true
-                    continue
-                }
-                for binding in variable.bindings {
-                    if isComputed(binding) { continue }
-                    guard binding.pattern.is(IdentifierPatternSyntax.self) else {
-                        context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.pattern))
-                        failed = true
-                        continue
-                    }
-                    guard let annotation = binding.typeAnnotation?.type ?? typeOfNextBinding(binding, in: variable) else {
-                        context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.annotation(binding.pattern.trimmedDescription)))
-                        failed = true
-                        continue
-                    }
-                    if !accept(annotation, context) { failed = true; continue }
-                    checked.append(annotation.trimmed)
-                }
-            }
+            checks = checkLines(structDecl.memberBlock.members, isEnum: false, failed: &failed, context)
         } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
             generics = enumDecl.genericParameterClause
-            for member in enumDecl.memberBlock.members {
-                guard let cases = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
-                for element in cases.elements {
-                    for parameter in element.parameterClause?.parameters ?? [] {
-                        if !accept(parameter.type, context) { failed = true; continue }
-                        checked.append(parameter.type.trimmed)
-                    }
-                }
-            }
+            checks = checkLines(enumDecl.memberBlock.members, isEnum: true, failed: &failed, context)
         } else {
             context.diagnose(Diagnostic(node: node, message: PlainDataDiagnostic.notValue))
             return []
@@ -72,7 +34,6 @@ public struct PlainDataMacro: ExtensionMacro {
         let constraints = (generics?.parameters ?? []).map { "\($0.name.text): PlainData" }
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
         let conformance = protocols.isEmpty ? "" : ": PlainData"
-        let checks = checked.map { "PlainDataCheck.field((\($0)).self)" }.joined(separator: "\n")
         let decl: DeclSyntax = """
             extension \(type.trimmed)\(raw: conformance)\(raw: whereClause) {
                 /// Compiled, never called: each line fails to compile unless its type is PlainData.
@@ -83,6 +44,79 @@ public struct PlainDataMacro: ExtensionMacro {
             """
         guard let ext = decl.as(ExtensionDeclSyntax.self) else { return [] }
         return [ext]
+    }
+
+    /// One check per stored property (or associated value), in member order. A member inside an
+    /// `#if` block is checked under the same conditions: every clause is read, so a member that
+    /// only one configuration compiles is still checked there, and a type that only exists in
+    /// that configuration is named only under its condition.
+    private static func checkLines(
+        _ members: MemberBlockItemListSyntax,
+        isEnum: Bool,
+        failed: inout Bool,
+        _ context: some MacroExpansionContext
+    ) -> String {
+        var lines: [String] = []
+        for member in members {
+            if let ifConfig = member.decl.as(IfConfigDeclSyntax.self) {
+                var block: [String] = []
+                for clause in ifConfig.clauses {
+                    let keyword = clause.poundKeyword.text
+                    block.append(clause.condition.map { "\(keyword) \($0.trimmedDescription)" } ?? keyword)
+                    if case .decls(let nested) = clause.elements {
+                        let inner = checkLines(nested, isEnum: isEnum, failed: &failed, context)
+                        if !inner.isEmpty { block.append(inner) }
+                    }
+                }
+                block.append("#endif")
+                lines.append(block.joined(separator: "\n"))
+                continue
+            }
+            if isEnum {
+                guard let cases = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
+                for element in cases.elements {
+                    for parameter in element.parameterClause?.parameters ?? [] {
+                        if !accept(parameter.type, context) { failed = true; continue }
+                        lines.append(check(parameter.type))
+                    }
+                }
+                continue
+            }
+            guard let variable = member.decl.as(VariableDeclSyntax.self) else { continue }
+            if variable.modifiers.contains(where: { $0.name.tokenKind == .keyword(.static) }) { continue }
+            if let weak = variable.modifiers.first(where: {
+                $0.name.tokenKind == .keyword(.weak) || $0.name.tokenKind == .keyword(.unowned)
+            }) {
+                context.diagnose(Diagnostic(node: weak, message: PlainDataDiagnostic.reference))
+                failed = true
+                continue
+            }
+            if let wrapper = variable.attributes.first {
+                context.diagnose(Diagnostic(node: wrapper, message: PlainDataDiagnostic.wrapper))
+                failed = true
+                continue
+            }
+            for binding in variable.bindings {
+                if isComputed(binding) { continue }
+                guard binding.pattern.is(IdentifierPatternSyntax.self) else {
+                    context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.pattern))
+                    failed = true
+                    continue
+                }
+                guard let annotation = binding.typeAnnotation?.type ?? typeOfNextBinding(binding, in: variable) else {
+                    context.diagnose(Diagnostic(node: binding.pattern, message: PlainDataDiagnostic.annotation(binding.pattern.trimmedDescription)))
+                    failed = true
+                    continue
+                }
+                if !accept(annotation, context) { failed = true; continue }
+                lines.append(check(annotation))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func check(_ type: TypeSyntax) -> String {
+        "PlainDataCheck.field((\(type.trimmed)).self)"
     }
 
     /// `var a, b: Int` gives `a` the type of the next annotated binding.

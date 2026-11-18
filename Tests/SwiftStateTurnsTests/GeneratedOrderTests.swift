@@ -1,19 +1,22 @@
-// §6.4: seeded, deterministic orders of inputs, completions, cancellations, deadlines and timers
-// against `OrderModel`. After every operation the machine's recorded violations and the core's
-// counters are checked against the machine's own view. A failing seed is printed; replay it with
-// `TURNS_SEED=<seed> swift test --filter GeneratedOrderTests`. CI runs the fixed seed set; a
-// longer run is `TURNS_SEEDS=<count>`.
+// §6.4: seeded orders of inputs, calls, completions, cancellations, deadlines and timers against
+// `OrderModel`. After every operation the machine's recorded violations, the sink's view and the
+// core's counters are checked against the machine's own view; at the end, every call's answer and
+// every queued input's fate. A failing seed is printed; replay it with
+// `TURNS_SEED=<seed> swift test --filter GeneratedOrderTests`, and keep it as a fixed replay
+// (`replays`). CI runs the fixed seed set; a longer run is `TURNS_SEEDS=<count>`.
 //
 // Every operation waits for its consequence before the next one starts: a `send` returns after
-// its segment; a completion, a deadline or a timer is waited for by the `notify` its step starts.
-// So a seed gives one order, run after run. (The segment budget is set high so that no drain
-// continues in a job of its own; the budget has its own ordered check, 13.)
+// its segment; a call is waited for until it has stepped, parked or been answered; a completion,
+// a deadline or a timer is waited for by the `notify` its step starts. With the large segment
+// budget a seed gives one order, run after run. Every third seed runs with a budget of 2, so a
+// drain continues in a job of its own and interleaves with the operations that follow; those
+// seeds keep the invariants but not one fixed schedule.
 
 import Foundation
 import SwiftStateTurns
 import Testing
 
-/// Counts the machine's notifications and lets the harness wait for the n-th of a name.
+/// Counts the machine's notifications and lets the harness wait for one.
 final class Notes: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
@@ -33,6 +36,10 @@ final class Notes: @unchecked Sendable {
         for continuation in ready { continuation.resume() }
     }
 
+    func count(_ name: String) -> Int {
+        lock.withLock { counts[name] ?? 0 }
+    }
+
     /// Returns once `name` has been posted at least once.
     func wait(_ name: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -46,15 +53,29 @@ final class Notes: @unchecked Sendable {
     }
 }
 
+/// A call's answer, once it has one.
+final class CallBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+    func set(_ text: String) { lock.withLock { value = text } }
+    var answer: String? { lock.withLock { value } }
+}
+
 actor OrderActor: TurnActor {
     let core: TurnCore<OrderModel>
     nonisolated let fixture: Fixture
     nonisolated let notes: Notes
+    /// What the sink received, and the outputs flushed after another step had run (invariant 11).
+    private var delivered: [Int] = []
+    private var lateFlushes: [String] = []
 
     init(fixture: Fixture, notes: Notes, parkedLimit: Int, segmentBudget: Int) {
         self.fixture = fixture
         self.notes = notes
         core = TurnCore(OrderModel(), parkedLimit: parkedLimit, segmentBudget: segmentBudget, clock: TestClock(fixture: fixture))
+        core.onDiagnostic = { event in
+            if case .parked = event { notes.post("park") }
+        }
     }
 
     @concurrent nonisolated func perform(_ effect: OrderModel.Effect) async -> OrderModel.Input? {
@@ -68,7 +89,14 @@ actor OrderActor: TurnActor {
         }
     }
 
-    func flush(_ outputs: consuming [Int]) {}
+    func flush(_ outputs: consuming [OrderOutput]) {
+        // Between steps: the machine's step count is the step whose outputs these are.
+        let step = core.read { $0.stepCount }
+        for output in outputs {
+            delivered.append(output.id)
+            if output.step != step { lateFlushes.append("output \(output.id) of step \(output.step) flushed after step \(step)") }
+        }
+    }
 
     struct View: Sendable {
         var violations: [String]
@@ -77,11 +105,19 @@ actor OrderActor: TurnActor {
         var timers: [Int: Int]
         var expectedHeld: Int
         var ended: Bool
+        var stepped: [Int]
+        var expectedOutputs: [Int]
+        var delivered: [Int]
+        var lateFlushes: [String]
+        var queued: Set<Int>
+        var droppedQueued: Set<Int>
         var stats: TurnStats
     }
 
     func view() -> View {
         let stats = core.stats
+        let delivered = delivered
+        let lateFlushes = lateFlushes
         return core.read { machine in
             View(
                 violations: machine.violations,
@@ -90,6 +126,12 @@ actor OrderActor: TurnActor {
                 timers: machine.timers,
                 expectedHeld: machine.expectedHeldKeys.count,
                 ended: machine.ended,
+                stepped: machine.steppedWork,
+                expectedOutputs: machine.expectedOutputs,
+                delivered: delivered,
+                lateFlushes: lateFlushes,
+                queued: machine.queued,
+                droppedQueued: machine.droppedQueued,
                 stats: stats
             )
         }
@@ -109,19 +151,40 @@ struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
+/// One `call` the harness made.
+struct CallRecord {
+    var id: Int
+    var box: CallBox
+    var task: Task<Void, Never>
+}
+
+/// Lets the actor's jobs run until `done` holds: a condition, not a delay. Each round trip into
+/// the actor lets a job queued before it (a call's entry, a drain continuation) run first.
+func settle(_ actor: OrderActor, rounds: Int = 10_000, until done: (OrderActor.View) -> Bool) async -> Bool {
+    for _ in 0 ..< rounds {
+        if done(await actor.view()) { return true }
+        await Task.yield()
+    }
+    return false
+}
+
 /// Runs one seed and returns its failures (empty: it passed).
-func runOrder(seed: UInt64, operations: Int) async -> [String] {
+func runOrder(seed: UInt64, operations: Int, segmentBudget: Int) async -> [String] {
     var random = SeededGenerator(seed: seed)
     let fixture = Fixture()
     let notes = Notes()
-    let actor = OrderActor(fixture: fixture, notes: notes, parkedLimit: 6, segmentBudget: 1_000)
+    let actor = OrderActor(fixture: fixture, notes: notes, parkedLimit: 6, segmentBudget: segmentBudget)
     var failures: [String] = []
     var nextSeq = 1
     var nextWork = 1
     var nextToken = 1
     var tokens: [(Int, EndToken)] = []
     var log: [String] = []
+    // The harness's mirror of each scope's ends (end, supersede, endAll) and of the live keys.
     var ends: [Int: Int] = [:]
+    var live: Set<Int> = [0, 1]
+    var endedAll = false
+    var calls: [CallRecord] = []
 
     await actor.send(.issue(0))
     await actor.send(.issue(1))
@@ -134,7 +197,8 @@ func runOrder(seed: UInt64, operations: Int) async -> [String] {
         var op = ""
         switch choice {
         case 0 ..< 22:
-            // External work, maybe parked, scoped, tokened.
+            // External work, maybe parked, scoped, tokened; sent, or called (with the caller's
+            // cancellation honoured).
             let id = nextWork
             nextWork += 1
             let scoped = Bool.random(using: &random)
@@ -148,42 +212,79 @@ func runOrder(seed: UInt64, operations: Int) async -> [String] {
                 tokens.append((nextToken, t))
                 nextToken += 1
             }
-            op = "work \(id) hold \(hold) scope \(scoped ? String(owner) : "-") token \(tokenID.map(String.init) ?? "-")"
-            await actor.send(.work(id: id, hold: Bool.random(using: &random) ? hold : nil, scope: scoped ? owner : nil,
-                                   scopeEnds: scopeEnds, token: token, tokenID: tokenID, pinned: false))
-        case 22 ..< 36:
+            let held = Bool.random(using: &random) ? hold : nil
+            let asCall = Int.random(in: 0 ..< 3, using: &random) == 0
+            let input = OrderModel.Input.work(id: id, hold: held, scope: scoped ? owner : nil,
+                                              scopeEnds: scopeEnds, token: token, tokenID: tokenID, pinned: false)
+            op = "\(asCall ? "call" : "work") \(id) hold \(held.map(String.init) ?? "-") scope \(scoped ? String(owner) : "-") token \(tokenID.map(String.init) ?? "-")"
+            if asCall {
+                let parks = notes.count("park")
+                let box = CallBox()
+                let task = Task {
+                    do {
+                        box.set("success \(try await actor.call(input, cancellation: .honoured))")
+                    } catch let error as TurnError {
+                        box.set("\(error)")
+                    } catch {
+                        box.set(error is CancellationError ? "cancelled" : "\(error)")
+                    }
+                }
+                calls.append(CallRecord(id: id, box: box, task: task))
+                // Waited for until it has stepped, parked or been answered.
+                let entered = await settle(actor) { v in
+                    v.stepped.contains(id) || notes.count("park") > parks || box.answer != nil
+                }
+                if !entered { failures.append("after `\(op)`: the call never entered the core") }
+            } else {
+                await actor.send(input)
+            }
+        case 22 ..< 34:
             let seq = nextSeq
             nextSeq += 1
             let retire = Int.random(in: 0 ..< 3, using: &random) == 0
             op = "startHold \(seq) owner \(owner) hold \(hold) retire \(retire)"
             await actor.send(.startHold(seq: seq, owner: owner, hold: hold, untilRetire: retire))
-        case 36 ..< 56:
+        case 34 ..< 52:
             guard let seq = view.pending.randomElement(using: &random) else { continue }
             op = "complete \(seq)"
             fixture.open("work \(seq)")
             await notes.wait("done \(seq)")
-        case 56 ..< 63:
+        case 52 ..< 58:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "deadline \(seq)"
             fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
             await notes.wait("abandoned \(seq)")
-        case 63 ..< 69:
+        case 58 ..< 63:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "cancel \(seq)"
             await actor.send(.cancel(seq: seq))
-        case 69 ..< 74:
+        case 63 ..< 67:
+            // A caller's cancellation: answered once it is handled, whether it was parked
+            // (withdrawn) or had already stepped (its reply finds no waiter).
+            guard let call = calls.filter({ $0.box.answer == nil }).randomElement(using: &random) else { continue }
+            op = "cancel call \(call.id)"
+            call.task.cancel()
+            let answered = await settle(actor) { _ in call.box.answer != nil }
+            if !answered { failures.append("after `\(op)`: the cancelled call was never answered") }
+        case 67 ..< 71:
             op = "end \(owner)"
             ends[owner, default: 0] += 1
+            live.remove(owner)
             await actor.send(.end(owner))
-        case 74 ..< 79:
+        case 71 ..< 76:
             op = "issue \(owner)"
+            if !endedAll {
+                // Over a live key, a supersede: it ends the old generation's scope.
+                if live.contains(owner) { ends[owner, default: 0] += 1 }
+                live.insert(owner)
+            }
             await actor.send(.issue(owner))
-        case 79 ..< 83:
+        case 76 ..< 81:
             let id = nextWork
             nextWork += 1
             op = "queue \(id) behind \(hold)"
             await actor.send(.queueBehind(id: id, hold: hold))
-        case 83 ..< 87:
+        case 81 ..< 85:
             guard let (tokenID, token) = tokens.randomElement(using: &random) else { continue }
             if Bool.random(using: &random) {
                 op = "revoke \(tokenID)"
@@ -193,18 +294,18 @@ func runOrder(seed: UInt64, operations: Int) async -> [String] {
                 token.markEnded()
                 await actor.send(.noteMarked(tokenID: tokenID))
             }
-        case 87 ..< 93:
+        case 85 ..< 91:
             // Timer instants are far from request deadlines, so their gates never meet.
             let seq = 1_000_000 + nextSeq
             nextSeq += 1
             op = "arm \(seq) on \(owner)"
             await actor.send(.arm(owner: owner, seq: seq))
-        case 93 ..< 98:
+        case 91 ..< 97:
             guard let (timerOwner, seq) = view.timers.randomElement(using: &random) else { continue }
             op = "fire \(seq) on \(timerOwner)"
             fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
             await notes.wait("fired \(seq)")
-        case 98:
+        case 97, 98:
             op = "close"
             await actor.send(.close)
         default:
@@ -212,48 +313,81 @@ func runOrder(seed: UInt64, operations: Int) async -> [String] {
             guard step > operations * 3 / 4, !view.ended else { continue }
             op = "endAll"
             for key in [0, 1] { ends[key, default: 0] += 1 }
+            live.removeAll()
+            endedAll = true
             await actor.send(.endAll)
         }
         log.append(op)
 
         let after = await actor.view()
-        if !after.violations.isEmpty {
-            failures.append("after `\(op)`: \(after.violations)")
-        }
-        if after.stats.openRequests != after.open.count {
-            failures.append("after `\(op)`: the core has \(after.stats.openRequests) open requests, the machine \(after.open.count)")
-        }
-        if after.stats.heldKeys != after.expectedHeld {
-            failures.append("after `\(op)`: the core holds \(after.stats.heldKeys) keys, the machine expects \(after.expectedHeld)")
-        }
-        if after.stats.parked > 6 + nextWork {
-            failures.append("after `\(op)`: \(after.stats.parked) parked")
-        }
-        if after.ended, after.stats.liveKeys != 0 {
-            failures.append("after `\(op)`: \(after.stats.liveKeys) live keys after endAll")
-        }
+        failures += check(after, op: op, parkedBound: 6 + nextWork)
         if !failures.isEmpty {
-            failures.append("seed \(seed), operation \(step); the last operations: \(log.suffix(12))")
+            failures.append("seed \(seed), budget \(segmentBudget), operation \(step); the last operations: \(log.suffix(12))")
             break
         }
     }
-    // End everything (cancelling the deadline and timer tasks) and let every worker return, so
-    // no task outlives the run.
-    if !(await actor.view()).ended { await actor.send(.endAll) }
-    let rest = await actor.view()
-    for seq in rest.pending {
-        fixture.open("work \(seq)")
-        await notes.wait("done \(seq)")
+
+    if failures.isEmpty {
+        // Let every worker return, so every hold is released and what is parked or queued steps.
+        let rest = await actor.view()
+        for seq in rest.pending {
+            fixture.open("work \(seq)")
+            await notes.wait("done \(seq)")
+        }
+        let drained = await settle(actor) { $0.stats.parked == 0 }
+        let final = await actor.view()
+        failures += check(final, op: "the last completions", parkedBound: 6 + nextWork)
+        if !drained { failures.append("parked inputs left after every hold was released: \(final.stats.parked)") }
+        // Invariant 14: a queued input steps, unless endAll dropped it.
+        for id in final.queued.sorted() where !final.stepped.contains(id) && !final.droppedQueued.contains(id) {
+            failures.append("queued work \(id) neither stepped nor dropped by endAll")
+        }
     }
+    // End everything (cancelling the deadline and timer tasks); every parked call is answered.
+    if !(await actor.view()).ended { await actor.send(.endAll) }
+    for call in calls { await call.task.value }
     let final = await actor.view()
-    if failures.isEmpty, !final.violations.isEmpty {
-        failures.append("seed \(seed), at the end: \(final.violations)")
+    // Invariant 10: each call answered once, and its answer matches whether it stepped.
+    for call in calls {
+        let answer = call.box.answer ?? "none"
+        let stepped = final.stepped.contains(call.id)
+        let refusals = ["\(TurnError.withdrawn)", "\(TurnError.closed)", "\(TurnError.overloaded)"]
+        let consistent = (answer == "success \(call.id)" && stepped)
+            || answer == "cancelled"  // withdrawn while parked, or stepped and no longer waited for
+            || (refusals.contains(answer) && !stepped)
+        if !consistent { failures.append("call \(call.id): answered \(answer), stepped \(stepped)") }
+    }
+    if final.stats.pendingWaiters != 0 { failures.append("\(final.stats.pendingWaiters) waiters left at the end") }
+    if !failures.isEmpty, !failures.contains(where: { $0.hasPrefix("seed ") }) {
+        failures.append("seed \(seed), budget \(segmentBudget), at the end; the last operations: \(log.suffix(12))")
     }
     return failures
 }
 
+/// What must hold between any two operations.
+func check(_ view: OrderActor.View, op: String, parkedBound: Int) -> [String] {
+    var failures: [String] = []
+    if !view.violations.isEmpty { failures.append("after `\(op)`: \(view.violations)") }
+    if view.stats.openRequests != view.open.count {
+        failures.append("after `\(op)`: the core has \(view.stats.openRequests) open requests, the machine \(view.open.count)")
+    }
+    if view.stats.heldKeys != view.expectedHeld {
+        failures.append("after `\(op)`: the core holds \(view.stats.heldKeys) keys, the machine expects \(view.expectedHeld)")
+    }
+    if view.stats.parked > parkedBound { failures.append("after `\(op)`: \(view.stats.parked) parked") }
+    if view.ended, view.stats.liveKeys != 0 { failures.append("after `\(op)`: \(view.stats.liveKeys) live keys after endAll") }
+    // Invariants 11 and 12: outputs leave before the next step, and only under a live key.
+    if !view.lateFlushes.isEmpty { failures.append("after `\(op)`: \(view.lateFlushes)") }
+    if view.delivered != view.expectedOutputs {
+        failures.append("after `\(op)`: the sink got \(view.delivered.suffix(6)), the machine expects \(view.expectedOutputs.suffix(6))")
+    }
+    if view.stats.droppedOutputs != view.stepped.count - view.expectedOutputs.count {
+        failures.append("after `\(op)`: \(view.stats.droppedOutputs) dropped outputs, the machine expects \(view.stepped.count - view.expectedOutputs.count)")
+    }
+    return failures
+}
 
-@Suite("Generated orders (§6.4)", .timeLimit(.minutes(2)))
+@Suite("Generated orders (§6.4)", .timeLimit(.minutes(3)))
 struct GeneratedOrderTests {
     static var seeds: [UInt64] {
         let environment = ProcessInfo.processInfo.environment
@@ -262,9 +396,22 @@ struct GeneratedOrderTests {
         return (1 ... UInt64(count)).map { $0 }
     }
 
+    /// Every third seed drains in small segments, so continuations interleave with operations.
+    static func budget(for seed: UInt64) -> Int { seed % 3 == 0 ? 2 : 1_000 }
+
     @Test("Seeded orders keep the core's invariants and its counters match the machine's view", arguments: seeds)
     func seededOrder(seed: UInt64) async {
-        let failures = await runOrder(seed: seed, operations: 300)
+        let failures = await runOrder(seed: seed, operations: 300, segmentBudget: Self.budget(for: seed))
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+    }
+
+    /// Seeds that once failed, kept as fixed replays with the budget they ran with. 21, 22 and 25
+    /// stepped an input parked under a scope after that scope's key was superseded (found before
+    /// a supersede withdrew such inputs); the generator has changed since, so each replays its
+    /// seed, not its old order.
+    @Test("Fixed replays of seeds that once failed", arguments: [UInt64(21), 22, 25])
+    func replays(seed: UInt64) async {
+        let failures = await runOrder(seed: seed, operations: 300, segmentBudget: 1_000)
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 }
