@@ -21,6 +21,17 @@ The target style is a textbook. A reader who knows Swift but not this project sh
 - No emphasis words: significantly, dramatically, simply, just, obviously.
 - No bare letter codes or internal labels. Don't write "rule 7", "check 28", "M1" or a plan's step number in user docs; name what the thing is ("the FIFO rule for parked inputs").
 
+## Choosing how to explain a concept
+
+- **Always start plain.** The first sentence says what it is in everyday words, with no other new term in it.
+- **Then an example**, by default, when the concept is about behaviour: a short compiled code example, or a concrete game scenario ("a player leaves while their profile loads").
+- **A picture when the point is structure or order over time:** layers, or who waits behind whom. Use one when text would need more than about three sentences of "then… then…".
+  - Hand-written SVG: an explicit light background with dark strokes (readable in light and dark themes), plain shapes and text, no external fonts, a `viewBox`, alt text, about 10 KB or less.
+  - English labels, shared by both languages; a `.zh-TW.svg` copy only when the zh-TW page needs Chinese labels.
+  - In DocC, put the file in the catalog's `Resources/` and use `@Image(source:alt:)`.
+  - The picture repeats what the text says, and adds nothing. The text stays complete without it, because a test can't check a picture.
+- Don't use all three where one does the job.
+
 ## Paragraphs
 
 - Order: what it shows, then how (or the evidence), then its limit.
