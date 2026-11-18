@@ -73,7 +73,7 @@ for snippet in "${snippets[@]}"; do
         "// expect: compiles")
             if [[ $status -ne 0 ]]; then
                 echo "FAIL $name: expected to compile, got:"
-                echo "${errors:-$output}" | head -5
+                echo "${errors:-$output}" | sed -n 1,5p
                 failures=$((failures + 1))
             else
                 echo "ok   $name compiles"
@@ -86,12 +86,12 @@ for snippet in "${snippets[@]}"; do
                 failures=$((failures + 1))
             elif ! grep -F -q -- "$expected" <<<"$errors"; then
                 echo "FAIL $name: failed without the expected error ($expected); got:"
-                echo "${errors:-$output}" | head -5
+                echo "${errors:-$output}" | sed -n 1,5p
                 failures=$((failures + 1))
             # The error must come from the snippet, not from the library or the setup.
-            elif ! grep -F -- "$expected" <<<"$errors" | grep -F -q -- "/$name:"; then
+            elif [[ "$(grep -F -- "$expected" <<<"$errors")" != *"/$name:"* ]]; then
                 echo "FAIL $name: the expected error is not in the snippet; got:"
-                echo "$errors" | head -5
+                echo "$errors" | sed -n 1,5p
                 failures=$((failures + 1))
             else
                 echo "ok   $name refused: $expected"
