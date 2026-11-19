@@ -6,6 +6,7 @@
 
 - **D10:** in a hybrid configuration, server events go alone, decided once when the adapter is built. No merged body is attempted per event.
 - **EV2:** for each registered server event type, the wire name (`_payloadWireName`, `EventPayload.swift:25`, overridable) equals the registry's name, which is the schema ID (`payloadEventName`, `SchemaExtractor.swift:218`). It is refused at registration otherwise.
+  - **Two types under one event name** (found in #632's review). The registry maps a name to its descriptor, and a later registration of the same name replaces the earlier one (`EventRegistry`'s name index). So the replay decodes into the last type, and the live wire sends both under one name, which a client can't tell apart. EV2 also refuses a name that two registered types share, naming both types.
 - **EV3:** when the host passes `eventHashes`, a registered server event missing from it is refused at registration (N8 (a)). Today it is sent with its string name (`MessagePackTransportMessageEncoder.swift:224`, `TransportMessageEncoder.swift:293`), which a client built from that schema doesn't know.
 
 EV2 and EV3 are rows in `LandDefinition.validateForRegistration(context:)`, reported in `PayloadRegistrationError`, at §5's entry points. EV3 needs the host's `eventHashes` in `LandRegistrationContext`. None of this touches replay or the record codec.
