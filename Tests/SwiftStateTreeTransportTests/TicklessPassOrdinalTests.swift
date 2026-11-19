@@ -7,6 +7,7 @@ import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 import SwiftStateTreeReevaluationMonitor
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct OrdinalState: StateNodeProtocol {

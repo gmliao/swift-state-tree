@@ -9,6 +9,7 @@ import Foundation
 import Logging
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 // MARK: - Land

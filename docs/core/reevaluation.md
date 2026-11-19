@@ -192,6 +192,25 @@ Every record before 3.6 has no fingerprint, so replay refuses it (`ReevaluationR
 
 The fingerprint must list every field. A land that records (`enableLiveStateHashRecording`) or is registered for reevaluation is refused at registration when it can't: a payload or server input without `@Payload` that has fields, or a nested value no sample of which can be built (required fields, no `@SnapshotConvertible`), named in `LandRegistrationError.schemaFingerprint` (`SchemaFingerprintError.unbuildableType`). So is a `@Payload` type with two fields under one wire key (`.wireKeyCollision`), and a `Set` whose element can't be listed. Field-less types, collections, raw-value types, Foundation scalars, values with their own snapshot conversion and `AnyCodable` are hashed as they are. The fingerprint is computed once per definition value and cached on it, off the tick path: at registration for a host that serves one value to every land (`NIOLandHost`), and at land creation, when recording, for a `LandManager` factory that builds a definition per land (the admin start's check calls the factory too).
 
+### Server Events in Replay
+
+The replay land shows each recorded server event typed (#521, #538). The runner resolves every tick before it queues it: each recorded event, and each event the replay emitted, is looked up by name in the base land's registry, and its payload is decoded with the record's own codec (`CanonicalMessagePack`, the one the recorder wrote with). A `Date` is read from its ISO string, `Data`, `URL` and `Decimal` from their own `Codable` forms. A saved record decodes strictly. The JSON view lost the float/integer split, so there an integer decodes into `Double` or `Float` when it converts exactly. The replay land registers its base land's server events and emits each event with `emitEvent`.
+
+Inside the record's domain the re-emitted event encodes to the live frame's bytes: `Bool`, `String`, integers from `Int.min` to `Int.max`, a `Date` at a whole second, finite `Float` and `Double` values, `Data`, `URL`, `Decimal`, optionals, arrays and string-keyed maps of these, and nested `@Payload` types. Outside it:
+
+- a `Date` with a fractional second: the record keeps whole seconds, so it replays truncated toward negative infinity;
+- an unsigned value above `Int.max`: a saved record holding one can't be read (#628); on the JSON view the value is a `Double` and fails the decode;
+- `-0.0` on the JSON view reads back as `+0.0` (a saved record keeps it);
+- map keys that are canonically equivalent (an NFC and an NFD spelling of one text) collapse to one key when the record is read.
+
+A tick that doesn't resolve fails the replay run with `ReevaluationReplayResolutionError`. The error names the tick, the event's origin (recorded or replayed), its sequence and name, and the cause. These ticks don't resolve: a server event whose name isn't registered or whose payload doesn't decode, a record read error, a state snapshot that doesn't encode, and a state that can't be rebuilt from it. The run reaches `failed` in the admin status. The ticks before it stay queued and are shown; the replay land stays up and is sent nothing after them.
+
+A run that feeds a replay land also fails on a result the land can't show: one without a frame (`unresolvedResult`, a custom runner that didn't call `ReevaluationReplayFrame.resolve`), a frame of another state type (`stateTypeMismatch`), or a frame without a state (`stateUnavailable`). A tick whose state hash can't be computed (§ Unavailable State Hashes) has no state, so its reason is the hash error. A run that feeds no replay land, the monitor's verification, reports such a tick as unverifiable and goes on. `registerWithGenericReplay` refuses these results before they are queued. A land built with `GenericReplayLand.makeLand` alone checks each result as it reads it and fails the run, so a result is never dropped silently.
+
+A land whose records will replay is refused at registration when one of its server event types has no decoder (`LandRegistrationError.serverEventsWithoutDecoder`). Every type the DSL registers has one. This check runs in the stock runner's init and the engine, after the record's checks. A custom runner (`ReevaluationTargetFactory`) skips it and meets the same case in `resolve`.
+
+Each step of the stock runner rebuilds the state and decodes every server event of the tick, for the monitor's verification too: a monitor run costs one state rebuild and the event decodes per tick.
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |
@@ -204,7 +223,7 @@ The reader picks the definition from the record's version (`ReevaluationRecordVe
 
 ### Unavailable State Hashes
 
-If the state cannot be converted for the hash (a map whose keys collide as strings, a value of an unsupported type, a NaN or infinite floating-point value, which JSON cannot encode), the live tick is not stopped: its hash is recorded as `unavailable: <reason>`, the keeper logs an error and counts it (`LandKeeper.stateHashUnavailableCount`). Replay reports such a tick as unverifiable, never as a match (`RunResult.unverifiableStateHashes`; older builds recorded `"error"`, which is treated the same way), and the initialize check reports `unverifiable`. A valid recorded hash that the replay cannot compute is a divergence, reported as a mismatch. `ReevaluationRunner --verify` exits with code 11 for unverifiable hashes only after every definite failure: a state hash mismatch (5), server events (6), sync outputs (8) and OnInitialize (9) take precedence.
+If the state cannot be converted for the hash (a map whose keys collide as strings, a value of an unsupported type, a NaN or infinite floating-point value, which JSON cannot encode), the live tick is not stopped: its hash is recorded as `unavailable: <reason>`, the keeper logs an error and counts it (`LandKeeper.stateHashUnavailableCount`). Replay reports such a tick as unverifiable, never as a match (`RunResult.unverifiableStateHashes`; older builds recorded `"error"`, which is treated the same way), and the initialize check reports `unverifiable`. A replay land has no state to show for such a tick, so a run that feeds one fails there (`stateUnavailable`, with the hash error; § Server Events in Replay). A valid recorded hash that the replay cannot compute is a divergence, reported as a mismatch. `ReevaluationRunner --verify` exits with code 11 for unverifiable hashes only after every definite failure: a state hash mismatch (5), server events (6), sync outputs (8) and OnInitialize (9) take precedence.
 
 Unsigned integers above `Int.max` (`UInt`, `UInt64`) convert to their decimal digits as a string, on every path: before, they trapped. Values that fit in `Int` are unchanged on the wire.
 

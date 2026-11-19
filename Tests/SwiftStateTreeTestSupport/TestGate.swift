@@ -1,4 +1,4 @@
-// Tests/SwiftStateTreeTransportTests/TestGate.swift
+// Tests/SwiftStateTreeTestSupport/TestGate.swift
 //
 // A gate for forced-interleaving tests: code under test awaits `arrive()` at the point where a
 // race can happen, the test sees the arrival, issues the competing calls, then opens the gate.
@@ -14,9 +14,9 @@ import Foundation
 /// scheduling stall a loaded runner produces: a 5 s bound failed tests whose order held, beside
 /// CPU-heavy tests on a 4-core runner. A wait that checks something *doesn't* happen must not use
 /// it; it states its own short bound instead.
-let testHangBound: Duration = .seconds(60)
+package let testHangBound: Duration = .seconds(60)
 
-final class TestGate: @unchecked Sendable {
+package final class TestGate: @unchecked Sendable {
     private struct ArrivalWaiter {
         let count: Int
         let continuation: CheckedContinuation<Bool, Never>
@@ -32,8 +32,10 @@ final class TestGate: @unchecked Sendable {
     /// Waiters cancelled before they registered (the handler ran first).
     private var cancelledWaiterIDs: Set<Int> = []
 
+    package init() {}
+
     /// Suspends until `open()`; returns at once if the gate is open already.
-    func arrive() async {
+    package func arrive() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
             arrivals += 1
@@ -53,7 +55,7 @@ final class TestGate: @unchecked Sendable {
     }
 
     /// Lets every current and future arrival through.
-    func open() {
+    package func open() {
         lock.lock()
         isOpen = true
         let resumed = waiters
@@ -63,14 +65,14 @@ final class TestGate: @unchecked Sendable {
     }
 
     /// Number of `arrive()` calls so far.
-    var arrivalCount: Int {
+    package var arrivalCount: Int {
         lock.lock()
         defer { lock.unlock() }
         return arrivals
     }
 
     /// Number of `waitForArrivals` calls still waiting.
-    var arrivalWaiterCount: Int {
+    package var arrivalWaiterCount: Int {
         lock.withLock { arrivalWaiters.count }
     }
 
@@ -78,7 +80,7 @@ final class TestGate: @unchecked Sendable {
     /// itself, not by polling; `false` when the waiting task is cancelled, or after
     /// `testHangBound`, when the code never arrived.
     @discardableResult
-    func waitForArrivals(_ count: Int) async -> Bool {
+    package func waitForArrivals(_ count: Int) async -> Bool {
         let id = lock.withLock { () -> Int in
             defer { nextWaiterID += 1 }
             return nextWaiterID
@@ -161,7 +163,7 @@ extension WebSocketTransport {
 /// Polls `condition` every 5 ms until it holds, for at most `testHangBound`; returns its final
 /// value. For state no event reports; a gate's arrival uses `waitForArrivals`.
 @discardableResult
-func pollUntil(_ condition: () async -> Bool) async -> Bool {
+package func pollUntil(_ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + testHangBound
     // wall-clock: condition poll with a 60 s hang bound; callers are counted by the poll-helper rule
     while !(await condition()), ContinuousClock.now < deadline {

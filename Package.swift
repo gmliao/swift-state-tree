@@ -222,10 +222,22 @@ let package = Package(
             exclude: ["Fixtures"]
         ),
 
+        // 🔹 Test support: helpers shared by the test targets (TestGate, RecordingConnection).
+        // Only test targets depend on it.
+        .target(
+            name: "SwiftStateTreeTestSupport",
+            dependencies: [
+                "SwiftStateTree",
+                "SwiftStateTreeTransport",
+            ],
+            path: "Tests/SwiftStateTreeTestSupport"
+        ),
+
         // 🔹 Transport tests
         .testTarget(
             name: "SwiftStateTreeTransportTests",
             dependencies: [
+                "SwiftStateTreeTestSupport",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
                 "SwiftStateTreeMessagePack",
@@ -243,6 +255,7 @@ let package = Package(
         .testTarget(
             name: "SwiftStateTreeNIOTests",
             dependencies: [
+                "SwiftStateTreeTestSupport",
                 "SwiftStateTreeNIO",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
