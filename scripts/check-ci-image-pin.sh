@@ -22,7 +22,14 @@ import tempfile
 # A Swift image as the value of an `image:` or `container:` key, or a `uses: docker://` step,
 # quoted or not, with or without a registry (a `host:port/` one included). Only in key position, so
 # a string value that merely contains "image: swift:" (an env value, a run line) is not read.
-IMAGE = re.compile(r"""^\s*(?:-\s+)?(?:(?:image|container):\s*["']?|uses:\s*["']?docker://)((?:[\w.-]+(?::\d+)?/)*swift:[^\s"'#]+)""")
+IMAGE = re.compile(r"""^\s*(?:-\s+)?(?:(?:image|container):\s*["']?|uses:\s*["']?docker://)((?:[\w.-]+(?::\d+)?/)*swift:[^\s"'#,}]+)""")
+# The flow form, `container: { image: swift:…, … }`: the image key inside the braces.
+FLOW_IMAGE = re.compile(r"""^\s*(?:-\s+)?container:\s*\{.*?\bimage:\s*["']?((?:[\w.-]+(?::\d+)?/)*swift:[^\s"'#,}]+)""")
+# Not read, as no workflow uses them: a quoted key (`"image": …`) and a flow map spread over
+# several lines. A workflow that starts using either needs this check extended first.
+# An image given as a block scalar (`image: >-` and the value on the next lines) isn't read:
+# it is refused, so an image can't hide from the check in a form it doesn't parse.
+BLOCK_IMAGE = re.compile(r"^\s*(?:-\s+)?(?:image|container):\s*[|>]")
 PINNED = re.compile(r"^swift:[\w.-]+@sha256:([0-9a-f]{64})$")
 CACHE_DIR = "~/.cache/org.swift.swiftpm"
 STEP = re.compile(r"^(\s*)- ")
@@ -90,11 +97,16 @@ def check(workflows):
         for n, line in enumerate(lines, 1):
             if line.lstrip().startswith("#"):
                 continue
-            for m in IMAGE.finditer(uncommented(line)):
+            text = uncommented(line)
+            if BLOCK_IMAGE.match(text):
+                errors.append(f"{f.name}:{n}: a container image must be a plain or quoted value, not a block scalar")
+            for m in [*IMAGE.finditer(text), *FLOW_IMAGE.finditer(text)]:
                 images.setdefault(m.group(1), []).append(f"{f.name}:{n}")
         for step in steps(lines):
             if any(v == CACHE_DIR for _, v in block_values(step, ["path"])):
                 cache_steps.append((f.name, step))
+    if errors:
+        return errors
     if not images:
         return [f"no Swift container image found in {workflows}"]
     if len(images) > 1:
@@ -163,6 +175,9 @@ def self_test():
         ("cache path in a list block with a stale key",
          GOOD.replace("path: ~/.cache/org.swift.swiftpm", "path: |\n          ~/.cache/org.swift.swiftpm\n          ~/.npm").replace(f"-{D}-$", f"-{other}-$"),
          "key doesn't hold"),
+        ("flow container, unpinned", GOOD + "  b:\n    container: { image: swift:6.2.4-noble, options: --privileged }\n", "more than one"),
+        ("flow container, pinned", GOOD + f"  b:\n    container: {{ image: swift:6.2.4-noble@sha256:{D} }}\n", None),
+        ("block-scalar image", GOOD + "  b:\n    container:\n      image: >-\n        swift:6.2.4-noble\n", "not a block scalar"),
         ("a folded key holding the digest",
          GOOD.replace(f"key: swiftpm-${{{{ github.job }}}}-{D}-${{{{ hashFiles('Package.resolved') }}}}",
                       f"key: >-\n          swiftpm-${{{{ github.job }}}}-{D}-\n          ${{{{ hashFiles('Package.resolved') }}}}"),
