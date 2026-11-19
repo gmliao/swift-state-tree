@@ -42,18 +42,19 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && !inputs.full_matrix }}
 
 jobs:
+  # One debug build of the package and its tests serves every variant: the variants differ only in
+  # environment variables read at run time, never at build time, so each is a `swift test
+  # --skip-build` run of its own on the same products (Notes/plans/2026-11-19-ci-one-test-build.md).
+  # A failed variant lets the next one run; a failed build stops them all, since --skip-build on
+  # missing or partial products runs whatever is there. The variables appear only in their test
+  # step's env, which the shellcheck job checks (scripts/check-variant-test-selection.sh).
+  # The job's limit is above the sum of its steps' own.
   build:
-    name: build (in-turn sync ${{ matrix.in_turn_sync }})
+    name: build (variants)
     runs-on: ubuntu-22.04 # Linux runner (matching production environment)
     container:
       image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
-    strategy:
-      fail-fast: false
-      matrix:
-        # The kill switch: "false" runs the whole suite on the legacy sync path.
-        in_turn_sync: ["true", "false"]
-    env:
-      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}
+    timeout-minutes: 180
 
     steps:
     - uses: actions/checkout@v4
@@ -73,19 +74,13 @@ jobs:
 
     # Lessons enforced in code (CLAUDE.md § Coding Conventions); the self-test proves the
     # checks still find what they look for before the repository is checked for zero findings.
-    # This step, Lint turns and Must-not-compile snippets read source text or compile snippets:
-    # IN_TURN_SYNC, the legs' only difference, is read at run time, so they give the same result in
-    # both legs. On a push they run in the in-turn sync true leg only; the nightly runs them in both.
-    # The shellcheck job checks that (scripts/check-variant-test-selection.sh, S4 and S6).
     - name: Lint lessons
-      if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}
       run: |
         scripts/lint-lessons.sh --self-test
         scripts/lint-lessons.sh
 
     # The turn core's rules the compiler can't check (Notes/plans/2026-11-18-swift-state-turns-core.md §7).
     - name: Lint turns
-      if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}
       run: |
         scripts/lint-turns.sh --self-test
         scripts/lint-turns.sh
@@ -94,36 +89,150 @@ jobs:
     # step), so `rm -rf .build` removed nothing.
     - name: Clean build artifacts
       run: swift package clean
-    
+
     - name: Show toolchain
       run: swift --version
-    
+
+    # The package and its test targets, once. Every `swift test` below passes --skip-build and no
+    # other flag, so it runs these products as built.
     - name: Build
-      run: swift build
+      id: build
+      run: swift build --build-tests
 
     # Handler bodies that must not compile (#586): a throw after the write, a wrong response type,
     # validate's context. Each snippet builds as a target of a generated package under .build/.
     - name: Must-not-compile snippets
-      if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}
       run: scripts/check-must-not-compile.sh
-    
-    - name: Run tests
-      run: swift test
+
+    # The whole suite with in-turn sync on, its default.
+    - name: Tests, in-turn sync on
+      id: in_turn_on
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        IN_TURN_SYNC: "true"
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-on.log" \
+          || { echo "::error title=Tests, in-turn sync on::the tests failed"; exit 1; }
       timeout-minutes: 30
 
+    # The kill switch: the whole suite on the legacy sync path.
+    - name: Tests, in-turn sync off
+      id: in_turn_off
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        IN_TURN_SYNC: "false"
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-off.log" \
+          || { echo "::error title=Tests, in-turn sync off::the tests failed"; exit 1; }
+      timeout-minutes: 30
+
+    # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
+    # step runs the tests again with both opted out, so the snapshot-diff fallback keeps coverage
+    # until it is removed. On a push it runs only the Transport and NIO targets: the flags reach no
+    # other test, which the shellcheck job checks (scripts/check-variant-test-selection.sh: the
+    # other targets that reach the transport pin both flags on every config). The nightly runs the
+    # whole suite here. In-turn sync is at its default. Row addressing (on by default) keeps the
+    # tables on whatever USE_SYNC_TABLES says, and in-process configs don't read ROW_ADDRESSING: a
+    # test with rows in effect (a router join with the sync sequence and path hashes) runs the
+    # tables here too. The step covers the direct-adapter tests and those without router joins,
+    # the sync sequence or path hashes; the fallback under a router join is covered by the tests
+    # that turn rows off explicitly (`withRowAddressing(false)`). It fails when the tests that pin
+    # the switches didn't run (a renamed target or test would otherwise match nothing and pass).
+    # They check the adapter's effective state, not only the environment.
+    - name: Tests, sync tables off
+      id: sync_tables_off
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        USE_SYNC_TABLES: "false"
+        TYPED_LEAF_VALUES: "false"
+        FILTER: ${{ !inputs.full_matrix && 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' || '' }}
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/sync-tables-off.log"
+        swift test --skip-build ${FILTER:+--filter "$FILTER"} 2>&1 | tee "$log" \
+          || { echo "::error title=Tests, sync tables off::the tests failed"; exit 1; }
+        for pin in 'A config built with init takes USE_SYNC_TABLES' 'A config built with init takes TYPED_LEAF_VALUES'; do
+          if ! grep -q "✔ Test \"$pin" "$log"; then
+            echo "::error title=Tests, sync tables off::the test \"$pin\" did not run"
+            exit 1
+          fi
+        done
+      timeout-minutes: 40
+
+    # Per-player fields on typed per-player tables (#514) are on by default wherever the broadcast
+    # tables are. This step runs the Transport and NIO targets again with them opted out, the
+    # broadcast tables at their default, so today's per-player snapshot diff keeps coverage. The
+    # identity tests toggle the three configurations in process. It fails when the test that pins
+    # the switch didn't run.
+    - name: Tests, per-player sync tables off
+      id: per_player_off
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        PER_PLAYER_SYNC_TABLES: "false"
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/per-player-sync-tables-off.log"
+        swift test --skip-build --filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' 2>&1 | tee "$log" \
+          || { echo "::error title=Tests, per-player sync tables off::the tests failed"; exit 1; }
+        pin='A config built with init takes PER_PLAYER_SYNC_TABLES'
+        if ! grep -q "✔ Test \"$pin" "$log"; then
+          echo "::error title=Tests, per-player sync tables off::the test \"$pin\" did not run"
+          exit 1
+        fi
+      timeout-minutes: 40
+
     # The wall-clock cadence smoke, in a process of its own: beside the parallel suite, CPU-heavy
-    # neighbours can starve it. It fails the job when it didn't run (a renamed suite or test
-    # would otherwise match nothing and pass).
+    # neighbours can starve it. Once, with in-turn sync at its default: the smoke runs both sync
+    # paths itself (`inTurn: [true, false]`). It fails the job when it didn't run (a renamed suite
+    # or test would otherwise match nothing and pass).
     - name: Run wall-clock tests
+      id: wall_clock
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       shell: bash
       run: |
         set -o pipefail
-        WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter WallClockCadenceSmokeTests 2>&1 | tee wall-clock.log
-        if ! grep -q '✔ Test "cadence smoke (wall clock)' wall-clock.log; then
+        log="$RUNNER_TEMP/wall-clock.log"
+        WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter WallClockCadenceSmokeTests 2>&1 | tee "$log"
+        if ! grep -q '✔ Test "cadence smoke (wall clock)' "$log"; then
           echo "::error::the wall-clock cadence smoke did not run"
           exit 1
         fi
       timeout-minutes: 5
+
+    # One check stands for every variant, so the run's summary names each one's outcome and its
+    # closing line.
+    - name: Summary
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BUILD_OUTCOME: ${{ steps.build.outcome }}
+        IN_TURN_ON_OUTCOME: ${{ steps.in_turn_on.outcome }}
+        IN_TURN_OFF_OUTCOME: ${{ steps.in_turn_off.outcome }}
+        TABLES_OFF_OUTCOME: ${{ steps.sync_tables_off.outcome }}
+        PER_PLAYER_OFF_OUTCOME: ${{ steps.per_player_off.outcome }}
+        WALL_CLOCK_OUTCOME: ${{ steps.wall_clock.outcome }}
+      run: |
+        row() {
+          local result
+          result=$(grep -h 'Test run with' "$RUNNER_TEMP/$3.log" 2>/dev/null | tail -1)
+          echo "| $1 | $2 | ${result:-} |"
+        }
+        {
+          echo "| step | outcome | closing line |"
+          echo "|---|---|---|"
+          echo "| Build | $BUILD_OUTCOME | |"
+          row "Tests, in-turn sync on" "$IN_TURN_ON_OUTCOME" in-turn-on
+          row "Tests, in-turn sync off" "$IN_TURN_OFF_OUTCOME" in-turn-off
+          row "Tests, sync tables off" "$TABLES_OFF_OUTCOME" sync-tables-off
+          row "Tests, per-player sync tables off" "$PER_PLAYER_OFF_OUTCOME" per-player-sync-tables-off
+          row "Run wall-clock tests" "$WALL_CLOCK_OUTCOME" wall-clock
+        } >> "$GITHUB_STEP_SUMMARY"
 
   # The turn core in release (its debug run is the build job's `swift test`): the ordered,
   # model and runtime-stop checks, and the step path's specialization for a client's machine.
@@ -162,108 +271,6 @@ jobs:
 
     - name: Check the step path's specialization
       run: scripts/check-turns-inlinable.sh
-
-  # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
-  # job runs the tests again with both opted out (USE_SYNC_TABLES=false, TYPED_LEAF_VALUES=false),
-  # so the snapshot-diff fallback keeps coverage until it is removed. On a push it runs only the
-  # Transport and NIO targets: the flags reach no other test, which the shellcheck job checks
-  # (scripts/check-variant-test-selection.sh: the other targets that reach the
-  # transport pin both flags on every config). The nightly runs the whole suite here.
-  # In-turn sync is at its default. Row addressing (on by default) keeps the tables on whatever
-  # USE_SYNC_TABLES says, and in-process configs don't read ROW_ADDRESSING: a test with rows in
-  # effect (a router join with the sync sequence and path hashes) runs the tables here too. The
-  # job covers the direct-adapter tests and those without router joins, the sync sequence or path
-  # hashes; the fallback under a router join is covered by the tests that turn rows off
-  # explicitly (`withRowAddressing(false)`).
-  sync-tables-off:
-    name: build (sync tables off)
-    runs-on: ubuntu-22.04
-    container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
-    env:
-      USE_SYNC_TABLES: "false"
-      TYPED_LEAF_VALUES: "false"
-
-    steps:
-    - uses: actions/checkout@v4
-
-    # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
-    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
-    # glob then walks .build and fails. actions/cache saves in its post step only when the job
-    # succeeded and the key wasn't an exact hit. .build is not cached.
-    - name: SwiftPM shared cache
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
-        restore-keys: |
-          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
-
-    - name: Show toolchain
-      run: swift --version
-
-    # It fails the job when the tests that pin the switches didn't run (a renamed target or
-    # test would otherwise match nothing and pass). They check the adapter's effective state,
-    # not only the environment.
-    - name: Run the tests with the tables and typed leaves off
-      shell: bash
-      env:
-        FILTER: ${{ !inputs.full_matrix && 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' || '' }}
-      run: |
-        set -o pipefail
-        swift test ${FILTER:+--filter "$FILTER"} 2>&1 | tee sync-tables-off.log
-        for pin in 'A config built with init takes USE_SYNC_TABLES' 'A config built with init takes TYPED_LEAF_VALUES'; do
-          if ! grep -q "✔ Test \"$pin" sync-tables-off.log; then
-            echo "::error::the test \"$pin\" did not run"
-            exit 1
-          fi
-        done
-      timeout-minutes: 40
-
-  # Per-player fields on typed per-player tables (#514) are on by default wherever the broadcast
-  # tables are. This job runs the Transport and NIO targets again with them opted out
-  # (PER_PLAYER_SYNC_TABLES=false), the broadcast tables at their default, so today's per-player
-  # snapshot diff keeps coverage. The identity tests toggle the three configurations in process.
-  per-player-sync-tables-off:
-    name: build (per-player sync tables off)
-    runs-on: ubuntu-22.04
-    container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
-    env:
-      PER_PLAYER_SYNC_TABLES: "false"
-
-    steps:
-    - uses: actions/checkout@v4
-
-    # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
-    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
-    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
-    # glob then walks .build and fails. actions/cache saves in its post step only when the job
-    # succeeded and the key wasn't an exact hit. .build is not cached.
-    - name: SwiftPM shared cache
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/org.swift.swiftpm
-        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
-        restore-keys: |
-          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
-
-    - name: Show toolchain
-      run: swift --version
-
-    # It fails the job when the test that pins the switch didn't run.
-    - name: Run the Transport and NIO tests with the per-player tables off
-      shell: bash
-      run: |
-        set -o pipefail
-        swift test --filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' 2>&1 | tee per-player-sync-tables-off.log
-        pin='A config built with init takes PER_PLAYER_SYNC_TABLES'
-        if ! grep -q "✔ Test \"$pin" per-player-sync-tables-off.log; then
-          echo "::error::the test \"$pin\" did not run"
-          exit 1
-        fi
-      timeout-minutes: 40
 
   # The Examples packages have their own test targets and builds, which the root `swift test`
   # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
@@ -513,11 +520,11 @@ jobs:
         scripts/check-ci-image-pin.sh --self-test
         scripts/check-ci-image-pin.sh
 
-    # The push runs leave out repeated variant runs, which is safe only while the variable can't
-    # change what they check: sync-tables-off runs only the Transport and NIO targets (no other test
-    # can read USE_SYNC_TABLES or TYPED_LEAF_VALUES), and the build job's in-turn sync false leg
-    # skips three steps that can't read IN_TURN_SYNC. Here, not in those jobs: the check is Python,
-    # which the Swift image lacks, and the runner's own Swift only parses the manifest
+    # The build job runs its variants on one build, which is valid only while no variable is read at
+    # build time: each appears only in its test step's env, and Package.swift reads no environment.
+    # Its sync-tables-off step runs only the Transport and NIO targets, which is safe only while no
+    # other test can read USE_SYNC_TABLES or TYPED_LEAF_VALUES. Here, not in that job: the check is
+    # Python, which the Swift image lacks, and the runner's own Swift only parses the manifest
     # (`swift package dump-package`) for the test targets' dependencies.
     - name: The variant runs left out can't read their variable
       run: |
