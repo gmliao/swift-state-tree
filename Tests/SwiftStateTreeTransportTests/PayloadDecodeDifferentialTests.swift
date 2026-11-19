@@ -388,7 +388,9 @@ struct PayloadDecodeDifferentialTests {
     func floatFromInteger() {
         struct Box: Codable { let f: Float }
         // 2^62 + 2^38 + 1: rounded through Double it lands on a midpoint and goes to 2^62.
-        for value in [MessagePackValue.int((1 << 62) + (1 << 38) + 1), .uint((1 << 62) + (1 << 38) + 1), .int(-((1 << 62) + (1 << 38) + 1))] {
+        let magnitude: Int64 = (1 << 62) + (1 << 38) + 1
+        let values: [MessagePackValue] = [.int(magnitude), .uint(UInt64(magnitude)), .int(-magnitude)]
+        for value in values {
             let box: MessagePackValue = .map([.string("f"): value])
             #expect(Self.typed(Box.self, box, recording: false) == Self.today(Box.self, box), "\(value)")
         }

@@ -181,30 +181,37 @@ private struct DecodeOnceFixture {
 
 /// A tickless land: an action without resolvers is applied before the adapter's `onMessage`
 /// returns, and so is a client event sent before it. A job's action is answered later.
+private func decodeOnceRules() -> RulesNode {
+    Rules {
+        HandleAction(DecodeOnceAction.self) { (state: inout DecodeOnceState, action: DecodeOnceAction, _: LandContext) in
+            state.hits.append("action:\(action.tag)")
+            return DecodeOnceResponse(count: state.hits.count)
+        }
+        HandleAction(DecodeOnceJobAction.self, resolvers: DecodeOnceJobResolver.self) { (state: inout DecodeOnceState, action: DecodeOnceJobAction, _: LandContext) in
+            state.hits.append("job:\(action.tag)")
+            return DecodeOnceResponse(count: state.hits.count)
+        }
+        HandleEvent(DecodeOnceEvent.self) { (state: inout DecodeOnceState, event: DecodeOnceEvent, _: LandContext) in
+            state.hits.append("event:\(event.tag)")
+        }
+    }
+}
+
 /// `tick`: a land with a tick (every hour, stepped by hand with `stepTickOnce()`), whose inputs
 /// wait for the tick. `recording`: the keeper records its inputs (`ReevaluationRecorder`).
 private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, tick: Bool = false, recording: Bool = false) async throws -> DecodeOnceFixture {
-    let definition = Land("decode-once", using: DecodeOnceState.self) {
-        ClientEvents { Register(DecodeOnceEvent.self) }
-        if tick {
+    let definition = tick
+        ? Land("decode-once", using: DecodeOnceState.self) {
+            ClientEvents { Register(DecodeOnceEvent.self) }
             Lifetime {
                 Tick(every: .seconds(3600)) { (_: inout DecodeOnceState, _: LandContext) in }
             }
+            decodeOnceRules()
         }
-        Rules {
-            HandleAction(DecodeOnceAction.self) { (state: inout DecodeOnceState, action: DecodeOnceAction, _: LandContext) in
-                state.hits.append("action:\(action.tag)")
-                return DecodeOnceResponse(count: state.hits.count)
-            }
-            HandleAction(DecodeOnceJobAction.self, resolvers: DecodeOnceJobResolver.self) { (state: inout DecodeOnceState, action: DecodeOnceJobAction, _: LandContext) in
-                state.hits.append("job:\(action.tag)")
-                return DecodeOnceResponse(count: state.hits.count)
-            }
-            HandleEvent(DecodeOnceEvent.self) { (state: inout DecodeOnceState, event: DecodeOnceEvent, _: LandContext) in
-                state.hits.append("event:\(event.tag)")
-            }
+        : Land("decode-once", using: DecodeOnceState.self) {
+            ClientEvents { Register(DecodeOnceEvent.self) }
+            decodeOnceRules()
         }
-    }
     let sent = DecodeOnceFrames()
     let keeper = LandKeeper(
         definition: definition,
