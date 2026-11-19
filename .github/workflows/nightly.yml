@@ -1,0 +1,100 @@
+# The nightly: the full test matrix on main once a day, on a measurement tag, and by hand.
+# It calls the push workflows with full_matrix: true, so the work the push runs leave out (the
+# variant reruns of Notes/plans/2026-11-19-ci-test-audit.md, V1–V5) still runs, from the same
+# definitions. Design: that plan, § Nightly workflow.
+#
+# By hand, on a branch or tag: gh workflow run nightly.yml --ref <branch-or-tag>
+# (no ref input: every checkout, the full-history ones too, then tests that ref, and the run's
+# headSha is its commit).
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+  push:
+    tags: [ 'measurements-*' ]
+  # A change to the nightly itself runs it once on its PR (the report job is schedule-only, so
+  # nothing is filed): the workflow_call wiring and the gate can't be tried any other way before
+  # they reach main.
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '.github/workflows/nightly.yml'
+      - 'scripts/nightly-*.sh'
+
+# Runs of one event on one ref wait for each other. A group keeps only one pending run, and a
+# newer one cancels it; the event is in the group so a dispatch queued on main can't cancel a
+# pending scheduled run (only scheduled runs report, so they still never race on the issue).
+concurrency:
+  group: nightly-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # A scheduled run skips a commit the last green scheduled run already tested. Dispatch and tag
+  # runs always run, and never count for the skip.
+  gate:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+    - uses: actions/checkout@v4
+    - id: gate
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        EVENT: ${{ github.event_name }}
+        SHA: ${{ github.sha }}
+      run: scripts/nightly-gate.sh "$EVENT" "$SHA"
+      timeout-minutes: 2
+
+  build-and-test:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    uses: ./.github/workflows/build-and-test.yml
+    with:
+      full_matrix: true
+
+  e2e:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    uses: ./.github/workflows/e2e-tests.yml
+    with:
+      full_matrix: true
+
+  # Scheduled runs only: one open nightly-failure issue, commented on while main stays red and
+  # closed when it is green again. Dispatch and tag runs report through their own run status.
+  # A gate that failed (an API error, say) is reported too: it leaves `run` unset, and a red
+  # scheduled run must not file nothing. Don't rerun an old scheduled run's report by hand: the
+  # script won't close a newer issue or take a baseline its commit doesn't contain, but a failed
+  # old run still files a report for a commit main has moved past.
+  report:
+    needs: [gate, build-and-test, e2e]
+    if: always() && github.event_name == 'schedule' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        # Full history: the report lists the commits since the last green scheduled nightly.
+        fetch-depth: 0
+    - name: Report to the nightly-failure issue
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        GATE: ${{ needs.gate.result }}
+        BUILD: ${{ needs.build-and-test.result }}
+        E2E: ${{ needs.e2e.result }}
+        SHA: ${{ github.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: scripts/nightly-report.sh "$GATE" "$BUILD" "$E2E" "$SHA" "$RUN_URL"
+      timeout-minutes: 5

@@ -20,6 +20,14 @@ on:
       - '.devcontainer/**'
       - 'README*'
   workflow_dispatch: # Allow manual triggering
+  # The nightly (nightly.yml) calls this workflow with full_matrix: true. The work the push runs
+  # leave out (Notes/plans/2026-11-19-ci-test-audit.md, V1–V5) is kept behind that input.
+  workflow_call:
+    inputs:
+      full_matrix:
+        description: Run the variant reruns the push runs leave out
+        type: boolean
+        default: false
 
 jobs:
   e2e-tests:
