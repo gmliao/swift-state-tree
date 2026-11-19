@@ -3,7 +3,7 @@
 **Status:** rev 9, plan only, for review.
 - **Detail:** B0–B2 in full; B3–B6 as outlines. Each of B3–B6 gets its own plan PR before its code, reviewed against the B0–B2 code that exists by then. Each outline's "open" list carries what the reviews of rev 1–3 raised for that step.
 - **Decided:** D4 = (a), by the maintainer (§2.2), with its rule documented as a B0 deliverable.
-- **Decisions in this rev:** the legacy path's removal from live lands (D1, decided): L1 written in full, L2 (2a–2d) a placeholder until its own layout; replay keeps the legacy cycle until #612 (§3.2). The replay-only cycle's shape in B2, (a) or (b), recommended (b). Decision 5 (the phase's emit effects) with every output named.
+- **Decisions in this rev:** the legacy path's removal from live lands (D1, decided): L1 written in full, L2 (2a–2d) a placeholder until its own layout; replay keeps the legacy cycle until #612 (§3.2). The replay-only cycle in B2: (b), decided by consequence. Decision 5 (the phase's emit effects) with every output named.
 - **Proposals:** D1–D3 and D5.
 - **After GO on B0–B1:** B0–B1 move to a draft code branch; B2's detail is settled against that code.
 
@@ -187,11 +187,11 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 - **B2 starts with one live sync path, and the legacy cycle used by replay only;**
 - deleting the keeper's off path, `beginSync`/`endSync`, the adapter's off executor, the harness's legacy cells and legacy-only rows (`disconnect-sending-join-response`, `disconnect-sending-initial-sync`, `join-during-sync-cycle`, each retired with its replacement) and B2's decisions 1 and 4 is #612's last step, not a precondition of B2.
 
-**The replay-only cycle in B2 (open, for B2's rewrite against L2's code).** Either:
+**The replay-only cycle in B2: (b), decided by consequence (2026-11-20).** The maintainer's call not to build what #612 deletes settles it (Main; the maintainer may still object). The options were:
 - (a) decisions 1 and 4 apply to it as written, with rev 8's must-fix 1–2 on decision 4 still to settle; or
 - (b) it stays an actor loop outside the machine, its commit a query (`.legacyCommit`, as in §3.2), with no `.syncCycle` request: today's busy skips and retries are unchanged, for replay only.
 
-*Recommended: (b).* Replay isn't on the live path, and #612 replaces it, so (b) avoids building the request machinery of decisions 1 and 4 only to delete it. It needs the machine to tolerate a commit query outside any held key, which decision 2's settle commit already does.
+*Taken: (b).* Replay isn't on the live path, and #612 replaces it, so (b) builds none of decisions 1 and 4's request machinery only to delete it. It needs the machine to accept a commit query outside any held key, which decision 2's settle commit already does.
 
 **B1: the empty machine.**
 - `TurnCore` in the adapter, which conforms to `TurnActor` directly, and the production `TurnClock` over `safeTaskSleep` (core plan §3.4). The dependency itself arrived in B0.
@@ -210,7 +210,7 @@ The actor keeps membership, join, inbound, actions, land failure, and the whole 
 
 **The in-turn commit.** When the keeper's turn calls `runSyncPhaseInTurn(state:events:…)`, the adapter builds a `MembershipView` in the same synchronous segment, and calls `core.query(.syncPhase(read, events, view, tools))`. The view holds the members, the joining sessions that this phase may flip, the held events, each session's lag entry, and what event routing needs (§3.3, decision 3). The answer appends the phase's events, then runs `planAndCommit`.
 
-> **Live lands: superseded by L2. Replay: open (§3.2, "The replay-only cycle in B2").** L2 removes the adapter's own cycle from live lands before B1, so the legacy cycle reaches B2 for replay only. The text from here through the legacy flag's list (the legacy driver, `.syncCycle`'s request, the backlog retry), the cycle parts of "Retry, follow-up and lag timer" and of `syncNow`, and decisions 1 and 4 stay for the record until L2's plan is GO; B2's detail is then rewritten against the one sync path.
+> **Live lands: superseded by L2. Replay: (b) (§3.2, "The replay-only cycle in B2"): the driver below stays an actor loop with its `.legacyCommit` query; the `.syncCycle` request, the in-flight record and the parked retry are not built.** L2 removes the adapter's own cycle from live lands before B1, so the legacy cycle reaches B2 for replay only. The text from here through the legacy flag's list (the legacy driver, `.syncCycle`'s request, the backlog retry), the cycle parts of "Retry, follow-up and lag timer" and of `syncNow`, and decisions 1 and 4 stay for the record until L2's plan is GO; B2's detail is then rewritten against the one sync path.
 
 **The legacy cycle stays an actor-driven loop in B2, with its commit as a query.** The legacy driver awaits `keeper.beginSync`. In the segment where that await returns, it builds the `MembershipView` and calls `core.query(.legacyCommit(read, view, tools))`. It then awaits `keeper.endSync`. So the membership view is captured at the cycle's ingress, after the keeper's read, in the same segment as the commit, as today.
 
@@ -289,7 +289,7 @@ Their users and the harness rows are listed in §6 (Appendix A).
 
 Each is a choice the code can't make for us: a wrong guess changes goldens or records silently. Each has a recommendation.
 
-**Decision 1: a stale `.legacyCommit`, a second call, and the cycle's deadline.** *Live lands: superseded by L2. It applies to the replay-only cycle only under option (a) (§3.2); recommended (b) doesn't need it. Deleted in #612's last step.*
+**Decision 1: a stale `.legacyCommit`, a second call, and the cycle's deadline.** *Live lands: superseded by L2. The replay-only cycle took (b) (§3.2), which doesn't use it. Kept for the record; #612's last step deletes the cycle.*
 
 `beginSync` hands back the read, and the keeper clears its dirty state for it. If the commit were then refused as stale, nothing would re-mark those fields, and the next cycle wouldn't send them.
 
@@ -341,7 +341,7 @@ What moves where:
 
 Rejected: showing that nothing appends during the answer. That isn't true today, because the phase appends its own events.
 
-**Decision 4: the legacy cycle's handoff.** *Live lands: superseded by L2. It applies to the replay-only cycle only under option (a) (§3.2), with rev 8's must-fix 1–2 still to settle there; recommended (b) doesn't need it. Deleted in #612's last step.*
+**Decision 4: the legacy cycle's handoff.** *Live lands: superseded by L2. The replay-only cycle took (b) (§3.2), which doesn't use it, so rev 8's must-fix 1–2 don't apply. Kept for the record; #612's last step deletes the cycle.*
 
 `.cycleStart` keeps today's order of checks (TA:3146): the writer-backlog check first (a backlogged writer skips the cycle, sets the backlog flags and schedules the coalesced retry), then the in-flight record (busy skip, decision 1), and only then the request.
 
@@ -514,7 +514,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 
 ## 7. Decisions for the maintainer
 
-- **D1 (decided, 2026-11-20).** The legacy sync path is removed from live lands before B1, in two steps: L1 (the switch) and L2 (the adapter's own cycle on live lands), §3.2. The production rollback switch (`IN_TURN_SYNC=false`) goes with L1. Replay keeps the legacy cycle until #612, whose last step deletes it. Open: the replay-only cycle's shape in B2, (a) or (b), recommended (b).
+- **D1 (decided, 2026-11-20).** The legacy sync path is removed from live lands before B1, in two steps: L1 (the switch) and L2 (the adapter's own cycle on live lands), §3.2. The production rollback switch (`IN_TURN_SYNC=false`) goes with L1. Replay keeps the legacy cycle until #612, whose last step deletes it. The replay-only cycle in B2 is (b), an actor loop outside the machine, decided by consequence.
 - **D2.** #652: allow a reused SessionID, with the binding stamp and generation-aware output in B3 (proposed), or forbid it.
 - **D3.** #588: before the recording, or after the merge (proposed). With it goes the keeper's join recheck (§4, B3).
 - **D4 (decided: (a)).** Module layering (§2.2); the rule is documented in B0.
@@ -531,7 +531,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | Change | Where |
 |---|---|
 | The legacy path's removal from live lands (D1 decided): L1, the switch, in full; L2, the adapter's own cycle on live lands, as a placeholder with groups 2a–2d (the adapter's own syncs, the public `syncNow`, the freeze, the core tests' doubles) | §3.2, §3, §7 |
-| Replay keeps the legacy cycle until #612, whose last step deletes it; B2 starts with one live sync path and the replay-only cycle; that cycle's shape in B2 is open, (a) decisions 1 and 4 or (b) an actor loop outside the machine, recommended (b) | §3.2, §3.3, §7 |
+| Replay keeps the legacy cycle until #612, whose last step deletes it; B2 starts with one live sync path and the replay-only cycle; that cycle in B2 is (b), an actor loop outside the machine with its commit as a query, decided by consequence | §3.2, §3.3, §7 |
 | The benchmark handle pins `syncStateForNewPlayer` and the `completedInTurn == false` join path: noted where L2 touches them | §3.2 |
 | Decision 5: `PhaseScratch`; every emit effect with its named output (`.eventHeld`, `.joiningEventsDropped`, `.joinFailed`, `.ceilingDropped`, `.syncDeferredByFreeze`) and the flush order; `.lost` keeps the earlier emits' outputs; witnesses and mutants | §3.2, §3.3 |
 | E's rationale: `TurnActor` is `public`, so a `package` adapter keeps the conformance's witnesses package-scoped; the facade's members (the container, the wiring, the SPI forwards) and GameDemo in E | §3.2 |
