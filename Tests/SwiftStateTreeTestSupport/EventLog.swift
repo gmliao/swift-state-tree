@@ -37,7 +37,8 @@ package final class EventLog: @unchecked Sendable {
     }
 
     /// Waits until the log meets `condition`; resumed by `append`, not by polling. `false` after
-    /// `testHangBound`, when the event never comes.
+    /// `testHangBound`, when the event never comes. `condition` runs under the log's lock, on the
+    /// appending thread: it must not call back into the log.
     @discardableResult
     package func waitFor(_ condition: @escaping @Sendable ([String]) -> Bool) async -> Bool {
         let id = lock.withLock { () -> Int in
