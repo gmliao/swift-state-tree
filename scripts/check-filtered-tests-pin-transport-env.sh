@@ -16,14 +16,17 @@
 #   R3 nothing builds a LandManager, LandRouter, LandRealm or a land server or host, which build
 #      adapters from the environment.
 # The filtered targets are read from the job itself: its FILTER line in
-# .github/workflows/build-and-test.yml, whose alternatives must each be a whole target (`Name\.`).
-# So the job and this check can't name different targets.
+# .github/workflows/build-and-test.yml, whose alternatives must each be a whole target (`Name\.`),
+# and its one `swift test`, which must pass `${FILTER:+--filter "$FILTER"}`. So the job and this
+# check can't name different targets, and the job can't run without the filter it declares.
 #
 # What it can't see (the nightly runs the whole suite in that job, as the backstop): R1 reads the
 # argument labels, not their types, so a non-optional expression that is nil at run time isn't
 # caught; R2 is textual, so it doesn't check that the pins set the same variable as the
-# construction, and it counts a pin under an inactive `#if` or in a closure that never runs. A
-# dump of the package this check can't read fails it rather than scanning nothing.
+# construction, and it counts a pin under an inactive `#if` or in a closure that never runs. The
+# lexer is simple: a string interpolation holding a nested string literal can end a literal early,
+# and a comma in a generic argument (`make<A, B>(…)`) ends the extracted expression there. A dump of
+# the package this check can't read fails it rather than scanning nothing.
 #
 # Usage: scripts/check-filtered-tests-pin-transport-env.sh [--self-test] [--package-json <file>]
 set -euo pipefail
@@ -39,7 +42,9 @@ import tempfile
 WORKFLOW = ".github/workflows/build-and-test.yml"
 JOB = "sync-tables-off"
 TRANSPORT = "SwiftStateTreeTransport"
-# The job's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`.
+# The job's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`, and the
+# one `swift test` that must use it.
+FILTERED_RUN = '${FILTER:+--filter "$FILTER"}'
 FILTER_LINE = re.compile(r"""^\s*FILTER:\s*\$\{\{\s*!inputs\.full_matrix\s*&&\s*'([^']*)'\s*\|\|\s*''\s*\}\}\s*$""")
 
 ADAPTER = re.compile(r"\bTransportAdapter\s*(?:<)?")
@@ -152,6 +157,10 @@ def filtered_targets(workflow):
     found = [m for m in map(FILTER_LINE.match, lines[start:end]) if m]
     if len(found) != 1:
         return set(), [f"{WORKFLOW}: the {JOB} job has {len(found)} FILTER lines of the form this check reads, not one"]
+    runs = [line for line in lines[start:end] if not line.lstrip().startswith("#") and re.search(r"\bswift test\b", line)]
+    if len(runs) != 1 or FILTERED_RUN not in runs[0]:
+        return set(), [f"{WORKFLOW}: the {JOB} job must run one `swift test {FILTERED_RUN}`; it has {len(runs)} swift test line(s)"
+                       + ("" if len(runs) != 1 else " and that one ignores FILTER")]
     names, errors = set(), []
     for alternative in found[0].group(1).split("|"):
         m = re.fullmatch(r"(\w+)\\\.", alternative)
@@ -227,7 +236,8 @@ def graph_errors(package):
     targets = package.get("targets")
     if not isinstance(targets, list) or not any(t.get("type") == "test" for t in targets):
         return ["the package dump lists no test targets: this check can't read it (another toolchain's format?)"]
-    errors = []
+    errors = [f"{t.get('name')}: a test target with no dependencies field: this check can't read the dump"
+              for t in targets if t.get("type") == "test" and not isinstance(t.get("dependencies"), list)]
     for t in targets:
         for d in t.get("dependencies", []):
             unknown = set(d) - DEPENDENCY_KINDS
@@ -323,7 +333,8 @@ def self_test():
         "jobs:\n  build:\n    steps:\n    - run: swift test\n"
         f"  {JOB}:\n    steps:\n    - name: Run\n      env:\n"
         f"        FILTER: ${{{{ !inputs.full_matrix && '{regex}' || '' }}}}\n"
-        "      run: swift test\n  per-player:\n    steps: []\n"
+        "      run: |\n        set -o pipefail\n        swift test ${FILTER:+--filter \"$FILTER\"} 2>&1 | tee out.log\n"
+        "  per-player:\n    steps:\n    - run: swift test --filter 'X\\.'\n"
     )
     both = job(r"SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.")
     filtered, filter_errors = filtered_targets(both)
@@ -381,6 +392,9 @@ def self_test():
         ("no FILTER line in the job fails", both.replace("FILTER:", "FILTERS:"), set(), "FILTER lines"),
         ("a FILTER line in another job only fails", both.replace(f"  {JOB}:", "  other:"), set(), f"no {JOB} job"),
         ("an alternative that isn't a whole target fails", job(r"SwiftStateTreeTransportTests\.|NIO"), None, "isn't a whole target"),
+        ("a swift test that ignores FILTER fails", both.replace(' ${FILTER:+--filter "$FILTER"}', ""), None, "ignores FILTER"),
+        ("a second swift test in the job fails", both.replace("2>&1 | tee out.log\n", "2>&1 | tee out.log\n        swift test\n"), None, "2 swift test line(s)"),
+        ("a swift test only in a comment doesn't count", both.replace("      run: |\n", "      # swift test\n      run: |\n"), {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}, None),
     ]:
         names, errors = filtered_targets(workflow)
         ok = (not errors and names == want_names) if want_error is None else any(want_error in e for e in errors)
@@ -415,6 +429,8 @@ def self_test():
     # A dump this check can't read fails it (fail closed), whatever the sources hold.
     for name, pkg, want in [
         ("a dump with no test targets", {"targets": package()["targets"][:3]}, "no test targets"),
+        ("a test target with no dependencies field",
+         package({"name": "NewTests", "type": "test"}), "no dependencies field"),
         ("a dependency of an unknown kind",
          package({"name": "NewTests", "type": "test", "dependencies": [{"macro": ["X", None]}]}), "of a kind this check doesn't know"),
     ]:
