@@ -10,7 +10,8 @@ import SwiftStateTree
 /// makes, each to the same adapter method, so a measured window runs the same adapter code as
 /// before. Each async forward is `nonisolated(nonsending)`: it runs on its caller's executor,
 /// so the call reaches the adapter with the same hops as a direct call.
-/// Applications host lands through `NIOLandHost` or `LandRouter`.
+/// The diagnostics forwards keep the adapter's `@_spi(Diagnostics)` level. Applications host
+/// lands through `NIOLandHost` or `LandRouter`.
 public struct TransportAdapterBenchmarkHandle<State: StateNodeProtocol>: Sendable {
     let adapter: TransportAdapter<State>
 
@@ -55,7 +56,7 @@ public struct TransportAdapterBenchmarkHandle<State: StateNodeProtocol>: Sendabl
 
     public var syncConfigForRecord: ReevaluationSyncConfig { adapter.syncConfigForRecord }
 
-    public var effectiveStateUpdateFeatures: [String] { adapter.effectiveStateUpdateFeatures }
+    @_spi(Diagnostics) public var effectiveStateUpdateFeatures: [String] { adapter.effectiveStateUpdateFeatures }
 
     nonisolated(nonsending) public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
@@ -107,11 +108,11 @@ public struct TransportAdapterBenchmarkHandle<State: StateNodeProtocol>: Sendabl
         await adapter.isDirtyTrackingEnabled()
     }
 
-    nonisolated(nonsending) public func waitForOutboundDrain(timeout: Duration = .seconds(5)) async -> Bool {
+    @_spi(Diagnostics) nonisolated(nonsending) public func waitForOutboundDrain(timeout: Duration = .seconds(5)) async -> Bool {
         await adapter.waitForOutboundDrain(timeout: timeout)
     }
 
-    nonisolated(nonsending) public func syncSkipCounts() async -> SyncSkipCounts {
+    @_spi(Diagnostics) nonisolated(nonsending) public func syncSkipCounts() async -> SyncSkipCounts {
         await adapter.syncSkipCounts()
     }
 

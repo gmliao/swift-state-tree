@@ -66,12 +66,12 @@ TRANSPORT = "SwiftStateTreeTransport"
 FILTERED_RUN = '${FILTER:+--filter "$FILTER"}'
 FILTER_LINE = re.compile(r"""^\s*FILTER:\s*\$\{\{\s*!inputs\.full_matrix\s*&&\s*'([^']*)'\s*\|\|\s*''\s*\}\}\s*$""")
 
-ADAPTER = re.compile(r"\bTransportAdapter\s*(?:<)?")
+ADAPTER = re.compile(r"\bTransportAdapter(?:BenchmarkHandle)?\s*(?:<)?")
 # `let a: TransportAdapter<S> = .init(…)`: the `.init(` is the construction.
-ADAPTER_INIT = re.compile(r":\s*TransportAdapter\s*<[^=]*>\s*=\s*\.init\s*(?=\()")
+ADAPTER_INIT = re.compile(r":\s*TransportAdapter(?:BenchmarkHandle)?\s*<[^=]*>\s*=\s*\.init\s*(?=\()")
 CONFIG = re.compile(r"\bTransportEnvConfig\s*(?:\.init\s*)?\(|:\s*TransportEnvConfig\s*=\s*\.init\s*\(")
 # Another name for either type would hide its constructions from R1 and R2.
-ALIAS = re.compile(r"\btypealias\s+\w+\s*(?:<[^=]*>)?\s*=\s*(TransportAdapter|TransportEnvConfig)\b")
+ALIAS = re.compile(r"\btypealias\s+\w+\s*(?:<[^=]*>)?\s*=\s*(TransportAdapter(?:BenchmarkHandle)?|TransportEnvConfig)\b")
 # A declaration's body, where a statement can't pin a config built in a stored property's default.
 TYPE_BODY = re.compile(r"\b(?:struct|class|enum|extension|actor|protocol)\b[^{}();]*$")
 FROM_ENV = re.compile(r"\bTransportEnvConfig\s*\.\s*fromEnvironment\b")
@@ -535,6 +535,8 @@ def self_test():
     filtered, filter_errors = filtered_targets(both)
     sources = [
         ("an adapter without transportEnvConfig:", "let a = TransportAdapter<S>(keeper: k, transport: t, landID: \"x\")\n", "R1"),
+        ("a benchmark handle without transportEnvConfig:",
+         "let a = TransportAdapterBenchmarkHandle<S>(keeper: k, transport: t, landID: \"x\")\n", "R1"),
         ("an adapter with it, spread over lines, the argument last", PINNED + ADAPTER_OK, None),
         ("a config that pins only the tables",
          PINNED.replace("    config.typedLeafValues = true\n", ""), "R2 a TransportEnvConfig whose block doesn't set typedLeafValues"),
