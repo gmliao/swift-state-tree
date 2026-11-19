@@ -47,6 +47,7 @@ if [[ "${SST_DIFFERENTIAL_VERIFY:-}" == "1" ]]; then
     exit 1
 fi
 
+command -v python3 >/dev/null || scripts/ci-apt-install.sh python3
 git config --global --add safe.directory "$PWD" 2>/dev/null || true
 [[ -z "$(git status --porcelain)" ]] || { echo "record-differential-goldens: the tree isn't clean; commit the code first" >&2; exit 1; }
 COMMIT=$(git rev-parse HEAD)

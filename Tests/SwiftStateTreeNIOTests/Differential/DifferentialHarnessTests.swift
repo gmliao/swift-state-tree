@@ -29,15 +29,26 @@ func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> Diff
 struct DifferentialHarnessTests {
     @Test("Every scenario in every cell passes the oracle and matches its golden")
     func scenariosMatchTheirGoldens() async throws {
+        if let refusal = DiffGolden.updateRefusal(environment: DiffGolden.environment) {
+            Issue.record(Comment(rawValue: refusal))
+            return
+        }
         if DiffGolden.isUpdating {
-            #expect(!DiffGolden.isVerifying, "\(DiffGoldenKeys.update) is refused under \(DiffGoldenKeys.verify)")
-            guard !DiffGolden.isVerifying else { return }
             try await record()
             return
         }
         var bytesCompared = true
+        var ran = 0
+        var masked = 0
         for scenario in diffScenarios {
             for cell in scenario.cells.cells {
+                // The adapter's in-turn sync is the config's and `IN_TURN_SYNC`'s: with the env
+                // off, an in-turn cell would run legacy, so it is masked, and counted.
+                if cell.sync == .inTurn && !InTurnSync.isEnabled() {
+                    masked += 1
+                    continue
+                }
+                ran += 1
                 let name = DiffGolden.fileName(scenario, cell)
                 let actual = try await runChecked(scenario, cell)
                 let golden: DiffGoldenFile
@@ -57,6 +68,11 @@ struct DifferentialHarnessTests {
                 #expect(differences.isEmpty, "\(name):\n\(differences.map(\.description).joined(separator: "\n"))")
             }
         }
+        // Fail closed: every cell the index lists ran, or was masked.
+        let listed = try DiffGolden.readIndex().files.count
+        print("Differential harness: \(ran) cell(s) compared, \(masked) masked (IN_TURN_SYNC), \(listed) listed")
+        #expect(ran > 0, "no cell ran")
+        #expect(ran + masked == listed, "\(ran) ran and \(masked) masked, the index lists \(listed)")
         if !bytesCompared {
             print("Differential harness: decoded views only, on \(DiffGolden.toolchain); the goldens were recorded on another toolchain. The pinned-image CI jobs compare bytes and are the gate.")
         }
@@ -76,6 +92,9 @@ struct DifferentialHarnessTests {
     /// One candidate set: every scenario and cell, oracle-checked, each file's decoded views
     /// checked against its bytes, then the index.
     private func record() async throws {
+        guard InTurnSync.isEnabled() else {
+            throw DiffRunFailure("recording needs the full matrix: IN_TURN_SYNC=false would mask the in-turn cells")
+        }
         let folder = try DiffGolden.outputFolder()
         let recordedWith = DiffRecordedWith(
             commit: DiffGolden.environment[DiffGoldenKeys.commit] ?? "unknown", toolchain: DiffGolden.toolchain

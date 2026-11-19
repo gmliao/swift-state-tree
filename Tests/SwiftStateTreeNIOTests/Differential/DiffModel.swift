@@ -75,9 +75,13 @@ enum DiffHold: Hashable, Sendable, CustomStringConvertible {
     case router(LandRouterHoldPoint)
     case adapter(TransportAdapterHoldPoint)
     case keeper(LandKeeperHoldPoint)
+    /// A server stop after its sessions' leaves were submitted and before the keeper's
+    /// shutdown (`NIOLandServer`'s after-sessions-closed hook).
+    case stopSessionsClosed
 
     var description: String {
         switch self {
+        case .stopSessionsClosed: return "server.stopSessionsClosed"
         case .router(let point): return "router.\(point)"
         case .adapter(let point): return "adapter.\(point)"
         case .keeper(let point): return "keeper.\(point)"
@@ -100,9 +104,18 @@ enum DiffStep: Sendable {
     case startJoin(String, player: String)
     /// Waits for a started join's ingress to finish and its flip to settle.
     case awaitJoin(String)
+    /// Waits for `name`'s last frame's ingress only: no inputs applied, no flip awaited.
+    case awaitIngress(String)
     /// `name` sends a `DiffBumpAction`; the runner waits for its reply (a tick land steps one
     /// tick to apply it).
     case bump(String, requestID: String, amount: Int)
+    /// As `bump`, but its change is applied and not synced: the keeper's drain on a tickless
+    /// land, one tick on a tick land, with no sync cycle asked for.
+    case bumpUnsynced(String, requestID: String, amount: Int)
+    /// As `bump`, under a held sync cycle: its sync request is skipped as busy, and the retry
+    /// that skip schedules waits for the held cycle, so it isn't awaited here (`settleSpawned`
+    /// awaits it).
+    case bumpUnderCycle(String, requestID: String, amount: Int)
     /// `name` sends a `DiffHeldAction` whose resolver waits on gate `key`; the runner waits for
     /// the resolver's arrival.
     case held(String, requestID: String, key: Int)
@@ -111,8 +124,15 @@ enum DiffStep: Sendable {
     /// Waits until every action job has left the keeper's job table (its result delivered as an
     /// input, or its release), then applies the inputs.
     case settleJobs
+    /// Waits for every spawned task and the background syncs, then applies the inputs they
+    /// queued.
+    case settleSpawned
+    /// Waits for every spawned task, nothing else.
+    case awaitSpawned
     /// One tick and the sync cycle after it (a tick land only; nothing on a tickless one).
     case tick
+    /// One tick on a tick land, with no sync asked for (nothing on a tickless land).
+    case tickUnsynced
     /// The transport's own disconnect of `name`, awaited, then its forward to the adapter and
     /// the leave applied (a tick and the sync cycle on a tick land).
     case disconnect(String)

@@ -61,6 +61,13 @@ enum DiffGolden {
     static var isVerifying: Bool { environment[DiffGoldenKeys.verify] == "1" }
     static var toolchain: String { environment[DiffGoldenKeys.toolchain] ?? "unknown" }
 
+    /// Why an update must not run in `environment`, or nil: the gate jobs set the verify key, and
+    /// an update there would rewrite what they compare.
+    static func updateRefusal(environment: [String: String]) -> String? {
+        guard environment[DiffGoldenKeys.update] == "1", environment[DiffGoldenKeys.verify] == "1" else { return nil }
+        return "\(DiffGoldenKeys.update)=1 is refused under \(DiffGoldenKeys.verify)=1"
+    }
+
     static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]

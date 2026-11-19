@@ -66,6 +66,8 @@ final class DiffHoldTable: @unchecked Sendable {
         case .router(let point): router.on(point, arrival: arrival, body)
         case .adapter(let point): adapter.on(point, arrival: arrival, body)
         case .keeper(let point): keeper.on(point, arrival: arrival, body)
+        // The server's hook reads the gate itself (`DiffRun.make`).
+        case .stopSessionsClosed: break
         }
     }
 }
@@ -79,6 +81,12 @@ struct DiffFrame: Codable, Equatable, Sendable {
     init(bytes: Data) throws {
         self.bytes = bytes
         self.decoded = try DiffValue.decodeFrame(bytes)
+    }
+
+    /// A frame whose stored view isn't derived from its bytes: the corrupt-golden check's input.
+    init(bytes: Data, decodedOverride: DiffValue) throws {
+        self.bytes = bytes
+        self.decoded = decodedOverride
     }
 }
 
@@ -196,7 +204,22 @@ final class DiffRun: @unchecked Sendable {
         await container.transportAdapter.captureJoinCommitsForTesting()
         await server.landRouter.installHolds(run.holds.router.hook)
         await container.transportAdapter.installHolds(run.holds.adapter.hook)
+        // On a tickless land with in-turn sync, a join's OnJoin turn and its registration race:
+        // the turn can run before the registration (the join then flips in a sync-only turn of
+        // its own) or after it (and flips in the OnJoin turn), and the record names the turn
+        // kind. So every join waits at `keeperJoinReturned` until the keeper's input drain is
+        // idle: its OnJoin turn runs before its registration, in every process. A tick land's
+        // OnJoin waits for the tick; without in-turn sync the hold isn't reached. Registered
+        // first, so it runs before a scenario's own hold there.
+        if cell.sync == .inTurn, cell.land == .tickless {
+            run.holds.adapter.on(.keeperJoinReturned) { [keeper = container.keeper] in
+                await keeper.waitForInputDrainIdleForTesting()
+            }
+        }
         await container.keeper.installHolds(run.holds.keeper.hook)
+        server.stopFlightsForTesting.onAfterSessionsClosedForTesting { [holds = run.holds] _ in
+            await holds.gate(.stopSessionsClosed)?.arrive()
+        }
         return run
     }
 
@@ -238,15 +261,7 @@ final class DiffRun: @unchecked Sendable {
             attemptOrder.append(name)
 
         case .join(let name, let player):
-            let order = orderJoinTurn()
             try startJoin(name, player: player)
-            if let order {
-                guard try await bounded("\(name) at keeperJoinReturned", { await order.waitForArrivals(1) }) else {
-                    throw DiffRunFailure("\(name)'s join never reached keeperJoinReturned")
-                }
-                try await bounded("\(name)'s OnJoin drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
-                order.open()
-            }
             try await settleJoin(name)
 
         case .refusedJoin(let name, let player):
@@ -273,10 +288,30 @@ final class DiffRun: @unchecked Sendable {
         case .awaitJoin(let name):
             try await settleJoin(name)
 
+        case .awaitIngress(let name):
+            try await awaitIngress(name)
+
         case .bump(let name, let requestID, let amount):
             try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
             try await awaitIngress(name)
             try await applyInputs()
+
+        case .bumpUnderCycle(let name, let requestID, let amount):
+            try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
+            try await awaitIngress(name)
+            if cell.land == .tick { await keeper.stepTickOnce() } else {
+                try await bounded("the keeper's input drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
+            }
+            await adapter.syncNow()
+
+        case .bumpUnsynced(let name, let requestID, let amount):
+            try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
+            try await awaitIngress(name)
+            if cell.land == .tick {
+                await keeper.stepTickOnce()
+            } else {
+                try await bounded("the keeper's input drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
+            }
 
         case .held(let name, let requestID, let key):
             try send(name, try action(requestID: requestID, DiffHeldAction(key: key)))
@@ -296,8 +331,23 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("the action jobs") { [keeper] in await keeper.waitForActionJobsForTesting() }
             try await applyInputs()
 
+        case .settleSpawned:
+            for task in spawned {
+                try await bounded("a spawned task") { await task.value }
+            }
+            try await bounded("the background syncs") { [adapter] in await adapter.waitForBackgroundSyncsForTesting() }
+            try await applyInputs()
+
         case .tick:
-            if cell.land == .tick { await stepTick() }
+            if cell.land == .tick { try await stepTick() }
+
+        case .awaitSpawned:
+            for task in spawned {
+                try await bounded("a spawned task") { await task.value }
+            }
+
+        case .tickUnsynced:
+            if cell.land == .tick { await keeper.stepTickOnce() }
 
         case .disconnect(let name):
             let attempt = try attempt(name)
@@ -383,11 +433,17 @@ final class DiffRun: @unchecked Sendable {
         case .refusedJoin(let name, _): return "refused join \(name)"
         case .startJoin(let name, _): return "start join \(name)"
         case .awaitJoin(let name): return "await join \(name)"
+        case .awaitIngress(let name): return "await ingress \(name)"
         case .bump(let name, let requestID, _): return "bump \(name) \(requestID)"
+        case .bumpUnderCycle(let name, let requestID, _): return "bump under cycle \(name) \(requestID)"
+        case .bumpUnsynced(let name, let requestID, _): return "bump unsynced \(name) \(requestID)"
         case .held(let name, let requestID, _): return "held action \(name) \(requestID)"
         case .openGate(let key): return "open gate \(key)"
         case .settleJobs: return "settle jobs"
+        case .settleSpawned: return "settle spawned"
+        case .awaitSpawned: return "await spawned"
         case .tick: return "tick"
+        case .tickUnsynced: return "tick unsynced"
         case .disconnect(let name): return "disconnect \(name)"
         case .startDisconnect(let name): return "start disconnect \(name)"
         case .settleDisconnects: return "settle disconnects"
@@ -407,20 +463,6 @@ final class DiffRun: @unchecked Sendable {
     func attempt(_ name: String) throws -> DiffAttempt {
         guard let attempt = attempts[name] else { throw DiffRunFailure("no attempt \(name)") }
         return attempt
-    }
-
-    /// On a tickless land with in-turn sync, a join's OnJoin turn and its registration race: the
-    /// turn can run before the registration (and the join flips in its own sync-only turn) or
-    /// after it (and flips in the OnJoin turn), and the record names the turn kind. So a settled
-    /// join is held at `keeperJoinReturned` until the keeper's input drain is idle: its OnJoin
-    /// turn has run before the registration, in every process. Nil where no race exists (a tick
-    /// land's OnJoin waits for the tick; without in-turn sync the hold isn't reached).
-    private func orderJoinTurn() -> TestGate? {
-        guard cell.sync == .inTurn, cell.land == .tickless else { return nil }
-        let gate = TestGate()
-        let arrival = holds.adapter.arrivalCount(at: .keeperJoinReturned) + 1
-        holds.adapter.on(.keeperJoinReturned, arrival: arrival) { await gate.arrive() }
-        return gate
     }
 
     /// The handshake join, always JSON.
@@ -469,17 +511,24 @@ final class DiffRun: @unchecked Sendable {
     /// in either sync mode an applied change reaches the clients only through this cycle.
     private func applyInputs() async throws {
         if cell.land == .tick {
-            await stepTick()
+            try await stepTick()
             return
         }
         try await bounded("the keeper's input drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
-        await adapter.syncNow()
+        try await sync()
     }
 
     /// One tick and the sync cycle after it: the tick loop and the sync loop, once each.
-    private func stepTick() async {
+    private func stepTick() async throws {
         await keeper.stepTickOnce()
+        try await sync()
+    }
+
+    /// One sync cycle, and the retry a skipped one schedules in the background (a cycle in
+    /// flight, or the writer's backlog): with the loops off nothing else would order it.
+    private func sync() async throws {
         await adapter.syncNow()
+        try await bounded("the background syncs") { [adapter] in await adapter.waitForBackgroundSyncsForTesting() }
     }
 
     // MARK: Checkpoints

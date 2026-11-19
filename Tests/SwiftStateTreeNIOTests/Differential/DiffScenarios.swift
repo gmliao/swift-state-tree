@@ -56,9 +56,12 @@ func expect(_ condition: Bool, _ what: @autoclosure () -> String) throws {
 }
 
 /// A join while a sync cycle is in flight: a legacy cycle (the adapter's own `syncNow`) is
-/// held before its `endSync`; a state change meets it and is deferred; B's join starts under the
-/// same hold. After the release the deferred sync and B's join run, and A converges.
-func syncCycleRow(_ name: String, cells: DiffCellRule, deferred: DiffStep) -> DiffScenario {
+/// held before its `endSync`; A's change applies under it and isn't sent; B's join starts under
+/// the same hold (`underHold`). After the release, the deferred sync and B's join run, and A
+/// converges.
+func syncCycleRow(
+    _ name: String, cells: DiffCellRule, bump: DiffStep, underHold: [DiffStep], afterRelease: [DiffStep]
+) -> DiffScenario {
     DiffScenario(
         name: name,
         cells: cells,
@@ -68,17 +71,15 @@ func syncCycleRow(_ name: String, cells: DiffCellRule, deferred: DiffStep) -> Di
             .arm(.adapter(.cycleBeforeEndSync), arrival: nil),
             .spawn("a legacy cycle") { run in await run.adapter.syncNow() },
             .reach(.adapter(.cycleBeforeEndSync)),
-            .bump("A", requestID: "bump-a", amount: 1),
-            deferred,
-            .check("A hasn't received the change") { run in
+            bump,
+            .check("the change applied") { run in
                 let counter = await run.keeper.currentState().counter
                 try expect(counter == 1, "the change didn't apply: counter \(counter)")
             },
-            .observe(.adapter(.admitJoinEntry)),
             .connect("B", session: "s-b"),
-            .startJoin("B", player: "pb"),
-            .reach(.adapter(.admitJoinEntry)),
+        ] + underHold + [
             .release(.adapter(.cycleBeforeEndSync)),
+        ] + afterRelease + [
             .awaitJoin("B"),
             .liveCheckpoint,
             .disconnect("B"),
@@ -331,16 +332,93 @@ let diffScenarios: [DiffScenario] = [
         outcomes: ["join-B": .reply, "join-A": .reply, "join-A2": .reply, "bump-a2": .reply],
         lifecycle: ["pb": [.join, .leave], "pa": [.join, .leave, .join, .leave]]
     ),
-    // In-turn off: the bump's sync request meets the held cycle (`syncSkips.busy` rises).
-    syncCycleRow("join-during-sync-cycle", cells: .legacyOnly, deferred: .check("syncDeferredByCycle") { run in
-        let busy = await run.adapter.syncDeferredByCycleCountForTesting
-        try expect(busy == 1, "syncSkips.busy is \(busy)")
-    }),
-    // In-turn on, with an explicit legacy cycle: the tick turn that applies the bump finds the
-    // cycle in flight and sets the keeper's latch, which endSync consumes.
-    syncCycleRow("join-during-sync-cycle-inturn", cells: DiffCellRule(syncModes: [.inTurn], landKinds: [.tick]),
-                 deferred: .check("syncDeferredByCycle") { run in
-        try expect(await run.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "the latch isn't set")
-    }),
+    // In-turn off: the bump's sync request meets the held cycle (`syncSkips.busy` rises), and
+    // B's join reaches the adapter under the hold. B stays held there until the cycle and its
+    // retry are done, so its OnJoin doesn't race the retry.
+    syncCycleRow("join-during-sync-cycle", cells: .legacyOnly, bump: .bumpUnderCycle("A", requestID: "bump-a", amount: 1), underHold: [
+        .check("syncDeferredByCycle") { run in
+            let busy = await run.adapter.syncDeferredByCycleCountForTesting
+            try expect(busy == 1, "syncSkips.busy is \(busy)")
+        },
+        .arm(.adapter(.admitJoinEntry)),
+        .startJoin("B", player: "pb"),
+        .reach(.adapter(.admitJoinEntry)),
+    ], afterRelease: [
+        // The cycle's end and the retry its busy skip scheduled, before B goes on: otherwise
+        // they race B's first sync, and its sequence number varies.
+        .settleSpawned,
+        .release(.adapter(.admitJoinEntry)),
+    ]),
+    // In-turn on, with an explicit legacy cycle: with the loops off a tick turn wants no sync,
+    // so the latch is set by B's join: it registers under the hold and asks for its sync turn,
+    // which finds the cycle in flight. On a tick land the tick that applies B's OnJoin is
+    // stepped while B is held at keeperJoinReturned; on a tickless one the drain is awaited.
+    // The bump asks for no sync of its own: a sync request on an in-turn land is a turn, not
+    // the adapter's `syncNow`, whose busy retry would race the latch's turn.
+    syncCycleRow("join-during-sync-cycle-inturn", cells: .inTurnOnly, bump: .bumpUnsynced("A", requestID: "bump-a", amount: 1), underHold: [
+        .arm(.adapter(.keeperJoinReturned)),
+        .startJoin("B", player: "pb"),
+        .reach(.adapter(.keeperJoinReturned)),
+        .tickUnsynced,
+        .check("B's OnJoin drain is idle") { run in await run.keeper.waitForInputDrainIdleForTesting() },
+        .check("no latch before B's sync request") { run in
+            try expect(await !run.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "the latch is set already")
+        },
+        .release(.adapter(.keeperJoinReturned)),
+        .awaitIngress("B"),
+        .check("syncDeferredByCycle") { run in
+            try expect(await run.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "the latch isn't set")
+        },
+        .arm(.keeper(.syncOnlyAfterLegacyCycle)),
+    ], afterRelease: [
+        // The latch's sync-only turn waits until the cycle has returned: the adapter's tail
+        // after `endSync` and that turn would otherwise interleave, and B's first sync's
+        // sequence number would vary.
+        .reach(.keeper(.syncOnlyAfterLegacyCycle)),
+        .awaitSpawned,
+        .release(.keeper(.syncOnlyAfterLegacyCycle)),
+        // That turn flips B: wait for it before `awaitJoin`'s own sync.
+        .check("the sync-only turn flipped B") { run in
+            await run.router.waitForNoPendingFlipForTesting()
+        },
+    ]),
+    // A land stop with players connected: the stop's per-session tasks are held at
+    // `stopLeave`, before their leaves queue; A's is released first, so B's leave queues behind
+    // A's. The stop is then held after its sessions' leaves were submitted and before the
+    // keeper's shutdown, where a tick land steps the tick that applies them (the shutdown
+    // drops a tick land's queued leaves, #512), so OnLeave runs A, then B.
+    DiffScenario(
+        name: "land-stop",
+        cells: .all,
+        steps: [
+            .connect("A", session: "s-a"),
+            .join("A", player: "pa"),
+            .connect("B", session: "s-b"),
+            .join("B", player: "pb"),
+            .bump("B", requestID: "bump-b", amount: 1),
+            .liveCheckpoint,
+            .arm(.router(.stopLeave(SessionID("s-a")))),
+            .arm(.router(.stopLeave(SessionID("s-b")))),
+            .observe(.adapter(.membershipQueued)),
+            .arm(.stopSessionsClosed),
+            .startStop,
+            .reach(.router(.stopLeave(SessionID("s-a")))),
+            .reach(.router(.stopLeave(SessionID("s-b")))),
+            .check("neither leave is queued") { run in
+                let queued = run.holds.gate(.adapter(.membershipQueued))?.arrivalCount ?? -1
+                try expect(queued == 0, "\(queued) membership operation(s) queued before the releases")
+            },
+            .release(.router(.stopLeave(SessionID("s-a")))),
+            .reach(.adapter(.membershipQueued)),
+            .release(.router(.stopLeave(SessionID("s-b")))),
+            .reach(.adapter(.membershipQueued), count: 2),
+            .reach(.stopSessionsClosed),
+            .tick,
+            .release(.stopSessionsClosed),
+            .awaitStop,
+        ],
+        outcomes: ["join-A": .reply, "join-B": .reply, "bump-b": .reply],
+        lifecycle: ["pa": [.join, .leave], "pb": [.join, .leave]]
+    ),
 ]
 #endif
