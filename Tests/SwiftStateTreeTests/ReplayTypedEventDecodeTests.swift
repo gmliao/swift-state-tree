@@ -418,16 +418,18 @@ struct ReplayTypedEventDecodeTests {
     }
 
     @Test("Each setFaultsForTesting replaces the earlier faults: read faults don't stack, and the encode fault clears (#646)",
-          arguments: ["state hash", "server events", "snapshot encode"])
+          arguments: ["state hash", "server events", "snapshot encode", "state hash missing"])
     func faultsAreReplaced(fault: String) async throws {
         let path = tempPath("sstr")
         try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), path: path)
         let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
         await runner.setFaultsForTesting(ReplayRunnerFaults(
-            stateHashRead: fault == "state hash", serverEventsRead: fault == "server events", snapshotEncode: fault == "snapshot encode"
+            stateHashRead: fault == "state hash", serverEventsRead: fault == "server events", snapshotEncode: fault == "snapshot encode",
+            stateHashMissing: fault == "state hash missing"
         ))
         await runner.setFaultsForTesting(ReplayRunnerFaults())
         let step = try #require(try await runner.step(), "\(fault): the earlier fault is gone")
+        #expect(step.recordedHash != nil, "\(fault): the record's hash is read again")
         #expect(step.isMatch, "\(fault)")
     }
 

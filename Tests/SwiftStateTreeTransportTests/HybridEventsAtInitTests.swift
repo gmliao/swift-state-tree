@@ -166,6 +166,7 @@ struct HybridEventsAtInitTests {
         try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
         #expect(f.keeper.failure?.kind == .eventEncode)
         #expect(f.adapter.outputGate.isClosed)
+        await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.transport.frames.count == before, "the failing turn sends nothing")
     }
 }
