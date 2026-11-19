@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 
 struct MessagePackValueDecoder {
     /// Set for a client input's payload (`MessagePackPayloadSource`): its `AnyCodable` fields
