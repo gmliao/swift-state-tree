@@ -205,8 +205,10 @@ struct WebSocketTransportSessionIDTests {
         #expect(await connection.entries.filter { $0 == .close }.count == 1)
     }
 
-    @Test("A queued close for an older connection leaves the connection that reuses the ID open (#531)")
-    func queuedCloseForOlderConnectionIsDropped() async {
+    /// `waitsForBound`: the current close's bound runs out while the "after" send is held (#488's
+    /// interleaving); it is held, so the frame still goes first.
+    @Test("A queued close for an older connection leaves the connection that reuses the ID open (#531)", arguments: [false, true])
+    func queuedCloseForOlderConnectionIsDropped(waitsForBound: Bool) async {
         let transport = WebSocketTransport()
         await transport.setDelegate(HoldingDelegate())
         let id = SessionID("reused")
@@ -219,13 +221,23 @@ struct WebSocketTransportSessionIDTests {
         #expect(older != current)
 
         let closed = await closeSignal(on: connection)
+        let stall = TestGate()
+        await connection.setStall(stall)
+        // The current close's bound is held: only the queue's order can close the session (#488).
+        let bound = await transport.holdBoundClosesForTesting()
+        defer { bound.open() }
 
         // The older connection's close does nothing; had it queued a close marker, the frame
         // after it would be dropped and the close would come first.
-        await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(5), generation: older)
+        await transport.closeSessionAfterQueuedFrames(id, timeout: .milliseconds(1), generation: older)
         await transport.sendSessionFrames([SessionFrame(data: Data("after".utf8), sessionID: id, connectionGeneration: current)])
-        await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(5), generation: current)
-        #expect(await closed.waitForArrivals(1))
+        #expect(await stall.waitForArrivals(1))
+        await transport.closeSessionAfterQueuedFrames(id, timeout: .milliseconds(1), generation: current)
+        if waitsForBound {
+            #expect(await bound.waitForArrivals(1), "the bound ran out")
+        }
+        stall.open()
+        #expect(await closed.waitForArrivals(1), "the session was closed")
         #expect(await connection.entries == [.frame("after"), .close])
         #expect(await transport.framesDroppedAfterCloseMarker == 0)
     }
