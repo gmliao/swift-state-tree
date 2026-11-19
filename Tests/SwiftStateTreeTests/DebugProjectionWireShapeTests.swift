@@ -31,7 +31,7 @@ private actor WireShapeRecordingTransport: Transport {
 
 /// The adapter's default config with both diff paths pinned: the typed sync tables with typed leaf
 /// values (the default), and the snapshot diff (the fallback). Pinned, so every build job runs both
-/// and no environment flag reaches this test (scripts/check-filtered-tests-pin-transport-env.sh).
+/// and no environment flag reaches this test (scripts/check-variant-test-selection.sh).
 private func wireShapeConfig(tables: Bool) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: true,

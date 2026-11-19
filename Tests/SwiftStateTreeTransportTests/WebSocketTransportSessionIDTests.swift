@@ -134,8 +134,9 @@ struct WebSocketTransportSessionIDTests {
         #expect(dropped == 1)
     }
 
-    @Test("Called on the concrete type from async code, the one-argument close still waits for the queued frames")
-    func concreteCallerGetsTheQueuedClose() async {
+    /// `boundRanOutFirst`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
+    @Test("Called on the concrete type from async code, the one-argument close still waits for the queued frames", arguments: [false, true])
+    func concreteCallerGetsTheQueuedClose(boundRanOutFirst: Bool) async {
         let transport = WebSocketTransport()
         await transport.setDelegate(HoldingDelegate())
         let id = SessionID("concrete")
@@ -146,12 +147,18 @@ struct WebSocketTransportSessionIDTests {
         let generation = await transport.connectionGeneration(for: id)
         await transport.sendSessionFrames([SessionFrame(data: Data("error".utf8), sessionID: id, connectionGeneration: generation)])
         #expect(await stall.waitForArrivals(1))
+        // The default 1 s bound is held, so only the queue's order can close first (#647).
+        let bound = await transport.holdBoundClosesForTesting()
         // The drain is held writing the frame: a close that doesn't queue behind it would
         // reach the connection first.
         await transport.closeSessionAfterQueuedFrames(id)
+        if boundRanOutFirst {
+            #expect(await bound.waitForArrivals(1), "the bound ran out")
+        }
         stall.open()
         #expect(await orderedPoll { await connection.entries.contains(.close) })
         #expect(await connection.entries == [.frame("error"), .close])
+        bound.open()
     }
 
     @Test("A client that stopped reading is closed after the timeout; the close happens once")
