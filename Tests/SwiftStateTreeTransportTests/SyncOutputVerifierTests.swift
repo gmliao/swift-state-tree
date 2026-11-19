@@ -311,7 +311,7 @@ struct VerifierFixture {
                 }
             )
             _ = try #require(result)
-            #expect(await adapter.waitForOutboundDrain())
+            await adapter.waitForOutboundIdleForTesting()
             return
         }
         try await simulateRouterJoin(
@@ -319,7 +319,8 @@ struct VerifierFixture {
             keeper: keeper,
             sessionID: SessionID("s\(n)"),
             clientID: ClientID("c\(n)"),
-            playerID: Self.player(n)
+            playerID: Self.player(n),
+            waitsByEvent: true
         )
     }
 
@@ -349,7 +350,7 @@ struct VerifierFixture {
     func tick(_ count: Int = 1) async {
         for _ in 0 ..< count {
             await keeper.stepTickOnce()
-            #expect(await adapter.waitForOutboundDrain())
+            await adapter.waitForOutboundIdleForTesting()
         }
     }
 

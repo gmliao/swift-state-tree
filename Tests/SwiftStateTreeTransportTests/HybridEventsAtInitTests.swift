@@ -32,6 +32,14 @@ struct HybridEventsAtInitTests {
         let adapter: TransportAdapter<HybridGoldenState>
         let transport: HybridCountingTestTransport
         let counts: EventEncodeCountsForTesting
+        /// The counts after the join, before the test's events.
+        let before: (body: Int, ownFrame: Int)
+
+        /// The encodes since the join.
+        var since: (body: Int, ownFrame: Int) {
+            let now = counts.counts
+            return (now.body - before.body, now.ownFrame - before.ownFrame)
+        }
     }
 
     /// The hybrid golden land (`HybridEventFrameGoldenTests`), one player joined, counting from
@@ -43,6 +51,7 @@ struct HybridEventsAtInitTests {
             autoStartLoops: false
         )
         let transport = HybridCountingTestTransport()
+        let counts = EventEncodeCountsForTesting()
         let adapter = TransportAdapter<HybridGoldenState>(
             keeper: keeper,
             transport: transport,
@@ -50,7 +59,9 @@ struct HybridEventsAtInitTests {
             encodingConfig: config,
             pathHashes: HybridEventFrameGoldenTests.schema.pathHashes,
             eventHashes: HybridEventFrameGoldenTests.schema.eventHashes,
-            suppressMissingPathHashesWarning: true
+            suppressMissingPathHashesWarning: true,
+            joinsThroughRouter: false,
+            eventEncodeCountsForTesting: counts
         )
         await transport.setDelegate(adapter)
         await keeper.awaitInitialization()
@@ -66,9 +77,7 @@ struct HybridEventsAtInitTests {
         _ = await adapter.allocatePlayerSlot(accountKey: player.rawValue, for: player)
         await adapter.syncStateForNewPlayer(playerID: player, sessionID: session)
         await adapter.waitForOutboundIdleForTesting()
-        let counts = EventEncodeCountsForTesting()
-        await adapter.setEventEncodeCountingForTesting(counts)
-        return Fixture(keeper: keeper, adapter: adapter, transport: transport, counts: counts)
+        return Fixture(keeper: keeper, adapter: adapter, transport: transport, counts: counts, before: counts.counts)
     }
 
     static func typed(_ message: String) -> AnyServerEvent {
@@ -85,7 +94,7 @@ struct HybridEventsAtInitTests {
         for (n, target) in targets.enumerated() {
             let outcome = await f.adapter.enqueueEventSynchronously(Self.typed("e\(n)"), to: target)
             #expect(outcome == .sentAlone, "\(message) \(target)")
-            #expect(f.counts.counts == (0, n + 1), "\(message) \(target)")
+            #expect(f.since == (0, n + 1), "\(message) \(target)")
         }
     }
 
@@ -94,7 +103,7 @@ struct HybridEventsAtInitTests {
         let f = try await Self.make(.messagepack)
         let outcome = await f.adapter.enqueueEventSynchronously(Self.typed("merged-event"), to: .all)
         #expect(outcome == .queued)
-        #expect(f.counts.counts == (1, 0))
+        #expect(f.since == (1, 0))
         let before = await f.transport.frames.count
         await f.keeper.stepTickOnce()
         await f.adapter.waitForOutboundIdleForTesting()
@@ -113,7 +122,7 @@ struct HybridEventsAtInitTests {
         let before = await f.transport.frames.count
         let outcome = await f.adapter.enqueueEventSynchronously(untyped, to: .all)
         #expect(outcome == .lost)
-        #expect(f.counts.counts == (1, 0))
+        #expect(f.since == (1, 0))
         #expect(await f.transport.frames.count == before)
     }
 }

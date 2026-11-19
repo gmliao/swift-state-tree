@@ -211,11 +211,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         case all
     }
 
-    /// Counts the event encodes from now on (tests only, #521 D10).
-    func setEventEncodeCountingForTesting(_ counts: EventEncodeCountsForTesting?) {
-        encodingPipeline.encodeCounts = counts
-        eventSendingPipeline.encodeCounts = counts
-    }
 
     /// Installs `eventEncodingFaultForTesting` (tests only).
     func setEventEncodingFaultForTesting(_ fault: (@Sendable (String) -> EventEncodingFault?)?) {
@@ -396,10 +391,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let routingTable: MessageRoutingTable
     
     /// Encoding pipeline (centralizes all encoding logic).
-    private var encodingPipeline: EncodingPipeline
+    private let encodingPipeline: EncodingPipeline
     
     /// Event sending pipeline (centralizes event sending logic: queue vs immediate).
-    private var eventSendingPipeline: EventSendingPipeline
+    private let eventSendingPipeline: EventSendingPipeline
 
     /// Dirty tracking toggle - default is enabled.
     ///
@@ -955,7 +950,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         suppressMissingPathHashesWarning: Bool = false,
         inTurnSync: Bool = true,
         logger: Logger? = nil,
-        joinsThroughRouter: Bool
+        joinsThroughRouter: Bool,
+        eventEncodeCountsForTesting: EventEncodeCountsForTesting? = nil
     ) {
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
@@ -1120,7 +1116,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.encodingPipeline = EncodingPipeline(
             stateUpdateEncoder: self.stateUpdateEncoder,
             messageEncoder: self.messageEncoder,
-            landID: landID
+            landID: landID,
+            encodeCounts: eventEncodeCountsForTesting
         )
         
         // Initialize event sending pipeline
@@ -1128,7 +1125,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             messageEncoder: self.messageEncoder,
             codec: self.codec,
             landID: landID,
-            logger: self.logger
+            logger: self.logger,
+            encodeCounts: eventEncodeCountsForTesting
         )
         self.membershipCoordinator = MembershipCoordinator()
 
@@ -2720,7 +2718,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if eventsMerge {
             // A body that doesn't encode means a frame that wouldn't either (one encoder, one
             // conversion): the event is lost after one encode, with no second attempt (#521 D10).
-            guard fault == nil, let body = encodingPipeline.encodeServerEventBody(event) else { return .lost }
+            let body: MessagePackValue
+            do {
+                if fault == .all {
+                    throw EncodingError.invalidValue(event.type, .init(codingPath: [], debugDescription: "encoding fault (tests)"))
+                }
+                body = try encodingPipeline.encodeServerEventBodyOrThrow(event)
+            } catch {
+                logger.error("❌ Event did not encode; it is lost", metadata: [
+                    "eventType": .string(event.type),
+                    "error": .string("\(error)")
+                ])
+                return .lost
+            }
             let queued = eventSendingPipeline.queueForMergedSend(
                 eventBody: body,
                 target: target,
@@ -2889,7 +2899,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Send event immediately (encode and transport.send).
     ///
-    /// This is the fallback path when opcode 107 is disabled or encoding fails.
+    /// The path for every event when opcode 107 is disabled, and in a hybrid configuration (opcode
+    /// 107 with `json` or `opcodeJsonArray` messages, decided at init, #521 D10).
     /// Handles encoding, validation, logging, and actual transport.send call.
     /// Returns false when the event did not encode (it is lost); true otherwise, also when its
     /// target has no current recipient.

@@ -19,7 +19,7 @@ struct EventSendingPipeline: Sendable {
     let landID: String
     let logger: Logger
     /// Counts the events' own frame encodes (tests only, #521 D10); nil in production.
-    var encodeCounts: EventEncodeCountsForTesting?
+    var encodeCounts: EventEncodeCountsForTesting? = nil
     
     /// Send decision result.
     enum SendDecision {
@@ -151,16 +151,16 @@ struct EventSendingPipeline: Sendable {
 /// (`EncodingPipeline.encodeServerEventBody`) and events' own frames
 /// (`EventSendingPipeline.prepareImmediateSend`). Counted before the encode, so one that throws
 /// counts too.
-final class EventEncodeCountsForTesting: @unchecked Sendable {
+package final class EventEncodeCountsForTesting: @unchecked Sendable {
     private let lock = NSLock()
     private var body = 0
     private var ownFrame = 0
 
-    init() {}
+    package init() {}
 
     func countBody() { lock.withLock { body += 1 } }
     func countOwnFrame() { lock.withLock { ownFrame += 1 } }
 
     /// (merged bodies, own frames) so far.
-    var counts: (body: Int, ownFrame: Int) { lock.withLock { (body, ownFrame) } }
+    package var counts: (body: Int, ownFrame: Int) { lock.withLock { (body, ownFrame) } }
 }

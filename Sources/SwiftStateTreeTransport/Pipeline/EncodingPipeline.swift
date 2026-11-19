@@ -26,9 +26,15 @@ struct EncodingPipeline: Sendable {
     let messageEncoder: any TransportMessageEncoder
     let landID: String
     /// Counts the event body encodes (tests only, #521 D10); nil in production.
-    var encodeCounts: EventEncodeCountsForTesting?
+    let encodeCounts: EventEncodeCountsForTesting?
 
-    init(stateUpdateEncoder: any StateUpdateEncoder, messageEncoder: any TransportMessageEncoder, landID: String) {
+    init(
+        stateUpdateEncoder: any StateUpdateEncoder,
+        messageEncoder: any TransportMessageEncoder,
+        landID: String,
+        encodeCounts: EventEncodeCountsForTesting? = nil
+    ) {
+        self.encodeCounts = encodeCounts
         self.stateUpdateEncoder = stateUpdateEncoder
         self.sequencedStateUpdateEncoder = stateUpdateEncoder as? any SyncSequencedStateUpdateEncoder
         self.messageEncoder = messageEncoder
@@ -249,19 +255,25 @@ struct EncodingPipeline: Sendable {
     /// - Parameter event: Server event to encode
     /// - Returns: Event body as MessagePackValue, or nil if encoding failed
     func encodeServerEventBody(_ event: AnyServerEvent) -> MessagePackValue? {
+        try? encodeServerEventBodyOrThrow(event)
+    }
+
+    /// `encodeServerEventBody`, throwing why the body didn't encode: the adapter logs the cause
+    /// of a lost event (#521 D10).
+    func encodeServerEventBodyOrThrow(_ event: AnyServerEvent) throws -> MessagePackValue {
         encodeCounts?.countBody()
-        do {
-            if let mpEncoder = messageEncoder as? MessagePackTransportMessageEncoder {
-                return try mpEncoder.encodeServerEventBody(event)
-            }
-            let transportMsg = TransportMessage.event(event: .fromServer(event: event))
-            let eventData = try messageEncoder.encode(transportMsg)
-            let eventUnpacked = try unpack(eventData)
-            guard case .array(let eventArr) = eventUnpacked, eventArr.count >= 2 else { return nil }
-            return .array(Array(eventArr.dropFirst()))
-        } catch {
-            return nil
+        if let mpEncoder = messageEncoder as? MessagePackTransportMessageEncoder {
+            return try mpEncoder.encodeServerEventBody(event)
         }
+        let transportMsg = TransportMessage.event(event: .fromServer(event: event))
+        let eventData = try messageEncoder.encode(transportMsg)
+        let eventUnpacked = try unpack(eventData)
+        guard case .array(let eventArr) = eventUnpacked, eventArr.count >= 2 else {
+            throw EncodingError.invalidValue(event.type, .init(
+                codingPath: [], debugDescription: "the message encoder's event frame is not a MessagePack array"
+            ))
+        }
+        return .array(Array(eventArr.dropFirst()))
     }
 }
 
