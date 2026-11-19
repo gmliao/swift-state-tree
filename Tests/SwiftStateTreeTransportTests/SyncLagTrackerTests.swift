@@ -1,13 +1,14 @@
 import Testing
 @testable import SwiftStateTreeTransport
+import SwiftStateTurns
 
 /// The lag fixtures of the sync-lag design (#332): a controllable clock, no hold points.
 @Suite("Sync lag: the per-session decisions")
 struct SyncLagTrackerTests {
     let policy = SyncLagPolicy.default
-    let t0 = ContinuousClock.now
+    let t0 = TurnInstant(nanoseconds: 0)
 
-    func at(_ seconds: Double) -> ContinuousClock.Instant {
+    func at(_ seconds: Double) -> TurnInstant {
         t0 + .milliseconds(Int64(seconds * 1000))
     }
 
