@@ -2,8 +2,8 @@
 #
 # A pull_request workflow runs from the PR's own branch, so a branch could change the gate
 # outside the protected paths. This job runs main's copy of this file (pull_request_target) and
-# executes none of the PR's code: it reads git objects only, with a read-only token and no
-# secrets. It checks the rewrite branch's PR (head branch `rewrite/546-*`):
+# executes none of the PR's code: it reads git objects only (no checkout, no diff drivers),
+# with a read-only token and no secrets. Event values reach the script through env, quoted. It checks the rewrite branch's PR (head branch `rewrite/546-*`):
 # - the head contains the fetched main tip;
 # - the protected paths at the head equal main's.
 # It reports both SHAs, so the result is bound to one head and one main.
@@ -47,7 +47,7 @@ jobs:
         [ "${FETCHED}" = "${HEAD_SHA}" ] || { echo "::error::the fetched head isn't the event's head SHA"; exit 1; }
         git merge-base --is-ancestor "${MAIN_SHA}" "${HEAD_SHA}" \
           || { echo "::error::the head doesn't contain main's tip ${MAIN_SHA}: merge main first"; exit 1; }
-        if ! git diff --quiet "${MAIN_SHA}" "${HEAD_SHA}" -- \
+        if ! git diff --quiet --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- \
             'Tests/SwiftStateTreeNIOTests/Differential' \
             ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/ExpectedDifferences.swift' \
             ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/RetiredRows.swift' \
@@ -58,7 +58,7 @@ jobs:
             '.github/workflows/differential-paths.yml' \
             'scripts/record-differential-goldens.sh' \
             'scripts/differential-gate.sh'; then
-          git diff --stat "${MAIN_SHA}" "${HEAD_SHA}" -- 'Tests/SwiftStateTreeNIOTests/Differential' 'Tests/SwiftStateTreeTestSupport' '.github/workflows' 'scripts'
+          git diff --stat --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- 'Tests/SwiftStateTreeNIOTests/Differential' 'Tests/SwiftStateTreeTestSupport' '.github/workflows' 'scripts'
           echo "::error::a protected path differs from main ${MAIN_SHA}: change it on main first"
           exit 1
         fi
