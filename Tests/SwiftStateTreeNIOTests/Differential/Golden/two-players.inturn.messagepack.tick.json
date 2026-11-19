@@ -1,0 +1,1407 @@
+{
+  "cell" : "inturn.messagepack.tick",
+  "recordedWith" : {
+    "commit" : "20e15daec3c6967034566dc27cc4253001ed259d",
+    "toolchain" : "Linux x86_64 Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "result" : {
+    "live" : {
+      "connections" : {
+        "A" : {
+          "frames" : [
+            {
+              "bytes" : "eyJraW5kIjoiam9pblJlc3BvbnNlIiwicGF5bG9hZCI6eyJqb2luUmVzcG9uc2UiOnsiZW5jb2RpbmciOiJtZXNzYWdlcGFjayIsImxhbmRJRCI6ImRpZmZlcmVudGlhbDpvbmUiLCJsYW5kSW5zdGFuY2VJZCI6Im9uZSIsImxhbmRUeXBlIjoiZGlmZmVyZW50aWFsIiwicGxheWVySUQiOiJwMSIsInBsYXllclNsb3QiOjEyNSwicmVxdWVzdElEIjoiam9pbi1BIiwic3RhdGVVcGRhdGVGZWF0dXJlcyI6WyJzeW5jU2VxdWVuY2UiXSwic3VjY2VzcyI6dHJ1ZX19fQ==",
+              "decoded" : {
+                "json" : {
+                  "kind" : "joinResponse",
+                  "payload" : {
+                    "joinResponse" : {
+                      "encoding" : "messagepack",
+                      "landID" : "differential:one",
+                      "landInstanceId" : "one",
+                      "landType" : "differential",
+                      "playerID" : "p1",
+                      "playerSlot" : 125,
+                      "requestID" : "join-A",
+                      "stateUpdateFeatures" : [
+                        "syncSequence"
+                      ],
+                      "success" : true
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "bytes" : "lgEBk6gvY291bnRlcgEAk6Yvbm90ZXMBgaJwMaZqb2luZWSTqC9wbGF5ZXJzAZGicDGTpi90aWNrcwEB",
+              "decoded" : {
+                "msgpack" : [
+                  1,
+                  1,
+                  [
+                    "/counter",
+                    1,
+                    0
+                  ],
+                  [
+                    "/notes",
+                    1,
+                    {
+                      "p1" : "joined"
+                    }
+                  ],
+                  [
+                    "/players",
+                    1,
+                    [
+                      "p1"
+                    ]
+                  ],
+                  [
+                    "/ticks",
+                    1,
+                    1
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgOTqC9wbGF5ZXJzAZKicDGicDKTpi90aWNrcwECkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    3,
+                    [
+                      "/players",
+                      1,
+                      [
+                        "p1",
+                        "p2"
+                      ]
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      2
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2amYnVtcC1hkA==",
+              "decoded" : {
+                "msgpack" : [
+                  102,
+                  "bump-a",
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgWTqC9jb3VudGVyAQKTpi90aWNrcwEDkZMBqkRpZmZCdW1wZWSSonAxAg==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    5,
+                    [
+                      "/counter",
+                      1,
+                      2
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      3
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p1",
+                        2
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "kwIFk6kvbm90ZXMvcDEBqGJ1bXBlZCAy",
+              "decoded" : {
+                "msgpack" : [
+                  2,
+                  5,
+                  [
+                    "/notes/p1",
+                    1,
+                    "bumped 2"
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgaTqC9jb3VudGVyAQWTpi90aWNrcwEEkZMBqkRpZmZCdW1wZWSSonAyBQ==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    6,
+                    [
+                      "/counter",
+                      1,
+                      5
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      4
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p2",
+                        5
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uTAgeTpi90aWNrcwEFkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    7,
+                    [
+                      "/ticks",
+                      1,
+                      5
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "B" : {
+          "frames" : [
+            {
+              "bytes" : "eyJraW5kIjoiam9pblJlc3BvbnNlIiwicGF5bG9hZCI6eyJqb2luUmVzcG9uc2UiOnsiZW5jb2RpbmciOiJtZXNzYWdlcGFjayIsImxhbmRJRCI6ImRpZmZlcmVudGlhbDpvbmUiLCJsYW5kSW5zdGFuY2VJZCI6Im9uZSIsImxhbmRUeXBlIjoiZGlmZmVyZW50aWFsIiwicGxheWVySUQiOiJwMiIsInBsYXllclNsb3QiOjQ0OCwicmVxdWVzdElEIjoiam9pbi1CIiwic3RhdGVVcGRhdGVGZWF0dXJlcyI6WyJzeW5jU2VxdWVuY2UiXSwic3VjY2VzcyI6dHJ1ZX19fQ==",
+              "decoded" : {
+                "json" : {
+                  "kind" : "joinResponse",
+                  "payload" : {
+                    "joinResponse" : {
+                      "encoding" : "messagepack",
+                      "landID" : "differential:one",
+                      "landInstanceId" : "one",
+                      "landType" : "differential",
+                      "playerID" : "p2",
+                      "playerSlot" : 448,
+                      "requestID" : "join-B",
+                      "stateUpdateFeatures" : [
+                        "syncSequence"
+                      ],
+                      "success" : true
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "bytes" : "lgEDk6gvY291bnRlcgEAk6Yvbm90ZXMBgaJwMqZqb2luZWSTqC9wbGF5ZXJzAZKicDGicDKTpi90aWNrcwEC",
+              "decoded" : {
+                "msgpack" : [
+                  1,
+                  3,
+                  [
+                    "/counter",
+                    1,
+                    0
+                  ],
+                  [
+                    "/notes",
+                    1,
+                    {
+                      "p2" : "joined"
+                    }
+                  ],
+                  [
+                    "/players",
+                    1,
+                    [
+                      "p1",
+                      "p2"
+                    ]
+                  ],
+                  [
+                    "/ticks",
+                    1,
+                    2
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgWTqC9jb3VudGVyAQKTpi90aWNrcwEDkZMBqkRpZmZCdW1wZWSSonAxAg==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    5,
+                    [
+                      "/counter",
+                      1,
+                      2
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      3
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p1",
+                        2
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2amYnVtcC1ikA==",
+              "decoded" : {
+                "msgpack" : [
+                  102,
+                  "bump-b",
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgaTqC9jb3VudGVyAQWTpi90aWNrcwEEkZMBqkRpZmZCdW1wZWSSonAyBQ==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    6,
+                    [
+                      "/counter",
+                      1,
+                      5
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      4
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p2",
+                        5
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "kwIGk6kvbm90ZXMvcDIBqGJ1bXBlZCA1",
+              "decoded" : {
+                "msgpack" : [
+                  2,
+                  6,
+                  [
+                    "/notes/p2",
+                    1,
+                    "bumped 5"
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uTAgeTpi90aWNrcwEFkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    7,
+                    [
+                      "/ticks",
+                      1,
+                      5
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "record" : {
+      "bytes" : "U1NUUgMFAAABLYSlY29kZWOkbm9uZaZmb3JtYXSjMy41pGtpbmSmaGVhZGVyqG1ldGFkYXRhiqljcmVhdGVkQXS0MjAyNy0wMS0xNVQwODowMDowMFqwbGFuZERlZmluaXRpb25JRKxkaWZmZXJlbnRpYWymbGFuZElEsGRpZmZlcmVudGlhbDpvbmWobGFuZFR5cGWsZGlmZmVyZW50aWFsqG1ldGFkYXRhgLFyZWNvcmRzU3luY1N0cmVhbcOncm5nU2VlZLAzNTA0YmUzODVkMzllOWYysXNjaGVtYUZpbmdlcnByaW50sDU2NDZkMzcwYzlmNDQ2MWGqc3luY0NvbmZpZ4KsZnVsbFNuYXBzaG90wrRtZXJnZWRCcm9hZGNhc3RGcmFtZcOndmVyc2lvbqMzLjYAAAM6iKRraW5kpHR1cm6vbGlmZWN5Y2xlRXZlbnRzkYuoY2xpZW50SUSiYzGoZGV2aWNlSUSiYzGnaXNHdWVzdMKka2luZKRqb2luqG1ldGFkYXRhgbNzdGF0ZVVwZGF0ZUZlYXR1cmVz2TxbInBhdGhJbmRleCIsICJmaWVsZE1lcmdlIiwgInN5bmNTZXF1ZW5jZSIsICJyb3dBZGRyZXNzaW5nIl2ocGxheWVySUSicDGucmVzb2x2ZWRBdFRpY2v/r3Jlc29sdmVyT3V0cHV0c4Coc2VxdWVuY2UAqXNlc3Npb25JRKNzLWGmdGlja0lkALRzZXF1ZW5jZUJlZm9yZUlucHV0cwG5c2VxdWVuY2VCZWZvcmVUaWNrSGFuZGxlcgGpc3RhdGVIYXNosDFlMjQzYjg0YzdlMmIzMTirc3luY01hcmtlcnORh6RraW5kpHNlZWSub2JzZXJ2ZWRUaWNrSWQAqHBsYXllcklEonAxpnJlam9pbsKoc2VxdWVuY2UBq3N0cmVhbUluZGV4Aah2aWV3SGFzaLA0NzlkYzFiNzU5MTBiODg1q3N5bmNPdXRwdXRzkoqtYnJvYWRjYXN0SGFzaLBhOGM3ZjgzMjI4MWEzOWM1sGVuY29kZURyb3BTY29wZXOQqmV2ZW50c0hhc2iwYThjN2Y4MzIyODFhMzljNa9leHRyYWN0aW9uRHJvcHOApWluZGV4AK5vYnNlcnZlZFRpY2tJZACtcGVyUGxheWVySGFzaLBhOGM3ZjgzMjI4MWEzOWM1qHNlcXVlbmNlAatzdHJlYW1JbmRleACodHVybktpbmSkdGlja4qtYnJvYWRjYXN0SGFzaLBhOGM3ZjgzMjI4MWEzOWM1sGVuY29kZURyb3BTY29wZXOQqmV2ZW50c0hhc2iwYThjN2Y4MzIyODFhMzljNa9leHRyYWN0aW9uRHJvcHOApWluZGV4Aa5vYnNlcnZlZFRpY2tJZACtcGVyUGxheWVySGFzaLBhOGM3ZjgzMjI4MWEzOWM1qHNlcXVlbmNlAatzdHJlYW1JbmRleAKodHVybktpbmSrbGVnYWN5Q3ljbGWmdGlja0lkAAAAAzqIpGtpbmSkdHVybq9saWZlY3ljbGVFdmVudHORi6hjbGllbnRJRKJjMqhkZXZpY2VJRKJjMqdpc0d1ZXN0wqRraW5kpGpvaW6obWV0YWRhdGGBs3N0YXRlVXBkYXRlRmVhdHVyZXPZPFsicGF0aEluZGV4IiwgImZpZWxkTWVyZ2UiLCAic3luY1NlcXVlbmNlIiwgInJvd0FkZHJlc3NpbmciXahwbGF5ZXJJRKJwMq5yZXNvbHZlZEF0VGljawCvcmVzb2x2ZXJPdXRwdXRzgKhzZXF1ZW5jZQGpc2Vzc2lvbklEo3MtYqZ0aWNrSWQBtHNlcXVlbmNlQmVmb3JlSW5wdXRzArlzZXF1ZW5jZUJlZm9yZVRpY2tIYW5kbGVyAqlzdGF0ZUhhc2iwYjQzYzZhODM3MWUzNDJlZatzeW5jTWFya2Vyc5GHpGtpbmSkc2VlZK5vYnNlcnZlZFRpY2tJZAGocGxheWVySUSicDKmcmVqb2luwqhzZXF1ZW5jZQKrc3RyZWFtSW5kZXgEqHZpZXdIYXNosDkyNzZiNDEwMzJmMmVlYjKrc3luY091dHB1dHOSiq1icm9hZGNhc3RIYXNosDJmNDg0ZDdmNzk5ZjQ4MGKwZW5jb2RlRHJvcFNjb3Blc5CqZXZlbnRzSGFzaLBhOGM3ZjgzMjI4MWEzOWM1r2V4dHJhY3Rpb25Ecm9wc4ClaW5kZXgArm9ic2VydmVkVGlja0lkAa1wZXJQbGF5ZXJIYXNosGE4YzdmODMyMjgxYTM5YzWoc2VxdWVuY2UCq3N0cmVhbUluZGV4A6h0dXJuS2luZKR0aWNriq1icm9hZGNhc3RIYXNosGE4YzdmODMyMjgxYTM5YzWwZW5jb2RlRHJvcFNjb3Blc5CqZXZlbnRzSGFzaLBhOGM3ZjgzMjI4MWEzOWM1r2V4dHJhY3Rpb25Ecm9wc4ClaW5kZXgBrm9ic2VydmVkVGlja0lkAa1wZXJQbGF5ZXJIYXNosGE4YzdmODMyMjgxYTM5YzWoc2VxdWVuY2UCq3N0cmVhbUluZGV4Bah0dXJuS2luZKtsZWdhY3lDeWNsZaZ0aWNrSWQBAAACVIinYWN0aW9uc5GJqGNsaWVudElEomMxpGtpbmSmYWN0aW9up3BheWxvYWSBpmFtb3VudAKocGxheWVySUSicDGucmVzb2x2ZWRBdFRpY2sBr3Jlc29sdmVyT3V0cHV0c4Coc2VxdWVuY2UCqXNlc3Npb25JRKNzLWGudHlwZUlkZW50aWZpZXKuRGlmZkJ1bXBBY3Rpb26ka2luZKR0dXJutHNlcXVlbmNlQmVmb3JlSW5wdXRzA7lzZXF1ZW5jZUJlZm9yZVRpY2tIYW5kbGVyBKxzZXJ2ZXJFdmVudHORhqRraW5kq3NlcnZlckV2ZW50p3BheWxvYWSComJ5onAxp2NvdW50ZXICqHNlcXVlbmNlA6Z0YXJnZXSCo2lkc5Cka2luZKNhbGymdGlja0lkAq50eXBlSWRlbnRpZmllcqpEaWZmQnVtcGVkqXN0YXRlSGFzaLAwMTdjNTE4MmQyZjJjNDI5q3N5bmNPdXRwdXRzkYutYnJvYWRjYXN0SGFzaLBiZGNhOGU2OGFjOTViOWJlsGVuY29kZURyb3BTY29wZXOQqmV2ZW50c0hhc2iwMGQ2N2UyZDc4YzMyNDRiNLVldmVudHNUaHJvdWdoU2VxdWVuY2UDr2V4dHJhY3Rpb25Ecm9wc4ClaW5kZXgArm9ic2VydmVkVGlja0lkAq1wZXJQbGF5ZXJIYXNosDk5ZTc4NGNlYjNlYWIzOGKoc2VxdWVuY2UEq3N0cmVhbUluZGV4Bqh0dXJuS2luZKtsZWdhY3lDeWNsZaZ0aWNrSWQCAAACVIinYWN0aW9uc5GJqGNsaWVudElEomMypGtpbmSmYWN0aW9up3BheWxvYWSBpmFtb3VudAOocGxheWVySUSicDKucmVzb2x2ZWRBdFRpY2sCr3Jlc29sdmVyT3V0cHV0c4Coc2VxdWVuY2UEqXNlc3Npb25JRKNzLWKudHlwZUlkZW50aWZpZXKuRGlmZkJ1bXBBY3Rpb26ka2luZKR0dXJutHNlcXVlbmNlQmVmb3JlSW5wdXRzBblzZXF1ZW5jZUJlZm9yZVRpY2tIYW5kbGVyBqxzZXJ2ZXJFdmVudHORhqRraW5kq3NlcnZlckV2ZW50p3BheWxvYWSComJ5onAyp2NvdW50ZXIFqHNlcXVlbmNlBaZ0YXJnZXSCo2lkc5Cka2luZKNhbGymdGlja0lkA650eXBlSWRlbnRpZmllcqpEaWZmQnVtcGVkqXN0YXRlSGFzaLAxYzIwZjY0Y2IyODQxZTQ2q3N5bmNPdXRwdXRzkYutYnJvYWRjYXN0SGFzaLBlZmU5MTQxMTM3ZGY3ZWEysGVuY29kZURyb3BTY29wZXOQqmV2ZW50c0hhc2iwYzhkODliZjA5MWVhYmRmY7VldmVudHNUaHJvdWdoU2VxdWVuY2UFr2V4dHJhY3Rpb25Ecm9wc4ClaW5kZXgArm9ic2VydmVkVGlja0lkA61wZXJQbGF5ZXJIYXNosGM3ZjcwNWZlYzAwOGU2YjSoc2VxdWVuY2UGq3N0cmVhbUluZGV4B6h0dXJuS2luZKtsZWdhY3lDeWNsZaZ0aWNrSWQDAAABcYeka2luZKR0dXJutHNlcXVlbmNlQmVmb3JlSW5wdXRzBrlzZXF1ZW5jZUJlZm9yZVRpY2tIYW5kbGVyBqlzdGF0ZUhhc2iwMjZlNDFmNGNiOTM1OGM0ZKtzeW5jTWFya2Vyc5GFpGtpbmSlY2xlYXKocGxheWVySUSicDKmcmVqb2luwqhzZXF1ZW5jZQerc3RyZWFtSW5kZXgJq3N5bmNPdXRwdXRzkYqtYnJvYWRjYXN0SGFzaLAzMzJhNGViZmZlNDdmNmJksGVuY29kZURyb3BTY29wZXOQqmV2ZW50c0hhc2iwYThjN2Y4MzIyODFhMzljNa9leHRyYWN0aW9uRHJvcHOApWluZGV4AK5vYnNlcnZlZFRpY2tJZAStcGVyUGxheWVySGFzaLBhOGM3ZjgzMjI4MWEzOWM1qHNlcXVlbmNlBqtzdHJlYW1JbmRleAiodHVybktpbmSrbGVnYWN5Q3ljbGWmdGlja0lkBAAAAs6HpGtpbmSkdHVybq9saWZlY3ljbGVFdmVudHORi6hjbGllbnRJRKJjMqhkZXZpY2VJRKJjMqdpc0d1ZXN0wqRraW5kpWxlYXZlqG1ldGFkYXRhgbNzdGF0ZVVwZGF0ZUZlYXR1cmVz2TxbInBhdGhJbmRleCIsICJmaWVsZE1lcmdlIiwgInN5bmNTZXF1ZW5jZSIsICJyb3dBZGRyZXNzaW5nIl2ocGxheWVySUSicDKucmVzb2x2ZWRBdFRpY2sEr3Jlc29sdmVyT3V0cHV0c4Coc2VxdWVuY2UGqXNlc3Npb25JRKNzLWKmdGlja0lkBbRzZXF1ZW5jZUJlZm9yZUlucHV0cwe5c2VxdWVuY2VCZWZvcmVUaWNrSGFuZGxlcgepc3RhdGVIYXNosGE5NGMwNjI3NGQ5ZDRiMzarc3luY091dHB1dHOSiq1icm9hZGNhc3RIYXNosDhmYjcxYmM1ZTIwZTk0NDSwZW5jb2RlRHJvcFNjb3Blc5CqZXZlbnRzSGFzaLBhOGM3ZjgzMjI4MWEzOWM1r2V4dHJhY3Rpb25Ecm9wc4ClaW5kZXgArm9ic2VydmVkVGlja0lkBa1wZXJQbGF5ZXJIYXNosGE4YzdmODMyMjgxYTM5YzWoc2VxdWVuY2UHq3N0cmVhbUluZGV4Cqh0dXJuS2luZKR0aWNriq1icm9hZGNhc3RIYXNosGE4YzdmODMyMjgxYTM5YzWwZW5jb2RlRHJvcFNjb3Blc5CqZXZlbnRzSGFzaLBhOGM3ZjgzMjI4MWEzOWM1r2V4dHJhY3Rpb25Ecm9wc4ClaW5kZXgBrm9ic2VydmVkVGlja0lkBa1wZXJQbGF5ZXJIYXNosGE4YzdmODMyMjgxYTM5YzWoc2VxdWVuY2UHq3N0cmVhbUluZGV4C6h0dXJuS2luZKtsZWdhY3lDeWNsZaZ0aWNrSWQFAAACmImnYWN0aW9uc5GJqGNsaWVudElEomMxpGtpbmSmYWN0aW9up3BheWxvYWSBpmFtb3VudAGocGxheWVySUSicDGucmVzb2x2ZWRBdFRpY2sFr3Jlc29sdmVyT3V0cHV0c4Coc2VxdWVuY2UHqXNlc3Npb25JRKNzLWGudHlwZUlkZW50aWZpZXKuRGlmZkJ1bXBBY3Rpb26ka2luZKR0dXJutHNlcXVlbmNlQmVmb3JlSW5wdXRzCLlzZXF1ZW5jZUJlZm9yZVRpY2tIYW5kbGVyCaxzZXJ2ZXJFdmVudHORhqRraW5kq3NlcnZlckV2ZW50p3BheWxvYWSComJ5onAxp2NvdW50ZXIGqHNlcXVlbmNlCKZ0YXJnZXSCo2lkc5Cka2luZKNhbGymdGlja0lkBq50eXBlSWRlbnRpZmllcqpEaWZmQnVtcGVkqXN0YXRlSGFzaLBhYmM1OTA1NjVkZDRjZDdhq3N5bmNNYXJrZXJzkYWka2luZKVjbGVhcqhwbGF5ZXJJRKJwMaZyZWpvaW7CqHNlcXVlbmNlCqtzdHJlYW1JbmRleA2rc3luY091dHB1dHORi61icm9hZGNhc3RIYXNosGZkMzQ3NjBlMWM0NTFmMzawZW5jb2RlRHJvcFNjb3Blc5CqZXZlbnRzSGFzaLAyYTQ2ZGVkMmM4MjFhMGI3tWV2ZW50c1Rocm91Z2hTZXF1ZW5jZQivZXh0cmFjdGlvbkRyb3BzgKVpbmRleACub2JzZXJ2ZWRUaWNrSWQGrXBlclBsYXllckhhc2iwOWUyM2MzZDc5ZmQyMzM2ZKhzZXF1ZW5jZQmrc3RyZWFtSW5kZXgMqHR1cm5LaW5kq2xlZ2FjeUN5Y2xlpnRpY2tJZAYAAAFGhqRraW5kpHR1cm6vbGlmZWN5Y2xlRXZlbnRzkYuoY2xpZW50SUSiYzGoZGV2aWNlSUSiYzGnaXNHdWVzdMKka2luZKVsZWF2ZahtZXRhZGF0YYGzc3RhdGVVcGRhdGVGZWF0dXJlc9k8WyJwYXRoSW5kZXgiLCAiZmllbGRNZXJnZSIsICJzeW5jU2VxdWVuY2UiLCAicm93QWRkcmVzc2luZyJdqHBsYXllcklEonAxrnJlc29sdmVkQXRUaWNrBq9yZXNvbHZlck91dHB1dHOAqHNlcXVlbmNlCalzZXNzaW9uSUSjcy1hpnRpY2tJZAe0c2VxdWVuY2VCZWZvcmVJbnB1dHMKuXNlcXVlbmNlQmVmb3JlVGlja0hhbmRsZXIKqXN0YXRlSGFzaLA5ZjEyODBiYTljZjJiNzYypnRpY2tJZAcAAACLhKRraW5kpHR1cm6vbGlmZWN5Y2xlRXZlbnRzkYaka2luZKhzaHV0ZG93bqhtZXRhZGF0YYCucmVzb2x2ZWRBdFRpY2sHr3Jlc29sdmVyT3V0cHV0c4Coc2VxdWVuY2UKpnRpY2tJZAipc3RhdGVIYXNosDlmMTI4MGJhOWNmMmI3NjKmdGlja0lkCAAAAD6FqGNvbXBsZXRlw6RraW5kpmZvb3RlcqltYXhUaWNrSWQIr3N5bmNTdHJlYW1Db3VudA6pdHVybkNvdW50CQ==",
+      "complete" : true,
+      "decoded" : {
+        "completeness" : "complete",
+        "frames" : [
+          {
+            "actions" : [
+
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+              {
+                "clientID" : "c1",
+                "deviceID" : "c1",
+                "isGuest" : false,
+                "kind" : "join",
+                "metadata" : {
+                  "stateUpdateFeatures" : "[\"pathIndex\", \"fieldMerge\", \"syncSequence\", \"rowAddressing\"]"
+                },
+                "playerID" : "p1",
+                "resolvedAtTick" : -1,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 0,
+                "sessionID" : "s-a",
+                "tickId" : 0
+              }
+            ],
+            "sequenceBeforeInputs" : 1,
+            "sequenceBeforeTickHandler" : 1,
+            "serverEvents" : [
+
+            ],
+            "stateHash" : "1e243b84c7e2b318",
+            "syncMarkers" : [
+              {
+                "kind" : "seed",
+                "observedTickId" : 0,
+                "playerID" : "p1",
+                "rejoin" : false,
+                "sequence" : 1,
+                "streamIndex" : 1,
+                "viewHash" : "479dc1b75910b885"
+              }
+            ],
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "a8c7f832281a39c5",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 0,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 1,
+                "streamIndex" : 0,
+                "turnKind" : "tick"
+              },
+              {
+                "broadcastHash" : "a8c7f832281a39c5",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 1,
+                "observedTickId" : 0,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 1,
+                "streamIndex" : 2,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 0
+          },
+          {
+            "actions" : [
+
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+              {
+                "clientID" : "c2",
+                "deviceID" : "c2",
+                "isGuest" : false,
+                "kind" : "join",
+                "metadata" : {
+                  "stateUpdateFeatures" : "[\"pathIndex\", \"fieldMerge\", \"syncSequence\", \"rowAddressing\"]"
+                },
+                "playerID" : "p2",
+                "resolvedAtTick" : 0,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 1,
+                "sessionID" : "s-b",
+                "tickId" : 1
+              }
+            ],
+            "sequenceBeforeInputs" : 2,
+            "sequenceBeforeTickHandler" : 2,
+            "serverEvents" : [
+
+            ],
+            "stateHash" : "b43c6a8371e342ee",
+            "syncMarkers" : [
+              {
+                "kind" : "seed",
+                "observedTickId" : 1,
+                "playerID" : "p2",
+                "rejoin" : false,
+                "sequence" : 2,
+                "streamIndex" : 4,
+                "viewHash" : "9276b41032f2eeb2"
+              }
+            ],
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "2f484d7f799f480b",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 1,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 2,
+                "streamIndex" : 3,
+                "turnKind" : "tick"
+              },
+              {
+                "broadcastHash" : "a8c7f832281a39c5",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 1,
+                "observedTickId" : 1,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 2,
+                "streamIndex" : 5,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 1
+          },
+          {
+            "actions" : [
+              {
+                "clientID" : "c1",
+                "kind" : "action",
+                "payload" : {
+                  "amount" : 2
+                },
+                "playerID" : "p1",
+                "resolvedAtTick" : 1,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 2,
+                "sessionID" : "s-a",
+                "typeIdentifier" : "DiffBumpAction"
+              }
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+
+            ],
+            "sequenceBeforeInputs" : 3,
+            "sequenceBeforeTickHandler" : 4,
+            "serverEvents" : [
+              {
+                "kind" : "serverEvent",
+                "payload" : {
+                  "by" : "p1",
+                  "counter" : 2
+                },
+                "sequence" : 3,
+                "target" : {
+                  "ids" : [
+
+                  ],
+                  "kind" : "all"
+                },
+                "tickId" : 2,
+                "typeIdentifier" : "DiffBumped"
+              }
+            ],
+            "stateHash" : "017c5182d2f2c429",
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "bdca8e68ac95b9be",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "0d67e2d78c3244b4",
+                "eventsThroughSequence" : 3,
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 2,
+                "perPlayerHash" : "99e784ceb3eab38b",
+                "sequence" : 4,
+                "streamIndex" : 6,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 2
+          },
+          {
+            "actions" : [
+              {
+                "clientID" : "c2",
+                "kind" : "action",
+                "payload" : {
+                  "amount" : 3
+                },
+                "playerID" : "p2",
+                "resolvedAtTick" : 2,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 4,
+                "sessionID" : "s-b",
+                "typeIdentifier" : "DiffBumpAction"
+              }
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+
+            ],
+            "sequenceBeforeInputs" : 5,
+            "sequenceBeforeTickHandler" : 6,
+            "serverEvents" : [
+              {
+                "kind" : "serverEvent",
+                "payload" : {
+                  "by" : "p2",
+                  "counter" : 5
+                },
+                "sequence" : 5,
+                "target" : {
+                  "ids" : [
+
+                  ],
+                  "kind" : "all"
+                },
+                "tickId" : 3,
+                "typeIdentifier" : "DiffBumped"
+              }
+            ],
+            "stateHash" : "1c20f64cb2841e46",
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "efe9141137df7ea2",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "c8d89bf091eabdfc",
+                "eventsThroughSequence" : 5,
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 3,
+                "perPlayerHash" : "c7f705fec008e6b4",
+                "sequence" : 6,
+                "streamIndex" : 7,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 3
+          },
+          {
+            "actions" : [
+
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+
+            ],
+            "sequenceBeforeInputs" : 6,
+            "sequenceBeforeTickHandler" : 6,
+            "serverEvents" : [
+
+            ],
+            "stateHash" : "26e41f4cb9358c4d",
+            "syncMarkers" : [
+              {
+                "kind" : "clear",
+                "playerID" : "p2",
+                "rejoin" : false,
+                "sequence" : 7,
+                "streamIndex" : 9
+              }
+            ],
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "332a4ebffe47f6bd",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 4,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 6,
+                "streamIndex" : 8,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 4
+          },
+          {
+            "actions" : [
+
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+              {
+                "clientID" : "c2",
+                "deviceID" : "c2",
+                "isGuest" : false,
+                "kind" : "leave",
+                "metadata" : {
+                  "stateUpdateFeatures" : "[\"pathIndex\", \"fieldMerge\", \"syncSequence\", \"rowAddressing\"]"
+                },
+                "playerID" : "p2",
+                "resolvedAtTick" : 4,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 6,
+                "sessionID" : "s-b",
+                "tickId" : 5
+              }
+            ],
+            "sequenceBeforeInputs" : 7,
+            "sequenceBeforeTickHandler" : 7,
+            "serverEvents" : [
+
+            ],
+            "stateHash" : "a94c06274d9d4b36",
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "8fb71bc5e20e9444",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 5,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 7,
+                "streamIndex" : 10,
+                "turnKind" : "tick"
+              },
+              {
+                "broadcastHash" : "a8c7f832281a39c5",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "a8c7f832281a39c5",
+                "extractionDrops" : {
+
+                },
+                "index" : 1,
+                "observedTickId" : 5,
+                "perPlayerHash" : "a8c7f832281a39c5",
+                "sequence" : 7,
+                "streamIndex" : 11,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 5
+          },
+          {
+            "actions" : [
+              {
+                "clientID" : "c1",
+                "kind" : "action",
+                "payload" : {
+                  "amount" : 1
+                },
+                "playerID" : "p1",
+                "resolvedAtTick" : 5,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 7,
+                "sessionID" : "s-a",
+                "typeIdentifier" : "DiffBumpAction"
+              }
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+
+            ],
+            "sequenceBeforeInputs" : 8,
+            "sequenceBeforeTickHandler" : 9,
+            "serverEvents" : [
+              {
+                "kind" : "serverEvent",
+                "payload" : {
+                  "by" : "p1",
+                  "counter" : 6
+                },
+                "sequence" : 8,
+                "target" : {
+                  "ids" : [
+
+                  ],
+                  "kind" : "all"
+                },
+                "tickId" : 6,
+                "typeIdentifier" : "DiffBumped"
+              }
+            ],
+            "stateHash" : "abc590565dd4cd7a",
+            "syncMarkers" : [
+              {
+                "kind" : "clear",
+                "playerID" : "p1",
+                "rejoin" : false,
+                "sequence" : 10,
+                "streamIndex" : 13
+              }
+            ],
+            "syncOutputs" : [
+              {
+                "broadcastHash" : "fd34760e1c451f36",
+                "encodeDropScopes" : [
+
+                ],
+                "eventsHash" : "2a46ded2c821a0b7",
+                "eventsThroughSequence" : 8,
+                "extractionDrops" : {
+
+                },
+                "index" : 0,
+                "observedTickId" : 6,
+                "perPlayerHash" : "9e23c3d79fd2336d",
+                "sequence" : 9,
+                "streamIndex" : 12,
+                "turnKind" : "legacyCycle"
+              }
+            ],
+            "tickId" : 6
+          },
+          {
+            "actions" : [
+
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+              {
+                "clientID" : "c1",
+                "deviceID" : "c1",
+                "isGuest" : false,
+                "kind" : "leave",
+                "metadata" : {
+                  "stateUpdateFeatures" : "[\"pathIndex\", \"fieldMerge\", \"syncSequence\", \"rowAddressing\"]"
+                },
+                "playerID" : "p1",
+                "resolvedAtTick" : 6,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 9,
+                "sessionID" : "s-a",
+                "tickId" : 7
+              }
+            ],
+            "sequenceBeforeInputs" : 10,
+            "sequenceBeforeTickHandler" : 10,
+            "serverEvents" : [
+
+            ],
+            "stateHash" : "9f1280ba9cf2b762",
+            "tickId" : 7
+          },
+          {
+            "actions" : [
+
+            ],
+            "clientEvents" : [
+
+            ],
+            "lifecycleEvents" : [
+              {
+                "kind" : "shutdown",
+                "metadata" : {
+
+                },
+                "resolvedAtTick" : 7,
+                "resolverOutputs" : {
+
+                },
+                "sequence" : 10,
+                "tickId" : 8
+              }
+            ],
+            "serverEvents" : [
+
+            ],
+            "stateHash" : "9f1280ba9cf2b762",
+            "tickId" : 8
+          }
+        ],
+        "holdsNonNFCText" : false,
+        "metadata" : {
+          "createdAt" : 821692800,
+          "landDefinitionID" : "differential",
+          "landID" : "differential:one",
+          "landType" : "differential",
+          "metadata" : {
+
+          },
+          "recordsSyncStream" : true,
+          "rngSeed" : "3504be385d39e9f2",
+          "schemaFingerprint" : "5646d370c9f4461a",
+          "syncConfig" : {
+            "fullSnapshot" : false,
+            "mergedBroadcastFrame" : true
+          },
+          "version" : "3.6"
+        }
+      }
+    },
+    "terminal" : {
+      "connections" : {
+        "A" : {
+          "frames" : [
+            {
+              "bytes" : "eyJraW5kIjoiam9pblJlc3BvbnNlIiwicGF5bG9hZCI6eyJqb2luUmVzcG9uc2UiOnsiZW5jb2RpbmciOiJtZXNzYWdlcGFjayIsImxhbmRJRCI6ImRpZmZlcmVudGlhbDpvbmUiLCJsYW5kSW5zdGFuY2VJZCI6Im9uZSIsImxhbmRUeXBlIjoiZGlmZmVyZW50aWFsIiwicGxheWVySUQiOiJwMSIsInBsYXllclNsb3QiOjEyNSwicmVxdWVzdElEIjoiam9pbi1BIiwic3RhdGVVcGRhdGVGZWF0dXJlcyI6WyJzeW5jU2VxdWVuY2UiXSwic3VjY2VzcyI6dHJ1ZX19fQ==",
+              "decoded" : {
+                "json" : {
+                  "kind" : "joinResponse",
+                  "payload" : {
+                    "joinResponse" : {
+                      "encoding" : "messagepack",
+                      "landID" : "differential:one",
+                      "landInstanceId" : "one",
+                      "landType" : "differential",
+                      "playerID" : "p1",
+                      "playerSlot" : 125,
+                      "requestID" : "join-A",
+                      "stateUpdateFeatures" : [
+                        "syncSequence"
+                      ],
+                      "success" : true
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "bytes" : "lgEBk6gvY291bnRlcgEAk6Yvbm90ZXMBgaJwMaZqb2luZWSTqC9wbGF5ZXJzAZGicDGTpi90aWNrcwEB",
+              "decoded" : {
+                "msgpack" : [
+                  1,
+                  1,
+                  [
+                    "/counter",
+                    1,
+                    0
+                  ],
+                  [
+                    "/notes",
+                    1,
+                    {
+                      "p1" : "joined"
+                    }
+                  ],
+                  [
+                    "/players",
+                    1,
+                    [
+                      "p1"
+                    ]
+                  ],
+                  [
+                    "/ticks",
+                    1,
+                    1
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgOTqC9wbGF5ZXJzAZKicDGicDKTpi90aWNrcwECkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    3,
+                    [
+                      "/players",
+                      1,
+                      [
+                        "p1",
+                        "p2"
+                      ]
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      2
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2amYnVtcC1hkA==",
+              "decoded" : {
+                "msgpack" : [
+                  102,
+                  "bump-a",
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgWTqC9jb3VudGVyAQKTpi90aWNrcwEDkZMBqkRpZmZCdW1wZWSSonAxAg==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    5,
+                    [
+                      "/counter",
+                      1,
+                      2
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      3
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p1",
+                        2
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "kwIFk6kvbm90ZXMvcDEBqGJ1bXBlZCAy",
+              "decoded" : {
+                "msgpack" : [
+                  2,
+                  5,
+                  [
+                    "/notes/p1",
+                    1,
+                    "bumped 2"
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgaTqC9jb3VudGVyAQWTpi90aWNrcwEEkZMBqkRpZmZCdW1wZWSSonAyBQ==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    6,
+                    [
+                      "/counter",
+                      1,
+                      5
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      4
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p2",
+                        5
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uTAgeTpi90aWNrcwEFkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    7,
+                    [
+                      "/ticks",
+                      1,
+                      5
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgiTqC9wbGF5ZXJzAZGicDGTpi90aWNrcwEGkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    8,
+                    [
+                      "/players",
+                      1,
+                      [
+                        "p1"
+                      ]
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      6
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2anYnVtcC1hMpA=",
+              "decoded" : {
+                "msgpack" : [
+                  102,
+                  "bump-a2",
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgqTqC9jb3VudGVyAQaTpi90aWNrcwEHkZMBqkRpZmZCdW1wZWSSonAxBg==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    10,
+                    [
+                      "/counter",
+                      1,
+                      6
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      7
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p1",
+                        6
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "kwIKk6kvbm90ZXMvcDEBqGJ1bXBlZCA2",
+              "decoded" : {
+                "msgpack" : [
+                  2,
+                  10,
+                  [
+                    "/notes/p1",
+                    1,
+                    "bumped 6"
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "B" : {
+          "frames" : [
+            {
+              "bytes" : "eyJraW5kIjoiam9pblJlc3BvbnNlIiwicGF5bG9hZCI6eyJqb2luUmVzcG9uc2UiOnsiZW5jb2RpbmciOiJtZXNzYWdlcGFjayIsImxhbmRJRCI6ImRpZmZlcmVudGlhbDpvbmUiLCJsYW5kSW5zdGFuY2VJZCI6Im9uZSIsImxhbmRUeXBlIjoiZGlmZmVyZW50aWFsIiwicGxheWVySUQiOiJwMiIsInBsYXllclNsb3QiOjQ0OCwicmVxdWVzdElEIjoiam9pbi1CIiwic3RhdGVVcGRhdGVGZWF0dXJlcyI6WyJzeW5jU2VxdWVuY2UiXSwic3VjY2VzcyI6dHJ1ZX19fQ==",
+              "decoded" : {
+                "json" : {
+                  "kind" : "joinResponse",
+                  "payload" : {
+                    "joinResponse" : {
+                      "encoding" : "messagepack",
+                      "landID" : "differential:one",
+                      "landInstanceId" : "one",
+                      "landType" : "differential",
+                      "playerID" : "p2",
+                      "playerSlot" : 448,
+                      "requestID" : "join-B",
+                      "stateUpdateFeatures" : [
+                        "syncSequence"
+                      ],
+                      "success" : true
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "bytes" : "lgEDk6gvY291bnRlcgEAk6Yvbm90ZXMBgaJwMqZqb2luZWSTqC9wbGF5ZXJzAZKicDGicDKTpi90aWNrcwEC",
+              "decoded" : {
+                "msgpack" : [
+                  1,
+                  3,
+                  [
+                    "/counter",
+                    1,
+                    0
+                  ],
+                  [
+                    "/notes",
+                    1,
+                    {
+                      "p2" : "joined"
+                    }
+                  ],
+                  [
+                    "/players",
+                    1,
+                    [
+                      "p1",
+                      "p2"
+                    ]
+                  ],
+                  [
+                    "/ticks",
+                    1,
+                    2
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgWTqC9jb3VudGVyAQKTpi90aWNrcwEDkZMBqkRpZmZCdW1wZWSSonAxAg==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    5,
+                    [
+                      "/counter",
+                      1,
+                      2
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      3
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p1",
+                        2
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2amYnVtcC1ikA==",
+              "decoded" : {
+                "msgpack" : [
+                  102,
+                  "bump-b",
+                  [
+
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uUAgaTqC9jb3VudGVyAQWTpi90aWNrcwEEkZMBqkRpZmZCdW1wZWSSonAyBQ==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    6,
+                    [
+                      "/counter",
+                      1,
+                      5
+                    ],
+                    [
+                      "/ticks",
+                      1,
+                      4
+                    ]
+                  ],
+                  [
+                    [
+                      1,
+                      "DiffBumped",
+                      [
+                        "p2",
+                        5
+                      ]
+                    ]
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "kwIGk6kvbm90ZXMvcDIBqGJ1bXBlZCA1",
+              "decoded" : {
+                "msgpack" : [
+                  2,
+                  6,
+                  [
+                    "/notes/p2",
+                    1,
+                    "bumped 5"
+                  ]
+                ]
+              }
+            },
+            {
+              "bytes" : "k2uTAgeTpi90aWNrcwEFkA==",
+              "decoded" : {
+                "msgpack" : [
+                  107,
+                  [
+                    2,
+                    7,
+                    [
+                      "/ticks",
+                      1,
+                      5
+                    ]
+                  ],
+                  [
+
+                  ]
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "scenario" : "two-players"
+}
