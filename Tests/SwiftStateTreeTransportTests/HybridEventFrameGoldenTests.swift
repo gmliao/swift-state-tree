@@ -10,7 +10,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@_spi(Diagnostics) @testable import SwiftStateTreeTransport
+@testable import SwiftStateTreeTransport
 
 enum HybridEventFrameGoldenEnvKeys {
     /// Set to `1` to rewrite this sync mode's fixture instead of checking it.
@@ -118,10 +118,10 @@ struct HybridEventFrameGoldenTests {
         }
         for _ in 0 ..< 2 {
             await keeper.stepTickOnce()
-            #expect(await adapter.waitForOutboundDrain(), "\(cell)")
+            await adapter.waitForOutboundIdleForTesting()
         }
         await adapter.sendEvent(AnyServerEvent(HybridGoldenEvent(message: "direct", n: 0)), to: .client(ClientID("c1")))
-        #expect(await adapter.waitForOutboundDrain(), "\(cell)")
+        await adapter.waitForOutboundIdleForTesting()
 
         // Per target, in send order. The order between sessions follows the adapter's session
         // dictionary, which differs between runs, so it isn't recorded.
