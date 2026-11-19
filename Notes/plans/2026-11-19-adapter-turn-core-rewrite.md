@@ -3,7 +3,7 @@
 **Status:** rev 10, plan only, for review.
 - **Detail:** B0–B2 in full; B3–B6 as outlines. Each of B3–B6 gets its own plan PR before its code, reviewed against the B0–B2 code that exists by then. Each outline's "open" list carries what the reviews of rev 1–3 raised for that step.
 - **Decided:** D4 = (a), by the maintainer (§2.2), with its rule documented as a B0 deliverable.
-- **Decisions in this rev:** the legacy path's removal from live lands (D1, decided): L1 in full, L2 (2a–2e) a placeholder until its own layout, the standalone initial sync outside L2; replay keeps the legacy cycle until #612, and the replay-only cycle in B2 is (b), decided by consequence (§3.2). Decision 5 with the commit's own outputs. **For Main:** the off executor's coverage after L1 (proposed: accept, plus explicit arms for release and shutdown), and B0's ack load and lag policy (§5.1).
+- **Decisions in this rev:** the legacy path's removal from live lands (D1, decided): L1 in full, L2 (2a–2e) a placeholder until its own layout, the standalone initial sync outside L2; replay keeps the legacy cycle until #612, and the replay-only cycle in B2 is (b), decided by consequence (§3.2). Decision 5 with the commit's own outputs. Settled by Main: the off executor's coverage after L1 (provisional, §3.2) and B0's two cells (§5.1).
 - **Proposals:** D1–D3 and D5.
 - **After GO on B0–B1:** B0–B1 move to a draft code branch; B2's detail is settled against that code.
 
@@ -201,7 +201,7 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
   - `AGENTS.md:89`, :153 and :214; `Sources/SwiftStateTree/Resolver/README.md:127`;
   - `Notes/solutions/2026-11-11-a-test-reads-state-an-unawaited-start-task-sets.md` and `2026-11-17-a-land-failure-test-passes-in-turn-and-hangs-on-legacy.md`: "pass `inTurnSync: false` explicitly";
   - source comments: `LandDSL.swift:1079` (public doc), TA:84, :1185 and :2290, `LandManager.swift:247–249`, `WallClockCadenceSmokeTests.swift:13`.
-- **The off executor's coverage after L1.** Today the off leg runs every default-configured suite on the off executor, and reevaluation uses that executor in production until #612. After L1 it is covered by the explicit tests, the harness's legacy cells and the reevaluation suites. *Proposed:* accept the reduction, plus explicit off arms where replay depends on behaviour it shares with the off path: release and teardown (`LandReleaseTests`, which relies on the leg today, :1–9) and graceful shutdown. Main checks this against #612.
+- **The off executor's coverage after L1.** Today the off leg runs every default-configured suite on the off executor, and reevaluation uses that executor in production until #612. After L1 it is covered by the explicit tests, the harness's legacy cells and the reevaluation suites. *Accepted provisionally (Main, 2026-11-20):* the reduction, plus explicit off arms where replay depends on behaviour it shares with the off path: release and teardown (`LandReleaseTests`, which relies on the leg today, :1–9) and graceful shutdown. Each arm is a separate test that passes `inTurnSync: false` and names the off mode in its title, so it can be moved or deleted on its own: if #612 removes the test-only viewer paths (`registerWithReevaluationSameLand`, `registerWithReevaluation`) before L2, the adapter's off mode goes away entirely and so do these arms (the maintainer's question, pending).
 - **Public API removed** (for L1's PR): `EnvKeys.Runtime.inTurnSync`, `InTurnSync.isEnabled(environment:)`, `NIOLandServerConfiguration.inTurnSync` and its init parameter, and `inTurnSync:` on `LandManager`'s public and SPI inits.
 - **Gate:** §3's gate in its one-mode form, plus the goldens unchanged. No host A/B: the switch is read once, at adapter init, never on a measured path, and no committed measurement tool sets `IN_TURN_SYNC=false`.
 
@@ -551,24 +551,7 @@ B0 changes value representations on the sync path (the engine's value part, `Tur
 
 - **The window:** `ENCODING_BENCHMARK_PERF_WINDOW=iteration` (the sync window), with `SWIFT_DETERMINISTIC_HASHING=1`. `<n>` iterations per cell are calibrated as the earlier sync-path sets were, for about 25 s a timed run.
 - **Judgement:** §5's sync-window rule: mean `instructions:u` per cell judged, time reported; encoded bytes and counts must equal base's.
-- **Not in any earlier set, for Main to decide:**
-  - an *ack-heavy* load. EncodingBenchmark's router settle acks fall outside its timed spans (`RouterJoin.swift:285–295`), so `b0-lag` measures sync with lag tracking active, not ack processing. Timing ack processing needs a new timed-ack mode in the tool, or a ServerLoadTest cell;
-  - the lag policy: the earlier sets ran the default policy; no set chose thresholds for a lag cell.
-
-**Builds:**
-- base is `main` at run time; head is the branch merged with that `main`;
-- release builds, both sides in one container from the pinned image, with `swift --version` and the digest recorded;
-- ABBA order, one warm-up pair discarded, then 5 pairs, with `SWIFT_DETERMINISTIC_HASHING=1`.
-
-**Cells:**
-- #554's five EncodingBenchmark cells (`rows-mp`, `rows-json`, `router-mp`, `rows-mp-100`, `json-control`), with `ENCODING_BENCHMARK_PERF_WINDOW=iteration`;
-- plus `nonsync`.
-
-**Judgement:**
-- mean `instructions:u` per cell. A cell regresses if it is above base by more than max(0.5 %, 3 × base's spread). Time is reported, not judged;
-- the per-message budget is about +100 instructions for the one `core.read`;
-- ServerLoadTest's zero-disconnect bar is reported for both sides;
-- encoded bytes and the patch and event counts must equal base's.
+- **Ack processing is not timed; not needed for B0's risk (Main, 2026-11-20).** EncodingBenchmark's router settle acks fall outside its timed spans (`RouterJoin.swift:285–295`), so `b0-lag` measures sync with lag tracking active. B0 is a plain-data marking change, so the A/B is sized to that: no ack-heavy cell, no new tool mode. The lag policy is the default one, as in the earlier sets.
 
 ## 6. Appendix A: hold points
 
@@ -605,7 +588,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | L2 groups for live lands only: 2e keepers with no transport added; the standalone initial sync stays outside L2 as B2's `.initialSyncCommit`; 2a's and 2d's labels, 2b's counts | §3.2 (L2) |
 | Decision 5: `PhaseScratch` carries the held frames; the commit's own writes as steps 1–7 with outputs (`.drainsStarted` split from `.flipped`; the full-plan flag is machine state); the tools used in place; `.immediateEvent` for the out-of-phase immediate send; witnesses and mutants per kind | §3.2, §3.3 |
 | E's text: the container direction; no host A/B for E; the handle's calls | §3.2 |
-| B0's two A/B cells defined, with what no earlier set fixed left for Main | §3.1, §5.1, §8 |
+| B0's two A/B cells defined (Main: no ack-heavy cell, default lag policy); the off executor's coverage accepted provisionally, its arms deletable on their own | §3.1, §3.2, §5.1, §8 |
 
 ## 10. Rev 9: what changed
 
