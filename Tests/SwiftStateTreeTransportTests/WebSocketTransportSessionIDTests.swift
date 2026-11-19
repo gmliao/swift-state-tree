@@ -8,6 +8,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 /// Records sends and the close in order; a send can be stalled on a gate.
 private actor OrderedConnection: WebSocketConnection {

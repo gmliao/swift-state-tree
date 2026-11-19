@@ -12,6 +12,7 @@ import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
 @testable import SwiftStateTreeNIO
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 private struct ShutdownState: StateNodeProtocol {
@@ -158,74 +159,8 @@ private final class Events: @unchecked Sendable {
     func count(_ event: String) -> Int { all.filter { $0 == event }.count }
 }
 
-/// Records frames and the close code.
 private func errorCode(of message: TransportMessage) -> String? {
     if case .error(let payload) = message.payload { return payload.code } else { return nil }
-}
-
-private actor ShutdownConnection: WebSocketConnection {
-    private struct FrameWaiter {
-        let condition: @Sendable ([Data]) -> Bool
-        let continuation: CheckedContinuation<Bool, Never>
-    }
-
-    private(set) var frames: [Data] = []
-    private(set) var closeCode: UInt16?
-    private(set) var closed = false
-    private var frameWaiters: [Int: FrameWaiter] = [:]
-    private var nextWaiterID = 0
-
-    func send(_ data: Data) async throws {
-        frames.append(data)
-        let sent = frames
-        for (id, waiter) in frameWaiters where waiter.condition(sent) {
-            frameWaiters.removeValue(forKey: id)
-            waiter.continuation.resume(returning: true)
-        }
-    }
-
-    func close() async throws { closed = true; closeCode = 1000 }
-    func close(with close: SessionClose) async throws { closed = true; closeCode = close.code }
-
-    var messages: [TransportMessage] { Self.messages(in: frames) }
-
-    private static func messages(in frames: [Data]) -> [TransportMessage] {
-        frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
-    }
-
-    var errorCodes: [String] { messages.compactMap(errorCode(of:)) }
-
-    /// Waits until the transport messages sent so far meet `condition`; resumed by `send`, not
-    /// by polling. `false` after `hangBound`, when the frame never comes.
-    func waitUntilFrames(_ condition: @escaping @Sendable ([TransportMessage]) -> Bool) async -> Bool {
-        await waitUntilRawFrames { condition(Self.messages(in: $0)) }
-    }
-
-    /// Waits until a first-sync state frame was sent: the commit that sends it has run (#390).
-    func waitForFirstSync() async -> Bool {
-        await waitUntilRawFrames { frames in
-            frames.contains { String(decoding: $0, as: UTF8.self).contains("\"firstSync\"") }
-        }
-    }
-
-    /// `waitUntilFrames` over every frame sent, state frames included.
-    func waitUntilRawFrames(_ condition: @escaping @Sendable ([Data]) -> Bool) async -> Bool {
-        if condition(frames) { return true }
-        let id = nextWaiterID
-        nextWaiterID += 1
-        let hangGuard = Task { [weak self] in
-            try? await safeTaskSleep(for: hangBound)
-            await self?.expireWaiter(id)
-        }
-        defer { hangGuard.cancel() }
-        return await withCheckedContinuation { continuation in
-            frameWaiters[id] = FrameWaiter(condition: condition, continuation: continuation)
-        }
-    }
-
-    private func expireWaiter(_ id: Int) {
-        frameWaiters.removeValue(forKey: id)?.continuation.resume(returning: false)
-    }
 }
 
 private let landType = "shutdown-test"
@@ -308,8 +243,8 @@ private struct Fixture {
 
     var landID: LandID { LandID(landType: landType, instanceId: "one") }
 
-    func connect(_ session: SessionID) async -> ShutdownConnection {
-        let connection = ShutdownConnection()
+    func connect(_ session: SessionID) async -> RecordingConnection {
+        let connection = RecordingConnection()
         await server.transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
         return connection
     }
@@ -323,7 +258,7 @@ private struct Fixture {
 
     /// Connects a session and joins `player` to the land, waiting until the land has it.
     @discardableResult
-    func join(_ player: String) async throws -> (SessionID, ShutdownConnection) {
+    func join(_ player: String) async throws -> (SessionID, RecordingConnection) {
         let session = SessionID("s-\(player)")
         let connection = await connect(session)
         let frame = try joinFrame(player: player)
