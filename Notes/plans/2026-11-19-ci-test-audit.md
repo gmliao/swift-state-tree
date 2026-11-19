@@ -211,10 +211,11 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
 - **Triggers:**
   - `schedule` (one run a day, 19:00 UTC);
   - `workflow_dispatch` (no inputs);
-  - `push` of tags `measurements-*`.
+  - `push` of tags `measurements-*`;
+  - `pull_request` to `main` for changes to `nightly.yml` or `scripts/nightly-*.sh`, so the wiring and the gate run once before they reach `main` (`workflow_dispatch` can't run a workflow file that isn't on the default branch yet). The report job doesn't run there.
 
   To test a branch or tag by hand: `gh workflow run nightly.yml --ref <branch-or-tag>`. The run then checks out that ref, and its `headSha` is that ref's commit. A `ref` input is avoided on purpose: every `actions/checkout`, the `fetch-depth: 0` ones included, would have to pass it through `workflow_call`, and a dispatch run's `headSha` would still be `main`'s.
-- **Concurrency:** `group: nightly-${{ github.ref }}`, `cancel-in-progress: false`. Two runs on the same ref queue instead of racing on the report.
+- **Concurrency:** `group: nightly-${{ github.event_name }}-${{ github.ref }}`, `cancel-in-progress: false`. Runs of one event on one ref queue. A group keeps only one pending run and a newer one cancels it, so the event is in the group: a dispatch queued on `main` can't cancel a pending scheduled run. Only scheduled runs report, so they still never race on the issue.
 - **Gate job, on `schedule` only.** It looks up the last successful **scheduled** run, `gh run list --workflow nightly.yml --event schedule --status success --limit 1 --json headSha`. When that `headSha` equals the commit under test, it skips the rest.
   - Only scheduled runs count. A dispatch or tag run on another ref can't make the next scheduled run skip `main`'s HEAD.
   - A scheduled run's `headSha` is `main`'s HEAD when it started, which is the commit it tested.
@@ -226,14 +227,14 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
   - both build legs' checks.
 
   One definition serves both, so the nightly can't drift from the push runs. That needs `workflow_call` added to both workflows, in the PR that adds the nightly.
-- **Report job, on `schedule` only** (`if: always() && github.event_name == 'schedule'`, `permissions: issues: write`):
+- **Report job, on `schedule` only** (`if: always() && github.event_name == 'schedule' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')`, `permissions: issues: write`). A gate that failed (an API error, say) leaves `run` unset and is reported as a failure, so a red scheduled run never files nothing.
   - **On failure:** it finds the open issue labeled `nightly-failure`, or opens one (title `Nightly failing on main`, with a milestone and the type and priority labels). It comments with:
     - the run URL;
-    - the failed jobs;
-    - the commits since the last green scheduled run (`git log --oneline <last-green>..<sha>`, from a `fetch-depth: 0` checkout).
+    - every job that didn't pass (failed, cancelled or timed out);
+    - the commits since the last green scheduled run whose commit this one contains (`git log --oneline <last-green>..<sha>`, from a `fetch-depth: 0` checkout). The ancestry check keeps a rerun of an older run from taking a later green as its baseline.
 
     One issue at a time; a second failure comments on the same issue.
-  - **On success with that issue open:** it comments `green at <sha>` and closes it.
+  - **On success with that issue open:** it comments `green at <sha>` and closes it, when `<sha>` contains the commit the issue was opened for. A rerun of an older green run leaves a newer failure's issue open.
   - **Dispatch and tag runs never file or close the issue.** Their result is their own run's status, and a tag run's job summary names the tag.
 - **Before a measurement tag.** Pushing a `measurements-*` tag runs the nightly on the tagged commit. The rule for whoever tags: tag only a commit whose push runs are green, and check the tag's nightly run before using its numbers.
 - **Limits:**
@@ -248,3 +249,5 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
 3. **The nightly**, with `workflow_call` added to both workflows. It must land before V1–V5 take effect on `main`, or in the same PR as the first of them, so nothing dropped from push runs goes unrun.
 
 Each PR states its verdict's "still caught by" line and shows the remaining run passing.
+
+**Each V1–V5 PR also runs the nightly on its own branch before merge:** `gh workflow run nightly.yml --ref <branch>`, and the PR quotes that run (both called workflows green). The nightly's `pull_request` trigger doesn't fire for these PRs. Its path filter lists only `nightly.yml` and the nightly scripts, not the called workflows a V-PR edits. Without the dispatch, the `full_matrix: true` side of the change would first run on `main`'s next scheduled run.
