@@ -187,6 +187,200 @@ jobs:
         fi
       timeout-minutes: 40
 
+    - name: Isolation proof, after sequence 1
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      run: |
+        echo "tracked changes:"; git status --porcelain --untracked-files=no
+        echo "untracked:"; git status --porcelain | grep '^??' || true
+        echo "reevaluation-records/:"; ls -la reevaluation-records 2>/dev/null || echo "(none)"
+        echo "temp dir:"; ls -d "${TMPDIR:-/tmp}"/record-log-tests-* 2>/dev/null || echo "(none)"
+
+    # The whole suite with in-turn sync on, its default.
+    - name: Seq 2, tests, in-turn sync on
+      id: in_turn_on_2
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        IN_TURN_SYNC: "true"
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-on-2.log" \
+          || { echo "::error title=Tests, in-turn sync on::the tests failed"; exit 1; }
+      timeout-minutes: 30
+
+    # The kill switch: the whole suite on the legacy sync path.
+    - name: Seq 2, tests, in-turn sync off
+      id: in_turn_off_2
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        IN_TURN_SYNC: "false"
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-off-2.log" \
+          || { echo "::error title=Tests, in-turn sync off::the tests failed"; exit 1; }
+      timeout-minutes: 30
+
+    # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
+    # step runs the tests again with both opted out, so the snapshot-diff fallback keeps coverage
+    # until it is removed. On a push it runs only the Transport and NIO targets: the flags reach no
+    # other test, which the shellcheck job checks (scripts/check-variant-test-selection.sh: the
+    # other targets that reach the transport pin both flags on every config). The nightly runs the
+    # whole suite here. In-turn sync is at its default. Row addressing (on by default) keeps the
+    # tables on whatever USE_SYNC_TABLES says, and in-process configs don't read ROW_ADDRESSING: a
+    # test with rows in effect (a router join with the sync sequence and path hashes) runs the
+    # tables here too. The step covers the direct-adapter tests and those without router joins,
+    # the sync sequence or path hashes; the fallback under a router join is covered by the tests
+    # that turn rows off explicitly (`withRowAddressing(false)`). It fails when the tests that pin
+    # the switches didn't run (a renamed target or test would otherwise match nothing and pass).
+    # They check the adapter's effective state, not only the environment.
+    - name: Seq 2, tests, sync tables off
+      id: sync_tables_off_2
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        USE_SYNC_TABLES: "false"
+        TYPED_LEAF_VALUES: "false"
+        FILTER: ${{ !inputs.full_matrix && 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' || '' }}
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/sync-tables-off-2.log"
+        swift test --skip-build ${FILTER:+--filter "$FILTER"} 2>&1 | tee "$log" \
+          || { echo "::error title=Tests, sync tables off::the tests failed"; exit 1; }
+        for pin in 'A config built with init takes USE_SYNC_TABLES' 'A config built with init takes TYPED_LEAF_VALUES'; do
+          if ! grep -q "✔ Test \"$pin" "$log"; then
+            echo "::error title=Tests, sync tables off::the test \"$pin\" did not run"
+            exit 1
+          fi
+        done
+      timeout-minutes: 40
+
+    # Per-player fields on typed per-player tables (#514) are on by default wherever the broadcast
+    # tables are. This step runs the Transport and NIO targets again with them opted out, the
+    # broadcast tables at their default, so today's per-player snapshot diff keeps coverage. The
+    # identity tests toggle the three configurations in process. It fails when the test that pins
+    # the switch didn't run.
+    - name: Seq 2, tests, per-player sync tables off
+      id: per_player_off_2
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        PER_PLAYER_SYNC_TABLES: "false"
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/per-player-sync-tables-off-2.log"
+        swift test --skip-build --filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' 2>&1 | tee "$log" \
+          || { echo "::error title=Tests, per-player sync tables off::the tests failed"; exit 1; }
+        pin='A config built with init takes PER_PLAYER_SYNC_TABLES'
+        if ! grep -q "✔ Test \"$pin" "$log"; then
+          echo "::error title=Tests, per-player sync tables off::the test \"$pin\" did not run"
+          exit 1
+        fi
+      timeout-minutes: 40
+
+    - name: Isolation proof, after sequence 2
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      run: |
+        echo "tracked changes:"; git status --porcelain --untracked-files=no
+        echo "untracked:"; git status --porcelain | grep '^??' || true
+        echo "reevaluation-records/:"; ls -la reevaluation-records 2>/dev/null || echo "(none)"
+        echo "temp dir:"; ls -d "${TMPDIR:-/tmp}"/record-log-tests-* 2>/dev/null || echo "(none)"
+
+    # The whole suite with in-turn sync on, its default.
+    - name: Seq 3, tests, in-turn sync on
+      id: in_turn_on_3
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        IN_TURN_SYNC: "true"
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-on-3.log" \
+          || { echo "::error title=Tests, in-turn sync on::the tests failed"; exit 1; }
+        exit 1  # forced failure (throwaway)
+      timeout-minutes: 30
+
+    # The kill switch: the whole suite on the legacy sync path.
+    - name: Seq 3, tests, in-turn sync off
+      id: in_turn_off_3
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        IN_TURN_SYNC: "false"
+      run: |
+        set -o pipefail
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-off-3.log" \
+          || { echo "::error title=Tests, in-turn sync off::the tests failed"; exit 1; }
+      timeout-minutes: 30
+
+    # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
+    # step runs the tests again with both opted out, so the snapshot-diff fallback keeps coverage
+    # until it is removed. On a push it runs only the Transport and NIO targets: the flags reach no
+    # other test, which the shellcheck job checks (scripts/check-variant-test-selection.sh: the
+    # other targets that reach the transport pin both flags on every config). The nightly runs the
+    # whole suite here. In-turn sync is at its default. Row addressing (on by default) keeps the
+    # tables on whatever USE_SYNC_TABLES says, and in-process configs don't read ROW_ADDRESSING: a
+    # test with rows in effect (a router join with the sync sequence and path hashes) runs the
+    # tables here too. The step covers the direct-adapter tests and those without router joins,
+    # the sync sequence or path hashes; the fallback under a router join is covered by the tests
+    # that turn rows off explicitly (`withRowAddressing(false)`). It fails when the tests that pin
+    # the switches didn't run (a renamed target or test would otherwise match nothing and pass).
+    # They check the adapter's effective state, not only the environment.
+    - name: Seq 3, tests, sync tables off
+      id: sync_tables_off_3
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        USE_SYNC_TABLES: "false"
+        TYPED_LEAF_VALUES: "false"
+        FILTER: ${{ !inputs.full_matrix && 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' || '' }}
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/sync-tables-off-3.log"
+        swift test --skip-build ${FILTER:+--filter "$FILTER"} 2>&1 | tee "$log" \
+          || { echo "::error title=Tests, sync tables off::the tests failed"; exit 1; }
+        for pin in 'A config built with init takes USE_SYNC_TABLES' 'A config built with init takes TYPED_LEAF_VALUES'; do
+          if ! grep -q "✔ Test \"$pin" "$log"; then
+            echo "::error title=Tests, sync tables off::the test \"$pin\" did not run"
+            exit 1
+          fi
+        done
+      timeout-minutes: 40
+
+    # Per-player fields on typed per-player tables (#514) are on by default wherever the broadcast
+    # tables are. This step runs the Transport and NIO targets again with them opted out, the
+    # broadcast tables at their default, so today's per-player snapshot diff keeps coverage. The
+    # identity tests toggle the three configurations in process. It fails when the test that pins
+    # the switch didn't run.
+    - name: Seq 3, tests, per-player sync tables off
+      id: per_player_off_3
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      env:
+        PER_PLAYER_SYNC_TABLES: "false"
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/per-player-sync-tables-off-3.log"
+        swift test --skip-build --filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' 2>&1 | tee "$log" \
+          || { echo "::error title=Tests, per-player sync tables off::the tests failed"; exit 1; }
+        pin='A config built with init takes PER_PLAYER_SYNC_TABLES'
+        if ! grep -q "✔ Test \"$pin" "$log"; then
+          echo "::error title=Tests, per-player sync tables off::the test \"$pin\" did not run"
+          exit 1
+        fi
+      timeout-minutes: 40
+
+    - name: Isolation proof, after sequence 3
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      shell: bash
+      run: |
+        echo "tracked changes:"; git status --porcelain --untracked-files=no
+        echo "untracked:"; git status --porcelain | grep '^??' || true
+        echo "reevaluation-records/:"; ls -la reevaluation-records 2>/dev/null || echo "(none)"
+        echo "temp dir:"; ls -d "${TMPDIR:-/tmp}"/record-log-tests-* 2>/dev/null || echo "(none)"
+
     # The wall-clock cadence smoke, in a process of its own: beside the parallel suite, CPU-heavy
     # neighbours can starve it. Once, with in-turn sync at its default: the smoke runs both sync
     # paths itself (`inTurn: [true, false]`). It fails the job when it didn't run (a renamed suite
