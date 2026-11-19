@@ -154,12 +154,13 @@ struct PayloadDecodeDifferentialTests {
         let decimal: Decimal
         let data: Data
         let float: Float
+        let date: Date
         let inner: Inner
     }
 
     static let specials = DiffSpecials(
         url: URL(string: "https://example.com/a?b=1")!, decimal: Decimal(string: "2.5")!, data: Data([1, 2, 3]),
-        float: 1.5, inner: .init(int: 7, name: "n", ints: [1, 2], optional: nil)
+        float: 1.5, date: Date(timeIntervalSinceReferenceDate: 12.5), inner: .init(int: 7, name: "n", ints: [1, 2], optional: nil)
     )
 
     /// A value as a client sends it: its JSON form, then MessagePack.
@@ -369,6 +370,18 @@ struct PayloadDecodeDifferentialTests {
         // A frame the server builds decodes it from the value, as before.
         let plain = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("a"): .double(3)])).a.base
         #expect(plain as? Double == 3)
+    }
+
+    @Test("A double for a Float field rounds once from its shortest text, as JSONDecoder parsed it")
+    func floatFromDoubleMidpoint() {
+        struct Box: Codable { let f: Float }
+        // Float midpoints: ties-to-even on the exact double, the other way from the shortest text.
+        let midpoints = [1 + 0x1p-24, 3 + 0x1p-22, -(1 + 0x1p-24), 0x1p-126 * (1 + 0x1p-24), 1 + 3 * 0x1p-24]
+        for double in midpoints {
+            let box: MessagePackValue = .map([.string("f"): .double(double)])
+            #expect(Self.today(Box.self, box) != .refused, "\(double)")
+            #expect(Self.typed(Box.self, box, recording: false) == Self.today(Box.self, box), "\(double)")
+        }
     }
 
     @Test("An integer for a Float field rounds once, as the round trip parsed its text")

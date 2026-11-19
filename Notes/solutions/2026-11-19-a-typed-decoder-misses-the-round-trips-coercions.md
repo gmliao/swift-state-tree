@@ -48,12 +48,13 @@ In `MessagePackValueDecoder` (`Sources/SwiftStateTreeMessagePack/MessagePackValu
 
 - `Decimal` decodes from an int, uint, float or double, read from the number's shortest decimal text as the round trip read it. In a client payload, nothing else. Frames the server builds may also carry its string or keyed form.
 - `URL` decodes from a string, as `JSONDecoder` reads it. In a client payload, nothing else.
-- A `Float` refuses a finite double that would become infinite and a nonzero one that would become zero, and takes an integer straight, rounded once.
+- A `Float` refuses a finite double that would become infinite and a nonzero one that would become zero. It takes an integer straight, and a double that doesn't convert exactly from the double's shortest text, each rounded once as `JSONDecoder` rounds a number's text. `Float(double)` rounds the exact double, which goes the other way on a Float midpoint whose shortest text isn't exact (`1 + 2^-24` is `1.0000000596046448`).
 - In a client payload, `decodeNil(forKey:)` throws for a missing key. The unkeyed container moves past an element only when its decode succeeds.
 - For a client payload only (`clientPayload`, set by `MessagePackPayloadSource`), an `AnyCodable` field is built as the round trip built it: the value's tree through `JSONEncoder` and `JSONDecoder`.
 
 ## Prevention
 
+- Start from the reference decoder's boundary table: here swift-foundation's `JSONDecoder` (`unwrapFixedWidthInteger`, `unwrapFloatingPoint`, `unwrapDecimal`, `unwrapURL`, `unwrapData`, its keyed `decodeNil(forKey:)` and its unkeyed `decode`), and the MessagePack spec for the wire types (ext codes, float 32/64, bin against str). Each row of the table is a differential case, and each departure is a planned refusal with its reason.
 - When a decoder replaces another path, run a differential against that path before review. Cover every fixture type, field by field and one level down, with numeric kinds at their limits, `Decimal`, `URL`, `Date`, `Data`, `AnyCodable`, binary, extension values and strings, and each special type's keyed `Codable` form. Fail on any difference outside the planned classes, and pin each class's count (`Tests/SwiftStateTreeTransportTests/PayloadDecodeDifferentialTests.swift`).
 - A planned difference may only refuse what the old path accepted. Where another path reads the same input later, check that as well: replay decodes what live recorded, so every input the new decoder accepts must replay to the same value.
 - Probe the container behaviours a hand-written `init(from:)` relies on (`decodeNil(forKey:)` on a missing key, a failed unkeyed decode followed by a fallback). Synthesized fixtures never call them.

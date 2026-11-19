@@ -313,9 +313,9 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     /// fallback read (a hand-written `init(from:)` that tries one type, then another).
     private mutating func next<R>(_ body: (MessagePackValueBox, [CodingKey]) throws -> R) throws -> R {
         guard !isAtEnd else {
-            throw DecodingError.dataCorrupted(DecodingError.Context(
+            throw DecodingError.valueNotFound(R.self, DecodingError.Context(
                 codingPath: codingPath,
-                debugDescription: "Unkeyed container is at end"
+                debugDescription: "Unkeyed container is at end."
             ))
         }
         let result = try body(MessagePackValueBox(value: values[currentIndex]), codingPath)
@@ -444,7 +444,15 @@ private struct MessagePackValueBox {
         default: break
         }
         let double = try decodeDouble(codingPath: codingPath)
-        let float = Float(double)
+        // `JSONDecoder` parses the number's text straight into `Float`, and the round trip wrote
+        // the double's shortest text: one rounding, from that text. `Float(double)` rounds the
+        // exact double, which differs on a Float midpoint whose shortest text isn't exact
+        // (1 + 2^-24 is "1.0000000596046448", which rounds up). A double that converts exactly
+        // needs no text.
+        var float = Float(double)
+        if Double(float) != double, double.isFinite, let parsed = Float(double.description) {
+            float = parsed
+        }
         if double.isFinite && float.isInfinite || double != 0 && float == 0 {
             throw DecodingError.dataCorrupted(DecodingError.Context(
                 codingPath: codingPath,
