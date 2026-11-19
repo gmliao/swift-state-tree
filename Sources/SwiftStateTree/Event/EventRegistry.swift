@@ -17,24 +17,33 @@ public struct AnyEventDescriptor: Sendable {
     /// whose type is a `ClientEventPayload`; nil otherwise, and for a descriptor built with the
     /// public init, whose events are decoded by their handler when applied, as before.
     package let decodeClientEvent: (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)?
+
+    /// Decodes a recorded server event's payload into `type`, for the replay re-emit (#521 PR 1b).
+    /// Set for a server event whose type is a `ServerEventPayload`; nil otherwise, and for a
+    /// descriptor built with the public init. A land whose records will be replayed is refused
+    /// at registration when one of its server events has none (EV8).
+    package let decodeServerEvent: (@Sendable (any PayloadDecodingSource) throws -> any ServerEventPayload)?
     
     public init(type: Any.Type, eventName: String, direction: EventDirection) {
         self.type = type
         self.eventName = eventName
         self.direction = direction
         self.decodeClientEvent = nil
+        self.decodeServerEvent = nil
     }
 
     package init(
         type: Any.Type,
         eventName: String,
         direction: EventDirection,
-        decodeClientEvent: (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)?
+        decodeClientEvent: (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)? = nil,
+        decodeServerEvent: (@Sendable (any PayloadDecodingSource) throws -> any ServerEventPayload)? = nil
     ) {
         self.type = type
         self.eventName = eventName
         self.direction = direction
         self.decodeClientEvent = decodeClientEvent
+        self.decodeServerEvent = decodeServerEvent
     }
 
     /// The client-event decode for `type`, or nil when it isn't a `ClientEventPayload`.
@@ -45,6 +54,19 @@ public struct AnyEventDescriptor: Sendable {
         func decoder<Event: ClientEventPayload>(
             _: Event.Type
         ) -> @Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload {
+            { source in try source.decode(Event.self) }
+        }
+        return decoder(eventType)
+    }
+
+    /// The server-event decode for `type`, or nil when it isn't a `ServerEventPayload`.
+    package static func serverEventDecoder(
+        for type: Any.Type
+    ) -> (@Sendable (any PayloadDecodingSource) throws -> any ServerEventPayload)? {
+        guard let eventType = type as? any ServerEventPayload.Type else { return nil }
+        func decoder<Event: ServerEventPayload>(
+            _: Event.Type
+        ) -> @Sendable (any PayloadDecodingSource) throws -> any ServerEventPayload {
             { source in try source.decode(Event.self) }
         }
         return decoder(eventType)
@@ -90,7 +112,8 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
         let descriptor = AnyEventDescriptor(
             type: type,
             eventName: eventName,
-            direction: .server
+            direction: .server,
+            decodeServerEvent: AnyEventDescriptor.serverEventDecoder(for: type)
         )
         var newRegistered = registered
         newRegistered.append(descriptor)
@@ -128,7 +151,8 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
         let descriptor = AnyEventDescriptor(
             type: type,
             eventName: eventName,
-            direction: .server
+            direction: .server,
+            decodeServerEvent: AnyEventDescriptor.serverEventDecoder(for: type)
         )
         var newRegistered = registered
         newRegistered.append(descriptor)

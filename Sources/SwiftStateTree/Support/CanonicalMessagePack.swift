@@ -67,7 +67,19 @@ public enum CanonicalMessagePack {
         guard reader.offset == bytes.count else {
             throw CanonicalMessagePackError.trailingBytes(bytes.count - reader.offset)
         }
-        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: [])
+        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: [], integralFloats: false)
+    }
+
+    /// Decodes a `T` from `bytes` as `decode(_:from:)` does, and with `integralFloats` also
+    /// decodes an integer into `Double` or `Float` when it converts exactly: for a tree read from
+    /// JSON, which doesn't keep the float/integer split (`3.0` reads back as `3`, #521).
+    package static func decode<T: Decodable>(_ type: T.Type, from bytes: [UInt8], integralFloats: Bool) throws -> T {
+        var reader = CanonicalReader(bytes: bytes)
+        let node = try reader.readValue()
+        guard reader.offset == bytes.count else {
+            throw CanonicalMessagePackError.trailingBytes(bytes.count - reader.offset)
+        }
+        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: [], integralFloats: integralFloats)
     }
 }
 
@@ -777,29 +789,38 @@ private struct CanonicalReader {
 private struct CanonicalNodeDecoder: Decoder {
     let node: CanonicalNode
     let codingPath: [CodingKey]
+    /// An integer decodes into `Double` or `Float` when it converts exactly (`decode(_:from:integralFloats:)`).
+    let integralFloats: Bool
     var userInfo: [CodingUserInfoKey: Any] { [:] }
 
-    static func unbox<T: Decodable>(_ node: CanonicalNode, as type: T.Type, codingPath: [CodingKey]) throws -> T {
+    static func unbox<T: Decodable>(_ node: CanonicalNode, as type: T.Type, codingPath: [CodingKey], integralFloats: Bool) throws -> T {
         if type == Date.self {
             guard case .string(let text) = node else {
                 throw CanonicalMessagePackError.typeMismatch(expected: "date string", path: pathString(codingPath))
             }
             return try CanonicalDate.parse(text, path: pathString(codingPath)) as! T
         }
-        if type == Double.self { return try unboxDouble(node, codingPath: codingPath) as! T }
-        if type == Float.self { return try unboxFloat(node, codingPath: codingPath) as! T }
-        return try T(from: CanonicalNodeDecoder(node: node, codingPath: codingPath))
+        if type == Double.self { return try unboxDouble(node, codingPath: codingPath, integralFloats: integralFloats) as! T }
+        if type == Float.self { return try unboxFloat(node, codingPath: codingPath, integralFloats: integralFloats) as! T }
+        return try T(from: CanonicalNodeDecoder(node: node, codingPath: codingPath, integralFloats: integralFloats))
     }
 
-    static func unboxDouble(_ node: CanonicalNode, codingPath: [CodingKey]) throws -> Double {
-        guard case .double(let value) = node else {
-            throw CanonicalMessagePackError.typeMismatch(expected: "float64", path: pathString(codingPath))
+    static func unboxDouble(_ node: CanonicalNode, codingPath: [CodingKey], integralFloats: Bool) throws -> Double {
+        switch node {
+        case .double(let value):
+            return value
+        case .int(let value) where integralFloats:
+            if let exact = Double(exactly: value) { return exact }
+        case .uint(let value) where integralFloats:
+            if let exact = Double(exactly: value) { return exact }
+        default:
+            break
         }
-        return value
+        throw CanonicalMessagePackError.typeMismatch(expected: "float64", path: pathString(codingPath))
     }
 
-    static func unboxFloat(_ node: CanonicalNode, codingPath: [CodingKey]) throws -> Float {
-        let value = try unboxDouble(node, codingPath: codingPath)
+    static func unboxFloat(_ node: CanonicalNode, codingPath: [CodingKey], integralFloats: Bool) throws -> Float {
+        let value = try unboxDouble(node, codingPath: codingPath, integralFloats: integralFloats)
         let narrowed = Float(value)
         // Exact only: NaN stays NaN, every other value must convert back to the same Double.
         guard value.isNaN || Double(narrowed) == value else {
@@ -825,24 +846,25 @@ private struct CanonicalNodeDecoder: Decoder {
         guard case .map(let entries) = node else {
             throw CanonicalMessagePackError.typeMismatch(expected: "map", path: pathString(codingPath))
         }
-        return KeyedDecodingContainer(CanonicalKeyedDecoder<Key>(entries: entries, codingPath: codingPath))
+        return KeyedDecodingContainer(CanonicalKeyedDecoder<Key>(entries: entries, codingPath: codingPath, integralFloats: integralFloats))
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
         guard case .array(let elements) = node else {
             throw CanonicalMessagePackError.typeMismatch(expected: "array", path: pathString(codingPath))
         }
-        return CanonicalUnkeyedDecoder(elements: elements, codingPath: codingPath)
+        return CanonicalUnkeyedDecoder(elements: elements, codingPath: codingPath, integralFloats: integralFloats)
     }
 
     func singleValueContainer() throws -> SingleValueDecodingContainer {
-        CanonicalSingleValueDecoder(node: node, codingPath: codingPath)
+        CanonicalSingleValueDecoder(node: node, codingPath: codingPath, integralFloats: integralFloats)
     }
 }
 
 private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let entries: [CanonicalKey: CanonicalNode]
     let codingPath: [CodingKey]
+    let integralFloats: Bool
 
     var allKeys: [Key] { entries.keys.compactMap { Key(stringValue: $0.string) } }
 
@@ -869,17 +891,17 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
 
     func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
         guard let node = presentNode(for: key) else { return nil }
-        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: codingPath + [key])
+        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: codingPath + [key], integralFloats: integralFloats)
     }
 
     func decodeIfPresent(_ type: Bool.Type, forKey key: Key) throws -> Bool? {
         guard let node = presentNode(for: key) else { return nil }
-        return try CanonicalSingleValueDecoder(node: node, codingPath: codingPath + [key]).decode(type)
+        return try CanonicalSingleValueDecoder(node: node, codingPath: codingPath + [key], integralFloats: integralFloats).decode(type)
     }
 
     func decodeIfPresent(_ type: String.Type, forKey key: Key) throws -> String? {
         guard let node = presentNode(for: key) else { return nil }
-        return try CanonicalSingleValueDecoder(node: node, codingPath: codingPath + [key]).decode(type)
+        return try CanonicalSingleValueDecoder(node: node, codingPath: codingPath + [key], integralFloats: integralFloats).decode(type)
     }
 
     func decodeIfPresent(_ type: Int.Type, forKey key: Key) throws -> Int? {
@@ -898,15 +920,15 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
     }
 
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
-        try CanonicalNodeDecoder.unbox(try node(for: key), as: type, codingPath: codingPath + [key])
+        try CanonicalNodeDecoder.unbox(try node(for: key), as: type, codingPath: codingPath + [key], integralFloats: integralFloats)
     }
 
     func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool {
-        try CanonicalSingleValueDecoder(node: try node(for: key), codingPath: codingPath + [key]).decode(type)
+        try CanonicalSingleValueDecoder(node: try node(for: key), codingPath: codingPath + [key], integralFloats: integralFloats).decode(type)
     }
 
     func decode(_ type: String.Type, forKey key: Key) throws -> String {
-        try CanonicalSingleValueDecoder(node: try node(for: key), codingPath: codingPath + [key]).decode(type)
+        try CanonicalSingleValueDecoder(node: try node(for: key), codingPath: codingPath + [key], integralFloats: integralFloats).decode(type)
     }
 
     func decode(_ type: Int.Type, forKey key: Key) throws -> Int {
@@ -922,31 +944,33 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
     }
 
     func nestedContainer<NestedKey: CodingKey>(keyedBy type: NestedKey.Type, forKey key: Key) throws -> KeyedDecodingContainer<NestedKey> {
-        try CanonicalNodeDecoder(node: try node(for: key), codingPath: codingPath + [key]).container(keyedBy: type)
+        try CanonicalNodeDecoder(node: try node(for: key), codingPath: codingPath + [key], integralFloats: integralFloats).container(keyedBy: type)
     }
 
     func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
-        try CanonicalNodeDecoder(node: try node(for: key), codingPath: codingPath + [key]).unkeyedContainer()
+        try CanonicalNodeDecoder(node: try node(for: key), codingPath: codingPath + [key], integralFloats: integralFloats).unkeyedContainer()
     }
 
     func superDecoder() throws -> Decoder {
         let key = CanonicalCodingKey(stringValue: "super")
-        return CanonicalNodeDecoder(node: entries[CanonicalKey("super")] ?? .null, codingPath: codingPath + [key])
+        return CanonicalNodeDecoder(node: entries[CanonicalKey("super")] ?? .null, codingPath: codingPath + [key], integralFloats: integralFloats)
     }
 
     func superDecoder(forKey key: Key) throws -> Decoder {
-        CanonicalNodeDecoder(node: entries[CanonicalKey(key.stringValue)] ?? .null, codingPath: codingPath + [key])
+        CanonicalNodeDecoder(node: entries[CanonicalKey(key.stringValue)] ?? .null, codingPath: codingPath + [key], integralFloats: integralFloats)
     }
 }
 
 private struct CanonicalUnkeyedDecoder: UnkeyedDecodingContainer {
     let elements: [CanonicalNode]
     let codingPath: [CodingKey]
+    let integralFloats: Bool
     var currentIndex = 0
 
-    init(elements: [CanonicalNode], codingPath: [CodingKey]) {
+    init(elements: [CanonicalNode], codingPath: [CodingKey], integralFloats: Bool) {
         self.elements = elements
         self.codingPath = codingPath
+        self.integralFloats = integralFloats
     }
 
     var count: Int? { elements.count }
@@ -973,28 +997,29 @@ private struct CanonicalUnkeyedDecoder: UnkeyedDecodingContainer {
 
     mutating func decode<T: Decodable>(_ type: T.Type) throws -> T {
         let (node, path) = try next()
-        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: path)
+        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: path, integralFloats: integralFloats)
     }
 
     mutating func nestedContainer<NestedKey: CodingKey>(keyedBy type: NestedKey.Type) throws -> KeyedDecodingContainer<NestedKey> {
         let (node, path) = try next()
-        return try CanonicalNodeDecoder(node: node, codingPath: path).container(keyedBy: type)
+        return try CanonicalNodeDecoder(node: node, codingPath: path, integralFloats: integralFloats).container(keyedBy: type)
     }
 
     mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
         let (node, path) = try next()
-        return try CanonicalNodeDecoder(node: node, codingPath: path).unkeyedContainer()
+        return try CanonicalNodeDecoder(node: node, codingPath: path, integralFloats: integralFloats).unkeyedContainer()
     }
 
     mutating func superDecoder() throws -> Decoder {
         let (node, path) = try next()
-        return CanonicalNodeDecoder(node: node, codingPath: path)
+        return CanonicalNodeDecoder(node: node, codingPath: path, integralFloats: integralFloats)
     }
 }
 
 private struct CanonicalSingleValueDecoder: SingleValueDecodingContainer {
     let node: CanonicalNode
     let codingPath: [CodingKey]
+    let integralFloats: Bool
 
     private func mismatch(_ expected: String) -> CanonicalMessagePackError {
         .typeMismatch(expected: expected, path: pathString(codingPath))
@@ -1013,11 +1038,11 @@ private struct CanonicalSingleValueDecoder: SingleValueDecodingContainer {
     }
 
     func decode(_ type: Double.Type) throws -> Double {
-        try CanonicalNodeDecoder.unboxDouble(node, codingPath: codingPath)
+        try CanonicalNodeDecoder.unboxDouble(node, codingPath: codingPath, integralFloats: integralFloats)
     }
 
     func decode(_ type: Float.Type) throws -> Float {
-        try CanonicalNodeDecoder.unboxFloat(node, codingPath: codingPath)
+        try CanonicalNodeDecoder.unboxFloat(node, codingPath: codingPath, integralFloats: integralFloats)
     }
 
     func decode(_ type: Int.Type) throws -> Int { try CanonicalNodeDecoder.unboxInteger(node, as: type, codingPath: codingPath) }
@@ -1032,7 +1057,7 @@ private struct CanonicalSingleValueDecoder: SingleValueDecodingContainer {
     func decode(_ type: UInt64.Type) throws -> UInt64 { try CanonicalNodeDecoder.unboxInteger(node, as: type, codingPath: codingPath) }
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        try CanonicalNodeDecoder.unbox(node, as: type, codingPath: codingPath)
+        try CanonicalNodeDecoder.unbox(node, as: type, codingPath: codingPath, integralFloats: integralFloats)
     }
 }
 

@@ -45,6 +45,24 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
     /// definition shares it; a definition built again computes its own.
     let schemaFingerprintCache = SchemaFingerprintCache()
+
+    /// This definition with `registry` as its server events, everything else kept: the replay
+    /// land registers its base land's event types, names and decoders (#521 PR 1b, M5). The copy
+    /// computes its own fingerprint.
+    package func replacingServerEventRegistry(_ registry: EventRegistry<AnyServerEvent>) -> LandDefinition<State> {
+        LandDefinition(
+            id: id,
+            stateType: stateType,
+            clientEventRegistry: clientEventRegistry,
+            serverEventRegistry: registry,
+            config: config,
+            actionHandlers: actionHandlers,
+            eventHandlers: eventHandlers,
+            serverInputHandlers: serverInputHandlers,
+            duplicateHandlers: duplicateHandlers,
+            lifetimeHandlers: lifetimeHandlers
+        )
+    }
 }
 
 // MARK: - Lifetime Handlers
