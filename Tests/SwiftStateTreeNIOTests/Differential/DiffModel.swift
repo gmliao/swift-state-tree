@@ -169,14 +169,27 @@ enum DiffStep: Sendable {
     case stop
     /// A row's post-condition, or an action no other step covers; named in failures.
     case check(String, @Sendable (DiffRun) async throws -> Void)
+    /// A value the row records instead of asserting: it goes into the next checkpoint's capture
+    /// under its name, and the comparator compares it (channel `note`). For a state the branch
+    /// is meant to change, which a `check` would turn into a run failure there.
+    case note(String, @Sendable (DiffRun) async throws -> DiffValue)
 }
 
 /// What a request should get, per connection attempt (the property oracle, plan §5.6).
 enum DiffOutcome: Sendable, Equatable {
+    /// "#" and digits: the reference a `recorded` outcome must carry.
+    static func isIssueReference(_ text: String) -> Bool {
+        text.count > 1 && text.first == "#" && text.dropFirst().allSatisfy(\.isASCII) && text.dropFirst().allSatisfy(\.isNumber)
+    }
+
     /// One reply to the request.
     case reply
     /// One error frame correlated with the request.
     case error
+    /// At most one reply or error, which the oracle doesn't judge: the frames record it and the
+    /// comparator compares them. Only for a request whose answer a named issue changes
+    /// (`issue`, "#NNN"); the oracle refuses one without it. Listed in the PR that adds it.
+    case recorded(issue: String)
     /// Neither a reply nor an error, on any connection.
     case none
 }

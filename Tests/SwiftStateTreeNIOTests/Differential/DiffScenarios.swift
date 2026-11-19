@@ -289,12 +289,14 @@ let diffScenarios: [DiffScenario] = [
             .arm(.router(.afterAdmit)),
             .release(.keeper(.join)),
             .reach(.router(.afterAdmit)),
-            .check("A's admission after the teardown") { run in
+            // Recorded, not asserted: on main it is true (#548), and the branch's fix makes it
+            // false, which its #548 expected difference names. A check would fail the run there.
+            .note("A has a current ticket after the teardown") { run in
                 var current = false
                 if let ticket = await run.adapter.sessionTicketForTesting(SessionID("s-a")) {
                     current = await run.adapter.ticketIsCurrentForTesting(ticket)
                 }
-                try expect(current, "A has no current ticket: #548 is no longer open on this side")
+                return .bool(current)
             },
             .release(.router(.afterAdmit)),
             .awaitJoin("A"),
@@ -305,7 +307,9 @@ let diffScenarios: [DiffScenario] = [
             .disconnect("A2"),
             .disconnect("B"),
         ],
-        outcomes: ["join-B": .reply, "join-A": .reply, "join-A2": .reply, "bump-a2": .reply],
+        // join-A is recorded, not judged: on main A is admitted after the teardown (#548), and
+        // the branch's fix refuses it; its frames carry the answer either way.
+        outcomes: ["join-B": .reply, "join-A": .recorded(issue: "#548"), "join-A2": .reply, "bump-a2": .reply],
         lifecycle: ["pb": [.join, .leave], "pa": [.join, .leave, .join, .leave]]
     ),
     // In-turn off: the bump's sync request meets the held cycle (`syncSkips.busy` rises), and

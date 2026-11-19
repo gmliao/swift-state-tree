@@ -140,6 +140,14 @@ enum DiffOracle {
             case .reply: want = (1, 0)
             case .error: want = (0, 1)
             case .none: want = (0, 0)
+            case .recorded(let issue):
+                guard DiffOutcome.isIssueReference(issue) else {
+                    throw DiffRunFailure("request \(id) is recorded without an issue reference (\"\(issue)\")")
+                }
+                guard got.0 + got.1 <= 1 else {
+                    throw DiffRunFailure("request \(id): \(got.0) repl(ies) and \(got.1) error(s), more than one answer")
+                }
+                continue
             }
             guard got == want else {
                 throw DiffRunFailure("request \(id): \(got.0) repl(ies) and \(got.1) error(s), the scenario states \(outcome)")

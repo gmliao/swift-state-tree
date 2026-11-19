@@ -103,6 +103,8 @@ struct DiffConnectionCapture: Codable, Equatable, Sendable {
 /// Every connection attempt's frames and close, by attempt name.
 struct DiffCapture: Codable, Equatable, Sendable {
     var connections: [String: DiffConnectionCapture]
+    /// The rows' notes since the previous checkpoint, by name; absent when there are none.
+    var notes: [String: DiffValue]?
 }
 
 /// The saved record: its file's bytes and its decoded view.
@@ -141,6 +143,8 @@ final class DiffRun: @unchecked Sendable {
     private var spawned: [Task<Void, Never>] = []
     /// Answers of actions whose job outlived their turn (`held`): the barrier waits for them.
     private(set) var pendingAnswers = 0
+    /// Notes taken since the last capture.
+    private var notes: [String: DiffValue] = [:]
     private(set) var live: DiffCapture?
     private(set) var stopped = false
     private var stopTask: Task<StopLandResult, Never>?
@@ -436,6 +440,14 @@ final class DiffRun: @unchecked Sendable {
             } catch let failure as DiffRunFailure {
                 throw DiffRunFailure("check \"\(name)\": \(failure)")
             }
+
+        case .note(let name, let body):
+            guard notes[name] == nil else { throw DiffRunFailure("note \"\(name)\" taken twice before a checkpoint") }
+            do {
+                notes[name] = try await body(self)
+            } catch let failure as DiffRunFailure {
+                throw DiffRunFailure("note \"\(name)\": \(failure)")
+            }
         }
     }
 
@@ -471,6 +483,7 @@ final class DiffRun: @unchecked Sendable {
         case .liveCheckpoint: return "live checkpoint"
         case .stop: return "stop"
         case .check(let name, _): return "check \(name)"
+        case .note(let name, _): return "note \(name)"
         }
     }
 
@@ -593,7 +606,9 @@ final class DiffRun: @unchecked Sendable {
                 : nil
             connections[name] = DiffConnectionCapture(frames: frames, close: close)
         }
-        return DiffCapture(connections: connections)
+        let taken = notes
+        notes = [:]
+        return DiffCapture(connections: connections, notes: taken.isEmpty ? nil : taken)
     }
 
     /// Stops the land and waits for its stop to finish; one that passes its bound fails the run.

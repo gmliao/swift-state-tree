@@ -47,6 +47,15 @@ struct DiffSelfCheckTests {
         closed.terminal.connections[name]?.close = DiffClose(code: 4999, reason: "mutated")
         #expect(DiffCompare.differences(base, closed).contains { $0.channel == .close && $0.place == name })
 
+        // A note is compared: a changed value, a missing one and an extra one each differ.
+        var noted = base
+        noted.live.notes = ["a note": .bool(true)]
+        var flipped = noted
+        flipped.live.notes = ["a note": .bool(false)]
+        #expect(DiffCompare.differences(noted, flipped).contains { $0.channel == .note && $0.place == "a note" })
+        #expect(DiffCompare.differences(noted, base).contains { $0.channel == .note && $0.place == "a note" })
+        #expect(DiffCompare.differences(base, noted).contains { $0.channel == .note && $0.place == "a note" })
+
         var recordDropped = base
         guard case .object(var root) = base.record.decoded, case .array(var recordFrames)? = root["frames"] else {
             Issue.record("the record has no frames")
@@ -139,6 +148,20 @@ struct DiffSelfCheckTests {
             #expect(!scenario.outcomes.isEmpty, "\(scenario.name) states no request")
             #expect(!scenario.lifecycle.isEmpty, "\(scenario.name) states no lifecycle")
         }
+        // A recorded outcome makes no claim, so each use is listed here, with its issue: one
+        // can't be added without this list changing (and the PR that adds it listing it).
+        var recorded: [String] = []
+        for scenario in diffScenarios {
+            for cell in scenario.cells.cells {
+                for (id, outcome) in scenario.outcomes(in: cell) {
+                    if case .recorded(let issue) = outcome {
+                        #expect(DiffOutcome.isIssueReference(issue), "\(scenario.name) \(id): \"\(issue)\" isn't an issue reference")
+                        recorded.append("\(scenario.name) \(id) \(issue)")
+                    }
+                }
+            }
+        }
+        #expect(Set(recorded) == ["teardown-during-keeper-join join-A #548"], "recorded outcomes: \(Set(recorded).sorted())")
     }
 }
 #endif

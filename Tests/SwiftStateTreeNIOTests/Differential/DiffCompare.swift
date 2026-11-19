@@ -14,6 +14,7 @@ struct DiffDifference: Equatable, Sendable, CustomStringConvertible {
         case frames
         case close
         case record
+        case note
     }
 
     let checkpoint: String
@@ -55,6 +56,12 @@ enum DiffCompare {
                 found.append(.init(checkpoint: checkpoint, channel: .close, place: name,
                                    detail: "expected \(describe(a.close)), got \(describe(b.close))"))
             }
+        }
+        let left = expected.notes ?? [:], right = actual.notes ?? [:]
+        for name in Set(left.keys).union(right.keys).sorted() where left[name] != right[name] {
+            let text = { (value: DiffValue?) in value.map { DiffValue.canonicalText($0) } ?? "<none>" }
+            found.append(.init(checkpoint: checkpoint, channel: .note, place: name,
+                               detail: "expected \(text(left[name])), got \(text(right[name]))"))
         }
         return found
     }
