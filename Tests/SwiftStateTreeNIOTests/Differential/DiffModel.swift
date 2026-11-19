@@ -108,9 +108,10 @@ enum DiffStep: Sendable {
     case held(String, requestID: String, key: Int)
     /// Opens resolver gate `key`.
     case openGate(Int)
-    /// One `stepTickOnce()` (a tick land only; the scenario lists it only where it applies).
+    /// One tick and the sync cycle after it (a tick land only; nothing on a tickless one).
     case tick
-    /// The transport's own disconnect of `name`, awaited.
+    /// The transport's own disconnect of `name`, awaited, then its forward to the adapter and
+    /// the leave applied (a tick and the sync cycle on a tick land).
     case disconnect(String)
     /// Holds the code at `hold`, on its `arrival`-th arrival (nil: every arrival).
     case arm(DiffHold, arrival: Int? = nil)

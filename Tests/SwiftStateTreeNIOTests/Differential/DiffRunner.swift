@@ -134,9 +134,6 @@ final class DiffRun: @unchecked Sendable {
     /// Answers of actions whose job outlived their turn (`held`): the barrier waits for them.
     private(set) var pendingAnswers = 0
     private(set) var live: DiffCapture?
-    /// Disconnects the router forwarded, counted at `forwardedHold` (observed in every run).
-    private var disconnects = 0
-    static let forwardedHold = DiffHold.router(.disconnectForwarded)
     private(set) var stopped = false
 
     var transport: WebSocketTransport { server.transport }
@@ -194,7 +191,6 @@ final class DiffRun: @unchecked Sendable {
         // The flip timeout off (`.zero` is none), and the join commits captured.
         await container.transportAdapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
         await container.transportAdapter.captureJoinCommitsForTesting()
-        run.holds.observe(forwardedHold)
         await server.landRouter.installHolds(run.holds.router.hook)
         await container.transportAdapter.installHolds(run.holds.adapter.hook)
         await container.keeper.installHolds(run.holds.keeper.hook)
@@ -239,15 +235,34 @@ final class DiffRun: @unchecked Sendable {
             attemptOrder.append(name)
 
         case .join(let name, let player):
+            let order = orderJoinTurn()
             try startJoin(name, player: player)
+            if let order {
+                guard try await bounded("\(name) at keeperJoinReturned", { await order.waitForArrivals(1) }) else {
+                    throw DiffRunFailure("\(name)'s join never reached keeperJoinReturned")
+                }
+                try await bounded("\(name)'s OnJoin drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
+                order.open()
+            }
             try await settleJoin(name)
 
         case .refusedJoin(let name, let player):
             try startJoin(name, player: player)
             try await awaitIngress(name)
-            try await bounded("the refusal frame of \(name)") { [attempt = try self.attempt(name)] in
-                await attempt.connection.waitUntilFrames { $0.contains { if case .error = $0.payload { return true } else { return false } } }
+            // The handshake's refusal is JSON in every encoding: an error or a failed join reply.
+            let requestID = "join-\(name)"
+            let refused = try await bounded("the refusal frame of \(name)") { [attempt = try self.attempt(name)] in
+                await attempt.connection.waitUntilFrames { messages in
+                    messages.contains { message in
+                        switch message.payload {
+                        case .error: return true
+                        case .joinResponse(let reply): return reply.requestID == requestID && !reply.success
+                        default: return false
+                        }
+                    }
+                }
             }
+            guard refused else { throw DiffRunFailure("\(name)'s join got no refusal") }
 
         case .startJoin(let name, let player):
             try startJoin(name, player: player)
@@ -270,7 +285,7 @@ final class DiffRun: @unchecked Sendable {
             DiffGates.gate(key).open()
 
         case .tick:
-            if cell.land == .tick { await keeper.stepTickOnce() }
+            if cell.land == .tick { await stepTick() }
 
         case .disconnect(let name):
             let attempt = try attempt(name)
@@ -278,19 +293,15 @@ final class DiffRun: @unchecked Sendable {
                 await transport.handleDisconnection(sessionID: attempt.session)
             }
             // The router forwards the disconnect to the adapter in a task of its own: wait
-            // until it has returned from the adapter (its leave is submitted by then).
-            disconnects += 1
-            let forwarded = disconnects
-            let reached = try await bounded("\(name)'s disconnect forward") { [holds] in
-                await holds.gate(Self.forwardedHold)?.waitForArrivals(forwarded) ?? false
+            // until every forward has returned from the adapter (its leave is submitted by
+            // then). Not a count of `disconnectForwarded`: a supersede's server close forwards
+            // one too, at a time of its own.
+            try await bounded("\(name)'s disconnect forward") { [router] in
+                await router.waitForDisconnectForwardsForTesting()
             }
-            guard reached else { throw DiffRunFailure("\(name)'s disconnect was never forwarded") }
-            // A tickless land applies the leave in a drain of its own: wait for it, so the
-            // next step's inputs never share its pass (a tick land's scenario steps a tick).
-            if cell.land == .tickless {
-                try await bounded("\(name)'s leave drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
-            }
-            if cell.sync == .legacy { await adapter.syncNow() }
+            // The leave is an input: applied before the next step, so the next step's inputs
+            // never share its pass.
+            try await applyInputs()
 
         case .arm(let hold, let arrival):
             holds.arm(hold, arrival: arrival)
@@ -310,7 +321,9 @@ final class DiffRun: @unchecked Sendable {
         case .liveCheckpoint:
             guard live == nil else { throw DiffRunFailure("a second live checkpoint") }
             try await barrier()
-            live = try await capture()
+            let captured = try await capture()
+            try await DiffOracle.convergence(self, captured)
+            live = captured
 
         case .stop:
             try await stop()
@@ -349,6 +362,20 @@ final class DiffRun: @unchecked Sendable {
     func attempt(_ name: String) throws -> DiffAttempt {
         guard let attempt = attempts[name] else { throw DiffRunFailure("no attempt \(name)") }
         return attempt
+    }
+
+    /// On a tickless land with in-turn sync, a join's OnJoin turn and its registration race: the
+    /// turn can run before the registration (and the join flips in its own sync-only turn) or
+    /// after it (and flips in the OnJoin turn), and the record names the turn kind. So a settled
+    /// join is held at `keeperJoinReturned` until the keeper's input drain is idle: its OnJoin
+    /// turn has run before the registration, in every process. Nil where no race exists (a tick
+    /// land's OnJoin waits for the tick; without in-turn sync the hold isn't reached).
+    private func orderJoinTurn() -> TestGate? {
+        guard cell.sync == .inTurn, cell.land == .tickless else { return nil }
+        let gate = TestGate()
+        let arrival = holds.adapter.arrivalCount(at: .keeperJoinReturned) + 1
+        holds.adapter.on(.keeperJoinReturned, arrival: arrival) { await gate.arrive() }
+        return gate
     }
 
     /// The handshake join, always JSON.
@@ -391,11 +418,23 @@ final class DiffRun: @unchecked Sendable {
         }
     }
 
-    /// Applies what the last step submitted: one tick on a tick land; then, with in-turn sync
-    /// off, the sync cycle a loop would run (the loops are off).
+    /// Applies what the last step submitted, as the loops would (they are off): on a tick land
+    /// one tick, then the sync cycle; on a tickless land the input's own drain (the ingress
+    /// returns once the input is submitted), then the sync cycle. The sync loop is off too, so
+    /// in either sync mode an applied change reaches the clients only through this cycle.
     private func applyInputs() async throws {
-        if cell.land == .tick { await keeper.stepTickOnce() }
-        if cell.sync == .legacy { await adapter.syncNow() }
+        if cell.land == .tick {
+            await stepTick()
+            return
+        }
+        try await bounded("the keeper's input drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
+        await adapter.syncNow()
+    }
+
+    /// One tick and the sync cycle after it: the tick loop and the sync loop, once each.
+    private func stepTick() async {
+        await keeper.stepTickOnce()
+        await adapter.syncNow()
     }
 
     // MARK: Checkpoints
@@ -410,6 +449,7 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("a spawned task") { await task.value }
         }
         try await bounded("no pending flip") { [router] in await router.waitForNoPendingFlipForTesting() }
+        try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
         guard !stopped else {
             try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
             return

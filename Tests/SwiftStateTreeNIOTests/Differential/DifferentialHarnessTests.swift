@@ -1,6 +1,8 @@
 // Tests/SwiftStateTreeNIOTests/Differential/DifferentialHarnessTests.swift
 //
-// The differential harness's suite (#555): every scenario in every cell its rule names.
+// The differential harness's suite (#555): every scenario in every cell its rule names, checked
+// by the property oracle and compared with its golden. With `SST_UPDATE_GOLDEN=1` (the recorder
+// script only) it writes candidates instead of comparing.
 
 #if DEBUG
 import Foundation
@@ -10,20 +12,85 @@ import Testing
 @testable import SwiftStateTreeNIO
 import SwiftStateTreeTestSupport
 
+/// Runs a scenario in a cell and checks the oracle; a failure names both.
+func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> DiffRunResult {
+    do {
+        let result = try await DiffRun.make(scenario, cell: cell).execute()
+        try DiffOracle.outcomes(scenario, result, encoding: cell.encoding)
+        try DiffOracle.lifecycle(scenario, result)
+        guard result.record.complete else { throw DiffRunFailure("the record is incomplete") }
+        return result
+    } catch let failure as DiffRunFailure {
+        throw DiffRunFailure("\(scenario.name) \(cell): \(failure)")
+    }
+}
+
 @Suite("Differential harness (#555)", .serialized, .resolverDeadlinesOff)
 struct DifferentialHarnessTests {
-    @Test("A scenario runs the same twice in one process, in every cell")
-    func sameTwice() async throws {
+    @Test("Every scenario in every cell passes the oracle and matches its golden")
+    func scenariosMatchTheirGoldens() async throws {
+        if DiffGolden.isUpdating {
+            #expect(!DiffGolden.isVerifying, "\(DiffGoldenKeys.update) is refused under \(DiffGoldenKeys.verify)")
+            guard !DiffGolden.isVerifying else { return }
+            try await record()
+            return
+        }
+        var bytesCompared = true
         for scenario in diffScenarios {
             for cell in scenario.cells.cells {
-                let first = try await DiffRun.make(scenario, cell: cell).execute()
-                let second = try await DiffRun.make(scenario, cell: cell).execute()
-                let differences = DiffCompare.differences(first, second)
-                #expect(differences.isEmpty, "\(scenario.name) \(cell): \(differences.map(\.description).joined(separator: "\n"))")
-                #expect(first.record.complete, "\(scenario.name) \(cell): the record is complete")
-                #expect(!first.live.connections.isEmpty)
+                let name = DiffGolden.fileName(scenario, cell)
+                let actual = try await runChecked(scenario, cell)
+                let golden: DiffGoldenFile
+                do {
+                    golden = try DiffGolden.read(named: name)
+                } catch {
+                    Issue.record("\(name): \(error)")
+                    continue
+                }
+                if let corruption = DiffGolden.corruption(of: golden.result) {
+                    Issue.record("\(name) is corrupt: \(corruption)")
+                    continue
+                }
+                let checkBytes = golden.recordedWith.toolchain == DiffGolden.toolchain
+                bytesCompared = bytesCompared && checkBytes
+                let differences = DiffCompare.differences(golden.result, actual, checkBytes: checkBytes)
+                #expect(differences.isEmpty, "\(name):\n\(differences.map(\.description).joined(separator: "\n"))")
             }
         }
+        if !bytesCompared {
+            print("Differential harness: decoded views only, on \(DiffGolden.toolchain); the goldens were recorded on another toolchain. The pinned-image CI jobs compare bytes and are the gate.")
+        }
+    }
+
+    @Test("The golden index lists every scenario and cell, and the folder holds nothing else")
+    func indexMatchesTheScenarios() throws {
+        guard !DiffGolden.isUpdating else { return }
+        let expected = DiffGolden.expectedFiles(diffScenarios)
+        let index = try DiffGolden.readIndex()
+        #expect(index.files == expected, "the index isn't the scenarios' set")
+        let present = DiffGolden.presentFiles()
+        #expect(Set(expected).subtracting(present).sorted() == [], "golden files missing")
+        #expect(Set(present).subtracting(expected).sorted() == [], "golden files no scenario claims")
+    }
+
+    /// One candidate set: every scenario and cell, oracle-checked, each file's decoded views
+    /// checked against its bytes, then the index.
+    private func record() async throws {
+        let folder = try DiffGolden.outputFolder()
+        let recordedWith = DiffRecordedWith(
+            commit: DiffGolden.environment[DiffGoldenKeys.commit] ?? "unknown", toolchain: DiffGolden.toolchain
+        )
+        for scenario in diffScenarios {
+            for cell in scenario.cells.cells {
+                let result = try await runChecked(scenario, cell)
+                if let corruption = DiffGolden.corruption(of: result) {
+                    throw DiffRunFailure("\(scenario.name) \(cell): \(corruption)")
+                }
+                let file = DiffGoldenFile(scenario: scenario.name, cell: cell.description, recordedWith: recordedWith, result: result)
+                try DiffGolden.write(file, named: DiffGolden.fileName(scenario, cell), to: folder)
+            }
+        }
+        try DiffGolden.writeIndex(diffScenarios, to: folder)
     }
 }
 #endif
