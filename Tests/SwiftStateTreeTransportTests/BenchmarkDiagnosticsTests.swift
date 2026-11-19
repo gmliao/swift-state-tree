@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 // The two `Diagnostics` hooks a benchmark needs to drive lands through a router by hand: a land

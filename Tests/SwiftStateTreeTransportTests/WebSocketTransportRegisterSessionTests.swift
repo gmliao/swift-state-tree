@@ -4,6 +4,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 private struct RegisterTestConnection: WebSocketConnection {
     func send(_ data: Data) async throws {}
