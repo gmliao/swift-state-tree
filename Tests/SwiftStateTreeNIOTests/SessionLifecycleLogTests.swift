@@ -8,6 +8,7 @@ import Logging
 import NIOCore
 import NIOEmbedded
 import NIOWebSocket
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTreeTransport
 import Testing
 @testable import SwiftStateTreeNIO
@@ -128,48 +129,25 @@ struct SessionLifecycleLogTests {
 /// Holds `onMessage` until `release()`, then writes `sessionJoined` to `lines` for the session:
 /// a stand-in for a land whose join, read before the close, completes after it.
 private final class HeldJoinDelegate: TransportDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var started = false
-    private var waiter: CheckedContinuation<Void, Never>?
-    private var released = false
+    /// The join arrives here, which says it reached the land, and waits until `release()`.
+    let hold = TestGate()
+    /// Open; one arrival per `sessionJoined` line written.
+    let joined = TestGate()
     let lines: SessionLines
-    init(lines: SessionLines) { self.lines = lines }
-
-    var hasStarted: Bool { lock.lock(); defer { lock.unlock() }; return started }
-
-    func release() {
-        lock.lock()
-        released = true
-        let continuation = waiter
-        waiter = nil
-        lock.unlock()
-        continuation?.resume()
+    init(lines: SessionLines) {
+        self.lines = lines
+        joined.open()
     }
+
+    func release() { hold.open() }
 
     func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {}
     func onDisconnect(sessionID: SessionID, clientID: ClientID) async {}
     func onMessage(_ message: Data, from sessionID: SessionID) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            started = true
-            if released {
-                lock.unlock()
-                continuation.resume()
-            } else {
-                waiter = continuation
-                lock.unlock()
-            }
-        }
+        await hold.arrive()
         lines.log.logSessionJoined(sessionID: sessionID, playerID: PlayerID("p"), landID: "t:room", instance: 1)
+        await joined.arrive()
     }
-}
-
-private func waitUntil(_ condition: () -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !condition(), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: .milliseconds(1))
-    }
-    return condition()
 }
 
 extension SessionLifecycleLogTests {
@@ -182,13 +160,13 @@ extension SessionLifecycleLogTests {
         let (channel, _) = try makeSession("held-join", lines: lines, transport: transport)
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "join")))
         channel.embeddedEventLoop.run()
-        try #require(await waitUntil { delegate.hasStarted }, "the join reached the land and is held")
+        try #require(await delegate.hold.waitForArrivals(1), "the join reached the land and is held")
 
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         #expect(lines.records.map(\.event) == [.sessionClosed], "the close is logged while the join is held")
 
         delegate.release()
-        #expect(await waitUntil { lines.records.count == 2 })
+        #expect(await delegate.joined.waitForArrivals(1), "the join's line is written")
         _ = try? channel.finish()
         #expect(lines.records.map(\.event) == [.sessionClosed, .sessionJoined])
         #expect(Set(lines.records.map(\.sessionID)) == ["held-join"], "paired by sessionID, in either order")

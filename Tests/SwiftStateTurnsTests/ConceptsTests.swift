@@ -169,14 +169,16 @@ struct ConceptsTests {
 // docs/turns/README.md § Plain data and tools: the before/after example, in both languages, each
 // block in its own namespace so the two `Room`s compile side by side. `PlayerID` and `Connection`
 // sit at file scope: the macro's extension is written there and names the field types unqualified.
+// All three are fileprivate, so this PlayerID doesn't shadow SwiftStateTree.PlayerID elsewhere in
+// the target.
 @PlainData
-struct PlayerID: Hashable, Sendable {
+fileprivate struct PlayerID: Hashable, Sendable {
     var raw: Int
 }
 
-final class Connection {}
+fileprivate final class Connection {}
 
-enum PlainDataDocExample {
+fileprivate enum PlainDataDocExample {
     enum Before {
         struct Room {
             var players: [PlayerID: Connection]       // Connection is a class
