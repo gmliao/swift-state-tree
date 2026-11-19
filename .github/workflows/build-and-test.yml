@@ -191,6 +191,7 @@ jobs:
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       shell: bash
       run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         echo "tracked changes:"; git status --porcelain --untracked-files=no
         echo "untracked:"; git status --porcelain | grep '^??' || true
         echo "reevaluation-records/:"; ls -la reevaluation-records 2>/dev/null || echo "(none)"
@@ -283,6 +284,7 @@ jobs:
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       shell: bash
       run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         echo "tracked changes:"; git status --porcelain --untracked-files=no
         echo "untracked:"; git status --porcelain | grep '^??' || true
         echo "reevaluation-records/:"; ls -la reevaluation-records 2>/dev/null || echo "(none)"
@@ -376,6 +378,7 @@ jobs:
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       shell: bash
       run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         echo "tracked changes:"; git status --porcelain --untracked-files=no
         echo "untracked:"; git status --porcelain | grep '^??' || true
         echo "reevaluation-records/:"; ls -la reevaluation-records 2>/dev/null || echo "(none)"
