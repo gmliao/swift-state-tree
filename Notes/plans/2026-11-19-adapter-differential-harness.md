@@ -1,12 +1,21 @@
 # A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 9 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 10 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
-## Rev 9: one rewrite branch, compared with golden captures
+## Rev 10: one rewrite branch, compared with golden captures
 
 **Decision (maintainer, 2026-11-19).** #546 rewrites `TransportAdapter` onto the turn core on one branch, in one go, instead of slice by slice behind an adoption level on `main`. The harness compares that branch with golden captures recorded on `main`. This section is the delta. Where it and the sections below disagree, this section holds. Q3 and everything else the review passed in rev 5 stay.
 
-Rev 9 answers the review of rev 8 (312483fd):
+Rev 10 answers the review of rev 9 (226ffa38):
+- the registration row has one post-release path, with no sync-producing step while `joinSyncRequested` holds, and a checkpoint of the committed flip before the leave;
+- the cycle row's two producers have a fixed order after release;
+- the observations are keyed so none can read true vacuously;
+- "lag off" is a real mode, tested by its behaviour, and the timed close and drain waits fail the run on timeout;
+- both resolver-deadline overrides are probed on their production paths.
+
+Review accepted the split: the gate and recorder items are settled in step 2's PR, with acceptance tied to one verified (head, `main`) pair, and to the merge-group candidate if one is used.
+
+Rev 9 answered the review of rev 8 (312483fd):
 - the cycle row gets a witness per sync mode;
 - the rows' post-conditions read named test observations, not adapter internals;
 - sync lag is off through an explicit disable, and the resolver-deadline override is wired into the harness suite and checked there;
@@ -92,9 +101,24 @@ Unchanged except that the build forwards no level. Step 1 as built:
 | frame order on one connection | frames | the frame-order rule below |
 | env-derived configuration (`TRANSPORT_ENCODING`, `IN_TURN_SYNC`, `USE_SYNC_TABLES`, `PER_PLAYER_SYNC_TABLES`, `ROW_ADDRESSING` and the other `SERVER_ENV` keys) | frames, record | pinned through the harness's parameters; the golden's key stores the effective values, and the comparison refuses a run whose values differ |
 
-**Sync lag off.** Passing no policy doesn't turn lag off: `LandManager` hands a policy to the adapter only when one is given (`:704–706`), and otherwise the adapter keeps `SyncLagPolicy.fromEnvironment()` (`TransportAdapter.swift:348`), whose `ContinuousClock` decisions stay live. Step 2 adds an explicit `package` disable: a policy value that makes no lag decision, which the assembly passes to every adapter it builds. The runner asserts, through a `package` read, that each adapter in the run has it.
+**Sync lag off.** Passing no policy doesn't turn lag off: `LandManager` hands a policy to the adapter only when one is given (`:704–706`), and otherwise the adapter keeps `SyncLagPolicy.fromEnvironment()` (`TransportAdapter.swift:348`), whose `ContinuousClock` decisions stay live. `SyncLagPolicy` has no off state today, so step 2 adds one as a real mode, a `package` value that:
+- keeps the wire's sequencing (sequence numbers and acks as today);
+- makes no lag decision: no resync, no suppression, no slow-consumer close (`SyncLag.swift:169–203`);
+- arms no lag timer and runs no timer-driven lag work (`TransportAdapter.swift:3345–3385`).
 
-**Resolver deadlines off.** `.resolverDeadlinesOff` is a trait in the core and Transport test targets. It sets `ResolverDeadline`'s two task-local overrides to `.zero`. Step 2 adds the same trait to the NIO test target and applies it to the harness suite. A task-local reaches only work started inside its scope, so step 2 also checks that it reaches the adapter's resolver work: one harness self-check runs a resolver that reads the effective deadline from inside `resolve` and asserts it is off.
+The assembly passes it to every adapter it builds. A test checks the mode by its behaviour, not by the stored value: a session that withholds acks across many syncs gets every frame, no resync and no close, and no lag timer is armed.
+
+**Timed waits that end a run.** Two waits in the paths the scenarios reach have a timer as a fallback:
+- the final-frame close (`WebSocketTransport.swift:556–569`): the barrier that completes it is the frame's hand-off to the fake connection, whose `send` returns at once;
+- the land-drain wait at a stop (`LandManager.swift:549–552`): the barrier is the stop flight (§5.3), which finishes when the bound sessions' leaves have run.
+
+If either ends by its timer, the run fails; step 2 adds a `package` count of each timeout if none exists, and the runner requires zero.
+
+**Resolver deadlines off.** `.resolverDeadlinesOff` is a trait in the core and Transport test targets. It sets `ResolverDeadline`'s two task-local overrides to `.zero`. Step 2 adds the same trait to the NIO test target and applies it to the harness suite. A task-local reaches only work started inside its scope, and the launches inherit it from whichever scope spawns them (`Task {}`, `group.addTask`). So one probe per override, each on its production path:
+- `overrideForTesting`: an action resolver, reached through real harness ingress (a frame on a fake connection, through the router and the adapter), reads the effective deadline inside `resolve`;
+- `initOverrideForTesting`: an initialization resolver, run when the harness's assembly creates the land, reads its effective deadline.
+
+Each probe asserts the deadline is off.
 
 **Excluded, with the reason.** `ProcessInfo` and hardware values reach only the record's metadata, pinned by the override above. Wall-clock values outside this list don't reach a capture: the land manager's activity and creation times and the transport's log throttling feed admin routes and logs, which aren't compared (§3), and the recorder's spool file name is a path, not record content.
 
@@ -153,29 +177,35 @@ Reaching a hold proves only that the code passed there. So each row also states 
 | Observation | Meaning | Read on `main` from |
 |---|---|---|
 | `admittedNotRegistered(session)` | the keeper admitted the player and the adapter holds the admission, but the session isn't registered with the transport | the in-turn join record with `transportRegistered == false`, and the transport's registration table |
-| `joinFlipped(session)` | the in-turn join's flip completed | the join waiter resolved with success |
+| `joinFlipped(attempt)` | this join attempt's flip committed | a record the adapter writes when a sync phase commits the flip, keyed by the join attempt, read at a controlled checkpoint. Not the waiter: `awaitJoined` removes it, and a missing waiter reads as success (`TransportAdapter.swift:1771–1777`) |
 | `disconnectQueuedBehind(session)` | the session's disconnect is accepted and waits behind a held membership operation | the `membershipQueued` arrival, with no leave applied |
-| `syncDeferredByCycle` | a sync request met a cycle in flight and was deferred to run after it | in-turn off: `syncSkips.busy`; in-turn on: the keeper's `syncOnlyTurnAfterLegacyCycle` (`LandKeeper.swift:4610–4614`) |
-| `teardownTicketsEnded(session)` | the membership teardown was applied to the session's tickets | `teardownTicketEnds` and the session's ended tickets |
-| `pendingActionOwned(session, requestID)` | the pending action's job is still owned by that session | the adapter's tracked action-response tasks |
+| `syncDeferredByCycle` | a sync request met a cycle in flight and was deferred to run after it | in-turn off: `syncSkips.busy` rising by one, for a real sync request made with the writer drained, so it reaches `beginSync` (`TransportAdapter.swift:3192–3205`). In-turn on: the keeper's `syncOnlyTurnAfterLegacyCycle` going from false to true across the held tick (`LandKeeper.swift:4610–4614`); it is a latch that coalesces requests, not a counter |
+| `sessionTicket(session)`, `ticketIsCurrent(token)` | an opaque token for the session's current membership ticket, and whether that same token is still current | the adapter's session ticket table |
+| `pendingActionCount(session)` | the session's pending action jobs whose answers the adapter still tracks | the adapter's action-response tasks for that session (`:5613–5635`). That map has no request IDs, so the observation is a count per session; a row that reads it has exactly one pending action per session, so the count names it |
 
 | Row | Hold | Kind | Post-condition |
 |---|---|---|---|
 | router rows (`beforeAdmit`, `afterAdmit`, `sendingJoinResponse`, `sendingInitialSync`) | as today | (a) | as §8.1 states each |
 | keeper `.join` | as today | (a) | the disconnect's `membershipQueued` arrival is observed while held, and its leave hasn't applied: the keeper still has no player; after release, admitted then left |
 | a disconnect before the keeper's admission | adapter `admitJoinEntry` | (b) | `disconnectForwarded` completes while the hold is closed; after release, the attempt is refused as stale (`staleJoinAttemptsRefused == 1`), with no OnJoin, no OnLeave and no join response |
-| a disconnect at the in-turn registration | adapter `keeperJoinReturned`, then `joinSyncRequested` (below) | (b), (c) | at `keeperJoinReturned`: `admittedNotRegistered(A)`, the keeper has the player, no join response, not `joinFlipped(A)`; the disconnect is sent and `disconnectQueuedBehind(A)` holds. At `joinSyncRequested`: registered, still not `joinFlipped(A)`, and `disconnectQueuedBehind(A)` still holds. After release, per land kind (below): the flip and the leave each happen once, in the order the golden fixes, and the observations agree with the frames (a join response only if `joinFlipped(A)`) |
-| a join while a sync cycle is in flight | adapter `cycleBeforeEndSync` | (c) | while held, the runner makes a state change and steps a tick; `syncDeferredByCycle` rises by one, and A has not received the change. After release, A receives it exactly once, as `syncDuringLegacyCycleRunsAfterEndSync` asserts. B's join is a second step under the same hold, and completes after the cycle |
-| a stale action reply after a leave | adapter `actionResponse` | (b) | A's answer is held across A2's join and A2's pending action; after release, A's request gets no reply and no error frame on A or A2, A2 gets its own reply, and `pendingActionOwned(A2, its request)` holds until that reply |
-| #548, a teardown during the keeper join | keeper `.join`, then the teardown input | (a), (b) | `teardownTicketsEnded(A)` while `.join` is held. The membership-and-generation snapshot is taken at the router's held `afterAdmit` (§8.1), after the admission returns and before the join response |
+| a disconnect at the in-turn registration | adapter `keeperJoinReturned`, then `joinSyncRequested`, then keeper `.leave` (below) | (b), (c), (a) | at `keeperJoinReturned`: `admittedNotRegistered(A)`, the keeper has the player, no join response, not `joinFlipped(A1)`; the disconnect is sent and `disconnectQueuedBehind(A)` holds. At `joinSyncRequested`: registered, still not `joinFlipped(A1)`, `disconnectQueuedBehind(A)` still holds, and no sync-producing step runs. After release, at the keeper's held `.leave` for A: `joinFlipped(A1)`, and OnLeave hasn't run. After that release: OnLeave once |
+| a join while a sync cycle is in flight | adapter `cycleBeforeEndSync` | (c) | while held, the runner makes a state change and steps a tick; `syncDeferredByCycle` holds as its mode defines it, and A has not received the change. B's join is a second step under the same hold. After release, the producers run in the order below, and A receives the change exactly once, as `syncDuringLegacyCycleRunsAfterEndSync` asserts |
+| a stale action reply after a leave | adapter `actionResponse` | (b) | A's answer is held across A2's join and A2's pending action; after release, A's request gets no reply and no error frame on A or A2, A2 gets its own reply, and `pendingActionCount(A2) == 1` until that reply, then 0 |
+| #548, a teardown during the keeper join | keeper `.join`, then the teardown input | (a), (b) | before the teardown, while `.join` holds, the runner takes `sessionTicket(A)` and checks `ticketIsCurrent` is true; after the teardown, the same token is no longer current. The membership-and-generation snapshot is taken at the router's held `afterAdmit` (§8.1), after the admission returns and before the join response |
 | a land stop | router `stopLeave(A)`, `stopLeave(B)` | (a) | both holds reached before either leave is queued; A's `membershipQueued` before B's release; OnLeave order A, B |
+
+**Every observation and post-condition ships with a mutation witness.** In step 2, each named observation and each row's post-condition comes with a source mutant that breaks the race or the observation, and that mutant must turn the row red. A row without a witness that does so doesn't merge. So a vacuous observation fails as a step 2 test, not in a plan review.
 
 **The moved holds.**
 - **`keeperJoinReturned`** replaces `registerSession`. `WebSocketTransport.registerSession` (`:500`) is synchronous, so a hold can't sit there. It is a hold of its own, `await holds.at(.keeperJoinReturned)`, right after a successful `await keeper.joinReportingAdmission` (`TransportAdapter.swift:2173`), taken only when the join completes in the turn (`completesInTurn`), as today's hold is (`:2205–2209`). The keeper's admission has already run, through the transport admission callback, so `admittedNotRegistered` holds there. On the branch it is where the keeper's join result arrives as an input.
-- **`joinSyncRequested`** is a new (c) hold before `await keeper.requestJoinSyncTurn()` (`:2234`). That call can run a sync-only turn that flips the join (`LandKeeper.swift:1909–1923`) before the membership queue reaches the queued disconnect, so the row controls the flip with this hold instead of inferring it from the queue. After its release:
-  - **tickless land:** the sync-only turn flips the join inside that call, and the join's queued operation then returns, so the leave applies after the flip;
-  - **tick land with periodic sync:** the call returns without a turn when the tick's cadence sync is due; the runner then steps once, and the golden fixes the order of the flip and the leave in that tick.
-  Either way the order is fixed by the code and the step rule, not by the scheduler, and the five-process check confirms it.
+- **`joinSyncRequested`** is a new (c) hold before `await keeper.requestJoinSyncTurn()` (`:2234`). That call can run a sync-only turn that flips the join (`LandKeeper.swift:1909–1923`) before the membership queue reaches the queued disconnect, so the row controls the flip with this hold instead of inferring it from the queue.
+  - **One path.** The harness runs with loops off, and `hasPeriodicSync` is false without them (`LandKeeper.swift:1380`). So on both land kinds `requestJoinSyncTurn()` runs the sync-only turn at once, which commits the flip inside that call. The join's queued operation then returns, and the queued leave applies after it. A cadence-due case would need its own fixture that controls the cadence; none is planned.
+  - **No sync-producing step while it holds.** Registration has already made the join eligible, so any other turn that runs a sync phase could flip it (`LandKeeper.swift:1933`, `:4609`). The runner refuses a scenario that steps a tick, sends an action or requests a sync while `joinSyncRequested` is closed.
+  - **Checkpoint.** After release, the keeper's `.leave` for A holds. There, `joinFlipped(A1)` must be true and OnLeave must not have run. Then it is released.
+- **The cycle row's order after release.** Two producers follow the cycle's end: the sync it deferred (A's change), and B's registration sync.
+  - **In-turn on:** B's join registers under the hold and asks for its sync turn; that turn finds the cycle in flight, suppresses its phase and sets the latch, which A's held tick had already set. `endSync()` clears the flag and starts one sync-only turn (`LandKeeper.swift:1356–1363`). That one turn carries both A's change and B's flip. The runner waits for `joinFlipped(B1)` and A's frame.
+  - **In-turn off:** B's join is held at the router's `sendingInitialSync`. After the cycle's release, the runner waits for A's deferred update to reach A, then releases B's initial sync.
+  - The golden therefore witnesses one order per mode: the coalesced turn in-turn, and A's follow-up before B's initial sync otherwise.
 - **`cycleBeforeEndSync`** stays where it is on `main`: after the cycle's plan and before `await keeper.endSync()`. That is an await on a call into the keeper, so the cycle is suspended there, with the keeper's sync flag still set. `LandKeeper.endSync()` itself is synchronous, so no hold goes inside it. On the branch it is where the cycle's end-of-sync request leaves the adapter.
 
 Step 2 rewrites these rows' schedules in §8.1 and refreshes §8.1's line references against the code it lands on.
@@ -241,6 +271,8 @@ These concern the gate and the recorder, which step 2 builds. Each is settled an
 - **The rerun gap:** if a manual rerun stands in for strict protection, step 2's PR names who checks that the head and `main` didn't move between the rerun and the merge.
 - **One schedule text:** §8 and §8.1 are rewritten against the step rule (no "steps until"), with the moved holds, the controlled flip and the cycle row's own milestones, and each step that emits several frame kinds lists its producer order.
 - **The image:** the recorder and job 2 use the digest the other CI jobs already pin (`swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12`, from `e2e-tests.yml`).
+- **Lag off and the timed waits:** the off mode and the timeout counts, as above, verified by the behaviour test and the zero-timeout check in step 2's PR.
+- **Deadline probes:** the two probes, as above, on their production paths in step 2's PR.
 - **One matrix environment:** the recorder and the verifier run under the same effective matrix environment (including `IN_TURN_SYNC`, which masks cells), and each refuses to run if it differs from what the index records.
 
 ### Steps (§11)
