@@ -1,12 +1,22 @@
 # A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 8 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 9 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
-## Rev 8: one rewrite branch, compared with golden captures
+## Rev 9: one rewrite branch, compared with golden captures
 
 **Decision (maintainer, 2026-11-19).** #546 rewrites `TransportAdapter` onto the turn core on one branch, in one go, instead of slice by slice behind an adoption level on `main`. The harness compares that branch with golden captures recorded on `main`. This section is the delta. Where it and the sections below disagree, this section holds. Q3 and everything else the review passed in rev 5 stay.
 
-Rev 8 answers the review of rev 7 (2340cf69):
+Rev 9 answers the review of rev 8 (312483fd):
+- the cycle row gets a witness per sync mode;
+- the rows' post-conditions read named test observations, not adapter internals;
+- sync lag is off through an explicit disable, and the resolver-deadline override is wired into the harness suite and checked there;
+- the retirement list is checked as an exact set, and each replacement names a mutant it must kill;
+- `keeperJoinReturned` gets its own hold, and the flip is controlled;
+- the record-determinism claim is narrowed.
+
+The gate's SHA binding and the recorder's details are settled in step 2's PR (below, "Settled in step 2").
+
+Rev 8 answered the review of rev 7 (2340cf69):
 - deterministic record bytes, through injected record metadata;
 - a retirement list the runner reads;
 - the moved holds placed on boundaries that suspend, with a post-condition per row;
@@ -58,7 +68,7 @@ Unchanged except that the build forwards no level. Step 1 as built:
 - the record as base64 bytes of the saved file, plus its decoded view;
 - the commit, platform and Swift version it was recorded with.
 
-**Deterministic record bytes.** The land manager writes `createdAt: Date()` and `HardwareInfoCollector.collect()` into the record's metadata (`LandManager.swift:728–747`), and `setMetadata` puts them in the file's header. So step 2 adds a `package` record-identity override to the assembly: a fixed `createdAt` and no hardware info, applied when the metadata is built, before the first header is written. With it, the saved file's bytes are deterministic, and the two replaced fields of §5.5 are pinned at the source instead of rewritten afterwards. The field list keeps them, with the rule "pinned by the override", so a new wall-clock field still fails until it is classified.
+**Deterministic record bytes.** The land manager writes `createdAt: Date()` and `HardwareInfoCollector.collect()` into the record's metadata (`LandManager.swift:728–747`), and `setMetadata` puts them in the file's header. So step 2 adds a `package` record-identity override to the assembly: a fixed `createdAt` and no hardware info, applied when the metadata is built, before the first header is written. With it, the two identity fields no longer vary between processes: they are pinned at the source instead of rewritten afterwards. The rest of the record (caller metadata, payloads, failure details) is as deterministic as the scenario's fixtures and the order rules below make it; the five-process check is what proves the whole file stable. The field list keeps them, with the rule "pinned by the override", so a new wall-clock field still fails until it is classified.
 
 **A golden's decoded view is derived from its bytes, and checked against them,** when it is recorded and each time it is compared. The harness decodes each frame's bytes with the cell's encoding, and the record's bytes with the record decoder. Each must equal the stored decoded view. At recording, a mismatch writes nothing; at comparison, the file fails as corrupt. So review can trust the readable diff: a decoded view can't differ from its bytes.
 
@@ -77,10 +87,14 @@ Unchanged except that the build forwards no level. Step 1 as built:
 | dictionary and set order | any encoded map | not pinned in-process: per-process hash seeds; caught by the five-process recording |
 | real ports and addresses | none | the fake connections have none (§5.2) |
 | join budget and flip timer | whether a join times out | pinned off (§8) |
-| resolver deadline (5 s, `ContinuousClock`) | a held resolver's outcome | turned off with the existing override (`.resolverDeadlinesOff`) for the whole harness suite |
-| sync lag (`SyncLag.swift:94–104`, `ContinuousClock`) | a resync, suppressed output or a lag close on a slow runner | off: the assembly is built with no sync-lag policy, and the runner checks that each adapter has none |
+| resolver deadline (5 s, `ContinuousClock`) | a held resolver's outcome | off, through `.resolverDeadlinesOff` (below) |
+| sync lag (`SyncLag.swift:94–104`, `ContinuousClock`) | a resync, suppressed output or a lag close on a slow runner | off, through an explicit disable (below) |
 | frame order on one connection | frames | the frame-order rule below |
 | env-derived configuration (`TRANSPORT_ENCODING`, `IN_TURN_SYNC`, `USE_SYNC_TABLES`, `PER_PLAYER_SYNC_TABLES`, `ROW_ADDRESSING` and the other `SERVER_ENV` keys) | frames, record | pinned through the harness's parameters; the golden's key stores the effective values, and the comparison refuses a run whose values differ |
+
+**Sync lag off.** Passing no policy doesn't turn lag off: `LandManager` hands a policy to the adapter only when one is given (`:704–706`), and otherwise the adapter keeps `SyncLagPolicy.fromEnvironment()` (`TransportAdapter.swift:348`), whose `ContinuousClock` decisions stay live. Step 2 adds an explicit `package` disable: a policy value that makes no lag decision, which the assembly passes to every adapter it builds. The runner asserts, through a `package` read, that each adapter in the run has it.
+
+**Resolver deadlines off.** `.resolverDeadlinesOff` is a trait in the core and Transport test targets. It sets `ResolverDeadline`'s two task-local overrides to `.zero`. Step 2 adds the same trait to the NIO test target and applies it to the harness suite. A task-local reaches only work started inside its scope, so step 2 also checks that it reaches the adapter's resolver work: one harness self-check runs a resolver that reads the effective deadline from inside `resolve` and asserts it is off.
 
 **Excluded, with the reason.** `ProcessInfo` and hardware values reach only the record's metadata, pinned by the override above. Wall-clock values outside this list don't reach a capture: the land manager's activity and creation times and the transport's log throttling feed admin routes and logs, which aren't compared (§3), and the recorder's spool file name is a path, not record content.
 
@@ -134,19 +148,34 @@ On `main`, each of these is an await in an adapter operation. On the branch, (b)
 
 Reaching a hold proves only that the code passed there. So each row also states a **post-condition** that proves the race happened, and the runner asserts it.
 
+**Named test observations.** The post-conditions don't read adapter internals (`joiningSessions` is private, and `transportRegistered`, `syncSkips` and `teardownTicketEnds` may not exist in a rewrite). Each is a named observation with a meaning. Step 2 adds a `package` read for each on `main`. The branch provides each with the same meaning, as with the hooks of §5.3 and §5.4, and they are part of the harness's interface.
+
+| Observation | Meaning | Read on `main` from |
+|---|---|---|
+| `admittedNotRegistered(session)` | the keeper admitted the player and the adapter holds the admission, but the session isn't registered with the transport | the in-turn join record with `transportRegistered == false`, and the transport's registration table |
+| `joinFlipped(session)` | the in-turn join's flip completed | the join waiter resolved with success |
+| `disconnectQueuedBehind(session)` | the session's disconnect is accepted and waits behind a held membership operation | the `membershipQueued` arrival, with no leave applied |
+| `syncDeferredByCycle` | a sync request met a cycle in flight and was deferred to run after it | in-turn off: `syncSkips.busy`; in-turn on: the keeper's `syncOnlyTurnAfterLegacyCycle` (`LandKeeper.swift:4610–4614`) |
+| `teardownTicketsEnded(session)` | the membership teardown was applied to the session's tickets | `teardownTicketEnds` and the session's ended tickets |
+| `pendingActionOwned(session, requestID)` | the pending action's job is still owned by that session | the adapter's tracked action-response tasks |
+
 | Row | Hold | Kind | Post-condition |
 |---|---|---|---|
 | router rows (`beforeAdmit`, `afterAdmit`, `sendingJoinResponse`, `sendingInitialSync`) | as today | (a) | as §8.1 states each |
 | keeper `.join` | as today | (a) | the disconnect's `membershipQueued` arrival is observed while held, and its leave hasn't applied: the keeper still has no player; after release, admitted then left |
 | a disconnect before the keeper's admission | adapter `admitJoinEntry` | (b) | `disconnectForwarded` completes while the hold is closed; after release, the attempt is refused as stale (`staleJoinAttemptsRefused == 1`), with no OnJoin, no OnLeave and no join response |
-| a disconnect at the in-turn registration | adapter `keeperJoinReturned` (renamed from `registerSession`; below) | (b) | at the hold: the keeper has the player; the adapter has the session's admission (`joiningSessions` with its in-turn record, `transportRegistered == false`); the transport has no registration for it; no join response and no flip. The disconnect's `membershipQueued` arrival is observed, and it can't apply while held. After release: registration, then the leave, then OnLeave; no flip completes |
-| a join while a sync cycle is in flight | adapter `cycleBeforeEndSync` | (c) | while held, the runner makes a state change and steps a tick; that tick's sync request meets the busy flag (`syncSkips.busy` rises by one). After release, the deferred sync runs and A receives the change made under the hold, as `syncDuringLegacyCycleRunsAfterEndSync` asserts; B's join completes after the cycle |
-| a stale action reply after a leave | adapter `actionResponse` | (b) | A's answer is held across A2's join and A2's pending action; after release, A's request gets no reply and no error frame on A or A2, A2 gets its own reply, and A2's pending action task is still tracked until it answers |
-| #548, a teardown during the keeper join | keeper `.join`, then the teardown input | (a), (b) | the teardown has been applied while `.join` is held: `teardownTicketEnds == 1` and the adapter's session tickets are ended, read through test reads. The membership-and-generation snapshot is taken at the router's held `afterAdmit` (§8.1), after the admission returns and before the join response |
+| a disconnect at the in-turn registration | adapter `keeperJoinReturned`, then `joinSyncRequested` (below) | (b), (c) | at `keeperJoinReturned`: `admittedNotRegistered(A)`, the keeper has the player, no join response, not `joinFlipped(A)`; the disconnect is sent and `disconnectQueuedBehind(A)` holds. At `joinSyncRequested`: registered, still not `joinFlipped(A)`, and `disconnectQueuedBehind(A)` still holds. After release, per land kind (below): the flip and the leave each happen once, in the order the golden fixes, and the observations agree with the frames (a join response only if `joinFlipped(A)`) |
+| a join while a sync cycle is in flight | adapter `cycleBeforeEndSync` | (c) | while held, the runner makes a state change and steps a tick; `syncDeferredByCycle` rises by one, and A has not received the change. After release, A receives it exactly once, as `syncDuringLegacyCycleRunsAfterEndSync` asserts. B's join is a second step under the same hold, and completes after the cycle |
+| a stale action reply after a leave | adapter `actionResponse` | (b) | A's answer is held across A2's join and A2's pending action; after release, A's request gets no reply and no error frame on A or A2, A2 gets its own reply, and `pendingActionOwned(A2, its request)` holds until that reply |
+| #548, a teardown during the keeper join | keeper `.join`, then the teardown input | (a), (b) | `teardownTicketsEnded(A)` while `.join` is held. The membership-and-generation snapshot is taken at the router's held `afterAdmit` (§8.1), after the admission returns and before the join response |
 | a land stop | router `stopLeave(A)`, `stopLeave(B)` | (a) | both holds reached before either leave is queued; A's `membershipQueued` before B's release; OnLeave order A, B |
 
 **The moved holds.**
-- **`keeperJoinReturned`** replaces `registerSession`. `WebSocketTransport.registerSession` (`:500`) is synchronous, so a hold can't sit there. The hold is on `main` right after `await keeper.joinReportingAdmission` returns (`TransportAdapter.swift:2173`), before the adapter reads the outcome. The keeper's admission has already run, through the transport admission callback, so the post-condition's state holds there. On the branch it is where the keeper's join result arrives as an input.
+- **`keeperJoinReturned`** replaces `registerSession`. `WebSocketTransport.registerSession` (`:500`) is synchronous, so a hold can't sit there. It is a hold of its own, `await holds.at(.keeperJoinReturned)`, right after a successful `await keeper.joinReportingAdmission` (`TransportAdapter.swift:2173`), taken only when the join completes in the turn (`completesInTurn`), as today's hold is (`:2205–2209`). The keeper's admission has already run, through the transport admission callback, so `admittedNotRegistered` holds there. On the branch it is where the keeper's join result arrives as an input.
+- **`joinSyncRequested`** is a new (c) hold before `await keeper.requestJoinSyncTurn()` (`:2234`). That call can run a sync-only turn that flips the join (`LandKeeper.swift:1909–1923`) before the membership queue reaches the queued disconnect, so the row controls the flip with this hold instead of inferring it from the queue. After its release:
+  - **tickless land:** the sync-only turn flips the join inside that call, and the join's queued operation then returns, so the leave applies after the flip;
+  - **tick land with periodic sync:** the call returns without a turn when the tick's cadence sync is due; the runner then steps once, and the golden fixes the order of the flip and the leave in that tick.
+  Either way the order is fixed by the code and the step rule, not by the scheduler, and the five-process check confirms it.
 - **`cycleBeforeEndSync`** stays where it is on `main`: after the cycle's plan and before `await keeper.endSync()`. That is an await on a call into the keeper, so the cycle is suspended there, with the keeper's sync flag still set. `LandKeeper.endSync()` itself is synchronous, so no hold goes inside it. On the branch it is where the cycle's end-of-sync request leaves the adapter.
 
 Step 2 rewrites these rows' schedules in §8.1 and refreshes §8.1's line references against the code it lands on.
@@ -156,7 +185,8 @@ The test hooks of §5.3 and §5.4 keep their meaning on the branch. One that ret
 **Retired rows: a list the runner reads.** The scenarios and the runner are protected (below), so retiring a row can't be a note in the PR body: the row would still run its hold, and the reach rule would fail it. Instead:
 - `RetiredRows.swift`, beside `ExpectedDifferences.swift`, is unprotected. Each entry names the scenario, the cells, the reason, and a replacement test. The replacement is a function value the runner itself calls, so it is compiled and run, not only named.
 - In each listed cell, the runner skips the row's run and its golden comparison, and runs the replacement instead. The index still claims the cell's golden.
-- An entry is used exactly once. An entry for a scenario or cell that doesn't exist fails, as a stale expected difference does.
+- The entries are expanded to unique (scenario, cell) keys, and the runner checks exact set equality: the index's cells are the compared cells plus the replaced cells, and the two sets are disjoint. A duplicate key, a key the index doesn't have, and an expected difference aimed at a retired cell each fail.
+- Each entry names a mutation witness: a source mutant that breaks the invariant the row protected. The replacement must fail with it. The branch PR shows each witness's failing output, as §7 (b) does for the harness's own mutants. So an empty replacement can't pass review.
 - Replacement tests live in `Tests/SwiftStateTreeNIOTests/Differential/Branch/`, which is unprotected.
 - Review reads each entry and its test; Main approves each one; the maintainer is told of the list at merge.
 
@@ -203,12 +233,23 @@ A change to them goes to `main` first, under the same review, and reaches the br
 - The branch merges `main` to stay current, and never rebases.
 - It merges when every scenario in every cell matches its golden, a listed expected difference or a listed retirement, the oracle passes, both gate jobs pass, and the usual gates pass.
 
+### Settled in step 2
+
+These concern the gate and the recorder, which step 2 builds. Each is settled and reviewed in step 2's PR, to this requirement:
+- **Gate binding:** both gate results are bound to one PR head SHA and one `main` SHA. Job 1 (`pull_request_target`, explicit `contents: read`) checks the fetched PR object against the event's immutable head SHA. Job 2 reports the SHA it built. The required check names the workflow, not only a job.
+- **Merge queue:** if one is used, both jobs handle `merge_group`.
+- **The rerun gap:** if a manual rerun stands in for strict protection, step 2's PR names who checks that the head and `main` didn't move between the rerun and the merge.
+- **One schedule text:** §8 and §8.1 are rewritten against the step rule (no "steps until"), with the moved holds, the controlled flip and the cycle row's own milestones, and each step that emits several frame kinds lists its producer order.
+- **The image:** the recorder and job 2 use the digest the other CI jobs already pin (`swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12`, from `e2e-tests.yml`).
+- **One matrix environment:** the recorder and the verifier run under the same effective matrix environment (including `IN_TURN_SYNC`, which masks cells), and each refuses to run if it differs from what the index records.
+
 ### Steps (§11)
 
 - Step 1 loses the adoption items.
 - Step 2 adds:
   - the harness, the record-identity override, the recorder script and the index;
-  - the `keeperJoinReturned` hold, and the rows' post-conditions;
+  - the `keeperJoinReturned` and `joinSyncRequested` holds, the named observations' reads, and the rows' post-conditions;
+  - the sync-lag disable and the resolver-deadline trait in the NIO target, with their checks;
   - both gate jobs;
   - the first goldens, in their own commit.
 - Step 3 is the rewrite branch (#546), instead of slice 1.
@@ -423,7 +464,7 @@ The order follows what waits on what. An answer can wait for an input that still
 - **Completeness.** A 3.5 footer can say it is incomplete (`ReevaluationRecordCompleteness.incomplete`, `ReevaluationRecordLog.swift:51`), so having a footer isn't enough. The harness asserts that the decoded completeness is `.complete`.
 - **Decoder access.** The log decoder (`ReevaluationRecordLog.read`) is internal to `SwiftStateTree`. Step 1 adds a `package` entry that returns the decoded contents, so the comparison keeps the sync stream and the watermarks. `@testable` would work too, but it needs testing builds, which a release test run doesn't have.
 - **Fields.** Each field that depends on the wall clock or the process is named in a list in the harness, with its rule:
-  - wall-clock metadata (`createdAt` and the like): replaced with a constant;
+  - wall-clock and machine metadata (`createdAt`, `hardwareInfo`): pinned by the record-identity override (rev 8), before the header is written;
   - client IDs: already stable (§5.4);
   - everything else: compared as it is.
 - **Field-list test.** A test walks the decoded record type itself, nested fields included, not fixtures. It fails when a field is neither on the list nor known to be stable. So a new optional field that no fixture has still fails until it is classified.
