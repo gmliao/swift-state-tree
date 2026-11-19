@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import CompilerPluginSupport
 import PackageDescription
@@ -246,6 +246,7 @@ let package = Package(
                 "SwiftStateTreeMessagePack",
                 "SwiftStateTreeDeterministicMath",
                 "SwiftStateTreeReevaluationMonitor",
+                "SwiftStateTurns",
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "Logging", package: "swift-log"),
             ],

@@ -21,7 +21,7 @@ swift build
 ### Q: 系統要求是什麼？
 
 A: 
-- Swift 6.0+
+- Swift 6.2+
 - macOS 14.0+（開發環境）
 - 支援 Swift 6 的平台（部署環境）
 
