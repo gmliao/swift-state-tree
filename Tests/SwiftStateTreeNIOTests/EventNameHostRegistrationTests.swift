@@ -210,7 +210,10 @@ struct EventNameHostRegistrationTests {
                 )
             }
         }
-        #expect(error.landType == landType, "the live definition's check throws, not the replay's")
+        // The throw names the live land type. With a separate replay definition (which passes every
+        // row) that is the live check's throw; the generic alias keeps the live ID, so there it
+        // doesn't tell the two checks apart.
+        #expect(error.landType == landType, "the error names the live land type")
         #expect(error.wireNameMismatches.count == 1, "\(error)")
         #expect(error.serverEventsWithoutHash.map { $0.hasPrefix("EHLive (") } == [true], "\(error)")
         #expect(await host.transportForTesting(webSocketPath: "/game/\(landType)") == nil)

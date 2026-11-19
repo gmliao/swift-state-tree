@@ -879,7 +879,8 @@ extension NIOLandServerConfiguration {
     /// `registrationContext` with recording forced on: the context the reevaluation helpers check a
     /// replayed live definition with. Whatever the configuration says, its record needs a
     /// fingerprint (#521 D15) and every server event needs a replay decoder (EV8); the flag turns
-    /// both on. Its other rows are the ones `register` checks, so one throw reports them all.
+    /// both on. Its other rows are the ones `register` checks, so one throw reports every row that
+    /// is checked (the fingerprint is skipped when another row fails).
     var replayedDefinitionContext: LandRegistrationContext {
         var context = registrationContext
         context.recordsForReplay = true
