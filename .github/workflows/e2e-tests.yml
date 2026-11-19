@@ -376,8 +376,8 @@ jobs:
         done
 
   e2e-matchmaking-tests:
-    # Temporarily disabled while paper work takes priority (job was hanging until
-    # run cancellation, e.g. run 33290172486). Remove this `if` to re-enable.
+    # Temporarily disabled: the job hung until the run was cancelled (e.g. run 33290172486).
+    # Re-enable by removing this `if` once the hang is diagnosed and fixed (#52).
     if: false
     # A hung step fails the job instead of running until the 6 h limit.
     timeout-minutes: 30
