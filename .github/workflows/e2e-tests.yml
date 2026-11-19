@@ -258,6 +258,11 @@ jobs:
         # The default ("on") and the opt-out ("off") run as legs of their own, side by side: the
         # opt-out run no longer waits for the default one, and runs when the default one fails.
         row_addressing: ["on", "off"]
+        # (in-turn sync false, row addressing off) only with full_matrix (the nightly): with
+        # in-turn sync off, rows can't take effect whatever ROW_ADDRESSING says, so its runs repeat
+        # the (false, on) leg's. The one section it adds, the tables-off fallback, runs in the
+        # (false, on) leg instead (audit plan, V2).
+        exclude: ${{ fromJSON(inputs.full_matrix && '[]' || '[{"in_turn_sync":"false","row_addressing":"off"}]') }}
     env:
       IN_TURN_SYNC: ${{ matrix.in_turn_sync }}
 
@@ -340,9 +345,41 @@ jobs:
         ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-rows-off.out
         ./check-row-addressing-run.sh --expect-off /tmp/e2e-rows-off.out /tmp/e2e-rows-off $E2E_ENCODINGS
 
+    # The (false, off) leg's one section of its own, run in the (false, on) leg when that leg is
+    # left out: the tables-off fallback (messagepack, USE_SYNC_TABLES=false
+    # TYPED_LEAF_VALUES=false) on the legacy sync. It runs only with ROW_ADDRESSING=false, set
+    # for this step alone; E2E_TABLES_OFF_ONLY skips the encoding runs the leg already made.
+    # `!cancelled()`: it runs when the default step failed, as the left-out leg ran whatever the
+    # (false, on) leg did; its own E2E_TMP_DIR leaves it nothing of that step's to trip on.
+    - name: Run the GameServer tables-off fallback (in-turn sync off)
+      if: ${{ !cancelled() && matrix.in_turn_sync == 'false' && matrix.row_addressing == 'on' && !inputs.full_matrix }}
+      shell: bash
+      env:
+        ROW_ADDRESSING: "false"
+        E2E_TABLES_OFF_ONLY: "true"
+        E2E_TMP_DIR: /tmp/e2e-tables-off
+      run: |
+        set -o pipefail
+        cd Tools/CLI
+        ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-tables-off.out
+        ./check-row-addressing-run.sh --expect-off /tmp/e2e-tables-off.out /tmp/e2e-tables-off messagepack
+
+    # Each server run's effective config, from the adapter's per-land log line, so two legs can be
+    # compared on one commit (the nightly runs all four). It checks nothing.
+    - name: Effective transport config per run
+      if: always()
+      shell: bash
+      run: |
+        for dir in /tmp/e2e-main /tmp/e2e-rows-off /tmp/e2e-tables-off; do
+          if [ -d "$dir" ]; then
+            echo "== $dir"
+            Tools/CLI/summarize-effective-config.sh "$dir"
+          fi
+        done
+
   e2e-matchmaking-tests:
-    # Temporarily disabled while paper work takes priority (job was hanging until
-    # run cancellation, e.g. run 33290172486). Remove this `if` to re-enable.
+    # Temporarily disabled: the job hung until the run was cancelled (e.g. run 33290172486).
+    # Re-enable by removing this `if` once the hang is diagnosed and fixed (#52).
     if: false
     # A hung step fails the job instead of running until the 6 h limit.
     timeout-minutes: 30

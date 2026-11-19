@@ -439,30 +439,9 @@ struct RowAddressingAdapterTests {
     func jsonIgnoresTheRawRowFlag() async throws {
         let pathHashes = try rowAddressingPathHashes()
         func configured(rowAddressing: Bool, inTurnSync: Bool, tables: Bool) async -> RowAddressingConfigured {
-            let lines = RowAddressingLoggedLines()
-            let logger = Logger(label: "row-addressing-json") { _ in RowAddressingLineHandler(lines: lines) }
-            let keeper = LandKeeper(
-                definition: rowAddressingLand(RowAddressingScript()), initialState: RowAddressingState(),
-                enableLiveStateHashRecording: false, autoStartLoops: false
-            )
-            let adapter = TransportAdapter<RowAddressingState>(
-                keeper: keeper,
-                transport: RowAddressingFrames(),
-                landID: "row-addressing",
-                transportEnvConfig: rowAddressingEnv(tables: tables),
-                encodingConfig: TransportEncodingConfig.json.withSyncSequence(true).withRowAddressing(rowAddressing),
-                pathHashes: pathHashes,
-                suppressMissingPathHashesWarning: true,
-                inTurnSync: inTurnSync,
-                logger: logger,
-                joinsThroughRouter: true
-            )
-            return RowAddressingConfigured(
-                rowAddressing: adapter.rowAddressing,
-                stateUpdateFeatures: adapter.stateUpdateFeatures,
-                usesSyncTables: await adapter.usesSyncTablesForTesting(),
-                messageEncoding: await adapter.getMessageEncoding(),
-                logged: lines.all
+            await configuredAdapter(
+                TransportEncodingConfig.json.withSyncSequence(true).withRowAddressing(rowAddressing),
+                inTurnSync: inTurnSync, tables: tables, pathHashes: pathHashes
             )
         }
         for inTurnSync in [true, false] {
@@ -475,6 +454,43 @@ struct RowAddressingAdapterTests {
                 #expect(!requested.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing), "\(cell)")
                 #expect(requested.usesSyncTables == tables, "\(cell): the tables follow USE_SYNC_TABLES alone")
                 #expect(requested.logged.contains { $0.hasPrefix("Transport encoding configured") }, "\(cell): the configuration line is compared")
+            }
+        }
+    }
+
+    /// The in-turn-off legs of the E2E matrix (audit plan V2): the push runs leave out the leg
+    /// with in-turn sync off and `ROW_ADDRESSING=false`, because with in-turn sync off joins
+    /// don't complete in a turn and row addressing can't take effect whatever the raw flag says.
+    /// This pins that in every encoding the E2E runs (and `.opcode`), with the sync sequence on or
+    /// off and the tables on or off. The one difference allowed is the info line that names a
+    /// request the land can't honour, logged only when the effective config still holds one.
+    @Test("In-turn sync off: the raw row flag on and off configure the same adapter in every encoding, apart from the info line naming the request")
+    func inTurnOffIgnoresTheRawRowFlag() async throws {
+        let pathHashes = try rowAddressingPathHashes()
+        let notInEffect = "Row addressing requested but not in effect"
+        let encodings: [(name: String, config: TransportEncodingConfig, opcode: Bool)] = [
+            ("json", .json, false), ("jsonOpcode", .jsonOpcode, true), ("messagepack", .messagepack, true), ("opcode", .opcode, true),
+        ]
+        for encoding in encodings {
+            for syncSequence in [true, false] {
+                for tables in [true, false] {
+                    let cell = "\(encoding.name), syncSequence \(syncSequence), tables \(tables)"
+                    let base = encoding.config.withSyncSequence(syncSequence)
+                    let requested = await configuredAdapter(
+                        base.withRowAddressing(true), inTurnSync: false, tables: tables, pathHashes: pathHashes
+                    )
+                    let optedOut = await configuredAdapter(
+                        base.withRowAddressing(false), inTurnSync: false, tables: tables, pathHashes: pathHashes
+                    )
+                    #expect(requested.removingLines(startingWith: notInEffect) == optedOut, "\(cell)")
+                    #expect(!requested.rowAddressing, "\(cell)")
+                    #expect(!requested.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing), "\(cell)")
+                    #expect(requested.usesSyncTables == tables, "\(cell): the tables follow USE_SYNC_TABLES alone")
+                    let requestLines = requested.logged.filter { $0.hasPrefix(notInEffect) }
+                    #expect(requestLines.count == (encoding.opcode && syncSequence ? 1 : 0), "\(cell): \(requestLines)")
+                    #expect(!optedOut.logged.contains { $0.hasPrefix(notInEffect) }, "\(cell)")
+                    #expect(requested.logged.contains { $0.hasPrefix("Transport encoding configured") }, "\(cell): the configuration line is compared")
+                }
             }
         }
     }
@@ -843,7 +859,8 @@ private struct RowAddressingRecordingLogHandler: LogHandler {
     }
 }
 
-/// What a json adapter decided, for `jsonIgnoresTheRawRowFlag`.
+/// What an adapter decided, for the tests that compare the raw row flag on and off
+/// (`jsonIgnoresTheRawRowFlag`, `inTurnOffIgnoresTheRawRowFlag`).
 private struct RowAddressingConfigured: Equatable {
     let rowAddressing: Bool
     let stateUpdateFeatures: [String]
@@ -851,6 +868,44 @@ private struct RowAddressingConfigured: Equatable {
     let messageEncoding: String
     /// Every line logged at info and above, with its metadata.
     let logged: [String]
+
+    func removingLines(startingWith prefix: String) -> RowAddressingConfigured {
+        RowAddressingConfigured(
+            rowAddressing: rowAddressing, stateUpdateFeatures: stateUpdateFeatures, usesSyncTables: usesSyncTables,
+            messageEncoding: messageEncoding, logged: logged.filter { !$0.hasPrefix(prefix) }
+        )
+    }
+}
+
+/// An adapter built from `config` (joins through the router), and what it decided and logged.
+private func configuredAdapter(
+    _ config: TransportEncodingConfig, inTurnSync: Bool, tables: Bool, pathHashes: [String: UInt32]
+) async -> RowAddressingConfigured {
+    let lines = RowAddressingLoggedLines()
+    let logger = Logger(label: "row-addressing-raw-flag") { _ in RowAddressingLineHandler(lines: lines) }
+    let keeper = LandKeeper(
+        definition: rowAddressingLand(RowAddressingScript()), initialState: RowAddressingState(),
+        enableLiveStateHashRecording: false, autoStartLoops: false
+    )
+    let adapter = TransportAdapter<RowAddressingState>(
+        keeper: keeper,
+        transport: RowAddressingFrames(),
+        landID: "row-addressing",
+        transportEnvConfig: rowAddressingEnv(tables: tables),
+        encodingConfig: config,
+        pathHashes: pathHashes,
+        suppressMissingPathHashesWarning: true,
+        inTurnSync: inTurnSync,
+        logger: logger,
+        joinsThroughRouter: true
+    )
+    return RowAddressingConfigured(
+        rowAddressing: adapter.rowAddressing,
+        stateUpdateFeatures: adapter.stateUpdateFeatures,
+        usesSyncTables: await adapter.usesSyncTablesForTesting(),
+        messageEncoding: await adapter.getMessageEncoding(),
+        logged: lines.all
+    )
 }
 
 private final class RowAddressingLoggedLines: @unchecked Sendable {
