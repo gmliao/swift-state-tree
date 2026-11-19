@@ -15,11 +15,17 @@
 #      and none comes from `fromEnvironment`;
 #   R3 nothing builds a LandManager, LandRouter, LandRealm or a land server or host, which build
 #      adapters from the environment.
-# R2 is a textual approximation: it doesn't check that the pins set the same variable. The nightly
-# runs the whole suite in that job too.
+# The filtered targets are read from the job itself: its FILTER line in
+# .github/workflows/build-and-test.yml, whose alternatives must each be a whole target (`Name\.`).
+# So the job and this check can't name different targets.
+#
+# What it can't see (the nightly runs the whole suite in that job, as the backstop): R1 reads the
+# argument labels, not their types, so a non-optional expression that is nil at run time isn't
+# caught; R2 is textual, so it doesn't check that the pins set the same variable as the
+# construction, and it counts a pin under an inactive `#if` or in a closure that never runs. A
+# dump of the package this check can't read fails it rather than scanning nothing.
 #
 # Usage: scripts/check-filtered-tests-pin-transport-env.sh [--self-test] [--package-json <file>]
-#        (the filtered targets are the job's: SwiftStateTreeTransportTests, SwiftStateTreeNIOTests)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 exec python3 - "$@" <<'PY'
@@ -30,8 +36,11 @@ import subprocess
 import sys
 import tempfile
 
-FILTERED = {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}
+WORKFLOW = ".github/workflows/build-and-test.yml"
+JOB = "sync-tables-off"
 TRANSPORT = "SwiftStateTreeTransport"
+# The job's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`.
+FILTER_LINE = re.compile(r"""^\s*FILTER:\s*\$\{\{\s*!inputs\.full_matrix\s*&&\s*'([^']*)'\s*\|\|\s*''\s*\}\}\s*$""")
 
 ADAPTER = re.compile(r"\bTransportAdapter\s*(?:<)?")
 # `let a: TransportAdapter<S> = .init(…)`: the `.init(` is the construction.
@@ -111,23 +120,46 @@ def enclosing_block(text, pos):
 
 
 def argument(args, label):
-    """The expression passed for `label:` in an argument list `( … )`, or None."""
-    m = re.search(r"\b" + label + r"\s*:", args)
-    if not m:
-        return None
-    depth, k = 0, m.end()
-    while k < len(args):
+    """The expression passed for `label:` among the top-level arguments of an argument list
+    `( … )`, or None. A label inside a nested call (`transport: make(label: x)`) is not it."""
+    parts, depth, start = [], 0, 1
+    for k in range(1, len(args)):
         c = args[k]
         if c in "([{":
             depth += 1
         elif c in ")]}":
             if depth == 0:
+                parts.append(args[start:k])
                 break
             depth -= 1
         elif c == "," and depth == 0:
-            break
-        k += 1
-    return args[m.end():k].strip()
+            parts.append(args[start:k])
+            start = k + 1
+    for part in parts:
+        m = re.match(r"\s*" + label + r"\s*:(.*)$", part, re.S)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def filtered_targets(workflow):
+    """The test targets the job runs on a push, from its FILTER line, and any error reading it."""
+    lines = workflow.splitlines()
+    start = next((i for i, line in enumerate(lines) if re.match(r"^  " + JOB + r":\s*$", line)), None)
+    if start is None:
+        return set(), [f"{WORKFLOW}: no {JOB} job"]
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [\w-]+:\s*$", lines[i])), len(lines))
+    found = [m for m in map(FILTER_LINE.match, lines[start:end]) if m]
+    if len(found) != 1:
+        return set(), [f"{WORKFLOW}: the {JOB} job has {len(found)} FILTER lines of the form this check reads, not one"]
+    names, errors = set(), []
+    for alternative in found[0].group(1).split("|"):
+        m = re.fullmatch(r"(\w+)\\\.", alternative)
+        if m:
+            names.add(m.group(1))
+        else:
+            errors.append(f"{WORKFLOW}: the {JOB} filter's alternative {alternative!r} isn't a whole target (Name\\.)")
+    return names, errors
 
 
 def line_of(text, pos):
@@ -177,6 +209,9 @@ def check_source(name, source):
     return errors
 
 
+DEPENDENCY_KINDS = {"byName", "target", "product"}
+
+
 def target_deps(target):
     deps = []
     for d in target.get("dependencies", []):
@@ -186,7 +221,22 @@ def target_deps(target):
     return deps
 
 
-def scanned_targets(package):
+def graph_errors(package):
+    """A manifest dump this check can't read fails it, rather than scanning nothing: another
+    toolchain's `dump-package` with no test targets, or a dependency of a kind it doesn't know."""
+    targets = package.get("targets")
+    if not isinstance(targets, list) or not any(t.get("type") == "test" for t in targets):
+        return ["the package dump lists no test targets: this check can't read it (another toolchain's format?)"]
+    errors = []
+    for t in targets:
+        for d in t.get("dependencies", []):
+            unknown = set(d) - DEPENDENCY_KINDS
+            if unknown:
+                errors.append(f"{t.get('name')}: a dependency of a kind this check doesn't know ({', '.join(sorted(unknown))}), so it can't tell whether it reaches {TRANSPORT}")
+    return errors
+
+
+def scanned_targets(package, filtered):
     """The test targets outside the filter that reach SwiftStateTreeTransport, and every target
     under Tests/ in their dependency closure that reaches it too (a test-support library a core test
     could build an adapter through), with their paths."""
@@ -210,7 +260,7 @@ def scanned_targets(package):
 
     out = []
     for t in package["targets"]:
-        if t.get("type") == "test" and t["name"] not in FILTERED and reaches(t["name"], set()):
+        if t.get("type") == "test" and t["name"] not in filtered and reaches(t["name"], set()):
             seen = set()
             closure(t["name"], seen)
             for n in sorted(seen):
@@ -220,9 +270,11 @@ def scanned_targets(package):
     return out
 
 
-def check(root, package):
-    errors, files = [], 0
-    for name, path in scanned_targets(package):
+def check(root, package, filtered):
+    errors, files = graph_errors(package), 0
+    if errors:
+        return errors, files
+    for name, path in scanned_targets(package, filtered):
         directory = root / path
         if not directory.is_dir():
             errors.append(f"{name}: its directory {path} doesn't exist")
@@ -236,7 +288,7 @@ def check(root, package):
 def package_from(args):
     if "--package-json" in args:
         return json.loads(pathlib.Path(args[args.index("--package-json") + 1]).read_text(encoding="utf-8"))
-    return json.loads(subprocess.run(["swift", "package", "dump-package"], check=True, capture_output=True, text=True).stdout)
+    return json.loads(subprocess.run(["swift", "package", "dump-package"], check=True, stdout=subprocess.PIPE, text=True).stdout)
 
 
 PINNED = """func config() -> TransportEnvConfig {
@@ -263,9 +315,18 @@ def self_test():
         {"name": "SwiftStateTreeNIO", "type": "regular", "dependencies": deps(TRANSPORT)},
         {"name": "SwiftStateTreeTests", "type": "test", "dependencies": deps(TRANSPORT)},
         {"name": "SwiftStateTreeTransportTests", "type": "test", "dependencies": deps(TRANSPORT)},
+        {"name": "SwiftStateTreeNIOTests", "type": "test", "dependencies": deps("SwiftStateTreeNIO")},
         {"name": "SwiftStateTreeMacrosTests", "type": "test", "dependencies": deps("SwiftStateTree")},
         *extra,
     ]}
+    job = lambda regex: (
+        "jobs:\n  build:\n    steps:\n    - run: swift test\n"
+        f"  {JOB}:\n    steps:\n    - name: Run\n      env:\n"
+        f"        FILTER: ${{{{ !inputs.full_matrix && '{regex}' || '' }}}}\n"
+        "      run: swift test\n  per-player:\n    steps: []\n"
+    )
+    both = job(r"SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.")
+    filtered, filter_errors = filtered_targets(both)
     sources = [
         ("an adapter without transportEnvConfig:", "let a = TransportAdapter<S>(keeper: k, transport: t, landID: \"x\")\n", "R1"),
         ("an adapter with it, spread over lines, the argument last", PINNED + ADAPTER_OK, None),
@@ -305,11 +366,26 @@ def self_test():
         ("a config as a stored property's default",
          "final class T {\n    var c = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta, profilingConfig: nil)\n}\n",
          "R2 a TransportEnvConfig built outside a function body"),
+        ("a transportEnvConfig: label in a nested call is not the adapter's",
+         PINNED + "let a = TransportAdapter<S>(keeper: k, transport: make(transportEnvConfig: config()), landID: \"x\")\n",
+         "R1 a TransportAdapter built without"),
         ("a config in a computed property that pins both",
          "struct T {\n    var c: TransportEnvConfig {\n        var c = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta, profilingConfig: nil)\n"
          "        c.useSyncTables = false\n        c.typedLeafValues = false\n        return c\n    }\n}\n", None),
     ]
     failed = 0
+    # The filter is the job's own FILTER line.
+    for name, workflow, want_names, want_error in [
+        ("the job's filter names Transport and NIO", both, {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}, None),
+        ("a filter without NIO names only Transport", job(r"SwiftStateTreeTransportTests\."), {"SwiftStateTreeTransportTests"}, None),
+        ("no FILTER line in the job fails", both.replace("FILTER:", "FILTERS:"), set(), "FILTER lines"),
+        ("a FILTER line in another job only fails", both.replace(f"  {JOB}:", "  other:"), set(), f"no {JOB} job"),
+        ("an alternative that isn't a whole target fails", job(r"SwiftStateTreeTransportTests\.|NIO"), None, "isn't a whole target"),
+    ]:
+        names, errors = filtered_targets(workflow)
+        ok = (not errors and names == want_names) if want_error is None else any(want_error in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {names} {errors}"))
+        failed += not ok
     for name, source, want in sources:
         errors = check_source("t.swift", source)
         ok = (not errors) if want is None else any(want in e for e in errors)
@@ -329,12 +405,24 @@ def self_test():
                       {"name": "TestSupport", "type": "regular", "path": "Tests/TestSupport", "dependencies": deps(TRANSPORT)},
                       {"name": "SwiftStateTreeTests", "type": "test", "dependencies": deps("TestSupport")}]},
          "TestSupport", "R1"),
+        ("the NIO tests are not scanned while the filter names them", package(), "SwiftStateTreeNIOTests", None),
         ("a library under Sources/ is not (its adapters are Sources' own)",
          {"targets": [*package()["targets"][:3],
                       {"name": "Lib", "type": "regular", "path": "Sources/Lib", "dependencies": deps(TRANSPORT)},
                       {"name": "SwiftStateTreeTests", "type": "test", "dependencies": deps("Lib")}]},
          "Lib", None),
     ]
+    # A dump this check can't read fails it (fail closed), whatever the sources hold.
+    for name, pkg, want in [
+        ("a dump with no test targets", {"targets": package()["targets"][:3]}, "no test targets"),
+        ("a dependency of an unknown kind",
+         package({"name": "NewTests", "type": "test", "dependencies": [{"macro": ["X", None]}]}), "of a kind this check doesn't know"),
+    ]:
+        with tempfile.TemporaryDirectory() as tmp:
+            errors, _ = check(pathlib.Path(tmp), pkg, filtered)
+        ok = any(want in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
+        failed += not ok
     for name, pkg, target, want in graphs:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -342,22 +430,39 @@ def self_test():
             for p in where.values():
                 (root / p).mkdir(parents=True, exist_ok=True)
             (root / where[target] / "A.swift").write_text(bad, encoding="utf-8")
-            errors, _ = check(root, pkg)
+            errors, _ = check(root, pkg, filtered)
         ok = (not errors) if want is None else any(want in e for e in errors)
         print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
         failed += not ok
+    # End to end: NIO dropped from the job's filter, its tests are scanned, and one that reads the
+    # flags fails the check (the job would run them with the flags on no more).
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "Tests" / "SwiftStateTreeNIOTests").mkdir(parents=True)
+        (root / "Tests" / "SwiftStateTreeTests").mkdir(parents=True)
+        (root / "Tests" / "SwiftStateTreeNIOTests" / "A.swift").write_text(bad, encoding="utf-8")
+        errors, _ = check(root, package(), filtered_targets(job(r"SwiftStateTreeTransportTests\."))[0])
+    ok = any("SwiftStateTreeNIOTests/A.swift" in e and "R1" in e for e in errors)
+    print(f"{'ok  ' if ok else 'FAIL'} self-test: NIO dropped from the filter, a NIO test reading the flags fails" + ("" if ok else f": {errors}"))
+    failed += not ok
+    if filter_errors:
+        print(f"FAIL self-test: the sample job's filter doesn't parse: {filter_errors}")
+        failed += 1
     return failed
 
 
 args = sys.argv[1:]
 if args[:1] == ["--self-test"]:
     sys.exit(1 if self_test() else 0)
-package = package_from(args)
-errors, files = check(pathlib.Path("."), package)
+filtered, errors = filtered_targets(pathlib.Path(WORKFLOW).read_text(encoding="utf-8"))
+files = 0
+if not errors:
+    package = package_from(args)
+    errors, files = check(pathlib.Path("."), package, filtered)
 for e in errors:
     print(f"::error::{e}")
 if not errors:
-    names = ", ".join(n for n, _ in scanned_targets(package)) or "none"
-    print(f"filtered-tests transport env: {files} files in the targets outside the filter that reach {TRANSPORT} ({names}) pin both flags")
+    names = ", ".join(n for n, _ in scanned_targets(package, filtered)) or "none"
+    print(f"filtered-tests transport env: {JOB} runs {', '.join(sorted(filtered))} on a push; {files} files in the other targets that reach {TRANSPORT} ({names}) pin both flags")
 sys.exit(1 if errors else 0)
 PY
