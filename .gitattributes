@@ -29,3 +29,9 @@ Examples/Demo/WebClient/src/generated/** text eol=lf
 
 # Re-evaluation records in format 3.0 (binary log, #245)
 *.reeval.sstr binary
+
+# The plan status index: every plan PR adds a row, so two branches touching it conflict on
+# adjacent lines. The union driver keeps both sides' lines in a local `git merge` (how main is
+# brought into a branch here); it doesn't change GitHub's own mergeability check. A row one side
+# changed comes out twice: scripts/check-plan-index.sh (pre-push and CI) fails on that.
+Notes/plans/README.md merge=union

@@ -7,6 +7,8 @@
 #   wall-clock  scripts/lint-wall-clock-tests.sh --self-test, then with the base's baseline
 #               (CI: wall-clock-tests)
 #   turns       scripts/lint-turns.sh --self-test, then the repository (CI: build › Lint turns)
+#   plan-index  scripts/check-plan-index.sh --self-test, then Notes/plans/README.md: one row per plan
+#               and no conflict marker, after a union merge (CI: shellcheck › Plan index)
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
 #               breaks it). Not in CI yet.
@@ -97,6 +99,7 @@ echo "pre-push-checks: base $base (merge base ${fork:0:12}), $(grep -c . <<<"$ch
 run lessons lessons
 run wall-clock wall_clock
 run turns bash -c 'scripts/lint-turns.sh --self-test && scripts/lint-turns.sh'
+run plan-index bash -c 'scripts/check-plan-index.sh --self-test && scripts/check-plan-index.sh'
 run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'
 if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
   run shellcheck shell_check
