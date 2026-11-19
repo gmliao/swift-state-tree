@@ -494,6 +494,25 @@ struct OrderedChecksTests {
         #expect(s.stats.droppedSends == 1)
     }
 
+    @Test("19f: a send deferred before its scope's end is withdrawn; one deferred after the end steps under the new generation")
+    func endWithdrawsDeferredSend() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        await a.send(.issueKey(1))
+        await a.send(.issueKey(2))
+        // Flushing output 1 defers an end of job 1's key, a send scoped to job 1 (it arrived
+        // before the end steps), and an emit for job 2. Flushing that output 2 defers a start of
+        // job 1's key and a second scoped send, which arrives after the end.
+        await a.onOutputs([
+            1: [.endKey(.job(1)), .scoped(9, scope: 1), .emit(2)],
+            2: [.issueKey(1), .scoped(10, scope: 1)],
+        ])
+        await a.send(.emit(1))
+        let s = await a.snapshot()
+        #expect(s.log == ["issue 1 false", "issue 2 false", "end key job(1)", "issue 1 false", "scoped 10"])
+        #expect(s.stats.droppedSends == 1)
+    }
+
     @Test("19d: limit: an input queued after its key's end and before the next start steps under the new generation")
     func queuedBetweenEndAndStartSteps() async {
         let f = Fixture()

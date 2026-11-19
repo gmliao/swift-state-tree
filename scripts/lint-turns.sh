@@ -193,7 +193,12 @@ lint() {  # root
         else
           print path ":" n ": [plain-data] a hand-written PlainData conformance; use @PlainData"
       }
-      if (word(list, "TurnActor")) actors[last(name)] = 1
+      if (word(list, "TurnActor")) {
+        actors[last(name)] = 1
+        # A qualified extension names its type; a primary declaration names it bare.
+        if (kind == "extension") qualified[name] = 1
+        else declared[last(name)] = 1
+      }
       if (kind != "extension" && kind != "protocol" && word(list, "TurnMachine")) machineFile[path] = 1
       if (kind == "extension" && word(list, "TurnMachine")) machineFile[path] = 1
       next
@@ -226,7 +231,14 @@ lint() {  # root
         if (match(code, /(^|[^A-Za-z0-9_@.])(struct|class|actor|extension)[ \t]+[A-Za-z_][A-Za-z0-9_.]*/)) {
           decl = substr(code, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", decl)
           split(decl, parts, /[ \t]+/)
-          if (last(parts[2]) in actors) { pendingName = last(parts[2]); pendingKind = parts[1]; pendingLine = n }
+          # A TurnActor is an actor (the protocol refines Actor), so a namesake struct or class
+          # is not one. A qualified extension counts when that qualified name conforms, or when
+          # the type declared the conformance itself.
+          candidate = last(parts[2]) in actors
+          if (candidate && parts[1] != "actor" && parts[1] != "extension") candidate = 0
+          if (candidate && parts[1] == "extension" && index(parts[2], ".") > 0 &&
+              !(parts[2] in qualified) && !(last(parts[2]) in declared)) candidate = 0
+          if (candidate) { pendingName = last(parts[2]); pendingKind = parts[1]; pendingLine = n }
         }
       }
       before = depth
@@ -324,6 +336,20 @@ actor Owner:
 }
 actor Split {
     let core = makeCore()
+}
+enum Left {
+    actor Pane {
+        let core = makeCore()
+    }
+}
+extension Left.Pane: TurnActor {}
+enum Right {
+    struct Pane {
+        var core = 0
+    }
+}
+extension Right.Pane {
+    var core: Int { 0 }
 }
 EOF
   cat > "$dir/Sources/App/SplitConformance.swift" <<'EOF'

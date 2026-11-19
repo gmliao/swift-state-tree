@@ -51,9 +51,10 @@ public final class TurnCore<M: TurnMachine> {
     /// Sends and calls made while a step or a batch was running, each with the scope-end clock
     /// at its arrival.
     @usableFromInline var queued = FIFO<(M.Input, InputID?, UInt64)>()
-    /// While inputs are deferred (`queued`), the clock reading at each scope's latest end or
-    /// supersede. A deferred input whose scope ended after it arrived is withdrawn when it is
-    /// admitted. Emptied when `queued` drains, so it holds only one batch's ends.
+    /// While inputs are deferred (`queued`), the clock reading at each key's latest end or
+    /// supersede, keyed by the ended key (not by the deferred inputs' scopes). A deferred input
+    /// whose scope ended after it arrived is withdrawn when it is admitted. Emptied when `queued`
+    /// drains, so its size is bounded by one batch's ends.
     @usableFromInline var scopeEndsWhileDeferred: [M.Key: UInt64] = [:]
     @usableFromInline var scopeEndClock: UInt64 = 0
     @usableFromInline var waiters: [InputID: CheckedContinuation<M.Reply, any Error>] = [:]

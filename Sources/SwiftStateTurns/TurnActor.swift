@@ -248,7 +248,7 @@ extension TurnActor {
             if let next = core.queued.pop() {
                 admit(next.0, caller: next.1, arrival: next.2)
                 if core.queued.isEmpty, !core.scopeEndsWhileDeferred.isEmpty {
-                    core.scopeEndsWhileDeferred.removeAll(keepingCapacity: true)
+                    core.scopeEndsWhileDeferred.removeAll()
                 }
                 continue
             }

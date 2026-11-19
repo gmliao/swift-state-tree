@@ -292,6 +292,7 @@ Every interleaving is ordered by an event, never by a sleep or a poll: an effect
 | 19 | `start` over a live generation closes requests made earlier in the same step | 4 |
 | 19b | A supersede withdraws the inputs queued under the old generation's scope; one queued before the key's first `start` stays | 4, 7 |
 | 19c | A send deferred during a batch is withdrawn when its scope is superseded before it is admitted | 4 |
+| 19f | A send deferred before its scope's end is withdrawn; one deferred after the end steps under the new generation | 4 |
 | 19d | Limit: an input queued after its key's end and before the next start steps under the new generation | 4 |
 | 19e | A queued send withdrawn by its scope's end, or dropped by close, counts as a dropped send | 4, 7, 12 |
 | 20 | Outputs flush before the next step; a step's effects launch after its flush | 10 |

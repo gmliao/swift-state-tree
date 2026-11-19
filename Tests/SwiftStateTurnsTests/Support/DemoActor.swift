@@ -166,6 +166,19 @@ actor DemoActor: TurnActor {
         }
     }
 
+    /// For each value in `plan`, when a flush first carries it: sends its inputs, in order (they
+    /// are deferred). Each entry runs once.
+    func onOutputs(_ plan: [Int: [DemoMachine.Input]]) {
+        var remaining = plan
+        flushHook = { (owner: isolated DemoActor, outputs: [Int]) in
+            for value in outputs {
+                guard let inputs = remaining.removeValue(forKey: value) else { continue }
+                for input in inputs { owner.send(input) }
+            }
+            if remaining.isEmpty { owner.flushHook = nil }
+        }
+    }
+
     func clearHooks() {
         flushHook = nil
     }
