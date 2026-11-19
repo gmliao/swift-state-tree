@@ -60,7 +60,8 @@ func expect(_ condition: Bool, _ what: @autoclosure () -> String) throws {
 /// the same hold (`underHold`). After the release, the deferred sync and B's join run, and A
 /// converges.
 func syncCycleRow(
-    _ name: String, cells: DiffCellRule, bump: DiffStep, underHold: [DiffStep], afterRelease: [DiffStep]
+    _ name: String, cells: DiffCellRule, beforeBump: [DiffStep] = [], bump: DiffStep,
+    underHold: [DiffStep], afterRelease: [DiffStep]
 ) -> DiffScenario {
     DiffScenario(
         name: name,
@@ -71,6 +72,7 @@ func syncCycleRow(
             .arm(.adapter(.cycleBeforeEndSync), arrival: nil),
             .spawn("a legacy cycle") { run in await run.adapter.syncNow() },
             .reach(.adapter(.cycleBeforeEndSync)),
+        ] + beforeBump + [
             bump,
             .check("the change applied") { run in
                 let counter = await run.keeper.currentState().counter
@@ -309,13 +311,21 @@ let diffScenarios: [DiffScenario] = [
         ],
         // join-A is recorded, not judged: on main A is admitted after the teardown (#548), and
         // the branch's fix refuses it; its frames carry the answer either way.
+        // So is pa's lifecycle: [join, leave, join, leave] on main, A's and A2's; the fix
+        // drops A's pair.
         outcomes: ["join-B": .reply, "join-A": .recorded(issue: "#548"), "join-A2": .reply, "bump-a2": .reply],
-        lifecycle: ["pb": [.join, .leave], "pa": [.join, .leave, .join, .leave]]
+        lifecycle: ["pb": [.join, .leave]],
+        recordedLifecycle: ["pa": "#548"]
     ),
     // In-turn off: the bump's sync request meets the held cycle (`syncSkips.busy` rises), and
     // B's join reaches the adapter under the hold. B stays held there until the cycle and its
     // retry are done, so its OnJoin doesn't race the retry.
-    syncCycleRow("join-during-sync-cycle", cells: .legacyOnly, bump: .bumpUnderCycle("A", requestID: "bump-a", amount: 1), underHold: [
+    // The busy skip's retry is held before its delay, so it can't meet the held cycle again
+    // (that would count a second skip) and doesn't retry while the hold lasts.
+    syncCycleRow("join-during-sync-cycle", cells: .legacyOnly, beforeBump: [
+        .arm(.adapter(.busyRetry)),
+    ], bump: .bumpUnderCycle("A", requestID: "bump-a", amount: 1), underHold: [
+        .reach(.adapter(.busyRetry)),
         .check("syncDeferredByCycle") { run in
             let busy = await run.adapter.syncDeferredByCycleCountForTesting
             try expect(busy == 1, "syncSkips.busy is \(busy)")
@@ -324,9 +334,15 @@ let diffScenarios: [DiffScenario] = [
         .startJoin("B", player: "pb"),
         .reach(.adapter(.admitJoinEntry)),
     ], afterRelease: [
-        // The cycle's end and the retry its busy skip scheduled, before B goes on: otherwise
-        // they race B's first sync, and its sequence number varies.
+        // The cycle's end, then the retry its busy skip scheduled, before B goes on:
+        // otherwise they race B's first sync, and its sequence number varies.
+        .awaitSpawned,
+        .release(.adapter(.busyRetry)),
         .settleSpawned,
+        .check("one busy skip") { run in
+            let busy = await run.adapter.syncDeferredByCycleCountForTesting
+            try expect(busy == 1, "syncSkips.busy is \(busy)")
+        },
         .release(.adapter(.admitJoinEntry)),
     ]),
     // In-turn on, with an explicit legacy cycle: with the loops off a tick turn wants no sync,

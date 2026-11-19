@@ -65,8 +65,8 @@ struct DiffHeldResolver: ContextResolver {
     }
 }
 
-/// The resolver gates of the current run, by key. Runs are serialized (the suite is), so one
-/// table is enough; the runner resets it at a run's start and opens every gate in its cleanup.
+/// The resolver gates of the current run, by key. Runs are serialized (both harness suites sit
+/// under one serialized parent, `DifferentialHarness`), so one table is enough; the runner resets it at a run's start and opens every gate in its cleanup.
 /// The keys are fixed in the scenarios, so they are the same in every run and every process.
 enum DiffGates {
     private static let lock = NSLock()

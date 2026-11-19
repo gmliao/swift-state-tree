@@ -36,5 +36,10 @@ jobs:
     - name: Install python3
       run: scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
 
+    # The lists of expected differences and retired rows are main's everywhere but on the rewrite
+    # branch's PR (head `rewrite/546-*`), where the self-check doesn't require them empty. A
+    # merge group is checked again by its push to main.
     - name: Gate run
+      env:
+        SST_DIFFERENTIAL_MAIN_LISTS: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'rewrite/546-'))) && '0' || '1' }}
       run: scripts/differential-gate.sh

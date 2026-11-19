@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.."
 
 GOLDEN=Tests/SwiftStateTreeNIOTests/Differential/Golden
 RUNS=5
-FILTER='SwiftStateTreeNIOTests\.DifferentialHarnessTests'
+FILTER='SwiftStateTreeNIOTests\.DifferentialHarness/DifferentialHarnessTests/'
 
 # The pinned image, read from the CI workflow, so the two can't name different images.
 image() {

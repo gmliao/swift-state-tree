@@ -369,6 +369,11 @@ final class DiffRun: @unchecked Sendable {
         case .disconnect(let name):
             let attempt = try attempt(name)
             disconnected.insert(name)
+            // The frames queued before the disconnect reach their connections first: the
+            // disconnect cancels the session's drain and drops its queue, so otherwise whether
+            // they're delivered depends on the scheduler. A row about undelivered frames holds
+            // the writer instead, and says so.
+            try await flushOutbound()
             try await bounded("\(name)'s disconnect") { [transport] in
                 await transport.handleDisconnection(sessionID: attempt.session)
             }
@@ -386,6 +391,7 @@ final class DiffRun: @unchecked Sendable {
         case .startDisconnect(let name):
             let attempt = try attempt(name)
             disconnected.insert(name)
+            try await flushOutbound()
             try await bounded("\(name)'s disconnect") { [transport] in
                 await transport.handleDisconnection(sessionID: attempt.session)
             }
@@ -571,6 +577,9 @@ final class DiffRun: @unchecked Sendable {
         }
         try await bounded("no pending flip") { [router] in await router.waitForNoPendingFlipForTesting() }
         try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
+        // A supersede closes the old connection from a task of its own, which a zero forward
+        // count can precede.
+        try await bounded("the supersedes' closes") { [adapter] in await adapter.waitForDetachedClosesForTesting() }
         guard !stopped else {
             try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
             return
@@ -592,6 +601,12 @@ final class DiffRun: @unchecked Sendable {
             guard quiet else { throw DiffRunFailure("the adapter's sync work didn't settle") }
         }
         // 3. The outbound writer is idle; 4. every queued frame reached its connection.
+        try await bounded("outbound idle") { [adapter] in await adapter.waitForOutboundIdleForTesting() }
+        try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
+    }
+
+    /// The outbound writer is idle and every queued frame reached its connection.
+    private func flushOutbound() async throws {
         try await bounded("outbound idle") { [adapter] in await adapter.waitForOutboundIdleForTesting() }
         try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
     }

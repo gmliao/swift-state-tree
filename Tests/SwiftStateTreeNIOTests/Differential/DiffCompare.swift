@@ -2,8 +2,10 @@
 //
 // The comparison of two runs (#555, plan §5.7 and rev 10's "Comparing the record"): frames per
 // connection, in order, byte for byte; each close; the record's bytes, and when they differ,
-// each differing field path of the decoded records. A report names the checkpoint, the
-// connection and the index of the first differing frame, with both frames decoded.
+// each differing field path of the decoded records as well. Every differing frame is its own
+// difference, naming the checkpoint, the connection, the frame's index, both frames decoded and,
+// when bytes are compared, both frames' digests: an expected difference covers exactly one frame
+// with exactly those bytes, never the frames after it.
 
 #if DEBUG
 import Foundation
@@ -44,13 +46,15 @@ enum DiffCompare {
                                    detail: expected.connections[name] == nil ? "an extra connection" : "a missing connection"))
                 continue
             }
-            if let index = firstDifference(a.frames, b.frames, checkBytes: checkBytes) {
-                let left = index < a.frames.count ? DiffValue.canonicalText(a.frames[index].decoded) : "<none>"
-                let right = index < b.frames.count ? DiffValue.canonicalText(b.frames[index].decoded) : "<none>"
-                found.append(.init(
-                    checkpoint: checkpoint, channel: .frames, place: name,
-                    detail: "frame \(index) of \(a.frames.count) vs \(b.frames.count): expected \(left), got \(right)"
-                ))
+            for index in differingFrames(a.frames, b.frames, checkBytes: checkBytes) {
+                let left = index < a.frames.count ? a.frames[index] : nil
+                let right = index < b.frames.count ? b.frames[index] : nil
+                let text = { (frame: DiffFrame?) in frame.map { DiffValue.canonicalText($0.decoded) } ?? "<none>" }
+                var detail = "frame \(index) of \(a.frames.count) vs \(b.frames.count): expected \(text(left)), got \(text(right))"
+                if checkBytes {
+                    detail += " (bytes \(digest(left?.bytes)) vs \(digest(right?.bytes)))"
+                }
+                found.append(.init(checkpoint: checkpoint, channel: .frames, place: name, detail: detail))
             }
             if a.close != b.close {
                 found.append(.init(checkpoint: checkpoint, channel: .close, place: name,
@@ -66,32 +70,46 @@ enum DiffCompare {
         return found
     }
 
-    private static func firstDifference(_ a: [DiffFrame], _ b: [DiffFrame], checkBytes: Bool) -> Int? {
-        for index in 0..<max(a.count, b.count) {
-            guard index < a.count, index < b.count else { return index }
-            if checkBytes ? a[index].bytes != b[index].bytes : a[index].decoded != b[index].decoded {
-                return index
-            }
+    /// Every index where the two streams differ, a frame only one of them has included.
+    private static func differingFrames(_ a: [DiffFrame], _ b: [DiffFrame], checkBytes: Bool) -> [Int] {
+        (0..<max(a.count, b.count)).filter { index in
+            guard index < a.count, index < b.count else { return true }
+            return checkBytes ? a[index].bytes != b[index].bytes : a[index].decoded != b[index].decoded
         }
-        return nil
+    }
+
+    /// The bytes' 64-bit FNV-1a digest in hex, `<none>` for a missing frame: it keys an expected
+    /// difference to the exact bytes (a stable value across processes and platforms, unlike
+    /// `hashValue`).
+    static func digest(_ bytes: Data?) -> String {
+        guard let bytes else { return "<none>" }
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in bytes {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        let hex = String(hash, radix: 16)
+        return "fnv64:" + String(repeating: "0", count: 16 - hex.count) + hex
     }
 
     private static func describe(_ close: DiffClose?) -> String {
         close.map { "\($0.code) \"\($0.reason)\"" } ?? "no close"
     }
 
-    /// The record: its bytes first; when they differ, each differing field path. Bytes that
-    /// differ while no path differs fail too: the record format is shared code.
+    /// The record: its bytes first; when they differ, a `<bytes>` difference with both digests,
+    /// and each differing field path beside it. The bytes difference is emitted even when fields
+    /// differ, so an expected difference for a field can't cover another byte change: the
+    /// branch lists the bytes difference too, with the exact digests.
     static func compareRecord(_ expected: DiffRecordCapture, _ actual: DiffRecordCapture, checkBytes: Bool) -> [DiffDifference] {
-        if checkBytes, expected.bytes == actual.bytes { return [] }
+        var found: [DiffDifference] = []
+        if checkBytes {
+            if expected.bytes == actual.bytes { return [] }
+            found.append(.init(checkpoint: "terminal", channel: .record, place: "<bytes>",
+                               detail: "\(digest(expected.bytes)) vs \(digest(actual.bytes))"))
+        }
         var paths: [(String, String)] = []
         walk(expected.decoded, actual.decoded, path: "", into: &paths)
-        if paths.isEmpty {
-            return checkBytes
-                ? [.init(checkpoint: "terminal", channel: .record, place: "<bytes>", detail: "the bytes differ while no field differs")]
-                : []
-        }
-        return paths.map { .init(checkpoint: "terminal", channel: .record, place: $0.0, detail: $0.1) }
+        return found + paths.map { .init(checkpoint: "terminal", channel: .record, place: $0.0, detail: $0.1) }
     }
 
     /// The decoded records' differing paths: `a.b` for a field, `a[3]` for an element.

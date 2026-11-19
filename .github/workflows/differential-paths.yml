@@ -57,7 +57,10 @@ jobs:
             '.github/workflows/differential-harness.yml' \
             '.github/workflows/differential-paths.yml' \
             'scripts/record-differential-goldens.sh' \
-            'scripts/differential-gate.sh'; then
+            'scripts/differential-gate.sh' \
+            'scripts/ci-apt-install.sh' \
+            'Tests/SwiftStateTreeNIOTests/ResolverDeadlinesOffTrait.swift' \
+            'Package.swift'; then
           git diff --stat --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- 'Tests/SwiftStateTreeNIOTests/Differential' 'Tests/SwiftStateTreeTestSupport' '.github/workflows' 'scripts'
           echo "::error::a protected path differs from main ${MAIN_SHA}: change it on main first"
           exit 1

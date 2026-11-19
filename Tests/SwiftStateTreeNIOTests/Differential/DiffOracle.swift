@@ -173,6 +173,15 @@ enum DiffOracle {
                 }
             }
         }
+        for (player, issue) in scenario.recordedLifecycle {
+            guard DiffOutcome.isIssueReference(issue) else {
+                throw DiffRunFailure("\(player)'s lifecycle is recorded without an issue reference (\"\(issue)\")")
+            }
+            guard scenario.lifecycle[player] == nil else {
+                throw DiffRunFailure("\(player)'s lifecycle is both stated and recorded")
+            }
+            found[player] = nil
+        }
         guard found == scenario.lifecycle else {
             throw DiffRunFailure("the record's lifecycle is \(found), the scenario states \(scenario.lifecycle)")
         }
