@@ -10,10 +10,14 @@ import Testing
 
 @Suite("ReevaluationRunner exit codes for the record schema fingerprint")
 struct ReevaluationRunnerExitTests {
-    /// How long one runner invocation may take before it is killed and the test fails.
+    /// How long one runner invocation may take before the test fails and kills it.
     private static let runnerDeadline: DispatchTimeInterval = .seconds(60)
+    /// How long each step after the deadline may take: SIGTERM, then SIGKILL, then the output read.
+    private static let killGrace: DispatchTimeInterval = .seconds(5)
 
-    @Test("--verify exits 10 for a record without a fingerprint and 13 for one of another schema", .timeLimit(.minutes(3)))
+    // Every wait below is bounded, so a runner that never exits fails the test in about
+    // runnerDeadline + 3 × killGrace. `.timeLimit` can't interrupt a blocked wait; it isn't used.
+    @Test("--verify exits 10 for a record without a fingerprint and 13 for one of another schema")
     func exitsOnFingerprint() throws {
         let products = try #require(Self.productsDirectory(), "can't find this test bundle's build products directory")
         let runner = products.appendingPathComponent("ReevaluationRunner")
@@ -33,7 +37,9 @@ struct ReevaluationRunnerExitTests {
             process.standardError = output
             let exited = DispatchSemaphore(value: 0)
             process.terminationHandler = { _ in exited.signal() }
-            // Read on another thread, so a runner that fills the pipe can't block its own exit.
+            try process.run()
+            // Read on another thread, started once the runner runs, so a runner that fills the
+            // pipe can't block its own exit.
             let read = DispatchGroup()
             nonisolated(unsafe) var data = Data()
             read.enter()
@@ -41,13 +47,22 @@ struct ReevaluationRunnerExitTests {
                 data = output.fileHandleForReading.readDataToEndOfFile()
                 read.leave()
             }
-            try process.run()
+            let label = fingerprint ?? "no fingerprint"
             if exited.wait(timeout: .now() + Self.runnerDeadline) == .timedOut {
+                Issue.record("ReevaluationRunner didn't exit within \(Self.runnerDeadline) (\(label)); killing it")
                 process.terminate()
-                exited.wait()
-                Issue.record("ReevaluationRunner didn't exit within \(Self.runnerDeadline) (\(fingerprint ?? "no fingerprint")); killed it")
+                if exited.wait(timeout: .now() + Self.killGrace) == .timedOut {
+                    kill(process.processIdentifier, SIGKILL)
+                    if exited.wait(timeout: .now() + Self.killGrace) == .timedOut {
+                        Issue.record("ReevaluationRunner didn't exit after SIGKILL (\(label))")
+                        continue
+                    }
+                }
             }
-            read.wait()
+            if read.wait(timeout: .now() + Self.killGrace) == .timedOut {
+                Issue.record("ReevaluationRunner's output stayed open after it exited (\(label))")
+                continue
+            }
             let text = String(decoding: data, as: UTF8.self)
             #expect(process.terminationReason == .exit)
             #expect(process.terminationStatus == expected, "\(fingerprint ?? "no fingerprint"): \(text.suffix(400))")
@@ -62,9 +77,9 @@ struct ReevaluationRunnerExitTests {
     private static func productsDirectory() -> URL? {
         let paths = CommandLine.arguments + Bundle.allBundles.map(\.bundlePath)
         for path in paths {
-            guard let range = path.range(of: ".xctest") else { continue }
-            let bundle = URL(fileURLWithPath: String(path[..<range.upperBound]))
-            return bundle.deletingLastPathComponent()
+            let components = URL(fileURLWithPath: path).pathComponents
+            guard let bundle = components.firstIndex(where: { $0.hasSuffix(".xctest") }) else { continue }
+            return URL(fileURLWithPath: NSString.path(withComponents: Array(components[..<bundle])))
         }
         return nil
     }

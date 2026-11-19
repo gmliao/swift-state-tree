@@ -25,6 +25,8 @@ import tempfile
 IMAGE = re.compile(r"""^\s*(?:-\s+)?(?:(?:image|container):\s*["']?|uses:\s*["']?docker://)((?:[\w.-]+(?::\d+)?/)*swift:[^\s"'#,}]+)""")
 # The flow form, `container: { image: swift:…, … }`: the image key inside the braces.
 FLOW_IMAGE = re.compile(r"""^\s*(?:-\s+)?container:\s*\{.*?\bimage:\s*["']?((?:[\w.-]+(?::\d+)?/)*swift:[^\s"'#,}]+)""")
+# Not read, as no workflow uses them: a quoted key (`"image": …`) and a flow map spread over
+# several lines. A workflow that starts using either needs this check extended first.
 # An image given as a block scalar (`image: >-` and the value on the next lines) isn't read:
 # it is refused, so an image can't hide from the check in a form it doesn't parse.
 BLOCK_IMAGE = re.compile(r"^\s*(?:-\s+)?(?:image|container):\s*[|>]")
