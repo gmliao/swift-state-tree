@@ -431,6 +431,54 @@ struct RowAddressingAdapterTests {
         #expect(!(await plain.adapter.usesSyncTablesForTesting()))
     }
 
+    /// The json cells of the E2E matrix (audit plan V1): the push runs leave out json with
+    /// `ROW_ADDRESSING=false` because json has no opcode state updates, so the raw flag can't
+    /// change anything the server does. This pins that where the server could tell the two apart:
+    /// everything the adapter decides, and every line it logs about it.
+    @Test("json: the raw row flag on and off configure the same adapter, with in-turn sync on or off and the tables on or off")
+    func jsonIgnoresTheRawRowFlag() async throws {
+        let pathHashes = try rowAddressingPathHashes()
+        func configured(rowAddressing: Bool, inTurnSync: Bool, tables: Bool) async -> RowAddressingConfigured {
+            let lines = RowAddressingLoggedLines()
+            let logger = Logger(label: "row-addressing-json") { _ in RowAddressingLineHandler(lines: lines) }
+            let keeper = LandKeeper(
+                definition: rowAddressingLand(RowAddressingScript()), initialState: RowAddressingState(),
+                enableLiveStateHashRecording: false, autoStartLoops: false
+            )
+            let adapter = TransportAdapter<RowAddressingState>(
+                keeper: keeper,
+                transport: RowAddressingFrames(),
+                landID: "row-addressing",
+                transportEnvConfig: rowAddressingEnv(tables: tables),
+                encodingConfig: TransportEncodingConfig.json.withSyncSequence(true).withRowAddressing(rowAddressing),
+                pathHashes: pathHashes,
+                suppressMissingPathHashesWarning: true,
+                inTurnSync: inTurnSync,
+                logger: logger,
+                joinsThroughRouter: true
+            )
+            return RowAddressingConfigured(
+                rowAddressing: adapter.rowAddressing,
+                stateUpdateFeatures: adapter.stateUpdateFeatures,
+                usesSyncTables: await adapter.usesSyncTablesForTesting(),
+                messageEncoding: await adapter.getMessageEncoding(),
+                logged: lines.all
+            )
+        }
+        for inTurnSync in [true, false] {
+            for tables in [true, false] {
+                let cell = "inTurnSync \(inTurnSync), tables \(tables)"
+                let requested = await configured(rowAddressing: true, inTurnSync: inTurnSync, tables: tables)
+                let optedOut = await configured(rowAddressing: false, inTurnSync: inTurnSync, tables: tables)
+                #expect(requested == optedOut, "\(cell)")
+                #expect(!requested.rowAddressing, "\(cell)")
+                #expect(!requested.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing), "\(cell)")
+                #expect(requested.usesSyncTables == tables, "\(cell): the tables follow USE_SYNC_TABLES alone")
+                #expect(requested.logged.contains { $0.hasPrefix("Transport encoding configured") }, "\(cell): the configuration line is compared")
+            }
+        }
+    }
+
     /// `perPlayerTablesInEffect = usesSyncTables && PER_PLAYER_SYNC_TABLES` (#514): the per-player
     /// tables follow the broadcast tables however those were turned on.
     @Test("The per-player tables are in effect where the broadcast tables are, unless PER_PLAYER_SYNC_TABLES is off (#514)")
@@ -792,5 +840,55 @@ private struct RowAddressingRecordingLogHandler: LogHandler {
         line: UInt
     ) {
         if level >= .info { records.append(level, message.description) }
+    }
+}
+
+/// What a json adapter decided, for `jsonIgnoresTheRawRowFlag`.
+private struct RowAddressingConfigured: Equatable {
+    let rowAddressing: Bool
+    let stateUpdateFeatures: [String]
+    let usesSyncTables: Bool
+    let messageEncoding: String
+    /// Every line logged at info and above, with its metadata.
+    let logged: [String]
+}
+
+private final class RowAddressingLoggedLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.withLock { lines.append(line) }
+    }
+
+    var all: [String] {
+        lock.withLock { lines }
+    }
+}
+
+/// Records each line at info and above as its level, message and sorted metadata.
+private struct RowAddressingLineHandler: LogHandler {
+    let lines: RowAddressingLoggedLines
+    var logLevel: Logger.Level = .info
+    var metadata: Logger.Metadata = [:]
+
+    subscript(metadataKey key: String) -> Logger.Metadata.Value? {
+        get { metadata[key] }
+        set { metadata[key] = newValue }
+    }
+
+    func log(
+        level: Logger.Level,
+        message: Logger.Message,
+        metadata: Logger.Metadata?,
+        source: String,
+        file: String,
+        function: String,
+        line: UInt
+    ) {
+        guard level >= .info else { return }
+        let all = self.metadata.merging(metadata ?? [:]) { _, call in call }
+        let fields = all.keys.sorted().map { "\($0)=\(all[$0]!)" }.joined(separator: " ")
+        lines.append("\(message.description) [\(level)] \(fields)")
     }
 }
