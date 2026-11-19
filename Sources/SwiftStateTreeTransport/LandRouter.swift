@@ -391,12 +391,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
     /// `awaitFlip` tasks spawned and not yet ended.
     private var pendingFlipWaits = 0
-    private var noPendingFlipWaiters: [CheckedContinuation<Void, Never>] = []
+    private var noPendingFlipWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var nextNoPendingFlipWaiter = 0
 
     private func flipWaitEnded() {
         pendingFlipWaits -= 1
         guard pendingFlipWaits == 0 else { return }
-        let waiters = noPendingFlipWaiters
+        let waiters = noPendingFlipWaiters.values
         noPendingFlipWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
     }
@@ -405,10 +406,31 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     package func pendingFlipWaitCountForTesting() -> Int { pendingFlipWaits }
 
     /// Tests: returns once no in-turn join's flip wait (`awaitFlip`) is in progress, so a test
-    /// knows every admitted join has flipped or failed.
-    package func waitForNoPendingFlipForTesting() async {
+    /// knows every admitted join has flipped or failed, or when the waiting task is cancelled.
+    /// Each waiter is removed under the router's isolation and resumed exactly once.
+    ///
+    /// - Parameter registered: called once the waiter is stored (not when it returns at once or
+    ///   is cancelled first), so a test acts after registration rather than after a delay.
+    package func waitForNoPendingFlipForTesting(registered: @escaping @Sendable () async -> Void = {}) async {
         if pendingFlipWaits == 0 { return }
-        await withCheckedContinuation { noPendingFlipWaiters.append($0) }
+        let id = nextNoPendingFlipWaiter
+        nextNoPendingFlipWaiter += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                noPendingFlipWaiters[id] = continuation
+                Task { await registered() }
+            }
+        } onCancel: {
+            Task { await self.cancelNoPendingFlipWaiter(id) }
+        }
+    }
+
+    private func cancelNoPendingFlipWaiter(_ id: Int) {
+        noPendingFlipWaiters.removeValue(forKey: id)?.resume()
     }
 
     // MARK: - Shutdown (#351)

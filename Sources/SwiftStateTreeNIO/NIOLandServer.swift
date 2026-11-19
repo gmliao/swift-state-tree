@@ -37,8 +37,9 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     /// - Throws: `LandRegistrationError` from `LandTypeRegistry.init`: the state's synced-state
     ///   problems in its `sync` (#464, #179, #535).
     ///
-    /// The router isn't the transport's delegate yet: call `attach()` before the transport
-    /// receives a connection (`NIOLandHost.register` does).
+    /// The router isn't the transport's delegate yet. Before the transport receives a
+    /// connection, call `await transport.setDelegate(server.landRouter)`; `NIOLandHost.register`
+    /// does this for you.
     public init(
         landType: String,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,

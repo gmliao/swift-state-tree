@@ -144,14 +144,48 @@ struct DifferentialHarnessHooksTests {
         try await h.join(session, player: "p1")
         #expect(await flipped.waitForArrivals(1), "the flip wait resumed and is held")
 
-        // Held inside `awaitFlip`: its wait is still counted, so the waiter below can't return
-        // before the gate opens.
+        // Held inside `awaitFlip`: its wait is still counted, so the waiter below registers and
+        // can't return before the gate opens.
         #expect(await h.router.pendingFlipWaitCountForTesting() == 1)
-        let ended = Task { await h.router.waitForNoPendingFlipForTesting() }
+        let registered = TestGate()
+        let ended = Task { await h.router.waitForNoPendingFlipForTesting { await registered.arrive() } }
+        #expect(await registered.waitForArrivals(1), "the waiter registered while the flip wait is held")
+        registered.open()
         flipped.open()
         #expect(await bounded { await ended.value }, "returns once the flip wait ended")
         #expect(await h.router.pendingFlipWaitCountForTesting() == 0)
         #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } })
+    }
+
+    @Test("The no-pending-flip waiter returns when its task is cancelled, registered or not yet")
+    func noPendingFlipWaiterIsCancellable() async throws {
+        let h = try await HooksHarness.make()
+        guard h.adapter.inTurnSyncEnabled else { return }  // only an in-turn join has a flip wait
+        let flipped = TestGate()
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.flipWaitResumed, arrival: 1) {
+            await flipped.arrive()
+        }.hook)
+        let session = SessionID("s1")
+        _ = await h.connect(session)
+        try await h.join(session, player: "p1")
+        #expect(await flipped.waitForArrivals(1), "the flip wait is held, so a waiter must register")
+
+        // Cancelled after it registered: the cancellation handler removes and resumes it.
+        let registered = TestGate()
+        let waiter = Task { await h.router.waitForNoPendingFlipForTesting { await registered.arrive() } }
+        #expect(await registered.waitForArrivals(1))
+        registered.open()
+        waiter.cancel()
+        #expect(await bounded { await waiter.value }, "the registered waiter returned on cancellation")
+
+        // Cancelled before it registered: it returns without being stored.
+        let early = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await h.router.waitForNoPendingFlipForTesting { Issue.record("a cancelled waiter registered") }
+        }
+        #expect(await bounded { await early.value }, "the waiter cancelled first returned")
+        flipped.open()
+        #expect(await bounded { await h.router.waitForNoPendingFlipForTesting() })
     }
 
     // MARK: Land-stop leaves
@@ -199,12 +233,24 @@ struct DifferentialHarnessHooksTests {
 
     // MARK: Action-response waiter
 
-    @Test("The action-response waiter returns when its task is cancelled, for a count that never comes")
+    @Test("The action-response waiter returns when its task is cancelled, registered or not yet, for a count that never comes")
     func actionResponseWaiterIsCancellable() async throws {
         let h = try await HooksHarness.make()
-        let waiter = Task { await h.adapter.waitForActionResponsesFinishedForTesting(1) }
+
+        // Cancelled after it registered: the cancellation handler removes and resumes it.
+        let registered = TestGate()
+        let waiter = Task { await h.adapter.waitForActionResponsesFinishedForTesting(1) { await registered.arrive() } }
+        #expect(await registered.waitForArrivals(1), "the waiter registered")
+        registered.open()
         waiter.cancel()
-        #expect(await bounded { await waiter.value }, "the cancelled waiter returned")
+        #expect(await bounded { await waiter.value }, "the registered waiter returned on cancellation")
+
+        // Cancelled before it registered: it returns without being stored.
+        let early = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await h.adapter.waitForActionResponsesFinishedForTesting(1) { Issue.record("a cancelled waiter registered") }
+        }
+        #expect(await bounded { await early.value }, "the waiter cancelled first returned")
         // A cancelled waiter is gone: a later finish resumes nothing twice.
         #expect(await bounded { await h.adapter.waitForActionResponsesFinishedForTesting(0) })
     }

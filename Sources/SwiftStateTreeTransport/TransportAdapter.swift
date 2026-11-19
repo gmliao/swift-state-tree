@@ -5694,7 +5694,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// the waiting task is cancelled, so a count that is never reached doesn't leave the waiter
     /// suspended past its test (#555). Each waiter is removed under the adapter's isolation and
     /// resumed exactly once.
-    func waitForActionResponsesFinishedForTesting(_ count: Int) async {
+    ///
+    /// - Parameter registered: called once the waiter is stored (not when it returns at once or
+    ///   is cancelled first), so a test acts after registration rather than after a delay.
+    func waitForActionResponsesFinishedForTesting(_ count: Int, registered: @escaping @Sendable () async -> Void = {}) async {
         guard actionResponsesFinished < count else { return }
         let id = nextActionResponsesFinishedWaiter
         nextActionResponsesFinishedWaiter += 1
@@ -5705,6 +5708,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     return
                 }
                 actionResponsesFinishedWaiters[id] = (count, continuation)
+                Task { await registered() }
             }
         } onCancel: {
             Task { await self.cancelActionResponsesFinishedWaiter(id) }
