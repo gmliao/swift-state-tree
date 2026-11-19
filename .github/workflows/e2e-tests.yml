@@ -349,8 +349,10 @@ jobs:
     # left out: the tables-off fallback (messagepack, USE_SYNC_TABLES=false
     # TYPED_LEAF_VALUES=false) on the legacy sync. It runs only with ROW_ADDRESSING=false, set
     # for this step alone; E2E_TABLES_OFF_ONLY skips the encoding runs the leg already made.
+    # `!cancelled()`: it runs when the default step failed, as the left-out leg ran whatever the
+    # (false, on) leg did; its own E2E_TMP_DIR leaves it nothing of that step's to trip on.
     - name: Run the GameServer tables-off fallback (in-turn sync off)
-      if: matrix.in_turn_sync == 'false' && matrix.row_addressing == 'on' && !inputs.full_matrix
+      if: ${{ !cancelled() && matrix.in_turn_sync == 'false' && matrix.row_addressing == 'on' && !inputs.full_matrix }}
       shell: bash
       env:
         ROW_ADDRESSING: "false"

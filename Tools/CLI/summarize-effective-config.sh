@@ -7,7 +7,8 @@
 #
 # CI prints it after each e2e-game step, so two legs' configs can be compared line for line on
 # one commit (audit plan V2: the in-turn-off legs with ROW_ADDRESSING on and off run the same
-# config). It checks nothing; a log with no config line says so.
+# config). It checks nothing and always exits 0 once its arguments are right: it runs after a
+# failed step too, and a log it can't read is reported, not a failure.
 # Usage: summarize-effective-config.sh <server log dir>
 set -euo pipefail
 if [ $# -ne 1 ]; then
@@ -21,8 +22,11 @@ if [ "${#logs[@]}" -eq 0 ]; then
   exit 0
 fi
 for log in "${logs[@]}"; do
-  plain=$(sed $'s/\x1b\\[[0-9;]*m//g' "$log")
   echo "$(basename "$log"):"
+  if ! plain=$(sed $'s/\x1b\\[[0-9;]*m//g' "$log" 2>/dev/null); then
+    echo "  (unreadable)"
+    continue
+  fi
   configs=$(grep -F "[TransportAdapter] Transport encoding configured " <<<"$plain" \
     | sed 's/.*Transport encoding configured //' \
     | tr -d '\r' \
