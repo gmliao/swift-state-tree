@@ -763,7 +763,7 @@ Read at `main` 353c296a. As above, each fact is marked **checked** or **inferred
 - PR 1b covers server events and the replay runner;
 - PR 2 covers client input at intake.
 
-So **PR 2 adds the protocol and both sources**, and PR 1b, whenever it is built, uses them for `decodeServerEvent`. The order of PR 1b and PR 2 is then free. §4's "What PR 1b adds" moves the protocol to whichever of the two merges first.
+So **PR 2 adds the protocol and both sources**, and PR 1b, whenever it is built, uses them for `decodeServerEvent`. The order of PR 1b and PR 2 is then free. As queued (2026-11-19), PR 1b follows PR 2. §4's "What PR 1b adds" moves the protocol to whichever of the two merges first.
 
 **Three things folded in by the decisions of 2026-11-19:**
 
