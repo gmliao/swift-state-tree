@@ -75,7 +75,6 @@ Tests/SwiftStateTreeTransportTests/MessagePackTransportTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/RecordTurnBoundaryLiveTests.swift helper-poll 2
 Tests/SwiftStateTreeTransportTests/RowAddressingAdapterTests.swift helper-poll 3
 Tests/SwiftStateTreeTransportTests/SyncLagCloseDecidedLogTests.swift helper-poll 1
-Tests/SwiftStateTreeTransportTests/SyncOutputVerifierTests.swift helper-poll 2
 Tests/SwiftStateTreeTransportTests/SyncStreamProducerTests.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TestGateTests.swift poll-helper 2
 Tests/SwiftStateTreeTransportTests/TransportAdapterActionJobTests.swift helper-poll 1

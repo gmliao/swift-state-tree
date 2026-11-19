@@ -237,7 +237,7 @@ struct TransportAdapterJoinHeldEventsTests {
         let fixture = await makeFixture(encoding)
         try await joinMember(fixture)
         let gate = TestGate()
-        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
         await eventually("the join at registerSession") { gate.arrivalCount == 1 }
@@ -261,7 +261,7 @@ struct TransportAdapterJoinHeldEventsTests {
         let fixture = await makeFixture(encoding)
         try await joinMember(fixture)
         let gate = TestGate()
-        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let s0 = SessionID("s0"), s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
         await eventually("the join at registerSession") { gate.arrivalCount == 1 }

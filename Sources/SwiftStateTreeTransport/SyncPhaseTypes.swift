@@ -127,6 +127,11 @@ struct SyncPhasePlan {
     var syncSeq: UInt64?
     /// What this plan's lag classification decided (#332), applied by its commit.
     var syncLag = SyncLagPlanned()
+    #if DEBUG
+    /// Unsynced recipients that get their initial full view in this plan, not a resync's
+    /// (tests: `initialSyncCommittedForTesting`).
+    var initialViewSessions: [SessionID] = []
+    #endif
     /// Frames in issue order. Per session: merged broadcast frame, targeted event frames,
     /// per-player state frame.
     var frames: [SyncPhaseFrame] = []

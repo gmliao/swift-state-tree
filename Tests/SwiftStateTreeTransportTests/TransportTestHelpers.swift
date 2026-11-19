@@ -25,7 +25,8 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     sessionID: SessionID,
     clientID: ClientID,
     playerID: PlayerID,
-    authInfo: AuthenticatedInfo? = nil
+    authInfo: AuthenticatedInfo? = nil,
+    waitsByEvent: Bool = false
 ) async throws {
     let playerSession = PlayerSession(
         playerID: playerID.rawValue,
@@ -63,7 +64,12 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     // In tests we call it directly since we don't have the actual WebSocket message flow.
     await adapter.syncStateForNewPlayer(playerID: finalPlayerID, sessionID: sessionID)
     // The adapter's outbound writer sends asynchronously; let firstSync reach the transport.
-    #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+    // `waitsByEvent` waits for the writer's consumer instead of polling.
+    if waitsByEvent {
+        await adapter.waitForOutboundIdleForTesting()
+    } else {
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+    }
 }
 
 /// Holds one sync cycle in flight at `TransportAdapter.debugCycleHoldBeforeEndSync`: after the
