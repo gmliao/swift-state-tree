@@ -60,8 +60,8 @@ jobs:
         scripts/lint-lessons.sh --self-test
         scripts/lint-lessons.sh
 
-    # `swift package clean` only: .build is never restored, and removing it would also remove the
-    # local clones SwiftPM made from the shared cache.
+    # `swift package clean` only: on a fresh runner there is no .build yet (the build is the next
+    # step), so `rm -rf .build` removed nothing.
     - name: Clean build artifacts
       run: swift package clean
     
@@ -70,12 +70,6 @@ jobs:
     
     - name: Build
       run: swift build
-
-    # Where SwiftPM put its shared cache, and what the cache step will save.
-    - name: SwiftPM shared cache contents
-      run: |
-        echo "HOME=$HOME"
-        du -sh ~/.cache/org.swift.swiftpm/* 2>/dev/null || echo "no SwiftPM shared cache under $HOME"
 
     # Handler bodies that must not compile (#586): a throw after the write, a wrong response type,
     # validate's context. Each snippet builds as a target of a generated package under .build/.
@@ -207,9 +201,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        # Full history: deep-research's wire-form tests resolve recorded commits and their parents.
-        fetch-depth: 0
 
     # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
     # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
@@ -312,6 +303,39 @@ jobs:
           exit 1
         fi
 
+    # EncodingBenchmark's --join-through-router / --row-addressing: the refused combinations exit 2
+    # with their reason (row-specific ones only for an explicit `on`), and small router runs (rows
+    # by default, on and off) join every session and record perConnection bytes and whether row
+    # entries were in effect. Reuses the tests' debug build.
+    # The router check parses the benchmark's JSON with python3, which the image doesn't have.
+    - name: Install python3
+      run: scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
+
+    - name: EncodingBenchmark router flags
+      working-directory: Examples/GameDemo
+      shell: bash
+      run: scripts/check-encoding-benchmark-router.sh
+      timeout-minutes: 10
+
+  # The deep-research Python tests, in a job of their own: they need no Swift build, so they run
+  # beside the Swift jobs instead of after the examples job's builds. The same image as the other
+  # jobs (Ubuntu 24.04's python3 and git), Node 20, and the full history.
+  deep-research-tests:
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        # Full history: deep-research's wire-form tests resolve recorded commits and their parents.
+        fetch-depth: 0
+
+    # Node from the official builds, not the Ubuntu mirrors (#453).
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
     # Every tracked deep-research Python test (standard library, git and node only), each from its
     # own directory. Every file runs; a file fails on a non-zero exit or when its output does not
     # report at least one test run (so a file that runs nothing can't pass). Each failing file is
@@ -325,6 +349,7 @@ jobs:
         log="$(mktemp)"
         count=0
         failed=()
+        summary=()
         while IFS= read -r -d '' f; do
           count=$((count + 1))
           echo "::group::$f"
@@ -340,27 +365,22 @@ jobs:
             echo "::error file=$f::$f exited 0 but reported no tests run"
             failed+=("$f")
           fi
+          # `|| true`: a file with no such line is already in the failed list; keep going.
+          ran="$(grep -E '^Ran [0-9]+ tests? in ' "$log" | tail -1 || true)"
+          result="$(grep -E '^(OK|FAILED)( |$)' "$log" | tail -1 || true)"
+          summary+=("$f: ${ran% in *}, ${result:-no result line}")
         done < <(git ls-files -z 'deep-research/*test_*.py' 'deep-research/**/test_*.py')
         if [ $count -eq 0 ]; then
           echo "::error::no deep-research Python tests found"
           exit 1
         fi
+        printf '%s\n' "${summary[@]}"
         echo "$count deep-research test files run"
         if [ ${#failed[@]} -ne 0 ]; then
           echo "Failed deep-research tests:"
           printf '  %s\n' "${failed[@]}"
           exit 1
         fi
-      timeout-minutes: 10
-
-    # EncodingBenchmark's --join-through-router / --row-addressing: the refused combinations exit 2
-    # with their reason (row-specific ones only for an explicit `on`), and small router runs (rows
-    # by default, on and off) join every session and record perConnection bytes and whether row
-    # entries were in effect. Reuses the tests' debug build.
-    - name: EncodingBenchmark router flags
-      working-directory: Examples/GameDemo
-      shell: bash
-      run: scripts/check-encoding-benchmark-router.sh
       timeout-minutes: 10
 
   # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
@@ -392,9 +412,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # One digest for every Swift container image, named by every SwiftPM cache key.
+    # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
+    # proves the check still finds what it looks for before the workflows are checked.
     - name: Swift image pinned by one digest
-      run: scripts/check-ci-image-pin.sh
+      run: |
+        scripts/check-ci-image-pin.sh --self-test
+        scripts/check-ci-image-pin.sh
 
     - name: Install ShellCheck 0.11.0
       run: |
