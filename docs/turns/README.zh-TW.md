@@ -275,7 +275,36 @@ API：`CallerCancellation`。
 - **三種寫法的比較**（[`Tests/SwiftStateTurnsTests/ComparisonTests.swift`](../../Tests/SwiftStateTurnsTests/ComparisonTests.swift)）。個人資料存取端 `load` 裡的 hold，讓一次加入停在 `await` 的中途。測試接著送出離開，再放行載入。每次執行的順序都相同，不用 sleep，所以一般 actor 的 bug 每次都會發生。
 - **執行期停止**（[`Tests/SwiftStateTurnsTests/RuntimeStopTests.swift`](../../Tests/SwiftStateTurnsTests/RuntimeStopTests.swift)）。少數錯誤只能在執行時發現，例如在狀態機自己的 step 裡讀取它。每一個都在子行程裡執行（exit test），而且必須帶著 core 的訊息停止。
 
-## 相關文件
+## Release build 的 exclusivity 檢查
+
+Swift 會在執行時檢查：一個變數正被使用時，沒有別的地方在改它。這就是 exclusivity 檢查。在 class 的 stored 屬性上，每次使用都要付一對 runtime 呼叫。
+
+在 release build 裡，core 對自己的 stored 狀態跳過這個檢查。core 內聯進採用它的 actor 之後，每個 input 都會多次碰到這些狀態；有這個檢查時，一次 `read` 的成本大約是手寫同樣查詢的兩倍。
+
+actor 一次只執行一個呼叫。在同一個呼叫裡，core 在每種 build 都守住自己的規則。step 會改狀態機，`read` 只是讀它。core 會記下目前開著幾個 read，以及有沒有 step 正在執行：
+
+| 已經開著 | 開始一個 `read` | 開始一個 step（`send`、`sendAndWait`、`query`） |
+|---|---|---|
+| 沒有 | 執行 | 執行 |
+| 一個以上的 `read` | 執行 | 停止行程 |
+| 一個 step | 停止行程 | `query` 停止行程；`send` 在這裡不算開始一個 step：它會等著，在這個 step 結束後才執行 |
+
+所以 read 可以巢狀，而在 `read` 的 closure 裡，一個會立刻執行的 `send`，或一個 `query`，即使裡面另一個 `read` 已經執行完並返回，也會停止行程。不會立刻執行的 `send`（在 batch 執行中送出的、它的 hold 正生效的、在 admission 被拒的）不會停止。
+
+**採用者必須守住的事。** core 在改自己的狀態時，也會執行採用者的一些程式碼，這時它擋不住重疊：
+- key 型別的 `==` 和 `hash(into:)`，在 core 更新它的表時執行；
+- core 丟掉的 input 或 key 的 deinit（被撤回的 input、清空的佇列、結束的 key）。
+
+這些程式碼不可以回頭呼叫 actor：不能在裡面 `send`、`sendAndWait`、`query`、`read` 或 `stats`。在沒有檢查的 release build 裡，這樣的呼叫會在另一次修改的途中改掉 core 的狀態，而且不會有任何錯誤。用下面有檢查的 build 來測試它。
+
+Debug build 保留這個檢查。用 `TURNS_EXCLUSIVITY_CHECKED` 旗標建置的 release build 也會保留：
+
+```sh
+swift build -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED
+```
+
+懷疑 release build 裡有兩次存取 core 狀態互相重疊時，或要在 release 路徑上開著檢查跑採用者的測試時，用它建置。預設的 release build 沒有這個檢查。
+
 
 - 設計與規則：`Notes/plans/2026-11-18-swift-state-turns-core.md`
 - turn 之外程式碼的 reentrancy 規則：`AGENTS.md` 的「Actor Reentrancy」一節
