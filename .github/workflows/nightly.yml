@@ -23,9 +23,11 @@ on:
       - '.github/workflows/nightly.yml'
       - 'scripts/nightly-*.sh'
 
-# Two runs on the same ref wait for each other instead of racing on the report.
+# Runs of one event on one ref wait for each other. A group keeps only one pending run, and a
+# newer one cancels it; the event is in the group so a dispatch queued on main can't cancel a
+# pending scheduled run (only scheduled runs report, so they still never race on the issue).
 concurrency:
-  group: nightly-${{ github.ref }}
+  group: nightly-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -68,9 +70,13 @@ jobs:
 
   # Scheduled runs only: one open nightly-failure issue, commented on while main stays red and
   # closed when it is green again. Dispatch and tag runs report through their own run status.
+  # A gate that failed (an API error, say) is reported too: it leaves `run` unset, and a red
+  # scheduled run must not file nothing. Don't rerun an old scheduled run's report by hand: the
+  # script won't close a newer issue or take a baseline its commit doesn't contain, but a failed
+  # old run still files a report for a commit main has moved past.
   report:
     needs: [gate, build-and-test, e2e]
-    if: always() && github.event_name == 'schedule' && needs.gate.outputs.run == 'true'
+    if: always() && github.event_name == 'schedule' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -85,16 +91,10 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
+        GATE: ${{ needs.gate.result }}
         BUILD: ${{ needs.build-and-test.result }}
         E2E: ${{ needs.e2e.result }}
         SHA: ${{ github.sha }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      run: |
-        case "$BUILD/$E2E" in
-          success/success) result=success ;;
-          failure/*|*/failure) result=failure ;;
-          *) result=other ;;
-        esac
-        echo "build-and-test: $BUILD, e2e: $E2E -> $result"
-        scripts/nightly-report.sh "$result" "$SHA" "$RUN_URL"
+      run: scripts/nightly-report.sh "$GATE" "$BUILD" "$E2E" "$SHA" "$RUN_URL"
       timeout-minutes: 5

@@ -458,13 +458,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
-    # proves the check still finds what it looks for before the workflows are checked.
-    # The nightly's gate and report, against a stub gh (nightly.yml runs them only on main).
+    # The nightly's gate and report, against a stub gh. The report only runs on scheduled runs,
+    # so nothing else would try it before a red main needs it.
     - name: Nightly scripts
       run: scripts/test-nightly-scripts.sh
       timeout-minutes: 2
 
+    # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
+    # proves the check still finds what it looks for before the workflows are checked.
     - name: Swift image pinned by one digest
       run: |
         scripts/check-ci-image-pin.sh --self-test
