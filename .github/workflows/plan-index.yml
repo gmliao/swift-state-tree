@@ -1,0 +1,39 @@
+# The plan status index (Notes/plans/README.md) merges with git's union driver (.gitattributes),
+# which keeps both versions of a row one side changed. scripts/check-plan-index.sh fails on that.
+# It runs here, not in Swift Build & Test: that workflow ignores Notes/** and *.md, and a plan-only
+# change is the usual way a row is added or changed.
+name: Plan index
+
+on:
+  push:
+    branches: [ "main", "exp/**" ]
+    paths:
+      - "Notes/plans/README.md"
+      - "scripts/check-plan-index.sh"
+      - ".github/workflows/plan-index.yml"
+  pull_request:
+    branches: [ "main", "exp/**" ]
+    paths:
+      - "Notes/plans/README.md"
+      - "scripts/check-plan-index.sh"
+      - ".github/workflows/plan-index.yml"
+
+# As in the push workflows: a new push to a pull request cancels its run still in progress, and
+# every other run gets a group of its own.
+concurrency:
+  group: plan-index-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan-index:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@v4
+    - name: One row per plan, no conflict marker
+      run: |
+        scripts/check-plan-index.sh --self-test
+        scripts/check-plan-index.sh
