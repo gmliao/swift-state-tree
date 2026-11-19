@@ -1,8 +1,10 @@
 # #521 PR 1b-2a: hybrid events go alone, decided at init (D10)
 
-**Status:** rev 2, plan only (the code follows on this branch once the plan is reviewed). Rev 2 folds in the review of rev 1 (#638 at 7beeb822: NOT GO, 2 must-fix, 2 should, 1 nit): the tests count both encodes, the verifier test keeps its mixed coverage, a raw hybrid golden is captured on `main` first, a non-deterministic encode is named, and the 107 decision is stored once. This is D10 of #521's plan ([`2026-11-13-typed-events-actions.md`](2026-11-13-typed-events-actions.md), §2.3's encoding table, the hybrid row). It was split out after that plan's rev 18. EV2 and EV3 follow in PR 1b-2b; they don't touch `TransportAdapter`. Read at `main` b7da92fb.
+**Status:** rev 3, plan only (the code follows once the plan is reviewed). Rev 3 folds in the review of rev 2 (#638 at 3fd95d38: NOT GO, 3 must-fix, 3 should, 1 nit): the order after #632, a dedicated land for the gated verifier test, the record header's 107 decision read from the stored value, the counters' places, the capture window, and the parity claim scoped to deterministic encoders. Rev 2 folded in the review of rev 1 (#638 at 7beeb822: NOT GO, 2 must-fix, 2 should, 1 nit): the tests count both encodes, the verifier test keeps its mixed coverage, a raw hybrid golden is captured on `main` first, a non-deterministic encode is named, and the 107 decision is stored once. This is D10 of #521's plan ([`2026-11-13-typed-events-actions.md`](2026-11-13-typed-events-actions.md), §2.3's encoding table, the hybrid row). It was split out after that plan's rev 18. EV2 and EV3 follow in PR 1b-2b; they don't touch `TransportAdapter`. Read at `main` b7da92fb.
 
-**Ordering:** this PR changes `TransportAdapter`'s event path, so it lands before the golden captures for the adapter's rewrite are recorded. Frames and records don't change (below), so the captures are the same whether they are recorded before or after it.
+**Ordering (rev 3):**
+- **After #632.** The MessagePack loss test uses #632's package hook `emitAnyServerEventForTesting`, which replaces the public `LandContext.emitAnyServerEvent` (`main`'s `LandContext.swift:245`). So D10's code branches from `main` after #632 merges. The capture commit below holds no D10 code and is carried over.
+- **Before the adapter rewrite's goldens.** This PR changes `TransportAdapter`'s event path, so it lands before the golden captures for the adapter's rewrite are recorded. Frames and records don't change (below), so the captures are the same whether they are recorded before or after it.
 
 ## Today (checked by reading)
 
@@ -29,7 +31,8 @@ There are two kinds of configuration, and the body behaves differently in each:
 ## Change
 
 Decide once in `TransportAdapter.init`:
-- `useStateUpdateWithEvents` becomes a stored `let`, set from the state update encoder's encoding at init. Today it is computed on each read from an injected `any StateUpdateEncoder` (:814). The sync path's 107 decision and the event path's decision then read one value and can't disagree.
+- `useStateUpdateWithEvents` becomes a stored `nonisolated let`, set from the state update encoder's encoding at init. Today it is computed on each read from an injected `any StateUpdateEncoder` (:814).
+- `syncConfigForRecord` (:86-88) reads it too (rev 3). Today it computes `stateUpdateEncoder.encoding == .opcodeMessagePack` live, and sets the record's `mergedBroadcastFrame`, which the verifier reads. So the record header, the sync path and the event path read one value and can't disagree.
 - `eventsMerge = useStateUpdateWithEvents && messageEncoder is MessagePackTransportMessageEncoder`.
 
 Both encoders are `let`s (:332-333), so neither answer can change later. In `enqueueEventSynchronously`:
@@ -40,8 +43,8 @@ Both encoders are `let`s (:332-333), so neither answer can change later. In `enq
 | Hybrid (107 on, messages not MessagePack) | body attempt (fails), then its own frame: `.sentAlone` (also for a stale target) or `.lost` | its own frame, with no body attempt: `.sentAlone` or `.lost`, as today |
 | 107 on, messages in MessagePack | body: `.queued` or `.noRecipient`; on failure, its own frame: `.sentAlone` or `.lost` | body: `.queued` or `.noRecipient`; on failure, `.lost` at once, after one encode |
 
-- **Nothing on the wire or in the record changes:**
-  - hybrid events go out with today's bytes, in today's order, under today's outcome;
+- **Nothing on the wire or in the record changes, for an encoder that gives the same result each time** (rev 3):
+  - hybrid events go out with today's bytes, in today's order, under today's outcome. Hybrid goes from two encodes per event to one, so an encoder with state (one that counts its calls, say) could give other bytes or another outcome once the discarded body attempt is gone. The framework's encoders have no such state;
   - an event that doesn't encode is still lost and ends the land with `eventEncode`.
 - **The fault hook:** `EventEncodingFault.mergedBody` goes away, since a body failure now means the event is lost. `.all` stays. The two tests that used `.mergedBody` to get a sent-alone event (`SyncOutputVerifierTests.swift:1209`, `TransportAdapterSyncPhaseTests.swift:823`) get one from a hybrid fixture instead.
 - **Docs:**
@@ -56,29 +59,43 @@ Both encoders are `let`s (:332-333), so neither answer can change later. In `enq
 ## Tests
 
 **First, on `main`, before any D10 code (rev 2):** no hybrid golden exists (`git grep` finds no hybrid capture under `Tests/`), and the differential harness compares decoded output, not bytes. So the order is:
-1. Capture, in a commit on this branch made from `main`'s code, the raw frames a hybrid land sends (`json` and `opcodeJsonArray` messages, `opcodeMessagePack` state updates), and its record's `eventsNotMerged`. Use a small land: one tick emits to `.all`, to `.players([])` and to one player.
+1. Capture, in a commit made from `main`'s code, the raw frames a hybrid land sends (`json` and `opcodeJsonArray` messages, `opcodeMessagePack` state updates), and its record's `eventsNotMerged`. Done (rev 3): `HybridEventFrameGoldenTests` and `Fixtures/HybridEventFrames/`, one file per sync mode, recorded at `main` b7da92fb with no D10 code. The window:
+   - **Land:** each tick sets its state (`ticks += 1`) and emits to `.all`, to `.players([])` and to `.player(p1)`, then requests a sync. `OnInitialize` emits nothing.
+   - **Cells:** `json` and `opcodeJsonArray` messages, each with event hashes off and on. Session, client and player IDs are pinned (`s1`/`c1`/`p1`, `s2`/`c2`/`p2`). The environment's sync options are given, not read.
+   - **Steps:** both players join (their first sync frames are in the capture), two ticks, then one `sendEvent` to `c1` from outside a turn, with a drain after each.
+   - **Captured per session, in send order.** The order between sessions follows a dictionary and isn't stable, so it isn't recorded.
+   - **Expected, and seen:** for each tick, `s1` gets the `.all` frame and the `.player(p1)` frame alone, in emission order, then the 107 frame with an empty event array. `s2` gets the `.all` frame, then the 107 frame. `.players([])` has no frame and is the third `sentAlone` entry of the tick's output (`[0, 1, 2]`, then `[3, 4, 5]`).
+   - **Stable:** a second recording in the same process gives the same bytes (a test), in all three sync modes.
 2. Verify D10 against those captures, byte for byte.
 3. Merge D10 before the adapter rewrite records its freeze captures. If a freeze capture is already taken, compare D10 with it and name any delta in the PR.
 
-**Counting both encodes (rev 2).** A package counting hook counts the two entry points separately: the merged body (`encodeServerEventBody`) and the event's own frame (`prepareImmediateSend`'s encode). The tests assert the pair:
+**Counting both encodes (rev 2).** A package counting hook counts the two entry points separately (rev 3, where each counter sits):
+- the body: at the entry of `EncodingPipeline.encodeServerEventBody` (:247), before it dispatches. The MessagePack encoder's method of the same name never sees a hybrid attempt, so a counter there would miss one;
+- the event's own frame: immediately before `messageEncoder.encode` in `EventSendingPipeline.prepareImmediateSend`, so an encode that throws still counts.
+
+The tests assert the pair:
 - **hybrid** (both message encodings): `(body, ownFrame) == (0, 1)` per event. The outcome is `.sentAlone`, and the frames equal the captures above;
-- **MessagePack, a payload that really fails conversion:** an untyped dictionary through the package hook `emitAnyServerEventForTesting` (the positional writer throws `UntypedPayloadError`). The pair is `(1, 0)`, the outcome `.lost`, and the land ends with `eventEncode`. The test hook's `.all` can't drive this case: it throws before either encoder runs (`failsEncoding`);
+- **MessagePack, a payload that really fails conversion:** an untyped dictionary through #632's package hook `emitAnyServerEventForTesting`, on a fixture with payload compression on. The bare encoder init defaults it off and the `.messagepack` config turns it on (`MessagePackTransportMessageEncoder.swift:32, 277-280`; `TransportEncodingConfig.swift:56, 286`). With it on, the body path throws `UntypedPayloadError` at the `PayloadCompression` cast. The pair is `(1, 0)`, the outcome `.lost`, and the land ends with `eventEncode`. The test hook's `.all` can't drive this case: it throws before either encoder runs (`failsEncoding`). The outside-turn arm passes the same `AnyServerEvent` to `adapter.sendEvent`, so its `.eventFlush` assertion stays;
 - **MessagePack, an event that merges:** `(1, 0)` with the outcome `.queued`, and the event is in the next merged frame (opcode 107). This pins the routing for the inversion mutant;
 - **the merged-frame pack fault test stays:** packing the batch can still fail after every body converted, and that path is unchanged.
 
 **The moved tests (rev 2):**
-- `SyncOutputVerifierTests.unmergedEventIsUnverifiable` (:1204). Its land emits three events every tick (:117-119), and today's fault is on for the middle tick only. That gives `[0, 3, 0]` unmerged, `events.compared == 2` and `unverifiable == 1`. On a hybrid fixture every tick's events go alone. So the hybrid version gates the land's emission to the middle tick, and the outputs before and after it emit nothing and stay compared. It then asserts the same mix: one unverifiable output between two compared ones.
-- `TransportAdapterSyncPhaseTests` (:823) keeps two arms:
-  - the sent-alone arm runs on a hybrid fixture;
-  - the loss arm runs on real MessagePack with the dictionary payload above, instead of the `.mergedBody` fault.
+- `SyncOutputVerifierTests.unmergedEventIsUnverifiable` (:1204). Its land emits three events every tick (:117-119), and today's fault is on for the middle tick only. That gives `[0, 3, 0]` unmerged, `events.compared == 2` and `unverifiable == 1`. On a hybrid fixture every tick's events go alone, so the hybrid version keeps the mix another way.
+  - **Its own land definition (rev 3), used both to record and to replay.** The replay helper rebuilds `makeVerifierLand()` (:194), which emits on every tick and in `OnInitialize` (:99-103). In a hybrid configuration that init event goes alone too, and adds an unverifiable output.
+  - The dedicated land emits only when the recorded state says so (`ticks == 2`), emits nothing in `OnInitialize`, and keeps the sync request on all three ticks. `makeVerifierLand()` is unchanged for the other tests.
+  - An output with no events still gets an events hash (`commitSyncPhase` records `hash([])` when `useStateUpdateWithEvents`, `TransportAdapter.swift:4046-4053`, :3781), and the verifier compares it (`SyncOutputVerifier.swift:485-503`). So the test asserts compared, unverifiable, compared: `events.compared == 2`, `unverifiable == 1`.
+- `TransportAdapterSyncPhaseTests` (:818-829) keeps two arms. Today the sent-alone arm uses the `.mergedBody` fault, and the outside-turn loss arm uses `.all` (rev 3: rev 2 had these swapped):
+  - the sent-alone arm runs on a hybrid fixture, with no fault;
+  - the loss arm runs on real MessagePack with the dictionary payload above, instead of `.all`.
 
 **Old records:** a hybrid record written before the change (the capture above) reads and verifies with the same verdict and counts.
 
 **Mutants:**
 - the init decision ignored, so the body is attempted in hybrid: the pair becomes (1, 1);
 - the second encode put back for MessagePack: the pair becomes (1, 1);
-- `eventsMerge` inverted: the merge test fails;
-- `useStateUpdateWithEvents` computed per call again: no test can see it while the encoders are `let`s, so it is a review item, not a mutant.
+- `eventsMerge` inverted: the merge test gives (0, 1) with no merged event, and fails;
+- `syncConfigForRecord` computed live again: like the next one, no test can see it while the encoders are `let`s;
+- `useStateUpdateWithEvents` computed per call again: no test can see it while the encoders are `let`s, so these two are review items, not mutants.
 
 **Runs:**
 - the touched suites;
