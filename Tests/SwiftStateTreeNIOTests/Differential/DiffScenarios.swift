@@ -55,6 +55,40 @@ func expect(_ condition: Bool, _ what: @autoclosure () -> String) throws {
     guard condition else { throw DiffRunFailure(what()) }
 }
 
+/// A join while a sync cycle is in flight: a legacy cycle (the adapter's own `syncNow`) is
+/// held before its `endSync`; a state change meets it and is deferred; B's join starts under the
+/// same hold. After the release the deferred sync and B's join run, and A converges.
+func syncCycleRow(_ name: String, cells: DiffCellRule, deferred: DiffStep) -> DiffScenario {
+    DiffScenario(
+        name: name,
+        cells: cells,
+        steps: [
+            .connect("A", session: "s-a"),
+            .join("A", player: "pa"),
+            .arm(.adapter(.cycleBeforeEndSync), arrival: nil),
+            .spawn("a legacy cycle") { run in await run.adapter.syncNow() },
+            .reach(.adapter(.cycleBeforeEndSync)),
+            .bump("A", requestID: "bump-a", amount: 1),
+            deferred,
+            .check("A hasn't received the change") { run in
+                let counter = await run.keeper.currentState().counter
+                try expect(counter == 1, "the change didn't apply: counter \(counter)")
+            },
+            .observe(.adapter(.admitJoinEntry)),
+            .connect("B", session: "s-b"),
+            .startJoin("B", player: "pb"),
+            .reach(.adapter(.admitJoinEntry)),
+            .release(.adapter(.cycleBeforeEndSync)),
+            .awaitJoin("B"),
+            .liveCheckpoint,
+            .disconnect("B"),
+            .disconnect("A"),
+        ],
+        outcomes: ["join-A": .reply, "join-B": .reply, "bump-a": .reply],
+        lifecycle: ["pa": [.join, .leave], "pb": [.join, .leave]]
+    )
+}
+
 let diffScenarios: [DiffScenario] = [
     DiffScenario(
         name: "join-act-leave",
@@ -260,5 +294,53 @@ let diffScenarios: [DiffScenario] = [
         outcomes: ["join-A": .reply, "held-a": .none, "join-A2": .reply, "held-a2": .reply],
         lifecycle: ["pa": [.join, .leave, .join, .leave]]
     ),
+    // #548: a teardown while the keeper's join holds. The ticket is issued at admission, after
+    // the hold, so on main A's admission after the teardown yields a current ticket: the bug,
+    // which the golden records. The branch's outcome is the #548 expected difference.
+    DiffScenario(
+        name: "teardown-during-keeper-join",
+        cells: .all,
+        steps: witnessJoins + [
+            .connect("A", session: "s-a"),
+            .arm(.keeper(.join)),
+            .startJoin("A", player: "pa"),
+            .reach(.keeper(.join)),
+            .check("the teardown ran") { run in
+                await run.adapter.endSessionTicketsForTeardown()
+                try expect(await run.adapter.teardownTicketEnds == 1, "teardownTicketEnds isn't 1")
+            },
+            .arm(.router(.afterAdmit)),
+            .release(.keeper(.join)),
+            .reach(.router(.afterAdmit)),
+            .check("A's admission after the teardown") { run in
+                var current = false
+                if let ticket = await run.adapter.sessionTicketForTesting(SessionID("s-a")) {
+                    current = await run.adapter.ticketIsCurrentForTesting(ticket)
+                }
+                try expect(current, "A has no current ticket: #548 is no longer open on this side")
+            },
+            .release(.router(.afterAdmit)),
+            .awaitJoin("A"),
+            .connect("A2", session: "s-a2"),
+            .join("A2", player: "pa"),
+            .bump("A2", requestID: "bump-a2", amount: 1),
+            .liveCheckpoint,
+            .disconnect("A2"),
+            .disconnect("B"),
+        ],
+        outcomes: ["join-B": .reply, "join-A": .reply, "join-A2": .reply, "bump-a2": .reply],
+        lifecycle: ["pb": [.join, .leave], "pa": [.join, .leave, .join, .leave]]
+    ),
+    // In-turn off: the bump's sync request meets the held cycle (`syncSkips.busy` rises).
+    syncCycleRow("join-during-sync-cycle", cells: .legacyOnly, deferred: .check("syncDeferredByCycle") { run in
+        let busy = await run.adapter.syncDeferredByCycleCountForTesting
+        try expect(busy == 1, "syncSkips.busy is \(busy)")
+    }),
+    // In-turn on, with an explicit legacy cycle: the tick turn that applies the bump finds the
+    // cycle in flight and sets the keeper's latch, which endSync consumes.
+    syncCycleRow("join-during-sync-cycle-inturn", cells: DiffCellRule(syncModes: [.inTurn], landKinds: [.tick]),
+                 deferred: .check("syncDeferredByCycle") { run in
+        try expect(await run.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "the latch isn't set")
+    }),
 ]
 #endif
