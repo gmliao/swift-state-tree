@@ -146,7 +146,7 @@ API：`start`、`end`、`isLive`。
 
 ![key player 7 的 generation 1 擁有一個載入 request，並有一個 chat input 以它為 scope 排入佇列。start 開始 generation 2：request 以 keyEnded 被放棄，遲到的結果交給 handleLateResult，佇列中的 chat 被撤回。](supersede-timeline.zh-TW.svg)
 
-key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleLateResult`。以該 key 為 scope、在佇列中的 input 被撤回，呼叫端收到 `withdrawn`。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。
+key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleLateResult`。以該 key 為 scope、在佇列中的 input 被撤回，呼叫端收到 `withdrawn`。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。這樣的 input 屬於該 `start` 開始的 generation，所以之後取代這個 generation 時，它同樣會被撤回。多個呼叫端同時被撤回時，它們收到回覆的順序沒有保證。
 
 API：`start`（取代時回傳 true）、`generation(of:)`、`Generation`。
 

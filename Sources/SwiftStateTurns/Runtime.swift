@@ -203,8 +203,8 @@ struct Runtime<M: TurnMachine> {
         if let hold = retiring.removeValue(forKey: id) { releaseHold(hold) }
     }
 
-    /// Removes the queued inputs `predicate` picks. Their callers are answered `withdrawn`, in
-    /// call order (not the hash order of the hold keys).
+    /// Removes the queued inputs `predicate` picks. Their callers are answered `withdrawn`,
+    /// sorted by call so a run repeats; the order callers observe is unspecified.
     @inlinable mutating func withdraw(where predicate: (Parked<M>) -> Bool) {
         if parkedCount == 0 { return }
         var callers: [InputID] = []
