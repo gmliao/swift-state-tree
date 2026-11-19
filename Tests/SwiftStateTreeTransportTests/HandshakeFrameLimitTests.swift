@@ -416,6 +416,32 @@ struct HandshakeFrameLimitTests {
         #expect(await transport.connectionGeneration(for: session) != nil)
     }
 
+    @Test("A close that ends at its marker isn't counted as a bound close; one whose drain is held past the bound is (#555)")
+    func boundClosesAreCounted() async throws {
+        let transport = WebSocketTransport()
+        // At the marker: nothing queued, the drain reads it at once; the bound is out of reach.
+        let atMarker = SessionID("s-at-marker")
+        let first = LimitConnection()
+        await transport.handleConnection(sessionID: atMarker, connection: first, authInfo: nil)
+        await transport.closeSessionAfterQueuedFrames(atMarker, timeout: .seconds(3600), close: .handshakeFrameTooBig)
+        await first.waitFor { !$0.closes.isEmpty }
+        #expect(await transport.finalFrameClosesAtBound == 0)
+
+        // At the bound: the drain is held on a frame, so the marker isn't read; the bound runs
+        // out at once and closes the connection.
+        let atBound = SessionID("s-at-bound")
+        let second = LimitConnection()
+        await transport.handleConnection(sessionID: atBound, connection: second, authInfo: nil)
+        let generation = try #require(await transport.connectionGeneration(for: atBound))
+        await second.holdSends()
+        await transport.sendSessionFrames([SessionFrame(data: Data([0x01]), sessionID: atBound, connectionGeneration: generation)])
+        await second.waitFor { $0.sendAttempts >= 1 }
+        await transport.closeSessionAfterQueuedFrames(atBound, timeout: .zero, generation: generation, close: .handshakeFrameTooBig)
+        await second.waitFor { !$0.closes.isEmpty }
+        #expect(await transport.finalFrameClosesAtBound == 1)
+        await second.releaseSends()
+    }
+
     @Test("The bound's close for a connection that has gone leaves a new connection under the ID open")
     func staleBoundClose() async throws {
         let transport = WebSocketTransport()
