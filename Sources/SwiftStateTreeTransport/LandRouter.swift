@@ -461,6 +461,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Tests only (#555): returns once no disconnect is being forwarded to a land, so a test's
+    /// disconnect, or one the server's own close started (a supersede), has reached its adapter.
+    package func waitForDisconnectForwardsForTesting() async {
+        await waitForDisconnectForwards()
+    }
+
     /// Stops accepting: from this segment on, a connection is closed in `onConnect` and a join
     /// is refused before it binds. Never undone.
     package func stopAccepting() {
