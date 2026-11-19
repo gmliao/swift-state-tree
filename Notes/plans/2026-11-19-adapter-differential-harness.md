@@ -1,8 +1,15 @@
 # A differential test harness for TransportAdapter's adoption levels (#555)
 
-**Status:** rev 4, for review. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 5, for review. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
-**Rev 4** answers the review of rev 3 (e10c8869):
+**Rev 5** answers the review of rev 4 (432e4221):
+- a witness client B in each single-player disconnect row, and the turn that completes each join (§8);
+- the join budget and the flip timer pinned off (§8);
+- #548's assertion at a held `afterAdmit`, and the action row's reuse after the transport's own disconnect (§8.1);
+- the barrier ordered by dependency, the stop flight finished, and the cleanup bounded (§5.3);
+- the counts, `package` access, and how the golden files are found.
+
+**Rev 4** answered the review of rev 3 (e10c8869):
 - every hold row now has its await chain, written out from the code (§8.1);
 - a disconnect behind a held queue operation is observed when it is enqueued (`membershipQueued`), not when it is forwarded;
 - the pre-admission schedule is `.admitJoinEntry`, and keeper `.join` is its own row;
@@ -86,7 +93,8 @@ Both callers get the same wiring, so no copy and no configuration test is needed
 So step 1 adds a `SwiftStateTreeTestSupport` target to `Package.swift`:
 - `.target(name: "SwiftStateTreeTestSupport", path: "Tests/SwiftStateTreeTestSupport")`;
 - it depends on `SwiftStateTree` (for `safeTaskSleep`) and `SwiftStateTreeTransport` (for `WebSocketConnection`), and only test targets depend on it, so the graph stays acyclic;
-- it holds `TestGate`, `Deadline` (`raceDeadline`) and `RecordingConnection` (`ShutdownConnection`, renamed, with its file-local helpers and its timeout). None of them imports `Testing`.
+- it holds `TestGate`, `Deadline` (`raceDeadline`) and `RecordingConnection` (`ShutdownConnection`, renamed, with its file-local helpers and its timeout). None of them imports `Testing`. Their declarations become `package`, so the test targets can use them across the target boundary;
+- `RecordingConnection` keeps the close reason with the code. Its JSON convenience decoder stays for other tests; the strict comparator reads only the raw bytes.
 
 `SwiftStateTreeTests` (`WithinDeadline.swift`, `LandKeeperLoopPhaseOffsetTests`), `SwiftStateTreeTransportTests` and `SwiftStateTreeNIOTests` depend on it. Each move is its own commit, and the existing users switch to the shared copies. `Deadline` leaves `Sources`, so its `package` access no longer has to be there for tests.
 
@@ -158,21 +166,27 @@ A run ends at a defined point, not when its last step returns. The trap is the o
 **The barrier.** A session's drain task can't be awaited: it is a `for await` over a stream that lives as long as the connection (`WebSocketTransport.swift:110`), so awaiting it waits until the session ends. Outbound idle alone isn't enough either: it can return while a producer is about to enqueue, such as a deferred sync retry after `cycleBeforeEndSync` is released, or a pending action reply. And a join reply on the wire doesn't show that the router's `awaitFlip` (`LandRouter.swift:1309`) has set the session to joined.
 
 The transport already has the right primitive. A `.flush(id)` element in a session's queue resumes its waiter when the drain reaches it (`flushSessionQueues`, `SessionFlushWaiters`). It is a barrier through the queue, not a wait for its end. The capture waits, in this order:
-1. **The producers settle:**
-   - each adapter's `waitForSyncQuiescenceForTesting`;
-   - `waitForActionResponsesFinishedForTesting` with the scenario's count of *pending* answers: actions whose job outlived their turn. It counts finished pending answers (`TransportAdapter.swift:5679`), so passing the total action count would hang when some actions reply directly;
+The order follows what waits on what. An answer can wait for an input that still has to drain and for a tick that still has to apply, and a drain can start a sync after a first quiescence check. So:
+1. **The scenario's own work ends:** the runner's ingress tasks and any explicit `syncNow` tasks are joined, and the flips settle: no pending flip wait in the router. Step 1 adds that report. The flip is registered before its task is spawned, and the registration ends on every exit of `awaitFlip`, error sends included.
+2. **The adapters settle, as one pass, repeated until it finds all of them idle together:**
    - the deferred inbound drains: the flip starts each in a task of its own (`TransportAdapter.swift:4130–4135`), and they produce frames after it. The harness awaits `waitForInboundDrainForTesting(session)` for each flipped session. That registry is filled in debug builds only, so the harness is compiled under `#if DEBUG`, as the suites that run it are;
-   - no pending flip wait in the router. Step 1 adds that report. The flip is registered before its task is spawned, and the registration ends on every exit of `awaitFlip`, error sends included.
-2. **Each adapter's outbound is idle:** `waitForOutboundIdleForTesting()`.
-3. **The queues are flushed:** `flushSessionQueues()`, awaited, so every frame enqueued before it has reached its connection.
+   - `waitForActionResponsesFinishedForTesting` with the scenario's count of *pending* answers: actions whose job outlived their turn. It counts finished pending answers (`TransportAdapter.swift:5679`), so passing the total action count would hang when some actions reply directly;
+   - each adapter's `waitForSyncQuiescenceForTesting`, which returns `Bool` (`TransportAdapter+Outbound.swift:179`). `false` fails the run.
+3. **Each adapter's outbound is idle:** `waitForOutboundIdleForTesting()`.
+4. **The queues are flushed:** `flushSessionQueues()`, awaited, so every frame enqueued before it has reached its connection.
 
 **Bounds and cleanup.** Each wait has a bound, through `raceDeadline`. A wait that hits its bound fails the run, naming the producer it waited on.
-- `raceDeadline` leaves the timed-out work running (`Deadline.swift:13–19`). So after a failure or a missed milestone, the runner releases every hold it set, stops the land, closes the fake connections, and then awaits its own spawned tasks under a second bound.
-- Every run builds its own transport, manager, router and adapters. Work left running after that second bound touches only that run's instances, never the next run's.
+- `raceDeadline` leaves the timed-out work running (`Deadline.swift:13–19`). So after a failure or a missed milestone, the runner:
+  1. opens every gate first, resolver gates included;
+  2. stops the land, under its own bound;
+  3. closes the fake connections through the transport, under its own bound;
+  4. awaits its own spawned tasks, under a final bound.
+- `waitForActionResponsesFinishedForTesting` installs a checked continuation (`TransportAdapter.swift:5679–5683`), so a count that can't be reached would leave it hanging past the run. Step 1 makes the waiter resume when its task is cancelled, and the runner cancels it in cleanup.
+- Every run builds its own transport, manager, router and adapters. Work left running after the final bound touches only that run's instances, never the next run's.
 
 **Two checkpoints.** The stop produces leaves, closes and record entries of its own, so a capture taken before it misses them, and one taken only after it misses the live state.
 - **Live:** the barrier, then a capture of frames, closes and responses. Convergence is checked here (§5.6).
-- **Terminal:** stop each land once, the barrier again, a second capture, and then the record (§5.5).
+- **Terminal:** stop each land once and wait for its stop flight to finish, then the barrier again, a second capture, and then the record (§5.5). The public stop can return `timedOut: true` while teardown goes on (`NIOLandServer.swift:154–185`, `224–235`). In that case the runner waits for the flight itself, under a bound, and a run whose stop never finishes fails.
 
 **Positive milestones.** Each scenario lists what it must observe before capture. Examples: the join reply and the first sync for each session; each input applied; each response; each close. A milestone that isn't observed fails the run. A scenario with no milestone is refused as vacuous. So two empty captures can't compare equal.
 
@@ -206,8 +220,8 @@ The transport already has the right primitive. A `.flush(id)` element in a sessi
 ### 5.6 The property oracle
 
 The differential comparison can't see a bug both levels share. An oracle independent of both sides can. Each run checks, on each side alone:
-- **convergence, at the live checkpoint:** each client's decoded state equals the keeper's per-player view for that player, as the E2E convergence check and `RowAddressingAdapterTests`' oracle do. A scenario must have at least one live client at its live checkpoint, or it is refused, so the check can't compare nothing;
-- **request outcomes:** each request gets the outcome its scenario states for its connection attempt: one reply, an error frame correlated by request ID, or none. "A stale action reply after a leave" states none, so a correct run passes it. Each joined attempt gets exactly one join reply;
+- **convergence, at the live checkpoint:** each client's decoded state equals the keeper's per-player view for that player, as the E2E convergence check and `RowAddressingAdapterTests`' oracle do. A scenario must have at least one live client at its live checkpoint, or it is refused, so the check can't compare nothing. The single-player race rows get a witness client for this (§8);
+- **request outcomes:** each request gets the outcome its scenario states for its connection attempt: one reply, an error frame correlated by request ID (`ErrorPayload.details["requestID"]`), or none. "A stale action reply after a leave" states none, so a correct run passes it. Each joined attempt gets exactly one join reply;
 - **lifecycle:** the record's join and leave entries match the identities and counts the scenario states (for example A joins and leaves, A2 joins and leaves). So a record with both of a pair dropped fails too. No OnLeave lacks its OnJoin.
 
 A property failure fails the run whether or not the two sides agree.
@@ -222,6 +236,7 @@ A property failure fails the run whether or not the two sides agree.
 
 Golden files are change detection on shared code, not a correctness check (§5.6 is that).
 - **Set:** two scenarios, each with a file per cell: the two-player join–act–leave scenario and the land stop with players. File name: `Tests/SwiftStateTreeNIOTests/Differential/Golden/<scenario>.<sync>.<encoding>.<land>.json`. Each file holds the decoded frames per connection, the closes, the responses and the decoded record.
+- **Location:** the harness finds the folder from its own source file (`#filePath`), not as a SwiftPM resource. The NIO test target declares no resources, and the update has to write the files in the source tree anyway. So `Package.swift` needs no `resources:` entry.
 - **Compare:** the `.legacy` result against the file. A missing file fails.
 - **Environment:** the CI legs differ by env settings that change frames (the tables-off and per-player-tables-off runs in `build-and-test.yml`). The harness pins each such setting through its parameters, so a golden doesn't depend on the leg. A setting it can't pin goes into the file's key.
 - **Update:** with `SST_UPDATE_GOLDEN=1` only, a named constant beside the harness. The update rewrites the files and prints the changed paths. A PR that changes a golden file names it in its body, and review reads the diff.
@@ -313,6 +328,16 @@ The rows of §2's tables, each with a check:
 
 **TestGate in the NIO target** comes from the shared test-support target (§3).
 
+**A witness client.** Each single-player race row (`beforeAdmit`, `afterAdmit`, the two send holds, `.admitJoinEntry`, keeper `.join`, `registerSession`) has a second client B. B joins and settles before the race, and stays. So the live checkpoint has a client to check convergence on, and B's frames show whether A's race leaked anything to the others. B's joins and syncs have finished before any `membershipQueued` observer is installed (§8.1).
+
+**Which turn completes a join.** On a tick land the runner steps `stepTickOnce()` until the join's lifecycle input has applied, before the next step and before each checkpoint. On a tickless land the input's own turn applies it. With in-turn sync on, the join's flip completes in the sync phase of the turn that applied it; with it off, in the router's own path. The runner waits for each through the barrier's flip report (§5.3).
+
+**Timers pinned off.** The join budget (the router's, `LandRouter.swift:1227–1262`) can end an attempt held before admission, and the flip timer can enqueue `timeOutJoin` on the membership queue (`startJoinWaiter`, `TransportAdapter.swift:1687–1698`). That enqueue passes `membershipQueued` too, and could be counted as the disconnect's arrival. On a slow CI runner a hold can last as long as either budget. So every scenario runs with both off:
+- the router's budget override set to `.zero`, which already means none (`LandRouter.swift:229–232`);
+- the flip timeout through `setJoinFlipLimitsForTesting`. Step 1 makes a `.zero` timeout there mean none, as the router's override does. Today `nil` only means "no override", and the 12 s `JOIN_TIMEOUT_MS` default would still apply.
+
+Arrivals are counted from the moment the observer is installed.
+
 **Reach rule.** Every hold a scenario names must be reached in each cell it runs in. A hold that isn't reached fails the run with the hold's name. The runner waits through `TestGate`, whose 60 s guard is the backstop. The cell rule keeps a hold out of cells that can't reach it, so the guard isn't what ends a correct run.
 
 | Scenario | Cells | Holds | Covers |
@@ -357,22 +382,25 @@ For each row: where the hold stops, what the scenario does while it is closed, t
   - Release: the join is queued → `performJoinQueued` refuses it as stale → `staleJoinAttemptsRefused` becomes 1, the milestone. Then the router's `afterAdmit` → `isCurrent` false → return.
 - **keeper `.join`** (the "during the keeper's join" row). The keeper is at `holds.at(.join)` (`LandKeeper.swift:1675`), after the `maxPlayers` check and before the player's insertion. The caller is the join's queued operation, suspended in `await keeper.joinReportingAdmission` (`TransportAdapter.swift:2164`), so that operation is the queue's current one.
   - Disconnect: the router's chain → `adapter.onDisconnect` → `enqueueMembership` → its task reaches `membershipQueued` (`:2960`), observed. It then waits for the previous operation, the held join. `disconnectForwarded` is therefore not reachable yet.
-  - Milestone while held: the `membershipQueued` arrival after the join's own. The runner registers the observer after the keeper's hold is reached, so the next arrival is the disconnect's, since nothing else in the scenario enqueues.
+  - Milestone while held: the `membershipQueued` arrival after the join's own. The runner registers the observer after the keeper's hold is reached, so the next arrival is the disconnect's: the witness B has settled, and the join timers are off (§8), so nothing else enqueues.
   - Release: the keeper inserts the player, the join's operation finishes (in-turn: through `registerSession`), and the queue runs the disconnect → `disconnectForwarded`. Outcome: admitted, then left.
 - **registerSession** (in-turn on). The join's queued operation is at `holds.at(.registerSession)` (`:2199`), after the keeper's admission, still inside the queue.
   - Disconnect: the same as the keeper `.join` row: `membershipQueued` observed while held, `disconnectForwarded` after release.
 - **#548.** The keeper's `.join` holds the join's queued operation, as above. The adapter actor is free.
   - While held: `adapter.endSessionTicketsForTeardown()` runs synchronously on the adapter → `teardownTicketEnds` becomes 1, the milestone. There is no disconnect, so no queue wait.
-  - Release, and the keeper's land allows the join: `admitJoining` issues a ticket after the teardown (the bug). The router reaches `afterAdmit`, observed. At that point the runner reads the adapter's membership and generation for attempt A, the assertion of §6.
-  - Then attempt A2 connects and joins, and its frames and record entries are compared.
+  - Release, and the keeper's land allows the join: `admitJoining` issues a ticket after the teardown (the bug). The router reaches `afterAdmit`, which this row *holds*, since past it the router sends the join response and, in-turn, waits for the flip, and either can change A's state.
+  - While `afterAdmit` holds: the runner reads A's membership and connection generation together, the assertion of §6.
+  - Release, then settle A's handler and any flip (the barrier's step 1).
+  - Then attempt A2 connects with a new `SessionID`, joins and acts, and its frames and record entries are compared. A new `SessionID` needs no wait for the transport's cleanup of A's.
 - **actionResponse.** The leave-first schedule of `staleAnswerAfterReconnect`:
   1. A joins.
   2. The `actionResponse` hold is armed for arrival 1.
   3. A sends an action whose resolver is held by a gate; the milestone is that the resolver arrived.
   4. A disconnects through the transport. The router's chain → `adapter.onDisconnect` → the leave rejects the pending job, whose answer reaches `finishActionResponse` → `holds.at(.actionResponse)` (`:5636`). The milestone is the hold's arrival; the answer runs in its own task, outside the membership queue.
-  5. The runner waits for `disconnectForwarded`, so the transport's disconnect (`WebSocketTransport.swift:408–453`) is complete before the `SessionID` is reused.
-  6. A2 connects with the same `SessionID`, joins, and sends an action of its own.
-  7. Release, then `waitForActionResponsesFinishedForTesting(1)`. Outcome: no reply to A's request on A or A2.
+  5. The runner awaits the transport's own disconnect, the `handleDisconnection` call it made, which clears `closingSessions` before it returns (`WebSocketTransport.swift:411–418`, `452–477`). `disconnectForwarded` comes from the router's task and doesn't show that.
+  6. A2 connects with the same `SessionID`. The runner requires that the connection was accepted and that A2's join finished. Then A2 sends an action of its own, whose resolver is held too.
+  7. Release A's `actionResponse` hold, then `waitForActionResponsesFinishedForTesting(1)` for A's answer, then a flush. A's checkpoint: no reply and no error frame for A's request ID on A or A2, matched by request ID in replies and in `ErrorPayload.details["requestID"]`. With the mutant, the stale answer goes out as an error frame stamped with A2's generation, so the error-frame match is what catches it.
+  8. Release A2's resolver, then wait for a count of 2. A2's own action gets its reply.
 - **cycleBeforeEndSync.** A legacy cycle is started explicitly, `Task { adapter.syncNow() }`, as `syncDuringLegacyCycleRunsAfterEndSync` does. It stops at `holds.at(.cycleBeforeEndSync)` (`:3222`), holding the keeper's sync flag and suspended on the adapter.
   - While held: B starts a join. Milestone: B's `admitJoinEntry`, observed. The router reaches it through `preparePlayerSession`, an adapter call that the suspended cycle doesn't block. Nothing waits on the sync flag before it.
   - Release: the cycle's `endSync`, then B's admission, initial sync and the rest, all captured by the barrier.
@@ -388,7 +416,7 @@ For each row: where the hold stops, what the scenario does while it is closed, t
 - **Sync modes in one process:**
   - `LandManager`'s `inTurnSync` parameter turns in-turn sync off for one manager. `IN_TURN_SYNC=false` in the environment turns it off for all of them, since "an explicit off in either place wins".
   - The required CI matrix in `build-and-test.yml` has one leg with `IN_TURN_SYNC=false`. In that leg the harness runs only the in-turn-off cells. It records the in-turn-on cells as disabled, with that reason. The other leg runs every cell in one process.
-- **Count.** The first set has 15 scenarios after the split rows (§8). Their cell rules give about 120 cells (scenario × sync mode × land kind × encoding) in the unrestricted leg, and about 60 in the `IN_TURN_SYNC=false` leg. With two runs per level (§7 (a)), that is about 240 runs at one level in the unrestricted leg and 120 in the masked leg, and twice that once a second level exists (480 and 240). The tables-off jobs come on top. Step 2 states the exact numbers from the cell rules.
+- **Count.** The first set has 15 scenarios after the split rows (§8). Their cell rules give about 162 cells (scenario × sync mode × land kind × encoding) in the unrestricted leg, and about 84 in the `IN_TURN_SYNC=false` leg. With two runs per level (§7 (a)), that is about 324 runs at one level in the unrestricted leg and 168 in the masked leg, and twice that once a second level exists (648 and 336). The tables-off jobs come on top. Step 2 states the exact numbers from the cell rules.
 - **Time.** Each run has real holds, flushes and a stop, so "a few milliseconds per run" is an assumption to measure, not a number. Step 2 measures it at that count, on the CI runner.
 - **Other jobs.** `build-and-test.yml` also runs the NIO suite in its tables-off and per-player-tables-off runs, so the harness's time counts in each of them. Step 2 states the total.
 - **Cost of a missed hold:** one unreached hold costs `TestGate`'s 60 s guard on its own. So the reach rule (§8) is what keeps the budget, and a harness run that hits the guard fails.
@@ -411,7 +439,7 @@ As #555 lists, and where each is covered instead:
    - `TransportAdapterAdoption` with `.legacy`, its env parser, the `LandManager` parameter, the configuration override and the resolution in `NIOLandServer.init` (§4), with the startup refusal stated in the PR;
    - the extracted assembly, its build and attach parts, with `NIOLandServer` and the host calling them (§3);
    - the `SwiftStateTreeTestSupport` target with `TestGate`, `Deadline` and `RecordingConnection`, and their users switched over (§3);
-   - the hooks: client identity by attempt (§5.4), the router's `stopLeave` hold (§5.4), the no-pending-flip report (§5.3), and the record decoder entry (§5.5);
+   - the hooks: client identity by attempt (§5.4), the router's `stopLeave` hold (§5.4), the no-pending-flip report (§5.3), the record decoder entry (§5.5), `.zero` as "no flip timeout" (§8), and a cancellable action-response waiter (§5.3);
    - the record field list and its test (§5.5).
 2. **The harness (one PR):**
    - the runner, the barrier, the two checkpoints and the milestones;
