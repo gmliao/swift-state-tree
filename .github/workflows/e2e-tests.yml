@@ -319,17 +319,20 @@ jobs:
           ./check-row-addressing-run.sh --expect-off /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
         fi
 
-    # The opt-out (ROW_ADDRESSING=false) on both in-turn sync legs, in all three encodings:
+    # The opt-out (ROW_ADDRESSING=false) on both in-turn sync legs, in the opcode encodings:
     # today's entries keep an E2E run while the old forms stay. This step also runs the
     # tables-off variant (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false), the snapshot-diff
     # fallback, which is an opt-out only with row addressing off; on the in-turn-off leg that is
     # the legacy sync with the fallback. No join negotiates rowAddressing (--expect-off).
+    # json only with full_matrix (the nightly): json has no opcode state updates, so row
+    # addressing is never in effect for it (`TransportEncodingConfig.effective`) and its run here
+    # is the row-on leg's json run with the same in-turn mode (audit plan, V1).
     - name: Run GameServer E2E tests with row addressing off (opt-out)
       if: matrix.row_addressing == 'off'
       shell: bash
       env:
         ROW_ADDRESSING: "false"
-        E2E_ENCODINGS: json jsonOpcode messagepack
+        E2E_ENCODINGS: ${{ inputs.full_matrix && 'json jsonOpcode messagepack' || 'jsonOpcode messagepack' }}
         E2E_TMP_DIR: /tmp/e2e-rows-off
       run: |
         set -o pipefail
