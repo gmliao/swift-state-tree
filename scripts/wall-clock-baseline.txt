@@ -9,15 +9,9 @@ Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift clock-poll 1
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift helper-poll 5
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/NIOLandHostTests.swift sleep-poll 1
-Tests/SwiftStateTreeNIOTests/SessionLifecycleLogTests.swift clock-poll 1
-Tests/SwiftStateTreeNIOTests/SessionLifecycleLogTests.swift helper-poll 2
-Tests/SwiftStateTreeNIOTests/SessionLifecycleLogTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift clock-poll 3
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift helper-poll 15
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift sleep-poll 3
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerOrderTests.swift clock-poll 1
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerOrderTests.swift helper-poll 11
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerOrderTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/ActionEventSyncTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/ActionJobTests.swift yield-poll 1
 Tests/SwiftStateTreeTests/AtomicPatternIndexAdapterTests.swift helper-poll 2

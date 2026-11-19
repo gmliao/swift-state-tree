@@ -1364,11 +1364,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A turn found this cycle in flight and left its sync phase to a sync-only turn now.
         if syncOnlyTurnAfterLegacyCycle {
             syncOnlyTurnAfterLegacyCycle = false
+            // One hop onto the keeper: the closure captures `self` weakly, so it isn't isolated
+            // to it, and the hold and the turn run in one isolated call.
             Task { [weak self] in
-                await self?.holds.at(.syncOnlyAfterLegacyCycle)
-                await self?.runSyncOnlyTurnIfInTurn()
+                await self?.runSyncOnlyTurnAfterLegacyCycle()
             }
         }
+    }
+
+    /// The sync-only turn `endSync` leaves to a Task, behind its test hold point.
+    private func runSyncOnlyTurnAfterLegacyCycle() async {
+        await holds.at(.syncOnlyAfterLegacyCycle)
+        await runSyncOnlyTurnIfInTurn()
     }
 
     /// End a sync operation, releasing the sync flag.

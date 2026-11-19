@@ -109,7 +109,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 ```
 
 ## Coding Style & Naming Conventions
-- Swift 6, macOS 13+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
+- Swift 6.2+, macOS 14+; follow Swift API Design Guidelines and prefer `Sendable` on public types.
 - **DTOs for API payloads**: Define `Codable` structs for HTTP request/response bodies instead of using `[String: Any]`. Align field names with the API contract (e.g. control-plane DTOs).
 - Indent with 4 spaces; keep line length reasonable (~120 chars).
 - Types: `UpperCamelCase`; methods/variables: `lowerCamelCase`; enums use verb-like cases for commands (`.join`, `.attack`).
@@ -274,7 +274,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 - `Notes/plans/`: Implementation plans and technical memos for specific features or refactors. AI agents store their task-specific plans here:
   - Name a plan `YYYY-MM-DD-<topic>.md` (an optional Chinese companion is `YYYY-MM-DD-<topic>.zh-TW.md`). Longer design specifications go in `Notes/plans/specs/`.
   - Add a row for a new plan to the status index `Notes/plans/README.md` (status `open`), and update that row when the work merges (`done`, `partial` with the open steps, or `superseded` by a named plan), citing the PR or commit.
-  - The index merges with git's union driver (`.gitattributes`): a local `git merge origin/main` keeps both sides' rows instead of a conflict, and a row the other side changed comes out twice. Keep the current version of a duplicated row; `scripts/check-plan-index.sh` (in `scripts/pre-push-checks.sh`, and in CI's Plan index workflow on every change to the index) fails until each plan has one row. GitHub's own mergeability check doesn't use the driver, so a PR can still show a conflict there: merge `main` in locally.
+  - The index merges with git's union driver (`.gitattributes`): a local `git merge origin/main` keeps both sides' rows instead of a conflict, and a row the other side changed comes out twice. Keep the current version of a duplicated row; `scripts/check-plan-index.sh` (in `scripts/pre-push-checks.sh`, and in CI's Plan index workflow on a push or pull request to `main` or `exp/**` that changes the index, the check or the workflow, index-only changes included) fails until each plan has one row. GitHub's own mergeability check doesn't use the driver, so a PR can still show a conflict there: merge `main` in locally.
   - A plan is a record, not maintained documentation. Don't rewrite an old plan to match the code; mark it superseded and write a new one.
 - `Notes/solutions/`: Reusable lessons from solved problems (bug classes, traps, measurement pitfalls, testing practices), one per file with YAML frontmatter, indexed in `Notes/solutions/README.md`.
   - Before designing a fix, search it for the symptom or bug class (`grep -l -i '<keyword>' Notes/solutions/*.md`).

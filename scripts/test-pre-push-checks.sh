@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for scripts/pre-push-checks.sh, each case in a throwaway clone of this checkout's HEAD
-# (with the working tree's pre-push-checks.sh, lint-text-encoding.py and check-plan-index.sh copied in),
+# (with the working tree's pre-push-checks.sh, lint-text-encoding.py, check-plan-index.sh and
+# check-turns-doc-blocks.py copied in),
 # against that HEAD as the base.
 # Usage: scripts/test-pre-push-checks.sh
 set -uo pipefail
@@ -23,6 +24,7 @@ case_() {  # name, expected exit, required output line (grep -E), setup command 
   cp "$root/scripts/pre-push-checks.sh" "$dir/scripts/pre-push-checks.sh"
   cp "$root/scripts/lint-text-encoding.py" "$dir/scripts/lint-text-encoding.py"
   cp "$root/scripts/check-plan-index.sh" "$dir/scripts/check-plan-index.sh"
+  cp "$root/scripts/check-turns-doc-blocks.py" "$dir/scripts/check-turns-doc-blocks.py"
   git -C "$dir" -c user.name=t -c user.email=t@t commit -q -am "pre-push-checks under test" --allow-empty
   base="$(git -C "$dir" rev-parse HEAD)"
   (cd "$dir" && eval "$setup")
@@ -49,5 +51,7 @@ case_ script-pipefail-reader 1 '^FAIL  pipefail-readers' 'printf "#!/usr/bin/env
 case_ sync-lag-default-change 1 '^FAIL  sync-lag-defaults' 'sed -i.bak "s/resyncAfter: Duration = .seconds(3)/resyncAfter: Duration = .seconds(4)/" Sources/SwiftStateTreeTransport/SyncLag.swift && rm Sources/SwiftStateTreeTransport/SyncLag.swift.bak'
 # A union merge of the plan index keeps both versions of a row one side changed.
 case_ plan-index-duplicate-row 1 '^FAIL  plan-index' 'grep -m1 "^| .*\\](2026-" Notes/plans/README.md >> Notes/plans/README.md'
+# A Swift block added to the Turns docs that no tested file contains (f515e11f turned main red so).
+case_ turns-doc-block-untested 1 '^FAIL  turns-doc-blocks' 'printf "\n\x60\x60\x60swift\nlet prePushProbe = 1\n\x60\x60\x60\n" >> docs/turns/README.md'
 case_ gitignore-change-runs-ignore-readers 0 '^ok    multiroom-ignored' 'echo "# probe" >> .gitignore'
 exit $fail

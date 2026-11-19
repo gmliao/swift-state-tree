@@ -272,7 +272,9 @@ let package = Package(
                 .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Tests/SwiftStateTreeNIOTests"
+            path: "Tests/SwiftStateTreeNIOTests",
+            // The harness's goldens, read from the source tree by path, not as resources.
+            exclude: ["Differential/Golden"]
         ),
 
         // 🔹 Macro tests

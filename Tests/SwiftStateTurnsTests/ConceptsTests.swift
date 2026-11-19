@@ -170,10 +170,11 @@ struct ConceptsTests {
 // docs/turns/README.md § Plain data and tools: the before/after example, in both languages, each
 // block in its own namespace so the two `Room`s compile side by side. `PlayerID` is the
 // repository's own (SwiftStateTree), which is plain data. `Connection` sits at file scope: the
-// macro's extension is written there and names the field types unqualified.
-final class Connection {}
+// macro's extension is written there and names the field types unqualified. It and the example
+// are fileprivate, so they don't leak into the rest of the target.
+fileprivate final class Connection {}
 
-enum PlainDataDocExample {
+fileprivate enum PlainDataDocExample {
     enum Before {
         struct Room {
             var players: [PlayerID: Connection]       // Connection is a class

@@ -136,6 +136,12 @@ enum DiffStep: Sendable {
     case settleSpawned
     /// Waits for every spawned task, nothing else.
     case awaitSpawned
+    /// The outbound writer is idle and every queued frame reached its connection: before a step
+    /// that ends a connection some other way than `disconnect` (a superseding join), or before
+    /// a cycle that must find the writer without a backlog.
+    case flushOutbound
+    /// `steps`, in the cells `label`'s predicate selects; nothing in the others.
+    indirect case only(String, @Sendable (DiffCell) -> Bool, [DiffStep])
     /// One tick and the sync cycle after it (a tick land only; nothing on a tickless one).
     case tick
     /// One tick on a tick land, with no sync asked for (nothing on a tickless land).
@@ -204,11 +210,17 @@ struct DiffScenario: Sendable {
     var outcomesByCell: @Sendable (DiffCell) -> [String: DiffOutcome] = { _ in [:] }
     /// The lifecycle the record must hold: each player's joins and leaves, in order.
     let lifecycle: [String: [DiffLifecycle]]
+    /// Players whose lifecycle is recorded, not judged, each with the issue that says why: the
+    /// oracle skips them, and the record's comparison with the golden covers them (a fix shows
+    /// as the record's difference, which the branch lists). A player here has no `lifecycle`
+    /// entry.
+    let recordedLifecycle: [String: String]
 
     init(
         name: String, cells: DiffCellRule, steps: [DiffStep], outcomes: [String: DiffOutcome],
         outcomesByCell: @escaping @Sendable (DiffCell) -> [String: DiffOutcome] = { _ in [:] },
-        lifecycle: [String: [DiffLifecycle]]
+        lifecycle: [String: [DiffLifecycle]],
+        recordedLifecycle: [String: String] = [:]
     ) {
         self.name = name
         self.cells = cells
@@ -216,6 +228,7 @@ struct DiffScenario: Sendable {
         self.outcomes = outcomes
         self.outcomesByCell = outcomesByCell
         self.lifecycle = lifecycle
+        self.recordedLifecycle = recordedLifecycle
     }
 
     func outcomes(in cell: DiffCell) -> [String: DiffOutcome] {
