@@ -419,13 +419,28 @@ struct HandshakeFrameLimitTests {
     @Test("A close that ends at its marker isn't counted as a bound close; one whose drain is held past the bound is (#555)")
     func boundClosesAreCounted() async throws {
         let transport = WebSocketTransport()
-        // At the marker: nothing queued, the drain reads it at once; the bound is out of reach.
+        // The bound's close is held before its check, and noted once it ran.
+        let boundHeld = TestGate()
+        let boundRan = TestGate()
+        boundRan.open()
+        await transport.setDelayedCloseForTesting { stage in
+            switch stage {
+            case .willCheck(.bound): await boundHeld.arrive()
+            case .didRun(.bound): await boundRan.arrive()
+            default: break
+            }
+        }
+        // At the marker: nothing queued, the drain reads it at once. The bound runs out at once
+        // too, and is held until the marker closed the connection; then it runs, and loses.
         let atMarker = SessionID("s-at-marker")
         let first = LimitConnection()
         await transport.handleConnection(sessionID: atMarker, connection: first, authInfo: nil)
-        await transport.closeSessionAfterQueuedFrames(atMarker, timeout: .seconds(3600), close: .handshakeFrameTooBig)
+        await transport.closeSessionAfterQueuedFrames(atMarker, timeout: .zero, close: .handshakeFrameTooBig)
         await first.waitFor { !$0.closes.isEmpty }
-        #expect(await transport.finalFrameClosesAtBound == 0)
+        #expect(await boundHeld.waitForArrivals(1), "the losing bound fired")
+        boundHeld.open()
+        #expect(await boundRan.waitForArrivals(1), "the losing bound ran")
+        #expect(await transport.finalFrameClosesAtBound == 0, "a bound that ran after the marker isn't counted")
 
         // At the bound: the drain is held on a frame, so the marker isn't read; the bound runs
         // out at once and closes the connection.
@@ -438,6 +453,7 @@ struct HandshakeFrameLimitTests {
         await second.waitFor { $0.sendAttempts >= 1 }
         await transport.closeSessionAfterQueuedFrames(atBound, timeout: .zero, generation: generation, close: .handshakeFrameTooBig)
         await second.waitFor { !$0.closes.isEmpty }
+        #expect(await boundRan.waitForArrivals(2))
         #expect(await transport.finalFrameClosesAtBound == 1)
         await second.releaseSends()
     }

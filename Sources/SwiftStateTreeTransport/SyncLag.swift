@@ -140,6 +140,13 @@ struct SyncLagSession: Sendable {
 
     /// The plan that resynced this session committed its snapshot: records the resync, and the
     /// FIFO restarts with the snapshot, a full view, in phase live.
+    /// `committed` with lag off (`SyncLagPolicy.off`): no decision reads the FIFO, so it keeps
+    /// the newest entry only and stays bounded while acks are withheld. An ack still pops it.
+    mutating func committedKeepingNewest(_ seq: UInt64, at time: ContinuousClock.Instant) {
+        guard phase == .live, unacked.last?.seq != seq else { return }
+        unacked = [Entry(seq: seq, committedAt: time, isFullView: false)]
+    }
+
     mutating func resynced(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant, policy: SyncLagPolicy) {
         guard phase != .closing else { return }
         resyncTimes.removeAll { time - $0 >= policy.slowConsumerWindow }

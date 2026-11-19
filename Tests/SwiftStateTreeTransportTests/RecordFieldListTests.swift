@@ -154,6 +154,24 @@ struct RecordFieldListTests {
         let gatedCases = [ObjectIdentifier(TaggedWithGate.self): taggedCases]
         #expect(RecordFieldProbe.probe(TaggedWithGate.self, cases: gatedCases).branching == [""])
 
+        // A gate that moves a field from one case to the other: the union over the cases is the
+        // same in both runs, so the runs are compared case by case.
+        struct GateMovesExtra: Decodable {
+            enum CodingKeys: String, CodingKey { case kind, swap, extra }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                let swap = try container.decode(Bool.self, forKey: .swap)
+                switch try container.decode(String.self, forKey: .kind) {
+                case "plain": if swap { _ = try container.decode(Int.self, forKey: .extra) }
+                case "rich": if !swap { _ = try container.decode(Int.self, forKey: .extra) }
+                default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "unknown kind")
+                }
+            }
+        }
+        let moving = RecordFieldProbe.probe(GateMovesExtra.self, cases: [ObjectIdentifier(GateMovesExtra.self): taggedCases])
+        #expect(moving.paths == ["kind", "swap", "extra"], "the union is the same in both runs")
+        #expect(moving.branching == [""])
+
         // A gate on an enum is found too: the second run takes the last case.
         enum Layout: String, Decodable, CaseIterable { case narrow, wide }
         struct LayoutGated: Decodable {

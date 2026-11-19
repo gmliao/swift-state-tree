@@ -362,6 +362,36 @@ struct DifferentialHarnessHooksTests {
         #expect(Adapter.joinFlipTimeout(override: nil, deadline: now - .seconds(1)) == .zero)
     }
 
+    // MARK: Named observations through the router
+
+    @Test("admittedNotRegistered and the join commits through a real router attempt: keyed by the router's attempt number")
+    func observationsThroughTheRouter() async throws {
+        let h = try await HooksHarness.make(autoStartLoops: false)
+        // The in-turn join's observations; the IN_TURN_SYNC=false leg covers the other path.
+        guard await h.keeper.isUsingInTurnSync() else { return }
+        await h.adapter.captureJoinCommitsForTesting()
+        let gate = TestGate()
+        await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
+        let session = SessionID("s-real-attempt")
+        _ = await h.connect(session)
+        let join = Task { try await h.join(session, player: "p1") }
+        #expect(await gate.waitForArrivals(1), "the join reached keeperJoinReturned")
+        // Admitted, and neither the adapter nor the transport's player table has it registered.
+        #expect(await h.adapter.admittedNotRegisteredForTesting(session))
+        #expect(await h.transport.playerSessionsForTesting(PlayerID("p1")).isEmpty)
+        gate.open()
+        try await join.value
+        await h.router.waitForNoPendingFlipForTesting()
+        #expect(await h.transport.playerSessionsForTesting(PlayerID("p1")) == [session])
+        #expect(await !h.adapter.admittedNotRegisteredForTesting(session))
+        typealias Key = TransportAdapter<HarnessHooksState>.JoinAttemptKey
+        // The router's first attempt is number 1.
+        #expect(await h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: 1)))
+        #expect(await h.adapter.initialSyncCommittedForTesting(Key(sessionID: session, attempt: 1)))
+        #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: nil)))
+        #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: 2)))
+    }
+
     // MARK: Record decoder
 
     @Test("The record decoder entry reads a saved record's 3.x contents, complete")

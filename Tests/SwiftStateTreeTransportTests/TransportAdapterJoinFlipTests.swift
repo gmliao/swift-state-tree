@@ -392,10 +392,20 @@ struct TransportAdapterJoinFlipTests {
     func joinSyncRequestedIsRegisteredNotFlipped() async throws {
         // Tickless: the join's own turn consumes its OnJoin, so only the sync turn is missing.
         let fixture = await makeFixture(tick: false)
+        await fixture.adapter.captureJoinCommitsForTesting()
+        let returned = TestGate()
         let gate = TestGate()
-        await fixture.adapter.installHolds(HoldRegistry.at(.joinSyncRequested) { await gate.arrive() })
+        await fixture.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.keeperJoinReturned) { await returned.arrive() }
+            .on(.joinSyncRequested) { await gate.arrive() }
+            .hook)
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        // The turn that applies OnJoin ends before the registration: a turn after it would run
+        // a sync phase that flips the registered join before `joinSyncRequested`.
+        #expect(await returned.waitForArrivals(1), "the join reached keeperJoinReturned")
+        await fixture.keeper.waitForInputDrainIdleForTesting()
+        returned.open()
         #expect(await gate.waitForArrivals(1), "the join reached joinSyncRequested")
         #expect(await fixture.adapter.isInTurnJoinRegisteredForTesting(s1), "registered with the transport")
         #expect(await fixture.adapter.isJoiningInTurn(s1), "not flipped")
