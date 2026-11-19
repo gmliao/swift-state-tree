@@ -12,7 +12,7 @@ actor 的方法一次只跑一個。但方法裡的每個 `await`，都會讓其
 
 ## 各部分如何組合
 
-## 各部分如何組合
+![TurnActor（外殼）包住 TurnCore（機制），TurnCore 包住 TurnMachine（純狀態機）。呼叫端以 send 與 sendAndWait 送入 input；flush 送出輸出；effect 在 actor 之外執行；結果、deadline 與 timer 都以新的 input 回來。](turn-core-layers.zh-TW.svg)
 
 - **`TurnMachine`**（純狀態機）：一個 step 接收狀態與一個 input，回傳新的狀態，以及 outputs、replies 和 effects。step 是同步的，只存純資料，不能 `await`。
 - **`TurnCore`**（機制）：它保管*佇列*（queue，排在進行中工作後面的 input）、*key* 與其 *generation*（哪些工作仍然需要）、*hold* 與其 deadline（讓後來的 input 等待的東西），以及 timer。
@@ -25,7 +25,7 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 - **狀態只在 step 裡改變。** 狀態機的 handler 不是 `async`，所以 step 不能 await。只有 step 拿到的 `Turn` 能接觸 core。
 - **Effect 以 input 的形式回來。** step 需要完成某項工作時，會發出一個 request。`perform` 在 actor 之外執行這項工作。結果成為之後某個 step 的新 input，由那個 step 依當下的狀態決定它的意義。request 已經關閉的結果，會交給 `handleLateResult`，而不是 `handle`。request 在這些情況下關閉：它的 key 結束或被取代、deadline 已過、或被取消。
 - **step 管不到的，由 core 管：** key 與 generation、帶 deadline 的 hold、withdraw token。handler 不持有任何 ticket。
-- **取代（supersede）也會結束舊 generation 在佇列中的 input。** 對一個仍有效的 key 再次呼叫 `start`，就是*取代*它。這會關閉舊 generation 的 request、取消它的 timer，並撤回（withdraw）以該 key 為 scope、在佇列中的 input，和 `end` 一樣。佇列中的 input 不帶 generation；少了這一步，在舊綁定下送出的 input 會在新綁定下執行。它的呼叫端會收到 `withdrawn`，可以重試。限制：在該 key 第一次 `start` 之前就佇列的 input 會保留。
+- **取代（supersede）也會結束舊 generation 在佇列中的 input。** 對一個仍有效的 key 再次呼叫 `start`，就是*取代*它。這會關閉舊 generation 的 request、取消它的 timer，並撤回（withdraw）以該 key 為 scope、在佇列中的 input，和 `end` 一樣。佇列中的 input 不帶 generation；少了這一步，在舊綁定下送出的 input 會在新綁定下執行。它的呼叫端會收到 `withdrawn`，可以重試。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。
 - **只存純資料。** `@PlainData` 在編譯時檢查狀態機只存純值。只有 `PlainData` 的狀態機能被執行。
 
 ## 範例
@@ -146,7 +146,7 @@ API：`start`、`end`、`isLive`。
 
 ![key player 7 的 generation 1 擁有一個載入 request，並有一個 chat input 以它為 scope 排入佇列。start 開始 generation 2：request 以 keyEnded 被放棄，遲到的結果交給 handleLateResult，佇列中的 chat 被撤回。](supersede-timeline.zh-TW.svg)
 
-key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleLateResult`。以該 key 為 scope、在佇列中的 input 被撤回，呼叫端收到 `withdrawn`。限制：在該 key 第一次 `start` 之前就佇列的 input 會保留。
+key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleLateResult`。以該 key 為 scope、在佇列中的 input 被撤回，呼叫端收到 `withdrawn`。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。
 
 API：`start`（取代時回傳 true）、`generation(of:)`、`Generation`。
 
@@ -198,7 +198,7 @@ API：`InputPolicy`、`queue(_:behind:)`、`TurnError`。
 
 ### Withdraw token
 
-*withdraw token* 讓送出者在 input 執行前放棄它。key 做不到這件事，因為 input 還沒開始任何東西。從一個在佇列中時就關閉的連線送來的加入，不應該讓任何人入座：
+*withdraw token* 讓送出者在 input 執行前放棄它。key 做不到這件事，因為 input 還沒開始任何東西。從一個在加入執行前就關閉的連線送來的加入，不應該讓任何人入座：
 
 ```swift
 let late = WithdrawToken()
@@ -244,7 +244,7 @@ API：`TurnStats`（`foreignCompletions`）。
 
 ### 呼叫端取消
 
-`sendAndWait` 會等待，而等待的 task 可能被取消，例如客戶端的連線 task 結束時。每個 `sendAndWait` 都要說明這代表什麼；沒有預設值。`.ignoresCancel`：呼叫端繼續等，並拿到真正的結果。呼叫端必須知道結果時選它，例如等待存檔的關機流程。`.cancelsCall`：呼叫端立刻收到 `CancellationError`，仍在佇列的 input 被撤回，永遠不會執行。已經執行的 input 會繼續。呼叫端消失就代表不再需要這個 input 時選它，例如已離開的客戶端送來的加入。
+`sendAndWait` 會等待，而等待的 task 可能被取消，例如客戶端的連線 task 結束時。每個 `sendAndWait` 都要說明這代表什麼；沒有預設值。`.ignoresCancel`：呼叫端繼續等，並拿到真正的結果。呼叫端必須知道結果時選它，例如等待存檔的關機流程。`.cancelsCall`：actor 一處理取消，呼叫端就收到 `CancellationError`，除非回覆先到；仍在佇列的 input 被撤回，永遠不會執行。已經執行的 input 會繼續。呼叫端消失就代表不再需要這個 input 時選它，例如已離開的客戶端送來的加入。
 
 API：`CallerCancellation`。
 
@@ -269,7 +269,7 @@ API：`CallerCancellation`。
 
 這些測試也是範例。下面每一個，都示範一種檢查 turn 架構 actor 的方法。
 
-- **產生的順序**（[`Tests/SwiftStateTurnsTests/GeneratedOrderTests.swift`](../../Tests/SwiftStateTurnsTests/GeneratedOrderTests.swift)）。一個帶 seed 的產生器，混合 send、call、完成、取消與時鐘推進。每次操作之後，測試都檢查 core 的不變量：沒有 step 在另一個 step 裡執行、排在同一個 hold 後面的 input 依到達順序執行、每個 call 只被回覆一次、只有在有效 key 下發出的 output 會到達輸出端。產生器是確定性的，所以同一個 seed 在每個平台都重播同樣的順序。失敗的 seed 會被印出，`replays` 測試把它留作固定案例。CI 跑一組固定的 seed；`TURNS_SEEDS=<數量>` 可以跑更多。
+- **產生的順序**（[`Tests/SwiftStateTurnsTests/GeneratedOrderTests.swift`](../../Tests/SwiftStateTurnsTests/GeneratedOrderTests.swift)）。一個帶 seed 的產生器，混合 send、call、完成、取消與時鐘推進。每次操作之後，測試都檢查 core 的不變量：沒有 step 在另一個 step 裡執行、排在同一個 hold 後面的 input 依到達順序執行、每個 call 只被回覆一次、只有在有效 key 下發出的 output 會到達輸出端。在大的 batch 上限下，同一個 seed 每次都產生同樣的順序；上限為 2 的 seed 會守住不變量，但沒有固定的排程。失敗的 seed 會被印出；手動把它加進 `replays` 測試，就留作固定案例。CI 跑一組固定的 seed；`TURNS_SEEDS=<數量>` 可以跑更多。
 - **必須編譯失敗的程式碼**（[`scripts/must-not-compile/turns/`](../../scripts/must-not-compile/turns/)，由 [`scripts/check-must-not-compile.sh`](../../scripts/check-must-not-compile.sh) 執行）。每個檔案都必須以指定的錯誤編譯失敗。它們合起來說明哪些東西寫不出來：會 await 的 handler、會啟動 task 的 handler、讀取 `core` 的 effect、存放 class 或 closure 的狀態機（包括在 `#if` 裡）、以及沒有 `@PlainData` 卻交給 core 的狀態機。
 - **範例**（[`Tests/SwiftStateTurnsTests/WorkedExampleTests.swift`](../../Tests/SwiftStateTurnsTests/WorkedExampleTests.swift)）。它執行這些頁面上的大廳。最後一個測試是防腐檢查：DocC 與 `docs/turns/` 裡的每段 Swift 程式碼，都必須出現在受測的檔案中，所以範例不會和程式碼脫節。
 - **三種寫法的比較**（[`Tests/SwiftStateTurnsTests/ComparisonTests.swift`](../../Tests/SwiftStateTurnsTests/ComparisonTests.swift)）。個人資料存取端 `load` 裡的 hold，讓一次加入停在 `await` 的中途。測試接著送出離開，再放行載入。每次執行的順序都相同，不用 sleep，所以一般 actor 的 bug 每次都會發生。

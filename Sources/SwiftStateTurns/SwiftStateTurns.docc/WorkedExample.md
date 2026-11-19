@@ -103,7 +103,7 @@ The load's result arrives as `.loaded`, in a later step, and only while its requ
 - The deadline passes first: the request is abandoned. `handleAbandoned` answers the caller with an error, and the store's hold is released.
 - The player leaves first: `.leave` ends the player's key, which abandons the request the same way.
 - A load returns after either of these: it goes to `handleLateResult`, which only counts it.
-- A second `.join` for the same player: it supersedes the first. The first load is abandoned, and the new one starts.
+- A second `.join` for the same player: `.join` waits for the store, so it queues until the first load's request closes. When it steps, its `start(.player(p))` begins a new binding for the player and a second load. The first load is already done; nothing is abandoned.
 
 ## The actor
 

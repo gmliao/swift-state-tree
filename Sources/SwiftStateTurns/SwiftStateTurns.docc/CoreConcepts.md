@@ -52,7 +52,7 @@ A *generation* is one lifetime of a key, from one `start` to the next. Calling `
 
 @Image(source: "supersede-timeline.svg", alt: "Generation 1 of key player 7 owns a load request and has a chat input queued under its scope. A start begins generation 2: the request is abandoned with keyEnded, its late result goes to handleLateResult, and the queued chat is withdrawn.")
 
-When the key is superseded, three things happen to the old generation. Its requests close (`handleAbandoned` runs, with `keyEnded`). A result that comes back later goes to `handleLateResult`. Inputs queued under the key's scope are withdrawn, and their callers get `withdrawn`. Limit: inputs queued before the key's first `start` stay.
+When the key is superseded, three things happen to the old generation. Its requests close (`handleAbandoned` runs, with `keyEnded`). A result that comes back later goes to `handleLateResult`. Inputs queued under the key's scope are withdrawn, and their callers get `withdrawn`. That includes an input sent while a batch runs and admitted after the supersede. Limit: an input that arrives while the key isn't live (before its first `start`, or after an `end`) steps under the next generation; use a fresh key per binding, such as a connection or session id, when that matters.
 
 API: ``Turn/start(_:)`` (true when it superseded), ``Turn/generation(of:)``, ``Generation``.
 
@@ -104,7 +104,7 @@ API: ``InputPolicy``, ``Turn/queue(_:behind:)``, ``TurnError``.
 
 ## Withdraw token
 
-An *withdraw token* lets the sender give up an input before it steps. A key can't do this, because the input hasn't started anything yet. A join from a connection that closed while the join was queued shouldn't seat anyone:
+A *withdraw token* lets the sender give up an input before it steps. A key can't do this, because the input hasn't started anything yet. A join from a connection that closed before its join stepped shouldn't seat anyone:
 
 ```swift
 let late = WithdrawToken()
@@ -150,7 +150,7 @@ API: ``TurnStats`` (`foreignCompletions`).
 
 ## Caller cancellation
 
-A `sendAndWait` waits, and the task that waits can be cancelled, for example when the client's connection task ends. Each `sendAndWait` says what that means; there is no default. `.ignoresCancel`: the caller keeps waiting and gets the real result. Pick it when the caller must know the outcome, such as a shutdown waiting for a save. `.cancelsCall`: the caller gets `CancellationError` at once, and an input still queued is withdrawn and never steps. An input that already stepped goes on. Pick it when a gone caller means the input is no longer wanted, such as a join from a client that left.
+A `sendAndWait` waits, and the task that waits can be cancelled, for example when the client's connection task ends. Each `sendAndWait` says what that means; there is no default. `.ignoresCancel`: the caller keeps waiting and gets the real result. Pick it when the caller must know the outcome, such as a shutdown waiting for a save. `.cancelsCall`: the caller gets `CancellationError` as soon as the actor handles the cancellation, unless its answer came first, and an input still queued is withdrawn and never steps. An input that already stepped goes on. Pick it when a gone caller means the input is no longer wanted, such as a join from a client that left.
 
 API: ``CallerCancellation``.
 

@@ -32,7 +32,8 @@
   <rect x="14" y="130" width="96" height="44" rx="22" fill="#ffffff" stroke="#24292f"/>
   <text class="s" x="62" y="157" text-anchor="middle">呼叫端</text>
   <path class="l" d="M110,152 L188,152"/>
-  <text class="s" x="149" y="142" text-anchor="middle">send / sendAndWait</text>
+  <text class="n" x="149" y="128" text-anchor="middle">send,</text>
+  <text class="n" x="149" y="143" text-anchor="middle">sendAndWait</text>
   <rect x="690" y="130" width="96" height="44" rx="22" fill="#ffffff" stroke="#24292f"/>
   <text class="s" x="738" y="157" text-anchor="middle">輸出端</text>
   <path class="l" d="M610,152 L688,152"/>
