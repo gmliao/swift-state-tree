@@ -411,6 +411,39 @@ struct DifferentialHarnessHooksTests {
         await h.router.waitForNoPendingFlipForTesting()
     }
 
+    @Test("waitForDisconnectForwards returns only after the forward reached the adapter")
+    func disconnectForwardsWait() async throws {
+        let h = try await HooksHarness.make(autoStartLoops: false)
+        let session = SessionID("s-forward")
+        _ = await h.connect(session)
+        try await h.join(session, player: "p1")
+        await h.router.waitForNoPendingFlipForTesting()
+        let forwarded = TestGate()
+        let waiting = TestGate()
+        waiting.open()
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.disconnectForwarded) { await forwarded.arrive() }
+            .on(.waitingForDisconnectForwards) { await waiting.arrive() }
+            .hook)
+        await h.transport.handleDisconnection(sessionID: session)
+        #expect(await forwarded.waitForArrivals(1), "the forward reached disconnectForwarded")
+        let returned = TestGate()
+        returned.open()
+        let waiter = Task {
+            await h.router.waitForDisconnectForwardsForTesting()
+            await returned.arrive()
+        }
+        // The forward is held after the adapter's onDisconnect and before it ends: the waiter
+        // finds it in flight and waits.
+        #expect(await waiting.waitForArrivals(1), "the waiter found the forward in flight")
+        #expect(returned.arrivalCount == 0, "the wait returned while the forward was in flight")
+        forwarded.open()
+        #expect(await returned.waitForArrivals(1), "the wait returned after the forward ended")
+        await waiter.value
+        // With none in flight it returns at once.
+        await h.router.waitForDisconnectForwardsForTesting()
+    }
+
     // MARK: Record decoder
 
     @Test("The record decoder entry reads a saved record's 3.x contents, complete")
