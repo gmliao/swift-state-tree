@@ -46,8 +46,13 @@ public final class TurnCore<M: TurnMachine> {
     // Release builds skip the runtime exclusivity checks on the core's own state (#621): with
     // the core inlined into its adopter, each use of a stored var otherwise pays a
     // `swift_beginAccess`/`swift_endAccess` pair. The actor serializes every access, and the core
-    // stops the process on the overlaps a check would catch (a step inside a step or inside
-    // `read`, `read` or `query` inside a step). Debug builds keep the checks, and so does a
+    // stops the process on the overlaps a check would catch, by the borrow rule of `borrows`
+    // (a step inside a step or inside a read, nested or not; a read or a query inside a step).
+    // It can't stop adopter code that the core runs
+    // during its own accesses: `M.Key`'s `==` and `hash(into:)` (run inside mutations of `rt`,
+    // `timerTasks` and `scopeEndsWhileDeferred`) and the deinits of inputs and keys the core
+    // drops (`queued`, a withdraw, `removeAll`). Those must not call back into the actor; an
+    // adopter tests that with the checked build. Debug builds keep the checks, and so does a
     // release build with `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED`. Every stored var carries the
     // attribute under this exact condition (scripts/lint-turns.sh, rule unchecked-state).
     /// Changed only inside a step.
@@ -59,19 +64,28 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var rt = Runtime<M>()
+    /// The machine's borrow state, kept as Rust's `RefCell` keeps its flag: 0 unused, n > 0 that
+    /// many `read`s open, -1 a step writing. The rule is SE-0176's: reads nest, a read and a write
+    /// or two writes don't.
+    ///
+    /// | state     | `read`  | a step (`send` stepping now, `sendAndWait`, `query`) |
+    /// |-----------|---------|------------------------------------------------------|
+    /// | 0         | → 1     | → -1                                                 |
+    /// | n > 0     | → n + 1 | stop                                                 |
+    /// | -1        | stop    | stop (`query`)                                       |
+    ///
+    /// A read gives back n - 1 and a step gives back 0, on every exit (`defer`). A `send` made
+    /// while writing isn't a step entry: `submit` defers it, and it steps after the step ends.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
-    @usableFromInline var inStep = false
+    @usableFromInline var borrows = 0
+    /// Tests: the borrow state between calls (0 when nothing is open).
+    package var borrowStateForTesting: Int { borrows }
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
     @usableFromInline var inSegment = false
-    /// Set while `read` runs its body: a step entered from it would mutate the borrowed machine.
-    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
-    @exclusivity(unchecked)
-    #endif
-    @usableFromInline var inRead = false
     /// Sends and calls made while a step or a batch was running, each with the scope-end clock
     /// at its arrival.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
@@ -169,11 +183,12 @@ public final class TurnCore<M: TurnMachine> {
         for entry in timerTasks.values { entry.task.cancel() }
     }
 
-    /// Reads the machine. Between steps only: from inside a step it stops the process.
+    /// Reads the machine. Between steps only: from inside a step it stops the process. Reads
+    /// nest; a step entered from a read's body (a `send`, a `query`) stops the process.
     @inlinable public func read<R>(_ body: (borrowing M) -> R) -> R {
-        if inStep { fatalError("TurnCore: the machine was read from inside its own step") }
-        inRead = true
-        defer { inRead = false }
+        if borrows < 0 { fatalError("TurnCore: the machine was read from inside its own step") }
+        borrows += 1
+        defer { borrows -= 1 }
         return body(machine)
     }
 
@@ -215,16 +230,16 @@ public final class TurnCore<M: TurnMachine> {
     // MARK: Steps
 
     @inlinable func enterStep(_ input: M.Input?) {
-        if inStep { fatalError("TurnCore: a step was entered from inside a step") }
-        if inRead { fatalError("TurnCore: a step was entered from inside read") }
-        inStep = true
+        if borrows < 0 { fatalError("TurnCore: a step was entered from inside a step") }
+        if borrows > 0 { fatalError("TurnCore: a step was entered while a read is open") }
+        borrows = -1
         #if DEBUG
         stepCase = input.map(Self.caseName)
         #endif
     }
 
     @inlinable func leaveStep() {
-        inStep = false
+        borrows = 0
         #if DEBUG
         stepCase = nil
         #endif
@@ -246,31 +261,30 @@ public final class TurnCore<M: TurnMachine> {
 
     @inlinable func step(_ input: M.Input, caller: InputID?) {
         enterStep(input)
+        defer { leaveStep() }
         var turn = Turn<M>(core: self, input: caller)
         machine.handle(input, &turn)
-        leaveStep()
     }
 
     @inlinable func stepStale(_ input: M.Input) {
         enterStep(input)
+        defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
         machine.handleLateResult(input, &turn)
-        leaveStep()
     }
 
     @inlinable func stepAbandoned(_ id: RequestID, _ why: Abandonment) {
         enterStep(nil)
+        defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
         machine.handleAbandoned(id, why, &turn)
-        leaveStep()
     }
 
     @inlinable func stepAnswer(_ query: M.Query) -> M.Answer {
-        if inStep { fatalError("TurnCore: query was called from inside a step") }
+        if borrows < 0 { fatalError("TurnCore: query was called from inside a step") }
         enterStep(nil)
+        defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
-        let answer = machine.answer(query, &turn)
-        leaveStep()
-        return answer
+        return machine.answer(query, &turn)
     }
 }

@@ -123,6 +123,51 @@ actor DemoActor: TurnActor {
         }
     }
 
+    /// Reads inside a read, then sends from the outer body once the inner read has returned: a
+    /// stop, since the outer read still holds the machine.
+    func sendFromOuterReadAfterNestedRead() {
+        _ = core.read { _ in
+            _ = self.core.read { _ in 0 }
+            self.send(.ping)
+            return 0
+        }
+    }
+
+    /// Asks from inside `read`'s body: the answer is a step, so a stop.
+    func queryFromInsideRead() {
+        _ = core.read { _ in
+            _ = self.query(.steps)
+            return 0
+        }
+    }
+
+    /// Asks from an outer read's body once a nested read has returned: a stop.
+    func queryFromOuterReadAfterNestedRead() {
+        _ = core.read { _ in
+            _ = self.core.read { _ in 0 }
+            _ = self.query(.steps)
+            return 0
+        }
+    }
+
+    /// Asks from inside a read that is itself nested in a read: a stop.
+    func queryFromNestedRead() {
+        _ = core.read { _ in
+            self.core.read { _ in
+                _ = self.query(.steps)
+                return 0
+            }
+        }
+    }
+
+    /// Two reads, one inside the other, and no step: both run.
+    func nestedReads() -> Int {
+        core.read { _ in 1 + self.core.read { _ in 1 } }
+    }
+
+    /// The core's borrow state between calls.
+    var borrowState: Int { core.borrowStateForTesting }
+
     // MARK: Collaborators between steps
 
     /// A collaborator called by the driver between steps (from `flush`) reads, asks and sends.

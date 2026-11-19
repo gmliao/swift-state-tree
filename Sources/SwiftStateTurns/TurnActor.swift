@@ -96,9 +96,10 @@ extension TurnActor {
 
     @inlinable func submit(_ input: M.Input, caller: InputID?) {
         let core = self.core
-        if core.inStep || core.inSegment {
+        if core.borrows < 0 || core.inSegment {
             core.queued.push((input, caller, core.scopeEndClock))
-            // Made from inside a step: the batch that follows the step picks it up.
+            // Made from inside a step (the machine borrowed for writing): not a step entry, so no
+            // borrow stop. The batch that follows the step picks it up.
             core.rt.dirty = true
             return
         }
