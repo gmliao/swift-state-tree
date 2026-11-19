@@ -199,6 +199,16 @@ public actor WebSocketTransport: Transport {
         }
     }
 
+    /// Tests: names each connection's `ClientID` by its connection generation (1 for the first
+    /// connection this transport accepts, 2 for the next, ...), so a test that reconnects with the
+    /// same `SessionID` still gets a distinct, stable ID per attempt (#555). nil: the random
+    /// default.
+    private var clientIDSupplierForTesting: (@Sendable (UInt64) -> ClientID)?
+
+    package func setClientIDSupplierForTesting(_ supplier: (@Sendable (UInt64) -> ClientID)?) {
+        clientIDSupplierForTesting = supplier
+    }
+
     func setServerCloseExpiryForTesting(_ schedule: @escaping ServerCloseExpiry) {
         scheduleServerCloseExpiry = schedule
     }
@@ -431,9 +441,9 @@ public actor WebSocketTransport: Transport {
         queue.generation = generation
         sessionQueues[sessionID] = queue
         lastMissingSessionLogAt.removeValue(forKey: sessionID)
-        // Generate short client ID (6 characters) for better identification
-        let clientIDString = String(UUID().uuidString.prefix(6))
-        let clientID = ClientID(clientIDString)
+        // Generate short client ID (6 characters) for better identification. A test may name
+        // it per connection attempt instead, so two runs give the same IDs.
+        let clientID = clientIDSupplierForTesting?(generation) ?? ClientID(String(UUID().uuidString.prefix(6)))
         sessionToClientID[sessionID] = clientID
         await delegate?.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
         return .accepted

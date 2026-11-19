@@ -8,6 +8,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 /// A connection that records the closes asked of it and hands each frame to `sent`, as it

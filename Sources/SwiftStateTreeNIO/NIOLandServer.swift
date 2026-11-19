@@ -36,12 +36,34 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   - transport: Shared WebSocketTransport instance.
     /// - Throws: `LandRegistrationError` from `LandTypeRegistry.init`: the state's synced-state
     ///   problems in its `sync` (#464, #179, #535).
+    ///
+    /// The router isn't the transport's delegate yet. Before the transport receives a
+    /// connection, call `await transport.setDelegate(server.landRouter)`; `NIOLandHost.register`
+    /// does this for you.
     public init(
         landType: String,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         configuration: NIOLandServerConfiguration,
         transport: WebSocketTransport
+    ) throws {
+        try self.init(
+            landType: landType, landFactory: landFactory, initialStateFactory: initialStateFactory,
+            configuration: configuration, transport: transport, autoStartLoops: true
+        )
+    }
+
+    /// The assembly, shared by the public init and the tests that build a server without its
+    /// host (the differential harness, #555): the manager, the registry, the router and the
+    /// failure stop. `autoStartLoops: false` leaves each live land's tick and sync loops to the
+    /// caller (`LandKeeper.stepTickOnce`).
+    package init(
+        landType: String,
+        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
+        initialStateFactory: @escaping @Sendable (LandID) -> State,
+        configuration: NIOLandServerConfiguration,
+        transport: WebSocketTransport,
+        autoStartLoops: Bool
     ) throws {
         self.landType = landType
         self.landFactory = landFactory
@@ -66,6 +88,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             enableLoopPhaseOffset: configuration.enableLoopPhaseOffset,
             inTurnSync: configuration.inTurnSync,
             syncLagPolicy: configuration.syncLag,
+            autoStartLoops: autoStartLoops,
             replayLandSuffix: configuration.replayLandSuffix,
             logger: configuration.logger
         )
@@ -110,6 +133,13 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         }
     }
     
+    /// Makes the router the transport's delegate. Separate from the init, which is synchronous,
+    /// because `WebSocketTransport.setDelegate` is actor-isolated. Await it before the transport
+    /// receives a connection, so the first frame finds the router.
+    package func attach() async {
+        await transport.setDelegate(landRouter)
+    }
+
     // MARK: - LandServerProtocol
     
     /// Shuts this land type down without a time bound: stops accepting, closes every session

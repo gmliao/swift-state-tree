@@ -468,7 +468,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var actionResponseTickets = GenerationTable<SessionID>()
     /// Tests only: pending answers finished (sent or dropped), and the waiters for a count.
     private var actionResponsesFinished = 0
-    private var actionResponsesFinishedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var actionResponsesFinishedWaiters: [Int: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextActionResponsesFinishedWaiter = 0
 
     /// A session admitted by a join (#69) whose initial sync hasn't started yet.
     struct JoiningSession: Sendable {
@@ -628,7 +629,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
 
     /// Tests only: replaces the flip wait (what is left of the join budget, #104) for joins
-    /// admitted from now on.
+    /// admitted from now on. `.zero`: no flip timeout.
     private var joinFlipTimeoutForTesting: Duration?
     /// Tests only: replaces `JoinFlipConfig.budget`.
     private var joinFlipBudgetForTesting: Int?
@@ -1684,12 +1685,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The flip waits for what is left of the join's budget (`JOIN_TIMEOUT_MS`, #104), from the
     /// router's deadline, or, for a join admitted without one, from now; the deprecated
     /// `JOIN_FLIP_TIMEOUT_MS` still caps it. No budget and no cap: no timeout.
+    /// A flip waiter's timeout: the test override, else what is left of the join budget; nil for
+    /// none. An explicit `.zero` override is "no timeout" (#555), as the router's join budget
+    /// override is; a `.zero` left of an expired deadline still times out at once.
+    static func joinFlipTimeout(override: Duration?, deadline: ContinuousClock.Instant?) -> Duration? {
+        if override == .zero { return nil }
+        return override ?? JoinTimeoutConfig.flipWait(deadline: deadline)
+    }
+
     private func startJoinWaiter(sessionID: SessionID, ticket: Ticket<SessionID>, joinDeadline: ContinuousClock.Instant?) {
         joinWaiters[sessionID]?.resolve(.failure(.superseded))
         let waiter = JoinWaiter(ticket: ticket)
         joinWaiters[sessionID] = waiter
         let deadline = joinDeadline ?? JoinTimeoutConfig.budget.map { ContinuousClock.now + $0 }
-        guard let timeout = joinFlipTimeoutForTesting ?? JoinTimeoutConfig.flipWait(deadline: deadline) else { return }
+        guard let timeout = Self.joinFlipTimeout(override: joinFlipTimeoutForTesting, deadline: deadline) else { return }
         waiter.timeout = Task { [weak self] in
             guard (try? await safeTaskSleep(for: timeout)) != nil, let adapter = self else { return }
             try? await adapter.enqueueMembership {
@@ -5674,17 +5683,44 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func noteActionResponseFinished() {
         actionResponsesFinished += 1
-        let ready = actionResponsesFinishedWaiters.filter { $0.count <= actionResponsesFinished }
-        actionResponsesFinishedWaiters.removeAll { $0.count <= actionResponsesFinished }
-        ready.forEach { $0.continuation.resume() }
+        let ready = actionResponsesFinishedWaiters.filter { $0.value.count <= actionResponsesFinished }
+        for (id, waiter) in ready {
+            actionResponsesFinishedWaiters.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
     }
 
-    /// Tests only: returns once `count` pending answers have finished (sent or dropped).
-    func waitForActionResponsesFinishedForTesting(_ count: Int) async {
+    /// Tests only: returns once `count` pending answers have finished (sent or dropped), or when
+    /// the waiting task is cancelled, so a count that is never reached doesn't leave the waiter
+    /// suspended past its test (#555). Each waiter is removed under the adapter's isolation and
+    /// resumed exactly once.
+    ///
+    /// - Parameter registered: called once the waiter is stored (not when it returns at once or
+    ///   is cancelled first), so a test acts after registration rather than after a delay. It has
+    ///   finished by the time the waiter returns.
+    func waitForActionResponsesFinishedForTesting(_ count: Int, registered: @escaping @Sendable () async -> Void = {}) async {
         guard actionResponsesFinished < count else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            actionResponsesFinishedWaiters.append((count, continuation))
+        let id = nextActionResponsesFinishedWaiter
+        nextActionResponsesFinishedWaiter += 1
+        // Joined before returning, so the acknowledgement has run when the waiter returns.
+        var acknowledgement: Task<Void, Never>?
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                actionResponsesFinishedWaiters[id] = (count, continuation)
+                acknowledgement = Task { await registered() }
+            }
+        } onCancel: {
+            Task { await self.cancelActionResponsesFinishedWaiter(id) }
         }
+        await acknowledgement?.value
+    }
+
+    private func cancelActionResponsesFinishedWaiter(_ id: Int) {
+        actionResponsesFinishedWaiters.removeValue(forKey: id)?.continuation.resume()
     }
 
     /// Tests only: the action response tasks still tracked, over all sessions.
