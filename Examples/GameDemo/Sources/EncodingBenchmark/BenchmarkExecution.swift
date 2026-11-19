@@ -112,7 +112,7 @@ func injectRouterMoveTargets(
 struct HeroDefenseRoomContext: Sendable {
     let landID: LandID
     let keeper: LandKeeper<HeroDefenseState>
-    let adapter: TransportAdapter<HeroDefenseState>
+    let adapter: TransportAdapterBenchmarkHandle<HeroDefenseState>
     let transport: CountingTransport
 }
 
@@ -120,7 +120,7 @@ struct HeroDefenseRoomContext: Sendable {
 struct CardGameRoomContext: Sendable {
     let landID: LandID
     let keeper: LandKeeper<CardGameState>
-    let adapter: TransportAdapter<CardGameState>
+    let adapter: TransportAdapterBenchmarkHandle<CardGameState>
     let transport: CountingTransport
 }
 
@@ -300,7 +300,7 @@ enum BenchmarkRunner {
             logger: benchmarkLogger
         )
         
-        let adapter = TransportAdapter<CardGameState>(
+        let adapter = TransportAdapterBenchmarkHandle<CardGameState>(
             keeper: keeper,
             transport: transport,
             landID: landID.stringValue,
@@ -311,8 +311,8 @@ enum BenchmarkRunner {
             suppressMissingPathHashesWarning: !format.usesPathHash,
             logger: benchmarkLogger
         )
-        await keeper.setTransport(adapter)
-        await transport.setDelegate(adapter)
+        await keeper.setTransport(adapter.keeperTransport)
+        await transport.setDelegate(adapter.transportDelegate)
         
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
@@ -498,7 +498,7 @@ enum BenchmarkRunner {
                 logger: benchmarkLogger
             )
             
-            let adapter = TransportAdapter<HeroDefenseState>(
+            let adapter = TransportAdapterBenchmarkHandle<HeroDefenseState>(
                 keeper: keeper,
                 transport: transport,
                 landID: landID.stringValue,
@@ -694,7 +694,7 @@ enum BenchmarkRunner {
                 logger: benchmarkLogger
             )
             
-            let adapter = TransportAdapter<HeroDefenseState>(
+            let adapter = TransportAdapterBenchmarkHandle<HeroDefenseState>(
                 keeper: keeper,
                 transport: transport,
                 landID: landID.stringValue,
@@ -895,7 +895,7 @@ enum BenchmarkRunner {
             logger: benchmarkLogger
         )
         
-        let adapter = TransportAdapter<HeroDefenseState>(
+        let adapter = TransportAdapterBenchmarkHandle<HeroDefenseState>(
             keeper: keeper,
             transport: transport,
             landID: landID.stringValue,
@@ -907,8 +907,8 @@ enum BenchmarkRunner {
             logger: benchmarkLogger
         )
         
-        await keeper.setTransport(adapter)
-        await transport.setDelegate(adapter)
+        await keeper.setTransport(adapter.keeperTransport)
+        await transport.setDelegate(adapter.transportDelegate)
         
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
@@ -1128,7 +1128,7 @@ enum BenchmarkRunner {
         logger: benchmarkLogger
     )
 
-    let adapter = TransportAdapter<BenchmarkState>(
+    let adapter = TransportAdapterBenchmarkHandle<BenchmarkState>(
         keeper: keeper,
         transport: mockTransport,
         landID: "benchmark-land",
@@ -1140,8 +1140,8 @@ enum BenchmarkRunner {
             logger: benchmarkLogger
         )
     
-    await keeper.setTransport(adapter)
-    await mockTransport.setDelegate(adapter)
+    await keeper.setTransport(adapter.keeperTransport)
+    await mockTransport.setDelegate(adapter.transportDelegate)
 
     // Connect players
     let playerIDs = (0 ..< playerCount).map { PlayerID("player-\($0)") }
@@ -1255,7 +1255,7 @@ struct EffectiveDirtyTracking {
 
     init() {}
 
-    init<State: StateNodeProtocol>(adapters: [TransportAdapter<State>]) async {
+    init<State: StateNodeProtocol>(adapters: [TransportAdapterBenchmarkHandle<State>]) async {
         for adapter in adapters {
             if await adapter.isDirtyTrackingEnabled() {
                 on += 1

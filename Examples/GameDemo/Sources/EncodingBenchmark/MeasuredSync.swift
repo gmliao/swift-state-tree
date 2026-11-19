@@ -13,7 +13,7 @@ import SwiftStateTree
 enum MeasuredSync {
     /// Waits until every adapter handed all frames enqueued so far to its transport. Exits the
     /// run if one does not drain: its counts would be incomplete.
-    static func drain<State: StateNodeProtocol>(_ adapters: [TransportAdapter<State>]) async {
+    static func drain<State: StateNodeProtocol>(_ adapters: [TransportAdapterBenchmarkHandle<State>]) async {
         for adapter in adapters {
             guard await adapter.waitForOutboundDrain(timeout: .seconds(30)) else {
                 print("Error: an adapter's outbound writer did not drain within 30 s; byte counts would be incomplete")
@@ -23,7 +23,7 @@ enum MeasuredSync {
     }
 
     /// Sync cycles the adapters skipped so far (back-pressure or a cycle in flight).
-    static func skipCount<State: StateNodeProtocol>(_ adapters: [TransportAdapter<State>]) async -> Int {
+    static func skipCount<State: StateNodeProtocol>(_ adapters: [TransportAdapterBenchmarkHandle<State>]) async -> Int {
         var total = 0
         for adapter in adapters {
             let skips = await adapter.syncSkipCounts()
@@ -33,7 +33,7 @@ enum MeasuredSync {
     }
 
     /// The adapters' frame prefix cache counts so far, summed (`FramePrefixCacheCounts`).
-    static func prefixCacheCounts<State: StateNodeProtocol>(_ adapters: [TransportAdapter<State>]) async -> FramePrefixCacheCounts {
+    static func prefixCacheCounts<State: StateNodeProtocol>(_ adapters: [TransportAdapterBenchmarkHandle<State>]) async -> FramePrefixCacheCounts {
         var total = FramePrefixCacheCounts()
         for adapter in adapters {
             total = total + (await adapter.framePrefixCacheCounts())
