@@ -93,6 +93,41 @@ struct DiffSelfCheckTests {
         #expect(DiffGolden.updateRefusal(environment: [DiffGoldenKeys.verify: "1"]) == nil)
     }
 
+    @Test("The branch lists: exact, one use, stale and overlap fail, retired keys exact")
+    func branchListRules() {
+        let cell = DiffCell(sync: .legacy, encoding: .json, land: .tickless)
+        let index = ["two-players.\(cell).json", "join-act-leave.\(cell).json"]
+        let difference = DiffDifference(checkpoint: "terminal", channel: .frames, place: "A", detail: "frame 3 differs")
+        func entry(_ detail: String = "frame 3 differs", scenario: String = "two-players") -> DiffExpectedDifference {
+            DiffExpectedDifference(scenario: scenario, cell: cell, checkpoint: "terminal", channel: .frames, place: "A", detail: detail, reason: "test")
+        }
+        // Exact match, used once.
+        var judged = DiffBranchLists.judge([difference], entries: [entry()])
+        #expect(judged.unexpected.isEmpty && judged.stale.isEmpty)
+        // A near match covers nothing: the difference is unexpected and the entry stale.
+        judged = DiffBranchLists.judge([difference], entries: [entry("frame 4 differs")])
+        #expect(judged.unexpected.count == 1 && judged.stale.count == 1)
+        // One entry covers one difference, not two.
+        judged = DiffBranchLists.judge([difference, difference], entries: [entry()])
+        #expect(judged.unexpected.count == 1 && judged.stale.isEmpty)
+        // An unused entry is stale.
+        #expect(DiffBranchLists.judge([], entries: [entry()]).stale.count == 1)
+        // Overlap, a key outside the index, a retired key twice, a retired key outside the index,
+        // and an expected difference on a retired cell.
+        #expect(DiffBranchLists.problems(expected: [entry(), entry()], retired: [], indexFiles: index).count == 1)
+        #expect(DiffBranchLists.problems(expected: [entry(scenario: "nope")], retired: [], indexFiles: index).count == 1)
+        let row = DiffRetiredRow(scenario: "join-act-leave", cells: [cell, cell], reason: "test", witness: "w", replacement: {})
+        #expect(DiffBranchLists.problems(expected: [], retired: [row], indexFiles: index).count == 1)
+        let outside = DiffRetiredRow(scenario: "nope", cells: [cell], reason: "test", witness: "w", replacement: {})
+        #expect(DiffBranchLists.problems(expected: [], retired: [outside], indexFiles: index).count == 1)
+        let retiredTwoPlayers = DiffRetiredRow(scenario: "two-players", cells: [cell], reason: "test", witness: "w", replacement: {})
+        #expect(DiffBranchLists.problems(expected: [entry()], retired: [retiredTwoPlayers], indexFiles: index).count == 1)
+        let noWitness = DiffRetiredRow(scenario: "two-players", cells: [cell], reason: "test", witness: "", replacement: {})
+        #expect(DiffBranchLists.problems(expected: [], retired: [noWitness], indexFiles: index).count == 1)
+        // The lists on main are empty and valid.
+        #expect(diffExpectedDifferences.isEmpty && diffRetiredRows.isEmpty)
+    }
+
     @Test("Every scenario has cells, a unique name, a live checkpoint, and states its requests")
     func scenariosAreWellFormed() {
         var names = Set<String>()

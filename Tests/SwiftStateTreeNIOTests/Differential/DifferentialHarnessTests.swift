@@ -37,15 +37,35 @@ struct DifferentialHarnessTests {
             try await record()
             return
         }
+        let index = try DiffGolden.readIndex()
+        let listProblems = DiffBranchLists.problems(
+            expected: diffExpectedDifferences, retired: diffRetiredRows, indexFiles: index.files
+        )
+        #expect(listProblems.isEmpty, "the branch lists: \(listProblems.joined(separator: "; "))")
+        guard listProblems.isEmpty else { return }
+        var replacements: [String: DiffRetiredRow] = [:]
+        for row in diffRetiredRows {
+            for cell in row.cells { replacements["\(row.scenario).\(cell)"] = row }
+        }
         var bytesCompared = true
         var ran = 0
         var masked = 0
+        var replaced = 0
         for scenario in diffScenarios {
             for cell in scenario.cells.cells {
                 // The adapter's in-turn sync is the config's and `IN_TURN_SYNC`'s: with the env
                 // off, an in-turn cell would run legacy, so it is masked, and counted.
                 if cell.sync == .inTurn && !InTurnSync.isEnabled() {
                     masked += 1
+                    continue
+                }
+                if let row = replacements["\(scenario.name).\(cell)"] {
+                    replaced += 1
+                    do {
+                        try await row.replacement()
+                    } catch {
+                        Issue.record("\(scenario.name) \(cell), retired (\(row.reason)): its replacement failed: \(error)")
+                    }
                     continue
                 }
                 ran += 1
@@ -65,14 +85,17 @@ struct DifferentialHarnessTests {
                 let checkBytes = golden.recordedWith.toolchain == DiffGolden.toolchain
                 bytesCompared = bytesCompared && checkBytes
                 let differences = DiffCompare.differences(golden.result, actual, checkBytes: checkBytes)
-                #expect(differences.isEmpty, "\(name):\n\(differences.map(\.description).joined(separator: "\n"))")
+                let entries = diffExpectedDifferences.filter { $0.scenario == scenario.name && $0.cell == cell }
+                let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries)
+                #expect(unexpected.isEmpty, "\(name):\n\(unexpected.map(\.description).joined(separator: "\n"))")
+                #expect(stale.isEmpty, "\(name): stale expected difference(s): \(stale.map { "\($0.checkpoint) \($0.channel.rawValue) \($0.place) (\($0.reason))" })")
             }
         }
-        // Fail closed: every cell the index lists ran, or was masked.
-        let listed = try DiffGolden.readIndex().files.count
-        print("Differential harness: \(ran) cell(s) compared, \(masked) masked (IN_TURN_SYNC), \(listed) listed")
+        // Fail closed: every cell the index lists ran, was replaced, or was masked.
+        let listed = index.files.count
+        print("Differential harness: \(ran) cell(s) compared, \(masked) masked (IN_TURN_SYNC), \(replaced) replaced, \(listed) listed")
         #expect(ran > 0, "no cell ran")
-        #expect(ran + masked == listed, "\(ran) ran and \(masked) masked, the index lists \(listed)")
+        #expect(ran + masked + replaced == listed, "\(ran) ran, \(replaced) replaced and \(masked) masked; the index lists \(listed)")
         if !bytesCompared {
             print("Differential harness: decoded views only, on \(DiffGolden.toolchain); the goldens were recorded on another toolchain. The pinned-image CI jobs compare bytes and are the gate.")
         }
