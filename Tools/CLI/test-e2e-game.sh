@@ -380,9 +380,27 @@ main() {
     # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
     # E2E_ENCODINGS narrows the list (space-separated), e.g. to the opcode encodings, where row
     # addressing (on by default) takes effect.
+    # E2E_TABLES_OFF_ONLY=true runs only the tables-off section below, which needs
+    # ROW_ADDRESSING=false: CI's in-turn-off leg runs it beside its default run instead of a
+    # leg of its own (audit plan, V2). Without ROW_ADDRESSING=false it fails rather than
+    # skipping the one section it was asked for.
     local encodings
     read -r -a encodings <<< "${E2E_ENCODINGS:-json jsonOpcode messagepack}"
     local failed_encodings=()
+    local tables_off_only=false
+    case "$(echo "${E2E_TABLES_OFF_ONLY:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|y|on)
+            tables_off_only=true
+            encodings=()
+            case "$(echo "${ROW_ADDRESSING:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+                0|false|no|n|off) ;;
+                *)
+                    print_error "E2E_TABLES_OFF_ONLY=true needs ROW_ADDRESSING=false: the tables-off section runs only then"
+                    exit 1
+                    ;;
+            esac
+            ;;
+    esac
     
     for encoding in "${encodings[@]}"; do
         echo "=========================================="
@@ -420,13 +438,15 @@ main() {
         echo ""
     done
 
-    echo "=========================================="
-    echo "  Graceful shutdown on SIGTERM (#351)"
-    echo "=========================================="
-    if ! run_graceful_shutdown_check; then
-        failed_encodings+=("graceful shutdown")
+    if [ "$tables_off_only" = false ]; then
+        echo "=========================================="
+        echo "  Graceful shutdown on SIGTERM (#351)"
+        echo "=========================================="
+        if ! run_graceful_shutdown_check; then
+            failed_encodings+=("graceful shutdown")
+        fi
+        echo ""
     fi
-    echo ""
 
     # The opt-out leg: messagepack with the typed sync tables and typed leaf values off, the
     # snapshot-diff fallback. Same CLI scenarios (broadcast field, broadcast event,
