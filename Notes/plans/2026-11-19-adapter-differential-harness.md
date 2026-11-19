@@ -1,8 +1,50 @@
-# A differential test harness for TransportAdapter's adoption levels (#555)
+# A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 5, GO (2026-11-19), with the review's last shoulds folded in. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 6 (2026-11-19): the delta below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
-**Rev 5** answers the review of rev 4 (432e4221):
+## Rev 6: one rewrite branch, compared with golden captures
+
+**Decision (maintainer, 2026-11-19).** #546 rewrites `TransportAdapter` onto the turn core on one branch, in one go, instead of slice by slice behind an adoption level on `main`. The harness compares that branch with golden captures recorded on `main`. This section is the delta. Where it and the sections below disagree, this section holds. Q3 and everything else the review passed in rev 5 stay.
+
+**What stays.** The harness still lands on `main` first: the scenarios and holds (§8), the barrier and the two checkpoints (§5.3), the stable identities (§5.4), the record capture and its field list (§5.5), the property oracle (§5.6) and the comparator's strictness (§5.7). Both approaches need them.
+
+**Dropped.**
+- §4 as a whole: no `TransportAdapterAdoption`, no `TRANSPORT_ADAPTER_ADOPTION` key, no `adoption` parameter on `LandManager` or the adapter, no configuration override, and no startup refusal. Step 1 had them in code; they are taken out again before its PR, so no new server setting ships.
+- The in-process comparison of two levels, and the clean capture under `.build` (§7 (b)).
+- §1's "one level only until slice 1" and §9's "twice that once a second level exists".
+
+**Changes by section.**
+- **§1 Goal.** The two implementations are `main`'s adapter, as recorded in its golden captures, and the rewrite branch's adapter. Each runs in its own build. The harness ships on `main` before the rewrite, and its own checks (§7) run against `main`.
+- **§2 Prior art.** Differential testing still applies: two implementations, the same inputs. The reference side's outputs are stored rather than produced in the same run, so the golden table's failure modes now cover every scenario, not two.
+- **§3 Assembly.** Unchanged except that the build no longer forwards a level. Step 1 as built: the build is `NIOLandServer`'s `package` init with `autoStartLoops`, which the public init calls with `true`; `attach()` installs the router as the transport's delegate, and the host awaits it before the route goes live. Two findings change §3's text:
+  - the failure-stop wiring stays in the init, which is synchronous and runs before any land exists, so `attach()` only installs the delegate;
+  - `Deadline` stays in `Sources`: `WebSocketSessionHandler` uses `raceDeadline` for its close grace. So the support target holds `TestGate` and `RecordingConnection`, and `SwiftStateTreeTests` doesn't need to depend on it.
+- **§5.1 Shape.** A run produces one `RunResult` per scenario and cell from the build's own adapter. The runner takes no level.
+- **§5.7 Comparison.** The branch's `RunResult` is compared with the golden capture for the same scenario and cell. Frames are still compared byte for byte, so a golden file stores each frame's exact bytes next to its decoded view. The report shows both decoded frames, as before.
+- **§5.8 Golden captures (replaces it).**
+  - **Set:** every scenario, in every cell it applies to (sync mode × land kind × encoding). One file per scenario and cell, at the path §5.8 gives.
+  - **Format:** stable and diffable. JSON with sorted keys; per connection, each frame as base64 bytes plus its decoded JSON; the closes; the responses; and the decoded record with the replaced fields (§5.5) set to their constants. The file names the `main` commit it was recorded at.
+  - **Recording:** on `main` only, with `SST_UPDATE_GOLDEN=1`. The update runs each scenario twice in each cell. If the two runs differ, it writes nothing for that cell and fails, naming the first difference. It also writes nothing when the property oracle (§5.6) fails on the run, so a shared bug isn't frozen into a golden.
+  - **Changes on `main`:** a PR that changes shared code and re-records goldens names each changed file, and review reads the diffs. The rewrite branch picks them up by merging `main`.
+  - **On the rewrite branch:** the goldens are read-only. The branch's PR CI checks that `Tests/SwiftStateTreeNIOTests/Differential/Golden/` is the same as on `main` (a `git diff --quiet` against the merge base), so a golden can't be re-recorded to match the branch.
+- **§6 Expected differences.** The list applies to golden versus branch. `legacy:` becomes `golden:` and `adopted:` becomes `branch:`; the rules (exact, one cell, one use, stale and overlap fail, masked cells) are unchanged. The first list moves from slice 1 to the rewrite branch: the #548 entry, and the pre-admission disconnect as no difference (Q3). For #588, each refusal source is compared with its golden.
+- **§7 Checks of the harness.**
+  - **(a) Determinism:** the double run moves into recording (§5.8 above). A normal run compares each cell once with its golden.
+  - **(b) Mutants:** each mutant's run is compared with the golden captures, and the scenario that claims its channel must fail.
+  - **(d) Golden:** adds a check that an update whose two runs differ writes nothing.
+  - **(f) Oracle:** a mutant that breaks a property on `main` must fail the recording, not only a normal run.
+  - (c), (e) and (g) are unchanged.
+- **§8 Scenarios and holds.** Unchanged. The hold points the rows use (§8.1) and the test hooks of §5.3 and §5.4 become the harness's interface to the adapter. The rewrite branch keeps each one at the matching await of its own code, and the reach rule still fails a hold that isn't reached. Where the rewrite removes the race a row forces, the row moves to the expected list or is retired, with the reason in the branch's PR.
+- **§9 Matrix and CI cost.** One run per cell in CI: about 162 runs in the unrestricted leg and 84 in the `IN_TURN_SYNC=false` leg. Recording runs twice per cell, on `main`, only when goldens are updated. Step 2 also states the golden set's file count and size.
+- **§10 What it can't see.** E2E and the load test compare the branch's server build with `main`'s, as for any PR; there is no level to choose.
+- **§11 Steps.** Step 1 loses the adoption items. Step 2 records goldens for every scenario and adds the read-only check. Step 3 is the rewrite branch (#546) instead of slice 1.
+
+**Rewrite branch rules.**
+- **Freeze:** while the branch is open, the adapter's files on `main` (`Sources/SwiftStateTreeTransport/TransportAdapter*.swift`, `MembershipCoordinator.swift`, `AdapterErrorMapping.swift`) take no changes except the harness's own hooks. A fix that can't wait goes to the maintainer, and lands on the branch in the same change.
+- **Commits:** sized so Review can take them one at a time. The branch merges `main` to stay current, never rebases.
+- **Merge:** when every scenario in every cell matches its golden capture or a listed expected difference, the property oracle passes, and the usual gates pass.
+
+**Rev 5** answered the review of rev 4 (432e4221):
 - a witness client B in each single-player disconnect row, and the turn that completes each join (§8);
 - the join budget and the flip timer pinned off (§8);
 - #548's assertion at a held `afterAdmit`, and the action row's reuse after the transport's own disconnect (§8.1);
