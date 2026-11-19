@@ -230,7 +230,13 @@ struct PayloadDecodeDifferentialTests {
             #expect(decoded.d == Decimal(string: expected), "\(value)")
             #expect(Self.today(Box.self, .map([.string("d"): value])) == .accepted(Self.canonical(decoded)), "\(value)")
         }
-        // A frame the server builds writes `Decimal`'s keyed `Codable` form: it round-trips.
+        // A client payload refuses a Decimal sent as a string, as the round trip did.
+        #expect(throws: DecodingError.self) {
+            _ = try MessagePackPayloadSource(validating: .map([.string("d"): .string("2.5")])).decode(Box.self)
+        }
+        #expect(Self.today(Box.self, .map([.string("d"): .string("2.5")])) == .refused)
+        // A frame the server builds writes a Decimal as its string (`MessagePackValueEncoder`):
+        // it round-trips. On main it didn't decode at all (the decoder took only the keyed form).
         let codec = MessagePackTransportCodec()
         for decimal in [Decimal(string: "2.5")!, Decimal(string: "-0.001")!, Decimal(12345678901234567890 as UInt64)] {
             #expect(try codec.decode(Box.self, from: codec.encode(Box(d: decimal))) == Box(d: decimal))

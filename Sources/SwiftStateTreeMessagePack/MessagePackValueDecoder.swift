@@ -149,7 +149,7 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
             let data = try box.decodeData(codingPath: codingPath + [key])
             return data as! T
         }
-        if type == Decimal.self, let decimal = try decodeValue(forKey: key).decodeDecimalNumber(codingPath: codingPath + [key]) {
+        if type == Decimal.self, let decimal = try decodeValue(forKey: key).decodeDecimalNumber(codingPath: codingPath + [key], clientPayload: decoder.clientPayload) {
             return decimal as! T
         }
         if type == AnyCodable.self, decoder.clientPayload {
@@ -280,7 +280,7 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             return data as! T
         }
         let value = try nextBox().value
-        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath) {
+        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath, clientPayload: decoder.clientPayload) {
             return decimal as! T
         }
         if type == AnyCodable.self, decoder.clientPayload {
@@ -393,7 +393,7 @@ private struct MessagePackSingleValueDecodingContainer: SingleValueDecodingConta
             let data = try MessagePackValueBox(value: value).decodeData(codingPath: codingPath)
             return data as! T
         }
-        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath) {
+        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath, clientPayload: decoder.clientPayload) {
             return decimal as! T
         }
         if type == AnyCodable.self, decoder.clientPayload {
@@ -461,11 +461,14 @@ private struct MessagePackValueBox {
     }
 
     /// A `Decimal` sent as a number, as a client writes one, read as the JSON round trip read it:
-    /// from the number's shortest decimal text, so `0.1` is `0.1`. Nil for any other value, which
-    /// `Decimal`'s own keyed `Codable` form then decodes (the form the server's encoders write).
-    func decodeDecimalNumber(codingPath: [CodingKey]) throws -> Decimal? {
+    /// from the number's shortest decimal text, so `0.1` is `0.1`. Outside a client payload, also
+    /// the string the server's value encoder writes (`MessagePackValueEncoder`); a client payload
+    /// refuses a string, as the round trip's `JSONDecoder` did. Nil for any other value, which
+    /// `Decimal`'s own keyed `Codable` form then decodes.
+    func decodeDecimalNumber(codingPath: [CodingKey], clientPayload: Bool) throws -> Decimal? {
         let text: String
         switch value {
+        case .string(let value) where !clientPayload: text = value
         case .int(let value): return Decimal(value)
         case .uint(let value): return Decimal(value)
         case .double(let value) where value.isFinite: text = value.description
