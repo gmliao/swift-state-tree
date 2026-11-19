@@ -164,9 +164,11 @@ private struct DecodeOnceFixture {
         try eventFrame(["tag": tag, "deep": deep])
     }
 
-    /// The error frames sent so far, decoded.
+    /// The error frames sent so far, decoded, once the adapter's outbound writer has handed
+    /// every queued frame to the transport (the writer delivers them on its own task).
     func errors() async -> [ErrorPayload] {
-        await sent.frames.compactMap { data in
+        await adapter.waitForOutboundIdleForTesting()
+        return await sent.frames.compactMap { data in
             // The adapter's encoder may differ from the decoding codec (an opcode JSON frame,
             // `[106, …]`, or a foreign codec's frames), so every server encoding is tried.
             let message = (try? choice.codec.decode(TransportMessage.self, from: data))
@@ -179,8 +181,6 @@ private struct DecodeOnceFixture {
     }
 }
 
-/// A tickless land: an action without resolvers is applied before the adapter's `onMessage`
-/// returns, and so is a client event sent before it. A job's action is answered later.
 private func decodeOnceRules() -> RulesNode {
     Rules {
         HandleAction(DecodeOnceAction.self) { (state: inout DecodeOnceState, action: DecodeOnceAction, _: LandContext) in
@@ -197,6 +197,9 @@ private func decodeOnceRules() -> RulesNode {
     }
 }
 
+/// By default a tickless land: an action without resolvers is applied before the adapter's `onMessage`
+/// returns, and so is a client event sent before it. A job's action is answered later.
+///
 /// `tick`: a land with a tick (every hour, stepped by hand with `stepTickOnce()`), whose inputs
 /// wait for the tick. `recording`: the keeper records its inputs (`ReevaluationRecorder`).
 private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, tick: Bool = false, recording: Bool = false) async throws -> DecodeOnceFixture {
