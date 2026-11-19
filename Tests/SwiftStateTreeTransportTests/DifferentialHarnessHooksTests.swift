@@ -19,9 +19,31 @@ struct HarnessHooksState: StateNodeProtocol {
     var leaves: [String] = []
 }
 
+@Payload
+struct HooksPingAction: ActionPayload {
+    typealias Response = HooksPingResponse
+    let tag: String
+}
+
+@Payload
+struct HooksPingResponse: ResponsePayload {
+    let tag: String
+}
+
+struct HooksPingOutput: ResolverOutput {}
+
+/// Returns at once; with it the ping is a pending job, answered by the adapter's response task.
+struct HooksPingResolver: ContextResolver {
+    typealias Output = HooksPingOutput
+    static func resolve(ctx: ResolverContext) async throws -> HooksPingOutput { HooksPingOutput() }
+}
+
 private func makeHooksLand() -> LandDefinition<HarnessHooksState> {
     Land("harness-hooks", using: HarnessHooksState.self) {
         Rules {
+            HandleAction(HooksPingAction.self, resolvers: HooksPingResolver.self) { (_: inout HarnessHooksState, action: HooksPingAction, _: LandContext) in
+                HooksPingResponse(tag: action.tag)
+            }
             OnJoin { (state: inout HarnessHooksState, ctx: LandContext) in
                 state.players.append(ctx.playerID.rawValue)
             }
@@ -81,6 +103,14 @@ private struct HooksHarness {
             requestID: "join-\(player)", landType: "harness-hooks", landInstanceId: "one",
             playerID: player, deviceID: nil, metadata: nil
         ))
+        await router.onMessage(frame, from: session)
+    }
+
+    /// A `HooksPingAction`, a pending job (it has a resolver): its answer finishing is one action
+    /// response finished.
+    func ping(_ session: SessionID, tag: String) async throws {
+        let envelope = ActionEnvelope(typeIdentifier: String(describing: HooksPingAction.self), payload: AnyCodable(HooksPingAction(tag: tag)))
+        let frame = try JSONEncoder().encode(TransportMessage.action(requestID: "ping-\(tag)", action: envelope))
         await router.onMessage(frame, from: session)
     }
 }
@@ -233,26 +263,40 @@ struct DifferentialHarnessHooksTests {
 
     // MARK: Action-response waiter
 
-    @Test("The action-response waiter returns when its task is cancelled, registered or not yet, for a count that never comes")
+    @Test("The action-response waiter returns on a real completion after it registered, and on cancellation, registered or not yet")
     func actionResponseWaiterIsCancellable() async throws {
         let h = try await HooksHarness.make()
+        let session = SessionID("s1")
+        let connection = await h.connect(session)
+        try await h.join(session, player: "p1")
+        #expect(await connection.waitForFirstSync())
 
-        // Cancelled after it registered: the cancellation handler removes and resumes it.
+        // Registered, then a real completion: the first action's response finishing resumes it.
         let registered = TestGate()
-        let waiter = Task { await h.adapter.waitForActionResponsesFinishedForTesting(1) { await registered.arrive() } }
-        #expect(await registered.waitForArrivals(1), "the waiter registered")
+        let first = Task { await h.adapter.waitForActionResponsesFinishedForTesting(1) { await registered.arrive() } }
+        #expect(await registered.waitForArrivals(1), "the waiter registered before the action")
         registered.open()
-        waiter.cancel()
-        #expect(await bounded { await waiter.value }, "the registered waiter returned on cancellation")
+        try await h.ping(session, tag: "one")
+        #expect(await bounded { await first.value }, "the completion resumed the registered waiter")
+
+        // Registered, cancelled, then completed: the cancellation resumes it, and the later
+        // completion finds no waiter to resume a second time.
+        let cancelledRegistration = TestGate()
+        let cancelled = Task { await h.adapter.waitForActionResponsesFinishedForTesting(2) { await cancelledRegistration.arrive() } }
+        #expect(await cancelledRegistration.waitForArrivals(1))
+        cancelledRegistration.open()
+        cancelled.cancel()
+        #expect(await bounded { await cancelled.value }, "the registered waiter returned on cancellation")
+        try await h.ping(session, tag: "two")
+        #expect(await bounded { await h.adapter.waitForActionResponsesFinishedForTesting(2) }, "the second completion counted")
 
         // Cancelled before it registered: it returns without being stored.
         let early = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            await h.adapter.waitForActionResponsesFinishedForTesting(1) { Issue.record("a cancelled waiter registered") }
+            await h.adapter.waitForActionResponsesFinishedForTesting(3) { Issue.record("a cancelled waiter registered") }
         }
         #expect(await bounded { await early.value }, "the waiter cancelled first returned")
-        // A cancelled waiter is gone: a later finish resumes nothing twice.
-        #expect(await bounded { await h.adapter.waitForActionResponsesFinishedForTesting(0) })
+        #expect(await connection.waitUntilFrames { $0.filter { $0.kind == .actionResponse }.count == 2 })
     }
 
     // MARK: Flip timeout

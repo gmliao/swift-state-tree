@@ -5696,11 +5696,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// resumed exactly once.
     ///
     /// - Parameter registered: called once the waiter is stored (not when it returns at once or
-    ///   is cancelled first), so a test acts after registration rather than after a delay.
+    ///   is cancelled first), so a test acts after registration rather than after a delay. It has
+    ///   finished by the time the waiter returns.
     func waitForActionResponsesFinishedForTesting(_ count: Int, registered: @escaping @Sendable () async -> Void = {}) async {
         guard actionResponsesFinished < count else { return }
         let id = nextActionResponsesFinishedWaiter
         nextActionResponsesFinishedWaiter += 1
+        // Joined before returning, so the acknowledgement has run when the waiter returns.
+        var acknowledgement: Task<Void, Never>?
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 if Task.isCancelled {
@@ -5708,11 +5711,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     return
                 }
                 actionResponsesFinishedWaiters[id] = (count, continuation)
-                Task { await registered() }
+                acknowledgement = Task { await registered() }
             }
         } onCancel: {
             Task { await self.cancelActionResponsesFinishedWaiter(id) }
         }
+        await acknowledgement?.value
     }
 
     private func cancelActionResponsesFinishedWaiter(_ id: Int) {

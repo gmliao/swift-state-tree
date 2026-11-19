@@ -4,6 +4,12 @@
 // comparison rule, so a field added later fails here until it is classified. The fields are read
 // from the types by a probing decoder, not from a recorded value, so a field that no fixture fills
 // (a nil optional, an empty collection, another case) is checked too.
+//
+// The root is the decoded contents (`ReevaluationRecordLogContents`: metadata, frames,
+// completeness), not the wire records (`ReevaluationLogRecord`, a header, turns and a footer).
+// The golden stores the record's bytes, compared byte for byte in the pinned image, and its decoded
+// view, which is these contents; the wire framing is covered by the bytes, and the field list
+// classifies what the decoded view compares.
 
 import Foundation
 import Testing
@@ -28,15 +34,44 @@ private nonisolated(unsafe) let recordSamples: [any Decodable] = [
     LandFailurePosition.Stage.input,
 ]
 
+/// Dynamic values: their content is a payload or a state value, not a fixed field set, so the
+/// probe returns these unprobed and reports where they sit (`recordBoundaryPaths`). The decoded
+/// view compares them as values.
+private nonisolated(unsafe) let recordBoundaries: [any Decodable] = [
+    AnyCodable(Int(0)),
+    SnapshotValue.null,
+]
+
+/// Where the record holds dynamic values: payloads, resolver outputs, patch values and the
+/// metadata's free-form maps.
+private let recordBoundaryPaths: Set<String> = [
+    "frames[].actions[].payload", "frames[].actions[].resolverOutputs[].value",
+    "frames[].clientEvents[].payload", "frames[].initialize.serverEvents[].payload",
+    "frames[].lifecycleEvents[].resolverOutputs[].value", "frames[].serverEvents[].payload",
+    "frames[].serverInputs[].payload", "frames[].syncOutputs[].patches[][].value",
+    "metadata.extensions[]", "metadata.landConfig[]", "metadata.ruleParams[]",
+]
+
 /// The record's types that pick their fields by a string discriminator, with every value.
 private let recordCases: [ObjectIdentifier: [String]] = [
     ObjectIdentifier(StatePatch.self): ["replace", "add", "remove"],
 ]
 
 private func probeRecordTypes() -> RecordFieldProbeResult {
-    let metadata = RecordFieldProbe.probe(ReevaluationRecordMetadata.self, at: "metadata", samples: recordSamples, cases: recordCases)
-    let frames = RecordFieldProbe.probe(ReevaluationTickFrame.self, at: "frames[]", samples: recordSamples, cases: recordCases)
-    return RecordFieldProbeResult(paths: metadata.paths.union(frames.paths), opaque: metadata.opaque.union(frames.opaque))
+    let metadata = RecordFieldProbe.probe(
+        ReevaluationRecordMetadata.self, at: "metadata", samples: recordSamples, boundaries: recordBoundaries, cases: recordCases
+    )
+    let frames = RecordFieldProbe.probe(
+        ReevaluationTickFrame.self, at: "frames[]", samples: recordSamples, boundaries: recordBoundaries, cases: recordCases
+    )
+    return RecordFieldProbeResult(
+        paths: metadata.paths.union(frames.paths),
+        opaque: metadata.opaque.union(frames.opaque),
+        recursive: metadata.recursive.union(frames.recursive),
+        branching: metadata.branching.union(frames.branching),
+        boundaries: metadata.boundaries.union(frames.boundaries),
+        nonLeafSamples: metadata.nonLeafSamples.union(frames.nonLeafSamples)
+    )
 }
 
 @Suite("Replay record field list (#555)")
@@ -45,6 +80,10 @@ struct RecordFieldListTests {
     func everyFieldIsClassified() async throws {
         let probe = probeRecordTypes()
         #expect(probe.opaque.isEmpty, "give each opaque type a sample or its cases: \(probe.opaque.sorted())")
+        #expect(probe.recursive.isEmpty, "a recursive record type: \(probe.recursive.sorted())")
+        #expect(probe.branching.isEmpty, "list the discriminator values in recordCases: \(probe.branching.sorted())")
+        #expect(probe.nonLeafSamples.isEmpty, "a sample hides fields: \(probe.nonLeafSamples.sorted())")
+        #expect(probe.boundaries == recordBoundaryPaths, "a new dynamic value: declare it in recordBoundaryPaths")
         // Fields only some records fill: optional, in-turn only, a discriminated case.
         #expect(probe.paths.isSuperset(of: [
             "metadata.rngSeed", "metadata.hardwareInfo.cpuModel", "frames[].landFailure.kind",
@@ -69,7 +108,7 @@ struct RecordFieldListTests {
         #expect(RecordFieldList.rule(for: "frames[].actions[].clientID") == .compared)
     }
 
-    @Test("The probe names nil optionals, empty collections, dictionary values and every case")
+    @Test("The probe names nil optionals, empty collections, dictionary values and each listed case")
     func probeNamesUnfilledFields() {
         struct Inner: Decodable { let x: Int; let tags: [String] }
         struct Outer: Decodable { let a: Inner; let b: Inner?; let c: [Inner]; let d: [String: Inner] }
@@ -77,24 +116,59 @@ struct RecordFieldListTests {
             "a", "a.x", "a.tags", "b", "b.x", "b.tags", "c", "c[].x", "c[].tags", "d", "d[].x", "d[].tags",
         ]))
 
-        // A type that reads `extra` only in one case: probed once per case, so `extra` is named.
+        // A type that reads `extra` only in one case and rejects an unknown discriminator, as
+        // `StatePatch` does. Without its cases neither run's string answer is a case, so it is
+        // reported as opaque; with them, each case is probed and `extra` is named.
         struct Tagged: Decodable {
             enum CodingKeys: String, CodingKey { case kind, extra }
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
-                if try container.decode(String.self, forKey: .kind) == "rich" {
-                    _ = try container.decode(Int.self, forKey: .extra)
+                switch try container.decode(String.self, forKey: .kind) {
+                case "plain": break
+                case "rich": _ = try container.decode(Int.self, forKey: .extra)
+                default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "unknown kind")
                 }
             }
         }
-        #expect(RecordFieldProbe.probe(Tagged.self).paths == ["kind"])
-        #expect(RecordFieldProbe.probe(Tagged.self, cases: [ObjectIdentifier(Tagged.self): ["plain", "rich"]]).paths == ["kind", "extra"])
+        #expect(RecordFieldProbe.probe(Tagged.self).opaque == [""])
+        let tagged = RecordFieldProbe.probe(Tagged.self, cases: [ObjectIdentifier(Tagged.self): ["plain", "rich"]])
+        #expect(tagged.paths == ["kind", "extra"] && tagged.opaque.isEmpty && tagged.branching.isEmpty)
+
+        // A version gate on an integer is flagged the same way, at its own path.
+        struct Gated: Decodable {
+            enum CodingKeys: String, CodingKey { case version, extra }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if try container.decode(Int.self, forKey: .version) >= 1 {
+                    _ = try container.decode(Bool.self, forKey: .extra)
+                }
+            }
+        }
+        struct HoldsGated: Decodable { let gated: Gated; let plain: Int }
+        let gated = RecordFieldProbe.probe(HoldsGated.self)
+        #expect(gated.branching == ["gated"], "the gate's type, not its parent")
+        #expect(gated.paths == ["gated", "gated.version", "gated.extra", "plain"])
 
         // An enum whose raw value the probe can't guess is reported, not skipped.
         enum Mode: String, Decodable { case on }
         struct WithMode: Decodable { let mode: Mode; let after: Int }
         #expect(RecordFieldProbe.probe(WithMode.self).opaque == ["mode"])
         #expect(RecordFieldProbe.probe(WithMode.self, samples: [Mode.on]) == RecordFieldProbeResult(paths: ["mode", "after"]))
+
+        // A sample whose type has fields would hide them: reported.
+        #expect(RecordFieldProbe.probe(WithMode.self, samples: [Mode.on, Inner(x: 0, tags: [])]).nonLeafSamples == ["Inner"])
+        // A boundary is returned unprobed, and where it sits is reported.
+        struct WithPayload: Decodable { let payload: AnyCodable; let after: Int }
+        #expect(RecordFieldProbe.probe(WithPayload.self, boundaries: [AnyCodable(Int(0))])
+            == RecordFieldProbeResult(paths: ["payload", "after"], boundaries: ["payload"]))
+    }
+
+    @Test("A recursive type is reported where it recurs, though it stops the fields after it")
+    func probeReportsRecursion() {
+        final class Node: Decodable { let child: Node?; let after: Int }
+        let probe = RecordFieldProbe.probe(Node.self)
+        #expect(probe.recursive == ["child"])
+        #expect(!probe.paths.contains("after"), "the stop is what the report is for")
     }
 }
 

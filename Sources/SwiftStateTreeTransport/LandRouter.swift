@@ -410,11 +410,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Each waiter is removed under the router's isolation and resumed exactly once.
     ///
     /// - Parameter registered: called once the waiter is stored (not when it returns at once or
-    ///   is cancelled first), so a test acts after registration rather than after a delay.
+    ///   is cancelled first), so a test acts after registration rather than after a delay. It has
+    ///   finished by the time the waiter returns.
     package func waitForNoPendingFlipForTesting(registered: @escaping @Sendable () async -> Void = {}) async {
         if pendingFlipWaits == 0 { return }
         let id = nextNoPendingFlipWaiter
         nextNoPendingFlipWaiter += 1
+        // Joined before returning, so the acknowledgement has run when the waiter returns.
+        var acknowledgement: Task<Void, Never>?
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 if Task.isCancelled {
@@ -422,11 +425,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     return
                 }
                 noPendingFlipWaiters[id] = continuation
-                Task { await registered() }
+                acknowledgement = Task { await registered() }
             }
         } onCancel: {
             Task { await self.cancelNoPendingFlipWaiter(id) }
         }
+        await acknowledgement?.value
     }
 
     private func cancelNoPendingFlipWaiter(_ id: Int) {
