@@ -148,3 +148,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A Docker tag isn't a pin: the same tag pulled two images a day apart](2026-11-19-a-docker-tag-is-not-a-pin.md) | ci, docker, toolchain, measurement, methodology |
 | 2026-11-19 | [A checker's trigger must cover every path it reads, not its own directory](2026-11-19-a-checkers-trigger-must-cover-what-it-reads.md) | pre-push, ci, deep-research, shell, pipefail |
 | 2026-11-19 | [A branch cut from a PR head that was then squash-merged duplicates on merge, with no conflict](2026-11-19-a-branch-from-a-squash-merged-pr-head-duplicates-on-merge.md) | git, merge, squash, stacked-branches, ci |
+| 2026-11-19 | [A small generic wrapper used from another module runs unspecialized unless it's `@inlinable`](2026-11-19-a-cross-module-generic-wrapper-runs-unspecialized.md) | performance, generics, specialization, inlinable, existential, proof-type |
