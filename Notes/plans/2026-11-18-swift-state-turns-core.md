@@ -64,7 +64,7 @@ In prose, "parked" became "queued" and "segment" became "batch". Internal names 
 ### 3.1 Values
 
 ```swift
-public struct InputID: Hashable, Sendable, PlainData      // one per `call`; names its waiter
+public struct InputID: Hashable, Sendable, PlainData      // one per `sendAndWait`; names its waiter
 public struct RequestID: Hashable, Sendable, PlainData    // one per `request`
 public struct Generation: Hashable, Sendable, PlainData   // comparisons and logs only
 
@@ -84,14 +84,14 @@ public enum Hold<Key: Hashable & Sendable>: Sendable {   // every holding reques
 }
 public enum Abandonment: Sendable, Equatable { case keyEnded, deadline, cancelled }
 public enum TurnError: Error, Sendable, Equatable { case closed, queueFull, withdrawn }
-public enum CallerCancellation: Sendable { case ignored, cancelsCall }
+public enum CallerCancellation: Sendable { case ignoresCancel, cancelsCall }
 ```
 
 ### 3.2 The machine
 
 ```swift
 public protocol TurnMachine: Sendable {          // a value type; every stored field is PlainData
-  associatedtype Input: Sendable                 // external inputs and effect results alike
+  associatedtype Input: Sendable                 // normal inputs and effect results alike
   associatedtype Effect: Sendable                // asynchronous work, as data
   associatedtype Output                          // synchronous sink items
   associatedtype Key: Hashable & Sendable
@@ -212,26 +212,26 @@ Each rule says what holds. A rejected alternative listed here was a real bug fou
 
 1. **A step is synchronous, and nothing enters a running step.** `handle`, `handleAbandoned`, `handleLateResult` and `answer` aren't `async`. A `send` or `sendAndWait` made during a step or batch is queued and steps later in that batch. `read`, `query`, or a step entered from inside a step stops the process with a message (`fatalError`, which prints in release; `precondition` doesn't).
 2. **The core is a reference held in a `let`; the `Turn` points at it.** `TurnCore` is a final, non-`Sendable` class, so it can't leave the actor and `perform` can't reach it. `Turn` holds `unowned(unsafe)` to the core and changes its runtime in place; the machine and the runtime are separate stored properties, so a step has no access conflict. That reference is sound only because a handler can't make, copy or move a `Turn`: the must-fail snippets that prove it stay. Rejected: a value core in `var core` (the adopter could replace it, or copy it across an await); moving the runtime into the `Turn` and back per step (too slow).
-3. **InputPolicy.** An `external` input is refused `closed` after `close`, refused `withdrawn` if its token has ended, queues behind its hold key if that key is blocked (refused `queueFull` over the queue limit), and otherwise steps. A key is blocked while a request holds it or inputs are still queued behind it, which keeps arrival order while a released queue drains. A `control` input is never gated, queued or refused. A request's completion is neither: it's gated only by its request being open. So a stop's own drain completions survive `close`.
-4. **Keys and generations; handlers hold no tickets.** `start(key)` starts a generation and returns true when it superseded a live one, closing that generation's requests (including ones made earlier in the same step), dropping its timer and withdrawing the normal inputs queued under its scope, as `end` does. A queued input carries no generation, so one sent under the old binding would otherwise step under the new one; its caller gets `withdrawn`, which it can retry, instead of a silent misapplication. Inputs queued before the key's first `start` stay (that isn't a supersede), and so does what a step queued (`queue`). `end(key)` closes the key's requests, releases their `.untilRequestCloses` holds and withdraws queued inputs scoped to it. Work is `request(effect, for: key)`, nil when the key isn't live. Rejected: `Ticket` values handed to handlers.
+3. **InputPolicy.** A `normal` input is refused `closed` after `close`, refused `withdrawn` if its token has ended, queues behind its hold key if that key is blocked (refused `queueFull` over the queue limit), and otherwise steps. A key is blocked while a request holds it or inputs are still queued behind it, which keeps arrival order while a released queue drains. A `control` input is never gated, queued or refused. A request's completion is neither: it's gated only by its request being open. So a stop's own drain completions survive `close`.
+4. **Keys and generations; handlers hold no tickets.** `start(key)` starts a generation and returns true when it superseded a live one, closing that generation's requests (including ones made earlier in the same step), dropping its timer and withdrawing the normal inputs queued under its scope, as `end` does. A queued input carries no generation, so one sent under the old binding would otherwise step under the new one; its caller gets `withdrawn`, which it can retry, instead of a silent misapplication. A send deferred while a step or batch runs is withdrawn the same way when its scope ended or was superseded after it arrived (the core keeps that batch's scope ends while sends are deferred). Limit: an input that arrives while the key isn't live (before its first `start`, or after an `end`) steps under the next generation, since that `start` isn't a supersede; a fresh key per binding avoids it. What a step queued (`queue`) stays. `end(key)` closes the key's requests, releases their `.untilRequestCloses` holds and withdraws queued inputs scoped to it. Work is `request(effect, for: key)`, nil when the key isn't live. Rejected: `Ticket` values handed to handlers.
 5. **A request, its worker and its reply are three states.** A request closes by its completion, its key ending or being superseded, its deadline, or `cancel`. Closed without its completion, `handleAbandoned` steps in that batch. The worker's late result goes to `handleLateResult`, which is the signal that the worker returned. `handleLateResult` may `start` (compensation needs a key). Each core has an incarnation; a completion from another core is dropped and counted.
 6. **A hold belongs to its request.** It exists only as a property of an open request, or of an abandoned one whose worker hasn't returned (`.untilWorkerReturns`). Owners are counted per key; a handover is a new request taking the same hold in the step that closes the old one. A late completion can't release another owner's hold. Rejected: `hold(key)`/`release(key)`, and a separate hold ID.
 7. **Queuing is FIFO per hold key, bounded, budgeted and scoped.** `queueLimit` bounds all queued inputs; a `send` over it has no caller to answer and is dropped and counted. The driver steps released inputs one at a time, never recursively, re-checking the hold before each, at most `maxReleasesPerBatch` per batch; the rest step in a later batch, as the actor's own job, and the key counts as blocked until then. A queued input carries its scope; `end(scope)`, or a supersede of the scope's key (rule 4), withdraws it with `withdrawn`. An adopter that wants inputs to carry over a rebind scopes them to a longer-lived key, or to none. Withdrawn and closed callers are answered in call order.
 8. **Withdraw tokens cover the end that arrives first.** The core reads an input's token on arrival and on release from queuing; an ended token withdraws it. `turn.revoke(token)` marks it and withdraws the queued inputs that carry it in that step. Scope, the key and the token cover three different orders; all three are needed.
 9. **`queue(input, behind:)` can't be refused.** It places the input after those already queued behind the key, or after the current step if the key isn't held. The queue limit, `close`, scope and tokens don't apply; only `endAll` drops it, and after `endAll` it returns false and is counted. The core sets no bound; the adopter does.
-10. **The driver's order.** After every step, before any other: flush outputs; publish replies without `after:`; answer withdrawn callers; if `close` ran, answer queued external callers `closed`; launch effects (one task each; a deadline is a second task). Then, one step at a time, repeating the list after each: an abandoned request, a queued `send` or `sendAndWait`, a released queued input within the budget. `reply(to:_:after: r)` is published when `r`'s completion step ends or `r` is abandoned. An `query` from inside a batch (a collaborator the driver called between two steps, from `flush`) runs its answer step at once, and what that step produced leaves when the batch drains, after the `query` returns: a second `query` in the same collaborator steps before the first one's outputs are flushed. That is the one exception to "flushed before the next step" (invariant 11).
+10. **The driver's order.** After every step, before any other: flush outputs; publish replies without `after:`; answer withdrawn callers; if `close` ran, answer queued normal callers `closed`; launch effects (one task each; a deadline is a second task). Then, one step at a time, repeating the list after each: an abandoned request, a queued `send` or `sendAndWait`, a released queued input within the budget. `reply(to:_:after: r)` is published when `r`'s completion step ends or `r` is abandoned. A `query` from inside a batch (a collaborator the driver called between two steps, from `flush`) runs its answer step at once, and what that step produced leaves when the batch drains, after the `query` returns: a second `query` in the same collaborator steps before the first one's outputs are flushed. That is the one exception to "flushed before the next step" (invariant 11).
 11. **Output is checked by key.** `emit(_, for: key)` is dropped and counted unless the key is live.
 12. **Replies.** At most one per `InputID`. `close` answers queued calls only; a call that already stepped gets its real answer. The waiter table is empty when the core is destroyed (a debug assertion).
 13. **Entries.** `send` steps in the caller's batch when the core is idle, queued otherwise. `sendAndWait` registers its waiter and submits in one batch. `query` runs `answer` as a step; called outside a batch, what it produced has left the core when it returns, and called from inside one, it leaves when that batch drains (rule 10). `read` borrows the machine between steps; an adopter's per-message path does one `read` per batch.
-14. **`close`** closes external intake and answers queued external calls; queued inputs, completions, control inputs, `query` and `run` still step.
+14. **`close`** closes normal intake and answers queued normal calls; queued inputs, completions, control inputs, `query` and `run` still step.
 15. **`endAll`** abandons every open request (`.keyEnded`; a `.untilWorkerReturns` hold stays until its worker returns), ends every key, withdraws scoped queued inputs, drops queued ones, and closes intake. Afterwards `start` does nothing and returns false (counted), so `request` returns nil and `emit` drops; `queue` returns false; `run`, `query`, control inputs and in-flight completions still step. A debug assertion in `request` checks that no key is live after the end.
 16. **Caller cancellation is a policy per `sendAndWait`, with no default.**
 
     | Policy | Behaviour |
     |---|---|
     | `.ignoresCancel` | No handling: the caller waits for the real result |
-    | `.cancelsCall`, external, cancelled before entry | Not submitted; `CancellationError` |
-    | `.cancelsCall`, external, still queued when the cancellation is handled | Withdrawn, never steps; `CancellationError` |
+    | `.cancelsCall`, normal, cancelled before entry | Not submitted; `CancellationError` |
+    | `.cancelsCall`, normal, still queued when the cancellation is handled | Withdrawn, never steps; `CancellationError` |
     | `.cancelsCall`, already stepped | The caller stops waiting (`CancellationError`); the work goes on and its reply finds no waiter |
     | `.cancelsCall`, control | Always submitted and stepped; only the caller stops waiting. Cancelled before entry, it is submitted and the caller gets `CancellationError` at once, even when the step replies at once; the reply finds no waiter |
 
@@ -291,6 +291,9 @@ Every interleaving is ordered by an event, never by a sleep or a poll: an effect
 | 18 | `endAll` with a `.untilWorkerReturns` hold: the hold outlives it, and a late deadline is ignored | 6, 15 |
 | 19 | `start` over a live generation closes requests made earlier in the same step | 4 |
 | 19b | A supersede withdraws the inputs queued under the old generation's scope; one queued before the key's first `start` stays | 4, 7 |
+| 19c | A send deferred during a batch is withdrawn when its scope is superseded before it is admitted | 4 |
+| 19d | Limit: an input queued after its key's end and before the next start steps under the new generation | 4 |
+| 19e | A queued send withdrawn by its scope's end, or dropped by close, counts as a dropped send | 4, 7, 12 |
 | 20 | Outputs flush before the next step; a step's effects launch after its flush | 10 |
 | 21–25 | Cancellation, one check per row of rule 16's table | 16 |
 | 25b | `.cancelsCall`, control, cancelled before entry, whose step replies at once: stepped, and the caller gets `CancellationError` | 16 |
