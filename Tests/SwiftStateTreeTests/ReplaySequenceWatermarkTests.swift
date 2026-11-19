@@ -233,7 +233,11 @@ private func watermarkMetadata(landType: String = "watermark-test") -> Reevaluat
         metadata: [:],
         landDefinitionID: landType,
         rngSeed: DeterministicSeed.fromLandID(watermarkLandID),
-        version: ReevaluationRecordVersion.current
+        version: ReevaluationRecordVersion.current,
+        // A record written by hand carries the land's fingerprint, as a recorder writes it (#521 D15).
+        schemaFingerprint: try? ReevaluationSchemaFingerprint.compute(
+            for: landType == makeTicklessWatermarkDefinition().id ? makeTicklessWatermarkDefinition() : makeWatermarkTestDefinition()
+        )
     )
 }
 

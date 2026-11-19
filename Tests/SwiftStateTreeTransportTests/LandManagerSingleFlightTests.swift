@@ -149,7 +149,12 @@ private func writeReplayRecord() throws -> URL {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: [:],
             landDefinitionID: "sf-game",
-            version: ReevaluationRecordVersion.current
+            version: ReevaluationRecordVersion.current,
+            // The live land's, as a live recording holds it; the keeper checks it before its
+            // first step, under the live type though the replay definition has the alias id (#521 D15).
+            schemaFingerprint: try ReevaluationSchemaFingerprint.compute(
+                for: plainLand(LandID(landType: "sf-game", instanceId: "recorded"))
+            )
         ),
         tickFrames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
     ))

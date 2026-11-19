@@ -52,6 +52,7 @@ struct TwoPhaseBumpEvent: ClientEventPayload {
     let amount: Int
 }
 
+@Payload
 struct TwoPhaseInput: ServerInputPayload {
     let amount: Int
 }
@@ -604,27 +605,39 @@ struct TwoPhaseHandlerTests {
         }
     }
 
-    @Test("A 3.4 record has no rejected list and replays without the comparison", arguments: [false, true])
+    /// A 3.4 record has no rejected list, and no schema fingerprint either: replay refuses it
+    /// before the first step (#521 D15), through the engine and both runner initializers, rather
+    /// than replaying it without the comparison.
+    @Test("A 3.4 record has no rejected list, and is refused as having no schema fingerprint", arguments: [false, true])
     func olderRecordIsNotCompared(tick: Bool) async throws {
         let keeper = try await makeTwoPhaseKeeper(tick: tick, recording: true)
         let key = TwoPhaseRefusals.freshKey()
         TwoPhaseRefusals.refuse(key)
         defer { TwoPhaseRefusals.allow(key) }
         _ = await sendAndApply(keeper, tick: tick, TwoPhaseAddAction(amount: 5, key: key))
-        // As a 3.4 writer wrote it: no rejected lists, version 3.4. Replay refuses the input
-        // again, and with nothing to compare against reports nothing.
+        // As a 3.4 writer wrote it: no rejected lists, version 3.4 (the fingerprint, which a 3.4
+        // writer didn't write, is dropped too).
         let path = try await saveJSONRecord(keeper) { object in
             try editRejected(&object, tick: tick) { _ in nil }
             var metadata = try #require(object["recordMetadata"] as? [String: Any])
             metadata["version"] = "3.4"
+            metadata["schemaFingerprint"] = nil
             object["recordMetadata"] = metadata
         }
         defer { try? FileManager.default.removeItem(atPath: path) }
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getMetadata().version == "3.4")
-        #expect(try await replay(path, tick: tick).recordedPassMismatches.isEmpty)
-        // The runner's version gate too, through both of its initializers.
-        #expect(try await runnerMismatches(path, tick: tick).isEmpty)
-        #expect(try await runnerMismatches(path, tick: tick, initialState: true).isEmpty)
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.4")) {
+            _ = try await replay(path, tick: tick)
+        }
+        // The runner's gate too, through both of its initializers.
+        for initialState in [false, true] {
+            do {
+                _ = try await runnerMismatches(path, tick: tick, initialState: initialState)
+                Issue.record("initialState \(initialState): expected the runner to refuse the record")
+            } catch ReevaluationReplayCompatibilityError.schemaFingerprintMissing(let recorded) {
+                #expect(recorded == "3.4")
+            }
+        }
     }
 }

@@ -32,7 +32,7 @@ case_() {  # name, expected exit, required output line (grep -E), setup command 
   fi
 }
 
-case_ unchanged 0 '^skip  deep-research, serverenv' ':'
+case_ unchanged 0 '^skip  deep-research and its readers' ':'
 case_ new-script-sc2164 1 '^FAIL  shellcheck' 'printf "#!/usr/bin/env bash\ncd /nonexistent\necho hi\n" > scripts/bad.sh'
 case_ held-script-now-clean 1 'has no findings now' 'printf "#!/usr/bin/env bash\necho clean\n" > deep-research/visibility/run.sh'
 case_ new-wall-clock-poll 1 '^FAIL  wall-clock' 'mkdir -p Tests/SwiftStateTreeTests && printf "import Testing\n@Test func poll() async {\n    let deadline = ContinuousClock.now + .seconds(1)\n    while ContinuousClock.now < deadline { await Task.yield() }\n}\n" > Tests/SwiftStateTreeTests/PrePushPollProbe.swift'
@@ -40,4 +40,10 @@ case_ markdown-only-without-shellcheck 0 '^skip  shellcheck \(no shell file chan
 case_ script-change-without-shellcheck 1 'CI pins 0.11.0' 'echo "# probe" >> scripts/pre-push-checks.sh' "$noshellcheck"
 case_ new-unencoded-text-read 1 '^FAIL  text-encoding' 'printf "from pathlib import Path\nprint(Path(\"x\").read_text())\n" > deep-research/encoding_probe.py'
 case_ sources-change-runs-serverenv 0 '^ok    serverenv' 'echo "// probe" >> Sources/SwiftStateTree/Support/EnvHelpers.swift'
+# A shell script outside deep-research/ reaches the pipefail-reader check (#608's examples failure
+# got through when only deep-research/ triggered it). The check reads tracked scripts, as a push
+# carries them, so the probe is added.
+case_ script-pipefail-reader 1 '^FAIL  pipefail-readers' 'printf "#!/usr/bin/env bash\nset -o pipefail\nyes | head -1\n" > scripts/pipefail-probe.sh && git add scripts/pipefail-probe.sh'
+case_ sync-lag-default-change 1 '^FAIL  sync-lag-defaults' 'sed -i.bak "s/resyncAfter: Duration = .seconds(3)/resyncAfter: Duration = .seconds(4)/" Sources/SwiftStateTreeTransport/SyncLag.swift && rm Sources/SwiftStateTreeTransport/SyncLag.swift.bak'
+case_ gitignore-change-runs-ignore-readers 0 '^ok    multiroom-ignored' 'echo "# probe" >> .gitignore'
 exit $fail

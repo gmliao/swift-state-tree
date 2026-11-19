@@ -605,9 +605,9 @@ struct ReevaluationRecordVersionCompatibilityTests {
         )
     }
 
-    @Test("A newer-minor record with an empty sync stream is read by a runner that requires 2.5")
-    func newRecordOnRunnerRequiring25() async throws {
-        let runner = try await runner(recorded: "2.6", required: "2.5", recordsSyncStream: true)
+    @Test("A current record with an empty sync stream is read by a runner that requires an earlier minor")
+    func currentRecordOnRunnerRequiringEarlierMinor() async throws {
+        let runner = try await runner(recorded: ReevaluationRecordVersion.current, required: "3.0", recordsSyncStream: true)
         // Recorded and empty: reported as recorded with 0 outputs, never as absent.
         #expect(runner.syncStreamPresence == .recorded(outputs: 0, markers: 0))
         try await runner.prepare()
@@ -630,8 +630,23 @@ struct ReevaluationRecordVersionCompatibilityTests {
 
     @Test("A record made with in-turn sync off reports the sync stream absent, with the reason")
     func inTurnOffRecord() async throws {
-        let runner = try await runner(recorded: "2.5", required: "2.5", recordsSyncStream: false)
+        let runner = try await runner(recorded: ReevaluationRecordVersion.current, required: nil, recordsSyncStream: false)
         #expect(runner.syncStreamPresence == .absent(reason: "recorded with in-turn sync off"))
+    }
+
+    /// 2.5 and 2.6 are still read, but a record before 3.6 has no schema fingerprint, so the
+    /// runner refuses it before the first step (#521 D15), whatever version it requires.
+    @Test("A record before 3.6 is refused by the runner as having no schema fingerprint", arguments: [nil, "2.5"] as [String?])
+    func recordWithoutFingerprintIsRefused(required: String?) async throws {
+        for old in ["2.5", "2.6", "3.4", "3.5"] where required == nil || old.hasPrefix("2.") {
+            do {
+                _ = try await runner(recorded: old, required: required, recordsSyncStream: true)
+                Issue.record("\(old): expected the record to be refused")
+            } catch ReevaluationReplayCompatibilityError.schemaFingerprintMissing(let recorded) {
+                #expect(recorded == old)
+                #expect((ReevaluationReplayCompatibilityError.schemaFingerprintMissing(recordedVersion: recorded) as NSError).code == 2005)
+            }
+        }
     }
 
     @Test("A different major version fails")

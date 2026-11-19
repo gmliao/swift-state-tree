@@ -279,15 +279,17 @@ func edgeSetCommittedBytes() throws {
     #expect(hex(bytes) == CanonicalMessagePackFixtures.edgeSetHex, "got \(hex(bytes))")
 }
 
-/// A tracked hero-defense record (JSON 2.5) read as `AnyCodable` and encoded canonically. The
+/// A hero-defense record (JSON 2.5, once a GameDemo replay fixture; now an encoder input only,
+/// since replay refuses a record without a schema fingerprint) read as `AnyCodable` and encoded
+/// canonically. The
 /// record holds integers, strings, booleans and nulls only, so the value tree is the same as the
 /// JSON's, and the expected digest comes from a separate reference encoder. This covers the
 /// generic `AnyCodable` path; the typed record path is covered by the 3.0 record tests.
 @Test("A hero-defense record encodes to the committed digest")
 func heroDefenseRecordDigest() throws {
     let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Examples/GameDemo/reevaluation-records/3-hero-defense.json")
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/hero-defense-record-2.5.json")
     let record = try JSONDecoder().decode(AnyCodable.self, from: Data(contentsOf: url))
     let bytes = try CanonicalMessagePack.encode(record)
     #expect(bytes.count == CanonicalMessagePackFixtures.heroDefenseRecordByteCount)

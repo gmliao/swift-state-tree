@@ -17,20 +17,24 @@ struct ServerInputTestState: StateNodeProtocol {
     public init() {}
 }
 
+@Payload
 struct SIProgress: ServerInputPayload {
     let tag: String
 }
 
+@Payload
 struct SIFailing: ServerInputPayload {
     let tag: String
 }
 
+@Payload
 struct SIUndeclared: ServerInputPayload {
     let tag: String
 }
 
 /// A payload whose live value differs from its record form unless live applies the record
 /// form: a fractional `Date` (the record holds whole seconds) and a whole `Double`.
+@Payload
 struct SIDated: ServerInputPayload {
     let at: Date
     let ratio: Double
@@ -38,18 +42,21 @@ struct SIDated: ServerInputPayload {
 }
 
 /// The canonical record encoding refuses a `Set`.
+@Payload
 struct SIUnencodable: ServerInputPayload {
     let ids: Set<Int>
 }
 
 /// A different type with the declared type's name: never the declared one.
 enum SIElsewhere {
+    @Payload
     struct SIProgress: ServerInputPayload {
         let tag: String
     }
 }
 
 /// Arrays nested `depth` deep, for the record's depth limit.
+@Payload
 struct SIDeep: ServerInputPayload {
     let depth: Int
 
@@ -425,20 +432,26 @@ struct ServerInputTests {
         }
     }
 
-    @Test("Replaying a recorded server input the land doesn't declare fails the replay")
+    /// The land without the input has another schema fingerprint (its server inputs are part of
+    /// it), so replay refuses the record before its first step (#521 D15) rather than failing on
+    /// the input's tick.
+    @Test("Replaying a record against a land that doesn't declare its server input is refused before the first step")
     func undeclaredRecordedInputFailsReplay() async throws {
         let keeper = try await makeKeeper(ticking: true)
         _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
         await keeper.stepTickOnce()
         let path = try await saveRecord(keeper, name: "server-input-undeclared")
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let result = try await ReevaluationEngine.run(
-            definition: makeTickDefinitionWithoutServerInputs(),
-            initialState: ServerInputTestState(),
-            recordFilePath: path
-        )
-        #expect(result.recordedPassMismatches.values.contains { $0.contains("SIProgress") }, "\(result.recordedPassMismatches)")
-        #expect(result.serverEventVerification != .passed)
+        let recorded = try ReevaluationSchemaFingerprint.compute(for: makeDefinition(ticking: true))
+        let current = try ReevaluationSchemaFingerprint.compute(for: makeTickDefinitionWithoutServerInputs())
+        #expect(recorded != current)
+        await #expect(throws: ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current)) {
+            _ = try await ReevaluationEngine.run(
+                definition: makeTickDefinitionWithoutServerInputs(),
+                initialState: ServerInputTestState(),
+                recordFilePath: path
+            )
+        }
     }
 
     @Test("Refusals queue nothing: undeclared type, no record form, not live, draining")
@@ -623,7 +636,7 @@ struct ServerInputTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let source = try ReevaluationRecordFile.openSource(filePath: path)
-        #expect(try await source.getMetadata().version == "3.5")
+        #expect(try await source.getMetadata().version == "3.6")
         let result = try await ReevaluationEngine.run(
             definition: makeDefinition(ticking: true),
             initialState: ServerInputTestState(),

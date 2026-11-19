@@ -19,6 +19,7 @@ public struct ActionEventExtractor {
         // Check if type conforms to SchemaMetadataProvider
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
             let fieldMetadata = metadataProvider.getFieldMetadata()
+            SchemaExtractionProbe.current?.noteFields(of: type, listed: fieldMetadata.count)
             
             var properties: [String: JSONSchema] = [:]
             var required: [String] = []
@@ -73,6 +74,7 @@ public struct ActionEventExtractor {
         // Check if type conforms to SchemaMetadataProvider (recommended path for codegen)
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
             let fieldMetadata = metadataProvider.getFieldMetadata()
+            SchemaExtractionProbe.current?.noteFields(of: type, listed: fieldMetadata.count)
             
             var properties: [String: JSONSchema] = [:]
             var required: [String] = []

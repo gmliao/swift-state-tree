@@ -80,7 +80,7 @@ struct HeroDefenseReplayStateParityTests {
 
     @Test("HeroDefenseState decodes first ConcreteReevaluationRunner snapshot from fixture record")
     func heroDefenseStateDecodesRunnerSnapshotFixture() async throws {
-        let recordPath = fixtureRecordPath("3-hero-defense.json")
+        let recordPath = fixtureRecordPath("3-hero-defense.sstr")
         #expect(FileManager.default.fileExists(atPath: recordPath))
 
         var services = LandServices()

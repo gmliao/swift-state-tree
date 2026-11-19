@@ -306,6 +306,18 @@ struct ReevaluationRunnerMain {
             // The export is incomplete: the run must not report success (#263).
             print("❌ Re-evaluation failed: \(error)")
             exit(12)
+        } catch let error as ReevaluationRecordFingerprintError {
+            // Refused before the first step (#521 D15): a record without a fingerprint is not
+            // comparable (exit 10, like a record this build doesn't read); one of another
+            // schema is a schema mismatch (exit 13).
+            switch error {
+            case .missing:
+                print("❌ Verification not possible: \(error)")
+                exit(10)
+            case .mismatch:
+                print("❌ Verification failed: \(error)")
+                exit(13)
+            }
         }
         printReplayTiming(run: 1, ticks: Int(first.maxTickId) + 1, wall: firstStart.duration(to: .now), tickIntervalMs: tickIntervalMs)
         
@@ -675,6 +687,9 @@ struct ReevaluationRunnerMain {
           that. A tick recorded without a hash (the live run could not compute it) is
           unverifiable: --verify exits 11, after every definite failure (5, 6, 8, 9). A valid
           recorded hash this replay cannot compute is a mismatch (exit 5).
+        Schema fingerprint (record format 3.6): checked before the first step. A record without
+          one (before 3.6) is not comparable: exit 10, re-record with this build. A record of
+          another schema (a type changed since it was recorded): exit 13.
         """)
         exit(exitCode)
     }

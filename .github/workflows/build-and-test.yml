@@ -229,6 +229,23 @@ jobs:
       run: swift test
       timeout-minutes: 30
 
+    # The GameDemo pacing tests that bound wall-clock time, in a process of their own (#466):
+    # beside the parallel suite, another test's subprocess delays their wakes. It fails the job
+    # when they didn't run (a renamed suite would otherwise match nothing and pass). The log goes
+    # to the runner's temp directory: the working tree must stay unchanged.
+    - name: GameDemo wall-clock tests
+      working-directory: Examples/GameDemo
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/gamedemo-wall-clock.log"
+        WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter LoadTestPacingWallClockTests 2>&1 | tee "$log"
+        if ! grep -q '✔ Suite "LoadTestPacing (wall clock)" passed' "$log"; then
+          echo "::error::the GameDemo wall-clock tests did not run"
+          exit 1
+        fi
+      timeout-minutes: 5
+
     - name: Demo build
       working-directory: Examples/Demo
       run: swift build
@@ -302,9 +319,6 @@ jobs:
       run: scripts/check-encoding-benchmark-router.sh
       timeout-minutes: 10
 
-  # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
-  # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
-  # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
   # The deep-research Python tests, in a job of their own: they need no Swift build, so they run
   # beside the Swift jobs instead of after the examples job's builds. The same image as the other
   # jobs (Ubuntu 24.04's python3 and git), Node 20, and the full history.
@@ -369,6 +383,9 @@ jobs:
         fi
       timeout-minutes: 10
 
+  # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
+  # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
+  # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
   wall-clock-tests:
     runs-on: ubuntu-22.04
     steps:
