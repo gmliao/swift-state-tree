@@ -48,8 +48,9 @@ private func firstSerializedHeader(_ recorder: ReevaluationRecorder) async throw
     try await recorder.saveCopyForTesting(to: path)
     let bytes = Array(try Data(contentsOf: URL(fileURLWithPath: path)))
     let start = ReevaluationRecordLog.preamble.count
-    #expect(ReevaluationRecordLog.hasMagic(bytes) && bytes.count > start + 4)
+    try #require(ReevaluationRecordLog.hasMagic(bytes) && bytes.count > start + 4)
     let length = Int(bytes[start]) << 24 | Int(bytes[start + 1]) << 16 | Int(bytes[start + 2]) << 8 | Int(bytes[start + 3])
+    try #require(bytes.count >= start + 4 + length, "the header record is whole")
     let body = Array(bytes[(start + 4)..<(start + 4 + length)])
     let record = try CanonicalMessagePack.decode(ReevaluationLogRecord.self, from: body)
     #expect(record.kind == .header, "the first record is the header")
@@ -73,7 +74,7 @@ struct RecordIdentityOverrideTests {
         let manager = makeManager()
         let before = Date()
         let metadata = try await recordedMetadata(manager, instance: "live")
-        // The record keeps whole milliseconds at most.
+        // The record keeps whole seconds.
         #expect(metadata.createdAt.timeIntervalSince1970 >= before.timeIntervalSince1970 - 1)
         #expect(metadata.hardwareInfo != nil)
     }
