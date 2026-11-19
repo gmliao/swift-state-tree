@@ -203,7 +203,13 @@ replay land 以有型別的方式顯示每個錄製的 server event（#521、#53
 - JSON 檢視中的 `-0.0` 讀回為 `+0.0`（儲存的錄製檔會保留）；
 - 正規等價（同一段文字的 NFC 與 NFD 寫法）的 map key 在讀取錄製檔時會合併成一個 key。
 
-無法解析的 tick 會讓 replay run 失敗，並帶上該 tick、event 的序號與名稱，以及錯誤：名稱未註冊或 payload 無法解碼的錄製 event、讀取錄製檔失敗、state snapshot 無法編碼、以及無法從 snapshot 重建 state。run 在 admin 狀態中變成 `failed`。replay land 保持運作，失敗之後不會再收到任何內容。錄製內容會被 replay 的 land，若有 server event 型別沒有 decoder，註冊時會被拒絕（`LandRegistrationError.serverEventsWithoutDecoder`）；DSL 註冊的每個型別都有 decoder。自訂 runner 用 `ReevaluationReplayFrame.resolve` 為結果建立 frame：replay land 只會收到依其 state 型別解析過的結果。
+無法解析的 tick 會讓 replay run 以 `ReevaluationReplayResolutionError` 失敗。錯誤會指出該 tick、event 的來源（錄製或 replay 送出）、序號與名稱，以及原因。以下情況的 tick 無法解析：名稱未註冊或 payload 無法解碼的 server event、讀取錄製檔失敗、state snapshot 無法編碼、以及無法從 snapshot 重建 state。run 在 admin 狀態中變成 `failed`。之前的 tick 仍留在佇列中並會顯示；replay land 保持運作，之後不會再收到任何內容。
+
+供給 replay land 的 run，遇到 land 無法顯示的結果也會失敗：沒有 frame 的結果（`unresolvedResult`，自訂 runner 沒有呼叫 `ReevaluationReplayFrame.resolve`）、其他 state 型別的 frame（`stateTypeMismatch`）、或沒有 state 的 frame（`stateUnavailable`）。無法計算 state hash 的 tick（§ 無法計算的 State Hash）沒有 state，其原因就是 hash 的錯誤。不供給 replay land 的 run（monitor 的驗證）會把這種 tick 回報為無法驗證，並繼續執行。`registerWithGenericReplay` 會在排入佇列前拒絕這些結果。只用 `GenericReplayLand.makeLand` 建立的 land 會在讀取每個結果時檢查，並讓 run 失敗，所以結果不會被默默丟掉。
+
+錄製內容會被 replay 的 land，若有 server event 型別沒有 decoder，註冊時會被拒絕（`LandRegistrationError.serverEventsWithoutDecoder`）。DSL 註冊的每個型別都有 decoder。這項檢查在內建 runner 的 init 與 engine 中、錄製檔自身的檢查之後執行。自訂 runner（`ReevaluationTargetFactory`）會略過它，並在 `resolve` 中遇到同樣的情況。
+
+內建 runner 的每一步都會重建 state 並解碼該 tick 的每個 server event，monitor 的驗證也一樣：monitor run 每個 tick 要付出一次 state 重建與 event 解碼的成本。
 
 ### 錄製所含的 Hash
 
@@ -217,7 +223,7 @@ replay land 以有型別的方式顯示每個錄製的 server event（#521、#53
 
 ### 無法計算的 State Hash
 
-若 state 無法為 hash 轉換（map 的 key 轉成字串後衝突、值的型別不受支援、JSON 無法編碼的 NaN 或無限大浮點數），live tick 不會因此停止：該 tick 的 hash 會記錄為 `unavailable: <reason>`，keeper 會記錄 error log 並計數（`LandKeeper.stateHashUnavailableCount`）。Replay 會把這類 tick 回報為無法驗證，絕不視為相符（`RunResult.unverifiableStateHashes`；較舊版本記錄的 `"error"` 也同樣處理），initialize 檢查則回報 `unverifiable`。若錄製的 hash 有效、但 replay 時無法計算，則屬於分歧，會回報為不符。`ReevaluationRunner --verify` 只有在沒有任何確定失敗時，才會因無法驗證的 hash 以 exit code 11 結束：state hash 不符（5）、server event（6）、sync output（8）與 OnInitialize（9）優先。
+若 state 無法為 hash 轉換（map 的 key 轉成字串後衝突、值的型別不受支援、JSON 無法編碼的 NaN 或無限大浮點數），live tick 不會因此停止：該 tick 的 hash 會記錄為 `unavailable: <reason>`，keeper 會記錄 error log 並計數（`LandKeeper.stateHashUnavailableCount`）。Replay 會把這類 tick 回報為無法驗證，絕不視為相符（`RunResult.unverifiableStateHashes`；較舊版本記錄的 `"error"` 也同樣處理），initialize 檢查則回報 `unverifiable`。replay land 對這種 tick 沒有 state 可顯示，所以供給 replay land 的 run 會在此失敗（`stateUnavailable`，帶上 hash 的錯誤；§ Replay 中的 server event）。若錄製的 hash 有效、但 replay 時無法計算，則屬於分歧，會回報為不符。`ReevaluationRunner --verify` 只有在沒有任何確定失敗時，才會因無法驗證的 hash 以 exit code 11 結束：state hash 不符（5）、server event（6）、sync output（8）與 OnInitialize（9）優先。
 
 大於 `Int.max` 的無號整數（`UInt`、`UInt64`）在所有路徑上都會轉成十進位數字字串：以前會 trap。可放入 `Int` 的值在傳輸上不變。
 
