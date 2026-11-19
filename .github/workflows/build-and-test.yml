@@ -384,7 +384,7 @@ jobs:
     # The router check parses the benchmark's JSON with python3, which the image doesn't have.
     - name: Install python3
       run: scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
-      timeout-minutes: 22  # above ci-apt-install.sh's 20 min worst case (#659)
+      timeout-minutes: 26  # above ci-apt-install.sh's worst case, 24 min 20 s (#659)
 
     - name: EncodingBenchmark router flags
       working-directory: Examples/GameDemo

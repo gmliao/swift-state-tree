@@ -35,5 +35,5 @@ Examples/Demo/WebClient/src/generated/** text eol=lf
 # brought into a branch here); it doesn't change GitHub's own mergeability check. A row one side
 # changed comes out twice: scripts/check-plan-index.sh fails on that, in pre-push and in the
 # Plan index workflow, which runs on a push or pull request to main or exp/** that changes the
-# index (Notes-only ones included).
+# index, the check or the workflow, index-only changes included.
 Notes/plans/README.md merge=union

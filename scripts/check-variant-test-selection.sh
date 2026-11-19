@@ -37,10 +37,12 @@
 #      name and that `if:`): the legs differ in one variable, read at run time. A new axis, or the
 #      axis in a compiler flag or another env var, fails until it is examined; so does the
 #      `strategy` context (`strategy.job-index` tells the legs apart without naming the axis).
-#      The scan is per line, outside comment lines, so an expression folded over several lines
-#      (`if: >-`) is read line by line, and its matrix line fails like any other. IN_TURN_SYNC, or
-#      the word matrix or strategy, in a step's display text or an inline comment fails too (a
-#      false alarm, fixed by rewording).
+#      The matrix and strategy rules read expressions: each `${{ … }}` (one spanning lines
+#      included) and each bare `if:` value (a folded one included), so display text such as
+#      `name: Dump strategy` doesn't count. A `#` line is a YAML comment and skipped, except inside
+#      a block scalar (`run: |`), where it is script text that Actions still interpolates. The
+#      IN_TURN_SYNC rule reads whole lines (a run line's `$IN_TURN_SYNC` is no expression), so the
+#      name in display text or a script comment fails too (a false alarm, fixed by rewording).
 #   S4 a one-leg step runs only `scripts/<name>.sh [--self-test]`, and neither those scripts nor any
 #      script they name (`scripts/*.sh` or `.py`, followed) mentions IN_TURN_SYNC, inTurnSync or
 #      InTurnSync. Textual: a script that builds the flag's name from parts isn't seen.
@@ -356,6 +358,55 @@ def job_steps(lines):
     return steps
 
 
+BLOCK_SCALAR = re.compile(r"^(\s*)(-\s+)?[\w-]+:\s*[|>][-+0-9]*\s*(?:#.*)?$")
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+IF_KEY = re.compile(r"^\s*(?:-\s+)?if:\s*(.*?)\s*$")
+
+
+def yaml_code(lines):
+    """`lines` without YAML comment lines. A line inside a block scalar (`run: |`) is content,
+    kept whatever it starts with, since Actions interpolates its expressions."""
+    out, block = [], None  # block: the indent the block's content must exceed
+    for line in lines:
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if not line.strip() or indent > block:
+                out.append(line)
+                continue
+            block = None
+        if line.lstrip().startswith("#"):
+            continue
+        m = BLOCK_SCALAR.match(line)
+        if m:
+            block = len(m.group(1)) + (len(m.group(2)) if m.group(2) else 0)
+        out.append(line)
+    return out
+
+
+def expressions(code):
+    """(index in `code`, expression) for each `${{ … }}` and each bare `if:` value."""
+    text = "\n".join(code)
+    found = [(text.count("\n", 0, m.start()), m.group(1)) for m in EXPRESSION.finditer(text)]
+    for i, line in enumerate(code):
+        m = IF_KEY.match(line)
+        if not m or "${{" in m.group(1):
+            continue
+        value = m.group(1)
+        if re.fullmatch(r"[|>][-+0-9]*", value):
+            # A folded `if:`: its value is the block's content.
+            indent = len(line) - len(line.lstrip())
+            rest = []
+            for j in range(i + 1, len(code)):
+                if code[j].strip() and len(code[j]) - len(code[j].lstrip()) <= indent:
+                    break
+                rest.append((j, code[j]))
+            if rest and "${{" not in " ".join(r for _, r in rest):
+                found.append((rest[0][0], " ".join(r.strip() for _, r in rest)))
+        elif value:
+            found.append((i, value))
+    return sorted(found)
+
+
 def leg_errors(workflow, read_script):
     """S6: the build job's matrix has one axis, in_turn_sync, used only as IN_TURN_SYNC (and in the
     job's name and the one-leg `if:`), so the legs differ in that one runtime variable. S4: a step
@@ -365,7 +416,7 @@ def leg_errors(workflow, read_script):
     if lines is None:
         return [f"{WORKFLOW}: no {BUILD_JOB} job"], []
     errors, where = [], f"{WORKFLOW}: the {BUILD_JOB} job"
-    code = [line for line in lines if not line.lstrip().startswith("#")]
+    code = yaml_code(lines)
     m = next((i for i, line in enumerate(code) if re.match(r"^      matrix:\s*$", line)), None)
     axes = []
     if m is not None:
@@ -382,12 +433,14 @@ def leg_errors(workflow, read_script):
         re.compile(r"^      " + LEG_ENV + r": \$\{\{ matrix\.in_turn_sync \}\}\s*$"),
         re.compile(r"^      " + re.escape(ONE_LEG_IF) + r"\s*$"),
     )
-    for line in code:
-        if STRATEGY_USE.search(line):
+    for i, expression in expressions(code):
+        line = code[i]
+        if STRATEGY_USE.search(expression):
             errors.append(f"{where} uses the strategy context: {line.strip()!r}; it tells the legs apart as the axis does (S6)")
-        elif MATRIX_USE.search(line) and not any(a.match(line) for a in allowed):
+        elif MATRIX_USE.search(expression) and not any(a.match(line) for a in allowed):
             errors.append(f"{where} uses the matrix outside {LEG_ENV}, its name and the one-leg if: {line.strip()!r} (S6)")
-        elif LEG_ENV_USE.search(line) and not allowed[1].match(line):
+    for line in code:
+        if LEG_ENV_USE.search(line) and not allowed[1].match(line):
             errors.append(f"{where} uses {LEG_ENV} outside its env line: {line.strip()!r}; a step that reads it must run in both legs (S6)")
     one_leg, seen = [], set()  # a script named twice is read once
     for step in job_steps(lines):
@@ -653,6 +706,15 @@ def leg_self_test():
          build(lint_if="      if: >-\n        ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}\n"), scripts, "outside IN_TURN_SYNC"),
         ("a strategy use folded into a run block fails",
          build(extra="    - name: Index\n      run: |\n        scripts/x.sh \\\n          ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
+        ("a matrix use in a run block's # line fails",
+         build(extra="    - name: Dump\n      run: |\n        # ${{ toJSON(matrix) }}\n        echo hi\n"), scripts, "outside IN_TURN_SYNC"),
+        ("a strategy use in a run block's # line fails",
+         build(extra="    - name: Dump\n      run: |\n        # ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
+        ("an expression spanning two lines fails",
+         build(extra="    - name: Dump\n      run: |\n        echo ${{ toJSON(\n          matrix) }}\n"), scripts, "outside IN_TURN_SYNC"),
+        ("a bare folded if fails", build(lint_if="      if: >-\n        matrix.in_turn_sync == 'true'\n"), scripts, "outside IN_TURN_SYNC"),
+        ("display text naming matrix or strategy doesn't count",
+         build(extra="    - name: Dump strategy and matrix\n      run: echo matrix strategy\n"), scripts, None),
         ("a second matrix use in the job's name fails",
          build().replace("    name: build (in-turn sync ${{ matrix.in_turn_sync }})\n",
                          "    name: build (in-turn sync ${{ matrix.in_turn_sync }}) ${{ matrix.rows }}\n"), scripts, "outside IN_TURN_SYNC"),

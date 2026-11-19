@@ -28,10 +28,12 @@ import sys
 
 INDEX = "Notes/plans/README.md"
 TITLE = r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
-DESTINATION = r"(?:<([^>]*)>|([^\s()<>]+))"
-INLINE = re.compile(r"\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
+# A bare destination may hold one level of balanced parentheses (`a(b).md`).
+DESTINATION = r"(?:<([^>]*)>|((?:[^\s()<>\\]|\\.|\([^\s()<>]*\))+))"
+# `[text](destination)`, its `[` not escaped: `](b.md)` alone or `\[P](b.md)` isn't a link.
+INLINE = re.compile(r"(?<!\\)\[(?:\\.|[^\]\\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
 # `[t][ref]`, `[ref][]` and `[ref]` (not followed by `(` or `[`).
-REFERENCE = re.compile(r"\[((?:\\.|[^\]\\])*)\]\[((?:\\.|[^\]\\])*)\]|\[((?:\\.|[^\]\\])+)\](?![(\[])")
+REFERENCE = re.compile(r"(?<!\\)\[((?:\\.|[^\]\\])*)\]\[((?:\\.|[^\]\\])*)\]|(?<!\\)\[((?:\\.|[^\]\\])+)\](?![(\[])")
 DEFINITION = re.compile(r"^ {0,3}\[((?:\\.|[^\]\\])+)\]:\s*" + DESTINATION + TITLE + r"\s*$")
 CODE_SPAN = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)")
 IMAGE = re.compile(r"!\[(?:\\.|[^\]\\])*\](?:\([^)]*\)|\[(?:\\.|[^\]\\])*\])?")
@@ -171,6 +173,9 @@ def self_test():
         ("a code span before the link is skipped", head + "| d | `[c](b.md)` [P](a.md) | open | x |\n" + row("a.md", "done"), dup("a.md", "3, 4")),
         ("an escaped pipe doesn't split the cell", head + "| d | [P \\| Q](a.md) | open | x |\n" + row("a.md", "done"), dup("a.md", "3, 4")),
         ("a row without the outer pipes counts", head + "2026-11-19 | [P](a.md) | open | x\n" + row("a.md", "done"), dup("a.md", "3, 4")),
+        ("a bare ](b.md) isn't a link", head + "| d | ](b.md) | open | x |\n" + row("a.md"), ["t.md:3: a row with no plan link in its Plan column"]),
+        ("an escaped \\[P](b.md) isn't a link", head + "| d | \\[P](b.md) | open | x |\n" + row("a.md"), ["t.md:3: a row with no plan link in its Plan column"]),
+        ("parentheses in a destination", head + row("a(b).md") + row("a(b).md", "done"), dup("a(b).md", "3, 4")),
         ("a link in Evidence isn't the plan", head + "| d | [P](a.md) | open | after [Q](b.md) |\n" + row("b.md"), []),
         ("a Plan cell without a link fails", head + "| d | a.md | open | [Q](b.md) |\n" + row("b.md"), ["t.md:3: a row with no plan link in its Plan column"]),
         ("a table without a Plan column isn't read", "| Status | Meaning |\n|---|---|\n| open | [x](a.md) |\n| done | [x](a.md) |\n\n" + head + row("b.md"), []),
