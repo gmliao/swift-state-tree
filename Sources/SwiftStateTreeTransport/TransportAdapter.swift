@@ -43,6 +43,9 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// A busy skip's deferred retry, before its delay: the cycle in flight hasn't ended yet, and
     /// the retry hasn't asked for a sync again.
     case busyRetry
+    /// A follow-up cycle (`startFollowUpSync`) after its `syncNow()` returned: a test waits here
+    /// for the follow-up to have run before it lets other background syncs go.
+    case followUpSynced
     /// A public `registerSession` (#531), after it read the keeper's entry and before it acts
     /// on what it read.
     case registrationAfterKeeperRead
@@ -1506,21 +1509,38 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
     func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?) {
         let transport = self.transport
+        guard tracksDetachedClosesForTesting else {
+            Task { await transport.closeSession(sessionID, with: .normal, generation: generation) }
+            return
+        }
         let id = nextDetachedCloseID
         nextDetachedCloseID += 1
         // The Task ends on this actor, after this segment, so the handle is stored before then.
-        detachedCloses[id] = Task {
+        // Weak: a close that never returns doesn't keep the adapter.
+        detachedCloses[id] = Task { [weak self] in
             await transport.closeSession(sessionID, with: .normal, generation: generation)
-            self.detachedCloses[id] = nil
+            await self?.detachedCloseEnded(id)
         }
     }
 
-    /// The closes `closeSessionDetached` started, by id, until each returns.
+    private func detachedCloseEnded(_ id: UInt64) {
+        detachedCloses[id] = nil
+    }
+
+    /// Tests only (#555): whether `closeSessionDetached` keeps each close's handle, so
+    /// `waitForDetachedClosesForTesting` can await it. Off in production: no tracking cost.
+    private var tracksDetachedClosesForTesting = false
+    /// The closes `closeSessionDetached` started while tracking, by id, until each returns.
     private var detachedCloses: [UInt64: Task<Void, Never>] = [:]
     private var nextDetachedCloseID: UInt64 = 0
 
+    /// Tests only (#555): from now on, keep each detached close's handle until it returns.
+    package func trackDetachedClosesForTesting() {
+        tracksDetachedClosesForTesting = true
+    }
+
     /// Tests only (#555): returns once every close `closeSessionDetached` started (a supersede's)
-    /// has returned from the transport.
+    /// since `trackDetachedClosesForTesting` has returned from the transport.
     package func waitForDetachedClosesForTesting() async {
         while let task = detachedCloses.values.first {
             await task.value
@@ -3137,7 +3157,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// If `beginSync` rejects it, another cycle is in flight: that cycle reads the kept events at
     /// the front of the queue, and its own check after `endSync()` covers anything queued later.
     private func startFollowUpSync() {
-        startBackgroundSync { await $0.syncNow() }
+        startBackgroundSync { await $0.runFollowUpSync() }
     }
 
     /// Starts `body` as a background sync Task and keeps its handle until it finishes.
@@ -3193,6 +3213,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             await writer.waitForSyncCycleDrain()
             await adapter.runBacklogDeferredSync()
         }
+    }
+
+    /// A follow-up cycle, then its hold point; one isolated call.
+    private func runFollowUpSync() async {
+        await syncNow()
+        await holds.at(.followUpSynced)
     }
 
     /// The busy retry's hold point, on the adapter (its holds are actor state).
