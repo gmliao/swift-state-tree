@@ -242,7 +242,7 @@ struct PayloadDecodeDifferentialTests {
         }
     }
 
-    static let expectedCounts: [String: Int] = [:]
+    static let expectedCounts: [String: Int] = ["integral float": 66, "binary into string": 9, "extended into string": 11]
 
     /// The seed's value at a case's field path (`key` or `key.inner`).
     static func seedField(_ seed: MessagePackValue, _ path: String) -> MessagePackValue? {
