@@ -275,7 +275,36 @@ The tests are also examples. Each one below shows a way to check a turn-based ac
 - **The three-version comparison** ([`Tests/SwiftStateTurnsTests/ComparisonTests.swift`](../../Tests/SwiftStateTurnsTests/ComparisonTests.swift)). A hold inside the profile store's `load` stops a join in the middle of its `await`. The test then sends the leave and releases the load. The order is the same on every run, with no sleeps, so the plain actor's bug happens every time.
 - **Runtime stops** ([`Tests/SwiftStateTurnsTests/RuntimeStopTests.swift`](../../Tests/SwiftStateTurnsTests/RuntimeStopTests.swift)). A few mistakes can only be caught while running, such as reading the machine from inside its own step. Each one runs in a child process (an exit test), which must stop with the core's message.
 
-## Related
+## Exclusivity checks in release builds
+
+Swift checks at run time that a variable isn't changed while something else is using it. This is the exclusivity check. On a class's stored property it costs a pair of runtime calls on every use.
+
+The core skips this check on its own stored state in a release build. Inlined into an adopter, the core touches that state many times per input, and the check made a `read` cost about twice what the same lookup costs by hand.
+
+The actor runs one call at a time. Within one call, the core keeps its own rule, in every build. A step changes the machine, and `read` only looks at it. The core counts the reads that are open and notes when a step runs:
+
+| Already open | A `read` starts | A step starts (`send`, `sendAndWait`, `query`) |
+|---|---|---|
+| nothing | runs | runs |
+| a `read` (one or more) | runs | stops the process |
+| a step | stops the process | a `query` stops the process; a `send` isn't a step start here: it waits, and steps after the step ends |
+
+So reads nest, and a `send` that would step now, or a `query`, from a `read`'s body stops the process, even when another `read` ran and returned inside it. A `send` that doesn't step now (one made during a batch, one whose hold is active, one refused on admission) doesn't stop.
+
+**What the adopter must keep.** The core also runs some of the adopter's code while it is changing its own state, and there it can't stop an overlap:
+- the key type's `==` and `hash(into:)`, which run inside the core's table updates;
+- the deinit of an input or a key the core drops (a withdrawn input, a queue emptied, a key ended).
+
+That code must not call back into the actor: no `send`, `sendAndWait`, `query`, `read` or `stats` from it. In a release build without the check, such a call would change the core's state in the middle of another change, with no error. Test it with the checked build below.
+
+Debug builds keep the check. A release build keeps it too when built with the `TURNS_EXCLUSIVITY_CHECKED` flag:
+
+```sh
+swift build -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED
+```
+
+Build with it when you suspect two accesses to the core's state overlap in a release build, and to run an adopter's tests on the release path with the check on. The default release build has no check.
+
 
 - The design and its rules: `Notes/plans/2026-11-18-swift-state-turns-core.md`
 - The reentrancy rule for code outside turns: "Actor Reentrancy" in `AGENTS.md`
