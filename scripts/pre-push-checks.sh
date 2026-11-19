@@ -17,8 +17,11 @@
 # When the change reaches them (files changed since the merge base with <base>, committed or not):
 #   deep-research  deep-research/** changed: deep-research/run-tests.sh (every test file, Linux-gated
 #               classes forced off Linux)
-#   serverenv   Sources/** or Examples/** changed (and deep-research didn't): deep-research/
-#               test_serverenv.py, which fails on a server env key missing from serverenv.py (#513)
+#   readers     deep-research didn't change: each deep-research test that reads files outside
+#               deep-research/ runs when one of the paths it reads changed (the table below): the
+#               server env list against Sources (#513), the pipefail-reader check against every
+#               tracked shell script, the sync-lag defaults against Sources and ws-loadtest, the
+#               state-shape fixtures, and the ignore rules the record paths rely on
 # Not covered (the build-slot verification and the push's own CI): swift build and test, E2E,
 # generated schemas and codegen, the TypeScript SDK and ws-loadtest tests.
 #
@@ -98,12 +101,35 @@ if touches '\.(sh|bash)$' || touches "^${workflow//./\\.}$"; then
 else
   echo "skip  shellcheck (no shell file changed)"
 fi
+# The deep-research tests that read files outside deep-research/, one row per reader: a label, the
+# paths it reads (grep -E on the changed paths), the test file, and a unittest selector (empty: the
+# whole file). A trigger must cover every path its test reads: a test that starts reading another
+# path outside deep-research/ adds it here, or a change there skips the test until CI runs it.
+# Fields are separated by tabs.
+readers="$(cat <<'EOF'
+serverenv	^Sources/	deep-research/test_serverenv.py	
+pipefail-readers	\.(sh|bash)$	deep-research/test_pipefail_readers.py	
+sync-lag-defaults	^Sources/SwiftStateTreeTransport/(SyncLag|TransportEnvKeys)\.swift$|^Examples/GameDemo/ws-loadtest/src/worker\.ts$	deep-research/network-impairment-2026-11/test_topic.py	SyncLagDefaults
+stateshape-fixtures	^Examples/GameDemo/ws-loadtest/tests/fixtures/	deep-research/entity-delta-baseline/test_stateshape.py	
+runmeta-ignored	(^|/)\.gitignore$	deep-research/test_runmeta_dirty.py	
+multiroom-ignored	(^|/)\.gitignore$	deep-research/multiroom-load-2026-11/test_topic.py	Plan.test_outputs_stay_under_the_topics_ignored_raw
+EOF
+)"
+reader() (  # test file, [selector]: from its own directory, as run-tests.sh runs it (a subshell, so
+            # the cd doesn't leak into the next row)
+  cd "$(dirname "$1")" && SST_FORCE_LINUX_TESTS=1 python3 "$(basename "$1")" ${2:+"$2"}
+)
 if touches '^deep-research/'; then
   run deep-research bash deep-research/run-tests.sh
-elif touches '^(Sources|Examples)/'; then
-  run serverenv bash -c 'cd deep-research && python3 test_serverenv.py'
 else
-  echo "skip  deep-research, serverenv (nothing they cover changed)"
+  ran_reader=0
+  while IFS=$'\t' read -r label trigger file selector; do
+    if touches "$trigger"; then
+      run "$label" reader "$file" "$selector"
+      ran_reader=1
+    fi
+  done <<<"$readers"
+  [ $ran_reader -eq 1 ] || echo "skip  deep-research and its readers (nothing they read changed)"
 fi
 echo "not covered: swift build/test, E2E, generated schemas/codegen, TypeScript SDK and ws-loadtest tests (build-slot verification and CI)"
 if [ ${#failed[@]} -ne 0 ]; then
