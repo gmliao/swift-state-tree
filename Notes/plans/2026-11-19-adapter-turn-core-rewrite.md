@@ -464,6 +464,8 @@ These are settled against B2's code and its tests; each keeps today's behaviour:
   - the broadcast table (`SyncTables.swift:1593`) is non-`Sendable`, so the compiler check covers it with `perPlayerTables`;
   - the actor-side event, action and gate writers are listed beside the keeper's `closeOutputs`.
 - **The recorder witness.** In-turn, the keeper submits the drafts after the adapter's query has returned (`LandKeeper.swift:4618–4625`), so a mutant on that submission can't witness the borrow trap. The mutant goes on the legacy submission (`submitSyncStream`, inside the legacy commit query) and inside the adapter's draft production.
+- **The engine's per-player cache, once the machine holds it:** `lastPerPlayerSnapshots`' `get`/`set` (`SyncEngine.swift:69–78`) copies the dictionary on each subscript write or `removeValue`. The cost predates B0 and matters only on the tables-off and replay paths, where the per-player cache isn't retired. When the machine takes `caches`, a `_modify` accessor (or direct `caches.perPlayerCacheStorage` access) avoids it.
+- **B0's leftovers, for B2's code PR:** `syncLagDroppedEvents` in the state inventory test, and `@inlinable` on `TurnInstant.init(_:)` (#666's review).
 - **The first sync:** the initial sync's delayed follow-up (`failedPlanFollowUp`) applies to tickless lands only; `isSyncCycle: false`, the initial sync's failure submission, the epoch captured before the keeper's read (TA:5536–5610), and `beginInitialSync(for:)` (TA:1957) as the separate reservation writer of `initialSyncingPlayers`.
 
 ## 4. B3–B6: outlines
