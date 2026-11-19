@@ -11,14 +11,16 @@ import NIOCore
 import NIOEmbedded
 import NIOWebSocket
 import SwiftStateTree
+import SwiftStateTreeTestSupport
 import SwiftStateTreeTransport
 import Testing
 @testable import SwiftStateTreeNIO
 
-/// Records delegate calls; `onConnect` for a held session suspends until `release`.
+/// Records delegate calls in `log`, which a test waits on; `onConnect` for a held session
+/// suspends until `release`.
 private final class HoldingDelegate: TransportDelegate, @unchecked Sendable {
     private let lock = NSLock()
-    private var log: [String] = []
+    let log = EventLog()
     private var held: Set<String> = []
     private var waiters: [String: CheckedContinuation<Void, Never>] = [:]
 
@@ -36,16 +38,10 @@ private final class HoldingDelegate: TransportDelegate, @unchecked Sendable {
         waiter?.resume()
     }
 
-    var events: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return log
-    }
+    var events: [String] { log.events }
 
     private func record(_ event: String) {
-        lock.lock()
         log.append(event)
-        lock.unlock()
     }
 
     func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {
@@ -70,15 +66,6 @@ private final class HoldingDelegate: TransportDelegate, @unchecked Sendable {
     func onMessage(_ message: Data, from sessionID: SessionID) async {
         record("message:\(sessionID.rawValue):\(String(decoding: message, as: UTF8.self))")
     }
-}
-
-@discardableResult
-private func waitUntil(_ condition: () -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !condition(), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return condition()
 }
 
 private func makeSession(
@@ -114,7 +101,7 @@ struct WebSocketSessionHandlerOrderTests {
         delegate.hold("s1")
 
         let channel = try makeSession("s1", transport: transport)
-        await waitUntil { delegate.events.contains("connect-start:s1") }
+        try #require(await delegate.log.waitFor("connect-start:s1"))
         try sendText("join", on: channel)
         try sendText("action", on: channel)
         _ = try? channel.finish()
@@ -124,7 +111,7 @@ struct WebSocketSessionHandlerOrderTests {
         #expect(delegate.events == ["connect-start:s1"])
 
         delegate.release("s1")
-        await waitUntil { delegate.events.contains("disconnect:s1") }
+        try #require(await delegate.log.waitFor("disconnect:s1"))
         #expect(delegate.events == [
             "connect-start:s1",
             "connect:s1",
@@ -142,10 +129,10 @@ struct WebSocketSessionHandlerOrderTests {
         delegate.hold("s1")
 
         let held = try makeSession("s1", transport: transport)
-        await waitUntil { delegate.events.contains("connect-start:s1") }
+        try #require(await delegate.log.waitFor("connect-start:s1"))
         let other = try makeSession("s2", transport: transport)
         try sendText("join", on: other)
-        await waitUntil { delegate.events.contains("message:s2:join") }
+        try #require(await delegate.log.waitFor("message:s2:join"))
         #expect(delegate.events.contains("connect:s2"))
         #expect(delegate.events.contains("message:s2:join"))
         #expect(!delegate.events.contains("connect:s1"))
@@ -153,8 +140,8 @@ struct WebSocketSessionHandlerOrderTests {
         delegate.release("s1")
         _ = try? held.finish()
         _ = try? other.finish()
-        let bothDisconnected = await waitUntil {
-            delegate.events.contains("disconnect:s1") && delegate.events.contains("disconnect:s2")
+        let bothDisconnected = await delegate.log.waitFor {
+            $0.contains("disconnect:s1") && $0.contains("disconnect:s2")
         }
         #expect(bothDisconnected)
     }
@@ -166,14 +153,14 @@ struct WebSocketSessionHandlerOrderTests {
         await transport.setDelegate(delegate)
 
         let channel = try makeSession("s1", transport: transport)
-        await waitUntil { delegate.events.contains("connect:s1") }
+        try #require(await delegate.log.waitFor("connect:s1"))
         // No loop run between the two frames: the message's batch flush is still scheduled
         // when the close frame arrives.
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "last-action")))
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
         channel.embeddedEventLoop.run()
 
-        let disconnected = await waitUntil { delegate.events.contains("disconnect:s1") }
+        let disconnected = await delegate.log.waitFor("disconnect:s1")
         #expect(disconnected)
         #expect(delegate.events == ["connect-start:s1", "connect:s1", "message:s1:last-action", "disconnect:s1"])
     }
@@ -185,13 +172,13 @@ struct WebSocketSessionHandlerOrderTests {
         await transport.setDelegate(delegate)
 
         let channel = try makeSession("s1", transport: transport)
-        await waitUntil { delegate.events.contains("connect:s1") }
+        try #require(await delegate.log.waitFor("connect:s1"))
         // Both frames in one read: the pipeline delivers them back to back.
         channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer())))
         channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "late"))))
         channel.embeddedEventLoop.run()
 
-        let disconnected = await waitUntil { delegate.events.contains("disconnect:s1") }
+        let disconnected = await delegate.log.waitFor("disconnect:s1")
         #expect(disconnected)
         try await Task.sleep(for: .milliseconds(50))
         #expect(delegate.events == ["connect-start:s1", "connect:s1", "disconnect:s1"])
@@ -204,13 +191,13 @@ struct WebSocketSessionHandlerOrderTests {
         await transport.setDelegate(delegate)
 
         let channel = try makeSession("s1", transport: transport)
-        await waitUntil { delegate.events.contains("connect:s1") }
+        try #require(await delegate.log.waitFor("connect:s1"))
         // First interval: ping sent. Second interval: no pong came back, so the handler closes.
         channel.embeddedEventLoop.advanceTime(by: .seconds(30))
         channel.embeddedEventLoop.advanceTime(by: .seconds(30))
         channel.embeddedEventLoop.run()
 
-        let disconnected = await waitUntil { delegate.events.contains("disconnect:s1") }
+        let disconnected = await delegate.log.waitFor("disconnect:s1")
         #expect(disconnected, "events: \(delegate.events)")
         #expect(delegate.events.filter { $0 == "disconnect:s1" }.count == 1)
         _ = try? channel.finish()
