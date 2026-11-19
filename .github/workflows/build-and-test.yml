@@ -307,6 +307,10 @@ jobs:
     # with their reason (row-specific ones only for an explicit `on`), and small router runs (rows
     # by default, on and off) join every session and record perConnection bytes and whether row
     # entries were in effect. Reuses the tests' debug build.
+    # The router check parses the benchmark's JSON with python3, which the image doesn't have.
+    - name: Install python3
+      run: scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
+
     - name: EncodingBenchmark router flags
       working-directory: Examples/GameDemo
       shell: bash
@@ -361,8 +365,10 @@ jobs:
             echo "::error file=$f::$f exited 0 but reported no tests run"
             failed+=("$f")
           fi
-          ran="$(grep -E '^Ran [0-9]+ tests? in ' "$log" | tail -1)"
-          summary+=("$f: ${ran% in *}")
+          # `|| true`: a file with no such line is already in the failed list; keep going.
+          ran="$(grep -E '^Ran [0-9]+ tests? in ' "$log" | tail -1 || true)"
+          result="$(grep -E '^(OK|FAILED)( |$)' "$log" | tail -1 || true)"
+          summary+=("$f: ${ran% in *}, ${result:-no result line}")
         done < <(git ls-files -z 'deep-research/*test_*.py' 'deep-research/**/test_*.py')
         if [ $count -eq 0 ]; then
           echo "::error::no deep-research Python tests found"

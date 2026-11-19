@@ -19,9 +19,12 @@ import re
 import sys
 import tempfile
 
-IMAGE = re.compile(r"""(?:\b(?:image|container):\s*|docker://)["']?((?:[\w.-]+/)*swift:[^\s"'#]+)""")
+# A Swift image as the value of an `image:` or `container:` key, or a `uses: docker://` step,
+# quoted or not, with or without a registry (a `host:port/` one included). Only in key position, so
+# a string value that merely contains "image: swift:" (an env value, a run line) is not read.
+IMAGE = re.compile(r"""^\s*(?:-\s+)?(?:(?:image|container):\s*["']?|uses:\s*["']?docker://)((?:[\w.-]+(?::\d+)?/)*swift:[^\s"'#]+)""")
 PINNED = re.compile(r"^swift:[\w.-]+@sha256:([0-9a-f]{64})$")
-CACHE_PATH = re.compile(r"^\s*path:\s*~/\.cache/org\.swift\.swiftpm\s*(#.*)?$")
+CACHE_DIR = "~/.cache/org.swift.swiftpm"
 STEP = re.compile(r"^(\s*)- ")
 
 
@@ -50,23 +53,30 @@ def steps(lines):
     return out
 
 
-def key_values(step):
-    """The step's `key:` value and its `restore-keys:` entries (a block or a single value)."""
+def block_values(step, names):
+    """(name, value) for each `name:` in the step. A plain or quoted scalar is one value. A block
+    scalar gives one value per line for `|` (a restore-keys list, a path list), and its lines joined
+    by spaces for `>` (a folded key)."""
     values, i = [], 0
     while i < len(step):
-        line = step[i]
-        m = re.match(r"^(\s*)(key|restore-keys):\s*(.*)$", line)
-        if m:
-            indent, name, rest = len(m.group(1)), m.group(2), uncommented(m.group(3)).strip()
-            if name == "restore-keys" and rest in ("|", ">", "|-", ">-", ""):
-                i += 1
-                while i < len(step) and (not step[i].strip() or len(step[i]) - len(step[i].lstrip()) > indent):
-                    if step[i].strip():
-                        values.append((name, uncommented(step[i]).strip()))
-                    i += 1
-                continue
-            values.append((name, rest))
+        m = re.match(r"^(\s*)(" + "|".join(names) + r"):\s*(.*)$", step[i])
+        if not m:
+            i += 1
+            continue
+        indent, name, rest = len(m.group(1)), m.group(2), uncommented(m.group(3)).strip()
         i += 1
+        if rest[:1] in ("|", ">"):
+            body = []
+            while i < len(step) and (not step[i].strip() or len(step[i]) - len(step[i].lstrip()) > indent):
+                if step[i].strip():
+                    body.append(uncommented(step[i]).strip())
+                i += 1
+            if rest[0] == ">":
+                values.append((name, " ".join(body)))
+            else:
+                values.extend((name, b) for b in body)
+        else:
+            values.append((name, rest.strip("\"'")))
     return values
 
 
@@ -83,7 +93,7 @@ def check(workflows):
             for m in IMAGE.finditer(uncommented(line)):
                 images.setdefault(m.group(1), []).append(f"{f.name}:{n}")
         for step in steps(lines):
-            if any(CACHE_PATH.match(l) for l in step):
+            if any(v == CACHE_DIR for _, v in block_values(step, ["path"])):
                 cache_steps.append((f.name, step))
     if not images:
         return [f"no Swift container image found in {workflows}"]
@@ -100,9 +110,9 @@ def check(workflows):
     if errors:
         return errors
     if not cache_steps:
-        return ["no SwiftPM cache step found (a step with path: ~/.cache/org.swift.swiftpm)"]
+        return [f"no SwiftPM cache step found (a step with path: {CACHE_DIR})"]
     for name, step in cache_steps:
-        values = key_values(step)
+        values = block_values(step, ["key", "restore-keys"])
         if not any(k == "key" for k, _ in values):
             errors.append(f"{name}: a SwiftPM cache step has no key")
         for k, v in values:
@@ -144,6 +154,19 @@ def self_test():
         ("no cache step", GOOD.split("    - name: SwiftPM")[0], "no SwiftPM cache step"),
         ("digest only in a comment", GOOD.replace(f"key: swiftpm-${{{{ github.job }}}}-{D}-", f"key: swiftpm-${{{{ github.job }}}}-x- # {D}"), "key doesn't hold"),
         ("stale restore key", GOOD.replace(f"          swiftpm-${{{{ github.job }}}}-{D}-", f"          swiftpm-${{{{ github.job }}}}-{other}-"), "restore-keys doesn't hold"),
+        ("host:port registry", GOOD + "  b:\n    container:\n      image: localhost:5000/swift:6.2.4-noble\n", "more than one"),
+        ("an env value naming an image is not an image",
+         GOOD + '  b:\n    env:\n      NOTE: "image: swift:6.2.4-noble"\n    steps:\n    - run: echo "container: swift:x"\n', None),
+        ("quoted cache path with a stale key",
+         GOOD.replace("path: ~/.cache/org.swift.swiftpm", 'path: "~/.cache/org.swift.swiftpm"').replace(f"-{D}-$", f"-{other}-$"),
+         "key doesn't hold"),
+        ("cache path in a list block with a stale key",
+         GOOD.replace("path: ~/.cache/org.swift.swiftpm", "path: |\n          ~/.cache/org.swift.swiftpm\n          ~/.npm").replace(f"-{D}-$", f"-{other}-$"),
+         "key doesn't hold"),
+        ("a folded key holding the digest",
+         GOOD.replace(f"key: swiftpm-${{{{ github.job }}}}-{D}-${{{{ hashFiles('Package.resolved') }}}}",
+                      f"key: >-\n          swiftpm-${{{{ github.job }}}}-{D}-\n          ${{{{ hashFiles('Package.resolved') }}}}"),
+         None),
     ]
     failed = 0
     for name, text, want in cases:
