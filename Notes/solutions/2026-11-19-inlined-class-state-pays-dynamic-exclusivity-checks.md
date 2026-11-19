@@ -37,12 +37,15 @@ Grouping the hot state into one struct, with one access per step and per read, w
 ## Fix
 
 - Every stored `var` of `TurnCore` carries `@exclusivity(unchecked)` under `#if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED`. Debug builds keep the checks, so the tests and the generated orders still run with them on. A release build with `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED` keeps them too.
-- The core stops the process on the overlaps a check would catch. The one only the check caught before, a step started from inside `read`'s body, has its own guard (`inRead`) and an exit test.
+- The core stops the process on the overlaps it can see, by one borrow state, `borrows`, modelled on Rust's `RefCell` flag (0 unused, n > 0 readers, -1 writing) and SE-0176's rule (reads nest; a read with a write, or two writes, don't). A step needs it unused, a read needs it not writing. The overlap only the runtime check caught before, a step started from inside `read`'s body, is one cell of that table. Each cell has an exit test, the nested read included.
+- A first fix used a second flag, `inRead`, cleared in `read`'s `defer`. A read nested inside another read cleared it on return, so a send from the outer body stepped unguarded. Two booleans for one borrow state invite that. A count with one rule doesn't.
+- The core can't stop adopter code it runs during its own accesses: the key type's `==` and `hash(into:)`, and the deinits of inputs and keys it drops. The docs make that a requirement on adopters (no call back into the actor from them), tested with the checked build.
 - On the Mac, the turn side's `read1` went from 237 to 142 instructions per call (direct: 135) and `emit` from 2538 to 1629.
 - `scripts/lint-turns.sh` (rule `unchecked-state`) fails when a stored var of `TurnCore` lacks the attribute under that exact condition.
 
 ## Prevention
 
 - When a class's state sits on a per-input path inlined into another module, count `swift_beginAccess` in the caller's disassembly before looking for anything else. Specialization only removes the generic overhead. A class's dynamic exclusivity checks remain after it.
-- `@exclusivity(unchecked)` is sound only where something else serializes every access (an actor, here) and the overlaps the check would catch are stopped by hand. List those overlaps, and test each one in a child process.
+- `@exclusivity(unchecked)` is sound only where something else serializes every access (an actor, here) and the overlaps the check would catch are stopped by hand. List those overlaps, and test each one in a child process, nesting included. Keep the borrow state as a count (readers) or a writing mark, not a flag per kind: a flag cleared by an inner call's `defer` reopens the outer one.
+- Also list the user code that runs inside the type's own accesses (`Hashable` conformances, deinits of values it drops). No guard sees it, so it becomes a documented requirement with a checked build to test it.
 - Keep the checks in debug builds and behind a flag in release builds, so a suspected overlap can be checked in production code.
