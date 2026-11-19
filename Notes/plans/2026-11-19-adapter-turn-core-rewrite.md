@@ -1,9 +1,9 @@
 # TransportAdapter on the turn core: the rewrite (#546)
 
-**Status:** rev 7, plan only, for review.
+**Status:** rev 8, plan only, for review.
 - **Detail:** B0–B2 in full; B3–B6 as outlines. Each of B3–B6 gets its own plan PR before its code, reviewed against the B0–B2 code that exists by then. Each outline's "open" list carries what the reviews of rev 1–3 raised for that step.
 - **Decided:** D4 = (a), by the maintainer (§2.2), with its rule documented as a B0 deliverable.
-- **Decisions in this rev:** the three B2 decisions (§3.3), each with a recommendation.
+- **Decisions in this rev:** the B2 decisions (§3.3), each with a recommendation: rev 7's three, and rev 8's two (the legacy cycle's handoff, the phase's event prepass).
 - **Proposals:** D1–D3 and D5.
 - **After GO on B0–B1:** B0–B1 move to a draft code branch; B2's detail is settled against that code.
 
@@ -45,13 +45,13 @@ A machine is `PlainData` (`TurnCore.init`, `TurnCore.swift:168`), so it can't st
 - The actor builds it once, as a `let`.
 - It travels in the value that runs the commit: the `.syncPhase` query (the core's `Query` has no constraints, `Machine.swift:18`), and the legacy commit query (§3.2).
 - The machine's `planAndCommit(_:tools:)` uses it for the duration of that call and keeps nothing.
-- **What the compiler checks, and what it doesn't.** `perform` is `@concurrent nonisolated`, so the compiler keeps it away from an actor-owned non-`Sendable` tool. Among the tools that is only `perPlayerTables`. The others are reachable from `perform`: `OutboundWriter` (`@unchecked Sendable`), `outputGate` (a `nonisolated let`) and `EncodingPipeline` (`Sendable`). For those the guard below is the check.
+- **What the compiler checks, and what it doesn't.** `perform` is `@concurrent nonisolated`, so the compiler keeps it away from an actor-owned non-`Sendable` tool. Among the tools those are the two table tools: `perPlayerTables` and the broadcast table (`SyncTables.swift:1593`), as §3.4 says. The others are reachable from `perform`: `OutboundWriter` (`@unchecked Sendable`), `outputGate` (a `nonisolated let`) and `EncodingPipeline` (`Sendable`). For those the guard below is the check.
 
 **The "changed only in turns" guard, scoped to the actor.** The borrow flag (`core.borrowStateForTesting < 0`, `TurnCore.swift:84`) is the adapter actor's state, so it is read only on the actor: the assertion sits in the actor-side wrappers through which the commit writes a tool (`perPlayerTables`, the broadcast tables, the writer's commit-side enqueue), never inside the tools themselves. A read of the flag from another executor would race, so no tool reads it. Legitimate writers outside an adapter step are listed and not asserted:
 - the keeper's synchronous `closeOutputs`, which writes the output gate outside any adapter step (`TransportAdapter+LandKeeperTransport.swift:97–100`);
 - the writer's own drain side (its socket task), which isn't a commit write.
 
-The witness for `perform` is the compiler for `perPlayerTables`, and for the `Sendable` tools a review rule: no `perform` in B2 names the writer's enqueue, the gate or the pipeline. B2's mutant per wrapper (an actor-side write outside a step) must trap.
+The witness for `perform` is the compiler for the two table tools, and for the `Sendable` tools a review rule: no `perform` in B2 names the writer's enqueue, the gate or the pipeline. B2's mutant per wrapper (an actor-side write outside a step) must trap; the in-turn borrow mutant goes inside the adapter's draft production (§3.4).
 
 ### 2.2 D4: how other modules' types are stored (decided: option (a))
 
@@ -112,18 +112,18 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 
 - **Goal:** carry out D4 (a), and make every piece of state B2 moves representable in a `PlainData` machine. No behaviour change.
 - **Changes:**
-  - the target edges: `SwiftStateTree` and the MessagePack target depend on `SwiftStateTurns`, and so Transport does too, in B0 (B0 already stores `TurnInstant`, so the edge can't wait for B1);
+  - the target edges: `SwiftStateTree` and the MessagePack target depend on `SwiftStateTurns`, and Transport does too, directly, in B0 (B0 already stores `TurnInstant`, so the edge can't wait for B1); so does `SwiftStateTreeTransportTests`. Turns uses `@concurrent`, so every consumer now needs Swift 6.2: `swift-tools-version` and the documented floor (README, FAQ, en and zh-TW) move from 6.0 to 6.2. `Package.swift` is a protected path of the differential gate (#654), so these package changes land on `main` first, in their own PR, and B0 takes them from `main`;
   - `@PlainData` at the definition of `SessionID`, `PlayerID`, `ClientID`, `StateSnapshot`, `SnapshotValue`, `MessagePackValue`, `EventTarget`, `CanonicalSyncEvent`, and each further type the build names; `Data: PlainData` in `SwiftStateTurns`;
-  - `MembershipCoordinator` (a `final class`, `MembershipCoordinator.swift:22`) becomes a value type, still owned by the actor;
+  - `MembershipCoordinator` (a `final class`, `MembershipCoordinator.swift:22`) stays a class in B0. B2's machine doesn't hold it (membership is the actor's until B3), so its conversion to a value type moves to B3;
   - `SyncEngine` splits into its value part and the layout tool, with `SyncEngine(for:)` kept (§2.2).
   - `SyncLagSession`'s instants become `TurnInstant` (§2.2); the lag clock change itself lands in B2, with the core.
   - `ExpectedAdmission` and its `joinResponse` closure don't change (§2.2).
-  - **the rule, documented** (the maintainer's condition for (a)): a section in the turn core's docs (`docs/turns/README.md` and `README.zh-TW.md`) in English and zh-TW, and a short note where contributors look: AGENTS.md's "Coding Style & Naming Conventions", in English (repository prose), linking to the docs section. It states:
+  - **the rule, documented** (the maintainer's condition for (a)): the turn core's docs already have a plain-data section on `main` (f515e11f, with #664's compiled before/after blocks); B0 updates it in English and zh-TW (`docs/turns/README.md` and `README.zh-TW.md`) rather than adding a new one, and adds a short note where contributors look: AGENTS.md's "Coding Style & Naming Conventions", in English (repository prose), linking to the docs section. It states:
     - a type held in a turn machine's state must be `@PlainData`, declared at the type's definition;
     - a hand-written conformance is refused by `scripts/lint-turns.sh`;
     - a standard-library or Foundation type that isn't plain (such as `ContinuousClock.Instant`) is replaced by a Turns value type (`TurnInstant`), not wrapped by hand.
 
-    With a before/after example, compiled by a test as the turn docs' other blocks are:
+    With a before/after example, compiled by a test as the turn docs' other blocks are (the docs use a `Room` with a class and a clock instant; the shape is the same):
 
     ```swift
     // Before: refused. The macro names `lastAckAt`, whose type isn't PlainData.
@@ -143,8 +143,14 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 
 ### 3.2 B1 and B2
 
+**Before B1: `TransportAdapter` becomes `package` (its own PR, "E").** B1 makes the adapter conform to `TurnActor` directly, and `TurnActor` is `package`, so the adapter can't stay public:
+- `TransportAdapter`, `LandManager.Container.transportAdapter` and `Container.init` (its parameter is the adapter) drop to `package`. The maintainer approved the removal, with no deprecation (no external users).
+- EncodingBenchmark measures the adapter directly. It goes through a minimal public facade in Transport, `TransportAdapterBenchmarkHandle`, that forwards only the calls the benchmark makes (its doc comment: benchmark and test support, not an integration surface). Diagnostics that already sit behind `@_spi(Diagnostics)` stay there; no new SPI.
+- The tests that import Transport with `@testable` (the two `SyncTablesFrameIdentityTests` included) reach `package` declarations and don't change; no CI job builds them in release.
+- The measured path must stay the same: a host A/B, base against the facade, under #517's gate.
+
 **B1: the empty machine.**
-- `TurnCore` in the adapter and the production `TurnClock` over `safeTaskSleep` (core plan §3.4). The dependency itself arrived in B0.
+- `TurnCore` in the adapter, which conforms to `TurnActor` directly, and the production `TurnClock` over `safeTaskSleep` (core plan §3.4). The dependency itself arrived in B0.
 - The machine has no state yet. No behaviour change.
 - Gate: §3's gate.
 
@@ -164,10 +170,10 @@ The actor keeps membership, join, inbound, actions, land failure, and the whole 
 
 **What holds `.syncCycle`.** A flag in the machine holds no core key, and an input queued behind an unheld key is releasable at once (`Turn.swift:158–166`). So the cycle is a request:
 - A cycle starts as a step (`.cycleStart`), which files a `.legacyCycle(id)` request under `.syncCycle` with `Hold.untilWorkerReturns`. `id` is a cycle number the machine counts. `untilRequestCloses` would release the key on the request's deadline, on cancellation or when the key ends (`Values.swift:62–74`), while `beginSync`/`endSync` still run; `untilWorkerReturns` keeps it until `perform` returns.
-- Its `perform` awaits the actor's driver, `adapter.runLegacyCycle(id)`: `beginSync`, then the `.legacyCommit(id, …)` query in the same segment as the await's return, then `endSync`. It returns the cycle's outcome: `.committed`, `.stale`, `.busy` or `.notStarted` (a failed `beginSync`, or no read).
+- Its `perform` awaits the actor's driver, `adapter.runLegacyCycle(id)`: `beginSync`, then the `.legacyCommit(id, …)` query in the same segment as the await's return, then `endSync`. It returns the cycle's outcome: `.committed`, `.busy` or `.notStarted` (a failed `beginSync`, or no read). A stale commit is unreachable (§3.3, decision 1), so it's no outcome.
 - **The ID, a stale commit, a second call and the deadline:** §3.3, decision 1. An accepted `beginSync` gets exactly one `endSync`, called by the driver after the query whatever it answered; a failed `beginSync` gets none.
-- **`syncNow` keeps today's boundary:** it returns after `endSync`. The driver resumes `syncNow`'s waiter there, and the cycle's `perform` returns there too: the ordinary cycle doesn't wait for the writer.
-- **The backlog retry** is queued behind `.syncCycle`, so it releases after the cycle's worker returns. Its own `perform` keeps today's waits before it sends `syncRequested`: after a busy rejection, 1 ms for the other cycle to reach `endSync`, and always `writer.waitForSyncCycleDrain()`, even when the key was already free.
+- **`syncNow` keeps today's boundary:** it returns after `endSync`. The driver resumes `syncNow`'s waiter there, and the cycle's `perform` returns there too: the ordinary cycle doesn't wait for the writer. The handoff is §3.3, decision 4.
+- **The backlog retry** is queued behind `.syncCycle`, so it releases after the cycle's worker returns. Its own `perform` keeps today's waits before it sends `syncRequested`: after a busy rejection, 1 ms for the other cycle to reach `endSync`, and always `writer.waitForSyncCycleDrain()`, even when the key was already free. Parking until the worker returns is an intended difference (decision 4).
 - The freeze settle stays an actor loop in B2 and doesn't use this request (§3.3, decision 2).
 
 In B3 the driver becomes a request chain (§4).
@@ -204,9 +210,9 @@ The lag decisions are made inside `planAndCommit` against the `MembershipView` p
   - **supersede**, inside the keeper's synchronous admission callback, which also discards each old session's lag entry first (`.sessionEnded`), with `outsideTurn: false` (TA:1884–1907).
 - **`.teardown`:** the recoverable teardown's `syncLag.removeAll()` (TA:1577). The #548 row exercises it.
 - **`.ack(session, seq)`:** `onSyncAck` updates the lag entry (TA:3381–3396).
-- **Merged events.** The append carries what `queueForMergedSend` uses today: the membership stamp, the canonical digest, and its queued / no-recipient result (`PendingEventManager.swift:67–81`, TA:2748–2755, :2826–2848). It is called from the keeper's turn (`enqueueEventSynchronously`), so it has two routes through one machine method, `appendMergedEvent(stamp, digest, body, target) -> QueueResult`:
-  - outside an answer, the `.mergedEvent(…)` query;
-  - inside the `.syncPhase` answer, the answer calls the method directly, since a query there would trap. The actor-side wrapper picks the route by the borrow flag (read on the actor). B2 has a test that reaches each route.
+- **Merged events.** The append carries what `queueForMergedSend` uses today: the membership stamp, the canonical digest, and its queued / no-recipient result (`PendingEventManager.swift:67–81`, TA:2748–2755, :2826–2848). One machine method, `appendMergedEvent(stamp, digest, body, target) -> QueueResult`, has two fixed call sites, each known statically (no routing by the borrow flag):
+  - the legacy and out-of-phase sends (`sendEvent`, TA:2703) call the `.mergedEvent(…)` query, outside any answer;
+  - the in-turn phase's events travel in `.syncPhase`'s value, and its answer calls the method in its prepass (§3.3, decision 5).
 
 `initialSyncingPlayers` stays actor-owned through B2: it has four writers (reservation and installation, TA:1662; the ticket-checked removal, :1664; the disconnect clear, :1339; supersede, :1907), and none of them is in the commit.
 
@@ -250,19 +256,19 @@ The options:
 - **Why it's unreachable.** `.cycleStart` is the only step that advances the cycle ID. With `untilWorkerReturns`, `.syncCycle` stays held until the driver returns, after `endSync`, whatever happens to the request (deadline or abandonment, `Values.swift:62–74`). A new cycle can't start while the key is held (below), so the driver's ID is always current when its `.legacyCommit` runs.
 - **The fault.** `.legacyCommit` asserts the ID in debug builds, and commits in every build. So if the reasoning is ever wrong, a test fails loudly, and production loses no dirty field. That is better than refusing the commit, which would lose data, and simpler than carrying the fields forward for a case that can't happen. `.legacyCycleEnded` keeps its ID check: there a stale value can only drop bookkeeping, never data.
 
-**A second call while the key is held is a busy skip, as today.** `.cycleStart` doesn't wait for `.syncCycle` (its policy names no `waitsFor`). It steps at once and reads the machine's in-flight record, which is set when it files the request and cleared by the worker's result (the normal or the stale step). If a cycle is in flight, the step records the skip: the backlog flags, and the coalesced retry queued behind `.syncCycle`. It then answers the caller `.busy` at once. So the off-mode test that awaits the skip before it opens the first cycle's hold (`TransportAdapterInTurnSyncTests.swift:926–939`) doesn't hang.
+**A second call while the key is held is a busy skip, as today.** `.cycleStart` doesn't wait for `.syncCycle` (its policy names no `waitsFor`). It steps at once and reads the machine's in-flight record, which is set when it files the request and cleared by the driver's `.legacyCycleEnded` query after `endSync` (decision 4). If a cycle is in flight, the step records the skip: the backlog flags, and the coalesced retry queued behind `.syncCycle`. It then answers the caller `.busy` at once. So the off-mode test that awaits the skip before it opens the first cycle's hold (`TransportAdapterInTurnSyncTests.swift:926–939`) doesn't hang.
 
-**The deadline.** Every holding request needs one. The cycle's deadline is today's longest wait in a cycle, the settle deadline (default 10 s). When it passes, the request is abandoned: the machine counts a diagnostic and logs the overrun. Nothing else changes, because:
+**The deadline.** Every holding request needs one. An ordinary cycle's deadline is a fixed 10 s, and it's diagnostic only. (The freeze's settle has its own configurable deadline, and doesn't use this request: decision 2.) When it passes, the request is abandoned: the machine counts a diagnostic and logs the overrun. Nothing else changes, because:
 - the key stays held until the worker returns;
 - `syncNow`'s waiter is resumed by the driver after `endSync`, not by the request;
-- the in-flight record is cleared by the worker's late result, through the stale step.
+- the in-flight record is cleared by the driver's `.legacyCycleEnded`, whatever happened to the request; the worker's late result goes through the stale step and only ends the key's hold.
 
 A hung `beginSync` or `endSync` is the keeper's bug, and it shows up as that diagnostic.
 
 **Decision 2: the freeze handshake.**
 
 *Recommended: the whole freeze stays on the actor through B2, the settle included; only its commit goes through the machine.* In rev 6 the settle moved and its control didn't, which needed a handshake between them. Keeping the settle with its control removes the handshake: the three questions keep today's answers, unchanged.
-- **A release during a settle.** The release bumps the actor's freeze generation. The settle checks `debugIsCurrent(generation)` after its last await, and publishes nothing for a released generation (TA:6464–6575, `debugReleaseFreeze`).
+- **A release during a settle.** The release clears the freeze count, and a fresh freeze advances the generation (TA:6368–6373, :6551–6558). The settle checks `debugIsCurrent(generation)` after its last await, and publishes nothing for a released generation (TA:6464–6575, `debugReleaseFreeze`).
 - **Ordinary syncs across a release and a refreeze.** `debugDeferSyncIfFrozen` latches them on the actor, before `.cycleStart` is sent. The release replays them, or hands them to a refreeze that happened meanwhile.
 - **The one deadline.** It covers the keeper's drain, the writer's backlog wait and the busy retries, in the settle's own loop.
 
@@ -289,6 +295,30 @@ What moves where:
 
 Rejected: showing that nothing appends during the answer. That isn't true today, because the phase appends its own events.
 
+**Decision 4: the legacy cycle's handoff.**
+
+`.cycleStart` keeps today's order of checks (TA:3146): the writer-backlog check first (a backlogged writer skips the cycle, sets the backlog flags and schedules the coalesced retry), then the in-flight record (busy skip, decision 1), and only then the request.
+
+*Recommended: the driver clears the in-flight record before it resumes `syncNow`'s waiter.* After `endSync` the driver calls `.legacyCycleEnded(id)`, which clears the record (its ID check drops a stale value), then resumes the waiter. So a `syncNow` called right after the previous one returns finds no cycle in flight and is accepted, as today, where `endSync` has already cleared the keeper's flag. It files its request behind `.syncCycle`, which may still be held for the few instructions until the first worker returns.
+
+Why not `Turn.reply(after:)` for the waiter: it also replies when the request is abandoned. A deadline would then resume `syncNow` before `endSync`, which breaks today's boundary.
+
+**The retry's parking is an intended difference.** Today a busy retry sleeps 1 ms, then retries: if the cycle is still in flight it meets it again, counts a second busy skip and schedules itself again, every millisecond while the cycle lasts (#654 holds it explicitly to make its row deterministic). In B2 the retry is queued behind `.syncCycle`, so it runs only after the worker returns. It never meets the same cycle twice, and `syncSkips.busy` counts one skip per rejected request. No golden changes: the only row that holds a cycle across the retry holds the retry too.
+
+**Decision 5: the phase's event prepass.**
+
+Today `runSyncPhaseInTurn` appends the phase's events (TA:2829) before it selects the ready joins (:2870), so an event held for a joining session is in that session's held store when the join is selected.
+
+The options:
+- the actor appends the events in a prepass, before it captures the `MembershipView`;
+- the answer keeps today's order inside the one query, with query-local state.
+
+*Recommended: the answer keeps today's order, with query-local state per emit.* The answer appends each event against the view and records, in a query-local copy, what each emit changed (a held event for a joining session, a digest). The later steps of the same answer read that copy. The order stays:
+1. the events, in order; the first `.lost` closes the gate: the answer emits `.landFailed` and returns, with nothing after it;
+2. then `includeSync`, the writer, the backlog, the freeze check and the ready joins, which see the events' query-local effects.
+
+The held-event changes leave the answer as `.heldEvents` outputs, applied by `flush` before any other step. A prepass on the actor would need a second view, or a view captured before the events changed it.
+
 ### 3.4 Details for the code (B2)
 
 These are settled against B2's code and its tests; each keeps today's behaviour:
@@ -298,12 +328,12 @@ These are settled against B2's code and its tests; each keeps today's behaviour:
   - with the gate closed, the commit still marks the join flipped and resolves its waiter, and starts no drain;
   - a ceiling drop ends every addressed session at once (TA:4249–4271, :4298–4315);
   - the held-overflow path stays a join failure, through the router's final-frame close.
-- **The lag timer:** its stop and re-arm rules and its single-flight latch (TA:3391–3409, :3508–3557). The barrier counts it through the timer's wake, an abandonment, the worker's return and the writer's handoff.
+- **The lag timer:** its stop and re-arm rules and its single-flight latch (TA:3391–3409, :3508–3557). The latch stays set through the `syncLagTimerSync` hold and is cleared just before the sync's dispatch (TA:3537–3557). The barrier counts it through the timer's wake, an abandonment, the worker's return and the writer's handoff.
 - **The guard:**
   - the broadcast table (`SyncTables.swift:1593`) is non-`Sendable`, so the compiler check covers it with `perPlayerTables`;
   - the actor-side event, action and gate writers are listed beside the keeper's `closeOutputs`.
 - **The recorder witness.** In-turn, the keeper submits the drafts after the adapter's query has returned (`LandKeeper.swift:4618–4625`), so a mutant on that submission can't witness the borrow trap. The mutant goes on the legacy submission (`submitSyncStream`, inside the legacy commit query) and inside the adapter's draft production.
-- **The first sync:** `isSyncCycle: false`, the initial sync's failure submission, the epoch captured before the keeper's read (TA:5536–5610), and `beginInitialSync(for:)` (TA:1957) as the separate reservation writer of `initialSyncingPlayers`.
+- **The first sync:** the initial sync's delayed follow-up (`failedPlanFollowUp`) applies to tickless lands only; `isSyncCycle: false`, the initial sync's failure submission, the epoch captured before the keeper's read (TA:5536–5610), and `beginInitialSync(for:)` (TA:1957) as the separate reservation writer of `initialSyncingPlayers`.
 
 ## 4. B3–B6: outlines
 
@@ -317,6 +347,7 @@ Each step below gets its own plan PR before its code.
   - leave: keeper leave → its tail.
 
   The hold passes between links through each completion step (`TurnActor.swift:170–176`; Review confirmed both the normal and the stale form). Queued membership inputs are scoped to a `.membershipEpoch(n)` that the recoverable teardown ends. The flip moves into the commit. B2's flip and held-event bridges and the legacy driver's queries go away. The public changes land here: the required `WithdrawToken`, the `Transport` defaults that ignore the connection generation (#240), `JoinAdmission.refused`, and the D2 stamp.
+- **Also in B3:** `MembershipCoordinator` becomes a value type (deferred from B0), when the machine takes membership.
 - **Owner after B3:** the machine, of membership, join, inbound and the initial sync.
 - **Gate:** §3's gate.
 - **Open before this step's plan:**
@@ -327,7 +358,7 @@ Each step below gets its own plan PR before its code.
   - **#548.** The adapter passes `admitThroughTransport: true` in both modes (TA:2208). The legacy behaviour comes from `refusesResolvedJoin` returning `false` when in-turn sync is off (`TransportAdapter+LandKeeperTransport.swift:38–44`).
     - The fix compensates with a keeper leave, targeted by the ended attempt's session and client (`leave(playerID:clientID:sessionID:)`, `LandKeeper.swift:2451`). Name the result field that tells the late step the keeper inserted a player, including the resolver-error path after the insert (`JoinOutcome` at :1797, :1880).
     - **No keeper recheck in this rewrite.** A recheck before the duplicate-login kick and after its leave is a keeper behaviour change, and it changes the in-turn lifecycle. It belongs with #588/#593's keeper change, which moves `CanJoin` into the apply turn.
-    - The harness row is ready for this: since #654 at 20e15dae, it records A's ticket as a note and `join-A` as `recorded(#548)`. The branch's refusal is then comparator differences, not a run failure. The comparator matches one entry per exact difference per cell, so the list has one entry per channel and checkpoint: the note at the live checkpoint, and the changed frames of connection `a` at each checkpoint where they differ. The exact set comes from the branch's run at B3, each entry naming #548. The lifecycle stays `pa = [join, leave, join, leave]`, because the compensating leave runs OnLeave.
+    - The harness row is ready for this: since #654 at 20e15dae, it records A's ticket as a note and `join-A` as `recorded(#548)`. The branch's refusal is then comparator differences, not a run failure. The comparator matches one entry per exact difference per cell, so the list has one entry per channel and checkpoint: the note at the live checkpoint, and the changed frames of connection `a` at each checkpoint where they differ. The exact set comes from the branch's run at B3, each entry naming #548 and, for byte comparisons, both digests. `pa`'s lifecycle is recorded too (`recordedLifecycle`, #548), so the oracle doesn't judge it; with the compensating leave running OnLeave it stays `[join, leave, join, leave]`, and any change shows as the record's differences.
     - B0–B2 depend on neither the recheck nor the compensation.
   - **Reverse bridges from B3 to the actor.** The freeze reads the coordinator's epoch (TA:6428, :6500) until B5. The disconnect cancels the actor-owned action work until B4. A binding read covers whether a reply is still eligible, not the cancellation.
   - **Flip timeout.** It goes through the membership queue today (TA:1731–1735). Its queued input survives an epoch withdrawal, so its handler checks the attempt, the binding and the still-unflipped record.
@@ -419,7 +450,18 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 - **The tools outside the machine.** `CommitTools` is passed in and not stored. Its writers are guarded by the borrow assertion, and `perform` can't reach them because it is nonisolated.
 - **The B2 bridges.** Each bridge is applied in the commit's own segment. If a bridge is missing for a write the actor still makes, a test of that write fails at B2's SHA.
 
-## 9. Rev 7: what changed
+## 9. Rev 8: what changed
+
+| Change | Where |
+|---|---|
+| E before B1: the adapter and its container field become `package`, the benchmark facade, the host A/B | B1 |
+| Decision 4: the legacy cycle's handoff (backlog check first, the in-flight record cleared before the waiter resumes, no `reply(after:)`), the retry's parking as an intended difference | §3.2, §3.3 |
+| Decision 5: the phase's events appended in the answer with query-local state, today's order kept; the borrow-flag routing removed | §3.2, §3.3 |
+| The ordinary cycle's 10 s deadline is diagnostic only; the lag latch through `syncLagTimerSync`; the initial sync's follow-up tickless only; §2.1 aligned with §3.4 | §2.1, §3.3, §3.4 |
+| A release clears the freeze count, a fresh freeze advances the generation; `.stale` dropped from the legacy outcomes | §3.2, §3.3 |
+| B0: the docs section updated rather than added; the Turns edges with the 6.2 floor, landing on `main` first; `MembershipCoordinator` moved to B3 | B0, B3 |
+
+## 10. Rev 7: what changed
 
 | Change | Where |
 |---|---|
@@ -429,7 +471,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | Decision 3: the phase's events in `.syncPhase`'s value | §3.2, §3.3 |
 | Rev 6's shoulds as details for B2's code; the close holds on the actor's close task; `beginInitialSync(for:)` | §3.4, §6 |
 
-## 10. Rev 6: what changed
+## 11. Rev 6: what changed
 
 | Change | Where |
 |---|---|
@@ -439,7 +481,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | B0: the value part listed in full, `SyncEngine(for:)` kept, `TurnInstant` and the core clock for lag, the guard scoped to the actor, the broadcast tables as a tool | §2.1, §2.2, B0 |
 | Quiescence from scheduling to the writer's handoff; the lag milestone after its fences; the recorder witness with in-turn sync on; stop triggers, the barrier's coverage and the builder's lifetime in the outlines; `onSyncAck` pointer | §2.3, §3.2, §4 |
 
-## 11. Rev 5: what changed
+## 12. Rev 5: what changed
 
 | Change | Where |
 |---|---|
@@ -451,7 +493,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | The seven missing rev-3 points and the overflow answer in the open lists; B6's stop conditions | §4 |
 | #654's merge as the prerequisite; #548 entries per exact difference; the compiler claim scoped; `Data: PlainData` in Turns | header, §2.1, §2.2, §4 |
 
-## 12. Rev 4: what changed
+## 13. Rev 4: what changed
 
 | Change | Where |
 |---|---|

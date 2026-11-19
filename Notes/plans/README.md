@@ -39,7 +39,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-18 | [SwiftStateTurns: the turn core target (#551)](2026-11-18-swift-state-turns-core.md) | open | #551 (part of #546). Rev 2, GO; implementation next |
 | 2026-11-18 | [Extract TransportAdapter's stateless encoding and frame-building code (#554)](2026-11-18-adapter-stateless-extraction.md) | open | #554 (part of #546, step 3). Rev 1, for review |
 | 2026-11-19 | [A differential test harness for TransportAdapter's turn-core rewrite (#555)](2026-11-19-adapter-differential-harness.md) | open | #555 (part of #546). Rev 10, GO: golden captures instead of adoption levels; step 1 in review |
-| 2026-11-19 | [TransportAdapter on the turn core: the rewrite (#546)](2026-11-19-adapter-turn-core-rewrite.md) | open | Rev 7, plan only: B0–B2 in full, B3–B6 outlined; D4 = (a) decided. The machine's state, inputs and keys; each hold point's seam on the branch; the order B0–B6 with the golden compare as each step's gate; retired unit-test holds and their invariants; the 485 adapter-side polls; #652, #548, #588; the host A/B. D1–D3 for the maintainer |
+| 2026-11-19 | [TransportAdapter on the turn core: the rewrite (#546)](2026-11-19-adapter-turn-core-rewrite.md) | open | Rev 8, plan only: B0–B2 in full, B3–B6 outlined; D4 = (a) decided; E (the adapter becomes `package`) before B1; B2 decisions 1–5. The machine's state, inputs and keys; each hold point's seam on the branch; the order B0–B6 with the golden compare as each step's gate; retired unit-test holds and their invariants; the 485 adapter-side polls; #652, #548, #588; the host A/B. D1–D3 for the maintainer |
 
 ## Reevaluation and replay
 
