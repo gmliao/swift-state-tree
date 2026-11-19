@@ -1,6 +1,6 @@
 # CI test audit and nightly design
 
-Status: proposal. Inventory and verdicts only. No test is removed, skipped or moved by this plan. Each move lands in its own PR after the list is approved.
+Status: proposal, rev 2. Rev 2 revises V3's premise and the nightly's skip and scoping after review, names the effective-config log lines for V2, and says what the queue figures count. Inventory and verdicts only. No test is removed, skipped or moved by this plan. Each move lands in its own PR after the list is approved.
 
 Follows `Notes/plans/2026-11-19-dev-speed.md` (levers 1–3: #618, #620).
 
@@ -54,7 +54,7 @@ The row-off leg is the same, plus the `messagepack (USE_SYNC_TABLES=false TYPED_
 
 ## Queue time
 
-The wait from a job's creation to its start (`created_at` to `started_at` in the jobs API), over the 80 jobs of the runs above:
+The wait from a job's creation to its start (`created_at` to `started_at` in the jobs API), over the 74 jobs of the runs above that started. The 6 skipped jobs are left out, as they never start:
 
 | | s |
 |---|---:|
@@ -63,10 +63,11 @@ The wait from a job's creation to its start (`created_at` to `started_at` in the
 | max | 483 |
 
 The waits are all on the two commits whose runs overlapped other runs on the repository, 2cb7818a and 7133736e (2026-11-19 00:29Z and 00:48Z):
-- 2cb7818a: six of its jobs waited 298–483 s;
-- 7133736e: all four e2e-game legs waited 74–175 s, and two build legs 136–161 s.
+Jobs that waited over 60 s, both workflows together:
+- 2cb7818a: 11 jobs, 92–483 s;
+- 7133736e: 6 jobs, 74–175 s: all four e2e-game legs and two build legs.
 
-The other four commits had no job waiting over 60 s.
+The other four commits had none.
 
 A job waits when the account's concurrent-job limit is reached, so a queued push is delayed by the job-minutes ahead of it, not by its own slowest job. On those two commits the wait (up to 8 min) was larger than anything this audit takes off the wall time. Fewer job-minutes per push, and one fewer job (V2), shorten that wait whenever runs overlap. The wait will be measured again after V1 and V2.
 
@@ -75,7 +76,7 @@ A job waits when the account's concurrent-job limit is reached, so a queued push
 | axis | where it is read | what it can reach |
 |---|---|---|
 | `IN_TURN_SYNC` (build × 2, e2e-game × 2) | `Sources/SwiftStateTree/Runtime/InTurnSync.swift:45` (core) | core, Transport and NIO tests. Not Macros (compile time) nor DeterministicMath (doesn't depend on the runtime). |
-| `USE_SYNC_TABLES`, `TYPED_LEAF_VALUES` (sync-tables-off) | `Sources/SwiftStateTreeTransport/TransportEnvConfig.swift:105,112` | Transport and NIO tests only. Core can't import Transport, so `SwiftStateTreeTests` (977 `@Test`s), Macros (33) and DeterministicMath (145) see no difference. |
+| `USE_SYNC_TABLES`, `TYPED_LEAF_VALUES` (sync-tables-off) | `Sources/SwiftStateTreeTransport/TransportEnvConfig.swift:105,112` | **Tests that build an adapter or a land server without an explicit `transportEnvConfig:`**, in whatever test target they are. Mostly Transport and NIO. But `SwiftStateTreeTests` depends on `SwiftStateTreeTransport` too (`Package.swift`, its `testTarget`), and 10 of its files import it. One of them builds an adapter that reads the environment: `DebugProjectionWireShapeTests`, which runs the snapshot-diff fallback in sync-tables-off and nowhere else. The other three core files that build an adapter pass `transportEnvConfig:` (`AtomicPatternIndexAdapterTests`, `ReevaluationMonitorFrameIdentityTests`, `SyncTablesLandCellTests`). Macros (33 `@Test`s) and DeterministicMath (145) can't reach an adapter. |
 | `PER_PLAYER_SYNC_TABLES` (per-player-sync-tables-off) | `TransportEnvConfig.swift:82` | Transport and NIO. The job already filters to them. |
 | `ROW_ADDRESSING` (e2e-game × 2) | `TransportAdapter.swift:1261`: `rowAddressing = rowAddressingRequested && inTurnSyncEnabled && joinsThroughRouter`; `TransportEncodingConfig.swift:139`: needs an opcode state-update encoding | **Only with in-turn sync on, and only for jsonOpcode and messagepack.** With in-turn sync off, or with json, row addressing is off whatever `ROW_ADDRESSING` says. |
 | `TRANSPORT_ENCODING` (e2e-tests × 3, e2e-game × 3 per leg) | the codecs | everything on the wire. |
@@ -97,16 +98,24 @@ Verdicts: **push** (every push and PR, as today), **variant** (only in the varia
 - **Today:** a full leg, the slowest on 7133736e (13.7 min).
 - **Why less:** with in-turn sync off, `ROW_ADDRESSING=false` changes nothing (`TransportAdapter.swift:1261`). Its jsonOpcode and messagepack runs repeat the (false, on) leg's. The only thing it adds is the `USE_SYNC_TABLES=false` messagepack section, which the script runs only when `ROW_ADDRESSING=false` (`test-e2e-game.sh:437–486`).
 - **Still caught by:** the (false, on) leg for every scenario. That section moves into the (false, on) leg, with `ROW_ADDRESSING=false` set for that section only.
-- **Precondition, in the same PR:** show that the two legs' servers run the same effective config on one commit. The server's config log line must be identical in both legs, with row addressing reported off.
+- **Precondition, in the same PR:** show that the two legs' lands run the same effective config on one commit.
+  - GameServer's own `📦 Transport encoding configured` line (`Examples/GameDemo/Sources/GameServer/main.swift:95`) logs the *requested* `rowAddressing`, so it differs between the legs by design and proves nothing.
+  - The evidence is the adapter's per-land `Transport encoding configured` line (`Sources/SwiftStateTreeTransport/TransportAdapter.swift:1416–1428`): it must show `rowAddressing: off` and the same other fields in both legs.
+  - The (false, on) leg also logs `Row addressing requested but not in effect` (`:1447`), and the (false, off) leg doesn't.
 - **Saves:** about 13 runner-min. The (false, on) leg grows by about 1.1 min. On wall time, the e2e-game maximum would come down to the (false, on) leg plus 1.1 min. Leg times vary by 3–4 min between identical legs (9.3 against 12.5 on one run), so the wall-time gain can't be read from one run. It will be measured on the PR.
 
-### V3. sync-tables-off: Transport and NIO only (variant)
+### V3. sync-tables-off: only the tests that can read the flags (variant)
 
 - **Today:** the full `swift test`.
-- **Why less:** the flags reach Transport and NIO only (see the axes table).
+- **Why less:** the flags reach only tests that build an adapter or a land server without an explicit `transportEnvConfig:` (see the axes table). That is most of Transport and NIO, plus `DebugProjectionWireShapeTests` in core. The rest of core, Macros and DeterministicMath run the same code with the flags on or off.
 - **Still caught by:** the same core, Macros and DeterministicMath tests in both build legs.
-- **How:** the per-player job's filter, `--filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.'`.
-- **Saves:** about 2 runner-min. This is an estimate from the per-player job, which builds the same and runs only those two modules: 9.7 against 11.6 min. It's off the critical path.
+- **How:** two options for the PR to choose between.
+  - (a) Filter to Transport, NIO and the core suites that read the flags: today `SwiftStateTreeTests.DebugProjectionWireShapeTests`.
+  - (b) Give `DebugProjectionWireShapeTests` an explicit tables-off case, so it covers the fallback in every job, and filter to Transport and NIO, like the per-player job (`--filter 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.'`).
+
+  (b) is preferred: a filter that lists core suites silently drops the next core test that builds an adapter from the environment.
+- **Either way, the PR adds a check** that lists every `TransportAdapter(` and land-server construction in `Tests/SwiftStateTreeTests` without `transportEnvConfig:`. It fails if one is outside the filter, for (a), or exists at all, for (b).
+- **Saves:** about 2 runner-min, an estimate. The per-player job builds the same and runs only Transport and NIO, in 9.7 against 11.6 min. Under (a), less whatever the added core suites take. It's off the critical path.
 
 ### V4. Must-not-compile snippets and Lint lessons: one build leg (variant)
 
@@ -118,7 +127,7 @@ Verdicts: **push** (every push and PR, as today), **variant** (only in the varia
 
 - **Why less:** neither module can read `IN_TURN_SYNC`.
 - **Still caught by:** the same tests in build (in-turn sync true).
-- **How:** `--skip 'SwiftStateTreeMacrosTests\.|SwiftStateTreeDeterministicMathTests\.'` in the in-turn-false leg.
+- **How:** `--skip 'SwiftStateTreeMacrosTests\.|SwiftStateTreeDeterministicMathTests\.'` in the in-turn-false leg. Once #608 merges, its test targets (`SwiftStateTurnsTests`, `SwiftStateTurnsMacrosTests`) get the same check: whether they can read `IN_TURN_SYNC`.
 - **Saves:** under 0.5 runner-min (178 short tests). Listed for completeness. Recommend doing it only together with V4, in one PR.
 
 ### V6. The slowest tests: no per-test moves (push)
@@ -163,6 +172,8 @@ The slowest tests by total time across the variant jobs, in seconds, with each j
 
 **Candidates** are tests that set the tables or typed-leaf flags in their own config: `SyncTablesByteIdentityTests` and `PerPlayerSyncTablesScenarioTests`. If they build their config without reading the environment, their runs in the tables-off and per-player-off jobs repeat the build legs'. A follow-up can check that and move them by file or tag, not by name. No minutes are claimed for it here.
 
+`SyncTablesByteIdentityTests` can't move as a whole in any case. It holds the pinned tests that the variant jobs grep their logs for: the per-player job greps `✔ Test "<pin>"`, so that a filter typo can't pass with nothing run. Those pins stay in every job that greps for them.
+
 ### V7. Kept as they are (push)
 
 - **e2e-tests, three encodings:** 0.4 min each on a 5.1-min job. The DemoServer build (2.2) is shared. Cutting an encoding saves under a minute and loses a codec on the real wire.
@@ -199,9 +210,15 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
 
 - **Triggers:**
   - `schedule` (one run a day, 19:00 UTC);
-  - `workflow_dispatch` (an optional `ref` input, default `main`);
+  - `workflow_dispatch` (no inputs);
   - `push` of tags `measurements-*`.
-- **Gate job.** Resolves the SHA under test. On `schedule` only, it looks up the last successful nightly run (`gh run list --workflow nightly.yml --status success --limit 1 --json headSha`). It skips the rest when that SHA equals the SHA under test. Dispatch and tag runs always run.
+
+  To test a branch or tag by hand: `gh workflow run nightly.yml --ref <branch-or-tag>`. The run then checks out that ref, and its `headSha` is that ref's commit. A `ref` input is avoided on purpose: every `actions/checkout`, the `fetch-depth: 0` ones included, would have to pass it through `workflow_call`, and a dispatch run's `headSha` would still be `main`'s.
+- **Concurrency:** `group: nightly-${{ github.ref }}`, `cancel-in-progress: false`. Two runs on the same ref queue instead of racing on the report.
+- **Gate job, on `schedule` only.** It looks up the last successful **scheduled** run, `gh run list --workflow nightly.yml --event schedule --status success --limit 1 --json headSha`. When that `headSha` equals the commit under test, it skips the rest.
+  - Only scheduled runs count. A dispatch or tag run on another ref can't make the next scheduled run skip `main`'s HEAD.
+  - A scheduled run's `headSha` is `main`'s HEAD when it started, which is the commit it tested.
+  - Dispatch and tag runs always run.
 - **Test jobs.** The full pre-audit matrix, via `workflow_call` of the two existing workflows with inputs that restore what V1–V5 drop:
   - all three encodings in the row-off legs;
   - the separate (false, off) leg;
@@ -209,15 +226,16 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
   - both build legs' checks.
 
   One definition serves both, so the nightly can't drift from the push runs. That needs `workflow_call` added to both workflows, in the PR that adds the nightly.
-- **Report job** (`if: always()`, `permissions: issues: write`):
+- **Report job, on `schedule` only** (`if: always() && github.event_name == 'schedule'`, `permissions: issues: write`):
   - **On failure:** it finds the open issue labeled `nightly-failure`, or opens one (title `Nightly failing on main`, with a milestone and the type and priority labels). It comments with:
     - the run URL;
     - the failed jobs;
-    - the commits since the last green nightly (`git log --oneline <last-green>..<sha>`, from a `fetch-depth: 0` checkout).
+    - the commits since the last green scheduled run (`git log --oneline <last-green>..<sha>`, from a `fetch-depth: 0` checkout).
 
     One issue at a time; a second failure comments on the same issue.
   - **On success with that issue open:** it comments `green at <sha>` and closes it.
-- **Before a measurement tag.** Pushing a `measurements-*` tag runs the nightly on the tagged commit. The rule for whoever tags: tag only a commit whose push runs are green, and check the tag's nightly run before using its numbers. A red tag run is reported to the same issue.
+  - **Dispatch and tag runs never file or close the issue.** Their result is their own run's status, and a tag run's job summary names the tag.
+- **Before a measurement tag.** Pushing a `measurements-*` tag runs the nightly on the tagged commit. The rule for whoever tags: tag only a commit whose push runs are green, and check the tag's nightly run before using its numbers.
 - **Limits:**
   - GitHub runs `schedule` only on the default branch;
   - it disables scheduled workflows in a public repository after 60 days without activity;
