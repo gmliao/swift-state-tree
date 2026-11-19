@@ -338,7 +338,7 @@ struct LandRouterJoinTimeoutTests {
         // transport no longer has: the interleaving behind #259, forced.
         let flipGate = TestGate(), bDisconnect = TestGate()
         defer { flipGate.open(); bDisconnect.open() }
-        await h.adapter.installHolds(HoldRegistry.at(.registerSession) { await flipGate.arrive() })
+        await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await flipGate.arrive() })
         await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.disconnectEntry) { await bDisconnect.arrive() }.hook)
         _ = await h.connect(b)
         let bJoin = try h.startJoin(b, player: "p2")

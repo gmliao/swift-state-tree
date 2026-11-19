@@ -5,9 +5,13 @@ import Logging
 
 /// Where a `TransportAdapter` awaits its test hold hook (`installHolds`).
 enum TransportAdapterHoldPoint: Hashable, Sendable {
-    /// An in-turn join (#69) after its admission and before `registerSession`: admitted, its
-    /// OnJoin may be consumed, but it can't flip yet.
-    case registerSession
+    /// An in-turn join (#69) after `keeper.joinReportingAdmission` returned with its admission,
+    /// before the session is registered with the transport: admitted, its OnJoin may be
+    /// consumed, but it can't flip yet. Taken only when the join completes in the turn.
+    case keeperJoinReturned
+    /// An in-turn join registered with the transport, before it asks the keeper for its sync
+    /// turn (`requestJoinSyncTurn`), which can flip it (#555): registered, not yet flipped.
+    case joinSyncRequested
     /// `admitJoin` on entry, before the join is queued on the membership queue (#97).
     case admitJoinEntry
     /// The delayed follow-up of a dropped initial sync (#564), before its `syncNow()`, so a test
@@ -85,7 +89,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
     public nonisolated var syncConfigForRecord: ReevaluationSyncConfig {
         ReevaluationSyncConfig(
-            mergedBroadcastFrame: stateUpdateEncoder.encoding == .opcodeMessagePack,
+            mergedBroadcastFrame: useStateUpdateWithEvents,
             fullSnapshot: syncStrategy == .fullSnapshot
         )
     }
@@ -207,11 +211,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Which encodings of an event fail (tests only).
     enum EventEncodingFault: Sendable {
-        /// The opcode 107 body: the event falls back to its own frame.
-        case mergedBody
         /// Every encoding: the event is lost.
         case all
     }
+
 
     /// Installs `eventEncodingFaultForTesting` (tests only).
     func setEventEncodingFaultForTesting(_ fault: (@Sendable (String) -> EventEncodingFault?)?) {
@@ -811,9 +814,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Debug freeze bookkeeping (see `TransportAdapter+DebugFreeze.swift`).
     var debugFreezeState = DebugFreezeState<State>()
 
-    /// Whether to merge server events with state update (opcode 107). True when state update encoding is opcodeMessagePack.
-    private var useStateUpdateWithEvents: Bool {
-        stateUpdateEncoder.encoding == .opcodeMessagePack
+    /// Whether to merge server events with state update (opcode 107): the state update encoding
+    /// is `opcodeMessagePack`. Decided once at init (#521 D10): `StateUpdateEncoder.encoding` is a
+    /// protocol getter, and the record header (`syncConfigForRecord`), the sync path and the event
+    /// path must read one decision.
+    private nonisolated let useStateUpdateWithEvents: Bool
+
+    /// Whether an event's body can be merged into the opcode 107 frame: opcode 107 is on and
+    /// messages are MessagePack, the only encoding whose event body is a MessagePack value.
+    /// Decided once at init (#521 D10). In a hybrid configuration (`json` or `opcodeJsonArray`
+    /// messages with `opcodeMessagePack` state updates) every event goes as its own frame, with
+    /// no body attempt.
+    private nonisolated let eventsMerge: Bool
+
+    /// `useStateUpdateWithEvents` and `eventsMerge` for these encoders, decided once at init.
+    private static func mergeDecisions(
+        _ stateUpdateEncoder: any StateUpdateEncoder,
+        _ messageEncoder: any TransportMessageEncoder
+    ) -> (useStateUpdateWithEvents: Bool, eventsMerge: Bool) {
+        let merged = stateUpdateEncoder.encoding == .opcodeMessagePack
+        return (merged, merged && messageEncoder is MessagePackTransportMessageEncoder)
     }
 
     /// Merged broadcast frames with a shared broadcast key table: a late joiner needs a key scope
@@ -935,7 +955,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         suppressMissingPathHashesWarning: Bool = false,
         inTurnSync: Bool = true,
         logger: Logger? = nil,
-        joinsThroughRouter: Bool
+        joinsThroughRouter: Bool,
+        eventEncodeCountsForTesting: EventEncodeCountsForTesting? = nil
     ) {
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
@@ -975,18 +996,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.rowAddressing = rowAddressing
         if let encodingConfig = encodingConfig?.withRowAddressing(rowAddressing) {
             self.codec = encodingConfig.makeCodec()
-            self.messageEncoder = encodingConfig.makeMessageEncoder(
+            let madeMessageEncoder = encodingConfig.makeMessageEncoder(
                 eventHashes: eventHashes,
                 clientEventHashes: clientEventHashes
             )
+            self.messageEncoder = madeMessageEncoder
             // Built here, at registration, and kept on the encoder: frames go out in the land's
             // canonical order (`CanonicalPatchOrder`).
-            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
+            let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
                 pathHashes: pathHashes,
                 warnIfMissingPathHashes: !suppressMissingPathHashesWarning,
                 atomicLayout: AtomicLayoutTable.forState(State.self),
                 unmappedPaths: unmappedPathCounter
             ))
+            self.stateUpdateEncoder = madeStateUpdateEncoder
+            (self.useStateUpdateWithEvents, self.eventsMerge) = Self.mergeDecisions(madeStateUpdateEncoder, madeMessageEncoder)
             self.pathHashes = pathHashes
             // The router requires the same list (from the same effective config).
             self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
@@ -1009,8 +1033,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         } else {
             self.codec = codec
-            self.messageEncoder = JSONTransportMessageEncoder()
-            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
+            let madeMessageEncoder = JSONTransportMessageEncoder()
+            let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
+            self.messageEncoder = madeMessageEncoder
+            self.stateUpdateEncoder = madeStateUpdateEncoder
+            (self.useStateUpdateWithEvents, self.eventsMerge) = Self.mergeDecisions(madeStateUpdateEncoder, madeMessageEncoder)
             self.pathHashes = pathHashes
             self.tracksSyncLag = false
             self.stateUpdateFeatures = []
@@ -1094,7 +1121,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.encodingPipeline = EncodingPipeline(
             stateUpdateEncoder: self.stateUpdateEncoder,
             messageEncoder: self.messageEncoder,
-            landID: landID
+            landID: landID,
+            encodeCounts: eventEncodeCountsForTesting
         )
         
         // Initialize event sending pipeline
@@ -1102,7 +1130,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             messageEncoder: self.messageEncoder,
             codec: self.codec,
             landID: landID,
-            logger: self.logger
+            logger: self.logger,
+            encodeCounts: eventEncodeCountsForTesting
         )
         self.membershipCoordinator = MembershipCoordinator()
 
@@ -1830,7 +1859,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sessions superseded by a newer join of their player so far.
     private(set) var supersededSessionCount = 0
     /// Router joins refused as stale before the keeper's join (`staleJoinAttempt`, #97).
-    private(set) var staleJoinAttemptsRefused = 0
+    package private(set) var staleJoinAttemptsRefused = 0
 
     /// Ends every session of `playerID` other than `sessionID` (newest wins, #92). For the game
     /// this is OnLeave then OnJoin: the keeper's join already left the old entry. Here, in the
@@ -2205,7 +2234,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let completesInTurn = outcome.admitted && joiningSessions[sessionID]?.inTurn != nil
             if completesInTurn {
                 // Admitted and not yet registered with the transport: not ready to flip.
-                await holds.at(.registerSession)
+                await holds.at(.keeperJoinReturned)
             }
 
             // Register session. Already in the membership queue, and the keeper join just ran in
@@ -2231,6 +2260,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 if let ticket = admittedTicket, joiningSessions[sessionID]?.ticket == ticket {
                     joiningSessions[sessionID]?.inTurn?.transportRegistered = true
                 }
+                await holds.at(.joinSyncRequested)
                 await keeper.requestJoinSyncTurn()
                 var result = JoinResult(playerID: playerID, sessionID: sessionID, playerSlot: slot)
                 result.completedInTurn = true
@@ -2658,20 +2688,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Helper Methods
 
-    /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack),
-    /// events are queued and sent merged with the next state update instead of separate frames.
-    /// When body encoding fails (e.g. message encoder is JSON in a hybrid config), falls back to sending a separate frame.
+    /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack) and
+    /// messages are MessagePack, events are queued and sent merged with the next state update
+    /// instead of separate frames.
     ///
-    /// **When fallback is used:** In typical production the message encoder is MessagePack (clients use the encoding
-    /// from joinResponse, so with `TransportEncodingConfig.messagepack` body encoding succeeds and events are merged).
-    /// The fallback matters for hybrid configs only: `message: .json` or `.opcodeJsonArray` with `stateUpdate: .opcodeMessagePack`
-    /// (e.g. debugging or migration), where `encodeServerEventBody` returns nil.
+    /// **Hybrid configurations** (`message: .json` or `.opcodeJsonArray` with `stateUpdate:
+    /// .opcodeMessagePack`, e.g. debugging or migration): opcode 107 merges events as MessagePack
+    /// values, which only a MessagePack message encoder produces. So every event goes as its own
+    /// frame. That is decided once at init (`eventsMerge`, #521 D10), with no body attempt.
     ///
-    /// **Core issue (why fallback is required):** Opcode 107 merges events with state updates as a MessagePack array.
-    /// That requires an event "body" as `MessagePackValue`. `encodeServerEventBody` can only produce that when the
-    /// message encoder is MessagePack. If the message encoder is JSON or opcodeJsonArray, it encodes to JSON bytes
-    /// then tries `unpack(JSON bytes)` as MessagePack, which fails → returns nil. Without fallback, the event would
-    /// be dropped silently. We therefore fall through to the normal send path and send the event as a separate frame.
+    /// **With MessagePack messages,** an event whose body doesn't encode is lost (its own frame
+    /// would fail the same way: one encoder, one conversion), which ends the land (#535 row 17).
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         guard enqueueEventSynchronously(event, to: target) == .lost else { return }
         // An event that reached no frame ends the land (#535 row 17).
@@ -2701,19 +2728,35 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if !heldEventOverflows.isEmpty { failHeldEventOverflows() }
         }
         let fault = eventEncodingFaultForTesting?(event.type)
-        // Queue mode (opcode 107)
-        if useStateUpdateWithEvents {
-            if fault == nil, let body = encodingPipeline.encodeServerEventBody(event) {
-                let queued = eventSendingPipeline.queueForMergedSend(
-                    eventBody: body,
-                    target: target,
-                    pendingEventManager: &pendingEventManager,
-                    membershipCoordinator: membershipCoordinator,
-                    digest: digest
-                )
-                return queued ? .queued : .noRecipient
+        // Queue mode (opcode 107, MessagePack messages)
+        if eventsMerge {
+            // A body that doesn't encode means a frame that wouldn't either (one encoder, one
+            // conversion): the event is lost after one encode, with no second attempt (#521 D10).
+            let body: MessagePackValue
+            do {
+                if fault == .all {
+                    throw EncodingError.invalidValue(event.type, .init(codingPath: [], debugDescription: "encoding fault (tests)"))
+                }
+                body = try encodingPipeline.encodeServerEventBodyOrThrow(event)
+            } catch {
+                logger.error("❌ Event did not encode; it is lost", metadata: [
+                    "eventType": .string(event.type),
+                    "error": .string("\(error)")
+                ])
+                return .lost
             }
-            // The body did not encode: the event goes out as its own frame, or is lost.
+            let queued = eventSendingPipeline.queueForMergedSend(
+                eventBody: body,
+                target: target,
+                pendingEventManager: &pendingEventManager,
+                membershipCoordinator: membershipCoordinator,
+                digest: digest
+            )
+            return queued ? .queued : .noRecipient
+        }
+        // Hybrid (opcode 107, messages not MessagePack): no body can merge, so the event goes as
+        // its own frame, decided at init (#521 D10).
+        if useStateUpdateWithEvents {
             return sendEventImmediately(event, to: target, failsEncoding: fault == .all) ? .sentAlone : .lost
         }
 
@@ -2729,10 +2772,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// Opcode 107, and nothing to queue: no recipient (`.players([])`, a client without a
         /// session).
         case noRecipient
-        /// Opcode 107, but the body did not encode: sent as its own frame.
+        /// Opcode 107 in a hybrid configuration (messages not MessagePack): sent as its own frame,
+        /// or nothing to send (a stale target).
         case sentAlone
-        /// The event did not encode: with opcode 107 neither its body nor its own frame, without it
-        /// its frame. Lost, so the land ends (#535 row 17).
+        /// The event did not encode: with opcode 107 and MessagePack messages its body, otherwise
+        /// its own frame. Lost, so the land ends (#535 row 17).
         case lost
         /// Not opcode 107: sent as its own frame.
         case immediate
@@ -2785,7 +2829,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
             if outcome == .lost {
                 // An event that reached no frame ends the land (#535 row 17). One sent alone
-                // after its merged body failed isn't a loss.
+                // (a hybrid configuration) isn't a loss.
                 let failure = LandFailure(
                     kind: .eventEncode,
                     detail: "event \(item.event.type) did not encode",
@@ -2869,7 +2913,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Send event immediately (encode and transport.send).
     ///
-    /// This is the fallback path when opcode 107 is disabled or encoding fails.
+    /// The path for every event when opcode 107 is disabled, and in a hybrid configuration (opcode
+    /// 107 with `json` or `opcodeJsonArray` messages, decided at init, #521 D10).
     /// Handles encoding, validation, logging, and actual transport.send call.
     /// Returns false when the event did not encode (it is lost); true otherwise, also when its
     /// target has no current recipient.
@@ -3353,7 +3398,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// synchronous pass, which also decides whether the loop goes on: no `await` sits between
     /// what the pass reads and what it does.
     private func startSyncLagTimerIfNeeded() {
-        guard syncLagTimer == nil else { return }
+        guard syncLagTimer == nil, !syncLagPolicy.decisionsOff else { return }
         syncLagTimerEpoch += 1
         let epoch = syncLagTimerEpoch
         let interval = syncLagTimerInterval
@@ -3364,6 +3409,100 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
     }
+
+    // MARK: - Named test observations (#555)
+
+    /// Tests: one join attempt, by its session and the router's attempt number (nil for a join
+    /// that didn't come through the router).
+    package struct JoinAttemptKey: Hashable, Sendable {
+        package let sessionID: SessionID
+        package let attempt: UInt64?
+
+        package init(sessionID: SessionID, attempt: UInt64?) {
+            self.sessionID = sessionID
+            self.attempt = attempt
+        }
+    }
+
+    #if DEBUG
+    /// Join attempts whose in-turn flip a sync phase committed.
+    private var joinFlipsCommitted: Set<JoinAttemptKey> = []
+    /// Join attempts whose initial sync a sync phase committed: an in-turn flip, the standalone
+    /// firstSync of a join without in-turn sync, or the full view a cycle sends an unsynced
+    /// recipient whose firstSync was dropped behind a commit (#564).
+    private var initialSyncsCommitted: Set<JoinAttemptKey> = []
+    /// Off until a test opts in, so a debug server keeps no key per join.
+    private var capturesJoinCommits = false
+
+    /// Recorded in the commit's segment, so a test reads it at any later checkpoint.
+    private func noteJoinCommitForTesting(_ sessionID: SessionID, flipped: Bool) {
+        guard capturesJoinCommits else { return }
+        let key = JoinAttemptKey(sessionID: sessionID, attempt: memberJoinAttempts[sessionID])
+        if flipped { joinFlipsCommitted.insert(key) }
+        initialSyncsCommitted.insert(key)
+    }
+    #endif
+
+    /// Tests: starts recording the join commits `joinFlippedForTesting` and
+    /// `initialSyncCommittedForTesting` read. Before it, both read false. DEBUG builds only.
+    package func captureJoinCommitsForTesting() {
+        #if DEBUG
+        capturesJoinCommits = true
+        #endif
+    }
+
+    /// Tests: the attempt's in-turn flip committed. Unlike the join's waiter, this can't read as
+    /// success for a join that never flipped: it is recorded only by the commit.
+    package func joinFlippedForTesting(_ key: JoinAttemptKey) -> Bool {
+        #if DEBUG
+        return joinFlipsCommitted.contains(key)
+        #else
+        return false
+        #endif
+    }
+
+    /// Tests: the attempt's initial sync committed.
+    package func initialSyncCommittedForTesting(_ key: JoinAttemptKey) -> Bool {
+        #if DEBUG
+        return initialSyncsCommitted.contains(key)
+        #else
+        return false
+        #endif
+    }
+
+    /// Tests: the keeper admitted the session's in-turn join and the adapter holds the
+    /// admission, but the session isn't registered with the transport yet: neither the adapter's
+    /// record nor, over a `WebSocketTransport`, the transport's player table has it.
+    package func admittedNotRegisteredForTesting(_ sessionID: SessionID) async -> Bool {
+        guard let joining = joiningSessions[sessionID], let inTurn = joining.inTurn,
+              !inTurn.transportRegistered else { return false }
+        guard let webSocket = transport as? WebSocketTransport else { return true }
+        let registered = await webSocket.playerSessionsForTesting(joining.playerID).contains(sessionID)
+        // Re-read after the await: the join may have registered meanwhile.
+        return !registered && joiningSessions[sessionID]?.inTurn?.transportRegistered == false
+    }
+
+    /// Tests: sync requests that met a cycle in flight and were deferred to run after it
+    /// (`syncSkips.busy`; in-turn sync off).
+    package var syncDeferredByCycleCountForTesting: Int { syncSkips.busy }
+
+    /// Tests: an opaque token for the session's current membership ticket, nil when it has none.
+    package func sessionTicketForTesting(_ sessionID: SessionID) -> Ticket<SessionID>? {
+        sessionTickets.ticket(for: sessionID)
+    }
+
+    /// Tests: whether that same ticket is still current.
+    package func ticketIsCurrentForTesting(_ ticket: Ticket<SessionID>) -> Bool {
+        sessionTickets.isCurrent(ticket)
+    }
+
+    /// Tests: the session's pending action jobs whose answers the adapter still tracks.
+    package func pendingActionCountForTesting(_ sessionID: SessionID) -> Int {
+        actionResponseTasks[sessionID]?.count ?? 0
+    }
+
+    /// Tests: whether the lag timer is running.
+    var syncLagTimerRunningForTesting: Bool { syncLagTimer != nil }
 
     /// Stops the timer (teardown).
     func stopSyncLagTimer() {
@@ -3426,6 +3565,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLag[sessionID]?.unacked.last?.seq
     }
 
+    /// The entries in a session's FIFO, nil when it is untracked (tests).
+    package func syncLagUnackedCountForTesting(_ sessionID: SessionID) -> Int? {
+        syncLag[sessionID]?.unackedCount
+    }
+
     /// The commit's lag step: the frames it commits enter their sessions' FIFOs, its resyncs
     /// restart them, its pending marks and closes are applied. In the commit's segment.
     private func applySyncLag(_ plan: SyncPhasePlan) {
@@ -3437,7 +3581,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             received.insert(frame.sessionID)
         }
         for sessionID in received where planned.resyncs[sessionID] == nil {
-            syncLag[sessionID]?.committed(seq, at: now)
+            if syncLagPolicy.decisionsOff {
+                syncLag[sessionID]?.committedKeepingNewest(seq, at: now)
+            } else {
+                syncLag[sessionID]?.committed(seq, at: now)
+            }
         }
         // A joined session with no lag state whose full view this plan committed (its own
         // firstSync was dropped behind a commit, #564, and the cycle served it as an unsynced
@@ -4051,6 +4199,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// pending reset.
     private func commitSyncPhase(_ plan: SyncPhasePlan, isSyncCycle: Bool) {
         syncPhaseCommits &+= 1
+        #if DEBUG
+        if let sessionID = plan.syncLag.firstSyncSession {
+            noteJoinCommitForTesting(sessionID, flipped: false)
+        }
+        // The full views of unsynced recipients (#564) whose state frame this plan commits.
+        for sessionID in plan.initialViewSessions
+        where plan.frames.contains(where: { $0.sessionID == sessionID && $0.isStateUpdate }) {
+            noteJoinCommitForTesting(sessionID, flipped: false)
+        }
+        #endif
         if var digest = plan.digest, let read = syncOutputRead {
             if useStateUpdateWithEvents {
                 let consumed = pendingEventManager.consumedEventDigests(
@@ -4107,6 +4265,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             eventsHeldForJoiningSessions += joining.heldEvents.count
             inTurnJoinFlips += 1
+            #if DEBUG
+            noteJoinCommitForTesting(flip.sessionID, flipped: true)
+            #endif
             joinWaiters[flip.sessionID]?.resolve(.success(()))
         }
         pendingEventManager.removeConsumed(
@@ -4342,6 +4503,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // ahead of that frame; a combined frame's view holds this plan's tables.
         let viewsFromStagedTables = !useStateUpdateWithEvents
         for recipient in unsyncedRecipients {
+            #if DEBUG
+            if !plan.syncLag.resyncPlayers.contains(recipient.playerID) {
+                plan.initialViewSessions.append(recipient.sessionID)
+            }
+            #endif
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
             let (update, viewPatches) = planFullViewUpdate(

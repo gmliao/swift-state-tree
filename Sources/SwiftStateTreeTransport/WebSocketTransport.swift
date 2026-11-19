@@ -596,6 +596,12 @@ public actor WebSocketTransport: Transport {
     /// `generation` has gone (nil: any). A newer connection under the same ID is left alone.
     private func closeSessionAtBound(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
         if let hook = delayedCloseForTesting { await hook(.willCheck(.bound)) }
+        // The marker wasn't reached in time: the connection this close was for is still here,
+        // its close still pending. Counted for tests that require every close at its marker.
+        if let queue = sessionQueues[sessionID], queue.closeMarkerYielded,
+           generation == nil || queue.generation == generation {
+            finalFrameClosesAtBound += 1
+        }
         await closeSession(sessionID, with: close, generation: generation)
         if let hook = delayedCloseForTesting { await hook(.didRun(.bound)) }
     }
@@ -609,6 +615,10 @@ public actor WebSocketTransport: Transport {
         }
         if let hook = delayedCloseForTesting { await hook(.didRun(.marker)) }
     }
+
+    /// Tests (#555): final-frame closes that ended by their bound, not at their marker: the drain
+    /// hadn't reached the close marker when the timeout ran out.
+    package private(set) var finalFrameClosesAtBound = 0
 
     /// The two closes `closeSessionAfterQueuedFrames` leaves behind, which can run after the
     /// connection they were for has gone (tests).
