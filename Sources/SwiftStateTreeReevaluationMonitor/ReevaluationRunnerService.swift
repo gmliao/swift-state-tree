@@ -119,16 +119,23 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// Fails the run `ticket` names, from the replay land that read one of its results and can't
     /// show it (#521 PR 1b): the status becomes `.failed` with `error`, the queue is cleared and
     /// the run stops. A later run (a newer ticket) is left alone.
-    package func failRun(ticket: UInt64, error: ReevaluationReplayResolutionError) {
+    /// Returns whether the ticket was current. A stale ticket (a newer run began, or this one
+    /// was already failed through it) changes nothing. A run that already failed keeps its first
+    /// error.
+    @discardableResult
+    package func failRun(ticket: UInt64, error: ReevaluationReplayResolutionError) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard isCurrentLocked(ticket) else { return }
+        guard isCurrentLocked(ticket) else { return false }
         // A new ticket, so the failed run can neither queue nor overwrite the status.
         generation &+= 1
         verificationTask?.cancel()
         resultsQueue.removeAll()
-        _status.phase = .failed
-        _status.errorMessage = error.description
+        if _status.phase != .failed {
+            _status.phase = .failed
+            _status.errorMessage = error.description
+        }
+        return true
     }
 
     private func updateStatus(_ block: (inout ReevaluationStatus) -> Void) {

@@ -95,11 +95,13 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
                     if let refusal = ReevaluationReplayFrame.refusal(
                         of: result, forStateType: ObjectIdentifier(State.self), named: String(reflecting: State.self)
                     ) {
-                        ctx.logger.error("Generic replay: the run's result can't be shown; the run fails", metadata: [
-                            "tickId": .stringConvertible(result.tickId),
-                            "error": .string(refusal.description),
-                        ])
-                        runnerService.failRun(ticket: ticket, error: refusal)
+                        // A stale ticket (a newer run began) fails nothing and logs nothing.
+                        if runnerService.failRun(ticket: ticket, error: refusal) {
+                            ctx.logger.error("Generic replay: the run's result can't be shown; the run failed", metadata: [
+                                "tickId": .stringConvertible(result.tickId),
+                                "error": .string(refusal.description),
+                            ])
+                        }
                         return
                     }
                     guard let frame = result.replayFrame, let decoded = frame.state as? State else { return }

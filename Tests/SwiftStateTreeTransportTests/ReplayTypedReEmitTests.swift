@@ -291,6 +291,44 @@ struct ReplayTypedReEmitTests {
         #expect(land.keeper.failure == nil)
     }
 
+    @Test("A result read from a run that a newer run replaced fails nothing: its ticket is stale")
+    func staleTicketFailsNothing() async throws {
+        let runner = ScriptedReplayRunner([
+            { ReevaluationStepResult(tickId: 0, stateHash: "h", recordedHash: "h", isMatch: true, actualState: replaySnapshot()) },
+        ])
+        let service = makeService(runner: runner, expectState: false)
+        await runToEnd(service)
+        let (result, ticket) = try #require(service.consumeNextResultWithTicket())
+        let refusal = try #require(ReevaluationReplayFrame.refusal(
+            of: result, forStateType: ObjectIdentifier(UntypedPayloadState.self), named: "UntypedPayloadState"
+        ))
+        await runToEnd(service)     // a newer run, between the read and the refusal
+        let before = service.getStatus()
+        #expect(before.phase == .completed)
+        #expect(!service.failRun(ticket: ticket, error: refusal), "the old run's ticket is stale")
+        #expect(service.getStatus().phase == before.phase, "the newer run is untouched")
+        #expect(service.getStatus().errorMessage == before.errorMessage)
+    }
+
+    @Test("A run that already failed keeps its first error when the land refuses one of its queued results")
+    func firstFailureIsKept() async throws {
+        struct RunnerFault: Error {}
+        let runner = ScriptedReplayRunner([
+            { ReevaluationStepResult(tickId: 0, stateHash: "h", recordedHash: "h", isMatch: true, actualState: replaySnapshot()) },
+            { throw RunnerFault() },
+        ])
+        let service = makeService(runner: runner, expectState: false)
+        let land = try await makeReplayLand(encoding: .opcode, service: service)
+        #expect(service.getStatus().phase == .failed)
+        let first = service.getStatus().errorMessage
+        #expect(first == RunnerFault().localizedDescription)
+        await land.tick()   // reads tick 0, which it can't show, and fails the run again
+        await land.adapter.waitForOutboundIdleForTesting()
+        #expect(service.getStatus().phase == .failed)
+        #expect(service.getStatus().errorMessage == first, "the runner's error stays")
+        #expect(service.consumeNextResult() == nil)
+    }
+
     @Test("Through processResult with a projector, a tick whose passes didn't match keeps its pass mismatch and frame, and shows only its replayed events (M2)")
     func projectorKeepsFieldsThroughProcessResult() async throws {
         let step: @Sendable () throws -> ReevaluationStepResult = {
