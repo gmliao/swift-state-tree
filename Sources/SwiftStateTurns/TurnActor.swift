@@ -40,8 +40,11 @@ extension TurnActor {
                 self.submit(input, caller: id)
             }
         case .cancelsCall:
-            let isControl: Bool
-            if case .control = core.machine.inputPolicy(for: input) { isControl = true } else { isControl = false }
+            // Through `read`, as every access to the machine outside a step: from inside a step
+            // (a task started synchronously on the actor) it stops instead of reading mid-write.
+            let isControl = core.read { machine in
+                if case .control = machine.inputPolicy(for: input) { return true } else { return false }
+            }
             if Task.isCancelled, isControl {
                 // Cancelled before entry: a control input is still submitted and stepped,
                 // but its caller doesn't wait. A reply from its step finds no waiter.
