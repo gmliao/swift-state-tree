@@ -112,7 +112,7 @@ HandleAction(BuyAction.self,
 `validate` gets a `ValidateContext`, not a `LandContext`:
 
 - **Available:** `landID`, `playerID`, `clientID`, `sessionID`, `deviceID`, `isGuest`, `metadata`, `tickId`, `playerSlot`, `logger`, resolver outputs by name (`ctx.productInfo`), and `services`, restricted to `ReadOnlyLandService` types.
-- **Not available:** `emitEvent`, `emitAnyServerEvent`, `requestSyncNow()` / `requestSyncBroadcastOnly()`, server inputs, random numbers, scheduling.
+- **Not available:** `emitEvent`, `requestSyncNow()` / `requestSyncBroadcastOnly()`, server inputs, random numbers, scheduling.
 
 `ReadOnlyLandService` is a marker protocol and a contract the compiler can't check: the service only reads, and answers the same for the same inputs, because replay runs `validate` again. Data that isn't deterministic (a clock, a remote call, a random source) belongs in a resolver, whose output is recorded. A service registered under an existential type (`register(x, as: (any P).self)`) can't be fetched through the marker; register it under its concrete type.
 

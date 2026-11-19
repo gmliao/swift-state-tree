@@ -192,6 +192,19 @@ fingerprint 缺少或與目前定義的不同時，replay 在第一步之前就�
 
 fingerprint 必須能列出每個欄位。會錄製（`enableLiveStateHashRecording`）或為 reevaluation 註冊的 land，若做不到就在註冊時被拒絕：有欄位但沒有 `@Payload` 的 payload 或 server input，或無法建出 sample 的巢狀值（有必填欄位且沒有 `@SnapshotConvertible`），名稱列在 `LandRegistrationError.schemaFingerprint`（`SchemaFingerprintError.unbuildableType`）。兩個欄位共用一個 wire key 的 `@Payload` 型別（`.wireKeyCollision`），以及元素無法列出的 `Set`，也同樣被拒絕。沒有欄位的型別、集合、raw-value 型別、Foundation 純量、有自己 snapshot 轉換的值與 `AnyCodable` 照原樣雜湊。fingerprint 對每個定義值計算一次並快取在其上，不在 tick 路徑上：對所有 land 共用同一個值的 host（`NIOLandHost`）在註冊時計算；對每個 land 建一個定義的 `LandManager` factory，則在錄製時於建立 land 時計算（admin start 的檢查也會呼叫該 factory）。
 
+### Replay 中的 server event
+
+replay land 以有型別的方式顯示每個錄製的 server event（#521、#538）。runner 在每個 tick 排入佇列前先解析：每個錄製的 event，以及 replay 自己送出的 event，都依名稱在 base land 的 registry 查找，payload 用錄製檔自己的 codec（`CanonicalMessagePack`，也就是 recorder 寫入時用的 codec）解碼。`Date` 從 ISO 字串讀回，`Data`、`URL` 與 `Decimal` 從它們自己的 `Codable` 形式讀回。儲存的錄製檔以嚴格模式解碼。JSON 檢視失去了浮點數與整數的區別，所以在那裡整數可以精確轉換時，會解碼成 `Double` 或 `Float`。replay land 會註冊 base land 的 server event，並用 `emitEvent` 送出每個 event。
+
+在錄製檔的值域內，重送的 event 編碼後與 live frame 位元組相同：`Bool`、`String`、`Int.min` 到 `Int.max` 的整數、整秒的 `Date`、有限的 `Float` 與 `Double`、`Data`、`URL`、`Decimal`，以及由這些組成的 optional、array、以字串為 key 的 map，和巢狀的 `@Payload` 型別。值域外：
+
+- 帶小數秒的 `Date`：錄製檔只保留整秒，所以 replay 時往負無限大方向截斷；
+- 大於 `Int.max` 的無號整數：含有這種值的儲存錄製檔無法讀取（#628）；在 JSON 檢視中這個值是 `Double`，解碼會失敗；
+- JSON 檢視中的 `-0.0` 讀回為 `+0.0`（儲存的錄製檔會保留）；
+- 正規等價（同一段文字的 NFC 與 NFD 寫法）的 map key 在讀取錄製檔時會合併成一個 key。
+
+無法解析的 tick 會讓 replay run 失敗，並帶上該 tick、event 的序號與名稱，以及錯誤：名稱未註冊或 payload 無法解碼的錄製 event、讀取錄製檔失敗、state snapshot 無法編碼、以及無法從 snapshot 重建 state。run 在 admin 狀態中變成 `failed`。replay land 保持運作，失敗之後不會再收到任何內容。錄製內容會被 replay 的 land，若有 server event 型別沒有 decoder，註冊時會被拒絕（`LandRegistrationError.serverEventsWithoutDecoder`）；DSL 註冊的每個型別都有 decoder。自訂 runner 用 `ReevaluationReplayFrame.resolve` 為結果建立 frame：replay land 只會收到依其 state 型別解析過的結果。
+
 ### 錄製所含的 Hash
 
 | 錄製格式 | State 與 initialize hash | 驗證方式 |

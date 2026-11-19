@@ -192,6 +192,19 @@ Every record before 3.6 has no fingerprint, so replay refuses it (`ReevaluationR
 
 The fingerprint must list every field. A land that records (`enableLiveStateHashRecording`) or is registered for reevaluation is refused at registration when it can't: a payload or server input without `@Payload` that has fields, or a nested value no sample of which can be built (required fields, no `@SnapshotConvertible`), named in `LandRegistrationError.schemaFingerprint` (`SchemaFingerprintError.unbuildableType`). So is a `@Payload` type with two fields under one wire key (`.wireKeyCollision`), and a `Set` whose element can't be listed. Field-less types, collections, raw-value types, Foundation scalars, values with their own snapshot conversion and `AnyCodable` are hashed as they are. The fingerprint is computed once per definition value and cached on it, off the tick path: at registration for a host that serves one value to every land (`NIOLandHost`), and at land creation, when recording, for a `LandManager` factory that builds a definition per land (the admin start's check calls the factory too).
 
+### Server Events in Replay
+
+The replay land shows each recorded server event typed (#521, #538). The runner resolves every tick before it queues it: each recorded event, and each event the replay emitted, is looked up by name in the base land's registry, and its payload is decoded with the record's own codec (`CanonicalMessagePack`, the one the recorder wrote with). A `Date` is read from its ISO string, `Data`, `URL` and `Decimal` from their own `Codable` forms. A saved record decodes strictly. The JSON view lost the float/integer split, so there an integer decodes into `Double` or `Float` when it converts exactly. The replay land registers its base land's server events and emits each event with `emitEvent`.
+
+Inside the record's domain the re-emitted event encodes to the live frame's bytes: `Bool`, `String`, integers from `Int.min` to `Int.max`, a `Date` at a whole second, finite `Float` and `Double` values, `Data`, `URL`, `Decimal`, optionals, arrays and string-keyed maps of these, and nested `@Payload` types. Outside it:
+
+- a `Date` with a fractional second: the record keeps whole seconds, so it replays truncated toward negative infinity;
+- an unsigned value above `Int.max`: a saved record holding one can't be read (#628); on the JSON view the value is a `Double` and fails the decode;
+- `-0.0` on the JSON view reads back as `+0.0` (a saved record keeps it);
+- map keys that are canonically equivalent (an NFC and an NFD spelling of one text) collapse to one key when the record is read.
+
+A tick that doesn't resolve fails the replay run, with the tick, the event's sequence and name, and the error: a recorded event whose name isn't registered or whose payload doesn't decode, a record read error, a state snapshot that doesn't encode, and a state that can't be rebuilt from it. The run reaches `failed` in the admin status. The replay land stays up and is sent nothing after the failure. A land whose records will replay is refused at registration when one of its server event types has no decoder (`LandRegistrationError.serverEventsWithoutDecoder`); every type the DSL registers has one. A custom runner gives its results a frame with `ReevaluationReplayFrame.resolve`: the replay land is fed only results resolved for its state type.
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |
