@@ -24,14 +24,14 @@ struct RecordFieldsState: StateNodeProtocol {
 }
 
 /// Values for the record's enums whose raw values the probe can't guess, and for a leaf that
-/// validates what it decodes.
+/// validates what it decodes: two of each, one per run, so a type that branches on one is found.
 private nonisolated(unsafe) let recordSamples: [any Decodable] = [
-    ReevaluationRecordedSyncOutput.TurnKind.tick,
-    SyncHashCoding(0),
-    ReevaluationRecordedSyncMarker.Kind.seed,
-    ReevaluationRecordedSyncMarker.ViewDrop.extraction,
-    LandFailure.Kind.syncPlan,
-    LandFailurePosition.Stage.input,
+    ReevaluationRecordedSyncOutput.TurnKind.tick, ReevaluationRecordedSyncOutput.TurnKind.legacyCycle,
+    SyncHashCoding(0), SyncHashCoding(1),
+    ReevaluationRecordedSyncMarker.Kind.seed, ReevaluationRecordedSyncMarker.Kind.initialize,
+    ReevaluationRecordedSyncMarker.ViewDrop.extraction, ReevaluationRecordedSyncMarker.ViewDrop.encode,
+    LandFailure.Kind.syncPlan, LandFailure.Kind.handlerWrite,
+    LandFailurePosition.Stage.input, LandFailurePosition.Stage.actionResponse,
 ]
 
 /// Dynamic values: their content is a payload or a state value, not a fixed field set, so the
@@ -53,8 +53,8 @@ private let recordBoundaryPaths: Set<String> = [
 ]
 
 /// The record's types that pick their fields by a string discriminator, with every value.
-private let recordCases: [ObjectIdentifier: [String]] = [
-    ObjectIdentifier(StatePatch.self): ["replace", "add", "remove"],
+private let recordCases: [ObjectIdentifier: ProbeCases] = [
+    ObjectIdentifier(StatePatch.self): ProbeCases(key: "op", values: ["replace", "add", "remove"]),
 ]
 
 private func probeRecordTypes() -> RecordFieldProbeResult {
@@ -131,8 +131,59 @@ struct RecordFieldListTests {
             }
         }
         #expect(RecordFieldProbe.probe(Tagged.self).opaque == [""])
-        let tagged = RecordFieldProbe.probe(Tagged.self, cases: [ObjectIdentifier(Tagged.self): ["plain", "rich"]])
+        let taggedCases = ProbeCases(key: "kind", values: ["plain", "rich"])
+        let tagged = RecordFieldProbe.probe(Tagged.self, cases: [ObjectIdentifier(Tagged.self): taggedCases])
         #expect(tagged.paths == ["kind", "extra"] && tagged.opaque.isEmpty && tagged.branching.isEmpty)
+
+        // Listing the discriminator fixes only its key: a Boolean gate beside it still differs
+        // between the runs and is reported.
+        struct TaggedWithGate: Decodable {
+            enum CodingKeys: String, CodingKey { case kind, compact, extra, wide }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                switch try container.decode(String.self, forKey: .kind) {
+                case "plain": break
+                case "rich": _ = try container.decode(Int.self, forKey: .extra)
+                default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "unknown kind")
+                }
+                if try !container.decode(Bool.self, forKey: .compact) {
+                    _ = try container.decode(Int.self, forKey: .wide)
+                }
+            }
+        }
+        let gatedCases = [ObjectIdentifier(TaggedWithGate.self): taggedCases]
+        #expect(RecordFieldProbe.probe(TaggedWithGate.self, cases: gatedCases).branching == [""])
+
+        // A gate that moves a field from one case to the other: the union over the cases is the
+        // same in both runs, so the runs are compared case by case.
+        struct GateMovesExtra: Decodable {
+            enum CodingKeys: String, CodingKey { case kind, swap, extra }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                let swap = try container.decode(Bool.self, forKey: .swap)
+                switch try container.decode(String.self, forKey: .kind) {
+                case "plain": if swap { _ = try container.decode(Int.self, forKey: .extra) }
+                case "rich": if !swap { _ = try container.decode(Int.self, forKey: .extra) }
+                default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "unknown kind")
+                }
+            }
+        }
+        let moving = RecordFieldProbe.probe(GateMovesExtra.self, cases: [ObjectIdentifier(GateMovesExtra.self): taggedCases])
+        #expect(moving.paths == ["kind", "swap", "extra"], "the union is the same in both runs")
+        #expect(moving.branching == [""])
+
+        // A gate on an enum is found too: the second run takes the last case.
+        enum Layout: String, Decodable, CaseIterable { case narrow, wide }
+        struct LayoutGated: Decodable {
+            enum CodingKeys: String, CodingKey { case layout, columns }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if try container.decode(Layout.self, forKey: .layout) == .wide {
+                    _ = try container.decode(Int.self, forKey: .columns)
+                }
+            }
+        }
+        #expect(RecordFieldProbe.probe(LayoutGated.self).branching == [""])
 
         // A version gate on an integer is flagged the same way, at its own path.
         struct Gated: Decodable {
@@ -155,8 +206,16 @@ struct RecordFieldListTests {
         #expect(RecordFieldProbe.probe(WithMode.self).opaque == ["mode"])
         #expect(RecordFieldProbe.probe(WithMode.self, samples: [Mode.on]) == RecordFieldProbeResult(paths: ["mode", "after"]))
 
-        // A sample whose type has fields would hide them: reported.
+        // A sample whose type has fields would hide them: reported, also when the fields sit
+        // inside a single value.
+        struct Wrapped: Decodable {
+            let inner: Inner
+            init(inner: Inner) { self.inner = inner }
+            init(from decoder: Decoder) throws { inner = try decoder.singleValueContainer().decode(Inner.self) }
+        }
         #expect(RecordFieldProbe.probe(WithMode.self, samples: [Mode.on, Inner(x: 0, tags: [])]).nonLeafSamples == ["Inner"])
+        let wrapped = Wrapped(inner: Inner(x: 0, tags: []))
+        #expect(RecordFieldProbe.probe(WithMode.self, samples: [Mode.on, wrapped]).nonLeafSamples == ["Wrapped"])
         // A boundary is returned unprobed, and where it sits is reported.
         struct WithPayload: Decodable { let payload: AnyCodable; let after: Int }
         #expect(RecordFieldProbe.probe(WithPayload.self, boundaries: [AnyCodable(Int(0))])

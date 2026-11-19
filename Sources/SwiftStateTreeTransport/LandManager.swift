@@ -122,6 +122,24 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// The adapter of the last instance built (tests).
     private(set) weak var lastBuiltAdapterForTesting: TransportAdapter<State>?
 
+    /// The record metadata's wall-clock and machine fields, pinned by a test (#555).
+    package struct RecordIdentity: Sendable {
+        package let createdAt: Date
+        package let hardwareInfo: HardwareInfo?
+
+        package init(createdAt: Date, hardwareInfo: HardwareInfo?) {
+            self.createdAt = createdAt
+            self.hardwareInfo = hardwareInfo
+        }
+    }
+
+    /// Tests: pins `createdAt` and `hardwareInfo` in the record metadata of every land built
+    /// after the call, so records from different processes and machines have the same bytes
+    /// (the differential harness, #555). Lands built earlier keep the values they wrote.
+    package func setRecordIdentityForTesting(_ identity: RecordIdentity?) {
+        recordIdentityForTesting = identity
+    }
+
     /// Mints each created instance's epoch.
     private var epochs = EpochCounter()
     /// The host's stop for a failed land (#535 B2), set by the server that owns this manager
@@ -201,6 +219,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let inTurnSync: Bool
     /// The sync-lag thresholds every land's adapter gets (#332).
     private let syncLagPolicy: SyncLagPolicy?
+    /// Tests: the record identity every land built afterwards writes into its record's metadata
+    /// instead of the wall clock and this machine (#555).
+    private var recordIdentityForTesting: RecordIdentity?
     /// Whether live lands' keepers start their tick and sync loops (the default). Off only
     /// through the `Diagnostics` init, for a benchmark that steps its lands itself. A
     /// re-evaluation keeper always starts them.
@@ -724,13 +745,15 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             // 3. Recording them could cause confusion if they change later
             // Only record configuration that affects game logic determinism
             
-            // Collect hardware information for cross-architecture verification
-            let hardwareInfo = HardwareInfoCollector.collect()
+            // Collect hardware information for cross-architecture verification, unless a test
+            // pinned the record's identity.
+            let identity = recordIdentityForTesting
+            let hardwareInfo = identity == nil ? HardwareInfoCollector.collect() : identity?.hardwareInfo
             
             let recordingMetadata = ReevaluationRecordMetadata(
                 landID: landID.stringValue,
                 landType: landID.landType,
-                createdAt: Date(),
+                createdAt: identity?.createdAt ?? Date(),
                 metadata: metadata,
                 landDefinitionID: landDefinition.id,
                 initialStateHash: nil,

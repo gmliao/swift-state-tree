@@ -98,7 +98,9 @@ struct InitialSyncBehindCommitTests {
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
+        await adapter.captureJoinCommitsForTesting()
         #expect(keeper.hasPeriodicSync == periodic)
+        typealias Key = TransportAdapter<BehindCommitState>.JoinAttemptKey
 
         let observer = (session: SessionID("s0"), client: ClientID("c0"), player: PlayerID("observer"))
         let joiner = (session: SessionID("s1"), client: ClientID("c1"), player: PlayerID("p1"))
@@ -106,7 +108,7 @@ struct InitialSyncBehindCommitTests {
             await adapter.onConnect(sessionID: who.session, clientID: who.client)
             _ = try #require(try await adapter.performJoin(
                 playerSession: PlayerSession(playerID: who.player.rawValue, deviceID: "dev", metadata: [:]),
-                clientID: who.client, sessionID: who.session, authInfo: nil
+                clientID: who.client, sessionID: who.session, authInfo: nil, joinAttempt: 1
             ))
         }
         func setTotal(_ total: Int) async throws {
@@ -144,6 +146,9 @@ struct InitialSyncBehindCommitTests {
         #expect(await adapter.initialSyncsDroppedBehindCommit == 1)
         #expect(await adapter.initialSyncsDroppedStale == 0)
         #expect(await transport.totals(for: joiner.session).isEmpty, "the firstSync from the passed read was sent")
+        // The named observation (#555): the dropped firstSync committed nothing for the joiner.
+        #expect(await !adapter.initialSyncCommittedForTesting(Key(sessionID: joiner.session, attempt: 1)))
+        #expect(await adapter.initialSyncCommittedForTesting(Key(sessionID: observer.session, attempt: 1)))
 
         if periodic {
             // The next periodic cycle.
@@ -157,6 +162,9 @@ struct InitialSyncBehindCommitTests {
         #expect(await adapter.waitForSyncQuiescenceForTesting())
         let joinerTotals = await transport.totals(for: joiner.session)
         #expect(joinerTotals == ["firstSync 7"], "the joiner received \(joinerTotals)")
+        // The cycle's full view for the unsynced joiner is its initial sync.
+        #expect(await adapter.initialSyncCommittedForTesting(Key(sessionID: joiner.session, attempt: 1)))
+        #expect(await !adapter.initialSyncCommittedForTesting(Key(sessionID: joiner.session, attempt: nil)), "keyed by the attempt")
         let observerAfter = await transport.totals(for: observer.session)
         #expect(observerAfter == ["firstSync 0", "diff 3", "diff 7"], "the observer received \(observerAfter)")
         await adapter.installHolds(nil)

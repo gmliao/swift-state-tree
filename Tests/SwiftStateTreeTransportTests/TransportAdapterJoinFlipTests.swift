@@ -368,10 +368,11 @@ struct TransportAdapterJoinFlipTests {
     func flipWaitsForRegistration() async throws {
         let fixture = await makeFixture(tick: true)
         let gate = TestGate()
-        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
-        await eventually("the join at registerSession") { gate.arrivalCount == 1 }
+        await eventually("the join at keeperJoinReturned") { gate.arrivalCount == 1 }
+        #expect(await fixture.adapter.admittedNotRegisteredForTesting(s1), "admitted, not registered (#555)")
         await fixture.keeper.stepTickOnce()
         await fixture.keeper.runSyncLoopIterationForTesting()
         #expect(await fixture.adapter.isJoiningInTurn(s1))
@@ -382,7 +383,53 @@ struct TransportAdapterJoinFlipTests {
         gate.open()
         await fixture.adapter.installHolds(nil)
         _ = try await join.value
+        #expect(await !fixture.adapter.admittedNotRegisteredForTesting(s1))
         #expect(await fixture.adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
+    }
+
+    @Test("At joinSyncRequested an in-turn join is registered and not flipped; its sync-only turn flips it after release (#555)")
+    func joinSyncRequestedIsRegisteredNotFlipped() async throws {
+        // Tickless: the join's own turn consumes its OnJoin, so only the sync turn is missing.
+        let fixture = await makeFixture(tick: false)
+        await fixture.adapter.captureJoinCommitsForTesting()
+        let returned = TestGate()
+        let gate = TestGate()
+        await fixture.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.keeperJoinReturned) { await returned.arrive() }
+            .on(.joinSyncRequested) { await gate.arrive() }
+            .hook)
+        let s1 = SessionID("s1")
+        let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        // The turn that applies OnJoin ends before the registration: a turn after it would run
+        // a sync phase that flips the registered join before `joinSyncRequested`.
+        #expect(await returned.waitForArrivals(1), "the join reached keeperJoinReturned")
+        await fixture.keeper.waitForInputDrainIdleForTesting()
+        returned.open()
+        #expect(await gate.waitForArrivals(1), "the join reached joinSyncRequested")
+        #expect(await fixture.adapter.isInTurnJoinRegisteredForTesting(s1), "registered with the transport")
+        #expect(await fixture.adapter.isJoiningInTurn(s1), "not flipped")
+        // The named observations (#555), keyed by the attempt (no router attempt number here).
+        let attempt = TransportAdapter<JoinFlipTestState>.JoinAttemptKey(sessionID: s1, attempt: nil)
+        #expect(await !fixture.adapter.admittedNotRegisteredForTesting(s1), "registered")
+        #expect(await !fixture.adapter.joinFlippedForTesting(attempt))
+        #expect(await !fixture.adapter.initialSyncCommittedForTesting(attempt))
+        await fixture.adapter.waitForOutboundIdleForTesting()
+        #expect(await fixture.sent.kinds(for: s1) == [])
+        gate.open()
+        await fixture.adapter.installHolds(nil)
+        _ = try await join.value
+        #expect(await !fixture.adapter.isJoiningInTurn(s1), "the sync-only turn flipped it")
+        #expect(await fixture.adapter.joinFlippedForTesting(attempt))
+        #expect(await fixture.adapter.initialSyncCommittedForTesting(attempt))
+        #expect(await !fixture.adapter.joinFlippedForTesting(.init(sessionID: s1, attempt: 7)), "keyed by the attempt")
+
+        // A session ticket token (#555): current while joined, not after a teardown.
+        let ticket = try #require(await fixture.adapter.sessionTicketForTesting(s1))
+        #expect(await fixture.adapter.ticketIsCurrentForTesting(ticket))
+        await fixture.adapter.endSessionTicketsForTeardown()
+        #expect(await !fixture.adapter.ticketIsCurrentForTesting(ticket))
+        await fixture.adapter.waitForOutboundIdleForTesting()
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
@@ -457,9 +504,9 @@ struct TransportAdapterJoinFlipTests {
 
         // s1's OnJoin is consumed by a tick while its registration is held.
         let gate = TestGate()
-        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let second = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
-        await eventually("the join at registerSession") { gate.arrivalCount == 1 }
+        await eventually("the join at keeperJoinReturned") { gate.arrivalCount == 1 }
         await fixture.keeper.stepTickOnce()
         #expect(await fixture.keeper.currentState().joins == 2)
         #expect(await fixture.adapter.isJoiningInTurn(s1))
@@ -499,10 +546,10 @@ struct TransportAdapterJoinFlipTests {
         let fixture = await makeFixture(tick: false)
         await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .seconds(3), budget: nil)
         let gate = TestGate()
-        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        await fixture.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
-        await eventually("the join at registerSession") { gate.arrivalCount == 1 }
+        await eventually("the join at keeperJoinReturned") { gate.arrivalCount == 1 }
 
         let freeze = try await fixture.adapter.debugFreeze()
         gate.open()
