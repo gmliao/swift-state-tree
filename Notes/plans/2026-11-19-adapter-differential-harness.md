@@ -619,7 +619,7 @@ The rows of §2's tables, each with a check:
 
 **TestGate in the NIO target** comes from the shared test-support target (§3).
 
-**A witness client.** Each single-player race row (`beforeAdmit`, `afterAdmit`, the two send holds, `.admitJoinEntry`, keeper `.join`, `registerSession`) has a second client B. B joins and settles before the race, and stays. So the live checkpoint has a client to check convergence on, and B's frames show whether A's race leaked anything to the others. "B settled" means that, before the observer is installed, B's ingress, its router flip and its sync work have all been awaited, with both join timers already off when B joins (§8.1). The race fixtures admit two players, and their `CanJoin` admits A while B is present.
+**A witness client.** Each single-player race row (`beforeAdmit`, `afterAdmit`, the two send holds, `.admitJoinEntry`, keeper `.join`, the in-turn registration) has a second client B. B joins and settles before the race, and stays. So the live checkpoint has a client to check convergence on, and B's frames show whether A's race leaked anything to the others. "B settled" means that, before the observer is installed, B's ingress, its router flip and its sync work have all been awaited, with both join timers already off when B joins (§8.1). The race fixtures admit two players, and their `CanJoin` admits A while B is present.
 
 The plain join–act–leave row has no witness, so its live checkpoint comes before its final leave.
 
@@ -649,7 +649,7 @@ Arrivals are counted from the moment the observer is installed.
 | a disconnect while the initial sync is sent | in-turn off | router `sendingInitialSync` | the same path |
 | a disconnect before the keeper's admission | all | adapter `.admitJoinEntry` | the pre-admission case (§6): neither OnJoin nor OnLeave runs, at both levels |
 | a disconnect during the keeper's join | all | keeper `.join` | admitted, then left |
-| a disconnect at the in-turn registration | in-turn on | adapter `registerSession` | after the keeper's admission (`TransportAdapter.swift:2164–2200`), before registration and flip |
+| a disconnect at the in-turn registration | in-turn on | adapter `keeperJoinReturned`, then `joinSyncRequested`, then keeper `.leave` | after the keeper's admission, before registration; then registered and not flipped; then the pre-leave checkpoint (rev 10) |
 | a teardown during the keeper join (#548) | all | keeper `.join`, then `endSessionTicketsForTeardown()`, then `.allow`, the membership assertion, then a reconnect | #548's entry (§6) |
 | a stale action reply after a leave | all, with an action whose resolver is held | adapter `actionResponse` | reached only when a pending action job's reply comes back after the session left; an action that replies in its turn doesn't reach it |
 | a join while a sync cycle is in flight | in-turn off, and in-turn on with an explicit legacy cycle | adapter `cycleBeforeEndSync` | as `TransportAdapterInTurnSyncTests` drives it |
@@ -680,8 +680,8 @@ For each row: where the hold stops, what the scenario does while it is closed, t
 - **keeper `.join`** (the "during the keeper's join" row). The keeper is at `holds.at(.join)` (`LandKeeper.swift:1675`), after the `maxPlayers` check and before the player's insertion. The caller is the join's queued operation, suspended in `await keeper.joinReportingAdmission` (`TransportAdapter.swift:2164`), so that operation is the queue's current one.
   - Disconnect: the router's chain → `adapter.onDisconnect` → `enqueueMembership` → its task reaches `membershipQueued` (`:2960`), observed. It then waits for the previous operation, the held join. `disconnectForwarded` is therefore not reachable yet.
   - Milestone while held: the `membershipQueued` arrival after the join's own. The runner registers the observer after the keeper's hold is reached, so the next arrival is the disconnect's: the witness B has settled, and the join timers are off (§8), so nothing else enqueues.
-  - Release: the keeper inserts the player, the join's operation finishes (in-turn: through `registerSession`), and the queue runs the disconnect → `disconnectForwarded`. Outcome: admitted, then left.
-- **registerSession** (in-turn on). The join's queued operation is at `holds.at(.registerSession)` (`:2199`), after the keeper's admission, still inside the queue.
+  - Release: the keeper inserts the player, the join's operation finishes (in-turn: through the registration and its sync request), and the queue runs the disconnect → `disconnectForwarded`. Outcome: admitted, then left.
+- **keeperJoinReturned, then joinSyncRequested** (in-turn on). The join's queued operation is at `holds.at(.keeperJoinReturned)`, after the keeper's admission and before the session is registered, still inside the queue. After its release it stops again at `holds.at(.joinSyncRequested)`, registered and not flipped, before `requestJoinSyncTurn()`; no sync-producing step runs while that holds. After that release, the keeper's `.leave` for A holds: the pre-leave checkpoint, where `joinFlipped(A1)` is true and OnLeave hasn't run (rev 10, "The moved holds").
   - Disconnect: the same as the keeper `.join` row: `membershipQueued` observed while held, `disconnectForwarded` after release.
 - **#548.** The keeper's `.join` holds the join's queued operation, as above. The adapter actor is free.
   - While held: `adapter.endSessionTicketsForTeardown()` runs synchronously on the adapter → `teardownTicketEnds` becomes 1, the milestone. There is no disconnect, so no queue wait.

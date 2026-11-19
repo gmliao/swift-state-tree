@@ -3387,17 +3387,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     #if DEBUG
     /// Join attempts whose in-turn flip a sync phase committed.
     private var joinFlipsCommitted: Set<JoinAttemptKey> = []
-    /// Join attempts whose initial sync a sync phase committed: an in-turn flip, or the
-    /// standalone firstSync of a join without in-turn sync.
+    /// Join attempts whose initial sync a sync phase committed: an in-turn flip, the standalone
+    /// firstSync of a join without in-turn sync, or the full view a cycle sends an unsynced
+    /// recipient whose firstSync was dropped behind a commit (#564).
     private var initialSyncsCommitted: Set<JoinAttemptKey> = []
+    /// Off until a test opts in, so a debug server keeps no key per join.
+    private var capturesJoinCommits = false
 
     /// Recorded in the commit's segment, so a test reads it at any later checkpoint.
     private func noteJoinCommitForTesting(_ sessionID: SessionID, flipped: Bool) {
+        guard capturesJoinCommits else { return }
         let key = JoinAttemptKey(sessionID: sessionID, attempt: memberJoinAttempts[sessionID])
         if flipped { joinFlipsCommitted.insert(key) }
         initialSyncsCommitted.insert(key)
     }
     #endif
+
+    /// Tests: starts recording the join commits `joinFlippedForTesting` and
+    /// `initialSyncCommittedForTesting` read. Before it, both read false. DEBUG builds only.
+    package func captureJoinCommitsForTesting() {
+        #if DEBUG
+        capturesJoinCommits = true
+        #endif
+    }
 
     /// Tests: the attempt's in-turn flip committed. Unlike the join's waiter, this can't read as
     /// success for a join that never flipped: it is recorded only by the commit.
@@ -3419,10 +3431,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Tests: the keeper admitted the session's in-turn join and the adapter holds the
-    /// admission, but the session isn't registered with the transport yet.
-    package func admittedNotRegisteredForTesting(_ sessionID: SessionID) -> Bool {
-        guard let inTurn = joiningSessions[sessionID]?.inTurn else { return false }
-        return !inTurn.transportRegistered
+    /// admission, but the session isn't registered with the transport yet: neither the adapter's
+    /// record nor, over a `WebSocketTransport`, the transport's player table has it.
+    package func admittedNotRegisteredForTesting(_ sessionID: SessionID) async -> Bool {
+        guard let joining = joiningSessions[sessionID], let inTurn = joining.inTurn,
+              !inTurn.transportRegistered else { return false }
+        guard let webSocket = transport as? WebSocketTransport else { return true }
+        let registered = await webSocket.playerSessionsForTesting(joining.playerID).contains(sessionID)
+        // Re-read after the await: the join may have registered meanwhile.
+        return !registered && joiningSessions[sessionID]?.inTurn?.transportRegistered == false
     }
 
     /// Tests: sync requests that met a cycle in flight and were deferred to run after it
@@ -3508,6 +3525,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLag[sessionID]?.unacked.last?.seq
     }
 
+    /// The entries in a session's FIFO, nil when it is untracked (tests).
+    package func syncLagUnackedCountForTesting(_ sessionID: SessionID) -> Int? {
+        syncLag[sessionID]?.unackedCount
+    }
+
     /// The commit's lag step: the frames it commits enter their sessions' FIFOs, its resyncs
     /// restart them, its pending marks and closes are applied. In the commit's segment.
     private func applySyncLag(_ plan: SyncPhasePlan) {
@@ -3519,7 +3541,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             received.insert(frame.sessionID)
         }
         for sessionID in received where planned.resyncs[sessionID] == nil {
-            syncLag[sessionID]?.committed(seq, at: now)
+            if syncLagPolicy.decisionsOff {
+                syncLag[sessionID]?.committedKeepingNewest(seq, at: now)
+            } else {
+                syncLag[sessionID]?.committed(seq, at: now)
+            }
         }
         // A joined session with no lag state whose full view this plan committed (its own
         // firstSync was dropped behind a commit, #564, and the cycle served it as an unsynced
@@ -4137,6 +4163,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let sessionID = plan.syncLag.firstSyncSession {
             noteJoinCommitForTesting(sessionID, flipped: false)
         }
+        // The full views of unsynced recipients (#564) whose state frame this plan commits.
+        for sessionID in plan.initialViewSessions
+        where plan.frames.contains(where: { $0.sessionID == sessionID && $0.isStateUpdate }) {
+            noteJoinCommitForTesting(sessionID, flipped: false)
+        }
         #endif
         if var digest = plan.digest, let read = syncOutputRead {
             if useStateUpdateWithEvents {
@@ -4432,6 +4463,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // ahead of that frame; a combined frame's view holds this plan's tables.
         let viewsFromStagedTables = !useStateUpdateWithEvents
         for recipient in unsyncedRecipients {
+            #if DEBUG
+            if !plan.syncLag.resyncPlayers.contains(recipient.playerID) {
+                plan.initialViewSessions.append(recipient.sessionID)
+            }
+            #endif
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
             let (update, viewPatches) = planFullViewUpdate(

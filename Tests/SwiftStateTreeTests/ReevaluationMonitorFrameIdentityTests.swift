@@ -116,6 +116,9 @@ struct ReevaluationMonitorFrameIdentityTests {
                 profilingConfig: nil
             )
             config.syncTablesEnabled = tables
+            // Pinned, so no environment flag reaches this test (scripts/check-filtered-tests-pin-transport-env.sh);
+            // typed leaf values off are covered by SyncTablesByteIdentityTests.
+            config.typedLeafValuesEnabled = true
             let transport = MonitorFrameTransport()
             let adapter = TransportAdapter<ReevaluationMonitorState>(
                 keeper: keeper,

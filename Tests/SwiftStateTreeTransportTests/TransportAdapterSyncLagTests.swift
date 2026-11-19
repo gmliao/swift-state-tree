@@ -189,7 +189,8 @@ struct TransportAdapterSyncLagTests {
         keeperTransport: Bool = false,
         fragileToken: Int = 0,
         holds: HoldRegistry<TransportAdapterHoldPoint>? = nil,
-        policy: SyncLagPolicy? = nil
+        policy: SyncLagPolicy? = nil,
+        captureJoinCommits: Bool = false
     ) async throws -> Fixture {
         // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.
         var envConfig = TransportEnvConfig.fromEnvironment()
@@ -217,6 +218,7 @@ struct TransportAdapterSyncLagTests {
         await adapter.setSyncLagClockForTesting { clock.now }
         await adapter.setSyncLagTimerIntervalForTesting(timerInterval)
         if let policy { await adapter.setSyncLagPolicy(policy) }
+        if captureJoinCommits { await adapter.captureJoinCommitsForTesting() }
         let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock, binary: binary)
         if failViewEncode {
             // Every update of the player fails to encode, even its empty fallback.
@@ -302,6 +304,22 @@ struct TransportAdapterSyncLagTests {
             sequences.append(contentsOf: frames.map(\.seq))
         }
         #expect(sequences == sequences.sorted() && Set(sequences).count == sequences.count, "sequencing kept")
+        // The FIFO no decision reads stays bounded while acks are withheld.
+        #expect(await f.adapter.syncLagUnackedCountForTesting(f.sessionID) == 1)
+        // An ack still pops it, and the next sync goes on with its sequence.
+        await f.ack(try #require(sequences.last))
+        #expect(await f.adapter.syncLagUnackedCountForTesting(f.sessionID) == 0)
+        try await f.bump()
+        let afterAck = try await f.stateFrames()
+        #expect(afterAck.map(\.op) == [2] && afterAck.map(\.seq).allSatisfy { $0 > sequences.last! })
+        #expect(await f.adapter.syncLagUnackedCountForTesting(f.sessionID) == 1)
+        // A targeted event reaches the session that never acked: nothing is dropped as lagging.
+        await f.transport.clearMessages()
+        await f.adapter.sendEvent(AnyServerEvent(Opcode107MessageEvent(message: "kept")), to: .client(f.clientID))
+        await f.adapter.syncNow()
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(await f.transport.recordedMessages().contains { String(decoding: $0, as: UTF8.self).contains("kept") }, "the event was sent")
+        #expect(await f.adapter.syncLagDroppedEvents == 0)
         #expect(await f.adapter.syncLagTimerPassForTesting())
         #expect(await f.adapter.syncLagResyncs == 0)
         #expect(await f.adapter.syncLagPendingMarks == 0)
@@ -311,8 +329,13 @@ struct TransportAdapterSyncLagTests {
 
     @Test("In-turn off: the standalone firstSync's commit is the attempt's initialSyncCommitted (#555)")
     func initialSyncCommittedWithInTurnOff() async throws {
-        let f = try await makeFixture(inTurnSync: false)
         typealias Key = TransportAdapter<SyncLagTestState>.JoinAttemptKey
+        // Opt-in: without it the commit records nothing.
+        let off = try await makeFixture(inTurnSync: false)
+        #expect(try await off.stateFrames().map(\.op) == [1])
+        #expect(await !off.adapter.initialSyncCommittedForTesting(Key(sessionID: off.sessionID, attempt: nil)), "not captured")
+
+        let f = try await makeFixture(inTurnSync: false, captureJoinCommits: true)
         #expect(try await f.stateFrames().map(\.op) == [1], "the firstSync was sent")
         #expect(await f.adapter.initialSyncCommittedForTesting(Key(sessionID: f.sessionID, attempt: nil)))
         #expect(await !f.adapter.joinFlippedForTesting(Key(sessionID: f.sessionID, attempt: nil)), "no in-turn flip")

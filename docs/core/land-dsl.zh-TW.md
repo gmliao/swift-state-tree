@@ -112,7 +112,7 @@ HandleAction(BuyAction.self,
 `validate` 收到的是 `ValidateContext`，不是 `LandContext`：
 
 - **可用：** `landID`、`playerID`、`clientID`、`sessionID`、`deviceID`、`isGuest`、`metadata`、`tickId`、`playerSlot`、`logger`、依名稱取得的 resolver 輸出（`ctx.productInfo`），以及只限 `ReadOnlyLandService` 型別的 `services`。
-- **不可用：** `emitEvent`、`emitAnyServerEvent`、`requestSyncNow()` / `requestSyncBroadcastOnly()`、server input、亂數、排程。
+- **不可用：** `emitEvent`、`requestSyncNow()` / `requestSyncBroadcastOnly()`、server input、亂數、排程。
 
 `ReadOnlyLandService` 是 marker protocol，也是編譯器無法檢查的約定：該 service 只讀取，且相同輸入給出相同答案，因為 replay 會再執行一次 `validate`。不具決定性的資料（時鐘、遠端呼叫、亂數來源）應放在 resolver，其輸出會被錄製。以 existential 型別註冊的 service（`register(x, as: (any P).self)`）無法透過 marker 取得；請以其具體型別註冊。
 

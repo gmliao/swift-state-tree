@@ -111,10 +111,16 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     }
 
     private let keeper: LandKeeper<State>
-    private let source: any ReevaluationSource
+    /// The base land's definition: its registry resolves each tick's server events (#521 PR 1b).
+    private let definition: LandDefinition<State>
+    /// A test's faults wrap it (`setFaultsForTesting`), so the reads below are the real calls.
+    private var source: any ReevaluationSource
     /// What the record's state hashes cover, from its version.
     private let hashDefinition: ReevaluationHashDefinition
     private let snapshotEncoder: JSONEncoder
+    /// Encodes the tick's snapshot in place of `snapshotEncoder` when set: a test makes the real
+    /// encode call throw (A10).
+    private var encodeSnapshot: ((StateSnapshot) throws -> Data)?
 
     /// Why a state hash mismatch in this record is not a replay difference, if it is not
     /// (`ReevaluationEngine.RunResult.hashIncomparability`): the reasons the engine applies.
@@ -148,6 +154,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         recordFilePath: String,
         requiredRecordVersion: String? = nil
     ) async throws {
+        self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
@@ -157,6 +164,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
+        // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
+        // decoded in `step()`, so a server event type without a decoder can't replay.
+        try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         // A land without a tick handler is tickless, as the keeper and the engine decide it: from
@@ -219,6 +229,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         requiredRecordVersion: String? = nil,
         services: LandServices = LandServices()
     ) async throws {
+        self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
@@ -228,6 +239,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
+        // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
+        // decoded in `step()`, so a server event type without a decoder can't replay.
+        try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         // A land without a tick handler is tickless, as the keeper and the engine decide it: from
@@ -358,19 +372,40 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
         // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String
-        var actualStatePayload: AnyCodable?
+        let snapshot: StateSnapshot?
+        // A state that can't be converted (a NaN, keys that collide as strings) is unverifiable,
+        // never a match (#180): the run goes on, and its frame has no state, with the reason. A
+        // replay land refuses that frame (`stateUnavailable`); a monitor-only run doesn't.
+        var stateUnavailable: String?
         do {
-            let (hash, snapshot) = try ReevaluationEngine.stateHashAndSnapshot(state, definition: hashDefinition)
+            let (hash, computed) = try ReevaluationEngine.stateHashAndSnapshot(state, definition: hashDefinition)
             stateHash = hash
-            if let data = try? snapshotEncoder.encode(snapshot), let jsonText = String(data: data, encoding: .utf8) {
-                actualStatePayload = AnyCodable(jsonText)
-            }
+            snapshot = computed
         } catch {
             stateHash = ReevaluationEngine.unavailableHash(error)
+            snapshot = nil
+            stateUnavailable = "the state can't be converted for its hash: \(error)"
+        }
+        // A snapshot that doesn't encode fails the run (A10, #521 PR 1b): the replay land would
+        // have no state to show for the tick.
+        var actualStatePayload: AnyCodable?
+        if let snapshot {
+            do {
+                let data = try encodeSnapshot?(snapshot) ?? snapshotEncoder.encode(snapshot)
+                actualStatePayload = AnyCodable(String(decoding: data, as: UTF8.self))
+            } catch {
+                throw ReevaluationReplayResolutionError.stateEncode(tickId: tickId, error: "\(error)")
+            }
         }
 
-        // Get recorded hash
-        let recordedHash = try? await source.getStateHash(for: tickId)
+        // A read error fails the run (A9, #521 PR 1b); a record without a hash for the tick
+        // (nil) is unchanged.
+        let recordedHash: String?
+        do {
+            recordedHash = try await source.getStateHash(for: tickId)
+        } catch {
+            throw ReevaluationReplayResolutionError.recordRead(tickId: tickId, read: "state hash", error: "\(error)")
+        }
 
         // A hash that could not be computed, live or here, is never a match.
         // A tick whose recorded passes didn't match applied none of its inputs (#325): never a
@@ -390,7 +425,24 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         let emittedServerEvents = passEvents + (await capturingSink.takeEmittedEvents(for: tickId))
         passEvents.removeAll()
         syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedServerEvents)
-        let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []
+        let recordedServerEvents: [ReevaluationRecordedServerEvent]
+        do {
+            recordedServerEvents = try await source.getServerEvents(for: tickId)
+        } catch {
+            throw ReevaluationReplayResolutionError.recordRead(tickId: tickId, read: "server events", error: "\(error)")
+        }
+        // D14 (a′): the tick resolved here, so a record/code mismatch fails the run (EV7, A11).
+        // It runs after the tick was applied and the driver stepped: a failure stops only what
+        // would be published; nothing is rolled back, and the run's keeper isn't reused.
+        let replayFrame = try ReevaluationReplayFrame.resolve(
+            tickId: tickId,
+            recordedServerEvents: recordedServerEvents,
+            emittedServerEvents: emittedServerEvents,
+            actualState: actualStatePayload,
+            definition: definition,
+            integralFloats: ReevaluationReplayFrame.integralFloats(for: source),
+            stateUnavailable: stateUnavailable
+        )
 
         return ReevaluationStepResult(
             tickId: tickId,
@@ -400,8 +452,19 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             actualState: actualStatePayload,
             emittedServerEvents: emittedServerEvents,
             recordedServerEvents: recordedServerEvents,
-            recordedPassMismatch: recordedPassMismatch
+            recordedPassMismatch: recordedPassMismatch,
+            replayFrame: replayFrame
         )
+    }
+
+    /// Installs faults for the next steps (tests only). The record source is wrapped so its reads
+    /// throw or find no hash, and the snapshot encode throws. Both go through the calls `step()`
+    /// makes, so a `try?` put back on one of them is seen.
+    package func setFaultsForTesting(_ faults: ReplayRunnerFaults) {
+        source = FaultingReevaluationSource(base: source, faults: faults)
+        if faults.snapshotEncode {
+            encodeSnapshot = { _ in throw ReplayRunnerFaults.Injected.snapshotEncode }
+        }
     }
 
     public func setPaused(_: Bool) {
@@ -449,4 +512,59 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             )
         }
     }
+}
+
+/// Faults a test injects into `ConcreteReevaluationRunner.step()`: the record reads (A9) and the
+/// snapshot encode (A10) throw as if the source or the encoder had failed, or the source has no
+/// hash for the tick.
+package struct ReplayRunnerFaults: Sendable {
+    package var stateHashRead = false
+    package var serverEventsRead = false
+    package var snapshotEncode = false
+    /// The source has no hash for the tick (nil), as a land that records none.
+    package var stateHashMissing = false
+
+    package init(stateHashRead: Bool = false, serverEventsRead: Bool = false, snapshotEncode: Bool = false, stateHashMissing: Bool = false) {
+        self.stateHashRead = stateHashRead
+        self.serverEventsRead = serverEventsRead
+        self.snapshotEncode = snapshotEncode
+        self.stateHashMissing = stateHashMissing
+    }
+
+    package enum Injected: Error, Equatable {
+        case stateHashRead, serverEventsRead, snapshotEncode
+    }
+}
+
+/// A record source with `ReplayRunnerFaults`' read faults (tests only); every other read goes to
+/// the wrapped source.
+struct FaultingReevaluationSource: ReevaluationSource {
+    let base: any ReevaluationSource
+    let faults: ReplayRunnerFaults
+
+    func getStateHash(for tickId: Int64) async throws -> String? {
+        if faults.stateHashRead { throw ReplayRunnerFaults.Injected.stateHashRead }
+        if faults.stateHashMissing { return nil }
+        return try await base.getStateHash(for: tickId)
+    }
+
+    func getServerEvents(for tickId: Int64) async throws -> [ReevaluationRecordedServerEvent] {
+        if faults.serverEventsRead { throw ReplayRunnerFaults.Injected.serverEventsRead }
+        return try await base.getServerEvents(for: tickId)
+    }
+
+    func getMetadata() async throws -> ReevaluationRecordMetadata { try await base.getMetadata() }
+    func getActions(for tickId: Int64) async throws -> [ReevaluationRecordedAction] { try await base.getActions(for: tickId) }
+    func getClientEvents(for tickId: Int64) async throws -> [ReevaluationRecordedClientEvent] { try await base.getClientEvents(for: tickId) }
+    func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent] { try await base.getLifecycleEvents(for: tickId) }
+    func getMaxTickId() async throws -> Int64 { try await base.getMaxTickId() }
+    func getSequenceWatermarks(for tickId: Int64) async throws -> ReevaluationSequenceWatermarks? { try await base.getSequenceWatermarks(for: tickId) }
+    func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] { try await base.getPasses(for: tickId) }
+    func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] { try await base.getServerInputs(for: tickId) }
+    func getRejected(for tickId: Int64) async throws -> [Int64] { try await base.getRejected(for: tickId) }
+    func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] { try await base.getSyncStream() }
+    func getLandFailure() async throws -> (tickId: Int64, failure: LandFailure)? { try await base.getLandFailure() }
+    func getInitializeRecord() async throws -> ReevaluationRecordedInitialize? { try await base.getInitializeRecord() }
+    func getRecordCompleteness() async throws -> ReevaluationRecordCompleteness { try await base.getRecordCompleteness() }
+    func getHoldsNonNFCText() async throws -> Bool { try await base.getHoldsNonNFCText() }
 }

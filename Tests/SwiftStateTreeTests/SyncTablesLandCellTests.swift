@@ -52,6 +52,9 @@ private func landCellConfig(tables: Bool, perPlayerTables: Bool, dirtyTracking: 
     )
     config.useSyncTables = tables
     config.perPlayerSyncTables = perPlayerTables
+    // Pinned, so no environment flag reaches this test (scripts/check-filtered-tests-pin-transport-env.sh);
+    // typed leaf values off are covered by SyncTablesByteIdentityTests.
+    config.typedLeafValues = true
     return config
 }
 

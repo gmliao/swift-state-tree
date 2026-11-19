@@ -19,6 +19,10 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
     private let factory: any ReevaluationTargetFactory
     private let projectorResolver: ReevaluationReplayProjectorResolver
+    /// The state type of the replay land this service feeds, when it feeds one
+    /// (`expectReplayLandState`): a result is queued only with a resolved frame of that type, so
+    /// the land's tick can't meet a frame it can't show (#521 PR 1b, S1).
+    private var replayLandState: (id: ObjectIdentifier, name: String)?
 
     public init(
         factory: any ReevaluationTargetFactory,
@@ -32,6 +36,14 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     deinit {
         requestContinuation.finish()
         driverTask?.cancel()
+    }
+
+    /// Makes this service feed a replay land of state `State`: each result must carry a
+    /// `ReevaluationReplayFrame` of that state type, or the run fails before it is queued.
+    package func expectReplayLandState(_ state: any StateNodeProtocol.Type) {
+        lock.lock()
+        defer { lock.unlock() }
+        replayLandState = (ObjectIdentifier(state), String(reflecting: state))
     }
 
     // MARK: Requests from land turns
@@ -90,12 +102,40 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     }
 
     public func consumeNextResult() -> ReevaluationStepResult? {
+        consumeNextResultWithTicket()?.result
+    }
+
+    /// The next result and the ticket of the run that queued it, read under one lock: a start
+    /// clears the queue when it takes a new ticket, so the result is that run's.
+    package func consumeNextResultWithTicket() -> (result: ReevaluationStepResult, ticket: UInt64)? {
         lock.lock()
         defer { lock.unlock() }
         guard !resultsQueue.isEmpty else {
             return nil
         }
-        return resultsQueue.removeFirst()
+        return (resultsQueue.removeFirst(), generation)
+    }
+
+    /// Fails the run `ticket` names, from the replay land that read one of its results and can't
+    /// show it (#521 PR 1b): the status becomes `.failed` with `error`, the queue is cleared and
+    /// the run stops. A later run (a newer ticket) is left alone.
+    /// Returns whether the ticket was current. A stale ticket (a newer run began, or this one
+    /// was already failed through it) changes nothing. A run that already failed keeps its first
+    /// error.
+    @discardableResult
+    package func failRun(ticket: UInt64, error: ReevaluationReplayResolutionError) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isCurrentLocked(ticket) else { return false }
+        // A new ticket, so the failed run can neither queue nor overwrite the status.
+        generation &+= 1
+        verificationTask?.cancel()
+        resultsQueue.removeAll()
+        if _status.phase != .failed {
+            _status.phase = .failed
+            _status.errorMessage = error.description
+        }
+        return true
     }
 
     private func updateStatus(_ block: (inout ReevaluationStatus) -> Void) {
@@ -224,20 +264,22 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         // A replaced run's result is dropped, and the replaced run stops.
         guard isCurrentLocked(ticket) else { return false }
 
+        // A replay land reads only a resolved frame of its own state type, with a state to show
+        // (#521 PR 1b, S1). A run that feeds no replay land queues a stateless tick: it is
+        // unverifiable, never a match (#180).
+        if let expected = replayLandState {
+            if let refusal = ReevaluationReplayFrame.refusal(of: result, forStateType: expected.id, named: expected.name) {
+                _status.phase = .failed
+                _status.errorMessage = refusal.description
+                return false
+            }
+        }
+
         var queuedResult = result
         if let replayProjector {
             do {
-                let projectedFrame = try replayProjector.project(result)
-                queuedResult = ReevaluationStepResult(
-                    tickId: result.tickId,
-                    stateHash: result.stateHash,
-                    recordedHash: result.recordedHash,
-                    isMatch: result.isMatch,
-                    actualState: result.actualState,
-                    emittedServerEvents: result.emittedServerEvents,
-                    recordedServerEvents: result.recordedServerEvents,
-                    projectedFrame: projectedFrame
-                )
+                // A copy that keeps every other field (#521 M2): the pass mismatch and the frame.
+                queuedResult = result.with(projectedFrame: try replayProjector.project(result))
             } catch {
                 _status.phase = .failed
                 _status.errorMessage = error.localizedDescription

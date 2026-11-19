@@ -35,7 +35,25 @@ private func recordedMetadata(
         definition: definition, initialState: RecordIdentityState(), metadata: [:]
     )
     let recorder = try #require(await container.keeper.getReevaluationRecorder())
-    return try #require(await recorder.getMetadata())
+    return try await firstSerializedHeader(recorder)
+}
+
+/// The metadata of the first header written to the record file: a later header would replace it
+/// on read, so reading the recorder's current metadata could hide a wrong first one.
+private func firstSerializedHeader(_ recorder: ReevaluationRecorder) async throws -> ReevaluationRecordMetadata {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("record-identity-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("record.sstr").path
+    try await recorder.saveCopyForTesting(to: path)
+    let bytes = Array(try Data(contentsOf: URL(fileURLWithPath: path)))
+    let start = ReevaluationRecordLog.preamble.count
+    #expect(ReevaluationRecordLog.hasMagic(bytes) && bytes.count > start + 4)
+    let length = Int(bytes[start]) << 24 | Int(bytes[start + 1]) << 16 | Int(bytes[start + 2]) << 8 | Int(bytes[start + 3])
+    let body = Array(bytes[(start + 4)..<(start + 4 + length)])
+    let record = try CanonicalMessagePack.decode(ReevaluationLogRecord.self, from: body)
+    #expect(record.kind == .header, "the first record is the header")
+    return try #require(record.metadata)
 }
 
 @Suite("Record-identity override (#555)")
@@ -55,7 +73,8 @@ struct RecordIdentityOverrideTests {
         let manager = makeManager()
         let before = Date()
         let metadata = try await recordedMetadata(manager, instance: "live")
-        #expect(metadata.createdAt >= before)
+        // The record keeps whole milliseconds at most.
+        #expect(metadata.createdAt.timeIntervalSince1970 >= before.timeIntervalSince1970 - 1)
         #expect(metadata.hardwareInfo != nil)
     }
 }

@@ -127,6 +127,13 @@ package enum RecordFieldProbe {
                 differing.insert(path)
             }
         }
+        // A listed type, case by case: its path branches when one case's fields or success
+        // differ between the runs, even if the union over its cases doesn't.
+        for key in Set(a.casePaths.keys).union(b.casePaths.keys).union(a.caseResults.keys).union(b.caseResults.keys) {
+            guard a.casePaths[key] != b.casePaths[key] || a.caseResults[key] != b.caseResults[key],
+                  let mark = key.lastIndex(of: "#") else { continue }
+            differing.insert(String(key[..<mark]))
+        }
         return differing.filter { parent in !differing.contains { below(parent, $0) } }
     }
 
@@ -145,6 +152,10 @@ private final class ProbeState {
     var boundaryPaths = Set<String>()
     /// Each composite type decoded, by path, and whether it built.
     var composites: [String: (type: ObjectIdentifier, ok: Bool)] = [:]
+    /// Each listed case's fields and success, by `<path>#<value>`.
+    var casePaths: [String: Set<String>] = [:]
+    var caseResults: [String: Bool] = [:]
+    private func noteCasePaths(_ key: String, _ found: Set<String>) { casePaths[key, default: []].formUnion(found) }
     /// Types being decoded on the current path, so a recursive type stops at its second visit.
     var active: [ObjectIdentifier] = []
     var samples: [ObjectIdentifier: Any] = [:]
@@ -196,7 +207,22 @@ private final class ProbeState {
         for answer in listed.values {
             discriminators.append((listed.key, answer))
             defer { discriminators.removeLast() }
-            last = try T(from: ProbeDecoder(state: self, path: path))
+            // Each case's fields apart, so the runs are compared per case before the union: a
+            // gate that moves a field from one case to another leaves the union unchanged.
+            let outer = paths
+            paths = []
+            let key = "\(path)#\(answer)"
+            defer {
+                noteCasePaths(key, paths)
+                paths.formUnion(outer)
+            }
+            do {
+                last = try T(from: ProbeDecoder(state: self, path: path))
+                caseResults[key] = true
+            } catch {
+                caseResults[key] = false
+                throw error
+            }
         }
         guard let last else { throw ProbeStop.opaque }
         return last
