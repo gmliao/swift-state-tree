@@ -195,7 +195,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     public struct PendingActionItem: Sendable {
         public let sequence: Int64
-        public let action: AnyCodable
+        /// The action, with its frame's bound when it has one: stored once (#616's A/B).
+        private let payload: MaybeDepthBounded<AnyCodable>
+        public var action: AnyCodable { payload.value }
         public let actionType: any ActionPayload.Type
         public let playerID: PlayerID
         public let clientID: ClientID
@@ -203,7 +205,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         public let resolverOutputs: [String: any ResolverOutput]
         public let resolvedAtTick: Int64
         /// `action`, bound by its frame's decode (`DepthBounded`); `nil` walks it at decode.
-        package let boundedAction: DepthBounded<AnyCodable>?
+        package var boundedAction: DepthBounded<AnyCodable>? { payload.bounded }
 
         public init(
             sequence: Int64,
@@ -217,8 +219,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ) {
             self.init(
                 sequence: sequence,
-                action: action,
-                boundedAction: nil,
+                payload: .unchecked(action),
                 actionType: actionType,
                 playerID: playerID,
                 clientID: clientID,
@@ -241,8 +242,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ) {
             self.init(
                 sequence: sequence,
-                action: bounded.value,
-                boundedAction: bounded,
+                payload: .bounded(bounded),
                 actionType: actionType,
                 playerID: playerID,
                 clientID: clientID,
@@ -254,8 +254,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         private init(
             sequence: Int64,
-            action: AnyCodable,
-            boundedAction: DepthBounded<AnyCodable>?,
+            payload: MaybeDepthBounded<AnyCodable>,
             actionType: any ActionPayload.Type,
             playerID: PlayerID,
             clientID: ClientID,
@@ -264,8 +263,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolvedAtTick: Int64
         ) {
             self.sequence = sequence
-            self.action = action
-            self.boundedAction = boundedAction
+            self.payload = payload
             self.actionType = actionType
             self.playerID = playerID
             self.clientID = clientID
@@ -278,8 +276,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         package func with(resolverOutputs: [String: any ResolverOutput], resolvedAtTick: Int64) -> PendingActionItem {
             PendingActionItem(
                 sequence: sequence,
-                action: action,
-                boundedAction: boundedAction,
+                payload: payload,
                 actionType: actionType,
                 playerID: playerID,
                 clientID: clientID,
@@ -292,13 +289,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     public struct PendingClientEventItem: Sendable {
         public let sequence: Int64
-        public let event: AnyClientEvent
+        /// The event, with its frame's bound when it has one: stored once (#616's A/B).
+        private let stored: MaybeDepthBounded<AnyClientEvent>
+        public var event: AnyClientEvent { stored.value }
         public let playerID: PlayerID
         public let clientID: ClientID
         public let sessionID: SessionID
         public let resolvedAtTick: Int64
         /// `event`'s payload, bound by its frame's decode (`DepthBounded`); `nil` walks it.
-        package let boundedPayload: DepthBounded<AnyCodable>?
+        package var boundedPayload: DepthBounded<AnyCodable>? { stored.bounded?.map(\.payload) }
 
         public init(
             sequence: Int64,
@@ -309,12 +308,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolvedAtTick: Int64
         ) {
             self.sequence = sequence
-            self.event = event
+            self.stored = .unchecked(event)
             self.playerID = playerID
             self.clientID = clientID
             self.sessionID = sessionID
             self.resolvedAtTick = resolvedAtTick
-            self.boundedPayload = nil
         }
 
         /// The event and its bound, one value: a bounded event is `bounded.value`.
@@ -327,12 +325,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolvedAtTick: Int64
         ) {
             self.sequence = sequence
-            self.event = bounded.value
+            self.stored = .bounded(bounded)
             self.playerID = playerID
             self.clientID = clientID
             self.sessionID = sessionID
             self.resolvedAtTick = resolvedAtTick
-            self.boundedPayload = bounded.map(\.payload)
         }
     }
 

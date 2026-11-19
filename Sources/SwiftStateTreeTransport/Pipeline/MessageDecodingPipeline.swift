@@ -42,6 +42,19 @@ struct MessageDecodingPipeline: Sendable {
     let codec: any TransportCodec
     let opcodeDecoder: OpcodeTransportMessageDecoder
     let enableLegacyJoin: Bool
+    /// `codec` is this module's JSON codec, whose parse the JSON scan covers. Checked once here:
+    /// a cast of the existential per frame costs a conformance lookup each time.
+    private let codecIsOwnJSON: Bool
+    /// `codec` is this module's MessagePack codec, which unpacks a client frame at the limit.
+    private let codecIsOwnMessagePack: Bool
+
+    init(codec: any TransportCodec, opcodeDecoder: OpcodeTransportMessageDecoder, enableLegacyJoin: Bool) {
+        self.codec = codec
+        self.opcodeDecoder = opcodeDecoder
+        self.enableLegacyJoin = enableLegacyJoin
+        self.codecIsOwnJSON = codec is JSONTransportCodec
+        self.codecIsOwnMessagePack = codec is MessagePackTransportCodec
+    }
     
     /// Decode raw data into TransportMessage.
     ///
@@ -95,7 +108,7 @@ struct MessageDecodingPipeline: Sendable {
             if codec.encoding == .messagepack {
                 return try decodeMessagePack(data)
             }
-            return Self.proven(try codec.decode(TransportMessage.self, from: data), if: scanned && codec is JSONTransportCodec)
+            return Self.proven(try codec.decode(TransportMessage.self, from: data), if: scanned && codecIsOwnJSON)
         }
         
         // Non-legacy mode: use codec-first approach (for performance)
@@ -116,7 +129,7 @@ struct MessageDecodingPipeline: Sendable {
         }
         
         // Standard JSON object format
-        return Self.proven(try codec.decode(TransportMessage.self, from: data), if: scanned && codec is JSONTransportCodec)
+        return Self.proven(try codec.decode(TransportMessage.self, from: data), if: scanned && codecIsOwnJSON)
     }
 
     /// `.bounded` when `bounded` (this module's code bounded the bytes `message` came from),
@@ -130,6 +143,6 @@ struct MessageDecodingPipeline: Sendable {
     /// doesn't for MessagePack), so its payloads are walked.
     private func decodeMessagePack(_ data: Data) throws -> DecodedClientFrame {
         let message = try codec.decodeClientFrame(TransportMessage.self, from: data)
-        return Self.proven(message, if: codec is MessagePackTransportCodec)
+        return Self.proven(message, if: codecIsOwnMessagePack)
     }
 }
