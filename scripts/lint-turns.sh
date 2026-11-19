@@ -20,7 +20,10 @@
 #   unchecked-state  every stored `var` of `TurnCore` (Sources/SwiftStateTurns/TurnCore.swift)
 #                carries `@exclusivity(unchecked)` under exactly
 #                `#if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED`, on the three lines above it (#621), and
-#                no `@exclusivity(unchecked)` there sits under any other line. A missing one
+#                no `@exclusivity(unchecked)` there sits under any other line or inline on a
+#                declaration (inline it is unchecked in debug builds too). A stored var is a `var`
+#                member whose line opens no brace, or whose brace holds observers (`didSet`,
+#                `willSet`), whatever its modifiers (`lazy`, `private(set)`, `final`). A missing one
 #                isn't unsafe, only a release-build slowdown: every use of that var pays the
 #                runtime exclusivity check. Debug builds, and release builds with
 #                `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED`, keep the checks.
@@ -324,18 +327,35 @@ unchecked_state() {
   fi
   # shellcheck disable=SC2016 # awk program, not shell
   awk -v path="$file" '
+    function isVar(l) { return l ~ /^    (@?[A-Za-z_]+(\([^)]*\))? )*var [A-Za-z_]+/ }
+    function unguarded(n) {
+      print path ":" n ": [unchecked-state] a stored var of TurnCore without #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED / @exclusivity(unchecked) / #endif on the lines above it"
+    }
     /^public final class TurnCore</ { inClass = 1; next }
     inClass && /^}/ { inClass = 0 }
     !inClass { next }
     {
       line = $0
-      if (line ~ /^    @exclusivity\(unchecked\)[[:space:]]*$/) {
+      # A var whose line opens a brace is stored only if observers follow (didSet, willSet).
+      if (pending) {
+        if (line ~ /^[[:space:]]*(didSet|willSet)/) { stored++; if (!pendingGuarded) unguarded(pendingLine) }
+        pending = 0
+      }
+      if (index(line, "@exclusivity(unchecked)") > 0 && line !~ /^    @exclusivity\(unchecked\)[[:space:]]*$/) {
+        print path ":" NR ": [unchecked-state] @exclusivity(unchecked) on a line of its own only, under #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED: inline it is unchecked in debug builds too"
+        if (isVar(line)) stored++
+        guarded = 0
+      } else if (line ~ /^    @exclusivity\(unchecked\)[[:space:]]*$/) {
         if (prev != "    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED") print path ":" NR ": [unchecked-state] @exclusivity(unchecked) outside #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED: debug builds and that flag keep the checks"
       } else if (line ~ /^    #endif[[:space:]]*$/) {
         guarded = (prev == "    @exclusivity(unchecked)" && prev2 == "    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED")
-      } else if (line ~ /^    (@[A-Za-z_]+ |(public|package|internal|private|fileprivate) )*var [A-Za-z_]+/ && line !~ /[{]/) {
-        stored++
-        if (!guarded) print path ":" NR ": [unchecked-state] a stored var of TurnCore without #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED / @exclusivity(unchecked) / #endif on the lines above it"
+      } else if (isVar(line)) {
+        if (line !~ /[{]/ || line ~ /[{][[:space:]]*(didSet|willSet)/) {
+          stored++
+          if (!guarded) unguarded(NR)
+        } else {
+          pending = 1; pendingLine = NR; pendingGuarded = guarded
+        }
         guarded = 0
       } else if (line != "    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED") {
         guarded = 0
@@ -516,6 +536,17 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var oldCondition = 0
+    @exclusivity(unchecked) @usableFromInline var inline = 0
+    lazy var lazyOne = 0
+    private(set) var privateSet = 0
+    final var finalOne = 0
+    @usableFromInline var observed = 0 {
+        didSet { }
+    }
+    var observedInline = 0 { didSet { } }
+    var computed: Int {
+        0
+    }
 }
 EOF
   out="$(lint "$dir" 2>&1)" && { echo "self-test: the failing fixture passed"; return 1; }
@@ -551,7 +582,13 @@ TurnCore.swift:3: [unchecked-state] @exclusivity(unchecked) outside
 TurnCore.swift:4: [unchecked-state] a stored var
 TurnCore.swift:9: [unchecked-state] a stored var
 TurnCore.swift:15: [unchecked-state] @exclusivity(unchecked) outside
-TurnCore.swift:17: [unchecked-state] a stored var'
+TurnCore.swift:17: [unchecked-state] a stored var
+TurnCore.swift:18: [unchecked-state] @exclusivity(unchecked) on a line of its own only
+TurnCore.swift:19: [unchecked-state] a stored var
+TurnCore.swift:20: [unchecked-state] a stored var
+TurnCore.swift:21: [unchecked-state] a stored var
+TurnCore.swift:22: [unchecked-state] a stored var
+TurnCore.swift:25: [unchecked-state] a stored var'
   while IFS= read -r want; do
     if ! grep -q -F -- "$want" <<<"$out"; then
       echo "self-test: missing '$want' in:"; echo "$out"; return 1
