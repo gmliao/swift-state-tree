@@ -1,6 +1,6 @@
 # CI test audit and nightly design
 
-Status: proposal, rev 2. Rev 2 revises V3's premise and the nightly's skip and scoping after review, names the effective-config log lines for V2, and says what the queue figures count. Inventory and verdicts only. No test is removed, skipped or moved by this plan. Each move lands in its own PR after the list is approved.
+Status: done: the nightly (#625), V1 (#627), V2 (#631), V3 (#642), V4 (#649); V5 dropped after measuring (§ V5). The text below is rev 2, the approved proposal, with V4 and V5 updated as built. Rev 2: Rev 2 revises V3's premise and the nightly's skip and scoping after review, names the effective-config log lines for V2, and says what the queue figures count. Inventory and verdicts only. No test is removed, skipped or moved by this plan. Each move lands in its own PR after the list is approved.
 
 Follows `Notes/plans/2026-11-19-dev-speed.md` (levers 1–3: #618, #620).
 
