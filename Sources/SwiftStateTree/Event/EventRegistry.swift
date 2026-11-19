@@ -12,11 +12,42 @@ public struct AnyEventDescriptor: Sendable {
     
     /// The direction of the event (client or server).
     public let direction: EventDirection
+
+    /// Decodes a client event's payload into `type`, at intake (#521). Set for a client event
+    /// whose type is a `ClientEventPayload`; nil otherwise, and for a descriptor built with the
+    /// public init, whose events are decoded by their handler when applied, as before.
+    package let decodeClientEvent: (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)?
     
     public init(type: Any.Type, eventName: String, direction: EventDirection) {
         self.type = type
         self.eventName = eventName
         self.direction = direction
+        self.decodeClientEvent = nil
+    }
+
+    package init(
+        type: Any.Type,
+        eventName: String,
+        direction: EventDirection,
+        decodeClientEvent: (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)?
+    ) {
+        self.type = type
+        self.eventName = eventName
+        self.direction = direction
+        self.decodeClientEvent = decodeClientEvent
+    }
+
+    /// The client-event decode for `type`, or nil when it isn't a `ClientEventPayload`.
+    package static func clientEventDecoder(
+        for type: Any.Type
+    ) -> (@Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload)? {
+        guard let eventType = type as? any ClientEventPayload.Type else { return nil }
+        func decoder<Event: ClientEventPayload>(
+            _: Event.Type
+        ) -> @Sendable (any PayloadDecodingSource) throws -> any ClientEventPayload {
+            { source in try source.decode(Event.self) }
+        }
+        return decoder(eventType)
     }
 }
 
@@ -113,7 +144,8 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
         let descriptor = AnyEventDescriptor(
             type: type,
             eventName: eventName,
-            direction: .client
+            direction: .client,
+            decodeClientEvent: AnyEventDescriptor.clientEventDecoder(for: type)
         )
         var newRegistered = registered
         newRegistered.append(descriptor)
@@ -148,7 +180,8 @@ public struct EventRegistry<E: Codable & Sendable>: Sendable {
         let descriptor = AnyEventDescriptor(
             type: type,
             eventName: eventName,
-            direction: .client
+            direction: .client,
+            decodeClientEvent: AnyEventDescriptor.clientEventDecoder(for: type)
         )
         var newRegistered = registered
         newRegistered.append(descriptor)

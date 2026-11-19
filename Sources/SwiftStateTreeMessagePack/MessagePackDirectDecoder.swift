@@ -85,8 +85,8 @@ struct MessagePackDirectDecoder {
             }
             let requestID = try extractString(array[1], context: "action requestID")
             let typeIdentifier = try extractString(array[2], context: "action typeIdentifier")
-            let payload = try decodeAnyCodable(from: array[3])
-            let action = ActionEnvelope(typeIdentifier: typeIdentifier, payload: payload)
+            // The payload stays a MessagePack value, decoded into its type by the keeper (#521).
+            let action = ActionEnvelope(typeIdentifier: typeIdentifier, source: try MessagePackPayloadSource(validating: array[3]))
             return TransportMessage(kind: .action, payload: .action(TransportActionPayload(requestID: requestID, action: action)))
             
         case 102: // actionResponse
@@ -103,13 +103,14 @@ struct MessagePackDirectDecoder {
             }
             let direction = try extractInt(array[1], context: "event direction")
             let type = try extractString(array[2], context: "event type")
-            let payload = try decodeAnyCodable(from: array[3])
             let rawBody = array.count > 4 ? try decodeOptionalBinaryData(array[4], context: "event rawBody") : nil
-            
             let event: TransportEvent
             if direction == 0 {
-                event = .fromClient(event: AnyClientEvent(type: type, payload: payload, rawBody: rawBody))
+                // A client event's payload stays a MessagePack value, decoded by the keeper (#521).
+                let source = try MessagePackPayloadSource(validating: array[3])
+                event = .fromClient(event: AnyClientEvent(type: type, source: source, rawBody: rawBody))
             } else {
+                let payload = try decodeAnyCodable(from: array[3])
                 event = .fromServer(event: AnyServerEvent(type: type, payload: payload, rawBody: rawBody))
             }
             return TransportMessage(kind: .event, payload: .event(event))
@@ -286,9 +287,8 @@ struct MessagePackDirectDecoder {
         guard let payloadValue = map["payload"] else {
             throw MessagePackDirectDecodingError.invalidFormat("Missing action payload")
         }
-        // ActionEnvelope.payload is AnyCodable, not Data
-        let payload = try decodeAnyCodable(from: payloadValue)
-        return ActionEnvelope(typeIdentifier: typeIdentifier, payload: payload)
+        // The payload stays a MessagePack value, decoded into its type by the keeper (#521).
+        return ActionEnvelope(typeIdentifier: typeIdentifier, source: try MessagePackPayloadSource(validating: payloadValue))
     }
 
     private func decodeTransportActionPayload(from value: MessagePackValue) throws -> TransportActionPayload {
@@ -340,9 +340,9 @@ struct MessagePackDirectDecoder {
         guard let payloadValue = map["payload"] else {
             throw MessagePackDirectDecodingError.invalidFormat("Missing client event payload")
         }
-        let payload = try decodeAnyCodable(from: payloadValue)
+        let source = try MessagePackPayloadSource(validating: payloadValue)
         let rawBody = try decodeOptionalBinaryData(map["rawBody"], context: "client event rawBody")
-        return AnyClientEvent(type: type, payload: payload, rawBody: rawBody)
+        return AnyClientEvent(type: type, source: source, rawBody: rawBody)
     }
 
     private func decodeAnyServerEvent(from value: MessagePackValue) throws -> AnyServerEvent {
@@ -483,44 +483,7 @@ struct MessagePackDirectDecoder {
     }
 
     private func decodeAnyCodable(from value: MessagePackValue) throws -> AnyCodable {
-        switch value {
-        case .nil:
-            return AnyCodable(Optional<Int>.none)
-        case .bool(let value):
-            return AnyCodable(value)
-        case .int(let value):
-            if value >= Int64(Int.min) && value <= Int64(Int.max) {
-                return AnyCodable(Int(value))
-            }
-            return AnyCodable(value)
-        case .uint(let value):
-            if value <= UInt64(Int.max) {
-                return AnyCodable(Int(value))
-            }
-            return AnyCodable(value)
-        case .float(let value):
-            return AnyCodable(Double(value))
-        case .double(let value):
-            return AnyCodable(value)
-        case .string(let value):
-            return AnyCodable(value)
-        case .binary(let value):
-            return AnyCodable(value)
-        case .array(let values):
-            let array = try values.map { try decodeAnyCodable(from: $0).base }
-            return AnyCodable(array)
-        case .map(let values):
-            var object: [String: Any] = [:]
-            for (key, value) in values {
-                guard case let .string(keyString) = key else {
-                    throw MessagePackDirectDecodingError.invalidFormat("Non-string AnyCodable key")
-                }
-                object[keyString] = try decodeAnyCodable(from: value).base
-            }
-            return AnyCodable(object)
-        case .extended(_, let data):
-            return AnyCodable(data)
-        }
+        try MessagePackPayloadSource.anyCodable(from: value)
     }
 
     private func decodeOptionalAnyCodableDictionary(

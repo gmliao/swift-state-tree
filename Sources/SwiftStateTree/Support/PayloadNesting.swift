@@ -12,7 +12,9 @@ import Logging
 ///   (`checkClientJSON`): a frame the router forwards is checked by the router and again by the
 ///   adapter's pipeline. MessagePack from a client unpacks at the same limit;
 /// - a 2.x JSON record is checked the same way, at the record limit;
-/// - every payload is checked again before its re-encode, whatever its source (`check`).
+/// - a payload is walked once more before it reaches its type: an `AnyCodable` one by `check`,
+///   before its re-encode; a MessagePack one by its decode source, which also checks the keys and
+///   numbers a record needs (`MessagePackPayloadSource`, #521). Either way, once per input.
 ///
 /// Two limits; a test pins both and their relation:
 /// - `clientFrameMaxDepth` (32) bounds what a client sends, in every encoding. Measured on macOS
@@ -127,7 +129,31 @@ package enum PayloadNesting {
     /// refuses; only server code builds longer chains of wrappers. It builds no intermediate
     /// values; a Foundation container bridged to `[Any]` or `[String: Any]` may still allocate.
     package static func check(_ value: Any, limit: Int = clientFrameMaxDepth) throws {
+        walks?.add()
         if !fits(value, depth: 0, limit: limit) { throw TooDeep(limit: limit) }
+    }
+
+    /// Counts the depth and recordability walks (`check`, and a MessagePack decode source's walk)
+    /// made in the task that binds it, and in the tasks that inherit it. A traversal that checks
+    /// nothing (a re-encode, a record's tree build) isn't counted. Tests only: unbound (nil)
+    /// everywhere else, where a walk reads the task-local and does nothing more.
+    @TaskLocal package static var walks: WalkCounter?
+
+    /// The count `walks` keeps.
+    package final class WalkCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        package init() {}
+
+        package var count: Int {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+
+        package func add() {
+            lock.lock(); value += 1; lock.unlock()
+        }
     }
 
     /// Whether `value`, a container's element at `depth`, fits under `limit`.
@@ -155,8 +181,9 @@ package enum PayloadNesting {
     nonisolated(unsafe) private static var dropped = 0
 
     /// Client events dropped because their payload nested deeper than the limit, in this process.
-    /// A client event whose payload doesn't decode is dropped, live and replayed alike (#537 is
-    /// to reject it instead); one too deep is also logged and counted here.
+    /// A live client event whose payload doesn't decode is refused at intake (#537); one reaching
+    /// its handler undecoded (a replayed one) is dropped there, and one too deep is also logged
+    /// and counted here.
     package static var droppedClientEventCount: Int {
         droppedLock.withLock { dropped }
     }

@@ -3,11 +3,39 @@ import Foundation
 /// Encoded action payload and metadata used by the transport layer.
 public struct ActionEnvelope: Codable, Sendable {
     public let typeIdentifier: String
-    public let payload: AnyCodable
+    /// The payload as its decoder received it (#521): the keeper decodes the action from it.
+    package let source: any PayloadDecodingSource
+
+    /// The payload as an `AnyCodable` tree, built from `source` when it isn't one already.
+    public var payload: AnyCodable { source.boxedPayload }
 
     public init(typeIdentifier: String, payload: AnyCodable) {
         self.typeIdentifier = typeIdentifier
-        self.payload = payload
+        self.source = AnyCodablePayloadSource(payload)
+    }
+
+    package init(typeIdentifier: String, source: any PayloadDecodingSource) {
+        self.typeIdentifier = typeIdentifier
+        self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case typeIdentifier
+        case payload
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            typeIdentifier: try container.decode(String.self, forKey: .typeIdentifier),
+            payload: try container.decode(AnyCodable.self, forKey: .payload)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(typeIdentifier, forKey: .typeIdentifier)
+        try container.encode(payload, forKey: .payload)
     }
 }
 

@@ -314,6 +314,9 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
     package let site: String?
     /// Throws only before it writes: from `validate` (#586).
     private let handler: @Sendable (inout State, AnyClientEvent, LandContext) throws -> Void
+    /// The handler for a value decoded at intake (#521). Returns false, running nothing, when the
+    /// value isn't of the handler's type.
+    private let decodedHandler: @Sendable (inout State, any ClientEventPayload, LandContext) throws -> Bool
 
     /// A handler in two stages (#586): `validate` reads the state, may throw, and returns the
     /// plan; `apply` writes and can't throw. There is no public form that takes a throwing body.
@@ -336,14 +339,19 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
     ) {
         self.eventType = eventType
         self.site = site
+        self.decodedHandler = { state, value, ctx in
+            guard let event = value as? E else { return false }
+            try invoke(&state, event, ctx)
+            return true
+        }
         self.handler = { state, anyEvent, ctx in
-            // Decode the event from AnyClientEvent
-            // A payload that doesn't decode drops the event, live and replayed alike (#537 is to
-            // reject it). One nested too deep is also logged and counted (#362).
-            let decoder = JSONDecoder()
+            // Decode the event from AnyClientEvent: one that reaches its handler undecoded. A live
+            // event is decoded at intake, and refused there when it doesn't decode (#537), so this
+            // is a replayed one, or one handed to `invoke` directly. A payload that doesn't decode
+            // drops the event here, as before; one nested too deep is also logged and counted (#362).
             let event: E
             do {
-                event = try InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, decoder: decoder)
+                event = try anyEvent.source.decode(E.self)
             } catch let tooDeep as PayloadNesting.TooDeep {
                 PayloadNesting.noteDroppedClientEvent(type: String(describing: E.self), tooDeep)
                 return
@@ -367,6 +375,17 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         ctx: LandContext
     ) throws {
         try handler(&state, event, ctx)
+    }
+
+    /// Runs the handler on a value decoded at intake. Returns false, having run nothing, when the
+    /// value isn't of this handler's type: a hand-built handler whose type differs from its
+    /// descriptor's. That event is skipped, as when it was decoded here (A7 waits for A8).
+    package func invokeDecoded(
+        _ state: inout State,
+        event: any ClientEventPayload,
+        ctx: LandContext
+    ) throws -> Bool {
+        try decodedHandler(&state, event, ctx)
     }
 }
 

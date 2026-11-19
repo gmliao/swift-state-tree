@@ -2920,7 +2920,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         let errorCode: ErrorCode
                         let errorMessage: String
 
-                        if let resolverError = error as? ResolverExecutionError {
+                        if let payloadError = error as? ClientEventPayloadError {
+                            // Refused at intake, before a handler ran (#537).
+                            errorCode = .eventInvalidPayload
+                            errorMessage = "\(payloadError)"
+                        } else if let resolverError = error as? ResolverExecutionError {
                             errorCode = .eventHandlerError
                             errorMessage = "Event handler failed: \(resolverError)"
                         } else if let resolverError = error as? ResolverError {
