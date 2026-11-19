@@ -151,7 +151,7 @@ extension WebSocketTransport {
     /// arrivals count the bounds that ran out. A test that holds a send across several awaits
     /// otherwise races that bound in real time, and loses it on a loaded runner (#647). Open the
     /// gate before the test ends: a held bound's task waits for it.
-    func holdBoundClosesForTesting() -> TestGate {
+    package func holdBoundClosesForTesting() -> TestGate {
         let bound = TestGate()
         setDelayedCloseForTesting { stage in
             if case .willCheck(.bound) = stage { await bound.arrive() }
