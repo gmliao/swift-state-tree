@@ -1,31 +1,176 @@
 #!/usr/bin/env bash
 # Every Swift container image in the workflows is pinned to one digest, and every SwiftPM cache
-# key names that digest, so a cache never outlives the image it was filled with and the jobs
+# step keys on that digest, so a cache never outlives the image it was filled with and the jobs
 # can't drift onto different images when the tag is pushed again.
+#
+# Images: `image:`, `container:` and `uses: docker://` values naming a `swift:` image, quoted or
+# not, with or without a registry prefix, in .github/workflows/*.yml and *.yaml. They must all be
+# the same `swift:<tag>@sha256:<64 hex>`.
+# Cache steps: the steps whose `path:` is SwiftPM's shared cache (~/.cache/org.swift.swiftpm).
+# There must be at least one; its `key` and every `restore-keys` entry must hold the digest as a
+# key segment (`-<digest>-`), outside a comment.
+#
+# Usage: scripts/check-ci-image-pin.sh [--self-test] [workflows dir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+exec python3 - "$@" <<'PY'
+import pathlib
+import re
+import sys
+import tempfile
 
-images="$(grep -hoE 'image: *swift:[^ #]+' .github/workflows/*.yml | sed -E 's/image: *//' | sort -u)"
-if [ -z "$images" ]; then
-  echo "::error::no Swift container image found in .github/workflows"
-  exit 1
-fi
-if [ "$(printf '%s\n' "$images" | wc -l)" -ne 1 ]; then
-  echo "::error::the workflows use more than one Swift container image:"
-  printf '%s\n' "$images"
-  exit 1
-fi
-case "$images" in
-  *@sha256:*) ;;
-  *) echo "::error::the Swift container image is not pinned by digest: $images"; exit 1 ;;
-esac
-digest="${images##*@sha256:}"
+IMAGE = re.compile(r"""(?:\b(?:image|container):\s*|docker://)["']?((?:[\w.-]+/)*swift:[^\s"'#]+)""")
+PINNED = re.compile(r"^swift:[\w.-]+@sha256:([0-9a-f]{64})$")
+CACHE_PATH = re.compile(r"^\s*path:\s*~/\.cache/org\.swift\.swiftpm\s*(#.*)?$")
+STEP = re.compile(r"^(\s*)- ")
 
-keys="$(grep -nE 'swiftpm-[$][{][{]' .github/workflows/*.yml || true)"
-stale="$(printf '%s\n' "$keys" | grep -v "$digest" | grep . || true)"
-if [ -n "$stale" ]; then
-  echo "::error::a SwiftPM cache key or restore key doesn't name the image digest $digest:"
-  printf '%s\n' "$stale"
-  exit 1
-fi
-echo "ci image pin: $images; $(printf '%s\n' "$keys" | grep -c .) SwiftPM cache key lines name its digest"
+
+def uncommented(line):
+    """The line without a trailing comment (a `#` at the start or after whitespace)."""
+    return re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+
+
+def steps(lines):
+    """Each step's lines: from a `- ` item to the next item at the same indent or less."""
+    out, cur, indent = [], None, None
+    for line in lines:
+        m = STEP.match(line)
+        if m and (indent is None or len(m.group(1)) <= indent):
+            if cur:
+                out.append(cur)
+            cur, indent = [line], len(m.group(1))
+        elif cur is not None:
+            if line.strip() and not line.startswith(" " * (indent + 1)) and not line.startswith(" " * indent + "-"):
+                out.append(cur)
+                cur, indent = None, None
+            else:
+                cur.append(line)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def key_values(step):
+    """The step's `key:` value and its `restore-keys:` entries (a block or a single value)."""
+    values, i = [], 0
+    while i < len(step):
+        line = step[i]
+        m = re.match(r"^(\s*)(key|restore-keys):\s*(.*)$", line)
+        if m:
+            indent, name, rest = len(m.group(1)), m.group(2), uncommented(m.group(3)).strip()
+            if name == "restore-keys" and rest in ("|", ">", "|-", ">-", ""):
+                i += 1
+                while i < len(step) and (not step[i].strip() or len(step[i]) - len(step[i].lstrip()) > indent):
+                    if step[i].strip():
+                        values.append((name, uncommented(step[i]).strip()))
+                    i += 1
+                continue
+            values.append((name, rest))
+        i += 1
+    return values
+
+
+def check(workflows):
+    errors = []
+    files = sorted(list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml")))
+    images = {}
+    cache_steps = []
+    for f in files:
+        lines = f.read_text(encoding="utf-8").splitlines()
+        for n, line in enumerate(lines, 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for m in IMAGE.finditer(uncommented(line)):
+                images.setdefault(m.group(1), []).append(f"{f.name}:{n}")
+        for step in steps(lines):
+            if any(CACHE_PATH.match(l) for l in step):
+                cache_steps.append((f.name, step))
+    if not images:
+        return [f"no Swift container image found in {workflows}"]
+    if len(images) > 1:
+        errors.append("the workflows use more than one Swift container image: "
+                      + "; ".join(f"{i} ({', '.join(w)})" for i, w in sorted(images.items())))
+    digest = None
+    for image, where in sorted(images.items()):
+        m = PINNED.match(image)
+        if not m:
+            errors.append(f"not pinned by a full digest (swift:<tag>@sha256:<64 hex>): {image} ({', '.join(where)})")
+        else:
+            digest = m.group(1)
+    if errors:
+        return errors
+    if not cache_steps:
+        return ["no SwiftPM cache step found (a step with path: ~/.cache/org.swift.swiftpm)"]
+    for name, step in cache_steps:
+        values = key_values(step)
+        if not any(k == "key" for k, _ in values):
+            errors.append(f"{name}: a SwiftPM cache step has no key")
+        for k, v in values:
+            if f"-{digest}-" not in v:
+                errors.append(f"{name}: {k} doesn't hold the image digest as a key segment: {v}")
+    if errors:
+        return errors
+    print(f"ci image pin: {next(iter(images))}; {len(cache_steps)} SwiftPM cache steps key on its digest")
+    return []
+
+
+D = "3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12"
+GOOD = f"""jobs:
+  a:
+    container:
+      image: swift:6.2.4-noble@sha256:{D}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{{{ github.job }}}}-{D}-${{{{ hashFiles('Package.resolved') }}}}
+        restore-keys: |
+          swiftpm-${{{{ github.job }}}}-{D}-
+"""
+
+
+def self_test():
+    other = "0" * 64
+    cases = [
+        ("good", GOOD, None),
+        ("quoted unpinned", GOOD + '  b:\n    container:\n      image: "swift:6.2.4-noble"\n', "more than one"),
+        ("short container form", GOOD + "  b:\n    container: swift:6.2.4-noble\n", "more than one"),
+        ("docker uses", GOOD + "  b:\n    steps:\n    - uses: docker://swift:6.2.4-noble\n", "more than one"),
+        ("registry-qualified", GOOD.replace("image: swift:", "image: docker.io/library/swift:"), "not pinned"),
+        ("truncated digest", GOOD.replace(f"@sha256:{D}", f"@sha256:{D[:12]}"), "not pinned"),
+        ("no cache step", GOOD.split("    - name: SwiftPM")[0], "no SwiftPM cache step"),
+        ("digest only in a comment", GOOD.replace(f"key: swiftpm-${{{{ github.job }}}}-{D}-", f"key: swiftpm-${{{{ github.job }}}}-x- # {D}"), "key doesn't hold"),
+        ("stale restore key", GOOD.replace(f"          swiftpm-${{{{ github.job }}}}-{D}-", f"          swiftpm-${{{{ github.job }}}}-{other}-"), "restore-keys doesn't hold"),
+    ]
+    failed = 0
+    for name, text, want in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            (d / "w.yml").write_text(text, encoding="utf-8")
+            errors = check(d)
+        ok = (not errors) if want is None else any(want in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {errors}"))
+        failed += not ok
+    # A *.yaml file is read too.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = pathlib.Path(tmp)
+        (d / "a.yml").write_text(GOOD, encoding="utf-8")
+        (d / "b.yaml").write_text("jobs:\n  b:\n    container:\n      image: swift:6.2.4-noble\n", encoding="utf-8")
+        errors = check(d)
+    ok = any("more than one" in e for e in errors)
+    print(f"{'ok  ' if ok else 'FAIL'} self-test: a .yaml workflow")
+    failed += not ok
+    return failed
+
+
+args = sys.argv[1:]
+if args[:1] == ["--self-test"]:
+    sys.exit(1 if self_test() else 0)
+errors = check(pathlib.Path(args[0] if args else ".github/workflows"))
+for e in errors:
+    print(f"::error::{e}")
+sys.exit(1 if errors else 0)
+PY

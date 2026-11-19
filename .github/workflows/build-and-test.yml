@@ -60,8 +60,8 @@ jobs:
         scripts/lint-lessons.sh --self-test
         scripts/lint-lessons.sh
 
-    # `swift package clean` only: .build is never restored, and removing it would also remove the
-    # local clones SwiftPM made from the shared cache.
+    # `swift package clean` only: on a fresh runner there is no .build yet (the build is the next
+    # step), so `rm -rf .build` removed nothing.
     - name: Clean build artifacts
       run: swift package clean
     
@@ -70,12 +70,6 @@ jobs:
     
     - name: Build
       run: swift build
-
-    # Where SwiftPM put its shared cache, and what the cache step will save.
-    - name: SwiftPM shared cache contents
-      run: |
-        echo "HOME=$HOME"
-        du -sh ~/.cache/org.swift.swiftpm/* 2>/dev/null || echo "no SwiftPM shared cache under $HOME"
 
     # Handler bodies that must not compile (#586): a throw after the write, a wrong response type,
     # validate's context. Each snippet builds as a target of a generated package under .build/.
@@ -412,9 +406,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # One digest for every Swift container image, named by every SwiftPM cache key.
+    # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
+    # proves the check still finds what it looks for before the workflows are checked.
     - name: Swift image pinned by one digest
-      run: scripts/check-ci-image-pin.sh
+      run: |
+        scripts/check-ci-image-pin.sh --self-test
+        scripts/check-ci-image-pin.sh
 
     - name: Install ShellCheck 0.11.0
       run: |
