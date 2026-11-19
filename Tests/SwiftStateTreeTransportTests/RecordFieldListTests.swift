@@ -6,7 +6,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@_spi(Diagnostics) @testable import SwiftStateTreeTransport
+@testable import SwiftStateTreeTransport
 import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
@@ -87,7 +87,6 @@ struct RecordFieldListTests {
         await keeper.stepTickOnce()
         await adapter.onDisconnect(sessionID: session, clientID: client)
         await keeper.stepTickOnce()
-        _ = await adapter.waitForOutboundDrain()
         await keeper.waitForRecorderSubmissionsForTesting()
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("record-fields-\(UUID().uuidString)")

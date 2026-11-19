@@ -35,8 +35,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   - configuration: Server configuration.
     ///   - transport: Shared WebSocketTransport instance.
     /// - Throws: `LandRegistrationError` from `LandTypeRegistry.init`: the state's synced-state
-    ///   problems in its `sync` (#464, #179, #535). `TransportAdapterAdoptionError` when
-    ///   `TRANSPORT_ADAPTER_ADOPTION` names no adoption level.
+    ///   problems in its `sync` (#464, #179, #535).
     ///
     /// The router isn't the transport's delegate yet: call `attach()` before the transport
     /// receives a connection (`NIOLandHost.register` does).
@@ -56,20 +55,15 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     /// The assembly, shared by the public init and the tests that build a server without its
     /// host (the differential harness, #555): the manager, the registry, the router and the
     /// failure stop. `autoStartLoops: false` leaves each live land's tick and sync loops to the
-    /// caller (`LandKeeper.stepTickOnce`). The adoption level is the configuration's, or else
-    /// `environment`'s `TRANSPORT_ADAPTER_ADOPTION`.
-    ///
-    /// - Throws: `TransportAdapterAdoptionError.unknown` when that names no level.
+    /// caller (`LandKeeper.stepTickOnce`).
     package init(
         landType: String,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         configuration: NIOLandServerConfiguration,
         transport: WebSocketTransport,
-        autoStartLoops: Bool,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        autoStartLoops: Bool
     ) throws {
-        let adoption = try configuration.adoption ?? TransportAdapterAdoption.fromEnvironment(environment)
         self.landType = landType
         self.landFactory = landFactory
         self.transport = transport
@@ -94,7 +88,6 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             inTurnSync: configuration.inTurnSync,
             syncLagPolicy: configuration.syncLag,
             autoStartLoops: autoStartLoops,
-            adoption: adoption,
             replayLandSuffix: configuration.replayLandSuffix,
             logger: configuration.logger
         )

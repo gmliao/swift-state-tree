@@ -1,9 +1,9 @@
 // Tests/SwiftStateTreeTransportTests/DifferentialHarnessHooksTests.swift
 //
-// The hooks the differential harness (#555) needs, each on its own: the adoption level and its
-// environment key, stable client IDs per connection attempt, the router's pending-flip report and
-// its land-stop leave hold, a cancellable action-response waiter, an explicit "no flip timeout",
-// and the record decoder entry. Orders are forced with hold points, never timing.
+// The hooks the differential harness (#555) needs, each on its own: stable client IDs per
+// connection attempt, the router's pending-flip report and its land-stop leave hold, a
+// cancellable action-response waiter, an explicit "no flip timeout", and the record decoder
+// entry. Orders are forced with hold points, never timing.
 
 import Foundation
 import Testing
@@ -105,25 +105,6 @@ private func bounded(_ body: @escaping @Sendable () async -> Void) async -> Bool
 
 @Suite("Differential harness hooks (#555)")
 struct DifferentialHarnessHooksTests {
-    // MARK: Adoption level
-
-    @Test("TRANSPORT_ADAPTER_ADOPTION: unset and legacy are .legacy, an unknown value is refused with the known levels")
-    func adoptionFromEnvironment() throws {
-        #expect(try TransportAdapterAdoption.fromEnvironment([:]) == .legacy)
-        #expect(try TransportAdapterAdoption.fromEnvironment(["TRANSPORT_ADAPTER_ADOPTION": "legacy"]) == .legacy)
-        #expect(throws: TransportAdapterAdoptionError.unknown("membershp")) {
-            try TransportAdapterAdoption.fromEnvironment(["TRANSPORT_ADAPTER_ADOPTION": "membershp"])
-        }
-        let message = TransportAdapterAdoptionError.unknown("membershp").description
-        #expect(message.contains("TRANSPORT_ADAPTER_ADOPTION=membershp") && message.contains("known: legacy"), "\(message)")
-    }
-
-    @Test("A land manager's adoption level reaches each land's adapter")
-    func adoptionReachesTheAdapter() async throws {
-        let h = try await HooksHarness.make()
-        #expect(h.adapter.adoption == .legacy)
-    }
-
     // MARK: Client IDs
 
     @Test("The client-ID supplier names each connection attempt, a reused SessionID included")
@@ -184,7 +165,8 @@ struct DifferentialHarnessHooksTests {
         try await h.join(b, player: "pb")
         let syncedA = await connectionA.waitForFirstSync(), syncedB = await connectionB.waitForFirstSync()
         #expect(syncedA && syncedB)
-        #expect(await pollUntil { await h.keeper.currentState().players.count == 2 })
+        // Each first sync follows its OnJoin.
+        #expect(await h.keeper.currentState().players.sorted() == ["pa", "pb"])
 
         let gateA = TestGate(), gateB = TestGate()
         await h.router.installHolds(

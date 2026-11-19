@@ -223,10 +223,6 @@ public struct NIOLandServerConfiguration: Sendable {
     /// it to the host's `shutdownTimeout`.
     package var landStopTimeout: Duration = .seconds(8)
 
-    /// The adapter's adoption level (#546), for tests. nil (the default): `NIOLandServer.init`
-    /// reads `TRANSPORT_ADAPTER_ADOPTION`, and refuses an unknown value there.
-    package var adoption: TransportAdapterAdoption?
-
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,

@@ -56,9 +56,6 @@ enum TransportEnvKeys {
     /// A file for the land lifecycle log (`LandLifecycleLog`): one JSON line per land instance
     /// created, removed by ID or destroyed. Unset (the default): no log.
     static let landLifecycleLogPath = "LAND_LIFECYCLE_LOG_PATH"
-    /// The adapter's adoption level (`TransportAdapterAdoption`, #546). Unset: `legacy`. An
-    /// unknown value stops the server at startup.
-    static let adapterAdoption = "TRANSPORT_ADAPTER_ADOPTION"
 
     enum Profiling {
         static let jsonlPath = "TRANSPORT_PROFILE_JSONL_PATH"

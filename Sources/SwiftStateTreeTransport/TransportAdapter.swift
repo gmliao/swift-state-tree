@@ -81,9 +81,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// single source of truth for the switch: the keeper follows it through
     /// `runsSyncPhaseInTurn(of:)`.
     public nonisolated let inTurnSyncEnabled: Bool
-    /// The adoption level this adapter runs at (#546), decided by its land manager. Nothing reads
-    /// it at `.legacy`; each turn-core slice reads it to choose its path.
-    package nonisolated let adoption: TransportAdapterAdoption
 
     /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
     public nonisolated var syncConfigForRecord: ReevaluationSyncConfig {
@@ -937,12 +934,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
         inTurnSync: Bool = true,
-        adoption: TransportAdapterAdoption = .legacy,
         logger: Logger? = nil,
         joinsThroughRouter: Bool
     ) {
         self.keeper = keeper
-        self.adoption = adoption
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
         self.inTurnSyncEnabled = inTurnSyncEnabled
