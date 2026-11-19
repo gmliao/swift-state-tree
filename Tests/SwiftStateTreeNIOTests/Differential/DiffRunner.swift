@@ -135,6 +135,9 @@ final class DiffRun: @unchecked Sendable {
     private(set) var pendingAnswers = 0
     private(set) var live: DiffCapture?
     private(set) var stopped = false
+    private var stopTask: Task<StopLandResult, Never>?
+    /// Attempts whose client disconnected: no longer live, though their connection isn't closed.
+    private(set) var disconnected: Set<String> = []
 
     var transport: WebSocketTransport { server.transport }
     var router: LandRouter<DiffState> { server.landRouter }
@@ -289,6 +292,7 @@ final class DiffRun: @unchecked Sendable {
 
         case .disconnect(let name):
             let attempt = try attempt(name)
+            disconnected.insert(name)
             try await bounded("\(name)'s disconnect") { [transport] in
                 await transport.handleDisconnection(sessionID: attempt.session)
             }
@@ -302,6 +306,32 @@ final class DiffRun: @unchecked Sendable {
             // The leave is an input: applied before the next step, so the next step's inputs
             // never share its pass.
             try await applyInputs()
+
+        case .startDisconnect(let name):
+            let attempt = try attempt(name)
+            disconnected.insert(name)
+            try await bounded("\(name)'s disconnect") { [transport] in
+                await transport.handleDisconnection(sessionID: attempt.session)
+            }
+
+        case .settleDisconnects:
+            try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
+            try await applyInputs()
+
+        case .startStop:
+            guard stopTask == nil, !stopped else { throw DiffRunFailure("the land was stopped twice") }
+            stopped = true
+            let server = self.server
+            stopTask = Task { await server.stopLand(landID: diffLandID) }
+
+        case .awaitStop:
+            guard let stopTask else { throw DiffRunFailure("no stop was started") }
+            let result = try await bounded("the stop") { await stopTask.value }
+            try await checkStop(result)
+
+        case .spawn(let label, let body):
+            spawned.append(Task { [self] in await body(self) })
+            _ = label
 
         case .arm(let hold, let arrival):
             holds.arm(hold, arrival: arrival)
@@ -349,6 +379,11 @@ final class DiffRun: @unchecked Sendable {
         case .openGate(let key): return "open gate \(key)"
         case .tick: return "tick"
         case .disconnect(let name): return "disconnect \(name)"
+        case .startDisconnect(let name): return "start disconnect \(name)"
+        case .settleDisconnects: return "settle disconnects"
+        case .startStop: return "start stop"
+        case .awaitStop: return "await stop"
+        case .spawn(let label, _): return "spawn \(label)"
         case .arm(let hold, _): return "arm \(hold)"
         case .observe(let hold): return "observe \(hold)"
         case .reach(let hold, _): return "reach \(hold)"
@@ -492,7 +527,10 @@ final class DiffRun: @unchecked Sendable {
     private func stop() async throws {
         guard !stopped else { throw DiffRunFailure("the land was stopped twice") }
         stopped = true
-        let result = await server.stopLand(landID: diffLandID)
+        try await checkStop(await server.stopLand(landID: diffLandID))
+    }
+
+    private func checkStop(_ result: StopLandResult) async throws {
         guard result == .stopped(timedOut: false) else { throw DiffRunFailure("the stop ended \(result)") }
         let atBound = await transport.finalFrameClosesAtBound
         guard atBound == 0 else { throw DiffRunFailure("\(atBound) final-frame close(s) ended at their bound") }
@@ -547,6 +585,7 @@ final class DiffRun: @unchecked Sendable {
                 await transport.handleDisconnection(sessionID: attempt.session)
             }
         }
+        if let stopTask { _ = try? await bounded("the started stop at cleanup") { await stopTask.value } }
         for task in Array(ingress.values) + spawned {
             _ = try? await bounded("a task at cleanup") { await task.value }
         }

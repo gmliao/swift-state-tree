@@ -16,7 +16,7 @@ import SwiftStateTreeTestSupport
 func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> DiffRunResult {
     do {
         let result = try await DiffRun.make(scenario, cell: cell).execute()
-        try DiffOracle.outcomes(scenario, result, encoding: cell.encoding)
+        try DiffOracle.outcomes(scenario, result, cell: cell)
         try DiffOracle.lifecycle(scenario, result)
         guard result.record.complete else { throw DiffRunFailure("the record is incomplete") }
         return result

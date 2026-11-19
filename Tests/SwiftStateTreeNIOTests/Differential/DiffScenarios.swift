@@ -17,6 +17,34 @@ import Foundation
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
 
+/// The witness client of a single-player race row: B joins and settles before the race and
+/// stays, so the live checkpoint has a client, and B's frames show what A's race leaked.
+let witnessJoins: [DiffStep] = [.connect("B", session: "s-b"), .join("B", player: "pb")]
+
+/// A disconnect of A while its join is held at a router hold, for the router rows: the router
+/// is free at the hold and nothing of A's join is queued, so the forward completes under it.
+func routerRow(_ name: String, hold: LandRouterHoldPoint, cells: DiffCellRule, joinReply: DiffOutcome,
+               joinReplyIn: @escaping @Sendable (DiffCell) -> DiffOutcome? = { _ in nil }, admitted: Bool) -> DiffScenario {
+    DiffScenario(
+        name: name,
+        cells: cells,
+        steps: witnessJoins + [
+            .connect("A", session: "s-a"),
+            .arm(.router(hold)),
+            .startJoin("A", player: "pa"),
+            .reach(.router(hold)),
+            .disconnect("A"),
+            .release(.router(hold)),
+            .awaitJoin("A"),
+            .liveCheckpoint,
+            .disconnect("B"),
+        ],
+        outcomes: ["join-B": .reply, "join-A": joinReply],
+        outcomesByCell: { cell in joinReplyIn(cell).map { ["join-A": $0] } ?? [:] },
+        lifecycle: ["pb": [.join, .leave]].merging(admitted ? ["pa": [.join, .leave]] : [:]) { a, _ in a }
+    )
+}
+
 let diffScenarios: [DiffScenario] = [
     DiffScenario(
         name: "join-act-leave",
@@ -87,6 +115,66 @@ let diffScenarios: [DiffScenario] = [
         ],
         outcomes: ["join-R": .error, "join-A": .reply, "join-B": .reply, "join-C": .reply, "join-D": .error, "bump-a": .reply],
         lifecycle: ["p1": [.join, .leave], "p2": [.join, .leave], "p3": [.join, .leave]]
+    ),
+    // The router returns before admission: no admission, no reply.
+    routerRow("disconnect-before-admit", hold: .beforeAdmit, cells: .all, joinReply: .none, admitted: false),
+    // After the router's admission step: admitted, then left. In-turn on a tickless land, the
+    // admission has flipped the join and sent its reply before the router reaches the hold; on
+    // a tick land the flip waits for the tick that applies OnJoin.
+    routerRow("disconnect-after-admit", hold: .afterAdmit, cells: .all, joinReply: .none,
+              joinReplyIn: { $0.sync == .inTurn && $0.land == .tickless ? .reply : nil }, admitted: true),
+    // Only on the path without the in-turn flip: the reply goes to a removed session.
+    routerRow("disconnect-sending-join-response", hold: .sendingJoinResponse, cells: .legacyOnly, joinReply: .none, admitted: true),
+    // The reply was sent; the initial sync is for a player the leave removed.
+    routerRow("disconnect-sending-initial-sync", hold: .sendingInitialSync, cells: .legacyOnly, joinReply: .reply, admitted: true),
+    // The pre-admission case: the disconnect ends the attempt before it is queued, so the
+    // queued join is refused as stale; neither OnJoin nor OnLeave runs.
+    DiffScenario(
+        name: "disconnect-before-keeper-admission",
+        cells: .all,
+        steps: witnessJoins + [
+            .connect("A", session: "s-a"),
+            .arm(.adapter(.admitJoinEntry)),
+            .startJoin("A", player: "pa"),
+            .reach(.adapter(.admitJoinEntry)),
+            .disconnect("A"),
+            .release(.adapter(.admitJoinEntry)),
+            .awaitJoin("A"),
+            .check("the attempt was refused as stale") { run in
+                let refused = await run.adapter.staleJoinAttemptsRefused
+                guard refused == 1 else { throw DiffRunFailure("staleJoinAttemptsRefused is \(refused)") }
+            },
+            .liveCheckpoint,
+            .disconnect("B"),
+        ],
+        outcomes: ["join-B": .reply, "join-A": .none],
+        lifecycle: ["pb": [.join, .leave]]
+    ),
+    // The disconnect queues behind the join held in the keeper: admitted, then left.
+    DiffScenario(
+        name: "disconnect-during-keeper-join",
+        cells: .all,
+        steps: witnessJoins + [
+            .connect("A", session: "s-a"),
+            .arm(.keeper(.join)),
+            .startJoin("A", player: "pa"),
+            .reach(.keeper(.join)),
+            .observe(.adapter(.membershipQueued)),
+            .startDisconnect("A"),
+            .reach(.adapter(.membershipQueued)),
+            .check("the leave waits behind the join") { run in
+                let players = await run.keeper.currentState().players
+                guard !players.contains("pa") else { throw DiffRunFailure("A is in the state while its join holds: \(players)") }
+            },
+            .release(.keeper(.join)),
+            .awaitJoin("A"),
+            .settleDisconnects,
+            .liveCheckpoint,
+            .disconnect("B"),
+        ],
+        // The transport removed A's queue when the disconnect started, so no reply reaches A.
+        outcomes: ["join-B": .reply, "join-A": .none],
+        lifecycle: ["pb": [.join, .leave], "pa": [.join, .leave]]
     ),
 ]
 #endif

@@ -113,6 +113,17 @@ enum DiffStep: Sendable {
     /// The transport's own disconnect of `name`, awaited, then its forward to the adapter and
     /// the leave applied (a tick and the sync cycle on a tick land).
     case disconnect(String)
+    /// The transport's disconnect of `name`, awaited, without waiting for its forward: a race
+    /// row's disconnect that queues behind a held operation. `settleDisconnects` ends it.
+    case startDisconnect(String)
+    /// Waits for every disconnect forward, then applies the leaves (as `disconnect` does).
+    case settleDisconnects
+    /// Starts the land's stop in a task of its own; `awaitStop` waits for it.
+    case startStop
+    /// Waits for the started stop; a stop that times out fails the run.
+    case awaitStop
+    /// Runs `body` in a task of its own, named in failures; the barrier awaits it.
+    case spawn(String, @Sendable (DiffRun) async -> Void)
     /// Holds the code at `hold`, on its `arrival`-th arrival (nil: every arrival).
     case arm(DiffHold, arrival: Int? = nil)
     /// Notes arrivals at `hold` without blocking them, from now on.
@@ -146,8 +157,27 @@ struct DiffScenario: Sendable {
     let steps: [DiffStep]
     /// Every request the scenario sends, with its expected outcome.
     let outcomes: [String: DiffOutcome]
+    /// Outcomes that differ by cell, replacing `outcomes`' entries there.
+    var outcomesByCell: @Sendable (DiffCell) -> [String: DiffOutcome] = { _ in [:] }
     /// The lifecycle the record must hold: each player's joins and leaves, in order.
     let lifecycle: [String: [DiffLifecycle]]
+
+    init(
+        name: String, cells: DiffCellRule, steps: [DiffStep], outcomes: [String: DiffOutcome],
+        outcomesByCell: @escaping @Sendable (DiffCell) -> [String: DiffOutcome] = { _ in [:] },
+        lifecycle: [String: [DiffLifecycle]]
+    ) {
+        self.name = name
+        self.cells = cells
+        self.steps = steps
+        self.outcomes = outcomes
+        self.outcomesByCell = outcomesByCell
+        self.lifecycle = lifecycle
+    }
+
+    func outcomes(in cell: DiffCell) -> [String: DiffOutcome] {
+        outcomes.merging(outcomesByCell(cell)) { _, override in override }
+    }
 }
 
 enum DiffLifecycle: String, Sendable, Codable {

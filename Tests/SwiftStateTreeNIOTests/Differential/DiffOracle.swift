@@ -63,7 +63,8 @@ enum DiffOracle {
         let state = await run.keeper.currentState()
         var compared = 0
         for name in capture.connections.keys.sorted() {
-            guard let connection = capture.connections[name], connection.close == nil else { continue }
+            guard let connection = capture.connections[name], connection.close == nil,
+                  !run.disconnected.contains(name) else { continue }
             let reader = DiffFrameReader(encoding: run.cell.encoding)
             var player: String?
             var view = SnapshotClientView()
@@ -101,7 +102,9 @@ enum DiffOracle {
     }
 
     /// The outcomes of the scenario's requests, from the terminal capture.
-    static func outcomes(_ scenario: DiffScenario, _ result: DiffRunResult, encoding: DiffEncoding) throws {
+    static func outcomes(_ scenario: DiffScenario, _ result: DiffRunResult, cell: DiffCell) throws {
+        let expected = scenario.outcomes(in: cell)
+        let encoding = cell.encoding
         var replies: [String: Int] = [:]
         var errors: [String: Int] = [:]
         for name in result.terminal.connections.keys.sorted() {
@@ -127,10 +130,10 @@ enum DiffOracle {
                 }
             }
         }
-        for id in Set(replies.keys).union(errors.keys) where scenario.outcomes[id] == nil {
+        for id in Set(replies.keys).union(errors.keys) where expected[id] == nil {
             throw DiffRunFailure("request \(id) was answered, and the scenario doesn't list it")
         }
-        for (id, outcome) in scenario.outcomes.sorted(by: { $0.key < $1.key }) {
+        for (id, outcome) in expected.sorted(by: { $0.key < $1.key }) {
             let got = (replies[id] ?? 0, errors[id] ?? 0)
             let want: (Int, Int)
             switch outcome {
