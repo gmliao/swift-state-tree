@@ -37,8 +37,10 @@
 #      name and that `if:`): the legs differ in one variable, read at run time. A new axis, or the
 #      axis in a compiler flag or another env var, fails until it is examined; so does the
 #      `strategy` context (`strategy.job-index` tells the legs apart without naming the axis).
-#      The scan is per line, outside comment lines: IN_TURN_SYNC in a step's display text or an
-#      inline comment fails too (a false alarm, fixed by rewording).
+#      The scan is per line, outside comment lines, so an expression folded over several lines
+#      (`if: >-`) is read line by line, and its matrix line fails like any other. IN_TURN_SYNC, or
+#      the word matrix or strategy, in a step's display text or an inline comment fails too (a
+#      false alarm, fixed by rewording).
 #   S4 a one-leg step runs only `scripts/<name>.sh [--self-test]`, and neither those scripts nor any
 #      script they name (`scripts/*.sh` or `.py`, followed) mentions IN_TURN_SYNC, inTurnSync or
 #      InTurnSync. Textual: a script that builds the flag's name from parts isn't seen.
@@ -320,9 +322,11 @@ ONE_LEG_IF = "if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}"
 # What the one-leg steps' scripts must not name: the flag, its key constant or its reader.
 FLAG_NAMES = re.compile(r"IN_TURN_SYNC|\binTurnSync\b|\bInTurnSync\b")
 SCRIPT_REF = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.(?:sh|py))\b")
-MATRIX_USE = re.compile(r"\bmatrix\s*(?:\.\s*\w+|\[)")
-# The strategy context: `strategy.job-index` differs between the legs as the axis does.
-STRATEGY_USE = re.compile(r"\bstrategy\s*(?:\.|\[)")
+# The matrix context in any form (`matrix.x`, `matrix['x']`, `toJSON(matrix)`), not the YAML key.
+MATRIX_USE = re.compile(r"\bmatrix\b(?!\s*:)")
+# The strategy context: `strategy.job-index` (or `toJSON(strategy)`) differs between the legs as the
+# axis does. The YAML key `strategy:` isn't a use.
+STRATEGY_USE = re.compile(r"\bstrategy\b(?!\s*:)")
 # The leg's variable anywhere but its env line: `env.IN_TURN_SYNC` in an `if:`, `$IN_TURN_SYNC` in a
 # run line, or a second env var built from it.
 LEG_ENV_USE = re.compile(r"\bIN_TURN_SYNC\b")
@@ -643,6 +647,12 @@ def leg_self_test():
         ("strategy.job-index in an if: fails", build(lint_if="      if: ${{ strategy.job-index == 0 || inputs.full_matrix }}\n"), scripts, "the strategy context"),
         ("strategy.job-index in a run line fails",
          build(extra="    - name: Index\n      run: scripts/x.sh ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
+        ("toJSON(matrix) fails", build(extra="    - name: Dump\n      run: echo '${{ toJSON(matrix) }}'\n"), scripts, "outside IN_TURN_SYNC"),
+        ("toJSON(strategy) fails", build(extra="    - name: Dump\n      run: echo '${{ toJSON(strategy) }}'\n"), scripts, "the strategy context"),
+        ("a one-leg if folded over two lines fails",
+         build(lint_if="      if: >-\n        ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}\n"), scripts, "outside IN_TURN_SYNC"),
+        ("a strategy use folded into a run block fails",
+         build(extra="    - name: Index\n      run: |\n        scripts/x.sh \\\n          ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
         ("a second matrix use in the job's name fails",
          build().replace("    name: build (in-turn sync ${{ matrix.in_turn_sync }})\n",
                          "    name: build (in-turn sync ${{ matrix.in_turn_sync }}) ${{ matrix.rows }}\n"), scripts, "outside IN_TURN_SYNC"),
