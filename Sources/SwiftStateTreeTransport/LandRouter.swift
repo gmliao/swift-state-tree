@@ -387,6 +387,30 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         return bound
     }
 
+    // MARK: - Pending flip waits (tests, #555)
+
+    /// `awaitFlip` tasks spawned and not yet ended.
+    private var pendingFlipWaits = 0
+    private var noPendingFlipWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func flipWaitEnded() {
+        pendingFlipWaits -= 1
+        guard pendingFlipWaits == 0 else { return }
+        let waiters = noPendingFlipWaiters
+        noPendingFlipWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Tests: the flip waits in progress.
+    package func pendingFlipWaitCountForTesting() -> Int { pendingFlipWaits }
+
+    /// Tests: returns once no in-turn join's flip wait (`awaitFlip`) is in progress, so a test
+    /// knows every admitted join has flipped or failed.
+    package func waitForNoPendingFlipForTesting() async {
+        if pendingFlipWaits == 0 { return }
+        await withCheckedContinuation { noPendingFlipWaiters.append($0) }
+    }
+
     // MARK: - Shutdown (#351)
 
     /// Disconnects removed here whose leave is still being forwarded to their land.
@@ -474,11 +498,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         adapter: TransportAdapter<State>?,
         close: @Sendable () -> SessionClose,
         transport: WebSocketTransport,
+        beforeLeave: @Sendable () async -> Void = {},
         leaveFinished: @Sendable () -> Void = {},
         afterLeave: @Sendable () async -> Void = {},
         closed: @Sendable () -> Void = {}
     ) async {
         if let adapter {
+            await beforeLeave()
             await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
             leaveFinished()
         }
@@ -527,6 +553,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             leaves.append((session.sessionID, session.clientID, adapter))
         }
         let transport = self.transport
+        let holds = self.holds
         await withTaskGroup(of: Void.self) { group in
             for leave in leaves {
                 group.addTask {
@@ -534,6 +561,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                         sessionID: leave.sessionID, clientID: leave.clientID ?? ClientID(""),
                         adapter: leave.clientID == nil ? nil : leave.adapter,
                         close: close, transport: transport,
+                        beforeLeave: { await holds.at(.stopLeave(leave.sessionID), isolation: nil) },
                         afterLeave: { await self.disconnectForwardEnded() }
                     )
                 }
@@ -1056,6 +1084,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             let admitted = AdmittedJoin(landID: landID, requestID: requestID, adapter: adapter)
             setPhase(.joining(JoinAttempt(number: attempt, admitted: admitted, requestID: requestID)), for: sessionID)
             let playerID = joinResult.playerID
+            // Counted before the task exists, so a test that waits for no pending flip can't
+            // run between the spawn and the task's start (#555).
+            pendingFlipWaits += 1
             Task { await self.awaitFlip(attempt: attempt, admitted, sessionID: sessionID, clientID: clientID, playerID: playerID) }
 
         case .success(let joinResult?):
@@ -1307,6 +1338,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// disconnected meanwhile is left alone, since its own disconnect already cleaned the
     /// adapter up.
     private func awaitFlip(attempt: UInt64, _ pending: AdmittedJoin, sessionID: SessionID, clientID: ClientID, playerID: PlayerID) async {
+        // On every exit, the error sends below included.
+        defer { flipWaitEnded() }
         let failure: JoinFlipError
         do {
             try await pending.adapter.awaitJoined(sessionID: sessionID)
@@ -1735,4 +1768,7 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// A land stop's sessions step after its snapshot (the epoch marked closing, its sessions
     /// removed), before their leaves (#102).
     case stopSnapshot
+    /// One session's leave in a land stop, before its adapter's `onDisconnect`: the leaves run
+    /// concurrently, so a test orders them here, before they enter the membership queue (#555).
+    case stopLeave(SessionID)
 }

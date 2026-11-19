@@ -205,6 +205,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// through the `Diagnostics` init, for a benchmark that steps its lands itself. A
     /// re-evaluation keeper always starts them.
     private let autoStartLoops: Bool
+    /// The adoption level each land's adapter runs at (#546).
+    package nonisolated let adoption: TransportAdapterAdoption
     /// A replay land type is a live one plus this suffix: a replay definition named so (the
     /// recorded definition's id plus the suffix) is checked against the recorded definition's
     /// fingerprint (`NIOLandServerConfiguration.replayLandSuffix`).
@@ -319,6 +321,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         inTurnSync: Bool = true,
         syncLagPolicy: SyncLagPolicy?,
         autoStartLoops: Bool = true,
+        adoption: TransportAdapterAdoption = .legacy,
         replayLandSuffix: String = "-replay",
         logger: Logger? = nil
     ) {
@@ -335,6 +338,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.inTurnSync = inTurnSync
         self.syncLagPolicy = syncLagPolicy
         self.autoStartLoops = autoStartLoops
+        self.adoption = adoption
         self.replayLandSuffix = replayLandSuffix
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
@@ -697,6 +701,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
             inTurnSync: inTurnSync && !isReevaluationKeeper,
+            adoption: adoption,
             logger: logger,
             // With a shared transport the router owns its delegate and every join.
             joinsThroughRouter: sharedTransport != nil

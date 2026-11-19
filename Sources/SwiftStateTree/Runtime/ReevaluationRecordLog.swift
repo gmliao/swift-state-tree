@@ -201,13 +201,21 @@ struct ReevaluationFrameAssembler {
 // MARK: - Reading
 
 /// What a 3.0 file holds, rebuilt into the 2.x model.
-struct ReevaluationRecordLogContents: Sendable {
-    var metadata: ReevaluationRecordMetadata
-    var frames: [ReevaluationTickFrame]
-    var completeness: ReevaluationRecordCompleteness
+package struct ReevaluationRecordLogContents: Sendable {
+    package var metadata: ReevaluationRecordMetadata
+    package var frames: [ReevaluationTickFrame]
+    package var completeness: ReevaluationRecordCompleteness
     /// Whether a file older than 3.3 holds a string or a map key that is not NFC (#446). Files
     /// from 3.3 on are not scanned.
-    var holdsNonNFCText = false
+    package var holdsNonNFCText = false
+}
+
+extension ReevaluationRecordLog {
+    /// Tests: a record file's decoded contents, so a test compares the full 3.x structure (the
+    /// differential harness, #555) rather than the 2.6 JSON view.
+    package static func decodeForTesting(_ bytes: [UInt8]) throws -> ReevaluationRecordLogContents {
+        try ReevaluationRecordLogReader.read(bytes)
+    }
 }
 
 /// Errors reading a 3.0 file. A cut file is not an error (it reads as incomplete).

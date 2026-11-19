@@ -81,6 +81,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// single source of truth for the switch: the keeper follows it through
     /// `runsSyncPhaseInTurn(of:)`.
     public nonisolated let inTurnSyncEnabled: Bool
+    /// The adoption level this adapter runs at (#546), decided by its land manager. Nothing reads
+    /// it at `.legacy`; each turn-core slice reads it to choose its path.
+    package nonisolated let adoption: TransportAdapterAdoption
 
     /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
     public nonisolated var syncConfigForRecord: ReevaluationSyncConfig {
@@ -468,7 +471,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var actionResponseTickets = GenerationTable<SessionID>()
     /// Tests only: pending answers finished (sent or dropped), and the waiters for a count.
     private var actionResponsesFinished = 0
-    private var actionResponsesFinishedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var actionResponsesFinishedWaiters: [Int: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextActionResponsesFinishedWaiter = 0
 
     /// A session admitted by a join (#69) whose initial sync hasn't started yet.
     struct JoiningSession: Sendable {
@@ -628,7 +632,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
 
     /// Tests only: replaces the flip wait (what is left of the join budget, #104) for joins
-    /// admitted from now on.
+    /// admitted from now on. `.zero`: no flip timeout.
     private var joinFlipTimeoutForTesting: Duration?
     /// Tests only: replaces `JoinFlipConfig.budget`.
     private var joinFlipBudgetForTesting: Int?
@@ -933,10 +937,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
         inTurnSync: Bool = true,
+        adoption: TransportAdapterAdoption = .legacy,
         logger: Logger? = nil,
         joinsThroughRouter: Bool
     ) {
         self.keeper = keeper
+        self.adoption = adoption
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
         self.inTurnSyncEnabled = inTurnSyncEnabled
@@ -1684,12 +1690,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The flip waits for what is left of the join's budget (`JOIN_TIMEOUT_MS`, #104), from the
     /// router's deadline, or, for a join admitted without one, from now; the deprecated
     /// `JOIN_FLIP_TIMEOUT_MS` still caps it. No budget and no cap: no timeout.
+    /// A flip waiter's timeout: the test override, else what is left of the join budget; nil for
+    /// none. An explicit `.zero` override is "no timeout" (#555), as the router's join budget
+    /// override is; a `.zero` left of an expired deadline still times out at once.
+    static func joinFlipTimeout(override: Duration?, deadline: ContinuousClock.Instant?) -> Duration? {
+        if override == .zero { return nil }
+        return override ?? JoinTimeoutConfig.flipWait(deadline: deadline)
+    }
+
     private func startJoinWaiter(sessionID: SessionID, ticket: Ticket<SessionID>, joinDeadline: ContinuousClock.Instant?) {
         joinWaiters[sessionID]?.resolve(.failure(.superseded))
         let waiter = JoinWaiter(ticket: ticket)
         joinWaiters[sessionID] = waiter
         let deadline = joinDeadline ?? JoinTimeoutConfig.budget.map { ContinuousClock.now + $0 }
-        guard let timeout = joinFlipTimeoutForTesting ?? JoinTimeoutConfig.flipWait(deadline: deadline) else { return }
+        guard let timeout = Self.joinFlipTimeout(override: joinFlipTimeoutForTesting, deadline: deadline) else { return }
         waiter.timeout = Task { [weak self] in
             guard (try? await safeTaskSleep(for: timeout)) != nil, let adapter = self else { return }
             try? await adapter.enqueueMembership {
@@ -5674,17 +5688,36 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func noteActionResponseFinished() {
         actionResponsesFinished += 1
-        let ready = actionResponsesFinishedWaiters.filter { $0.count <= actionResponsesFinished }
-        actionResponsesFinishedWaiters.removeAll { $0.count <= actionResponsesFinished }
-        ready.forEach { $0.continuation.resume() }
+        let ready = actionResponsesFinishedWaiters.filter { $0.value.count <= actionResponsesFinished }
+        for (id, waiter) in ready {
+            actionResponsesFinishedWaiters.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
     }
 
-    /// Tests only: returns once `count` pending answers have finished (sent or dropped).
+    /// Tests only: returns once `count` pending answers have finished (sent or dropped), or when
+    /// the waiting task is cancelled, so a count that is never reached doesn't leave the waiter
+    /// suspended past its test (#555). Each waiter is removed under the adapter's isolation and
+    /// resumed exactly once.
     func waitForActionResponsesFinishedForTesting(_ count: Int) async {
         guard actionResponsesFinished < count else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            actionResponsesFinishedWaiters.append((count, continuation))
+        let id = nextActionResponsesFinishedWaiter
+        nextActionResponsesFinishedWaiter += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                actionResponsesFinishedWaiters[id] = (count, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelActionResponsesFinishedWaiter(id) }
         }
+    }
+
+    private func cancelActionResponsesFinishedWaiter(_ id: Int) {
+        actionResponsesFinishedWaiters.removeValue(forKey: id)?.continuation.resume()
     }
 
     /// Tests only: the action response tasks still tracked, over all sessions.
