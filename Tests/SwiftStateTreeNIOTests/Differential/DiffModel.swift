@@ -108,6 +108,9 @@ enum DiffStep: Sendable {
     case held(String, requestID: String, key: Int)
     /// Opens resolver gate `key`.
     case openGate(Int)
+    /// Waits until every action job has left the keeper's job table (its result delivered as an
+    /// input, or its release), then applies the inputs.
+    case settleJobs
     /// One tick and the sync cycle after it (a tick land only; nothing on a tickless one).
     case tick
     /// The transport's own disconnect of `name`, awaited, then its forward to the adapter and

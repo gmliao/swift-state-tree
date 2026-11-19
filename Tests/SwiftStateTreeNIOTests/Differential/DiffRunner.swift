@@ -282,10 +282,19 @@ final class DiffRun: @unchecked Sendable {
             try send(name, try action(requestID: requestID, DiffHeldAction(key: key)))
             try await awaitIngress(name)
             pendingAnswers += 1
-            try await bounded("resolver \(key)'s arrival") { await DiffGates.gate(key).waitForArrivals(1) }
+            // The gate's own bound (`testHangBound`) ends this wait with false.
+            let arrived = await DiffGates.gate(key).waitForArrivals(1)
+            if !arrived {
+                let frames = await (try attempt(name)).connection.frames.map { String(decoding: $0.prefix(200), as: UTF8.self) }
+                throw DiffRunFailure("resolver \(key) never ran; \(name) received \(frames)")
+            }
 
         case .openGate(let key):
             DiffGates.gate(key).open()
+
+        case .settleJobs:
+            try await bounded("the action jobs") { [keeper] in await keeper.waitForActionJobsForTesting() }
+            try await applyInputs()
 
         case .tick:
             if cell.land == .tick { await stepTick() }
@@ -377,6 +386,7 @@ final class DiffRun: @unchecked Sendable {
         case .bump(let name, let requestID, _): return "bump \(name) \(requestID)"
         case .held(let name, let requestID, _): return "held action \(name) \(requestID)"
         case .openGate(let key): return "open gate \(key)"
+        case .settleJobs: return "settle jobs"
         case .tick: return "tick"
         case .disconnect(let name): return "disconnect \(name)"
         case .startDisconnect(let name): return "start disconnect \(name)"
