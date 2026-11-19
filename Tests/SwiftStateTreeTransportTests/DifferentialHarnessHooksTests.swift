@@ -379,6 +379,10 @@ struct DifferentialHarnessHooksTests {
         // Admitted, and neither the adapter nor the transport's player table has it registered.
         #expect(await h.adapter.admittedNotRegisteredForTesting(session))
         #expect(await h.transport.playerSessionsForTesting(PlayerID("p1")).isEmpty)
+        // The transport's table has the session while the adapter's bit is still unset: the
+        // read is false, so it doesn't rest on the bit alone.
+        _ = await h.transport.registerSession(session, for: PlayerID("p1"))
+        #expect(await !h.adapter.admittedNotRegisteredForTesting(session), "the transport's table has it")
         gate.open()
         try await join.value
         await h.router.waitForNoPendingFlipForTesting()
