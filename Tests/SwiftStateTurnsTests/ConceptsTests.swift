@@ -4,6 +4,7 @@
 // connection's withdraw token, and an idle timer. Compiled and run here; the rot check in
 // WorkedExampleTests.swift covers its blocks.
 
+import SwiftStateTree
 import SwiftStateTurns
 import Testing
 
@@ -163,5 +164,63 @@ struct ConceptsTests {
             await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the timer has run
         }
         #expect(await room.query(.seatCount) == 0)
+    }
+}
+
+/// The guide's plain-data example ("Your own types"). The guide's block holds the refused
+/// `Room` and the plain one together, so it sits whole under `#if false` for the documentation
+/// test's text match (once per language); the plain `Room` compiles below it, and
+/// `scripts/must-not-compile/turns/plaindata-guide-room.swift` pins the refused one's error.
+enum PlainDataGuideExample {
+    final class Connection {}
+
+    #if false
+    // Before: refused. A class and a clock instant in the state.
+    @PlainData
+    struct Room {
+        var players: [PlayerID: Connection]       // Connection is a class
+        var lastChat: ContinuousClock.Instant
+    }
+
+    // After: plain values. The connections stay on the actor, keyed by PlayerID.
+    @PlainData
+    struct Room {
+        var players: Set<PlayerID>                // PlayerID is @PlainData
+        var lastChat: TurnInstant
+    }
+    #endif
+
+    #if false
+    // 之前：會被拒絕。狀態裡有 class 和時鐘的 instant。
+    @PlainData
+    struct Room {
+        var players: [PlayerID: Connection]       // Connection 是 class
+        var lastChat: ContinuousClock.Instant
+    }
+
+    // 之後：純值。連線留在 actor 上，以 PlayerID 為鍵。
+    @PlainData
+    struct Room {
+        var players: Set<PlayerID>                // PlayerID 是 @PlainData
+        var lastChat: TurnInstant
+    }
+    #endif
+
+    // The plain `Room`, compiled.
+    @PlainData
+    struct Room {
+        var players: Set<PlayerID>                // PlayerID is @PlainData
+        var lastChat: TurnInstant
+    }
+}
+
+@Suite("The guide's plain-data example")
+struct PlainDataGuideExampleTests {
+    @Test("The guide's plain Room stores the repository's IDs and a turn instant")
+    func plainRoomCompiles() {
+        func isPlain<T: PlainData>(_: T.Type) -> Bool { true }
+        #expect(isPlain(PlainDataGuideExample.Room.self))
+        #expect(isPlain(PlayerID.self))
+        #expect(isPlain(SessionID.self))
     }
 }

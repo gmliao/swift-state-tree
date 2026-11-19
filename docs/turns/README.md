@@ -34,7 +34,7 @@ An effect's result, a deadline or a timer comes back as a new input. Each entry 
 
 `PlainData` (`Sources/SwiftStateTurns/PlainData.swift`) marks a value that can't call through to anything or change behind its holder: no class, closure, actor, existential, lock or token, at any depth.
 
-- **Built-ins that conform:** `Bool`, the integer types, `Double`, `Float`, `String`, `Character`, `Duration`, and the turn core's own values (`InputID`, `RequestID`, `Generation`, `TurnInstant`, `Abandonment`, `TurnError`).
+- **Built-ins that conform:** `Bool`, the integer types, `Double`, `Float`, `String`, `Character`, `Duration`, Foundation's `Data`, and the turn core's own values (`InputID`, `RequestID`, `Generation`, `TurnInstant`, `Abandonment`, `TurnError`).
 - **Containers conform when their contents do:** `Optional`, `Array`, `ContiguousArray`, `Set`, `Dictionary` (key and value), and `Result` (success and failure).
 - **A tuple can't conform.** Store `PlainPair` instead.
 
@@ -55,10 +55,14 @@ Mark a struct or an enum with `@PlainData` where it is defined. The macro writes
 - A generic type needs `where T: PlainData`.
 - `@PlainData` on a class or an actor is refused, and so is a field whose type is a class, an actor, a closure or an existential.
 - A hand-written `: PlainData` outside `SwiftStateTurns`, `@retroactive` included, is refused by `scripts/lint-turns.sh`: it would conform without checking anything.
-- A type from the standard library or another module can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
+- A type from the standard library or Foundation can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
+- A type from another module of this repository takes `@PlainData` at its definition, in its own module, never through an extension elsewhere. The IDs and values a land's state and its transport keep are marked this way: `SessionID`, `PlayerID`, `ClientID`, `EventTarget`, `StateSnapshot`, `SnapshotValue` and `MessagePackValue`. A machine can store them as they are.
+
+In the example below, the first `Room` is refused: the macro names both fields. The second one compiles.
 
 ```swift
-// Before: a class and a clock instant in the state.
+// Before: refused. A class and a clock instant in the state.
+@PlainData
 struct Room {
     var players: [PlayerID: Connection]       // Connection is a class
     var lastChat: ContinuousClock.Instant
