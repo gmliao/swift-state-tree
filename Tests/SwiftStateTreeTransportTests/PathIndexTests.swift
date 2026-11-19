@@ -264,15 +264,14 @@ struct PathIndexTests {
 
     @Test("missingStateUpdateFeatures: none required, declared, missing, and malformed metadata")
     func missingFeatures() {
-        typealias A = TransportAdapter<PathIndexState>
-        #expect(A.missingStateUpdateFeatures(required: [], metadata: nil) == nil)
-        #expect(A.missingStateUpdateFeatures(required: ["pathIndex"], metadata: nil) == ["pathIndex"])
-        #expect(A.missingStateUpdateFeatures(required: ["pathIndex"], metadata: ["stateUpdateFeatures": AnyCodable(["pathIndex", "fieldMerge"])]) == nil)
-        #expect(A.missingStateUpdateFeatures(required: ["pathIndex"], metadata: ["stateUpdateFeatures": AnyCodable(["fieldMerge"])]) == ["pathIndex"])
-        #expect(A.missingStateUpdateFeatures(required: ["pathIndex"], metadata: ["stateUpdateFeatures": AnyCodable("pathIndex")]) == ["pathIndex"])
+        #expect(StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: [], metadata: nil) == nil)
+        #expect(StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: ["pathIndex"], metadata: nil) == ["pathIndex"])
+        #expect(StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: ["pathIndex"], metadata: ["stateUpdateFeatures": AnyCodable(["pathIndex", "fieldMerge"])]) == nil)
+        #expect(StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: ["pathIndex"], metadata: ["stateUpdateFeatures": AnyCodable(["fieldMerge"])]) == ["pathIndex"])
+        #expect(StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: ["pathIndex"], metadata: ["stateUpdateFeatures": AnyCodable("pathIndex")]) == ["pathIndex"])
         // As decoded from a client's JSON join.
         let decoded = try? JSONDecoder().decode([String: AnyCodable].self, from: Data(#"{"stateUpdateFeatures":["pathIndex"]}"#.utf8))
-        #expect(A.missingStateUpdateFeatures(required: ["pathIndex"], metadata: decoded) == nil)
+        #expect(StateUpdateFeatureNegotiation.missingStateUpdateFeatures(required: ["pathIndex"], metadata: decoded) == nil)
     }
 
     static func router(encoding: TransportEncodingConfig, withPathHashes: Bool = true) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {

@@ -411,7 +411,9 @@ jobs:
           fi
           # `|| true`: a file with no such line is already in the failed list; keep going.
           ran="$(grep -E '^Ran [0-9]+ tests? in ' "$log" | tail -1 || true)"
-          result="$(grep -E '^(OK|FAILED)( |$)' "$log" | tail -1 || true)"
+          # unittest's summary: the first OK/FAILED line after the last "Ran N tests" line, not a
+          # test's own output that happens to start with OK.
+          result="$(awk '/^Ran [0-9]+ tests? in /{r=NR; line=""} r && NR>r && line=="" && /^(OK|FAILED)( |$)/{line=$0} END{print line}' "$log")"
           summary+=("$f: ${ran% in *}, ${result:-no result line}")
         done < <(git ls-files -z 'deep-research/*test_*.py' 'deep-research/**/test_*.py')
         if [ $count -eq 0 ]; then
