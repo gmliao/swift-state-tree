@@ -96,7 +96,9 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
     /// What `inboundBacklogEventForTesting` reports.
     enum InboundBacklogTestEvent: Sendable {
-        /// A batch left the backlog (delivered or dropped). On the chain, any thread.
+        /// A batch left the backlog (delivered or dropped), and the resume hop it needs, if any,
+        /// is queued: a loop task submitted after this runs after that hop. On the chain, any
+        /// thread.
         case delivered
         /// The resume hop a drain queued has run, whether or not it resumed. On the event loop.
         case resumeHopRan
@@ -526,13 +528,15 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// A batch was delivered to the transport (or dropped): off the backlog. Runs on the chain,
     /// any thread; hops to the event loop only when the backlog drained while paused.
     private func noteInboundDelivered(messages: Int, bytes: Int) {
-        let drained = inboundBacklogCount.subtract(messages: messages, bytes: bytes)
-        inboundBacklogEventForTesting?(.delivered)
-        guard drained else { return }
-        hop {
-            self.resumeReadsIfDrained()
-            self.inboundBacklogEventForTesting?(.resumeHopRan)
+        if inboundBacklogCount.subtract(messages: messages, bytes: bytes) {
+            hop {
+                self.resumeReadsIfDrained()
+                self.inboundBacklogEventForTesting?(.resumeHopRan)
+            }
         }
+        // After the hop is queued (`hop` queues synchronously): a loop task a test submits once
+        // this fires runs after that hop.
+        inboundBacklogEventForTesting?(.delivered)
     }
 
     /// Resumes reading at the low watermark, forwarding the read withheld meanwhile. Runs on

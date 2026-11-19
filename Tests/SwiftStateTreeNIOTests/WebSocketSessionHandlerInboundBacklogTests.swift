@@ -179,7 +179,9 @@ private func messages(_ count: Int, size: Int = 1) -> [String] {
     }
 }
 
-@Suite("WebSocketSessionHandler: inbound backlog bound (#113)", .timeLimit(.minutes(1)))
+// Two minutes, above `testHangBound` (60 s): a wait that runs out reports its own message
+// ("reads never resumed, ...") before the time limit ends the test.
+@Suite("WebSocketSessionHandler: inbound backlog bound (#113)", .timeLimit(.minutes(2)))
 struct WebSocketSessionHandlerInboundBacklogTests {
     @Test("A held message and a flood: reads stop at the message bound, after one message over it")
     func messageBoundStopsReads() async throws {
