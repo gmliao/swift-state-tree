@@ -15,6 +15,7 @@ SwiftStateTree adopts a modular design with clear responsibilities for each modu
 | **SwiftStateTreeTransport** | Transport layer | Transport abstraction, WebSocketTransport, Land management, multi-room routing |
 | **SwiftStateTreeNIO** | NIO server | WebSocket hosting, JWT/Guest auth, Admin routes (default server) |
 | **SwiftStateTreeNIOProvisioning** | Provisioning | Registers GameServer with matchmaking control plane on startup |
+| **SwiftStateTurns** | Turn core | `TurnActor`, `TurnCore`, `@PlainData`: the serial turn machinery that SwiftStateTree, its MessagePack target and SwiftStateTreeTransport build on |
 | **SwiftStateTreeMacros** | Compile-time tools | `@StateNodeBuilder`, `@Payload`, `@SnapshotConvertible` |
 | **SwiftStateTreeDeterministicMath** | Deterministic math | Fixed-point arithmetic, collision detection, vector operations for server-authoritative games |
 | **SwiftStateTreeBenchmarks** | Benchmarks | Performance test executable |
@@ -30,9 +31,12 @@ graph TD
     NIO[SwiftStateTreeNIO<br/>NIO Server]
     Provisioning[SwiftStateTreeNIOProvisioning<br/>Provisioning]
     Macros[SwiftStateTreeMacros<br/>Compile-time Macro]
+    Turns[SwiftStateTurns<br/>Turn Core]
     
+    Turns --> Core
+    Turns --> Transport
+    Macros --> Core
     Core --> Transport
-    Core --> Macros
     Transport --> NIO
     NIO --> Provisioning
     
@@ -41,7 +45,10 @@ graph TD
     style NIO fill:#e8f5e9
     style Provisioning fill:#f3e5f5
     style Macros fill:#fce4ec
+    style Turns fill:#fffde7
 ```
+
+An arrow points from a module to a module that depends on it.
 
 **Notes**:
 - **SwiftStateTree** is the core module, network-independent, provides core logic

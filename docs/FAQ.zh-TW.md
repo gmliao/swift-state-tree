@@ -23,7 +23,7 @@ swift build
 A: 
 - Swift 6.2+
 - macOS 14.0+（開發環境）
-- 支援 Swift 6 的平台（部署環境）
+- 有 Swift 6.2+ toolchain 的平台（部署環境）
 
 ### Q: 如何確認專案可以正常運行？
 

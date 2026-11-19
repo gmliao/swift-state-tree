@@ -160,7 +160,7 @@ public enum HardwareInfoCollector {
         #endif
         
         // Swift Version
-        // Note: This project requires Swift 6.0+ (see Package.swift: swift-tools-version: 6.0)
+        // Note: This project requires Swift 6.2+ (the swift-tools-version in Package.swift)
         // Use compile-time version detection for more granular version numbers
         var swiftVersion: String? = nil
         #if swift(>=6.3)
