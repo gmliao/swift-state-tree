@@ -67,3 +67,33 @@ package struct AnyCodablePayloadSource: PayloadDecodingSource {
 
     package var boxedPayload: AnyCodable { payload }
 }
+
+/// A recorded payload, decoded with the codec that wrote its record (#521 PR 1b): the tree is
+/// encoded with `CanonicalMessagePack` and the type decoded with its strict decoder, so a
+/// `Date` reads from its ISO string and `Data`, `URL` and `Decimal` from their own `Codable`
+/// forms, as the recorder wrote them. Both record sources hold trees in that form: a saved
+/// record, and the JSON view, which is rendered from frames read back from the log.
+///
+/// A payload whose base is already the type (an in-process run's projected event) is taken as
+/// is, without a round trip.
+package struct RecordPayloadSource: PayloadDecodingSource {
+    package let payload: AnyCodable
+    /// The JSON view's one allowance: JSON doesn't keep the float/integer split, so an integer
+    /// decodes into `Double` or `Float` when it converts exactly. False (strict) for a saved record.
+    package let integralFloats: Bool
+
+    package init(_ payload: AnyCodable, integralFloats: Bool = false) {
+        self.payload = payload
+        self.integralFloats = integralFloats
+    }
+
+    package func decode<T: Decodable>(_ type: T.Type) throws -> T {
+        if let typed = payload.base as? T { return typed }
+        return try CanonicalMessagePack.decode(type, from: CanonicalMessagePack.encode(payload), integralFloats: integralFloats)
+    }
+
+    /// A recorded payload was checked when it was recorded.
+    package func validateRecordable() throws {}
+
+    package var boxedPayload: AnyCodable { payload }
+}

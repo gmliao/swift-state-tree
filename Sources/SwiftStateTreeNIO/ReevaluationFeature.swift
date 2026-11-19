@@ -254,7 +254,8 @@ public extension NIOLandHost {
             .injectingGenericReplayRunnerBootstrap(
                 replayLandType: replayLandType,
                 liveLandType: landType,
-                recordsDir: recordsDir
+                recordsDir: recordsDir,
+                replayLandState: State.self
             )
             .injectingGenericReplayKeeperModeResolver(
                 replayLandType: replayLandType,
@@ -547,10 +548,14 @@ extension NIOLandServerConfiguration {
         return updated
     }
 
+    /// - Parameter replayLandState: the state type of a replay land that shows the runner's
+    ///   results (`GenericReplayLand`): the service then queues only results resolved for it.
+    ///   Nil for a replay land that replays in its own keeper and reads no results.
     func injectingGenericReplayRunnerBootstrap(
         replayLandType: String,
         liveLandType: String,
         recordsDir: String,
+        replayLandState: (any StateNodeProtocol.Type)? = nil,
         ticketSigner: ReplayTicketSigner = .process
     ) -> NIOLandServerConfiguration {
         var updated = self
@@ -582,6 +587,9 @@ extension NIOLandServerConfiguration {
                 return services
             }
 
+            if let replayLandState {
+                runnerService.expectReplayLandState(replayLandState)
+            }
             if runnerService.getStatus().phase == .idle {
                 runnerService.startVerification(
                     landType: captureLiveLandType,

@@ -233,16 +233,11 @@ public struct LandContext: Sendable {
         emitEventHandler(anyEvent, target)
     }
 
-    /// Emit a pre-built type-erased server event deterministically.
-    ///
-    /// This is useful for replay pipelines that already carry `{typeIdentifier, payload}`
-    /// envelopes and need to forward events without concrete payload decoding branches.
-    ///
-    /// On a compressed encoding (`messagepack`, `opcodeJsonArray`) the payload must be a payload
-    /// type (`@Payload`). Any other value (a dictionary, an array, a primitive) has no positional
-    /// form: the event is lost and the land ends with `LandFailure.Kind.eventEncode` (#544). On
-    /// `json` it is written as is.
-    public func emitAnyServerEvent(_ event: AnyServerEvent, to target: EventTarget) {
+    /// Emits a pre-built type-erased event (tests only). Land code emits typed events only
+    /// (`emitEvent`); the public untyped emit was removed with the typed replay re-emit (#521
+    /// PR 1b, #538). This keeps the path a framework bug would take: on a compressed encoding a
+    /// payload that isn't a payload type is lost and ends the land with `.eventEncode` (#544).
+    package func emitAnyServerEventForTesting(_ event: AnyServerEvent, to target: EventTarget) {
         emitEventHandler(event, target)
     }
 
