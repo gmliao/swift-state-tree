@@ -279,7 +279,23 @@ API：`CallerCancellation`。
 
 Swift 會在執行時檢查：一個變數正被使用時，沒有別的地方在改它。這就是 exclusivity 檢查。在 class 的 stored 屬性上，每次使用都要付一對 runtime 呼叫。
 
-在 release build 裡，core 對自己的 stored 狀態跳過這個檢查。core 內聯進採用它的 actor 之後，每個 input 都會多次碰到這些狀態；有這個檢查時，一次 `read` 的成本大約是手寫同樣查詢的兩倍。這裡不需要靠它保證安全：actor 一次只執行一個呼叫，而檢查會抓到的重疊，core 都會停止行程。這些重疊是：step 裡再進 step、在 `read` 裡啟動 step、在 step 裡呼叫 `read` 或 `query`。
+在 release build 裡，core 對自己的 stored 狀態跳過這個檢查。core 內聯進採用它的 actor 之後，每個 input 都會多次碰到這些狀態；有這個檢查時，一次 `read` 的成本大約是手寫同樣查詢的兩倍。
+
+actor 一次只執行一個呼叫。在同一個呼叫裡，core 在每種 build 都守住自己的規則。step 會改狀態機，`read` 只是讀它。core 會記下目前開著幾個 read，以及有沒有 step 正在執行：
+
+| 已經開著 | 開始一個 `read` | 開始一個 step（`send`、`sendAndWait`、`query`） |
+|---|---|---|
+| 沒有 | 執行 | 執行 |
+| 一個以上的 `read` | 執行 | 停止行程 |
+| 一個 step | 停止行程 | `query` 停止行程；`send` 在這裡不算開始一個 step：它會等著，在這個 step 結束後才執行 |
+
+所以 read 可以巢狀，而在 `read` 的 closure 裡 `send` 或 `query`，即使裡面另一個 `read` 已經執行完並返回，也會停止行程。
+
+**採用者必須守住的事。** core 在改自己的狀態時，也會執行採用者的一些程式碼，這時它擋不住重疊：
+- key 型別的 `==` 和 `hash(into:)`，在 core 更新它的表時執行；
+- core 丟掉的 input 或 key 的 deinit（被撤回的 input、清空的佇列、結束的 key）。
+
+這些程式碼不可以回頭呼叫 actor：不能在裡面 `send`、`sendAndWait`、`query`、`read` 或 `stats`。在沒有檢查的 release build 裡，這樣的呼叫會在另一次修改的途中改掉 core 的狀態，而且不會有任何錯誤。用下面有檢查的 build 來測試它。
 
 Debug build 保留這個檢查。用 `TURNS_EXCLUSIVITY_CHECKED` 旗標建置的 release build 也會保留：
 
@@ -287,7 +303,7 @@ Debug build 保留這個檢查。用 `TURNS_EXCLUSIVITY_CHECKED` 旗標建置的
 swift build -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED
 ```
 
-懷疑 release build 裡有兩次存取 core 狀態互相重疊時，或要在 release 路徑上開著檢查跑測試時，用它建置。預設的 release build 沒有這個檢查。
+懷疑 release build 裡有兩次存取 core 狀態互相重疊時，或要在 release 路徑上開著檢查跑採用者的測試時，用它建置。預設的 release build 沒有這個檢查。
 
 
 - 設計與規則：`Notes/plans/2026-11-18-swift-state-turns-core.md`

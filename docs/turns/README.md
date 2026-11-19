@@ -279,7 +279,23 @@ The tests are also examples. Each one below shows a way to check a turn-based ac
 
 Swift checks at run time that a variable isn't changed while something else is using it. This is the exclusivity check. On a class's stored property it costs a pair of runtime calls on every use.
 
-The core skips this check on its own stored state in a release build. Inlined into an adopter, the core touches that state many times per input, and the check made a `read` cost about twice what the same lookup costs by hand. The check isn't needed there for safety: the actor runs one call at a time, and the core stops the process on the overlaps the check would catch. These are a step inside a step, a step started from inside `read`, and `read` or `query` called from inside a step.
+The core skips this check on its own stored state in a release build. Inlined into an adopter, the core touches that state many times per input, and the check made a `read` cost about twice what the same lookup costs by hand.
+
+The actor runs one call at a time. Within one call, the core keeps its own rule, in every build. A step changes the machine, and `read` only looks at it. The core counts the reads that are open and notes when a step runs:
+
+| Already open | A `read` starts | A step starts (`send`, `sendAndWait`, `query`) |
+|---|---|---|
+| nothing | runs | runs |
+| a `read` (one or more) | runs | stops the process |
+| a step | stops the process | a `query` stops the process; a `send` isn't a step start here: it waits, and steps after the step ends |
+
+So reads nest, and a `send` or a `query` from a `read`'s body stops the process even when another `read` ran and returned inside it.
+
+**What the adopter must keep.** The core also runs some of the adopter's code while it is changing its own state, and there it can't stop an overlap:
+- the key type's `==` and `hash(into:)`, which run inside the core's table updates;
+- the deinit of an input or a key the core drops (a withdrawn input, a queue emptied, a key ended).
+
+That code must not call back into the actor: no `send`, `sendAndWait`, `query`, `read` or `stats` from it. In a release build without the check, such a call would change the core's state in the middle of another change, with no error. Test it with the checked build below.
 
 Debug builds keep the check. A release build keeps it too when built with the `TURNS_EXCLUSIVITY_CHECKED` flag:
 
@@ -287,7 +303,7 @@ Debug builds keep the check. A release build keeps it too when built with the `T
 swift build -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED
 ```
 
-Build with it when you suspect two accesses to the core's state overlap in a release build, and to run the tests on the release path with the check on. The default release build has no check.
+Build with it when you suspect two accesses to the core's state overlap in a release build, and to run an adopter's tests on the release path with the check on. The default release build has no check.
 
 
 - The design and its rules: `Notes/plans/2026-11-18-swift-state-turns-core.md`
