@@ -3,7 +3,7 @@
 **Status:** rev 9, plan only, for review.
 - **Detail:** B0–B2 in full; B3–B6 as outlines. Each of B3–B6 gets its own plan PR before its code, reviewed against the B0–B2 code that exists by then. Each outline's "open" list carries what the reviews of rev 1–3 raised for that step.
 - **Decided:** D4 = (a), by the maintainer (§2.2), with its rule documented as a B0 deliverable.
-- **Decisions in this rev:** the legacy path's removal (D1, decided): L1 written in full, L2 a placeholder until its own layout (§3.2). Decision 5 (the phase's emit effects) with every output named. Decisions 1 and 4 are superseded by L2.
+- **Decisions in this rev:** the legacy path's removal from live lands (D1, decided): L1 written in full, L2 (2a–2d) a placeholder until its own layout; replay keeps the legacy cycle until #612 (§3.2). The replay-only cycle's shape in B2, (a) or (b), recommended (b). Decision 5 (the phase's emit effects) with every output named.
 - **Proposals:** D1–D3 and D5.
 - **After GO on B0–B1:** B0–B1 move to a draft code branch; B2's detail is settled against that code.
 
@@ -154,12 +154,12 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 - The tests that import Transport with `@testable` (the two `SyncTablesFrameIdentityTests` included) reach `package` declarations and don't change; no CI job builds them in release.
 - The measured path must stay the same: a host A/B, base against the facade, under #517's gate.
 
-**After E, before B1: the legacy sync path is removed, in two steps (the maintainer, 2026-11-20).** So B1 conforms an adapter with one sync path, and B2 moves one sync path into the machine. The removal is breaking, with no deprecation (no external users). "The legacy path" is two layers, and they come out separately:
+**After E, before B1: the legacy sync path is removed from live lands, in two steps (the maintainer, 2026-11-20).** So B1 conforms an adapter with one live sync path, and B2 moves that path into the machine. The removal is breaking, with no deprecation (no external users). "The legacy path" is two layers, and they come out separately:
 - **L1, the off mode:** the `IN_TURN_SYNC` switch and the public parameters that select it;
-- **L2, the adapter's own cycle:** `withSyncState` over `keeper.beginSync`/`endSync`. It still runs with in-turn sync on (below), so removing L1 doesn't remove it.
+- **L2, the adapter's own cycle on live lands:** `withSyncState` over `keeper.beginSync`/`endSync`. It still runs with in-turn sync on (below), so removing L1 doesn't remove it. Replay keeps it until #612.
 
 **L1: the switch (its own PR to `main`, mechanical).**
-- **Goal:** no production configuration can turn in-turn sync off. The adapter's off mode stays reachable only through a `package` parameter, for its remaining users until L2: reevaluation keepers (`LandManager.swift:720` forces it), the harness's legacy cells, and the tests that pass it explicitly.
+- **Goal:** no production configuration can turn in-turn sync off. The adapter's off mode stays reachable only through a `package` parameter, for its remaining users: reevaluation keepers (`LandManager.swift:720` forces it) until #612, and the harness's legacy cells and the tests that pass it explicitly.
 - **Sources:**
   - `EnvKeys.Runtime.inTurnSync` and `InTurnSync.isEnabled()` (`InTurnSync.swift:39–45`) are deleted. `TransportAdapter`'s effective setting becomes its `inTurnSync` argument alone (TA:963);
   - `NIOLandHostConfiguration.inTurnSync` (`NIOLandHost.swift:210–254`) is deleted;
@@ -176,13 +176,22 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 - **Docs:** `docs/core/runtime.md` and `.zh-TW.md` (the kill-switch paragraph and the legacy-path notes), the env tables in `docs/transport/README.md` and `.zh-TW.md`, and `AGENTS.md:89`.
 - **Gate:** §3's gate in its one-mode form, plus the goldens unchanged. No host A/B: the default path's code doesn't change.
 
-**L2: the adapter's own cycle (placeholder; laid out in its own plan before it is fixed).** The maintainer wants L2 laid out carefully first. It is a step of its own, after L1 and before B1. Its groups, each to be planned with its call sites, tests and gate:
-1. **The adapter's own syncs,** which run the cycle with in-turn sync on: the follow-up (TA:3119), the backlog retry (:3137, :3176), the failed plan's delayed follow-up, and the lag timer's sync (:3557). They become requests for a keeper sync-only turn (`runSyncOnlyTurn`).
-2. **The public `syncNow()` and `syncBroadcastOnly()`:** about 134 test calls, EncodingBenchmark's measured path (29 calls) and `SwiftStateTreeBenchmarks`. They become "request a sync turn and await it". The benchmark's measured path changes, so this group gets a host A/B.
-3. **The freeze:** the settle (TA:6503) and the resume's replay (:6574).
-4. **The core tests' doubles:** every keeper whose transport isn't the attached adapter runs the keeper's off path (`usesInTurnSync` is false): the fake `LandKeeperTransport`s of about 15 `SwiftStateTreeTests` suites. They move onto the in-turn path.
-5. **Reevaluation:** reevaluation keepers run the off path by design (`LandManager.swift:620–624`, `mode != .live`). The maintainer decides whether they go in-turn or keep a replay-only cycle.
-6. **Then the deletion:** the keeper's off path (its sync loop, tick and tickless delivery through `syncNowFromTransport`, `deliverLegacyPass`), `beginSync`/`endSync`, the adapter's off executor, the harness's legacy cells and legacy-only rows (`disconnect-sending-join-response`, `disconnect-sending-initial-sync`, `join-during-sync-cycle`), each retired with its replacement (L2's plan says where the goldens change and how), and B2's decisions 1 and 4 (§3.3). Rev 8's must-fix 1–2 on decision 4 (the request on a held key; the parked retry against `join-during-sync-cycle`) go with them.
+**L2: the adapter's own cycle on live lands (placeholder; laid out in its own plan before it is fixed).** The maintainer wants L2 laid out carefully first. It is a step of its own, after L1 and before B1. Its groups, each to be planned with its call sites, tests and gate:
+- **2a. The adapter's own syncs,** which run the cycle with in-turn sync on: the follow-up (TA:3119), the backlog retry (:3137, :3176), the failed plan's delayed follow-up, and the lag timer's sync (:3557). On a live land they become requests for a keeper sync-only turn (`runSyncOnlyTurn`).
+- **2b. The public `syncNow()` and `syncBroadcastOnly()`:** about 134 test calls, EncodingBenchmark's measured path (29 calls) and `SwiftStateTreeBenchmarks`. They become "request a sync turn and await it". The benchmark's measured path changes, so this group gets a host A/B. `TransportAdapterBenchmarkHandle` (E) forwards `syncNow`, and also pins two other public entry points this removal touches: `syncStateForNewPlayer` and the join path with `completedInTurn == false` (which `Rejoin.swift` uses). L2's plan, or the legacy-join removal, says what the handle does with each; the handle is the single place they show.
+- **2c. The freeze:** the settle (TA:6503) and the resume's replay (:6574).
+- **2d. The core tests' doubles:** every keeper whose transport isn't the attached adapter runs the keeper's off path (`usesInTurnSync` is false): the fake `LandKeeperTransport`s of about 15 `SwiftStateTreeTests` suites. They move onto the in-turn path.
+
+**Replay keeps the legacy cycle until #612 (the maintainer, 2026-11-20).** Reevaluation keepers run the off path by design (`LandManager.swift:620–624`, `mode != .live`): the same-land replay adapter and the runner's keeper. Their redesign belongs to #612 (replay on typed inputs fed into the same turn machine; #550 folds into it). So:
+- after L2, the legacy cycle (`beginSync`/`endSync`, the keeper's off path, the adapter's off executor) is used by replay only;
+- **B2 starts with one live sync path, and the legacy cycle used by replay only;**
+- deleting the keeper's off path, `beginSync`/`endSync`, the adapter's off executor, the harness's legacy cells and legacy-only rows (`disconnect-sending-join-response`, `disconnect-sending-initial-sync`, `join-during-sync-cycle`, each retired with its replacement) and B2's decisions 1 and 4 is #612's last step, not a precondition of B2.
+
+**The replay-only cycle in B2 (open, for B2's rewrite against L2's code).** Either:
+- (a) decisions 1 and 4 apply to it as written, with rev 8's must-fix 1–2 on decision 4 still to settle; or
+- (b) it stays an actor loop outside the machine, its commit a query (`.legacyCommit`, as in §3.2), with no `.syncCycle` request: today's busy skips and retries are unchanged, for replay only.
+
+*Recommended: (b).* Replay isn't on the live path, and #612 replaces it, so (b) avoids building the request machinery of decisions 1 and 4 only to delete it. It needs the machine to tolerate a commit query outside any held key, which decision 2's settle commit already does.
 
 **B1: the empty machine.**
 - `TurnCore` in the adapter, which conforms to `TurnActor` directly, and the production `TurnClock` over `safeTaskSleep` (core plan §3.4). The dependency itself arrived in B0.
@@ -201,7 +210,7 @@ The actor keeps membership, join, inbound, actions, land failure, and the whole 
 
 **The in-turn commit.** When the keeper's turn calls `runSyncPhaseInTurn(state:events:…)`, the adapter builds a `MembershipView` in the same synchronous segment, and calls `core.query(.syncPhase(read, events, view, tools))`. The view holds the members, the joining sessions that this phase may flip, the held events, each session's lag entry, and what event routing needs (§3.3, decision 3). The answer appends the phase's events, then runs `planAndCommit`.
 
-> **Superseded by L2.** L2 removes the adapter's own cycle before B1, so B2 has no legacy cycle. The text from here through the legacy flag's list (the legacy driver, `.syncCycle`'s request, the backlog retry), the cycle parts of "Retry, follow-up and lag timer" and of `syncNow`, and decisions 1 and 4 stay for the record until L2's plan is GO; B2's detail is then rewritten against the one sync path.
+> **Live lands: superseded by L2. Replay: open (§3.2, "The replay-only cycle in B2").** L2 removes the adapter's own cycle from live lands before B1, so the legacy cycle reaches B2 for replay only. The text from here through the legacy flag's list (the legacy driver, `.syncCycle`'s request, the backlog retry), the cycle parts of "Retry, follow-up and lag timer" and of `syncNow`, and decisions 1 and 4 stay for the record until L2's plan is GO; B2's detail is then rewritten against the one sync path.
 
 **The legacy cycle stays an actor-driven loop in B2, with its commit as a query.** The legacy driver awaits `keeper.beginSync`. In the segment where that await returns, it builds the `MembershipView` and calls `core.query(.legacyCommit(read, view, tools))`. It then awaits `keeper.endSync`. So the membership view is captured at the cycle's ingress, after the keeper's read, in the same segment as the commit, as today.
 
@@ -280,7 +289,7 @@ Their users and the harness rows are listed in §6 (Appendix A).
 
 Each is a choice the code can't make for us: a wrong guess changes goldens or records silently. Each has a recommendation.
 
-**Decision 1: a stale `.legacyCommit`, a second call, and the cycle's deadline.** *Superseded by L2 (§3.2): kept for the record.*
+**Decision 1: a stale `.legacyCommit`, a second call, and the cycle's deadline.** *Live lands: superseded by L2. It applies to the replay-only cycle only under option (a) (§3.2); recommended (b) doesn't need it. Deleted in #612's last step.*
 
 `beginSync` hands back the read, and the keeper clears its dirty state for it. If the commit were then refused as stale, nothing would re-mark those fields, and the next cycle wouldn't send them.
 
@@ -332,7 +341,7 @@ What moves where:
 
 Rejected: showing that nothing appends during the answer. That isn't true today, because the phase appends its own events.
 
-**Decision 4: the legacy cycle's handoff.** *Superseded by L2 (§3.2), with rev 8's must-fix 1–2 on it: kept for the record.*
+**Decision 4: the legacy cycle's handoff.** *Live lands: superseded by L2. It applies to the replay-only cycle only under option (a) (§3.2), with rev 8's must-fix 1–2 still to settle there; recommended (b) doesn't need it. Deleted in #612's last step.*
 
 `.cycleStart` keeps today's order of checks (TA:3146): the writer-backlog check first (a backlogged writer skips the cycle, sets the backlog flags and schedules the coalesced retry), then the in-flight record (busy skip, decision 1), and only then the request.
 
@@ -505,7 +514,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 
 ## 7. Decisions for the maintainer
 
-- **D1 (decided, 2026-11-20).** The legacy sync path is removed before B1, in two steps: L1 (the switch) and L2 (the adapter's own cycle), §3.2. The production rollback switch (`IN_TURN_SYNC=false`) goes with L1. Open inside L2: reevaluation in-turn, or a replay-only cycle.
+- **D1 (decided, 2026-11-20).** The legacy sync path is removed from live lands before B1, in two steps: L1 (the switch) and L2 (the adapter's own cycle on live lands), §3.2. The production rollback switch (`IN_TURN_SYNC=false`) goes with L1. Replay keeps the legacy cycle until #612, whose last step deletes it. Open: the replay-only cycle's shape in B2, (a) or (b), recommended (b).
 - **D2.** #652: allow a reused SessionID, with the binding stamp and generation-aware output in B3 (proposed), or forbid it.
 - **D3.** #588: before the recording, or after the merge (proposed). With it goes the keeper's join recheck (§4, B3).
 - **D4 (decided: (a)).** Module layering (§2.2); the rule is documented in B0.
@@ -521,8 +530,9 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 
 | Change | Where |
 |---|---|
-| The legacy path's removal (D1 decided): L1, the switch, in full; L2, the adapter's own cycle, as a placeholder with its six groups (the adapter's own syncs, the public `syncNow`, the freeze, the core tests' doubles, reevaluation, then the deletion) | §3.2, §3, §7 |
-| Decisions 1 and 4, and rev 8's must-fix 1–2, superseded by L2 and kept for the record | §3.2, §3.3 |
+| The legacy path's removal from live lands (D1 decided): L1, the switch, in full; L2, the adapter's own cycle on live lands, as a placeholder with groups 2a–2d (the adapter's own syncs, the public `syncNow`, the freeze, the core tests' doubles) | §3.2, §3, §7 |
+| Replay keeps the legacy cycle until #612, whose last step deletes it; B2 starts with one live sync path and the replay-only cycle; that cycle's shape in B2 is open, (a) decisions 1 and 4 or (b) an actor loop outside the machine, recommended (b) | §3.2, §3.3, §7 |
+| The benchmark handle pins `syncStateForNewPlayer` and the `completedInTurn == false` join path: noted where L2 touches them | §3.2 |
 | Decision 5: `PhaseScratch`; every emit effect with its named output (`.eventHeld`, `.joiningEventsDropped`, `.joinFailed`, `.ceilingDropped`, `.syncDeferredByFreeze`) and the flush order; `.lost` keeps the earlier emits' outputs; witnesses and mutants | §3.2, §3.3 |
 | E's rationale: `TurnActor` is `public`, so a `package` adapter keeps the conformance's witnesses package-scoped; the facade's members (the container, the wiring, the SPI forwards) and GameDemo in E | §3.2 |
 | §2.1 and the risks: only the two table tools are compiler-isolated; #548 cites 20e15dae and ce9db968, the exact entries from B3's run; B0's A/B in two cells; the decisions' heading | §2.1, §3.1, §3.3, §4, §8 |
