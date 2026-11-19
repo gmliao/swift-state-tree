@@ -79,15 +79,25 @@ public struct AnyClientEvent: Codable, Sendable {
     /// The event type identifier (e.g., "WelcomeEvent", "ChatMessageEvent").
     public let type: String
     
-    /// The event payload as a type-erased codable value.
-    public let payload: AnyCodable
+    /// The payload as its decoder received it (#521): the keeper decodes the event from it.
+    package let source: any PayloadDecodingSource
+
+    /// The event payload as a type-erased codable value, built from `source` when it isn't one
+    /// already.
+    public var payload: AnyCodable { source.boxedPayload }
     
     /// Optional raw body for future extensibility.
     public let rawBody: Data?
     
     public init(type: String, payload: AnyCodable, rawBody: Data? = nil) {
         self.type = type
-        self.payload = payload
+        self.source = AnyCodablePayloadSource(payload)
+        self.rawBody = rawBody
+    }
+
+    package init(type: String, source: any PayloadDecodingSource, rawBody: Data? = nil) {
+        self.type = type
+        self.source = source
         self.rawBody = rawBody
     }
     
@@ -97,10 +107,31 @@ public struct AnyClientEvent: Codable, Sendable {
     /// (e.g., "MoveToEvent" -> "MoveTo").
     public init<E: ClientEventPayload>(_ event: E) {
         self.type = E._payloadWireName
-        self.payload = AnyCodable(event)
+        self.source = AnyCodablePayloadSource(AnyCodable(event))
         self.rawBody = nil
     }
-    
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case payload
+        case rawBody
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            type: try container.decode(String.self, forKey: .type),
+            payload: try container.decode(AnyCodable.self, forKey: .payload),
+            rawBody: try container.decodeIfPresent(Data.self, forKey: .rawBody)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(type, forKey: .type)
+        try container.encode(payload, forKey: .payload)
+        try container.encodeIfPresent(rawBody, forKey: .rawBody)
+    }
 }
 
 /// Type-erased root type for all server events.

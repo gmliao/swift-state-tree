@@ -322,27 +322,33 @@ enum ClientFrameTargets {
     }
 
     /// T5 on a decoded message: an action's or a client event's payload decoded as every
-    /// fixture type, the way the keeper and the client-event handlers decode it. Each type's
-    /// outcome goes into `outcomes`. Returns whether the payload decoded as `AnyCodable`, or nil
-    /// for a message without an action or client-event payload.
+    /// fixture type from the decode source its frame's decoder built, the way the keeper decodes
+    /// it at intake (#521): the whole-tree check, the typed decode, and the record's tree. A
+    /// MessagePack frame's source decodes straight from its value; a JSON one with the round trip
+    /// (`InboundPayloadDecoding`). Each type's outcome goes into `outcomes`. Returns whether the
+    /// payload decoded as `AnyCodable`, or nil for a message without an action or client-event
+    /// payload.
     @discardableResult
     static func decodePayloads(of message: TransportMessage, outcomes: inout PayloadOutcomes) -> Bool? {
-        let decoder = JSONDecoder()
-        func attempt<T: Decodable>(_ type: T.Type, _ payload: AnyCodable) {
-            outcomes.record(type, PayloadDecodeResult { _ = try InboundPayloadDecoding.decode(type, from: payload, decoder: decoder) })
+        func attempt<T: Decodable>(_ type: T.Type, _ source: any PayloadDecodingSource) {
+            outcomes.record(type, PayloadDecodeResult {
+                try source.validateRecordable()
+                _ = try source.decode(type)
+                _ = try source.makeRecordPayload()
+            })
         }
-        let payload: AnyCodable
+        let source: any PayloadDecodingSource
         switch message.payload {
         case .action(let action):
-            payload = action.action.payload
-            for type in FuzzPayloadTypes.actions { attempt(type, payload) }
+            source = action.action.source
+            for type in FuzzPayloadTypes.actions { attempt(type, source) }
         case .event(.fromClient(let event)):
-            payload = event.payload
-            for type in FuzzPayloadTypes.clientEvents { attempt(type, payload) }
+            source = event.source
+            for type in FuzzPayloadTypes.clientEvents { attempt(type, source) }
         default:
             return nil
         }
-        return (try? InboundPayloadDecoding.decode(AnyCodable.self, from: payload, decoder: decoder)) != nil
+        return (try? source.validateRecordable()).flatMap { (try? source.decode(AnyCodable.self)) } != nil
     }
 
     @discardableResult
@@ -415,15 +421,17 @@ struct ClientFrameFuzzTests {
             let name = try #require(expected[frame.name])
             if outcomes.seeds[name]?.decoded != 1 {
                 // Say why: the payload's own decode error.
-                let payload: AnyCodable? = switch message.payload {
-                case .action(let action): action.action.payload
-                case .event(.fromClient(let event)): event.payload
+                let source: (any PayloadDecodingSource)? = switch message.payload {
+                case .action(let action): action.action.source
+                case .event(.fromClient(let event)): event.source
                 default: nil
                 }
                 let types: [any Decodable.Type] = [FuzzLeavesAction.self, FuzzMathAction.self, FuzzContainersEvent.self, PFClientEvent.self]
                 let type = try #require(types.first { String(describing: $0) == name })
                 do {
-                    _ = try InboundPayloadDecoding.decode(type, from: try #require(payload), decoder: JSONDecoder())
+                    let source = try #require(source)
+                    try source.validateRecordable()
+                    _ = try source.decode(type)
                     Issue.record("\(frame.name) \(encoding): decodes alone but not in decodePayloads")
                 } catch {
                     Issue.record("\(frame.name) \(encoding) as \(name): \(error)")
