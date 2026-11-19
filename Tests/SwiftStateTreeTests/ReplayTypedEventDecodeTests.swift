@@ -406,6 +406,33 @@ struct ReplayTypedEventDecodeTests {
         #expect(step.recordedHash == nil && step.isMatch, "no hash for the tick: unchanged, not a failure")
     }
 
+    @Test("Faults installed on a JSON view keep its decode allowance: the policy comes from the record, not the wrapper (#646)")
+    func faultWrapperKeepsTheJSONPolicy() async throws {
+        let live = replayDomainEvent(at: 1_800_000_000)
+        let path = try await recordedPath(emitting: live, form: .jsonView)
+        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: live), recordFilePath: path)
+        await runner.setFaultsForTesting(ReplayRunnerFaults())
+        let step = try #require(try await runner.step())
+        let replayed = try #require(step.replayFrame?.recordedEvents.first?.event as? ReplayDomainEvent)
+        #expect(replayed.whole == live.whole, "a whole-number float written as an integer reads back")
+    }
+
+    @Test("Each setFaultsForTesting replaces the earlier faults: read faults don't stack, and the encode fault clears (#646)",
+          arguments: ["state hash", "server events", "snapshot encode", "state hash missing"])
+    func faultsAreReplaced(fault: String) async throws {
+        let path = tempPath("sstr")
+        try await recordOneTick(makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), path: path)
+        let runner = try await ConcreteReevaluationRunner(definition: makeReplayDecodeLand(emitting: replayDomainEvent(at: 0)), recordFilePath: path)
+        await runner.setFaultsForTesting(ReplayRunnerFaults(
+            stateHashRead: fault == "state hash", serverEventsRead: fault == "server events", snapshotEncode: fault == "snapshot encode",
+            stateHashMissing: fault == "state hash missing"
+        ))
+        await runner.setFaultsForTesting(ReplayRunnerFaults())
+        let step = try #require(try await runner.step(), "\(fault): the earlier fault is gone")
+        #expect(step.recordedHash != nil, "\(fault): the record's hash is read again")
+        #expect(step.isMatch, "\(fault)")
+    }
+
     @Test("A snapshot that doesn't encode fails the step (A10), and the run through the service")
     func snapshotEncodeErrorFailsTheStep() async throws {
         let path = tempPath("sstr")
