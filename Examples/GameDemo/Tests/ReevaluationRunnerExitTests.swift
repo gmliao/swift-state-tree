@@ -72,12 +72,13 @@ struct ReevaluationRunnerExitTests {
 
     /// The directory that holds this test bundle, which is where `swift build` put the package's
     /// executables for the same configuration and scratch path. The test process names the bundle
-    /// in its arguments: on Linux the `.xctest` executable is `argv[0]`; on macOS the testing
-    /// helper is passed the bundle's executable inside `<name>.xctest/Contents/MacOS/`.
+    /// in its arguments: on Linux the `<name>.xctest` executable is `argv[0]`; on macOS the testing
+    /// helper is passed `<name>.xctest/Contents/MacOS/<name>`. Only the arguments: on Linux
+    /// `Bundle.allBundles` crashed the test process (a null dereference in CFBundleGetAllBundles),
+    /// and `dladdr` isn't visible from Swift's Glibc module.
     private static func productsDirectory() -> URL? {
-        let paths = CommandLine.arguments + Bundle.allBundles.map(\.bundlePath)
-        for path in paths {
-            let components = URL(fileURLWithPath: path).pathComponents
+        for argument in CommandLine.arguments {
+            let components = URL(fileURLWithPath: argument).standardizedFileURL.pathComponents
             guard let bundle = components.firstIndex(where: { $0.hasSuffix(".xctest") }) else { continue }
             return URL(fileURLWithPath: NSString.path(withComponents: Array(components[..<bundle])))
         }
