@@ -31,6 +31,7 @@ package enum PayloadNesting {
     /// Data nested deeper than `limit`.
     package struct TooDeep: Error, CustomStringConvertible, Sendable {
         package let limit: Int
+        package init(limit: Int) { self.limit = limit }
         package var description: String { "Nesting deeper than \(limit)" }
     }
 
