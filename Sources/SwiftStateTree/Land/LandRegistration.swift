@@ -53,25 +53,37 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Why a land whose records will be replayed has no record schema fingerprint (#521 D15).
     /// Checked only under `LandRegistrationContext.recordsForReplay`, and only when `sync` is nil.
     public let schemaFingerprint: SchemaFingerprintError?
+    /// Server event types a replay can't decode (#521 EV8): their descriptor has no decoder,
+    /// because the type isn't a `ServerEventPayload` (given to the deprecated
+    /// `ServerEventNode(type:)`) or the descriptor was built with the public
+    /// `AnyEventDescriptor` init. Checked only under `LandRegistrationContext.recordsForReplay`.
+    /// Empty when there are none.
+    public let serverEventsWithoutDecoder: [String]
 
     init(
         landType: String,
         payload: PayloadRegistrationError?,
         sync: SyncRegistrationError? = nil,
         duplicateHandlers: [DuplicateHandlerDeclaration] = [],
-        schemaFingerprint: SchemaFingerprintError? = nil
+        schemaFingerprint: SchemaFingerprintError? = nil,
+        serverEventsWithoutDecoder: [String] = []
     ) {
         self.landType = landType
         self.payload = payload
         self.sync = sync
         self.duplicateHandlers = duplicateHandlers
         self.schemaFingerprint = schemaFingerprint
+        self.serverEventsWithoutDecoder = serverEventsWithoutDecoder
     }
 
     public var description: String {
-        "land type '\(landType)' can't be registered: "
+        let undecodable = serverEventsWithoutDecoder.isEmpty ? nil
+            : "its records will be replayed, and these server event types can't be decoded from a record; "
+                + "register each with ServerEvents { Register(E.self) }: "
+                + serverEventsWithoutDecoder.joined(separator: ", ")
+        return "land type '\(landType)' can't be registered: "
             + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description)
-                + [schemaFingerprint?.description].compactMap { $0 })
+                + [schemaFingerprint?.description, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
 }
@@ -97,12 +109,23 @@ extension LandDefinition {
                 fingerprint = error
             }
         }
-        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil {
+        // EV8 (#521 PR 1b): a replay decodes every recorded server event through its
+        // descriptor, so a descriptor without a decoder can't replay.
+        let undecodable = context.recordsForReplay == true ? serverEventsWithoutDecoder() : []
+        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil || !undecodable.isEmpty {
             throw LandRegistrationError(
                 landType: id, payload: payload, sync: sync,
-                duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint
+                duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint,
+                serverEventsWithoutDecoder: undecodable
             )
         }
+    }
+
+    /// EV8: the server event types whose descriptor has no `decodeServerEvent`, by event name.
+    func serverEventsWithoutDecoder() -> [String] {
+        serverEventRegistry.registered
+            .filter { $0.decodeServerEvent == nil }
+            .map { "\($0.eventName) (\(String(reflecting: $0.type)))" }
     }
 
     /// EV1: the types the server writes positionally (its events, and each action's declared

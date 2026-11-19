@@ -105,7 +105,8 @@ public struct PayloadWithoutWriterError: Error, CustomStringConvertible {
 
 /// Thrown by a compressed encoding's positional writer for a payload that isn't a payload type:
 /// a dictionary, an array or a primitive, as an untyped event (`AnyServerEvent(type:payload:)`)
-/// or a record's decoded event carries. Such a value has no positional form. A server event
+/// carries. Land code emits typed events only and the replay land re-emits typed (#521), so
+/// only a framework bug builds one. Such a value has no positional form. A server event
 /// that throws it reaches no frame, so the land that emitted it ends with
 /// `LandFailure.Kind.eventEncode` (#544, #535); on `json` the value is written as is.
 public struct UntypedPayloadError: Error, CustomStringConvertible, Sendable, Equatable {
