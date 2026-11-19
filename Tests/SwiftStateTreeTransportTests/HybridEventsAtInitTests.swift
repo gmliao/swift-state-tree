@@ -25,6 +25,28 @@ actor HybridCountingTestTransport: Transport {
     }
 }
 
+/// The hybrid golden land, but each tick emits an untyped dictionary under the registered event's
+/// name (`emitAnyServerEventForTesting`): with MessagePack messages and payload compression on,
+/// its positional form fails.
+func makeUntypedEmitLand() -> LandDefinition<HybridGoldenState> {
+    Land("hybrid-event-frames", using: HybridGoldenState.self) {
+        ServerEvents { Register(HybridGoldenEvent.self) }
+        Lifetime {
+            Tick(every: .seconds(3600)) { (state: inout HybridGoldenState, ctx: LandContext) in
+                state.ticks += 1
+                ctx.emitAnyServerEventForTesting(
+                    AnyServerEvent(
+                        type: AnyServerEvent(HybridGoldenEvent(message: "", n: 0)).type,
+                        payload: AnyCodable(["message": AnyCodable("untyped"), "n": AnyCodable(state.ticks)])
+                    ),
+                    to: .all
+                )
+                ctx.requestSyncNow()
+            }
+        }
+    }
+}
+
 @Suite("Hybrid events decided at init: the encodes per event (#521 PR 1b-2a, D10)", .serialized)
 struct HybridEventsAtInitTests {
     struct Fixture {
@@ -44,9 +66,12 @@ struct HybridEventsAtInitTests {
 
     /// The hybrid golden land (`HybridEventFrameGoldenTests`), one player joined, counting from
     /// after the join.
-    static func make(_ config: TransportEncodingConfig) async throws -> Fixture {
+    static func make(
+        _ config: TransportEncodingConfig,
+        definition: LandDefinition<HybridGoldenState> = makeHybridGoldenLand()
+    ) async throws -> Fixture {
         let keeper = LandKeeper<HybridGoldenState>(
-            definition: makeHybridGoldenLand(),
+            definition: definition,
             initialState: HybridGoldenState(),
             autoStartLoops: false
         )
@@ -124,5 +149,23 @@ struct HybridEventsAtInitTests {
         #expect(outcome == .lost)
         #expect(f.since == (1, 0))
         #expect(await f.transport.frames.count == before)
+    }
+
+    @Test("MessagePack, from a land's turn: a payload whose body doesn't encode is lost after one encode and ends the land")
+    func messagePackBodyFailureFromATurnEndsTheLand() async throws {
+        let f = try await Self.make(.messagepack, definition: makeUntypedEmitLand())
+        let before = await f.transport.frames.count
+        await f.keeper.stepTickOnce()
+        #expect(f.since == (1, 0), "one body encode, no own frame")
+        // In-turn sync flushes the turn's events in its sync phase and ends the land in the same
+        // turn. The legacy path sends them through `sendEvent`, which submits the failure; a land
+        // with a tick applies it in its next tick, and this fixture's loops are off.
+        let inTurn = f.adapter.inTurnSyncEnabled
+        #expect(f.adapter.outputGate.failure?.position.stage == (inTurn ? .syncPhase : .eventFlush))
+        if !inTurn { await f.keeper.stepTickOnce() }
+        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        #expect(f.keeper.failure?.kind == .eventEncode)
+        #expect(f.adapter.outputGate.isClosed)
+        #expect(await f.transport.frames.count == before, "the failing turn sends nothing")
     }
 }
