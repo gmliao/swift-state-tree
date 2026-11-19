@@ -31,6 +31,16 @@ on:
         type: boolean
         default: false
 
+# A new push to a pull request cancels that pull request's run still in progress. Nothing else
+# shares a group, so nothing else is ever cancelled: a push (main, exp/**), a workflow_dispatch and
+# every call from the nightly (`full_matrix`, whatever event started the nightly) each get a group
+# of their own run. That matters even with cancel-in-progress false: GitHub keeps one pending run
+# per group and cancels the older pending one. The prefix keeps this workflow's groups apart from
+# the other called workflow's in the same nightly run, which shares its run_id.
+concurrency:
+  group: build-and-test-${{ github.event_name == 'pull_request' && !inputs.full_matrix && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !inputs.full_matrix }}
+
 jobs:
   build:
     name: build (in-turn sync ${{ matrix.in_turn_sync }})
@@ -489,6 +499,13 @@ jobs:
     - name: Nightly scripts
       run: scripts/test-nightly-scripts.sh
       timeout-minutes: 2
+
+    # Notes/plans/README.md merges with git's union driver (.gitattributes): a row one side changed
+    # comes out twice. One row per plan, and no conflict marker.
+    - name: Plan index
+      run: |
+        scripts/check-plan-index.sh --self-test
+        scripts/check-plan-index.sh
 
     # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
     # proves the check still finds what it looks for before the workflows are checked.
