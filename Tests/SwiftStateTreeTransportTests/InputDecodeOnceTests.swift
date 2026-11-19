@@ -286,7 +286,7 @@ struct InputDecodeOnceTests {
         await fixture.adapter.onMessage(try fixture.actionFrame("after"), from: fixture.session)
         #expect(await fixture.keeper.currentState().hits == ["action:after"])
         let errors = await fixture.errors()
-        #expect(errors.map(\.code) == [.eventInvalidPayload])
+        #expect(errors.map(\.code) == [ErrorCode.eventInvalidPayload.rawValue])
     }
 
     @Test("A MessagePack client event or action holding a non-finite number is refused, as the round trip refused it",
