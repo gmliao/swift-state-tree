@@ -58,7 +58,7 @@ Unchanged except that the build forwards no level. Step 1 as built:
 - `attach()` installs the router as the transport's delegate, and the host awaits it before the route goes live;
 - the failure-stop wiring stays in the init, which is synchronous and runs before any land exists, so `attach()` only installs the delegate.
 
-`Deadline` stays in `Sources` for now. No library code calls `raceDeadline`: `WebSocketSessionHandler`'s close grace uses the event loop's `scheduleTask`. Its callers are tests in all three test targets. Moving it would make `SwiftStateTreeTests` depend on the support target, which step 1 doesn't otherwise need, so the move is a later cleanup. The support target holds `TestGate`, `RecordingConnection` and the record field walk and list.
+`Deadline` stays in `Sources` for now. No library code calls `raceDeadline`: `WebSocketSessionHandler`'s close grace uses the event loop's `scheduleTask`. Its callers are tests in all three test targets. Moving it would make `SwiftStateTreeTests` depend on the support target, which step 1 doesn't otherwise need, so the move is a later cleanup. The support target holds `TestGate`, `RecordingConnection` and the record field probe and list.
 
 ### Golden captures (§5.8, replaced)
 
@@ -246,7 +246,7 @@ The test hooks of §5.3 and §5.4 keep their meaning on the branch. One that ret
 **Protected paths.** The branch may not change:
 - the golden folder and its index;
 - the harness's runner, scenarios, barrier, comparator and oracle (`Tests/SwiftStateTreeNIOTests/Differential/`), except `ExpectedDifferences.swift`, `RetiredRows.swift` and `Differential/Branch/`;
-- the record field walk and list (`Tests/SwiftStateTreeTestSupport/RecordField*.swift`);
+- the record field probe and list (`Tests/SwiftStateTreeTestSupport/RecordField*.swift`);
 - the harness workflow and its scripts: the gate run's workflow file, the gate script and the recorder script.
 
 A change to them goes to `main` first, under the same review, and reaches the branch by merging `main`.
