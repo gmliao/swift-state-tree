@@ -82,7 +82,7 @@ package enum SessionPerPlayerPolicy: Sendable, Equatable {
 }
 
 /// Adapts Transport events to LandKeeper calls.
-public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
+package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
 

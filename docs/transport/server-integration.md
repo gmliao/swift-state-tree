@@ -6,7 +6,7 @@ This guide describes how to integrate SwiftStateTree with **any** HTTP/WebSocket
 
 ## Contract: What Any Server Must Do
 
-1. **Create a `WebSocketTransport`** per land type (or per path) and connect it to a `LandRouter` or `TransportAdapter`.
+1. **Create a `WebSocketTransport`** per land type (or per path) and connect it to a `TransportDelegate` such as `LandRouter`.
 2. **On WebSocket upgrade**: resolve auth from the handshake (path + URI), then call `WebSocketTransport.handleConnection(sessionID:connection:authInfo:)`.
 3. **Optionally** expose HTTP endpoints: `/schema` (for clients/codegen) and `/admin/*` (for management).
 
@@ -58,7 +58,7 @@ Your server must provide a type that conforms to `WebSocketConnection` (send/rec
 
 | Step | Action |
 |------|--------|
-| 1 | Create `WebSocketTransport` and set its `delegate` to your `TransportAdapter` (or equivalent). |
+| 1 | Create `WebSocketTransport` and set its `delegate` to your `LandRouter` (or another `TransportDelegate`). |
 | 2 | On WebSocket upgrade: mint the connection's ID with `SessionID.mint()`, get path and full URI, then call your `AuthInfoResolverProtocol.resolve(path:uri:)` (or skip auth and pass `nil`). |
 | 3 | Call `transport.handleConnection(sessionID: sessionID, connection: yourConnection, authInfo: resolvedAuthInfo)`. |
 | 4 | (Optional) Expose `/schema` and admin routes using your framework’s router. |
