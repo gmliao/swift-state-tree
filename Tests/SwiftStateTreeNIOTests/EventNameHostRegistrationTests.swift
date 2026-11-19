@@ -171,10 +171,13 @@ struct EventNameHostRegistrationTests {
         #expect(await host.realm.isRegistered(landType: "eh-generic-replay"))
     }
 
-    @Test("The helpers' live check reports EV2 and EV3 in one throw, and maps nothing", arguments: [false, true])
-    func liveCheckReportsEveryRow(generic: Bool) async throws {
+    @Test(
+        "The helpers' live check reports EV2 and EV3 in one throw, and maps nothing",
+        arguments: ["same land", "separate replay land", "generic replay"]
+    )
+    func liveCheckReportsEveryRow(overload: String) async throws {
         let host = makeHost()
-        let landType = generic ? "eh-both-generic" : "eh-both-same"
+        let landType = "eh-both-" + overload.replacingOccurrences(of: " ", with: "-")
         let land = Land(landType, using: EventNameHostState.self) {
             ServerEvents {
                 Register(EHBellEvent.self)
@@ -185,18 +188,29 @@ struct EventNameHostRegistrationTests {
         var configuration = NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
         configuration.eventHashes = ["EHBell": 1]
         let error = try await #require(throws: LandRegistrationError.self) {
-            if generic {
-                try await host.registerWithGenericReplay(
+            switch overload {
+            case "same land":
+                try await host.registerWithReevaluationSameLand(
                     landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
                     liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
                 )
-            } else {
-                try await host.registerWithReevaluationSameLand(
+            case "separate replay land":
+                // The replay definition passes every row, so the throw is the live definition's.
+                try await host.registerWithReevaluation(
+                    landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
+                    liveWebSocketPath: "/game/\(landType)",
+                    replayLand: Land("\(landType)-replay", using: EventNameHostState.self) { Rules {} },
+                    replayInitialState: EventNameHostState(),
+                    configuration: configuration, reevaluation: feature()
+                )
+            default:
+                try await host.registerWithGenericReplay(
                     landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
                     liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
                 )
             }
         }
+        #expect(error.landType == landType, "the live definition's check throws, not the replay's")
         #expect(error.wireNameMismatches.count == 1, "\(error)")
         #expect(error.serverEventsWithoutHash.map { $0.hasPrefix("EHLive (") } == [true], "\(error)")
         #expect(await host.transportForTesting(webSocketPath: "/game/\(landType)") == nil)
