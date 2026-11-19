@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# The sync-tables-off job runs only the Transport and NIO tests, with USE_SYNC_TABLES=false and
+# Safe test selection for the push runs' variant jobs, in the sense of Rothermel and Harrold
+# (TOSEM 1997): a run is left out only if it can't reach the variable its job varies. The nightly
+# runs everything (full_matrix), as the backstop. Two sections:
+#
+# 1. sync-tables-off. The sync-tables-off job runs only the Transport and NIO tests, with USE_SYNC_TABLES=false and
 # TYPED_LEAF_VALUES=false. That is safe only while no other test can read those two flags, so this
-# check fails if one could. It is a safe regression test selection in the sense of Rothermel and
-# Harrold (TOSEM 1997): a test is left out only if it can't reach the env reads.
+# check fails if one could.
 #
 # The flags are read by every TransportEnvConfig (its `useSyncTables` and `typedLeafValues` default
 # to the environment, a config built with `init` included) and by every TransportAdapter built
@@ -16,16 +19,28 @@
 #   R3 nothing builds a LandManager, LandRouter, LandRealm or a land server or host, which build
 #      adapters from the environment.
 # The filtered targets are read from the job itself: its FILTER line in
-# .github/workflows/build-and-test.yml, whose alternatives must each be a whole target (`Name\.`).
-# So the job and this check can't name different targets.
+# .github/workflows/build-and-test.yml, whose alternatives must each be a whole target (`Name\.`),
+# and its one `swift test`, which must pass `${FILTER:+--filter "$FILTER"}`. So the job and this
+# check can't name different targets, and the job can't run without the filter it declares.
 #
 # What it can't see (the nightly runs the whole suite in that job, as the backstop): R1 reads the
 # argument labels, not their types, so a non-optional expression that is nil at run time isn't
 # caught; R2 is textual, so it doesn't check that the pins set the same variable as the
-# construction, and it counts a pin under an inactive `#if` or in a closure that never runs. A
-# dump of the package this check can't read fails it rather than scanning nothing.
+# construction, and it counts a pin under an inactive `#if` or in a closure that never runs. The
+# lexer is simple: a string interpolation holding a nested string literal can end a literal early,
+# and a comma in a generic argument (`make<A, B>(…)`) ends the extracted expression there. A dump of
+# the package this check can't read fails it rather than scanning nothing.
 #
-# Usage: scripts/check-filtered-tests-pin-transport-env.sh [--self-test] [--package-json <file>]
+# 2. The build job's in-turn sync legs. On a push, the false leg skips the steps whose `if:` is
+# `matrix.in_turn_sync == 'true' || inputs.full_matrix`.
+#   S6 the job's matrix has one axis, in_turn_sync, used only as IN_TURN_SYNC (and in the job's
+#      name and that `if:`): the legs differ in one variable, read at run time. A new axis, or the
+#      axis in a compiler flag or another env var, fails until it is examined.
+#   S4 a one-leg step runs only `scripts/<name>.sh [--self-test]`, and neither those scripts nor any
+#      script they name (`scripts/*.sh` or `.py`, followed) mentions IN_TURN_SYNC, inTurnSync or
+#      InTurnSync. Textual: a script that builds the flag's name from parts isn't seen.
+#
+# Usage: scripts/check-variant-test-selection.sh [--self-test] [--package-json <file>]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 exec python3 - "$@" <<'PY'
@@ -39,7 +54,9 @@ import tempfile
 WORKFLOW = ".github/workflows/build-and-test.yml"
 JOB = "sync-tables-off"
 TRANSPORT = "SwiftStateTreeTransport"
-# The job's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`.
+# The job's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`, and the
+# one `swift test` that must use it.
+FILTERED_RUN = '${FILTER:+--filter "$FILTER"}'
 FILTER_LINE = re.compile(r"""^\s*FILTER:\s*\$\{\{\s*!inputs\.full_matrix\s*&&\s*'([^']*)'\s*\|\|\s*''\s*\}\}\s*$""")
 
 ADAPTER = re.compile(r"\bTransportAdapter\s*(?:<)?")
@@ -152,6 +169,10 @@ def filtered_targets(workflow):
     found = [m for m in map(FILTER_LINE.match, lines[start:end]) if m]
     if len(found) != 1:
         return set(), [f"{WORKFLOW}: the {JOB} job has {len(found)} FILTER lines of the form this check reads, not one"]
+    runs = [line for line in lines[start:end] if not line.lstrip().startswith("#") and re.search(r"\bswift test\b", line)]
+    if len(runs) != 1 or FILTERED_RUN not in runs[0]:
+        return set(), [f"{WORKFLOW}: the {JOB} job must run one `swift test {FILTERED_RUN}`; it has {len(runs)} swift test line(s)"
+                       + ("" if len(runs) != 1 else " and that one ignores FILTER")]
     names, errors = set(), []
     for alternative in found[0].group(1).split("|"):
         m = re.fullmatch(r"(\w+)\\\.", alternative)
@@ -227,7 +248,8 @@ def graph_errors(package):
     targets = package.get("targets")
     if not isinstance(targets, list) or not any(t.get("type") == "test" for t in targets):
         return ["the package dump lists no test targets: this check can't read it (another toolchain's format?)"]
-    errors = []
+    errors = [f"{t.get('name')}: a test target with no dependencies field: this check can't read the dump"
+              for t in targets if t.get("type") == "test" and not isinstance(t.get("dependencies"), list)]
     for t in targets:
         for d in t.get("dependencies", []):
             unknown = set(d) - DEPENDENCY_KINDS
@@ -285,6 +307,119 @@ def check(root, package, filtered):
     return errors, files
 
 
+# Section 2: the build job's in-turn-sync legs. Steps that run in one leg only are safe while the
+# leg's one variable can't change what they check.
+BUILD_JOB = "build"
+LEG_AXIS = "in_turn_sync"
+LEG_ENV = "IN_TURN_SYNC"
+ONE_LEG_IF = "if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}"
+# What the one-leg steps' scripts must not name: the flag, its key constant or its reader.
+FLAG_NAMES = re.compile(r"IN_TURN_SYNC|\binTurnSync\b|\bInTurnSync\b")
+SCRIPT_REF = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.(?:sh|py))\b")
+MATRIX_USE = re.compile(r"\bmatrix\.(\w+)")
+
+
+def job_lines(workflow, job):
+    """The job's lines (its header included), or None."""
+    lines = workflow.splitlines()
+    start = next((i for i, line in enumerate(lines) if re.match(r"^  " + re.escape(job) + r":\s*$", line)), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [\w-]+:\s*$", lines[i])), len(lines))
+    return lines[start:end]
+
+
+def job_steps(lines):
+    """The job's steps, each a list of its lines (a step starts at `    - `)."""
+    steps, current = [], None
+    for line in lines:
+        if re.match(r"^    - ", line):
+            current = [line]
+            steps.append(current)
+        elif current is not None and (line.startswith("      ") or not line.strip()):
+            current.append(line)
+        elif not line.lstrip().startswith("#"):
+            current = None
+    return steps
+
+
+def leg_errors(workflow, read_script):
+    """S6: the build job's matrix has one axis, in_turn_sync, used only as IN_TURN_SYNC (and in the
+    job's name and the one-leg `if:`), so the legs differ in that one runtime variable. S4: a step
+    that runs in one leg only runs scripts, and neither they nor the scripts they name read it.
+    Returns the errors and the one-leg steps' names."""
+    lines = job_lines(workflow, BUILD_JOB)
+    if lines is None:
+        return [f"{WORKFLOW}: no {BUILD_JOB} job"], []
+    errors, where = [], f"{WORKFLOW}: the {BUILD_JOB} job"
+    code = [line for line in lines if not line.lstrip().startswith("#")]
+    m = next((i for i, line in enumerate(code) if re.match(r"^      matrix:\s*$", line)), None)
+    axes = []
+    if m is not None:
+        for line in code[m + 1:]:
+            if not line.startswith("        "):
+                break
+            key = re.match(r"^        ([\w-]+):", line)
+            if key:
+                axes.append(key.group(1))
+    if axes != [LEG_AXIS]:
+        errors.append(f"{where}'s matrix has the axes {axes}, not only {LEG_AXIS}: a new axis must be examined before its legs skip steps (S6)")
+    allowed = (
+        re.compile(r"^    name: .*\$\{\{ matrix\.in_turn_sync \}\}.*$"),
+        re.compile(r"^      " + LEG_ENV + r": \$\{\{ matrix\.in_turn_sync \}\}\s*$"),
+        re.compile(r"^      " + re.escape(ONE_LEG_IF) + r"\s*$"),
+    )
+    for line in code:
+        if MATRIX_USE.search(line) and not any(a.match(line) for a in allowed):
+            errors.append(f"{where} uses the matrix outside {LEG_ENV}, its name and the one-leg if: {line.strip()!r} (S6)")
+    one_leg, seen = [], set()  # a script named twice is read once
+    for step in job_steps(lines):
+        conditioned = [line for line in step if re.match(r"^\s*-?\s*if:", line)]
+        if not any(MATRIX_USE.search(line) for line in conditioned):
+            continue
+        name = next((re.sub(r"^\s*-?\s*name:\s*", "", line).strip() for line in step if re.match(r"^\s*-?\s*name:", line)), "?")
+        one_leg.append(name)
+        run = [line for line in step if not line.lstrip().startswith("#")]
+        start = next((i for i, line in enumerate(run) if re.match(r"^\s*-?\s*run:", line)), None)
+        if start is None:
+            errors.append(f"{where}'s one-leg step {name!r} has no run: (S4)")
+            continue
+        head = re.sub(r"^\s*-?\s*run:\s*", "", run[start]).strip()
+        if head == "|":
+            body = []
+            for line in run[start + 1:]:
+                if line.strip() and not line.startswith("        "):
+                    break  # the step's next key (`timeout-minutes:`)
+                body.append(line.strip())
+            commands = [c for c in body if c]
+        else:
+            commands = [head]
+        for command in commands:
+            if not re.fullmatch(r"scripts/[\w./-]+\.sh(\s+--self-test)?", command):
+                errors.append(f"{where}'s one-leg step {name!r} runs {command!r}: only scripts that don't read {LEG_ENV} may skip a leg (S4)")
+                continue
+            todo = [command.split()[0]]
+            while todo:
+                script = todo.pop()
+                if script in seen:
+                    continue
+                seen.add(script)
+                text = read_script(script)
+                if text is None:
+                    errors.append(f"{where}'s one-leg step {name!r}: {script} doesn't exist (S4)")
+                    continue
+                hit = FLAG_NAMES.search(text)
+                if hit:
+                    errors.append(f"{script}:{line_of(text, hit.start())}: names {hit.group(0)}, so its step can't run in one leg only (S4)")
+                todo += SCRIPT_REF.findall(text)
+    return errors, one_leg
+
+
+def read_repo_script(path):
+    p = pathlib.Path(path)
+    return p.read_text(encoding="utf-8") if p.is_file() else None
+
+
 def package_from(args):
     if "--package-json" in args:
         return json.loads(pathlib.Path(args[args.index("--package-json") + 1]).read_text(encoding="utf-8"))
@@ -323,7 +458,8 @@ def self_test():
         "jobs:\n  build:\n    steps:\n    - run: swift test\n"
         f"  {JOB}:\n    steps:\n    - name: Run\n      env:\n"
         f"        FILTER: ${{{{ !inputs.full_matrix && '{regex}' || '' }}}}\n"
-        "      run: swift test\n  per-player:\n    steps: []\n"
+        "      run: |\n        set -o pipefail\n        swift test ${FILTER:+--filter \"$FILTER\"} 2>&1 | tee out.log\n"
+        "  per-player:\n    steps:\n    - run: swift test --filter 'X\\.'\n"
     )
     both = job(r"SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.")
     filtered, filter_errors = filtered_targets(both)
@@ -381,6 +517,9 @@ def self_test():
         ("no FILTER line in the job fails", both.replace("FILTER:", "FILTERS:"), set(), "FILTER lines"),
         ("a FILTER line in another job only fails", both.replace(f"  {JOB}:", "  other:"), set(), f"no {JOB} job"),
         ("an alternative that isn't a whole target fails", job(r"SwiftStateTreeTransportTests\.|NIO"), None, "isn't a whole target"),
+        ("a swift test that ignores FILTER fails", both.replace(' ${FILTER:+--filter "$FILTER"}', ""), None, "ignores FILTER"),
+        ("a second swift test in the job fails", both.replace("2>&1 | tee out.log\n", "2>&1 | tee out.log\n        swift test\n"), None, "2 swift test line(s)"),
+        ("a swift test only in a comment doesn't count", both.replace("      run: |\n", "      # swift test\n      run: |\n"), {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}, None),
     ]:
         names, errors = filtered_targets(workflow)
         ok = (not errors and names == want_names) if want_error is None else any(want_error in e for e in errors)
@@ -415,6 +554,8 @@ def self_test():
     # A dump this check can't read fails it (fail closed), whatever the sources hold.
     for name, pkg, want in [
         ("a dump with no test targets", {"targets": package()["targets"][:3]}, "no test targets"),
+        ("a test target with no dependencies field",
+         package({"name": "NewTests", "type": "test"}), "no dependencies field"),
         ("a dependency of an unknown kind",
          package({"name": "NewTests", "type": "test", "dependencies": [{"macro": ["X", None]}]}), "of a kind this check doesn't know"),
     ]:
@@ -448,21 +589,64 @@ def self_test():
     if filter_errors:
         print(f"FAIL self-test: the sample job's filter doesn't parse: {filter_errors}")
         failed += 1
+    failed += leg_self_test()
+    return failed
+
+
+def leg_self_test():
+    """Section 2's cells: the build job's matrix (S6) and its one-leg steps' scripts (S4)."""
+    def build(matrix="        in_turn_sync: [\"true\", \"false\"]\n", env="      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}\n",
+              lint_if="      " + ONE_LEG_IF + "\n", lint_run="      run: |\n        scripts/lint.sh --self-test\n        scripts/lint.sh\n",
+              extra=""):
+        return ("jobs:\n  build:\n    name: build (in-turn sync ${{ matrix.in_turn_sync }})\n    strategy:\n      matrix:\n"
+                "        # a comment\n" + matrix + "    env:\n" + env + "\n    steps:\n    - uses: actions/checkout@v4\n"
+                "    - name: Lint\n" + lint_if + lint_run + "\n    - name: Snippets\n" + lint_if + "      run: scripts/snippets.sh\n"
+                "      timeout-minutes: 5\n" + extra + "    - name: Run tests\n      run: swift test\n  other:\n    steps:\n    - run: x\n")
+    scripts = {"scripts/lint.sh": "echo lint\n", "scripts/snippets.sh": "swift build --target \"$t\"\nscripts/helper.py\n",
+               "scripts/helper.py": "print(1)\n"}
+    cells = [
+        ("today's shape: two one-leg steps, scripts only", build(), scripts, None),
+        ("a second matrix axis fails", build(matrix="        in_turn_sync: [\"true\", \"false\"]\n        rows: [on, off]\n"), scripts, "not only in_turn_sync"),
+        ("a renamed axis fails", build(matrix="        sync: [\"true\", \"false\"]\n", env="      IN_TURN_SYNC: ${{ matrix.sync }}\n"), scripts, "not only in_turn_sync"),
+        ("the axis as another env var fails", build(env="      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}\n      ROWS: ${{ matrix.in_turn_sync }}\n"), scripts, "outside IN_TURN_SYNC"),
+        ("the axis in a compiler flag fails",
+         build(extra="    - name: Build\n      run: swift build -Xswiftc -DSYNC_${{ matrix.in_turn_sync }}\n"), scripts, "outside IN_TURN_SYNC"),
+        ("a one-leg if of another form fails", build(lint_if="      if: matrix.in_turn_sync == 'true'\n"), scripts, "outside IN_TURN_SYNC"),
+        ("a one-leg step running swift test fails",
+         build(lint_run="      run: swift test --filter X\n"), scripts, "only scripts that don't read"),
+        ("a one-leg script naming IN_TURN_SYNC fails", build(), {**scripts, "scripts/lint.sh": "[ \"$IN_TURN_SYNC\" = true ]\n"}, "names IN_TURN_SYNC"),
+        ("a one-leg script naming InTurnSync fails", build(), {**scripts, "scripts/lint.sh": "grep InTurnSync x\n"}, "names InTurnSync"),
+        ("a script it calls naming the key fails", build(), {**scripts, "scripts/helper.py": "k = 'inTurnSync'\n"}, "helper.py:1: names inTurnSync"),
+        ("a one-leg script that doesn't exist fails", build(), {k: v for k, v in scripts.items() if k != "scripts/lint.sh"}, "doesn't exist"),
+        ("a step with no if runs in both legs, whatever it runs", build(extra="    - name: Free\n      run: scripts/free.sh\n"),
+         {**scripts, "scripts/free.sh": "echo $IN_TURN_SYNC\n"}, None),
+        ("the axis only in a comment doesn't count", build(extra="    # ${{ matrix.rows }}\n"), scripts, None),
+    ]
+    failed = 0
+    for name, workflow, files, want in cells:
+        errors, one_leg = leg_errors(workflow, files.get)
+        ok = (not errors and one_leg == ["Lint", "Snippets"]) if want is None else any(want in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {one_leg} {errors}"))
+        failed += not ok
     return failed
 
 
 args = sys.argv[1:]
 if args[:1] == ["--self-test"]:
     sys.exit(1 if self_test() else 0)
-filtered, errors = filtered_targets(pathlib.Path(WORKFLOW).read_text(encoding="utf-8"))
+workflow = pathlib.Path(WORKFLOW).read_text(encoding="utf-8")
+filtered, errors = filtered_targets(workflow)
 files = 0
 if not errors:
     package = package_from(args)
     errors, files = check(pathlib.Path("."), package, filtered)
-for e in errors:
+leg, one_leg = leg_errors(workflow, read_repo_script)
+for e in errors + leg:
     print(f"::error::{e}")
 if not errors:
     names = ", ".join(n for n, _ in scanned_targets(package, filtered)) or "none"
-    print(f"filtered-tests transport env: {JOB} runs {', '.join(sorted(filtered))} on a push; {files} files in the other targets that reach {TRANSPORT} ({names}) pin both flags")
-sys.exit(1 if errors else 0)
+    print(f"variant test selection: {JOB} runs {', '.join(sorted(filtered))} on a push; {files} files in the other targets that reach {TRANSPORT} ({names}) pin both flags")
+if not leg:
+    print(f"variant test selection: the {BUILD_JOB} job's legs differ only in {LEG_ENV}; {len(one_leg)} steps run in one leg ({', '.join(one_leg) or 'none'}), and their scripts don't read it")
+sys.exit(1 if errors or leg else 0)
 PY

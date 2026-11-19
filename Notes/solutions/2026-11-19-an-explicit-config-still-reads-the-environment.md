@@ -26,7 +26,7 @@ related:
 
 **Root cause.** `TransportEnvConfig.useSyncTables`, `perPlayerSyncTables` and `typedLeafValues` are stored properties whose defaults are statics read from the process environment. Every config gets them, one built with `init` included, so a whole test run can be switched from outside. Passing an explicit config pins only the properties the test sets. "Passes a config" and "doesn't read the environment" are different claims.
 
-**Fix.** The three helpers pin `typedLeafValues` too (typed leaf values off stays covered explicitly by `SyncTablesByteIdentityTests`). `DebugProjectionWireShapeTests`, which built its adapter with no config, got explicit cells for both diff paths. `scripts/check-filtered-tests-pin-transport-env.sh` (#642) now fails if a test outside the filter could read the flags: an adapter without a config or with a possibly nil one, a config that doesn't set both flags in its function body, or a land manager or router, which build adapters from the environment.
+**Fix.** The three helpers pin `typedLeafValues` too (typed leaf values off stays covered explicitly by `SyncTablesByteIdentityTests`). `DebugProjectionWireShapeTests`, which built its adapter with no config, got explicit cells for both diff paths. `scripts/check-variant-test-selection.sh` (#642) now fails if a test outside the filter could read the flags: an adapter without a config or with a possibly nil one, a config that doesn't set both flags in its function body, or a land manager or router, which build adapters from the environment.
 
 **Prevention.**
 - **To pin a config, set every property whose default is read from the environment.** Constructing it explicitly is not enough. Read the type's property defaults, not only its `init`.
