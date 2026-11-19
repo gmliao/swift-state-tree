@@ -293,21 +293,43 @@ indirect enum DiffValue: Codable, Equatable, Sendable {
     }
 
     static func fromJSON(_ data: Data) throws -> DiffValue {
-        from(json: try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
+        try JSONDecoder().decode(JSONTree.self, from: data).value
     }
 
-    private static func from(json: Any) -> DiffValue {
-        switch json {
-        case is NSNull: return .null
-        case let number as NSNumber:
-            if CFGetTypeID(number) == CFBooleanGetTypeID() { return .bool(number.boolValue) }
-            if CFNumberIsFloatType(number) { return .double(number.doubleValue) }
-            if number.int64Value >= 0, number.uint64Value > UInt64(Int64.max) { return .uint(number.uint64Value) }
-            return .int(number.int64Value)
-        case let string as String: return .string(string)
-        case let array as [Any]: return .array(array.map { from(json: $0) })
-        case let object as [String: Any]: return .object(object.mapValues { from(json: $0) })
-        default: return .string(String(describing: json))
+    /// A JSON value decoded by its token, the same on every platform: `true`/`false` only as a
+    /// bool (tried first), a number as a signed integer when it is one, as an unsigned one above
+    /// `Int64.max`, and as a double otherwise. Not through `NSNumber`, whose bool and float
+    /// tests are CoreFoundation's and differ on Linux.
+    private struct JSONTree: Decodable {
+        let value: DiffValue
+
+        init(from decoder: Decoder) throws {
+            if var array = try? decoder.unkeyedContainer() {
+                var items: [DiffValue] = []
+                while !array.isAtEnd { items.append(try array.decode(JSONTree.self).value) }
+                value = .array(items)
+                return
+            }
+            if let object = try? decoder.container(keyedBy: AnyKey.self) {
+                var fields: [String: DiffValue] = [:]
+                for key in object.allKeys { fields[key.stringValue] = try object.decode(JSONTree.self, forKey: key).value }
+                value = .object(fields)
+                return
+            }
+            let single = try decoder.singleValueContainer()
+            if single.decodeNil() { value = .null }
+            else if let bool = try? single.decode(Bool.self) { value = .bool(bool) }
+            else if let int = try? single.decode(Int64.self) { value = .int(int) }
+            else if let uint = try? single.decode(UInt64.self) { value = .uint(uint) }
+            else if let double = try? single.decode(Double.self) { value = .double(double) }
+            else { value = .string(try single.decode(String.self)) }
+        }
+
+        private struct AnyKey: CodingKey {
+            let stringValue: String
+            init?(stringValue: String) { self.stringValue = stringValue }
+            var intValue: Int? { nil }
+            init?(intValue: Int) { nil }
         }
     }
 
