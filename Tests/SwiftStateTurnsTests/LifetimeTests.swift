@@ -38,7 +38,7 @@ struct LifetimeTests {
         // Once the result is handled, nothing holds the actor (a condition, not a delay: each
         // yield lets the effect's task run its next step).
         for _ in 0 ..< 10_000 where released != nil {
-            await Task.yield() // wall-clock: not time: yields until the effect's task lets the actor go (no event for a deinit)
+            await Task.yield() // wall-clock: not time: yields until the effect's task lets the actor go and the weak reference clears
         }
         #expect(released == nil)
         await f.wait("cancelled deadline 9")

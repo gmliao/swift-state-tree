@@ -146,6 +146,7 @@ lint() {  # root
   LINT_ISOLATED="$ISOLATED_BOUNDARIES" LINT_MARKERS="$ALLOW_MARKERS" awk -F'\t' '
     function core(p) { return p ~ /^Sources\/SwiftStateTurns(Macros)?\// }
     function allowed(list, rule) { return index("," list ",", "," rule ",") > 0 }
+    function last(n) { sub(/.*\./, "", n); return n }
     function word(text, w) { return text ~ ("(^|[^A-Za-z0-9_])" w "([^A-Za-z0-9_]|$)") }
     # The conformance list of a type, extension or protocol header: after the name, generics,
     # `where` and the body removed.
@@ -178,13 +179,21 @@ lint() {  # root
         next
       }
       list = conformances(text)
+      # On a protocol, `where Self: PlainData` refines PlainData just as `: PlainData` does.
+      if (kind == "protocol") {
+        wh = text; sub(/\{.*/, "", wh)
+        if (match(wh, /[ \t]where[ \t]/)) {
+          wh = substr(wh, RSTART + RLENGTH)
+          if (wh ~ /(^|[^A-Za-z0-9_])Self[ \t]*:[^,]*(^|[^A-Za-z0-9_])PlainData([^A-Za-z0-9_]|$)/) list = list ", PlainData"
+        }
+      }
       if (word(list, "PlainData") && !allowed(allow, "plain-data")) {
         if (kind == "protocol")
           print path ":" n ": [plain-data] a protocol refining PlainData lets a type conform without @PlainData"
         else
           print path ":" n ": [plain-data] a hand-written PlainData conformance; use @PlainData"
       }
-      if (word(list, "TurnActor")) actors[name] = 1
+      if (word(list, "TurnActor")) actors[last(name)] = 1
       if (kind != "extension" && kind != "protocol" && word(list, "TurnMachine")) machineFile[path] = 1
       if (kind == "extension" && word(list, "TurnMachine")) machineFile[path] = 1
       next
@@ -202,22 +211,22 @@ lint() {  # root
       if (!core(path)) {
         # machine-file
         if ((path in machineFile) && !allowed(allow, "machine-file") &&
-            code ~ /(^|[^A-Za-z0-9_.])Task[ \t]*(\{|\(|<|\.init|\.detached)|nonisolated\(unsafe\)|@unchecked[ \t]+Sendable/)
+            code ~ /(^|[^A-Za-z0-9_.])Task[ \t]*(\{|\(|<|\.init|\.detached|$)|nonisolated\(unsafe\)|@unchecked[ \t]+Sendable/)
           print path ":" n ": [machine-file] no task, nonisolated(unsafe) or @unchecked Sendable in a machine'"'"'s file"
         # let-core: a member of a conforming type'"'"'s declaration or extension.
         if (body > 0 && depth == body) {
           # Only what precedes the first brace on the line is at member level.
           member = code; sub(/\{.*/, "", member)
-          if (member ~ /(^|[^A-Za-z0-9_])let[ \t]+core([^A-Za-z0-9_]|$)/ && bodyKind != "extension") hasLet[bodyName] = 1
+          if (member ~ /(^|[^A-Za-z0-9_])let[ \t]+core([^A-Za-z0-9_]|$)/ && bodyKind != "extension") hasLet[bodyLoc] = 1
           if (member ~ /(^|[^A-Za-z0-9_])var[ \t]+core([^A-Za-z0-9_]|$)/) {
-            if (allowed(allow, "let-core")) markedVar[bodyName] = 1
+            if (allowed(allow, "let-core")) markedVar[bodyLoc] = 1
             else print path ":" n ": [let-core] a TurnActor'"'"'s core is a stored let, not a var"
           }
         }
         if (match(code, /(^|[^A-Za-z0-9_@.])(struct|class|actor|extension)[ \t]+[A-Za-z_][A-Za-z0-9_.]*/)) {
           decl = substr(code, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", decl)
           split(decl, parts, /[ \t]+/)
-          if (parts[2] in actors) { pendingName = parts[2]; pendingKind = parts[1]; pendingLine = n }
+          if (last(parts[2]) in actors) { pendingName = last(parts[2]); pendingKind = parts[1]; pendingLine = n }
         }
       }
       before = depth
@@ -225,7 +234,8 @@ lint() {  # root
       if (pendingName != "" && index(code, "{") > 0) {
         # The body opens on this line: its members are one level below the brace.
         body = before + 1; bodyName = pendingName; bodyKind = pendingKind; pendingName = ""
-        if (bodyKind != "extension") { primary[bodyName] = path ":" pendingLine }
+        bodyLoc = path ":" pendingLine
+        if (bodyKind != "extension") { primary[bodyLoc] = bodyName }
         if (depth < body) body = 0
       } else if (body > 0 && depth < body) {
         body = 0
@@ -233,9 +243,11 @@ lint() {  # root
       next
     }
     END {
-      for (a in actors) {
-        if ((a in primary) && !(a in hasLet) && !(a in markedVar))
-          print primary[a] ": [let-core] a TurnActor declares '"'"'let core'"'"' as a member"
+      # Each primary declaration of a TurnActor name needs its own `let core`: two nested
+      # types can share a bare name.
+      for (loc in primary) {
+        if (!(loc in hasLet) && !(loc in markedVar))
+          print loc ": [let-core] a TurnActor declares '"'"'let core'"'"' as a member"
       }
       # Allow markers and assumeIsolated calls, against their lists.
       split(ENVIRON["LINT_MARKERS"], rows, "\n")
@@ -302,7 +314,7 @@ let text = "struct S: PlainData {}"
 struct Model: TurnMachine { var n: Int }
 struct Box<T: PlainData>: Sendable where T: PlainData {}
 func use<T>(_ value: T) where T: PlainData {}
-protocol Plain where Self: PlainData {}
+protocol Constrained where Self: Sendable {}
 typealias Pair = PlainPair<Int, Int>
 actor Owner:
     TurnActor
@@ -362,6 +374,23 @@ actor Elsewhere {
     var core = makeCore()
 }
 let x = 0 // lint-allow: turns-isolated: a marker outside Tests
+protocol WhereBridge where Self: PlainData {}
+protocol WhereSplit
+    where Self: Sendable & PlainData
+{
+}
+enum A {
+    actor Owner: TurnActor {
+        let core = makeCore()
+    }
+}
+enum B {
+    actor Owner: TurnActor {
+    }
+}
+extension B.Owner {
+    var core: TurnCore<M> { fatalError() }
+}
 EOF
   cat > "$dir/Sources/App/BadConformance.swift" <<'EOF'
 extension Elsewhere: TurnActor {}
@@ -374,6 +403,11 @@ nonisolated(unsafe) var shared = 0
 final class Box: @unchecked Sendable {}
 func later() { Task(priority: .high) { } }
 func typed() { _ = Task<Void, Never> { } }
+func split() {
+    Task
+        .detached(priority: .high) { }
+}
+func spelled() { Task.init { }; Task.detached { } }
 EOF
   cat > "$dir/Tests/Marked.swift" <<'EOF'
 let y = 0 // lint-allow: turns-isolated:
@@ -394,11 +428,17 @@ Bad.swift:15: [let-core] a TurnActor declares
 Bad.swift:18: [let-core] a TurnActor declares
 Bad.swift:19: [let-core] a TurnActor'"'"'s core is a stored let
 Bad.swift:21: [allow] lint-allow markers are accepted only under Tests/
+Bad.swift:22: [plain-data] a protocol refining
+Bad.swift:23: [plain-data] a protocol refining
+Bad.swift:33: [let-core] a TurnActor declares
+Bad.swift:37: [let-core] a TurnActor'"'"'s core is a stored let
 BadMachine.swift:2: [machine-file]
 BadMachine.swift:4: [machine-file]
 BadMachine.swift:5: [machine-file]
 BadMachine.swift:6: [machine-file]
 BadMachine.swift:7: [machine-file]
+BadMachine.swift:9: [machine-file]
+BadMachine.swift:12: [machine-file]
 Marked.swift:1: [allow] a lint-allow marker names a rule
 Tests/Marked.swift: [allow] 1 marker(s), 0 listed
 Calls.swift: [isolated]'

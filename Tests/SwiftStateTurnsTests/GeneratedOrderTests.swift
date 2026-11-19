@@ -405,13 +405,12 @@ struct GeneratedOrderTests {
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 
-    /// Seeds that once failed, kept as fixed replays with the budget they ran with. 21, 22 and 25
-    /// stepped an input queued under a scope after that scope's key was superseded (found before
-    /// a supersede withdrew such inputs); the generator has changed since, so each replays its
-    /// seed, not its old order.
-    @Test("Fixed replays of seeds that once failed", arguments: [UInt64(21), 22, 25])
+    /// Seeds that kill a known mutant, run by default at their own budget, each with the mutant
+    /// it kills. 79: a supersede that doesn't withdraw the inputs queued under the old
+    /// generation's scope (`Turn.start` without its `withdraw`).
+    @Test("Fixed replays of seeds that kill a known mutant", arguments: [UInt64(79)])
     func replays(seed: UInt64) async {
-        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: 1_000)
+        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed))
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 }

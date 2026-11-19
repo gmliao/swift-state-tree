@@ -365,7 +365,7 @@ struct OrderedChecksTests {
         #expect(u.stats.queued == 0)
     }
 
-    @Test("17: endAll abandons, ends, withdraws, drops and closes; then issue and queue are ignored, run and ask still step")
+    @Test("17: endAll abandons, ends, withdraws, drops and closes; then start and queue are ignored, run and query still step")
     func endAllIsTerminal() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
@@ -432,7 +432,7 @@ struct OrderedChecksTests {
         #expect(f.count(of: "stale deadline") == 1)
     }
 
-    @Test("19: issue over a live generation closes requests made earlier in the same step")
+    @Test("19: start over a live generation closes requests made earlier in the same step")
     func reissueClosesEarlierRequests() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
@@ -449,7 +449,7 @@ struct OrderedChecksTests {
         #expect(s.stats.openRequests == 0)
     }
 
-    @Test("19b: a supersede withdraws the inputs queued under the old generation's scope; one queued before the key's first issue stays")
+    @Test("19b: a supersede withdraws the inputs queued under the old generation's scope; one queued before the key's first start stays")
     func supersedeWithdrawsScopedParked() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
@@ -477,6 +477,59 @@ struct OrderedChecksTests {
         #expect(s.log == ["issue 1 false", "begin 1", "issue 1 true", "issue 2 false", "end 1", "scoped 10"])
         #expect(!s.log.contains("scoped 9"))
         #expect(s.stats.queued == 0)
+    }
+
+    @Test("19c: a send deferred during a batch is withdrawn when its scope is superseded before it is admitted")
+    func supersedeWithdrawsDeferredSend() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        await a.send(.issueKey(1))
+        // While the batch flushes output 1, a collaborator sends a supersede of job 1's key and
+        // then a send scoped to job 1. Both are deferred; the supersede steps first, so the send
+        // belongs to the old generation by the time it is admitted.
+        await a.onOutput(1, send: [.issueKey(1), .scoped(9, scope: 1)])
+        await a.send(.emit(1))
+        let s = await a.snapshot()
+        #expect(s.log == ["issue 1 false", "issue 1 true"])
+        #expect(s.stats.droppedSends == 1)
+    }
+
+    @Test("19d: limit: an input queued after its key's end and before the next start steps under the new generation")
+    func queuedBetweenEndAndStartSteps() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        await a.send(.issueKey(1))
+        await a.send(.transaction(1, "t1"))
+        await a.send(.endKey(.job(1)))
+        // Sent while job 1's key isn't live: no generation to belong to.
+        await a.send(.scoped(10, scope: 1))
+        await f.wait("park #1")
+        // Not a supersede (the key isn't live), so the queued input stays.
+        await a.send(.issueKey(1))
+        f.open("t1")
+        await a.waitForLog(6)
+        let s = await a.snapshot()
+        #expect(s.log == ["issue 1 false", "begin 1", "end key job(1)", "issue 1 false", "end 1", "scoped 10"])
+        #expect(s.stats.droppedSends == 0)
+    }
+
+    @Test("19e: a queued send withdrawn by its scope's end, or dropped by close, counts as a dropped send")
+    func droppedQueuedSendsCount() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        await a.send(.issueKey(1))
+        await a.send(.transaction(1, "never"))
+        await a.send(.scoped(5, scope: 1))
+        await a.send(.step(6))
+        await f.wait("park #2")
+        await a.send(.endKey(.job(1)))
+        let afterEnd = await a.snapshot()
+        await a.send(.shutdown)
+        let afterClose = await a.snapshot()
+        #expect(afterEnd.stats.droppedSends == 1)
+        #expect(afterEnd.stats.queued == 1)
+        #expect(afterClose.stats.droppedSends == 2)
+        #expect(afterClose.stats.queued == 0)
     }
 
     @Test("20: outputs flush before the next step; a step's effects launch after its flush")

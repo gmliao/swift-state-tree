@@ -48,8 +48,14 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline var rt = Runtime<M>()
     @usableFromInline var inStep = false
     @usableFromInline var inSegment = false
-    /// Sends and calls made while a step or a batch was running.
-    @usableFromInline var queued = FIFO<(M.Input, InputID?)>()
+    /// Sends and calls made while a step or a batch was running, each with the scope-end clock
+    /// at its arrival.
+    @usableFromInline var queued = FIFO<(M.Input, InputID?, UInt64)>()
+    /// While inputs are deferred (`queued`), the clock reading at each scope's latest end or
+    /// supersede. A deferred input whose scope ended after it arrived is withdrawn when it is
+    /// admitted. Emptied when `queued` drains, so it holds only one batch's ends.
+    @usableFromInline var scopeEndsWhileDeferred: [M.Key: UInt64] = [:]
+    @usableFromInline var scopeEndClock: UInt64 = 0
     @usableFromInline var waiters: [InputID: CheckedContinuation<M.Reply, any Error>] = [:]
     @usableFromInline var nextInput: UInt64 = 0
     @usableFromInline var drainScheduled = false
@@ -161,6 +167,14 @@ public final class TurnCore<M: TurnMachine> {
         let text = String(describing: input)
         if let paren = text.firstIndex(of: "(") { return String(text[..<paren]) }
         return text
+    }
+
+    /// `key`'s binding ended (`end`) or was superseded (`start` over a live key): the deferred
+    /// inputs that arrived before now and belong to it are withdrawn when they are admitted.
+    @inlinable func scopeEnded(_ key: M.Key) {
+        if queued.isEmpty { return }
+        scopeEndClock &+= 1
+        scopeEndsWhileDeferred[key] = scopeEndClock
     }
 
     @inlinable func step(_ input: M.Input, caller: InputID?) {

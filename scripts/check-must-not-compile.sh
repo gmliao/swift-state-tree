@@ -103,7 +103,7 @@ for snippet in "${snippets[@]}"; do
                 echo "${errors:-$output}" | sed -n 1,5p
                 failures=$((failures + 1))
             # The error must come from the snippet, not from the library or the setup.
-            elif ! grep -F -- "$expected" <<<"$errors" | grep -q -E "/$name:|^macro expansion @"; then
+            elif ! grep -F -- "$expected" <<<"$errors" | grep -E "/$name:|^macro expansion @" >/dev/null; then
                 echo "FAIL $name: the expected error is not in the snippet; got:"
                 echo "$errors" | sed -n 1,5p
                 failures=$((failures + 1))

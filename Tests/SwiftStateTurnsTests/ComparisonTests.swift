@@ -114,7 +114,7 @@ struct ComparisonTests {
         f.open("release 7")
         // The load's result comes back as an input, and steps as stale (a condition, not a delay).
         for _ in 0 ..< 10_000 where await lobby.late() == 0 {
-            await Task.yield() // wall-clock: not time: yields until the late result's job has run on the actor
+            await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the late result has run
         }
         #expect(throws: LobbyError.self) { try result.get() }
         #expect(await lobby.late() == 1)

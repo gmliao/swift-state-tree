@@ -143,7 +143,7 @@ struct ConceptsTests {
 
         await room.send(.saveStats(player: 7))
         for _ in 0 ..< 10_000 where await room.heldKeys() != 0 {
-            await Task.yield() // wall-clock: not time: yields until the save's result job has run on the actor
+            await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the save's result has run
         }
         #expect(await room.heldKeys() == 0)
 
@@ -160,7 +160,7 @@ struct ConceptsTests {
         clock.set(seconds: 60)
         f.open("deadline 60")
         for _ in 0 ..< 10_000 where await room.query(.seatCount) != 0 {
-            await Task.yield() // wall-clock: not time: yields until the timer's job has run on the actor
+            await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the timer has run
         }
         #expect(await room.query(.seatCount) == 0)
     }

@@ -48,9 +48,12 @@ public final class WithdrawToken: @unchecked Sendable {
 
 /// How an input is admitted.
 public enum InputPolicy<Key: Hashable & Sendable>: Sendable {
-    /// From outside: refused `closed` after `close`, refused `withdrawn` if `unless` has ended,
-    /// queued while `hold` is blocked (refused `queueFull` over the queue limit). `scope`: the
-    /// key the input belongs to; ending it withdraws the input while it is queued.
+    /// From outside: refused `closed` after `close`, refused `withdrawn` if `withdrawnBy` is
+    /// withdrawn, queued while `waitsFor` is held (refused `queueFull` over the queue limit).
+    /// `belongsTo`: the key the input belongs to. Ending that key, or starting it again over a
+    /// live generation, after the input arrives and before it steps withdraws it. An input that
+    /// arrives after an `end` and before the next `start` steps under the new generation, so
+    /// use a fresh key per binding (a connection or session id) when that matters.
     case normal(waitsFor: Key?, belongsTo: Key?, withdrawnBy: WithdrawToken? = nil)
     /// Never gated, queued or refused: a disconnect, a stop, a teardown, a `run`'s result.
     case control
@@ -93,7 +96,7 @@ public enum Abandonment: Sendable, Equatable {
     case keyEnded, deadline, cancelled
 }
 
-/// Why an normal input never stepped.
+/// Why a normal input never stepped.
 public enum TurnError: Error, Sendable, Equatable {
     /// The core is closed to normal inputs.
     case closed
@@ -107,7 +110,7 @@ public enum TurnError: Error, Sendable, Equatable {
 public enum CallerCancellation: Sendable {
     /// Nothing: the caller keeps waiting and gets the real result.
     case ignoresCancel
-    /// An normal input not yet submitted isn't; one still queued when the cancellation is
+    /// A normal input not yet submitted isn't; one still queued when the cancellation is
     /// handled is withdrawn and never steps; one that stepped goes on, and only its caller stops
     /// waiting. A control input is always submitted and stepped. The caller gets
     /// `CancellationError`.

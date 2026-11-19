@@ -43,7 +43,7 @@ extension TurnActor {
             let isControl: Bool
             if case .control = core.machine.inputPolicy(for: input) { isControl = true } else { isControl = false }
             if Task.isCancelled, isControl {
-                // Cancelled before entry: a control input is still submitted and stepped (rule 16),
+                // Cancelled before entry: a control input is still submitted and stepped,
                 // but its caller doesn't wait. A reply from its step finds no waiter.
                 core.counters.cancelledCalls += 1
                 submit(input, caller: id)
@@ -97,7 +97,7 @@ extension TurnActor {
     @inlinable func submit(_ input: M.Input, caller: InputID?) {
         let core = self.core
         if core.inStep || core.inSegment {
-            core.queued.push((input, caller))
+            core.queued.push((input, caller, core.scopeEndClock))
             // Made from inside a step: the batch that follows the step picks it up.
             core.rt.dirty = true
             return
@@ -107,7 +107,8 @@ extension TurnActor {
         if core.rt.dirty { runSegment() }
     }
 
-    @inlinable func admit(_ input: M.Input, caller: InputID?) {
+    /// `arrival`: a deferred input's scope-end clock when it arrived; nil when admitted on arrival.
+    @inlinable func admit(_ input: M.Input, caller: InputID?, arrival: UInt64? = nil) {
         let core = self.core
         switch core.machine.inputPolicy(for: input) {
         case .control:
@@ -118,6 +119,11 @@ extension TurnActor {
                 return
             }
             if let token, token.isWithdrawn {
+                refuse(caller, .withdrawn)
+                return
+            }
+            if let arrival, let scope, let ended = core.scopeEndsWhileDeferred[scope], ended > arrival {
+                // Its scope ended or was superseded while it was deferred.
                 refuse(caller, .withdrawn)
                 return
             }
@@ -240,7 +246,10 @@ extension TurnActor {
                 continue
             }
             if let next = core.queued.pop() {
-                admit(next.0, caller: next.1)
+                admit(next.0, caller: next.1, arrival: next.2)
+                if core.queued.isEmpty, !core.scopeEndsWhileDeferred.isEmpty {
+                    core.scopeEndsWhileDeferred.removeAll(keepingCapacity: true)
+                }
                 continue
             }
             if let key = core.rt.nextReleasable() {

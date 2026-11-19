@@ -23,12 +23,18 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
-    /// (also ones made earlier in this step), whose timer is dropped, and whose queued inputs
-    /// scoped to `key` are withdrawn, as by `end`: a queued input carries no generation, so one
-    /// sent under the old generation would otherwise step under the new one. Inputs queued
-    /// before the key's first `start` stay. After `endAll` it does nothing and returns false: a
-    /// handler that runs late (a stale completion) can call it, and then finds no live key to
-    /// work under.
+    /// (also ones made earlier in this step), whose timer is dropped, and whose not-yet-stepped
+    /// inputs scoped to `key` are withdrawn, as by `end`: queued ones now, deferred ones (sent
+    /// while a step or batch ran) when they are admitted. An input carries no generation, so
+    /// one sent under the old generation would otherwise step under the new one.
+    ///
+    /// Limit: an input that arrives while `key` isn't live (before its first `start`, or after
+    /// an `end`) isn't withdrawn by this `start`; it steps under the new generation. Use a fresh
+    /// key per binding (a connection or session id) when inputs sent between an `end` and the
+    /// next `start` must not step.
+    ///
+    /// After `endAll` it does nothing and returns false: a handler that runs late (a stale
+    /// completion) can call it, and then finds no live key to work under.
     @inlinable @discardableResult
     public mutating func start(_ key: M.Key) -> Bool {
         if core.rt.ended {
@@ -40,6 +46,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
             core.rt.closeRequests(of: key)
             core.rt.dropTimer(of: key)
             if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key && !$0.pinned } }
+            core.scopeEnded(key)
         }
         core.rt.counter &+= 1
         core.rt.live[key] = core.rt.counter
@@ -47,12 +54,14 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     }
 
     /// Ends `key`: its requests close, their `.untilRequestCloses` holds are released, its timer
-    /// is dropped, and queued inputs scoped to it are withdrawn, whether or not the key is live.
+    /// is dropped, and not-yet-stepped inputs scoped to it are withdrawn (queued ones now,
+    /// deferred ones when they are admitted), whether or not the key is live.
     @inlinable public mutating func end(_ key: M.Key) {
         core.rt.closeRequests(of: key)
         core.rt.dropTimer(of: key)
         core.rt.live.removeValue(forKey: key)
         if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key } }
+        core.scopeEnded(key)
     }
 
     /// Ends `token`, in this step: a queued input that carries it is withdrawn now, and one that
@@ -142,7 +151,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     /// don't apply. Only `endAll` drops it, and after `endAll` this does nothing.
     ///
     /// The core puts no bound on these: the adopter does, by what it queues. They count as
-    /// queued, so a burst of them can make an normal input find the queue full.
+    /// queued, so a burst of them can make a normal input find the queue full.
     ///
     /// False: the core has ended, and the input was not queued.
     @inlinable @discardableResult
@@ -199,7 +208,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     }
 
     /// Closes intake from outside: queued normal calls are answered `closed`, later ones refused.
-    /// Queued inputs, completions, control inputs, `query` and `run` still step.
+    /// Inputs a step queued (`queue`), completions, control inputs, `query` and `run` still step.
     @inlinable public mutating func close() {
         core.rt.closed = true
         core.rt.closing = true

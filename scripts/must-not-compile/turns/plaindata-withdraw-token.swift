@@ -1,7 +1,7 @@
 // expect-error: 'WithdrawToken' conform to 'PlainData'
 import SwiftStateTurns
 
-// A machine that stores an withdraw token (the core reads tokens; a machine never keeps one).
+// A machine that stores a withdraw token (the core reads tokens; a machine never keeps one).
 @PlainData
 struct Mach: TurnMachine {
     typealias Input = Int

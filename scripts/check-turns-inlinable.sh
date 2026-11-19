@@ -30,7 +30,7 @@ build_bench() {  # package scratch
   local log
   log="$(mktemp)"
   if ! (cd "$1" && swift build -c release --product TurnsBench --scratch-path "$2") > "$log" 2>&1; then
-    grep -E "error:" "$log" | head -20 >&2 || tail -20 "$log" >&2
+    grep -m 20 -E "error:" "$log" >&2 || tail -20 "$log" >&2
     rm -f "$log"
     echo "check-turns-inlinable: FAILED: the release build of TurnsBench failed" >&2
     return 1
@@ -44,11 +44,17 @@ build_bench() {  # package scratch
 
 # Prints the required driver functions that have no specialization on the bench's types, one per
 # line; prints nothing when all have one.
+# Fails when nm can't read the binary or finds none of the bench's symbols, so a wrong path
+# can't pass as "nothing specialized".
 missing_in() {  # binary
-  local specialized required
+  local symbols demangled specialized required
+  symbols="$(nm "$1")" || { echo "check-turns-inlinable: FAILED: nm couldn't read $1" >&2; return 1; }
   # Full demangling: `--simplified` drops the specialization's type arguments.
-  specialized="$(nm "$1" | awk '{ print $NF }' | swift demangle 2>/dev/null \
-    | grep -E '^generic specialization <[^>]*TurnsBench\.(BenchMachine|BenchActor)' || true)"
+  demangled="$(awk '{ print $NF }' <<<"$symbols" | swift demangle)" \
+    || { echo "check-turns-inlinable: FAILED: swift demangle failed on $1" >&2; return 1; }
+  grep -q -F 'TurnsBench.' <<<"$demangled" \
+    || { echo "check-turns-inlinable: FAILED: no TurnsBench symbols in $1" >&2; return 1; }
+  specialized="$(grep -E '^generic specialization <[^>]*TurnsBench\.(BenchMachine|BenchActor)' <<<"$demangled" || true)"
   while IFS= read -r required; do
     [ -n "$required" ] || continue
     grep -q -F -- "> of $required" <<<"$specialized" || echo "$required"
@@ -56,7 +62,7 @@ missing_in() {  # binary
 }
 
 binary="$(build_bench "$root" "$scratch")"
-missing="$(missing_in "$binary")"
+missing="$(missing_in "$binary")" || exit 1
 if [ -n "$missing" ]; then
   echo "check-turns-inlinable: FAILED: no specialization on TurnsBench's types for:"
   awk '{ print "  " $0 }' <<<"$missing"
@@ -101,12 +107,13 @@ for file in "$control/package/Sources/SwiftStateTurns"/*.swift; do
   # `@usableFromInline`, so the inlinable code that remains still type-checks.
   perl -0pi -e 's/\@inlinable((?:\s+\@\w+(?:\([^)]*\))?)*\s+(?:public|open)\b)/$1/g; s/\@inlinable\b/\@usableFromInline/g; s/\@usableFromInline(\s+\@usableFromInline)+/\@usableFromInline/g' "$file"
 done
-if ! control_binary="$(build_bench "$control/package" "$control/build" 2>&1)"; then
+# Only stdout is the path; the build's diagnostics go to a log shown on failure.
+if ! control_binary="$(build_bench "$control/package" "$control/build" 2>"$control/build.log")"; then
   echo "check-turns-inlinable: FAILED: the negative control didn't build:"
-  echo "$control_binary"
+  cat "$control/build.log"
   exit 1
 fi
-control_missing="$(missing_in "$control_binary")"
+control_missing="$(missing_in "$control_binary")" || exit 1
 if [ "$control_missing" != "$REQUIRED" ]; then
   echo "check-turns-inlinable: FAILED: the negative control (no @inlinable) still has specializations for:"
   grep -v -x -F -f <(printf '%s\n' "$control_missing") <<<"$REQUIRED" | sed 's/^/  /'

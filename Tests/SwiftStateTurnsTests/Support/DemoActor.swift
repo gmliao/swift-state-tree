@@ -106,7 +106,7 @@ actor DemoActor: TurnActor {
     func askFromInsideStep() {
         let me = self
         StepHooks.$duringStep.withValue({
-            me.assumeIsolated { owner in // lint-allow: turns-isolated: reaches the actor from inside a step to show ask stops
+            me.assumeIsolated { owner in // lint-allow: turns-isolated: reaches the actor from inside a step to show query stops
                 let answer = owner.query(.steps)
                 owner.fixture.record("asked \(answer)")
             }
@@ -153,6 +153,16 @@ actor DemoActor: TurnActor {
             owner.flushHook = nil
             owner.fixture.open(gate)
             if let input { owner.send(input) }
+        }
+    }
+
+    /// When a flush carries `value`: sends `inputs`, in order. They are deferred (the batch is
+    /// running) and admitted after the flush, one after another. Runs once.
+    func onOutput(_ value: Int, send inputs: [DemoMachine.Input]) {
+        flushHook = { (owner: isolated DemoActor, outputs: [Int]) in
+            guard outputs.contains(value) else { return }
+            owner.flushHook = nil
+            for input in inputs { owner.send(input) }
         }
     }
 
