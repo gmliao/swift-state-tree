@@ -1,7 +1,9 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// Membership stamp for versioning (prevents stale operations after rejoin).
+@PlainData
 struct MembershipStamp: Sendable, Equatable {
     let playerID: PlayerID
     let version: UInt64

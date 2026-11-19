@@ -5,6 +5,7 @@
 // are not canonical). See Notes/plans/2026-11-05-sync-output-replay.md, "Canonical form".
 
 import Foundation
+import SwiftStateTurns
 
 /// One scope's patches in canonical order, with their hash.
 ///
@@ -159,6 +160,7 @@ extension SnapshotValue {
 }
 
 /// One consumed event, as the events scope of a sync output hashes it.
+@PlainData
 package struct CanonicalSyncEvent: Sendable, Equatable {
     /// The keeper's output sequence of the event.
     package let sequence: Int64

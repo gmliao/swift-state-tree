@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTurns
 
 // MARK: - Identity Types
 
@@ -6,6 +7,7 @@ import Foundation
 ///
 /// Used to identify a client instance across multiple tabs/devices.
 /// Provided by the application layer.
+@PlainData
 public struct ClientID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }
@@ -41,6 +43,7 @@ extension ClientID: CodingKeyRepresentable {
 /// (replay rebuilds recorded IDs) and `LandContext.systemSessionID` are the other sources. The
 /// type steers new connections to `mint()` but can't rule reuse out: the public `Decodable` and
 /// `CodingKeyRepresentable` inits still build an ID from any string.
+@PlainData
 public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }
@@ -86,6 +89,7 @@ extension SessionID: CodingKeyRepresentable {
 // MARK: - Event Target
 
 /// Event delivery target for sending events to specific recipients
+@PlainData
 public enum EventTarget: Sendable {
     /// Send to all players in the land
     case all

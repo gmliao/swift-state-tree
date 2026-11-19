@@ -1,6 +1,7 @@
 // Sources/SwiftStateTree/Sync/PlayerID.swift
 
 import Foundation
+import SwiftStateTurns
 
 /// Player identifier (account level)
 ///
@@ -8,6 +9,7 @@ import Foundation
 /// (an NFD one, equal as a `String`) stores the NFC bytes. So an ID is the same bytes as a map
 /// key, as a value, in an event and in a log, and a client that compares bytes finds it. An
 /// ASCII ID is stored as given, without a conversion.
+@PlainData
 public struct PlayerID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }

@@ -1,5 +1,6 @@
 import SwiftStateTree
 import SwiftStateTreeMessagePack
+import SwiftStateTurns
 
 /// Manager for pending server events (targeted and broadcast).
 ///
@@ -8,8 +9,10 @@ import SwiftStateTreeMessagePack
 ///
 /// **Design**: This is a value type (struct) for zero allocation overhead. All state
 /// mutations happen within TransportAdapter's actor isolation domain.
+@PlainData
 struct PendingEventManager: Sendable {
     /// Pending targeted event body with membership stamp validation.
+    @PlainData
     struct TargetedEvent: Sendable {
         let target: SwiftStateTree.EventTarget
         let body: MessagePackValue

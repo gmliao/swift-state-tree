@@ -1,8 +1,10 @@
 // Sources/SwiftStateTree/Sync/SnapshotValue.swift
 
 import Foundation
+import SwiftStateTurns
 
 /// Allowed data types for snapshots, used for JSON-friendly output structures.
+@PlainData
 public enum SnapshotValue: Equatable, Codable, Sendable {
     case null
     case bool(Bool)

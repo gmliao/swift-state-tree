@@ -2,6 +2,7 @@ import Foundation
 import SwiftStateTree
 import SwiftStateTreeMessagePack
 import Logging
+import SwiftStateTurns
 
 /// Where a `TransportAdapter` awaits its test hold hook (`installHolds`).
 enum TransportAdapterHoldPoint: Hashable, Sendable {
@@ -3313,8 +3314,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLagTimerInterval = interval
     }
 
-    private func syncLagNow() -> ContinuousClock.Instant {
-        syncLagNowForTesting?() ?? .now
+    /// The lag clock's now, as the lag state stores it (`TurnInstant`, so it is plain data).
+    private func syncLagNow() -> TurnInstant {
+        TurnInstant(syncLagNowForTesting?() ?? .now)
     }
 
     /// The plan's first step (D1): classifies each recipient with its lag state and returns the
@@ -3327,7 +3329,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func classifySyncLag(
         _ recipients: [SyncPhaseRecipient],
         fullPlan: Bool,
-        now: ContinuousClock.Instant? = nil,
+        now: TurnInstant? = nil,
         events: PendingEventManager,
         into plan: inout SyncPhasePlan
     ) -> [SyncPhaseRecipient] {
@@ -3657,7 +3659,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Whether a tracked session has a resync due at `now`: read-only, the same decision the
     /// plan's classification makes.
-    private func syncLagResyncDue(at now: ContinuousClock.Instant) -> Bool {
+    private func syncLagResyncDue(at now: TurnInstant) -> Bool {
         guard tracksSyncLag else { return false }
         return syncLag.contains { sessionID, session in
             guard !endedSessions.contains(sessionID) else { return false }
@@ -5222,7 +5224,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func planBroadcastOnlySyncPhase(
         state: State,
         recipients: [SyncPhaseRecipient],
-        lagNow: ContinuousClock.Instant,
+        lagNow: TurnInstant,
         hasMembers: Bool,
         events: PendingEventManager,
         fullSnapshot: Bool

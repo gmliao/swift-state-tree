@@ -5,6 +5,7 @@
 // See Notes/plans/2026-11-05-sync-output-replay.md, "What is recorded".
 
 import Foundation
+import SwiftStateTurns
 
 /// One committed sync plan's output.
 public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
@@ -171,6 +172,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
 /// Opcode 107 events that did not reach a merged frame, by what became of them; keeper
 /// sequences, sorted. In a hybrid configuration this includes events with no recipient
 /// (`.players([])`), listed as sent alone with no frame.
+@PlainData
 public struct ReevaluationUnmergedEvents: Codable, Sendable, Equatable {
     /// Sent as their own frame: in a hybrid configuration (opcode 107 with `json` or
     /// `opcodeJsonArray` messages) every event; otherwise none, since an event that doesn't encode

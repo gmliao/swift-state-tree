@@ -1,6 +1,8 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
+@PlainData
 public enum MessagePackValue: Sendable, Equatable, Hashable {
     case `nil`
     case bool(Bool)

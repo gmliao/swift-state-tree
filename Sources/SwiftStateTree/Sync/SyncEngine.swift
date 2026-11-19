@@ -1,6 +1,7 @@
 // Sources/SwiftStateTree/Sync/SyncEngine.swift
 
 import Foundation
+import SwiftStateTurns
 
 /// Snapshot generation mode for controlling which fields are included in the snapshot.
 public enum SnapshotMode: Sendable {
@@ -48,43 +49,60 @@ public struct SyncEngine: Sendable {
     private var lastBroadcastSnapshot: StateSnapshot? {
         get {
             assert(!broadcastCacheRetired, "the broadcast cache is read while the typed tables hold last-sent")
-            return broadcastCacheStorage
+            return caches.broadcastCacheStorage
         }
         set {
             assert(!broadcastCacheRetired, "the broadcast cache is written while the typed tables hold last-sent")
-            broadcastCacheStorage = newValue
+            caches.broadcastCacheStorage = newValue
         }
     }
-    private var broadcastCacheStorage: StateSnapshot?
 
     /// The owner diffs broadcast fields on the typed tables (`SyncTableBroadcastDiff`), which
     /// hold what clients were last sent. The broadcast cache then stays nil and must be neither
     /// read nor written: debug builds stop on either (step 2 note, section 4).
-    package var broadcastCacheRetired = false
+    package var broadcastCacheRetired: Bool {
+        get { caches.broadcastCacheRetired }
+        set { caches.broadcastCacheRetired = newValue }
+    }
     
     /// Cache for per-player snapshots (individual cache per player)
     private var lastPerPlayerSnapshots: [PlayerID: StateSnapshot] {
         get {
             assert(!perPlayerCacheRetired, "the per-player cache is read while the per-player tables hold last-sent")
-            return perPlayerCacheStorage
+            return caches.perPlayerCacheStorage
         }
         set {
             assert(!perPlayerCacheRetired, "the per-player cache is written while the per-player tables hold last-sent")
-            perPlayerCacheStorage = newValue
+            caches.perPlayerCacheStorage = newValue
         }
     }
-    private var perPlayerCacheStorage: [PlayerID: StateSnapshot] = [:]
 
     /// The owner diffs per-player fields on the typed per-player tables
     /// (`SyncTablePerPlayerDiff`, #514), which hold what each client was last sent. The per-player
     /// cache then stays empty and must be neither read nor written: debug builds stop on either.
-    package var perPlayerCacheRetired = false
+    package var perPlayerCacheRetired: Bool {
+        get { caches.perPlayerCacheRetired }
+        set { caches.perPlayerCacheRetired = newValue }
+    }
     
     /// Track which players have received firstSync signal
     /// This is separate from cache population to handle lateJoin scenarios:
     /// - lateJoinSnapshot populates cache but doesn't mark as firstSync received
     /// - First generateDiff after lateJoin will return firstSync signal
-    private var hasReceivedFirstSync: Set<PlayerID> = []
+
+    /// The engine's state: every cache and flag it keeps between syncs. Plain data, so a turn
+    /// machine can hold it; the layout below is configuration and isn't part of it.
+    @PlainData
+    package struct Caches: Sendable {
+        var broadcastCacheStorage: StateSnapshot? = nil
+        var broadcastCacheRetired: Bool = false
+        var perPlayerCacheStorage: [PlayerID: StateSnapshot] = [:]
+        var perPlayerCacheRetired: Bool = false
+        var hasReceivedFirstSync: Set<PlayerID> = []
+    }
+
+    /// The engine's state (see `Caches`).
+    package var caches = Caches()
 
     /// The atomic values of the state type this engine diffs: a value at one of its paths is
     /// replaced as a whole. Taken from the state type at construction, so every engine of a type
@@ -115,12 +133,12 @@ public struct SyncEngine: Sendable {
         for (playerID, snapshot) in staged.perPlayer {
             lastPerPlayerSnapshots[playerID] = snapshot
         }
-        hasReceivedFirstSync.formUnion(staged.firstSyncReceived)
+        caches.hasReceivedFirstSync.formUnion(staged.firstSyncReceived)
     }
 
     /// Whether `playerID` received its firstSync, counting marks staged by the current plan.
     package func hasReceivedFirstSync(_ playerID: PlayerID, staged: StagedCaches) -> Bool {
-        hasReceivedFirstSync.contains(playerID) || staged.firstSyncReceived.contains(playerID)
+        caches.hasReceivedFirstSync.contains(playerID) || staged.firstSyncReceived.contains(playerID)
     }
 
     /// The cached broadcast snapshot (the re-evaluation shadow reads it for dropped fields).
@@ -135,17 +153,17 @@ public struct SyncEngine: Sendable {
 
     /// The cached broadcast snapshot (tests).
     package var cachedBroadcastSnapshotForTesting: StateSnapshot? {
-        broadcastCacheStorage
+        caches.broadcastCacheStorage
     }
 
     /// The cached per-player snapshot of `playerID` (tests).
     package func cachedPerPlayerSnapshotForTesting(_ playerID: PlayerID) -> StateSnapshot? {
-        perPlayerCacheStorage[playerID]
+        caches.perPlayerCacheStorage[playerID]
     }
 
     /// Whether `playerID` is marked as having received its firstSync (tests).
     package func hasReceivedFirstSyncForTesting(_ playerID: PlayerID) -> Bool {
-        hasReceivedFirstSync.contains(playerID)
+        caches.hasReceivedFirstSync.contains(playerID)
     }
 
     /// An engine for `State`, diffing with its `AtomicLayoutTable`.
@@ -938,7 +956,7 @@ public struct SyncEngine: Sendable {
     ) throws -> StateUpdate {
         // Check if this is the first sync for this player
         // This is separate from cache check to handle lateJoin scenarios
-        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+        let isFirstSyncForPlayer = !caches.hasReceivedFirstSync.contains(playerID)
         
         // Automatically handle dirty tracking
         let broadcastMode: SnapshotMode
@@ -982,7 +1000,7 @@ public struct SyncEngine: Sendable {
         
         // Now that cache is populated, we can safely return firstSync signal
         if isFirstSyncForPlayer {
-            hasReceivedFirstSync.insert(playerID)  // Mark as received
+            caches.hasReceivedFirstSync.insert(playerID)  // Mark as received
             return .firstSync(mergedPatches)
         }
         
@@ -1040,7 +1058,7 @@ public struct SyncEngine: Sendable {
         baseline: DiffBaseline = .cached,
         staged: inout StagedCaches
     ) -> StateUpdate {
-        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+        let isFirstSyncForPlayer = !caches.hasReceivedFirstSync.contains(playerID)
             && !staged.firstSyncReceived.contains(playerID)
 
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
@@ -1074,7 +1092,7 @@ public struct SyncEngine: Sendable {
         perPlayerDiff: [StatePatch],
         staged: inout StagedCaches
     ) -> StateUpdate {
-        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+        let isFirstSyncForPlayer = !caches.hasReceivedFirstSync.contains(playerID)
             && !staged.firstSyncReceived.contains(playerID)
         let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
         if isFirstSyncForPlayer {
@@ -1175,7 +1193,7 @@ public struct SyncEngine: Sendable {
     ) throws -> StateUpdate {
         // Check if this is the first sync for this player
         // This is separate from cache check to handle lateJoin scenarios
-        let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+        let isFirstSyncForPlayer = !caches.hasReceivedFirstSync.contains(playerID)
         
         // Get snapshot mode based on dirty tracking
         let snapshotMode: SnapshotMode
@@ -1242,7 +1260,7 @@ public struct SyncEngine: Sendable {
         // Now that cache is populated, we can safely return firstSync signal
         // Include patches to handle any changes between join and first diff generation
         if isFirstSyncForPlayer {
-            hasReceivedFirstSync.insert(playerID)  // Mark as received
+            caches.hasReceivedFirstSync.insert(playerID)  // Mark as received
             return .firstSync(mergedPatches)
         }
         
@@ -1282,7 +1300,7 @@ public struct SyncEngine: Sendable {
     /// - Parameter playerID: The player ID whose cache should be cleared.
     public mutating func clearCacheForDisconnectedPlayer(_ playerID: PlayerID) {
         if !perPlayerCacheRetired { lastPerPlayerSnapshots.removeValue(forKey: playerID) }
-        hasReceivedFirstSync.remove(playerID)  // Also clear firstSync flag
+        caches.hasReceivedFirstSync.remove(playerID)  // Also clear firstSync flag
     }
     
     /// Mark that a player has received initial sync (e.g., via lateJoinSnapshot).
@@ -1292,7 +1310,7 @@ public struct SyncEngine: Sendable {
     ///
     /// - Parameter playerID: The player ID that has received initial sync.
     public mutating func markFirstSyncReceived(for playerID: PlayerID) {
-        hasReceivedFirstSync.insert(playerID)
+        caches.hasReceivedFirstSync.insert(playerID)
     }
     
     // MARK: - Cache Population Helper

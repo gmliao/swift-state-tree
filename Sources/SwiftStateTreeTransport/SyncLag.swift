@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTurns
 
 /// Sync-lag tracking's thresholds (#332). Every value is configurable; the defaults are the
 /// design's. Tracking is always on for a hosted land; there is no public off switch.
@@ -91,7 +92,9 @@ enum SyncLagDecision: Equatable, Sendable {
 /// function of its inputs. The sync plan classifies each recipient with `decide` and the commit
 /// applies what the plan staged; the timer only reads it (D1). The adapter owns one per session
 /// and mutates it only in synchronous segments.
+@PlainData
 struct SyncLagSession: Sendable {
+    @PlainData
     enum Phase: Equatable, Sendable {
         /// Frames are planned as usual.
         case live
@@ -101,22 +104,23 @@ struct SyncLagSession: Sendable {
         case closing
     }
 
+    @PlainData
     struct Entry: Sendable {
         var seq: UInt64
-        var committedAt: ContinuousClock.Instant
+        var committedAt: TurnInstant
         /// A firstSync or a resync snapshot: exempt from `resyncAfter`.
         var isFullView: Bool
     }
 
     private(set) var unacked: [Entry]
-    private(set) var lastAckAt: ContinuousClock.Instant
+    private(set) var lastAckAt: TurnInstant
     private(set) var phase: Phase = .live
-    private(set) var resyncTimes: [ContinuousClock.Instant] = []
+    private(set) var resyncTimes: [TurnInstant] = []
     /// When the session was marked pending (nil unless pending).
-    private(set) var pendingSince: ContinuousClock.Instant?
+    private(set) var pendingSince: TurnInstant?
     /// Tracking starts when the session's firstSync commits: it is the FIFO's first entry, and
     /// the ack clock starts at its commit.
-    init(firstSyncSeq: UInt64, committedAt: ContinuousClock.Instant) {
+    init(firstSyncSeq: UInt64, committedAt: TurnInstant) {
         unacked = [Entry(seq: firstSyncSeq, committedAt: committedAt, isFullView: true)]
         lastAckAt = committedAt
     }
@@ -132,7 +136,7 @@ struct SyncLagSession: Sendable {
 
     /// A state-update frame committed to the session. Ignored unless live: no frame is planned
     /// otherwise, so one arriving here is a stale plan's.
-    mutating func committed(_ seq: UInt64, at time: ContinuousClock.Instant) {
+    mutating func committed(_ seq: UInt64, at time: TurnInstant) {
         // A flip's tracking starts in the same commit (its full view is the entry already).
         guard phase == .live, unacked.last?.seq != seq else { return }
         unacked.append(Entry(seq: seq, committedAt: time, isFullView: false))
@@ -140,14 +144,14 @@ struct SyncLagSession: Sendable {
 
     /// `committed` with lag off (`SyncLagPolicy.off`): no decision reads the FIFO, so it keeps
     /// the newest entry only and stays bounded while acks are withheld. An ack still pops it.
-    mutating func committedKeepingNewest(_ seq: UInt64, at time: ContinuousClock.Instant) {
+    mutating func committedKeepingNewest(_ seq: UInt64, at time: TurnInstant) {
         guard phase == .live, unacked.last?.seq != seq else { return }
         unacked = [Entry(seq: seq, committedAt: time, isFullView: false)]
     }
 
     /// The plan that resynced this session committed its snapshot: records the resync, and the
     /// FIFO restarts with the snapshot, a full view, in phase live.
-    mutating func resynced(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant, policy: SyncLagPolicy) {
+    mutating func resynced(snapshotSeq seq: UInt64, at time: TurnInstant, policy: SyncLagPolicy) {
         guard phase != .closing else { return }
         resyncTimes.removeAll { time - $0 >= policy.slowConsumerWindow }
         resyncTimes.append(time)
@@ -156,12 +160,12 @@ struct SyncLagSession: Sendable {
 
     /// Another session of the same player was resynced in the same plan: the view is per player,
     /// so this one got the snapshot too. Its own count doesn't grow.
-    mutating func resyncedAlongside(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant) {
+    mutating func resyncedAlongside(snapshotSeq seq: UInt64, at time: TurnInstant) {
         guard phase != .closing else { return }
         restart(snapshotSeq: seq, at: time)
     }
 
-    private mutating func restart(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant) {
+    private mutating func restart(snapshotSeq seq: UInt64, at time: TurnInstant) {
         unacked = [Entry(seq: seq, committedAt: time, isFullView: true)]
         phase = .live
         pendingSince = nil
@@ -169,7 +173,7 @@ struct SyncLagSession: Sendable {
 
     /// An ack for `seq`: pops every entry at or before it. Every ack refreshes `lastAckAt`, one
     /// that pops nothing (an unchanged value) included. Ignored once closing.
-    mutating func ack(_ seq: UInt64, at time: ContinuousClock.Instant) {
+    mutating func ack(_ seq: UInt64, at time: TurnInstant) {
         guard phase != .closing else { return }
         lastAckAt = time
         if let firstKept = unacked.firstIndex(where: { $0.seq > seq }) {
@@ -180,12 +184,12 @@ struct SyncLagSession: Sendable {
     }
 
     /// The resyncs within `slowConsumerWindow` before `now`.
-    func resyncCount(now: ContinuousClock.Instant, policy: SyncLagPolicy) -> Int {
+    func resyncCount(now: TurnInstant, policy: SyncLagPolicy) -> Int {
         resyncTimes.filter { now - $0 < policy.slowConsumerWindow }.count
     }
 
     /// The check's decision, in the design's order (§ 3). Pure: `apply` makes it happen.
-    func decide(now: ContinuousClock.Instant, policy: SyncLagPolicy) -> SyncLagDecision {
+    func decide(now: TurnInstant, policy: SyncLagPolicy) -> SyncLagDecision {
         guard phase != .closing, !policy.decisionsOff else { return .none }
         let fresh = now - lastAckAt <= policy.ackFreshness
         if let first = unacked.first {
@@ -224,7 +228,7 @@ struct SyncLagSession: Sendable {
 
     /// Applies a pending mark or a close, decided at `time`. A resync is applied by `resynced`
     /// when its plan commits.
-    mutating func apply(_ decision: SyncLagDecision, at time: ContinuousClock.Instant) {
+    mutating func apply(_ decision: SyncLagDecision, at time: TurnInstant) {
         switch decision {
         case .none, .resync:
             return
