@@ -5,9 +5,13 @@ import Logging
 
 /// Where a `TransportAdapter` awaits its test hold hook (`installHolds`).
 enum TransportAdapterHoldPoint: Hashable, Sendable {
-    /// An in-turn join (#69) after its admission and before `registerSession`: admitted, its
-    /// OnJoin may be consumed, but it can't flip yet.
-    case registerSession
+    /// An in-turn join (#69) after `keeper.joinReportingAdmission` returned with its admission,
+    /// before the session is registered with the transport: admitted, its OnJoin may be
+    /// consumed, but it can't flip yet. Taken only when the join completes in the turn.
+    case keeperJoinReturned
+    /// An in-turn join registered with the transport, before it asks the keeper for its sync
+    /// turn (`requestJoinSyncTurn`), which can flip it (#555): registered, not yet flipped.
+    case joinSyncRequested
     /// `admitJoin` on entry, before the join is queued on the membership queue (#97).
     case admitJoinEntry
     /// The delayed follow-up of a dropped initial sync (#564), before its `syncNow()`, so a test
@@ -1830,7 +1834,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sessions superseded by a newer join of their player so far.
     private(set) var supersededSessionCount = 0
     /// Router joins refused as stale before the keeper's join (`staleJoinAttempt`, #97).
-    private(set) var staleJoinAttemptsRefused = 0
+    package private(set) var staleJoinAttemptsRefused = 0
 
     /// Ends every session of `playerID` other than `sessionID` (newest wins, #92). For the game
     /// this is OnLeave then OnJoin: the keeper's join already left the old entry. Here, in the
@@ -2205,7 +2209,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let completesInTurn = outcome.admitted && joiningSessions[sessionID]?.inTurn != nil
             if completesInTurn {
                 // Admitted and not yet registered with the transport: not ready to flip.
-                await holds.at(.registerSession)
+                await holds.at(.keeperJoinReturned)
             }
 
             // Register session. Already in the membership queue, and the keeper join just ran in
@@ -2231,6 +2235,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 if let ticket = admittedTicket, joiningSessions[sessionID]?.ticket == ticket {
                     joiningSessions[sessionID]?.inTurn?.transportRegistered = true
                 }
+                await holds.at(.joinSyncRequested)
                 await keeper.requestJoinSyncTurn()
                 var result = JoinResult(playerID: playerID, sessionID: sessionID, playerSlot: slot)
                 result.completedInTurn = true
@@ -3365,6 +3370,80 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    // MARK: - Named test observations (#555)
+
+    /// Tests: one join attempt, by its session and the router's attempt number (nil for a join
+    /// that didn't come through the router).
+    package struct JoinAttemptKey: Hashable, Sendable {
+        package let sessionID: SessionID
+        package let attempt: UInt64?
+
+        package init(sessionID: SessionID, attempt: UInt64?) {
+            self.sessionID = sessionID
+            self.attempt = attempt
+        }
+    }
+
+    #if DEBUG
+    /// Join attempts whose in-turn flip a sync phase committed.
+    private var joinFlipsCommitted: Set<JoinAttemptKey> = []
+    /// Join attempts whose initial sync a sync phase committed: an in-turn flip, or the
+    /// standalone firstSync of a join without in-turn sync.
+    private var initialSyncsCommitted: Set<JoinAttemptKey> = []
+
+    /// Recorded in the commit's segment, so a test reads it at any later checkpoint.
+    private func noteJoinCommitForTesting(_ sessionID: SessionID, flipped: Bool) {
+        let key = JoinAttemptKey(sessionID: sessionID, attempt: memberJoinAttempts[sessionID])
+        if flipped { joinFlipsCommitted.insert(key) }
+        initialSyncsCommitted.insert(key)
+    }
+    #endif
+
+    /// Tests: the attempt's in-turn flip committed. Unlike the join's waiter, this can't read as
+    /// success for a join that never flipped: it is recorded only by the commit.
+    package func joinFlippedForTesting(_ key: JoinAttemptKey) -> Bool {
+        #if DEBUG
+        return joinFlipsCommitted.contains(key)
+        #else
+        return false
+        #endif
+    }
+
+    /// Tests: the attempt's initial sync committed.
+    package func initialSyncCommittedForTesting(_ key: JoinAttemptKey) -> Bool {
+        #if DEBUG
+        return initialSyncsCommitted.contains(key)
+        #else
+        return false
+        #endif
+    }
+
+    /// Tests: the keeper admitted the session's in-turn join and the adapter holds the
+    /// admission, but the session isn't registered with the transport yet.
+    package func admittedNotRegisteredForTesting(_ sessionID: SessionID) -> Bool {
+        guard let inTurn = joiningSessions[sessionID]?.inTurn else { return false }
+        return !inTurn.transportRegistered
+    }
+
+    /// Tests: sync requests that met a cycle in flight and were deferred to run after it
+    /// (`syncSkips.busy`; in-turn sync off).
+    package var syncDeferredByCycleCountForTesting: Int { syncSkips.busy }
+
+    /// Tests: an opaque token for the session's current membership ticket, nil when it has none.
+    package func sessionTicketForTesting(_ sessionID: SessionID) -> Ticket<SessionID>? {
+        sessionTickets.ticket(for: sessionID)
+    }
+
+    /// Tests: whether that same ticket is still current.
+    package func ticketIsCurrentForTesting(_ ticket: Ticket<SessionID>) -> Bool {
+        sessionTickets.isCurrent(ticket)
+    }
+
+    /// Tests: the session's pending action jobs whose answers the adapter still tracks.
+    package func pendingActionCountForTesting(_ sessionID: SessionID) -> Int {
+        actionResponseTasks[sessionID]?.count ?? 0
+    }
+
     /// Tests: whether the lag timer is running.
     var syncLagTimerRunningForTesting: Bool { syncLagTimer != nil }
 
@@ -4054,6 +4133,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// pending reset.
     private func commitSyncPhase(_ plan: SyncPhasePlan, isSyncCycle: Bool) {
         syncPhaseCommits &+= 1
+        #if DEBUG
+        if let sessionID = plan.syncLag.firstSyncSession {
+            noteJoinCommitForTesting(sessionID, flipped: false)
+        }
+        #endif
         if var digest = plan.digest, let read = syncOutputRead {
             if useStateUpdateWithEvents {
                 let consumed = pendingEventManager.consumedEventDigests(
@@ -4110,6 +4194,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             eventsHeldForJoiningSessions += joining.heldEvents.count
             inTurnJoinFlips += 1
+            #if DEBUG
+            noteJoinCommitForTesting(flip.sessionID, flipped: true)
+            #endif
             joinWaiters[flip.sessionID]?.resolve(.success(()))
         }
         pendingEventManager.removeConsumed(

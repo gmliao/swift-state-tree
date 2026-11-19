@@ -899,7 +899,10 @@ struct TransportAdapterInTurnSyncTests {
         await f.adapter.installHolds(nil)
 
         let before = await f.frameCount()
+        #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
         await f.keeper.stepTickOnce()  // requests a sync while the legacy cycle holds the flag
+        // The named observation `syncDeferredByCycle` (#555), in-turn: the latch went false to true.
+        #expect(await f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
         let held = await f.transport.messages(for: f.session).dropFirst(before)
             .flatMap { decodeItems($0, encoding: .json) }
         #expect(!held.contains(.state("ticks", 1)), "no state while the cycle is in flight: \(held)")
@@ -916,6 +919,26 @@ struct TransportAdapterInTurnSyncTests {
             .flatMap { decodeItems($0, encoding: .json) }
         #expect(items.contains(.state("ticks", 1)), "the request ran after endSync: \(items)")
         #expect(items.filter { $0 == .event("tick-event-1") }.count == 1, "event once: \(items)")
+        #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "endSync consumed the latch")
+    }
+
+    @Test("In-turn off: a sync request that meets a cycle in flight is deferred and counted (syncDeferredByCycle, #555)")
+    func syncDeferredByCycleCountsWithInTurnOff() async throws {
+        let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)
+        let gate = InTurnGate()
+        await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.wait() })
+        let legacy = Task { await f.adapter.syncNow() }
+        for _ in 0..<400 where await gate.waiting == 0 {
+            try await safeTaskSleep(for: .milliseconds(5))
+        }
+        #expect(await gate.waiting == 1)
+        await f.adapter.installHolds(nil)
+        let before = await f.adapter.syncDeferredByCycleCountForTesting
+        #expect(await f.adapter.waitForOutboundDrain())
+        await f.adapter.syncNow()  // a real request, with the writer drained: it meets the cycle
+        #expect(await f.adapter.syncDeferredByCycleCountForTesting == before + 1)
+        await gate.release()
+        await legacy.value
     }
 
     // MARK: - Events (A.7)

@@ -294,6 +294,7 @@ struct TransportAdapterActionJobTests {
         try await sendReturning(f, "B", AdapterJobHeldAction(key: b), from: s1)
         try await bounded("B's resolver") { await AdapterJobGates.gate(b).waitUntilArrived() }
         #expect(await f.adapter.actionResponseTaskCountForTesting() == 1, "B's task is tracked")
+        #expect(await f.adapter.pendingActionCountForTesting(s1) == 1, "pendingActionCount: B's, by session (#555)")
 
         answerHold.open()
         try await bounded("A's answer finishes") { await f.adapter.waitForActionResponsesFinishedForTesting(1) }
@@ -304,6 +305,7 @@ struct TransportAdapterActionJobTests {
         try await bounded("B's answer") { await f.adapter.waitForActionResponsesFinishedForTesting(2) }
         #expect(await f.answers(for: s1) == baseline + ["B"])
         #expect(await f.adapter.actionResponseTaskCountForTesting() == 0)
+        #expect(await f.adapter.pendingActionCountForTesting(s1) == 0)
         AdapterJobGates.gate(a).open()
         try await bounded("the keeper's jobs") { await f.keeper.waitForActionJobsForTesting() }
         #expect(await f.keeper.actionJobCountsForTesting().slots == 0)

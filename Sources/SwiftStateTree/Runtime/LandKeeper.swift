@@ -694,6 +694,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// settle, a joiner's path) held the sync flag: `endSync` then runs a sync-only turn, so the
     /// request is not lost.
     private var syncOnlyTurnAfterLegacyCycle = false
+    /// Tests (#555): a sync request met a legacy cycle in flight, and a sync-only turn is due
+    /// after its `endSync()`. A latch that coalesces requests, not a counter.
+    package var syncOnlyTurnAfterLegacyCycleForTesting: Bool { syncOnlyTurnAfterLegacyCycle }
 
     /// The tick loop's next deadline: set by the loop after each tick, cleared when the tick starts.
     private var nextTickDeadline: ContinuousClock.Instant?
