@@ -15,10 +15,14 @@ public struct LandRegistrationContext: Sendable {
     /// or its definition is registered for reevaluation. Such a land must have a record schema
     /// fingerprint (#521 D15), or none of its records could replay.
     public var recordsForReplay: Bool?
+    /// The host's server event opcode table, when it passes one: each registered server event
+    /// must have an entry (#521 EV3). Nil skips the row; the encoders then send event names.
+    public var eventHashes: [String: Int]?
 
-    public init(payloadsCompressed: Bool? = nil, recordsForReplay: Bool? = nil) {
+    public init(payloadsCompressed: Bool? = nil, recordsForReplay: Bool? = nil, eventHashes: [String: Int]? = nil) {
         self.payloadsCompressed = payloadsCompressed
         self.recordsForReplay = recordsForReplay
+        self.eventHashes = eventHashes
     }
 
     /// The rows that hold whatever the encoding.
@@ -59,6 +63,13 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// `AnyEventDescriptor` init. Checked only under `LandRegistrationContext.recordsForReplay`.
     /// Empty when there are none.
     public let serverEventsWithoutDecoder: [String]
+    /// Registered server event, client event and action types whose wire name
+    /// (`_payloadWireName`) isn't the schema's ID for them (#521 EV2), one line per type: its
+    /// kind, the type, both names. Empty when there are none.
+    public let wireNameMismatches: [String]
+    /// Registered server events with no entry in the host's `eventHashes` (#521 EV3), by event
+    /// name and type. Checked only when the context has `eventHashes`. Empty when there are none.
+    public let serverEventsWithoutHash: [String]
 
     init(
         landType: String,
@@ -66,7 +77,9 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         sync: SyncRegistrationError? = nil,
         duplicateHandlers: [DuplicateHandlerDeclaration] = [],
         schemaFingerprint: SchemaFingerprintError? = nil,
-        serverEventsWithoutDecoder: [String] = []
+        serverEventsWithoutDecoder: [String] = [],
+        wireNameMismatches: [String] = [],
+        serverEventsWithoutHash: [String] = []
     ) {
         self.landType = landType
         self.payload = payload
@@ -74,6 +87,8 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         self.duplicateHandlers = duplicateHandlers
         self.schemaFingerprint = schemaFingerprint
         self.serverEventsWithoutDecoder = serverEventsWithoutDecoder
+        self.wireNameMismatches = wireNameMismatches
+        self.serverEventsWithoutHash = serverEventsWithoutHash
     }
 
     public var description: String {
@@ -81,9 +96,15 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
             : "its records will be replayed, and these server event types can't be decoded from a record; "
                 + "register each with ServerEvents { Register(E.self) }: "
                 + serverEventsWithoutDecoder.joined(separator: ", ")
+        let mismatched = wireNameMismatches.isEmpty ? nil
+            : "these types' wire names aren't the schema's names for them; keep the type's name, or rename and "
+                + "regenerate the schema and the clients: " + wireNameMismatches.joined(separator: ", ")
+        let unhashed = serverEventsWithoutHash.isEmpty ? nil
+            : "eventHashes has no entry for these server events; pass the schema's table: "
+                + serverEventsWithoutHash.joined(separator: ", ")
         return "land type '\(landType)' can't be registered: "
             + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description)
-                + [schemaFingerprint?.description, undecodable].compactMap { $0 })
+                + [mismatched, unhashed, schemaFingerprint?.description, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
 }
@@ -98,11 +119,17 @@ extension LandDefinition {
         let payload = context.payloadsCompressed == true ? payloadsWithoutWriter() : nil
         let problems = SyncRegistration.cachedProblems(State.self)
         let sync = problems.isEmpty ? nil : SyncRegistrationError(problems: problems)
+        // EV2 and EV3 (#521 PR 1b-2b): the wire name is the schema's, and the host's opcode table
+        // covers every registered server event.
+        let mismatched = wireNameMismatches()
+        let unhashed = context.eventHashes.map { serverEventsWithoutHash(in: $0) } ?? []
         // A land whose records will be replayed needs a fingerprint (#521 D15, U3). Computed once
         // per definition and cached; any error other than the fingerprint's own propagates. Only
-        // when every other row holds: an error from the schema walk would replace those rows.
+        // when every other row holds: an error from the schema walk would replace those rows (the
+        // walk re-runs this check, so EV2 would throw from inside it).
         var fingerprint: SchemaFingerprintError?
-        if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty {
+        if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty,
+           mismatched.isEmpty, unhashed.isEmpty {
             do {
                 _ = try ReevaluationSchemaFingerprint.cached(for: self)
             } catch let error as SchemaFingerprintError {
@@ -112,13 +139,48 @@ extension LandDefinition {
         // EV8 (#521 PR 1b): a replay decodes every recorded server event through its
         // descriptor, so a descriptor without a decoder can't replay.
         let undecodable = context.recordsForReplay == true ? serverEventsWithoutDecoder() : []
-        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil || !undecodable.isEmpty {
+        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil || !undecodable.isEmpty
+            || !mismatched.isEmpty || !unhashed.isEmpty {
             throw LandRegistrationError(
                 landType: id, payload: payload, sync: sync,
                 duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint,
-                serverEventsWithoutDecoder: undecodable
+                serverEventsWithoutDecoder: undecodable,
+                wireNameMismatches: mismatched, serverEventsWithoutHash: unhashed
             )
         }
+    }
+
+    /// EV2: the registered types whose `_payloadWireName` differs from the schema's ID, the rule
+    /// `SchemaExtractor` names them by (`payloadEventName`, `payloadActionName`): the last dotted
+    /// component of the type's name, minus a trailing `Event` or `Action`. A hand-written
+    /// `_payloadWireName` that keeps an old name after a rename is refused here.
+    func wireNameMismatches() -> [String] {
+        var mismatched: [String] = []
+        func check(_ type: Any.Type, kind: String, schemaID: String) {
+            guard let payload = type as? any PayloadCompression.Type else { return }
+            let wireName = payload._payloadWireName
+            guard wireName != schemaID else { return }
+            mismatched.append("\(kind) \(String(reflecting: type)) (wire name \(wireName), schema name \(schemaID))")
+        }
+        for descriptor in serverEventRegistry.registered {
+            check(descriptor.type, kind: "server event", schemaID: payloadEventName(for: descriptor.type))
+        }
+        for descriptor in clientEventRegistry.registered {
+            check(descriptor.type, kind: "client event", schemaID: payloadEventName(for: descriptor.type))
+        }
+        for handler in actionHandlers {
+            let type = handler.getActionType()
+            check(type, kind: "action", schemaID: payloadActionName(for: type))
+        }
+        return mismatched
+    }
+
+    /// EV3: the registered server events with no entry in `eventHashes`, by event name. It checks
+    /// that the table is complete, not that its opcodes are the schema's.
+    func serverEventsWithoutHash(in eventHashes: [String: Int]) -> [String] {
+        serverEventRegistry.registered
+            .filter { eventHashes[$0.eventName] == nil }
+            .map { "\($0.eventName) (\(String(reflecting: $0.type)))" }
     }
 
     /// EV8: the server event types whose descriptor has no `decodeServerEvent`, by event name.

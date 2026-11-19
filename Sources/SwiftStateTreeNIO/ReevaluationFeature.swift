@@ -52,16 +52,15 @@ public extension NIOLandHost {
         configuration: NIOLandServerConfiguration,
         reevaluation: ReevaluationFeatureConfiguration
     ) async throws {
-        if reevaluation.enabled {
-            // The definition is replayed, so it must have a record schema fingerprint (#521 D15).
-            try liveLand.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
-        }
         let effectiveConfiguration: NIOLandServerConfiguration
         if reevaluation.enabled {
             effectiveConfiguration = configuration.injectingReevaluationServices(
                 runnerServiceFactory: reevaluation.runnerServiceFactory,
                 replayEventPolicy: reevaluation.replayEventPolicy
             )
+            // The definition is replayed, so it must have a record schema fingerprint (#521 D15);
+            // its other rows are checked in the same throw.
+            try liveLand.validateForRegistration(context: effectiveConfiguration.replayedDefinitionContext)
         } else {
             effectiveConfiguration = configuration
         }
@@ -128,18 +127,36 @@ public extension NIOLandHost {
         configuration: NIOLandServerConfiguration,
         reevaluation: ReevaluationFeatureConfiguration
     ) async throws {
-        if reevaluation.enabled {
-            // The definition is replayed, so it must have a record schema fingerprint (#521 D15).
-            try liveLand.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
-        }
         let effectiveConfiguration: NIOLandServerConfiguration
         if reevaluation.enabled {
             effectiveConfiguration = configuration.injectingReevaluationServices(
                 runnerServiceFactory: reevaluation.runnerServiceFactory,
                 replayEventPolicy: reevaluation.replayEventPolicy
             )
+            // The definition is replayed, so it must have a record schema fingerprint (#521 D15);
+            // its other rows are checked in the same throw.
+            try liveLand.validateForRegistration(context: effectiveConfiguration.replayedDefinitionContext)
         } else {
             effectiveConfiguration = configuration
+        }
+
+        let replay: (landType: String, webSocketPath: String, configuration: NIOLandServerConfiguration)?
+        if reevaluation.enabled {
+            let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
+            // The replay land is created only from a replay ticket the admin replay start issued
+            // (#366). This registration starts no runner, so the accepted land keeps its mode.
+            var replayConfig = effectiveConfiguration.injectingReplayTicketGate(
+                replayLandType: replayLandType,
+                recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+            )
+            replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
+            // The replay definition is checked before the live land registers, with the context
+            // its own registration uses (the live table): a refusal then publishes no route
+            // (#521 PR 1b-2b).
+            try replayLand.validateForRegistration(context: replayConfig.registrationContext)
+            replay = (replayLandType, reevaluation.replayWebSocketPathResolver(replayLandType), replayConfig)
+        } else {
+            replay = nil
         }
 
         try await register(
@@ -150,28 +167,18 @@ public extension NIOLandHost {
             configuration: effectiveConfiguration
         )
 
-        guard reevaluation.enabled else {
+        guard let replay else {
             return
         }
 
-        let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
-        let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
-
-        // The replay land is created only from a replay ticket the admin replay start issued
-        // (#366). This registration starts no runner, so the accepted land keeps its mode.
-        var replayConfigForDifferentState = effectiveConfiguration.injectingReplayTicketGate(
-            replayLandType: replayLandType,
-            recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
-        )
-        replayConfigForDifferentState.replayLandSuffix = reevaluation.replayLandSuffix
         replayLandSuffix = reevaluation.replayLandSuffix
 
         try await register(
-            landType: replayLandType,
+            landType: replay.landType,
             land: replayLand,
             initialState: replayInitialState(),
-            webSocketPath: replayWebSocketPath,
-            configuration: replayConfigForDifferentState
+            webSocketPath: replay.webSocketPath,
+            configuration: replay.configuration
         )
 
         if await realm.isRegistered(landType: reevaluation.monitorLandType) == false {
@@ -220,18 +227,48 @@ public extension NIOLandHost {
         configuration: NIOLandServerConfiguration,
         reevaluation: ReevaluationFeatureConfiguration
     ) async throws {
-        if reevaluation.enabled {
-            // The definition is replayed, so it must have a record schema fingerprint (#521 D15).
-            try liveLand.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
-        }
         let effectiveConfiguration: NIOLandServerConfiguration
         if reevaluation.enabled {
             effectiveConfiguration = configuration.injectingReevaluationServices(
                 runnerServiceFactory: reevaluation.runnerServiceFactory,
                 replayEventPolicy: reevaluation.replayEventPolicy
             )
+            // The definition is replayed, so it must have a record schema fingerprint (#521 D15);
+            // its other rows are checked in the same throw.
+            try liveLand.validateForRegistration(context: effectiveConfiguration.replayedDefinitionContext)
         } else {
             effectiveConfiguration = configuration
+        }
+
+        let replay: (
+            landType: String, webSocketPath: String, configuration: NIOLandServerConfiguration,
+            land: LandDefinition<State>
+        )?
+        if reevaluation.enabled {
+            let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
+            let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+            var replayConfig = effectiveConfiguration
+                .injectingGenericReplayRunnerBootstrap(
+                    replayLandType: replayLandType,
+                    liveLandType: landType,
+                    recordsDir: recordsDir,
+                    replayLandState: State.self
+                )
+                .injectingGenericReplayKeeperModeResolver(
+                    replayLandType: replayLandType,
+                    recordsDir: recordsDir
+                )
+            replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
+            // Built once, from the live definition alone, and checked before the live land
+            // registers with the context its own registration uses: a refusal then publishes no
+            // route (#521 PR 1b-2b). The alias isn't a subset of the base for every row: it drops
+            // the server inputs, so its fingerprint walk can find a wire-key collision that a
+            // same-named server input hides in the base's walk.
+            let replayLand = GenericReplayLand<State>.makeLand(basedOn: liveLand)
+            try replayLand.validateForRegistration(context: replayConfig.registrationContext)
+            replay = (replayLandType, reevaluation.replayWebSocketPathResolver(replayLandType), replayConfig, replayLand)
+        } else {
+            replay = nil
         }
 
         try await register(
@@ -242,37 +279,18 @@ public extension NIOLandHost {
             configuration: effectiveConfiguration
         )
 
-        guard reevaluation.enabled else {
+        guard let replay else {
             return
         }
 
-        let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
-        let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
-        let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
-
-        var replayConfig = effectiveConfiguration
-            .injectingGenericReplayRunnerBootstrap(
-                replayLandType: replayLandType,
-                liveLandType: landType,
-                recordsDir: recordsDir,
-                replayLandState: State.self
-            )
-            .injectingGenericReplayKeeperModeResolver(
-                replayLandType: replayLandType,
-                recordsDir: recordsDir
-            )
-        replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
-
         replayLandSuffix = reevaluation.replayLandSuffix
 
-        let replayLand = GenericReplayLand<State>.makeLand(basedOn: liveLand)
-
         try await register(
-            landType: replayLandType,
-            land: replayLand,
+            landType: replay.landType,
+            land: replay.land,
             initialState: liveInitialState(),
-            webSocketPath: replayWebSocketPath,
-            configuration: replayConfig
+            webSocketPath: replay.webSocketPath,
+            configuration: replay.configuration
         )
 
         if await realm.isRegistered(landType: reevaluation.monitorLandType) == false {

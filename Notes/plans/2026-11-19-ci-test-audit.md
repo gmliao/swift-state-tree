@@ -1,6 +1,6 @@
 # CI test audit and nightly design
 
-Status: proposal, rev 2. Rev 2 revises V3's premise and the nightly's skip and scoping after review, names the effective-config log lines for V2, and says what the queue figures count. Inventory and verdicts only. No test is removed, skipped or moved by this plan. Each move lands in its own PR after the list is approved.
+Status: done: the nightly (#625), V1 (#627), V2 (#631), V3 (#642), V4 (#649); V5 dropped after measuring (§ V5). The text below is rev 2, the approved proposal, with V4 and V5 updated as built. Rev 2: Rev 2 revises V3's premise and the nightly's skip and scoping after review, names the effective-config log lines for V2, and says what the queue figures count. Inventory and verdicts only. No test is removed, skipped or moved by this plan. Each move lands in its own PR after the list is approved.
 
 Follows `Notes/plans/2026-11-19-dev-speed.md` (levers 1–3: #618, #620).
 
@@ -117,18 +117,17 @@ Verdicts: **push** (every push and PR, as today), **variant** (only in the varia
 - **Either way, the PR adds a check** that lists every `TransportAdapter(` and land-server construction in `Tests/SwiftStateTreeTests` without `transportEnvConfig:`. It fails if one is outside the filter, for (a), or exists at all, for (b).
 - **Saves:** about 2 runner-min, an estimate. The per-player job builds the same and runs only Transport and NIO, in 9.7 against 11.6 min. Under (a), less whatever the added core suites take. It's off the critical path.
 
-### V4. Must-not-compile snippets and Lint lessons: one build leg (variant)
+### V4. Must-not-compile snippets, Lint lessons and Lint turns: one build leg (variant)
 
-- **Why less:** both are compile-time or text checks; `IN_TURN_SYNC` is a runtime environment value.
-- **Still caught by:** the same steps in build (in-turn sync true).
-- **Saves:** about 1 runner-min. It's off the critical path.
+- **Why less:** all three are compile-time or text checks; `IN_TURN_SYNC` is a runtime environment value.
+- **Still caught by:** the same steps in build (in-turn sync true), and in both legs on the nightly.
+- **How:** `if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}` on the three steps. `scripts/check-variant-test-selection.sh` (V3's check, renamed, with a second section) fails if the build job's matrix gets another axis or uses the axis outside `IN_TURN_SYNC` (S6), or if a one-leg step runs anything but scripts, or a script it runs, or one they name, mentions `IN_TURN_SYNC`, its key or `InTurnSync` (S4).
+- **Saves:** about 2 runner-min: must-not-compile alone took 113 s in the in-turn false leg of run 44484927089. It's off the critical path.
 
-### V5. Macros and DeterministicMath tests: one build leg (variant)
+### V5. Macros and DeterministicMath tests: one build leg (variant). Dropped
 
-- **Why less:** neither module can read `IN_TURN_SYNC`.
-- **Still caught by:** the same tests in build (in-turn sync true).
-- **How:** `--skip 'SwiftStateTreeMacrosTests\.|SwiftStateTreeDeterministicMathTests\.'` in the in-turn-false leg. Once #608 merges, its test targets (`SwiftStateTurnsTests`, `SwiftStateTurnsMacrosTests`) get the same check: whether they can read `IN_TURN_SYNC`.
-- **Saves:** under 0.5 runner-min (178 short tests). Listed for completeness. Recommend doing it only together with V4, in one PR.
+- **Measured before building it.** In the in-turn false leg of run 44484927089, the "Run tests" step took 367 s: `Build complete! (314.73s)` for the test targets, then `Test run with 2443 tests … after 51.175 seconds`. The four targets V5 would skip (Macros, DeterministicMath, and since #608 Turns and TurnsMacros) are 172 of the run's 2564 suite-seconds, about 7% of work that runs in parallel: a few seconds of the 51 s. `--skip` doesn't skip building them.
+- **Dropped:** about 3–5 s per push isn't worth the checks it needs. Those targets depend on `SwiftStateTree`, where `InTurnSync.isEnabled()` and the key live, so the check would have to scan their files for the reader, the key and dynamic environment reads, besides the dependency graph. That analysis is kept in the V4 PR's design discussion, in case those targets grow heavy.
 
 ### V6. The slowest tests: no per-test moves (push)
 
@@ -197,12 +196,14 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
 | V1 | ~3 | up to ~1.5 when a row-off leg is the slowest |
 | V2 | ~13 | e2e-game max becomes the (false, on) leg + ~1.1; to be measured on the PR |
 | V3 | ~2 (estimate) | none (off the critical path) |
-| V4 + V5 | ~1.5 | none |
+| V4 (V5 dropped) | ~2 | none |
 | **total** | **~19 of ~110 (≈17%), and 1 of 15 jobs** | **0–1.5 min** |
 
 **The audit mostly saves runner-minutes and queue time, not wall time.** The queue time saved depends on how many runs overlap, so it isn't estimated here. It is measured after V1 and V2 (see "Queue time"). The wall time is set by one e2e-game leg: a 5.5-min GameServer build, then about 5.5 min of scenarios across three encodings. Cutting that needs a different lever, not a removal. Two options are noted for the dev-speed plan, not proposed here:
 - one leg per encoding (more runner-minutes, about 8 min of wall time);
 - build GameServer once and share the product across legs.
+
+**The same lever applies to the Swift build jobs, and it is the largest one left.** Every Swift test job builds the package and its tests from scratch: in run 44484927089's in-turn false leg, `swift build` took 345 s and `swift test` 315 s more, compiling only the test targets, against 51 s of tests. The two build legs, sync-tables-off and per-player sync tables off differ only in runtime environment variables (`IN_TURN_SYNC`, `USE_SYNC_TABLES`, `TYPED_LEAF_VALUES`, the per-player flag), so they build the same thing four times. One build, then `swift test --skip-build` once per variant, in one job or with the build shared, would save most of three builds, about 30 runner-min per push. Wall time would be the build plus the test runs in a row. An idea for after V4, not designed here.
 
 ## Nightly workflow
 
@@ -245,7 +246,7 @@ The nightly below still runs the **full pre-audit matrix**, so whatever V1–V5 
 ## Order, after approval
 
 1. **V1, then V2,** each in its own PR. V2 includes the effective-config check, and both PRs measure the legs on their runs.
-2. **V3, then V4 + V5,** one PR each.
+2. **V3, then V4,** one PR each (V5 dropped, measured: see V5).
 3. **The nightly**, with `workflow_call` added to both workflows. It must land before V1–V5 take effect on `main`, or in the same PR as the first of them, so nothing dropped from push runs goes unrun.
 
 Each PR states its verdict's "still caught by" line and shows the remaining run passing.

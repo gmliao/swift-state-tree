@@ -362,8 +362,9 @@ struct JoinPendingInboundTests {
         #expect(await !h.log.contains("after"))
     }
 
-    @Test("Over the bound after the flip, the session gets INBOUND_OVERFLOW and is closed")
-    func boundAfterFlip() async throws {
+    /// `waitsForBound`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
+    @Test("Over the bound after the flip, the session gets INBOUND_OVERFLOW and is closed", arguments: [false, true])
+    func boundAfterFlip(waitsForBound: Bool) async throws {
         let h = try await PendingHarness.make()
         await h.adapter.setDeferredInboundLimitForTesting(count: 2, bytes: 1 << 20)
         try await h.joinPending()
@@ -376,11 +377,18 @@ struct JoinPendingInboundTests {
         // and the close then wait, and the session's membership with them.
         #expect(await pendingPoll { await h.connection.frames.contains { String(decoding: $0, as: UTF8.self).contains("firstSync") } })
         let reader = TestGate()
+        // The close's bound is held while the client doesn't read: the membership checks below
+        // assume the close hasn't run (#647).
+        let bound = await h.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
         await h.connection.setStall(reader)
         // "a" is being dispatched, "b" waits: one more fits, the next goes over.
         try await h.send("c")
         try await h.send("d")
         #expect(await h.adapter.inboundOverflowClosures == 1)
+        if waitsForBound {
+            #expect(await bound.waitForArrivals(1), "the bound ran out")
+        }
         #expect(await h.adapter.inboundAfterFlipCount(h.session) == nil)
         // Before the disconnect arrives a later frame still reaches the adapter: it is dropped
         // and counted, never applied.

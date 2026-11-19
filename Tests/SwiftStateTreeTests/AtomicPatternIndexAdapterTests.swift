@@ -90,7 +90,7 @@ private func patternIndexAdapterEnv(tables: Bool) -> TransportEnvConfig {
         profilingConfig: nil
     )
     config.useSyncTables = tables
-    // Pinned, so no environment flag reaches this test (scripts/check-filtered-tests-pin-transport-env.sh);
+    // Pinned, so no environment flag reaches this test (scripts/check-variant-test-selection.sh);
     // typed leaf values off are covered by SyncTablesByteIdentityTests.
     config.typedLeafValues = true
     return config
