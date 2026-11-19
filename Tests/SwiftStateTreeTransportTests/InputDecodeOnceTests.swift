@@ -167,9 +167,12 @@ private struct DecodeOnceFixture {
     /// The error frames sent so far, decoded.
     func errors() async -> [ErrorPayload] {
         await sent.frames.compactMap { data in
-            // An opcode JSON frame (`[106, …]`) is read by the opcode decoder.
+            // The adapter's encoder may differ from the decoding codec (an opcode JSON frame,
+            // `[106, …]`, or a foreign codec's frames), so every server encoding is tried.
             let message = (try? choice.codec.decode(TransportMessage.self, from: data))
                 ?? (try? OpcodeTransportMessageDecoder().decode(from: data))
+                ?? (try? MessagePackTransportCodec().decode(TransportMessage.self, from: data))
+                ?? (try? JSONDecoder().decode(TransportMessage.self, from: data))
             guard let message, case .error(let payload) = message.payload else { return nil }
             return payload
         }

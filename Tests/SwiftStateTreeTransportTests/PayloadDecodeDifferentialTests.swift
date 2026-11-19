@@ -87,9 +87,10 @@ struct PayloadDecodeDifferentialTests {
     /// Values a field is replaced with.
     static let replacements: [(String, MessagePackValue)] = nonFinite + [
         ("int 1", .int(1)), ("int -1", .int(-1)), ("int64 min", .int(.min)), ("uint64 max", .uint(.max)),
-        ("int 300", .int(300)), ("int 70000", .int(70_000)), ("int 2^40", .int(1 << 40)),
+        ("uint 7", .uint(7)), ("int 300", .int(300)), ("int 70000", .int(70_000)), ("int 2^40", .int(1 << 40)),
         ("double 3.0", .double(3)), ("double 3.5", .double(3.5)), ("float 2.0", .float(2)), ("float 2.5", .float(2.5)),
-        ("double -0.0", .double(-0.0)), ("double max", .double(.greatestFiniteMagnitude)),
+        ("double 0.1", .double(0.1)), ("double -0.0", .double(-0.0)), ("double max", .double(.greatestFiniteMagnitude)),
+        ("double 1e39", .double(1e39)),
         ("float max", .float(.greatestFiniteMagnitude)), ("double subnormal", .double(.leastNonzeroMagnitude)),
         ("string \"1\"", .string("1")), ("string x", .string("x")), ("binary", .binary(Data("x".utf8))),
         ("nil", .nil), ("bool", .bool(true)), ("empty array", .array([])), ("empty map", .map([:])),
@@ -191,6 +192,34 @@ struct PayloadDecodeDifferentialTests {
         let gone = Self.expectedDifferences.subtracting(differences).sorted()
         #expect(unlisted.isEmpty, "not listed:\n\(unlisted.joined(separator: "\n"))")
         #expect(gone.isEmpty, "listed but no longer differ:\n\(gone.joined(separator: "\n"))")
+    }
+
+    @Test("Decimal decodes from each numeric kind as the round trip read it, and its keyed form still decodes")
+    func decimal() throws {
+        struct Box: Codable, Equatable { let d: Decimal }
+        let cases: [(MessagePackValue, String)] = [
+            (.int(-2), "-2"), (.uint(7), "7"), (.float(2.5), "2.5"), (.double(2.5), "2.5"), (.double(0.1), "0.1"),
+        ]
+        for (value, expected) in cases {
+            let decoded = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("d"): value]))
+            #expect(decoded.d == Decimal(string: expected), "\(value)")
+            #expect(Self.today(Box.self, .map([.string("d"): value])) == .accepted(Self.canonical(decoded)), "\(value)")
+        }
+        // A frame the server builds writes `Decimal`'s keyed `Codable` form: it round-trips.
+        let codec = MessagePackTransportCodec()
+        for decimal in [Decimal(string: "2.5")!, Decimal(string: "-0.001")!, Decimal(12345678901234567890 as UInt64)] {
+            #expect(try codec.decode(Box.self, from: codec.encode(Box(d: decimal))) == Box(d: decimal))
+        }
+    }
+
+    @Test("A Float field refuses a double it can't hold, as the round trip did",
+          arguments: [Double.greatestFiniteMagnitude, 1e39, -1e39, .leastNonzeroMagnitude, 1e-50])
+    func floatRange(double: Double) {
+        struct Box: Codable { let f: Float }
+        #expect(throws: DecodingError.self) {
+            _ = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("f"): .double(double)]))
+        }
+        #expect(Self.today(Box.self, .map([.string("f"): .double(double)])) == .refused)
     }
 
     @Test("A JSON frame's payload carries an AnyCodable source: today's round trip, unchanged",

@@ -92,7 +92,7 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
     }
 
     func decode(_ type: Float.Type, forKey key: Key) throws -> Float {
-        Float(try decodeValue(forKey: key).decodeDouble(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeFloat(codingPath: codingPath + [key])
     }
 
     func decode(_ type: Int.Type, forKey key: Key) throws -> Int {
@@ -140,6 +140,9 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
             let box = try decodeValue(forKey: key)
             let data = try box.decodeData(codingPath: codingPath + [key])
             return data as! T
+        }
+        if type == Decimal.self, let decimal = try decodeValue(forKey: key).decodeDecimalNumber(codingPath: codingPath + [key]) {
+            return decimal as! T
         }
         let value = try decodeValue(forKey: key).value
         let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key])
@@ -217,7 +220,7 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     }
 
     mutating func decode(_ type: Float.Type) throws -> Float {
-        Float(try nextBox().decodeDouble(codingPath: codingPath))
+        try nextBox().decodeFloat(codingPath: codingPath)
     }
 
     mutating func decode(_ type: Int.Type) throws -> Int {
@@ -266,6 +269,9 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             return data as! T
         }
         let value = try nextBox().value
+        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath) {
+            return decimal as! T
+        }
         let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
         return try T(from: nestedDecoder)
     }
@@ -325,7 +331,7 @@ private struct MessagePackSingleValueDecodingContainer: SingleValueDecodingConta
     }
 
     func decode(_ type: Float.Type) throws -> Float {
-        Float(try MessagePackValueBox(value: value).decodeDouble(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeFloat(codingPath: codingPath)
     }
 
     func decode(_ type: Int.Type) throws -> Int {
@@ -373,6 +379,9 @@ private struct MessagePackSingleValueDecodingContainer: SingleValueDecodingConta
             let data = try MessagePackValueBox(value: value).decodeData(codingPath: codingPath)
             return data as! T
         }
+        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath) {
+            return decimal as! T
+        }
         let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
         return try T(from: nestedDecoder)
     }
@@ -408,6 +417,47 @@ private struct MessagePackValueBox {
         default:
             throw typeMismatch(Double.self, codingPath: codingPath)
         }
+    }
+
+    /// A `Float`, refusing what the JSON round trip refused: a finite value past `Float`'s range
+    /// (it would become infinite) and a nonzero one too small for it (it would become zero).
+    func decodeFloat(codingPath: [CodingKey]) throws -> Float {
+        if case .float(let value) = value { return value }
+        let double = try decodeDouble(codingPath: codingPath)
+        let float = Float(double)
+        if double.isFinite && float.isInfinite || double != 0 && float == 0 {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "\(value) out of range for Float"
+            ))
+        }
+        return float
+    }
+
+    /// A `Decimal` sent as a number, as a client writes one, read as the JSON round trip read it:
+    /// from the number's shortest decimal text, so `0.1` is `0.1`. Nil for any other value, which
+    /// `Decimal`'s own keyed `Codable` form then decodes (the form the server's encoders write).
+    func decodeDecimalNumber(codingPath: [CodingKey]) throws -> Decimal? {
+        let text: String
+        switch value {
+        case .int(let value): return Decimal(value)
+        case .uint(let value): return Decimal(value)
+        case .double(let value) where value.isFinite: text = value.description
+        case .float(let value) where value.isFinite: text = value.description
+        case .double, .float:
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "\(value) isn't a finite Decimal"
+            ))
+        default: return nil
+        }
+        guard let decimal = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "\(value) doesn't read as a Decimal"
+            ))
+        }
+        return decimal
     }
 
     func decodeInt(codingPath: [CodingKey]) throws -> Int {
