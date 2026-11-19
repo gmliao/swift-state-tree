@@ -8,7 +8,7 @@
 #   1. playwright-cli open $WEB_URL
 #   2. playwright-cli click e35     # Reevaluation button (or get ref from snapshot)
 #   3. playwright-cli snapshot       # Get refs for record list
-#   4. playwright-cli click e301     # 2-hero-defense.json listitem (ref from snapshot)
+#   4. playwright-cli click e301     # 2-hero-defense.sstr listitem (ref from snapshot)
 #   5. playwright-cli click e621     # Start Replay Stream (ref from snapshot)
 #   6. sleep 5
 #   7. playwright-cli console        # Verify Errors: 0

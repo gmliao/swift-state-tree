@@ -31,6 +31,7 @@ public actor LandRealm {
         nonisolated(unsafe) let debugFreezeClosure: (LandID) async throws -> DebugFreezeResponse?
         nonisolated(unsafe) let debugProjectionClosure: (LandID, PlayerID?) async throws -> DebugProjectionResponse?
         nonisolated(unsafe) let debugResumeClosure: (LandID, String) async -> DebugResumeResponse?
+        nonisolated(unsafe) let recordSchemaFingerprintClosure: () throws -> String?
         
         init<Server: LandServerProtocol>(
             landType: String,
@@ -76,6 +77,10 @@ public actor LandRealm {
 
             self.debugResumeClosure = { landID, freezeToken in
                 await server.debugResume(landID: landID, freezeToken: freezeToken)
+            }
+
+            self.recordSchemaFingerprintClosure = {
+                try server.recordSchemaFingerprint()
             }
         }
     }
@@ -238,6 +243,12 @@ public actor LandRealm {
     /// - Returns: The state type name as a string, or nil if not registered
     public func getStateTypeName(for landType: String) -> String? {
         return servers[landType]?.stateTypeName
+    }
+
+    /// The record schema fingerprint of a registered land type's definition (#521 D15), or nil
+    /// when the land type isn't registered or its server provides none.
+    public func recordSchemaFingerprint(for landType: String) throws -> String? {
+        try servers[landType]?.recordSchemaFingerprintClosure()
     }
     
     /// List all lands across all registered servers.

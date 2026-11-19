@@ -205,6 +205,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// through the `Diagnostics` init, for a benchmark that steps its lands itself. A
     /// re-evaluation keeper always starts them.
     private let autoStartLoops: Bool
+    /// A replay land type is a live one plus this suffix: a replay definition named so (the
+    /// recorded definition's id plus the suffix) is checked against the recorded definition's
+    /// fingerprint (`NIOLandServerConfiguration.replayLandSuffix`).
+    private let replayLandSuffix: String
     
     /// Initialize a LandManager.
     ///
@@ -315,6 +319,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         inTurnSync: Bool = true,
         syncLagPolicy: SyncLagPolicy?,
         autoStartLoops: Bool = true,
+        replayLandSuffix: String = "-replay",
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -330,6 +335,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.inTurnSync = inTurnSync
         self.syncLagPolicy = syncLagPolicy
         self.autoStartLoops = autoStartLoops
+        self.replayLandSuffix = replayLandSuffix
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -416,7 +422,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             registrationValidations += 1
             do {
                 try definition.validateForRegistration(
-                    context: LandRegistrationContext(payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray)
+                    context: LandRegistrationContext(
+                        payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray,
+                        recordsForReplay: enableLiveStateHashRecording
+                    )
                 )
                 verdict = nil
             } catch let error as LandRegistrationError {
@@ -612,6 +621,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                         required: ReevaluationRecordVersion.current
                     )
                 }
+                // Before the first step, like every replay entry point (#521 D15): a record
+                // without a fingerprint, or of another schema, isn't replayed. Checked under the
+                // live land type: a replay definition may be named by the replay alias.
+                try ReevaluationSchemaFingerprint.checkRecord(
+                    recordedMetadata, against: landDefinition, replayLandSuffix: replayLandSuffix
+                )
                 reevalServices.register(
                     DeterministicRngService(seed: recordedMetadata.replayRngSeed),
                     as: DeterministicRngService.self

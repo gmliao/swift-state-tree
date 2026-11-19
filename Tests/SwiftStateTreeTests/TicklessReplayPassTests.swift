@@ -581,11 +581,13 @@ struct TicklessReplayPassTests {
         #expect(turnPasses == (endsTurn ? passes.map { [$0] } : [passes]))
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getPasses(for: 0) == passes)
-        #expect(try await source.getMetadata().version == "3.5")
+        #expect(try await source.getMetadata().version == "3.6")
     }
 
-    @Test("A 3.0 tickless record without passes still replays, in sequence order, ignoring sequences")
-    func recordWithoutPassesReplaysAsBefore() async throws {
+    /// A 3.0 record is still read (no passes), but replay refuses it: it has no schema
+    /// fingerprint (#521 D15).
+    @Test("A 3.0 tickless record is read without passes, and refused at replay")
+    func recordWithoutPassesIsReadAndRefused() async throws {
         let keeper = try await makePassKeeper(inTurn: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
@@ -600,13 +602,12 @@ struct TicklessReplayPassTests {
         let source = try ReevaluationRecordFile.openSource(filePath: oldPath)
         #expect(try await source.getMetadata().version == "3.0")
         #expect(try await source.getPasses(for: 0).isEmpty)
-        let result = try await replayPassRecord(oldPath)
-        #expect(result.watermarkedTicks.isEmpty)
-        #expect(result.recordedPassMismatches.isEmpty)
-        #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]))
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "3.0")) {
+            _ = try await replayPassRecord(oldPath)
+        }
     }
 
-    @Test("The JSON view keeps a 3.1 record's passes; a 2.x JSON tickless record replays ignoring sequences")
+    @Test("The JSON view keeps a current record's passes and replays; a 2.x JSON tickless record is read and refused at replay")
     func jsonRecordsReplay() async throws {
         let keeper = try await makePassKeeper(inTurn: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
@@ -618,7 +619,7 @@ struct TicklessReplayPassTests {
         let livePasses = try await ReevaluationRecordFile.openSource(filePath: path).getPasses(for: 0)
         try #require(!livePasses.isEmpty)
 
-        // The JSON view of the 3.1 record keeps its passes and replays exactly.
+        // The JSON view of the current record keeps its passes and replays exactly.
         let jsonPath = path + ".json"
         defer { try? FileManager.default.removeItem(atPath: jsonPath) }
         try FileManager.default.copyItem(atPath: path, toPath: jsonPath)
@@ -640,9 +641,10 @@ struct TicklessReplayPassTests {
         try JSONSerialization.data(withJSONObject: object).write(to: URL(fileURLWithPath: oldPath))
         let old = try ReevaluationRecordFile.openSource(filePath: oldPath)
         #expect(try await old.getPasses(for: 0).isEmpty)
-        let result = try await replayPassRecord(oldPath)
-        #expect(result.watermarkedTicks.isEmpty)
-        #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]))
+        // A 2.x record has no schema fingerprint (#521 D15).
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "2.6")) {
+            _ = try await replayPassRecord(oldPath)
+        }
     }
 
     @Test("Passes that don't match the tick's inputs fail the tick with a reason", arguments: [

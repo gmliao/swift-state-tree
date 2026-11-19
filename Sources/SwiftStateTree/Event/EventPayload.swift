@@ -25,6 +25,11 @@ public protocol PayloadCompression {
     static var _payloadWireName: String { get }
     /// Each field and how the writer writes it, in field order.
     static var _payloadFieldForms: [_PayloadFieldFormEntry] { get }
+    /// Each field whose wire key differs from its property name, property name to key: the raw
+    /// values of the type's own `CodingKeys`. `@Payload` reads them from the declaration, so
+    /// `CodingKeys` declared in an extension, or a custom `encode(to:)`, aren't seen. The record
+    /// schema fingerprint names fields by these keys (#521 D15).
+    static var _payloadWireKeys: [String: String] { get }
 }
 
 // Provide a default metadata implementation so enums and non-macro types still compile.
@@ -50,6 +55,8 @@ extension PayloadCompression {
     public static var _payloadWireName: String { payloadEventName(for: Self.self) }
 
     public static var _payloadFieldForms: [_PayloadFieldFormEntry] { [] }
+
+    public static var _payloadWireKeys: [String: String] { [:] }
 }
 
 // MARK: - Generic Event Container

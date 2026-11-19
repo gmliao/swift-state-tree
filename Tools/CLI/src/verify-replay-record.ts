@@ -82,7 +82,7 @@ async function main() {
   ).trim();
   const recordPathArg =
     args["record-path"] ??
-    resolve(process.cwd(), "..", "..", "Examples", "GameDemo", "reevaluation-records", "3-hero-defense.json");
+    resolve(process.cwd(), "..", "..", "Examples", "GameDemo", "reevaluation-records", "3-hero-defense.sstr");
 
   const recordFilePath = isAbsolute(recordPathArg) ? recordPathArg : resolve(process.cwd(), recordPathArg);
   console.log(chalk.blue(`Record file: ${recordFilePath}`));

@@ -109,7 +109,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // value's. A property without a type annotation is listed as `Any`; the check takes its
         // value's type instead.
         let storedFieldEntries = properties.map { property in
-            "(\"\(property.name)\", \(property.typeName.map { "(\(metatypeSpelling($0))).self" } ?? "Any.self"))"
+            "(\"\(property.wireName)\", \(property.typeName.map { "(\(metatypeSpelling($0))).self" } ?? "Any.self"))"
         }
         let storedFieldsBody = storedFieldEntries.isEmpty ? "[]" : "[\n        " + storedFieldEntries.joined(separator: ",\n        ") + "\n    ]"
         let storedFieldsExtension = try ExtensionDeclSyntax(
@@ -137,9 +137,9 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                     error.diagnose(context: context)
                     throw error
                 }
-                leafEntries.append("_atomicLeafPaths(of: \(typeName).self, named: \"\(property.name)\")")
+                leafEntries.append("_atomicLeafPaths(of: \(typeName).self, named: \"\(property.wireName)\")")
                 metadataEntries.append(
-                    "FieldMetadata(name: \"\(property.name)\", type: \(typeName).self, policy: nil, nodeKind: .leaf, defaultValue: nil)"
+                    "FieldMetadata(name: \"\(property.wireName)\", type: \(typeName).self, policy: nil, nodeKind: .leaf, defaultValue: nil)"
                 )
             }
             let leafBody = leafEntries.isEmpty
@@ -183,7 +183,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                !declaresSnapshotFieldMetadata(declaration) {
                 let entries = properties.map { property in
                     let typeName = metatypeSpelling(property.typeName!)
-                    return "FieldMetadata(name: \"\(property.name)\", type: (\(typeName)).self, policy: nil, nodeKind: SchemaHelper.determineNodeKind(from: (\(typeName)).self), defaultValue: nil)"
+                    return "FieldMetadata(name: \"\(property.wireName)\", type: (\(typeName)).self, policy: nil, nodeKind: SchemaHelper.determineNodeKind(from: (\(typeName)).self), defaultValue: nil)"
                 }
                 let body = entries.isEmpty ? "[]" : "[\n        " + entries.joined(separator: ",\n        ") + "\n    ]"
                 extensions.append(try ExtensionDeclSyntax(
@@ -203,7 +203,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         var assignmentLines: [String] = []
         for prop in properties {
             assignmentLines.append(
-                "        if let _v = _dict[\"\(prop.name)\"] { self.\(prop.name) = try _snapshotDecode(_v) }"
+                "        if let _v = _dict[\"\(prop.wireName)\"] { self.\(prop.name) = try _snapshotDecode(_v) }"
             )
         }
         let assignmentBody = assignmentLines.joined(separator: "\n")
@@ -306,7 +306,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
     /// Generate toFullSnapshotValue(): every stored property through `SnapshotValue.makeFull`, so a
     /// state node held by this value contributes its full state to the replay hash.
     private static func generateToFullSnapshotValueMethod(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
-        let entries = properties.map { "\"\($0.name)\": try SnapshotValue.makeFull(from: self.\($0.name) as Any)" }
+        let entries = properties.map { "\"\($0.wireName)\": try SnapshotValue.makeFull(from: self.\($0.name) as Any)" }
         let body = entries.isEmpty ? "return .object([:])" : "return .object([\n    " + entries.joined(separator: ",\n    ") + "\n])"
         return try FunctionDeclSyntax(
             """
@@ -339,7 +339,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             let conversionCode = generatePropertyConversionCode(for: property.typeName, propertyName: propertyName)
 
             let comma = index < properties.count - 1 ? "," : ""
-            codeLines.append("    \"\(propertyName)\": \(conversionCode)\(comma)")
+            codeLines.append("    \"\(property.wireName)\": \(conversionCode)\(comma)")
         }
 
         codeLines.append("])")
@@ -419,7 +419,11 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
 
 /// Information about a property in a struct
 private struct PropertyInfo {
+    /// The source spelling, for generated code: a keyword property keeps its backticks.
     let name: String
+    /// The name in string literals (field metadata, snapshot keys): without backticks, as a
+    /// synthesized `Codable` names it.
+    var wireName: String { String(name.filter { $0 != "`" }) }
     let typeName: String?
     /// Whether the property is declared with `var` (mutable) vs `let` (immutable).
     let isMutable: Bool

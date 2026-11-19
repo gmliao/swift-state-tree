@@ -3,7 +3,7 @@ Notes/plans/2026-11-07-streaming-record-format.md section 2, independently of th
 
 Regenerates the expected values in Tests/SwiftStateTreeTests/CanonicalMessagePackFixtures.swift:
     python3 Tools/CanonicalMessagePack/reference.py edge
-    python3 Tools/CanonicalMessagePack/reference.py Examples/GameDemo/reevaluation-records/3-hero-defense.json
+    python3 Tools/CanonicalMessagePack/reference.py Tests/SwiftStateTreeTests/Fixtures/hero-defense-record-2.5.json
 """
 import struct, math, json, hashlib, sys, datetime
 

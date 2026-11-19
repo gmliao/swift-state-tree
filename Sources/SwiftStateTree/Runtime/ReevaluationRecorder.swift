@@ -44,6 +44,7 @@ public actor ReevaluationRecorder {
     }
 
     private var metadata: ReevaluationRecordMetadata?
+    private let schemaFingerprint: String?
     private let flushInterval: Int64
     private let spoolDirectory: URL?
     private let makeSink: (@Sendable (URL) throws -> any ReevaluationRecordSink)?
@@ -83,7 +84,15 @@ public actor ReevaluationRecorder {
     /// build the 2.6 frames (`legacyFramesForTesting()`), from their first call.
     @TaskLocal package static var recordsLegacyFramesForTesting = false
 
-    public init(flushInterval: Int64 = 60, spoolDirectory: URL? = nil, logger: Logger? = nil) {
+    /// - Parameter schemaFingerprint: the land's record schema fingerprint, written into the
+    ///   record's metadata in place of the caller's (#521 D15).
+    public init(
+        flushInterval: Int64 = 60,
+        spoolDirectory: URL? = nil,
+        logger: Logger? = nil,
+        schemaFingerprint: String? = nil
+    ) {
+        self.schemaFingerprint = schemaFingerprint
         self.flushInterval = flushInterval
         self.legacyModel = Self.recordsLegacyFramesForTesting ? ReevaluationLegacyFrameModel() : nil
         self.spoolDirectory = spoolDirectory
@@ -100,6 +109,7 @@ public actor ReevaluationRecorder {
         logger: Logger? = nil,
         makeSink: @escaping @Sendable (URL) throws -> any ReevaluationRecordSink
     ) {
+        self.schemaFingerprint = nil
         self.flushInterval = 60
         self.spoolDirectory = spoolDirectory
         self.makeSink = makeSink
@@ -124,7 +134,7 @@ public actor ReevaluationRecorder {
     /// The first call opens the spool file and writes the header; a later call writes another
     /// header, which replaces the first on read.
     public func setMetadata(_ metadata: ReevaluationRecordMetadata) {
-        let stamped = metadata.stampedWithCurrentVersion()
+        let stamped = metadata.stampedWithCurrentVersion(schemaFingerprint: schemaFingerprint)
         self.metadata = stamped
         guard case .recording = phase else { return }
         if writer == nil {

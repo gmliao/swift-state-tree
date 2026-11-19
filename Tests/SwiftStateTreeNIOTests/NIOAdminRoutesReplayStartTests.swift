@@ -14,7 +14,7 @@ struct NIOAdminRoutesReplayStartTests {
         let recordFileURL = try writeRecordFile(
             landType: "hero-defense",
             landDefinitionID: "hero-defense",
-            version: "2.5"
+            version: ReevaluationRecordVersion.current
         )
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
 
@@ -51,7 +51,7 @@ struct NIOAdminRoutesReplayStartTests {
         let recordFileURL = try writeRecordFile(
             landType: "hero-defense",
             landDefinitionID: "legacy-schema-v1",
-            version: "1.0"
+            version: ReevaluationRecordVersion.current
         )
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
 
@@ -147,7 +147,9 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == "1.0")
     }
 
-    @Test("Replay start accepts a record with the same major version and another minor", arguments: [("2.6", "2.5"), ("2.5", "2.6")])
+    @Test("Replay start accepts a record with the same major version and another minor", arguments: [
+        (ReevaluationRecordVersion.current, "3.0"), (ReevaluationRecordVersion.current, "3.4"),
+    ])
     func replayStartAcceptsSameMajor(versions: (recorded: String, expected: String)) async throws {
         let router = try await makeRouter()
         let recordFileURL = try writeRecordFile(
@@ -189,6 +191,71 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(decoded.error?.message.contains("re-record") == true)
         #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == "2.4")
         #expect(detailString(decoded.error?.details, key: "minimumRecordVersion") == "2.5")
+    }
+
+    @Test("Replay start refuses a record without a schema fingerprint: one before 3.6, or a current one without the field (#521 D15)")
+    func replayStartRefusesRecordWithoutFingerprint() async throws {
+        let router = try await makeRouter()
+        let cases: [(String, String?)] = [
+            ("2.6", testRecordFingerprint), ("3.4", testRecordFingerprint), ("3.5", testRecordFingerprint),
+            (ReevaluationRecordVersion.current, nil),
+        ]
+        for (version, fingerprint) in cases {
+            let recordFileURL = try writeRecordFile(
+                landType: "hero-defense", landDefinitionID: "hero-defense", version: version, schemaFingerprint: fingerprint
+            )
+            defer { try? FileManager.default.removeItem(at: recordFileURL) }
+            let body = try JSONSerialization.data(withJSONObject: ["landType": "hero-defense", "recordFilePath": recordFileURL.path])
+            let response = try await sendReplayStartRequest(body: body, on: router)
+            #expect(response.status == .conflict, "\(version)")
+            let decoded = try decodeAdminResponse(from: response)
+            #expect(decoded.error?.code == "RECORD_SCHEMA_FINGERPRINT_MISSING", "\(version)")
+            #expect(decoded.error?.message.contains("re-record") == true)
+            #expect(detailString(decoded.error?.details, key: "recordedRecordVersion") == version)
+            #expect(detailString(decoded.error?.details, key: "minimumReplayableVersion") == ReevaluationRecordVersion.minimumReplayable)
+        }
+    }
+
+    @Test("Replay start refuses a record whose schema fingerprint differs from the live land type's, with both values (#521 D15)")
+    func replayStartRefusesFingerprintMismatch() async throws {
+        let router = try await makeRouter(live: .fingerprint("fedcba9876543210"))
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense", landDefinitionID: "hero-defense", version: ReevaluationRecordVersion.current
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let body = try JSONSerialization.data(withJSONObject: ["landType": "hero-defense", "recordFilePath": recordFileURL.path])
+        let response = try await sendReplayStartRequest(body: body, on: router)
+        #expect(response.status == .conflict)
+        let decoded = try decodeAdminResponse(from: response)
+        #expect(decoded.error?.code == "RECORD_SCHEMA_FINGERPRINT_MISMATCH")
+        #expect(detailString(decoded.error?.details, key: "recordedSchemaFingerprint") == testRecordFingerprint)
+        #expect(detailString(decoded.error?.details, key: "currentSchemaFingerprint") == "fedcba9876543210")
+
+        // The same record against a live land type with its fingerprint is accepted.
+        let matching = try await makeRouter()
+        #expect(try await sendReplayStartRequest(body: body, on: matching).status == .ok)
+    }
+
+    @Test("Replay start refuses a record when the land type has no fingerprint to compare with: its server reports none, can't list a type, or isn't registered (#521 D15)")
+    func replayStartRefusesWithoutCurrentFingerprint() async throws {
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense", landDefinitionID: "hero-defense", version: ReevaluationRecordVersion.current
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let body = try JSONSerialization.data(withJSONObject: ["landType": "hero-defense", "recordFilePath": recordFileURL.path])
+        let reasons: [(LiveLand, String)] = [
+            (.reportsNone, "reports one"),
+            (.unbuildable, "Opaque"),
+            (.unregistered, "reports one"),
+        ]
+        for (live, reason) in reasons {
+            let response = try await sendReplayStartRequest(body: body, on: try await makeRouter(live: live))
+            #expect(response.status == .conflict, "\(live)")
+            let decoded = try decodeAdminResponse(from: response)
+            #expect(decoded.error?.code == "RECORD_SCHEMA_FINGERPRINT_UNAVAILABLE", "\(live)")
+            #expect(decoded.error?.message.contains(reason) == true, "\(live): \(decoded.error?.message ?? "")")
+            #expect(detailString(decoded.error?.details, key: "landType") == "hero-defense")
+        }
     }
 
     @Test("Replay start returns land type mismatch conflict with actionable details")
@@ -235,7 +302,7 @@ struct NIOAdminRoutesReplayStartTests {
 
         // A record inside: the ID is a monitor ticket for the monitor land type, binding the
         // record's live land type, and not a replay ticket.
-        let recordFileURL = try writeRecordFile(landType: "hero-defense", landDefinitionID: "hero-defense", version: "2.5")
+        let recordFileURL = try writeRecordFile(landType: "hero-defense", landDefinitionID: "hero-defense", version: ReevaluationRecordVersion.current)
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
         let body = try JSONEncoder().encode(ReevaluationMonitorStartRequest(
             landType: "hero-defense", recordFilePath: recordFileURL.path
@@ -263,7 +330,7 @@ struct NIOAdminRoutesReplayStartTests {
         let recordFileURL = try writeRecordFile(
             landType: "hero-defense",
             landDefinitionID: "hero-defense",
-            version: "2.5"
+            version: ReevaluationRecordVersion.current
         )
         defer { try? FileManager.default.removeItem(at: recordFileURL) }
 
@@ -345,8 +412,33 @@ private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NI
     return response
 }
 
-private func makeRouter() async throws -> NIOHTTPRouter {
+/// The fingerprint test records carry unless a test names another.
+private let testRecordFingerprint = "0123456789abcdef"
+
+/// What the live land type `hero-defense` gives the route as its record schema fingerprint
+/// (#521 D15).
+private enum LiveLand {
+    case fingerprint(String)
+    /// Registered, but its server reports none (the protocol's default).
+    case reportsNone
+    /// Registered, but its definition has a type the fingerprint can't list.
+    case unbuildable
+    /// Not registered.
+    case unregistered
+}
+
+private func makeRouter(live: LiveLand = .fingerprint(testRecordFingerprint)) async throws -> NIOHTTPRouter {
     let landRealm = LandRealm()
+    switch live {
+    case .fingerprint(let fingerprint):
+        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer(fingerprint: fingerprint))
+    case .reportsNone:
+        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer())
+    case .unbuildable:
+        try await landRealm.register(landType: "hero-defense", server: MockReplayLandServer(failure: .unbuildableType("Opaque")))
+    case .unregistered:
+        break
+    }
     try await landRealm.register(landType: "hero-defense-replay", server: MockReplayLandServer())
     try await landRealm.register(landType: "reevaluation-monitor", server: MockReplayLandServer())
 
@@ -411,7 +503,8 @@ private struct ReplayRecordFile: Codable {
 private func writeRecordFile(
     landType: String,
     landDefinitionID: String?,
-    version: String
+    version: String,
+    schemaFingerprint: String? = testRecordFingerprint
 ) throws -> URL {
     let recordsDirectory = URL(
         fileURLWithPath: FileManager.default.currentDirectoryPath,
@@ -438,7 +531,8 @@ private func writeRecordFile(
         ruleParams: nil,
         version: version,
         extensions: nil,
-        hardwareInfo: nil
+        hardwareInfo: nil,
+        schemaFingerprint: schemaFingerprint
     )
 
     let payload = ReplayRecordFile(recordMetadata: metadata, tickFrames: [])
@@ -451,6 +545,14 @@ private func writeRecordFile(
 
 private struct MockReplayLandServer: LandServerProtocol {
     typealias State = DummyReplayState
+
+    var fingerprint: String?
+    var failure: SchemaFingerprintError?
+
+    func recordSchemaFingerprint() throws -> String? {
+        if let failure { throw failure }
+        return fingerprint
+    }
 
     func shutdown() async throws {}
 

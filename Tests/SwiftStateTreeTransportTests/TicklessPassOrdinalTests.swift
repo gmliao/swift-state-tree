@@ -23,6 +23,7 @@ struct OrdinalAddAction: ActionPayload {
 }
 
 /// A server input that changes state and emits, as the emit action does.
+@Payload
 struct OrdinalServerEmit: ServerInputPayload {
     let amount: Int
 }
@@ -279,25 +280,25 @@ struct TicklessPassOrdinalTests {
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
     }
 
-    /// 3.0 records no passes (they arrive in 3.1): the land is known tickless from its
-    /// definition, not from the record, so its sync outputs are skipped too, never compared by tick.
+    /// Before #521 D15, a 3.3 or 3.0 tickless record replayed with its sync outputs skipped
+    /// (#563). Such a record has no schema fingerprint, so replay now refuses it before the first
+    /// step (S5).
     @Test(
-        "A tickless record from before 3.4 has no ordinals: its sync outputs are not verified, with the reason",
+        "A tickless record from before 3.4 is refused at replay: it has no schema fingerprint",
         arguments: ["3.3", "3.0"]
     )
-    func olderTicklessRecordIsSkipped(version: String) async throws {
-        guard InTurnSync.isEnabled() else { return }
+    func olderTicklessRecordIsRefused(version: String) async throws {
         let f = await OrdinalFixture.make()
         try await playTies(f)
-        let result = try await f.replay(version: version) { frames in
-            guard version == "3.0" else { return }
-            frames = frames.map { $0.replacing(passes: []) }
+        do {
+            _ = try await f.replay(version: version) { frames in
+                guard version == "3.0" else { return }
+                frames = frames.map { $0.replacing(passes: []) }
+            }
+            Issue.record("expected the record to be refused")
+        } catch ReevaluationRecordFingerprintError.missing(let recorded) {
+            #expect(recorded == version)
         }
-        guard case .skipped(let reason) = result.syncOutput.verdict else {
-            Issue.record("expected skipped, got \(result.syncOutput.summary)")
-            return
-        }
-        #expect(reason.contains("#563"))
     }
 
     @Test("A pass numbered out of order is a record error, not replayed in another order")
