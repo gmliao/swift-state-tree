@@ -4,8 +4,9 @@
 // resume). A hang burns the CI job's timeout and names nothing; racing the await against a
 // deadline turns it into a failure of the step that hung.
 //
-// It stays in Sources (package access), not in the SwiftStateTreeTestSupport target with
-// `TestGate`: `WebSocketSessionHandler` (SwiftStateTreeNIO) races its close grace with it too.
+// Test support kept in Sources (package access): only tests call it, in all three test targets.
+// Moving it into the SwiftStateTreeTestSupport target would make SwiftStateTreeTests depend on
+// that target; that move is a later cleanup.
 
 import Foundation
 
