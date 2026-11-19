@@ -272,14 +272,10 @@ For detailed information, please refer to [Macros](macros/README.md).
 
 A: Keep it enabled unless a measurement of your land says otherwise. Disabled, a sync reads every root field but skips resetting the dirty marks; whether that is faster depends on how many fields change per sync. The adapter doesn't switch it by itself. On the snapshot-diff fallback (`USE_SYNC_TABLES=false`), disabling it could be faster when most fields change on every update. Where row addressing is in effect (by default, an opcode encoding with path hashes, in-turn sync and joins through the router), `USE_SYNC_TABLES=false` has no effect: to run the snapshot-diff fallback there, set `ROW_ADDRESSING=false` as well.
 
-```swift
-// Set when initializing TransportAdapter
-let adapter = TransportAdapter(
-    keeper: keeper,
-    transport: transport,
-    landID: landID,
-    enableDirtyTracking: false // Disable dirty tracking
-)
+Turn it off for the server process with the environment variable:
+
+```bash
+ENABLE_DIRTY_TRACKING=false swift run GameServer
 ```
 
 ## Multi-Room Architecture

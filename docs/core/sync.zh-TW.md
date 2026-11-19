@@ -142,7 +142,7 @@ typed sync diff（`USE_SYNC_TABLES`，預設路徑；設為 `false` 可退回 sn
 ## Dirty Tracking
 
 `@Sync` 會在寫入時標記 dirty，用於降低 diff 成本。
-dirty tracking 每個 adapter 固定：由 `ENABLE_DIRTY_TRACKING`（預設開啟）設定，執行期可用 `setDirtyTrackingEnabled(_:)` 變更。adapter 不會自行切換。
+dirty tracking 每個 adapter 固定：由 `ENABLE_DIRTY_TRACKING`（預設開啟）設定。adapter 不會自行切換。
 
 - 開啟：只序列化 dirty 欄位
 - 關閉：每次同步都全量 snapshot

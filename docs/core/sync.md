@@ -142,7 +142,7 @@ avoiding race conditions between join snapshot and first diff.
 ## Dirty Tracking
 
 `@Sync` marks dirty on write, used to reduce diff costs.
-Dirty tracking is fixed per adapter: `ENABLE_DIRTY_TRACKING` (on by default) sets it, and `setDirtyTrackingEnabled(_:)` changes it at runtime. The adapter doesn't switch it by itself.
+Dirty tracking is fixed per adapter: `ENABLE_DIRTY_TRACKING` (on by default) sets it. The adapter doesn't switch it by itself.
 
 - Enabled: Only serialize dirty fields
 - Disabled: Full snapshot on every sync

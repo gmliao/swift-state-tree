@@ -142,7 +142,7 @@ struct RouterRooms: Sendable {
     /// Per room, each player's client ID as the transport assigned it, in player order.
     let clientIDs: [[ClientID]]
     /// The rooms' adapters, for the ack check after the run.
-    let adapters: [TransportAdapter<HeroDefenseState>]
+    let adapters: [TransportAdapterBenchmarkHandle<HeroDefenseState>]
     /// Acks in MessagePack when the message encoding is MessagePack, else JSON, as a client
     /// sends them (the transport takes either form).
     let binaryAcks: Bool
@@ -244,7 +244,7 @@ struct RouterRooms: Sendable {
                 return clientID
             }
             rooms.append(HeroDefenseRoomContext(
-                landID: landID, keeper: container.keeper, adapter: container.transportAdapter, transport: counting
+                landID: landID, keeper: container.keeper, adapter: TransportAdapterBenchmarkHandle(container), transport: counting
             ))
             allClientIDs.append(clientIDs)
             connections.append(roomConnections)

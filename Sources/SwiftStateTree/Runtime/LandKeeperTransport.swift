@@ -39,23 +39,6 @@ public struct InTurnSyncFold: Sendable, Equatable {
 /// client event) from those two calls: that input's pass delivers behind the call's own
 /// delivery, which waits for it, so both hang. Start the input in a task of its own instead,
 /// without awaiting it there. `syncNowFromTransport` isn't ordered this way.
-///
-/// Example usage:
-/// ```swift
-/// extension TransportAdapter: LandKeeperTransport {
-///     public func sendEvent(_ event: AnyServerEvent, to target: EventTarget) async {
-///         await self.sendEvent(event, to: target)
-///     }
-///     
-///     public func syncNow() async {
-///         await self.syncNow()
-///     }
-///     
-///     public func syncBroadcastOnly() async {
-///         await self.syncBroadcastOnly()
-///     }
-/// }
-/// ```
 public protocol LandKeeperTransport: Sendable {
     /// Send a server event to clients.
     ///
