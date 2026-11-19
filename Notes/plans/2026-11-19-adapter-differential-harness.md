@@ -1,12 +1,21 @@
 # A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 7 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 8 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
-## Rev 7: one rewrite branch, compared with golden captures
+## Rev 8: one rewrite branch, compared with golden captures
 
 **Decision (maintainer, 2026-11-19).** #546 rewrites `TransportAdapter` onto the turn core on one branch, in one go, instead of slice by slice behind an adoption level on `main`. The harness compares that branch with golden captures recorded on `main`. This section is the delta. Where it and the sections below disagree, this section holds. Q3 and everything else the review passed in rev 5 stay.
 
-Rev 7 answers the review of rev 6 (b4ac6e88): cross-process stability of the goldens, holds as semantic boundaries, the freeze from recording on, the protected paths and the gate, the nondeterminism inventory, and the decoded-view check.
+Rev 8 answers the review of rev 7 (2340cf69):
+- deterministic record bytes, through injected record metadata;
+- a retirement list the runner reads;
+- the moved holds placed on boundaries that suspend, with a post-condition per row;
+- the inventory's gaps: sync lag, resolver deadlines, tick count, frame order and the exclusions;
+- a gate anchored in workflows `main` controls;
+- one #638 rule;
+- the recorder script's steps.
+
+Rev 7 answered the review of rev 6 (b4ac6e88): cross-process stability, holds as semantic boundaries, the freeze from recording on, the protected paths and the gate, the inventory and the decoded-view check.
 
 **What stays.** The harness still lands on `main` first: the scenarios (§8), the barrier and the two checkpoints (§5.3), the stable identities (§5.4), the record capture and its field list (§5.5), the property oracle (§5.6) and the comparator's strictness (§5.7). Both approaches need them.
 
@@ -36,15 +45,22 @@ Unchanged except that the build forwards no level. Step 1 as built:
 
 **Rules of §5.8 that stay:** the folder found from the harness's own source file (`#filePath`), with no `resources:` entry; frame-changing env settings pinned through the harness's parameters, else in the file's key; the update key as a named constant beside the harness, printing the changed paths; a PR that changes a golden names each file, and review reads the diff; a missing file fails. **Replaced:** the set, the format, what is compared, and how files are recorded.
 
+**Comparing the record.** The record's bytes are compared first. If they differ, the comparison walks the two decoded records by field path (§5.5) and lists each differing path:
+- a `recordField` expected difference (§6, the #548 entry) excuses its path, with its exact values;
+- every other differing path fails;
+- bytes that differ while no path differs fail too: the record format is shared code, and the rewrite doesn't change it.
+
 **Set.** Every scenario, in every cell it applies to (sync mode × land kind × encoding), one file per scenario and cell. An index file in the golden folder lists every expected scenario and cell. A cell without a file fails, and so does a file that no scenario and cell claims.
 
 **Format.** JSON with sorted keys, stable and diffable:
 - per connection, each frame as base64 bytes plus its decoded view;
 - the closes and the responses;
-- the record as base64 bytes of the saved file plus its decoded view, with the replaced fields (§5.5) set to their constants;
+- the record as base64 bytes of the saved file, plus its decoded view;
 - the commit, platform and Swift version it was recorded with.
 
-**A golden's decoded view is checked against its bytes,** when it is recorded and each time it is compared. The harness decodes each frame's bytes with the cell's encoding, and the record's bytes with the record decoder and the field rules. Each must equal the stored decoded view. At recording, a mismatch writes nothing; at comparison, the file fails as corrupt. So review can trust the readable diff: a decoded view can't differ from its bytes.
+**Deterministic record bytes.** The land manager writes `createdAt: Date()` and `HardwareInfoCollector.collect()` into the record's metadata (`LandManager.swift:728–747`), and `setMetadata` puts them in the file's header. So step 2 adds a `package` record-identity override to the assembly: a fixed `createdAt` and no hardware info, applied when the metadata is built, before the first header is written. With it, the saved file's bytes are deterministic, and the two replaced fields of §5.5 are pinned at the source instead of rewritten afterwards. The field list keeps them, with the rule "pinned by the override", so a new wall-clock field still fails until it is classified.
+
+**A golden's decoded view is derived from its bytes, and checked against them,** when it is recorded and each time it is compared. The harness decodes each frame's bytes with the cell's encoding, and the record's bytes with the record decoder. Each must equal the stored decoded view. At recording, a mismatch writes nothing; at comparison, the file fails as corrupt. So review can trust the readable diff: a decoded view can't differ from its bytes.
 
 **Nondeterminism inventory.** Every value that can reach a capture without being fixed by the code under test, and how it is pinned. The list comes from a search of the library's sources for `UUID()`, `Date()`, `random` and process identity, plus hash-seeded order. It is the full list; the five-process recording below catches a source it misses.
 
@@ -54,22 +70,30 @@ Unchanged except that the build forwards no level. Step 1 as built:
 | `SessionID.mint()` (random UUID) | frames, record | not used: the runner names every session (§5.4) |
 | `LandID.generate` (random instance) | frames, record | not used: every join and create names its instance |
 | player IDs, request IDs, join metadata | frames, record | fixed in the scenario (§5.4) |
-| record `createdAt` | record metadata | a replaced field, set to a constant (§5.5) |
-| record `hardwareInfo` | record metadata | a replaced field, set to a constant (§5.5) |
+| record `createdAt` | record metadata, file header | the record-identity override: a fixed date |
+| record `hardwareInfo` | record metadata, file header | the record-identity override: none |
 | `rngSeed` and the land's `random` | record metadata, state | derived from the land ID, which the scenario fixes |
-| tick IDs, sequences, sync marker indices | frames, record | advanced only by stepped inputs: loops off, every input stepped (§8) |
+| tick IDs, sequences, sync marker indices | frames, record | advanced only by stepped inputs, with the step rule below |
 | dictionary and set order | any encoded map | not pinned in-process: per-process hash seeds; caught by the five-process recording |
 | real ports and addresses | none | the fake connections have none (§5.2) |
 | join budget and flip timer | whether a join times out | pinned off (§8) |
-| resolver deadline (5 s) | a held resolver's outcome | each held resolver's gate is opened before its deadline matters (§8.1, `actionResponse`) |
+| resolver deadline (5 s, `ContinuousClock`) | a held resolver's outcome | turned off with the existing override (`.resolverDeadlinesOff`) for the whole harness suite |
+| sync lag (`SyncLag.swift:94–104`, `ContinuousClock`) | a resync, suppressed output or a lag close on a slow runner | off: the assembly is built with no sync-lag policy, and the runner checks that each adapter has none |
+| frame order on one connection | frames | the frame-order rule below |
+| env-derived configuration (`TRANSPORT_ENCODING`, `IN_TURN_SYNC`, `USE_SYNC_TABLES`, `PER_PLAYER_SYNC_TABLES`, `ROW_ADDRESSING` and the other `SERVER_ENV` keys) | frames, record | pinned through the harness's parameters; the golden's key stores the effective values, and the comparison refuses a run whose values differ |
 
-Wall-clock values outside this list don't reach a capture: the land manager's activity and creation times and the transport's log throttling feed admin routes and logs, which aren't compared (§3), and the recorder's spool file name is a path, not record content.
+**Excluded, with the reason.** `ProcessInfo` and hardware values reach only the record's metadata, pinned by the override above. Wall-clock values outside this list don't reach a capture: the land manager's activity and creation times and the transport's log throttling feed admin routes and logs, which aren't compared (§3), and the recorder's spool file name is a path, not record content.
 
-**Cross-process stability.** Swift seeds hashing per process, so dictionary and set order can differ between two processes and agree within one. Recording therefore:
-- runs in the pinned `swift:6.2.4-noble` image, the one CI uses, through a script step 2 adds;
-- runs the harness in five separate `swift test` processes, each writing its candidates to its own folder, with `SWIFT_DETERMINISTIC_HASHING` unset (the recorder refuses if it is set);
-- runs the harness suite serialized within each process;
-- writes nothing unless all five folders are byte-identical. A difference fails, naming the scenario, cell and first differing field.
+**Step rule (tick count).** The runner never steps in a loop on a condition. Before each step it waits for the event that makes the step do its work: the input is enqueued, or the join's transport registration is done. Then it steps once. Each scenario lists its steps, so the tick count is part of the scenario, and the record's tick IDs pin it. The follow-up turn a sync phase can request (`requestJoinSyncTurn`) is a milestone the runner awaits before the next step, not something it steps for. A scheduler-dependent extra tick would change the record and fail the five-process check.
+
+**Frame-order rule.** On each connection the frames come from a known set of producers: the router's join response, the adapter's initial sync, sync updates, events, action replies, error frames and the close. Each step declares the frames it expects per connection, by kind and in order. The runner waits for them before the next step that can write to that connection. Within one step, at most one producer writes to a connection, unless the step's holds order them. So the order before each flush is fixed by milestones, not by the scheduler.
+
+**Cross-process stability.** Swift seeds hashing per process, so dictionary and set order can differ between two processes and agree within one. The recorder script, which step 2 adds:
+1. **Build once,** in the pinned image named by digest and architecture (`swift:6.2.4-noble@sha256:…`, `linux/amd64`), the one CI uses: `swift build --build-tests`.
+2. **Run five times, in sequence,** each a separate `swift test --skip-build` process filtered to the harness, with `SWIFT_DETERMINISTIC_HASHING` unset (the recorder refuses if it is set). The harness suite is serialized within each process. Each run writes its candidates into its own output folder, emptied before the run.
+3. **Check each candidate set** against the full index: every scenario and cell present, nothing extra, each decoded view equal to its bytes, and the oracle passed.
+4. **Compare the five sets** byte for byte. A difference fails, naming the scenario, the cell and the first differing field.
+5. **Publish** into the golden folder only after all five pass every check. Otherwise it writes nothing.
 
 Five, not two: an order over two keys agrees between two seeds half the time, so two processes miss a seed dependency often; five miss it one time in sixteen. After that, every CI run is one more fresh process compared with the goldens, so a dependency that slipped through shows as a failing cell with its decoded diff.
 
@@ -94,35 +118,49 @@ The list applies to golden versus branch. `legacy:` becomes `golden:` and `adopt
 - **(d) Golden:** adds three checks:
   - an update whose processes differ writes nothing;
   - a golden whose decoded view doesn't match its bytes is refused at recording and fails at comparison;
+  - a record whose bytes differ while no field path differs fails;
   - under the verify key (below), `SST_UPDATE_GOLDEN=1` fails the run at start.
 - **(f) Oracle:** a mutant that breaks a property on `main` must fail the recording, not only a normal run.
 - (c), (e) and (g) are unchanged.
 
 ### Holds as semantic boundaries (§8)
 
-A rewrite onto the turn core can't keep "the matching await": inside a turn there is none, and the adapter's operations change shape. So each hold is defined by a semantic boundary, and every gate sits outside the adapter's turns. A hold is one of:
-- **(a) A neighbour's boundary:** a hold point in the router, the keeper or the transport, or a gated land resolver. These components aren't rewritten, so the hold is the same on both sides.
-- **(b) The adapter's input boundary:** where a call enters the adapter, before its input is accepted; or where an input is accepted and waits for its turn. Both are outside any turn. The branch provides each such hold under the same name.
+A rewrite onto the turn core can't keep "the matching await": inside a turn there is none, and the adapter's operations change shape. So each hold is defined by a semantic boundary, and every gate sits where the code suspends, outside the adapter's turns. A hold is one of:
+- **(a) A neighbour's boundary:** a hold point in the router, the keeper or the transport, or a gated land resolver, at a point where that code already suspends. These components aren't rewritten, so the hold is the same on both sides.
+- **(b) The adapter's input boundary:** where a call or a reply enters the adapter, before the adapter acts on it; or where an input is accepted and waits for its turn.
+- **(c) The adapter's output boundary:** where the adapter has issued a request to a neighbour and awaits it, before the neighbour takes it.
 
-No hold sits inside a turn, or between two awaits of one adapter operation. The rows map as follows; step 2 moves the rows that need it before recording.
+On `main`, each of these is an await in an adapter operation. On the branch, (b) and (c) are where an input arrives and where a turn's request leaves; both are outside any turn. The branch provides each hold under the same name. No hold sits inside a synchronous function of the adapter or of a neighbour.
 
-| Row's hold | Kind | Boundary |
-|---|---|---|
-| router `beforeAdmit`, `afterAdmit`, `sendingJoinResponse`, `sendingInitialSync`, `stopLeave` | (a) | unchanged |
-| keeper `.join` | (a) | unchanged |
-| adapter `membershipQueued` (the disconnect's arrival) | (b) | a membership input accepted, waiting for its turn |
-| adapter `admitJoinEntry` | (b) | a join enters the adapter, not yet accepted |
-| adapter `registerSession` | (a), moved | the transport receives the session's registration, after the keeper's admission |
-| adapter `actionResponse` | (b) | an action job's answer arrives at the adapter, before it is accepted |
-| adapter `cycleBeforeEndSync` | (a), moved | the keeper's end of the sync phase, while the cycle holds the sync flag; step 2 adds the keeper hold point if none exists |
-| #548's `endSessionTicketsForTeardown()` | (b) | the teardown request enters the adapter while the keeper's `.join` is held |
+Reaching a hold proves only that the code passed there. So each row also states a **post-condition** that proves the race happened, and the runner asserts it.
+
+| Row | Hold | Kind | Post-condition |
+|---|---|---|---|
+| router rows (`beforeAdmit`, `afterAdmit`, `sendingJoinResponse`, `sendingInitialSync`) | as today | (a) | as §8.1 states each |
+| keeper `.join` | as today | (a) | the disconnect's `membershipQueued` arrival is observed while held, and its leave hasn't applied: the keeper still has no player; after release, admitted then left |
+| a disconnect before the keeper's admission | adapter `admitJoinEntry` | (b) | `disconnectForwarded` completes while the hold is closed; after release, the attempt is refused as stale (`staleJoinAttemptsRefused == 1`), with no OnJoin, no OnLeave and no join response |
+| a disconnect at the in-turn registration | adapter `keeperJoinReturned` (renamed from `registerSession`; below) | (b) | at the hold: the keeper has the player; the adapter has the session's admission (`joiningSessions` with its in-turn record, `transportRegistered == false`); the transport has no registration for it; no join response and no flip. The disconnect's `membershipQueued` arrival is observed, and it can't apply while held. After release: registration, then the leave, then OnLeave; no flip completes |
+| a join while a sync cycle is in flight | adapter `cycleBeforeEndSync` | (c) | while held, the runner makes a state change and steps a tick; that tick's sync request meets the busy flag (`syncSkips.busy` rises by one). After release, the deferred sync runs and A receives the change made under the hold, as `syncDuringLegacyCycleRunsAfterEndSync` asserts; B's join completes after the cycle |
+| a stale action reply after a leave | adapter `actionResponse` | (b) | A's answer is held across A2's join and A2's pending action; after release, A's request gets no reply and no error frame on A or A2, A2 gets its own reply, and A2's pending action task is still tracked until it answers |
+| #548, a teardown during the keeper join | keeper `.join`, then the teardown input | (a), (b) | the teardown has been applied while `.join` is held: `teardownTicketEnds == 1` and the adapter's session tickets are ended, read through test reads. The membership-and-generation snapshot is taken at the router's held `afterAdmit` (§8.1), after the admission returns and before the join response |
+| a land stop | router `stopLeave(A)`, `stopLeave(B)` | (a) | both holds reached before either leave is queued; A's `membershipQueued` before B's release; OnLeave order A, B |
+
+**The moved holds.**
+- **`keeperJoinReturned`** replaces `registerSession`. `WebSocketTransport.registerSession` (`:500`) is synchronous, so a hold can't sit there. The hold is on `main` right after `await keeper.joinReportingAdmission` returns (`TransportAdapter.swift:2173`), before the adapter reads the outcome. The keeper's admission has already run, through the transport admission callback, so the post-condition's state holds there. On the branch it is where the keeper's join result arrives as an input.
+- **`cycleBeforeEndSync`** stays where it is on `main`: after the cycle's plan and before `await keeper.endSync()`. That is an await on a call into the keeper, so the cycle is suspended there, with the keeper's sync flag still set. `LandKeeper.endSync()` itself is synchronous, so no hold goes inside it. On the branch it is where the cycle's end-of-sync request leaves the adapter.
+
+Step 2 rewrites these rows' schedules in §8.1 and refreshes §8.1's line references against the code it lands on.
 
 The test hooks of §5.3 and §5.4 keep their meaning on the branch. One that returns early leaves frames or record entries out of the capture, and the golden comparison reports that.
 
-**Retired rows.** Where the rewrite removes the race a row forces, the row can be retired:
-- it needs a replacement test of the invariant the row protected;
-- it goes in a "retired rows" list in the branch PR, with the reason and the test;
-- Main approves each one after Review, and the maintainer is told of the list at merge.
+**Retired rows: a list the runner reads.** The scenarios and the runner are protected (below), so retiring a row can't be a note in the PR body: the row would still run its hold, and the reach rule would fail it. Instead:
+- `RetiredRows.swift`, beside `ExpectedDifferences.swift`, is unprotected. Each entry names the scenario, the cells, the reason, and a replacement test. The replacement is a function value the runner itself calls, so it is compiled and run, not only named.
+- In each listed cell, the runner skips the row's run and its golden comparison, and runs the replacement instead. The index still claims the cell's golden.
+- An entry is used exactly once. An entry for a scenario or cell that doesn't exist fails, as a stale expected difference does.
+- Replacement tests live in `Tests/SwiftStateTreeNIOTests/Differential/Branch/`, which is unprotected.
+- Review reads each entry and its test; Main approves each one; the maintainer is told of the list at merge.
+
+**New and changed scenarios** go to `main` first, with their goldens recorded there, and reach the branch by merging `main`. That replaces §8.1's "Growth" paragraph: the branch adds no scenario of its own, because no golden would exist for it.
 
 ### Matrix and CI cost (§9) and what it can't see (§10)
 
@@ -132,32 +170,47 @@ The test hooks of §5.3 and §5.4 keep their meaning on the branch. One that ret
 ### Freeze, protection and the gate
 
 **Freeze.**
-- It starts when the goldens are recorded, at step 2's merge, and ends when the rewrite branch merges.
-- While it holds, the adapter's files on `main` (`Sources/SwiftStateTreeTransport/TransportAdapter*.swift`, `MembershipCoordinator.swift`, `AdapterErrorMapping.swift`) take only the harness's own hooks.
+- It starts at the recording commit, the commit in step 2 that adds the goldens, and ends when the rewrite branch merges.
+- From the recording commit until step 2 merges, step 2 merges `main` before it merges itself. If an adapter change landed on `main` in that window and changes a golden, step 2 re-records before it merges. Main announces the freeze when the recording commit is pushed.
+- While the freeze holds, the adapter's files on `main` (`Sources/SwiftStateTreeTransport/TransportAdapter*.swift`, `MembershipCoordinator.swift`, `AdapterErrorMapping.swift`) take only the harness's own hooks.
 - A fix that can't wait goes to the maintainer. Its PR re-records the cells it changes, with the diffs reviewed, and the same fix lands on the branch.
-- **#638** lands before step 2 records. If it slips, step 2 doesn't wait: #638 re-records the hybrid cells in its own PR, and Review checks that the golden diff is empty.
+- **#638:** the planned order is that #638 merges before step 2 records. If #638 isn't merged when step 2 is otherwise ready, step 2 records without waiting, and #638 then re-records the hybrid cells in its own PR with an empty-diff check.
 
 **Protected paths.** The branch may not change:
 - the golden folder and its index;
-- the harness's runner, scenarios, barrier, comparator and oracle (`Tests/SwiftStateTreeNIOTests/Differential/`), except the expected-difference list (`ExpectedDifferences.swift`);
-- the record field walk and list, including the replaced fields (`Tests/SwiftStateTreeTestSupport/RecordField*.swift`).
+- the harness's runner, scenarios, barrier, comparator and oracle (`Tests/SwiftStateTreeNIOTests/Differential/`), except `ExpectedDifferences.swift`, `RetiredRows.swift` and `Differential/Branch/`;
+- the record field walk and list (`Tests/SwiftStateTreeTestSupport/RecordField*.swift`);
+- the harness workflow and its scripts: the gate run's workflow file, the gate script and the recorder script.
 
 A change to them goes to `main` first, under the same review, and reaches the branch by merging `main`.
 
-**The gate.** A required job on the branch's PR:
-1. fetches `main` and requires that the branch contains its current tip (`git merge-base --is-ancestor origin/main HEAD`);
-2. requires that the protected paths equal `main`'s tip (`git diff --quiet origin/main HEAD -- <paths>`);
-3. runs the harness in the pinned image with the verify key `SST_DIFFERENTIAL_VERIFY=1`. Under it, `SST_UPDATE_GOLDEN=1` fails at start, and a missing golden is fatal, as it always is.
+**The gate, anchored in `main`'s workflows.** A `pull_request` workflow runs from the PR's own branch, so the branch could change the gate outside the protected paths. So the gate has two jobs:
+1. **The path check**, a `pull_request_target` job. It runs `main`'s copy of the workflow and executes none of the PR's code: it only reads git objects, with a read-only token and no secrets. It:
+   - fetches `main` and records the SHA it fetched;
+   - takes the PR's head SHA from the event, not from a checkout;
+   - requires that the head contains the fetched `main` tip (`git merge-base --is-ancestor`);
+   - requires that the protected paths at the head equal the fetched `main` (`git diff --quiet <main-sha> <head-sha> -- <paths>`).
+2. **The harness run**, in the PR's own workflow. Its workflow file and scripts are protected paths, so job 1 has proved they are `main`'s. It:
+   - runs in the pinned image by digest, and checks the image digest and `swift --version` before the build;
+   - sets the verify key `SST_DIFFERENTIAL_VERIFY=1`. Under it, `SST_UPDATE_GOLDEN=1` fails at start, and a missing golden is fatal, as it always is;
+   - always runs the full matrix (`SST_DIFFERENTIAL_FULL_MATRIX=1`). §9's messagepack-only fallback applies to ordinary PRs on `main`, never to the rewrite PR;
+   - fails closed: a skipped or filtered-out suite, zero runs, the wrong image or toolchain, or fewer cells run than the index lists (less the retired cells) each fail the job. It prints the counts.
+
+**A fresh check at merge.** The rewrite PR merges only with both gate jobs green at its current head, against `main`'s current tip. When the branch opens, Main asks the maintainer to make both jobs required with strict up-to-date protection for it, or to use a merge queue. Until that setting exists, Main re-runs both jobs right before the merge, and doesn't merge if `main` moves in between.
 
 **Branch rules.**
 - Commits are sized so Review can take them one at a time.
 - The branch merges `main` to stay current, and never rebases.
-- It merges when every scenario in every cell matches its golden or a listed expected difference, the oracle passes, the gate passes, and the usual gates pass.
+- It merges when every scenario in every cell matches its golden, a listed expected difference or a listed retirement, the oracle passes, both gate jobs pass, and the usual gates pass.
 
 ### Steps (§11)
 
 - Step 1 loses the adoption items.
-- Step 2 adds the harness, the recorder script, the index, the semantic-boundary moves (`registerSession`, `cycleBeforeEndSync`), the gate job's script, and the first goldens in their own commit.
+- Step 2 adds:
+  - the harness, the record-identity override, the recorder script and the index;
+  - the `keeperJoinReturned` hold, and the rows' post-conditions;
+  - both gate jobs;
+  - the first goldens, in their own commit.
 - Step 3 is the rewrite branch (#546), instead of slice 1.
 
 **Rev 5** answered the review of rev 4 (432e4221):
