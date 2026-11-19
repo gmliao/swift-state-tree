@@ -1,0 +1,511 @@
+// Tests/SwiftStateTreeNIOTests/Differential/DiffRunner.swift
+//
+// Runs one scenario in one cell (#555, plan §5): builds the server's assembly with its loops
+// off, drives fake connections through the real transport, router, adapter and keeper, and
+// captures each connection's frames and close at the live checkpoint, again after the stop,
+// and the saved record. Every wait has a bound; a wait that hits it fails the run, naming what
+// it waited for. Orders are forced with holds, never with timing.
+
+#if DEBUG
+import Foundation
+import Logging
+@testable import SwiftStateTree
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
+@testable import SwiftStateTreeNIO
+import SwiftStateTreeTestSupport
+
+struct DiffRunFailure: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
+
+/// The bound on each wait of a run. A correct run never reaches it: it is the backstop that
+/// turns a hang into a failure naming its step.
+let diffWaitBound: Duration = .seconds(30)
+
+/// The record's pinned creation time (the record-identity override).
+let diffRecordCreatedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+/// The land every scenario joins.
+let diffLandID = LandID(landType: diffLandType, instanceId: "one")
+
+// MARK: - Holds
+
+/// The run's hold registries, one per component, and a gate per armed or observed hold.
+final class DiffHoldTable: @unchecked Sendable {
+    let router = HoldRegistry<LandRouterHoldPoint>()
+    let adapter = HoldRegistry<TransportAdapterHoldPoint>()
+    let keeper = HoldRegistry<LandKeeperHoldPoint>()
+    private let lock = NSLock()
+    private var gates: [DiffHold: TestGate] = [:]
+
+    /// Closes `hold` on its `arrival`-th arrival (every arrival when nil) until `release`.
+    func arm(_ hold: DiffHold, arrival: Int?) {
+        register(hold, arrival: arrival, gate: TestGate())
+    }
+
+    /// Counts arrivals at `hold` from now on, without blocking them.
+    func observe(_ hold: DiffHold) {
+        let gate = TestGate()
+        gate.open()
+        register(hold, arrival: nil, gate: gate)
+    }
+
+    func gate(_ hold: DiffHold) -> TestGate? {
+        lock.withLock { gates[hold] }
+    }
+
+    func openAll() {
+        for gate in lock.withLock({ Array(gates.values) }) { gate.open() }
+    }
+
+    private func register(_ hold: DiffHold, arrival: Int?, gate: TestGate) {
+        lock.withLock { gates[hold] = gate }
+        let body: @Sendable () async -> Void = { await gate.arrive() }
+        switch hold {
+        case .router(let point): router.on(point, arrival: arrival, body)
+        case .adapter(let point): adapter.on(point, arrival: arrival, body)
+        case .keeper(let point): keeper.on(point, arrival: arrival, body)
+        }
+    }
+}
+
+// MARK: - Captures
+
+struct DiffFrame: Codable, Equatable, Sendable {
+    let bytes: Data
+    let decoded: DiffValue
+
+    init(bytes: Data) throws {
+        self.bytes = bytes
+        self.decoded = try DiffValue.decodeFrame(bytes)
+    }
+}
+
+struct DiffClose: Codable, Equatable, Sendable {
+    let code: UInt16
+    let reason: String
+}
+
+struct DiffConnectionCapture: Codable, Equatable, Sendable {
+    var frames: [DiffFrame]
+    var close: DiffClose?
+}
+
+/// Every connection attempt's frames and close, by attempt name.
+struct DiffCapture: Codable, Equatable, Sendable {
+    var connections: [String: DiffConnectionCapture]
+}
+
+/// The saved record: its file's bytes and its decoded view.
+struct DiffRecordCapture: Codable, Equatable, Sendable {
+    let bytes: Data
+    let decoded: DiffValue
+    let complete: Bool
+}
+
+struct DiffRunResult: Codable, Equatable, Sendable {
+    var live: DiffCapture
+    var terminal: DiffCapture
+    var record: DiffRecordCapture
+}
+
+// MARK: - The run
+
+/// One connection attempt of a scenario.
+struct DiffAttempt: Sendable {
+    let session: SessionID
+    let connection: RecordingConnection
+}
+
+/// A run of one scenario in one cell. Steps run in order on one task; the hold table and the
+/// resolver gates are the only state other tasks touch, and they lock.
+final class DiffRun: @unchecked Sendable {
+    let scenario: DiffScenario
+    let cell: DiffCell
+    let server: NIOLandServer<DiffState>
+    let container: LandContainer<DiffState>
+    let recorder: ReevaluationRecorder
+    let holds = DiffHoldTable()
+    private(set) var attempts: [String: DiffAttempt] = [:]
+    private(set) var attemptOrder: [String] = []
+    private var ingress: [String: Task<Void, Never>] = [:]
+    private var spawned: [Task<Void, Never>] = []
+    /// Answers of actions whose job outlived their turn (`held`): the barrier waits for them.
+    private(set) var pendingAnswers = 0
+    private(set) var live: DiffCapture?
+    private(set) var stopped = false
+
+    var transport: WebSocketTransport { server.transport }
+    var router: LandRouter<DiffState> { server.landRouter }
+    var adapter: TransportAdapter<DiffState> { container.transportAdapter }
+    var keeper: LandKeeper<DiffState> { container.keeper }
+
+    private init(scenario: DiffScenario, cell: DiffCell, server: NIOLandServer<DiffState>, container: LandContainer<DiffState>, recorder: ReevaluationRecorder) {
+        self.scenario = scenario
+        self.cell = cell
+        self.server = server
+        self.container = container
+        self.recorder = recorder
+    }
+
+    /// The assembly for `cell`, with every timer and clock-driven decision off, and the land
+    /// created before any join so its holds are installed first.
+    static func make(_ scenario: DiffScenario, cell: DiffCell) async throws -> DiffRun {
+        DiffGates.reset()
+        let definition = makeDiffLand(cell.land)
+        var configuration = NIOLandServerConfiguration(
+            logger: Logger(label: "differential") { _ in SwiftLogNoOpLogHandler() },
+            allowAutoCreateOnJoin: false,
+            transportEncoding: cell.encoding.config,
+            enableLiveStateHashRecording: true,
+            enableLoopPhaseOffset: false,
+            inTurnSync: cell.sync.inTurnSync,
+            syncLag: .off,
+            maxHandshakeFrameBytes: HandshakeFrameLimit.defaultMaxBytes,
+            maxRefusedHandshakeFrames: HandshakeFrameLimit.defaultMaxRefusedFrames
+        )
+        // Past any correct run: a stop that reaches it fails the run.
+        configuration.landStopTimeout = diffWaitBound
+        let transport = WebSocketTransport()
+        let server = try NIOLandServer<DiffState>(
+            landType: diffLandType,
+            landFactory: { _ in definition },
+            initialStateFactory: { _ in DiffState() },
+            configuration: configuration,
+            transport: transport,
+            autoStartLoops: false
+        )
+        await server.attach()
+        await transport.setClientIDSupplierForTesting { ClientID("c\($0)") }
+        await server.landManager.setRecordIdentityForTesting(.init(createdAt: diffRecordCreatedAt, hardwareInfo: nil))
+        // The join budget off (`.zero` is none).
+        await server.landRouter.setJoinTimeoutForTesting(.zero)
+        let container = try await server.landManager.getOrCreateLand(
+            landID: diffLandID, definition: definition, initialState: DiffState(), metadata: [:]
+        )
+        guard let recorder = await container.keeper.getReevaluationRecorder() else {
+            throw DiffRunFailure("the land has no recorder")
+        }
+        let run = DiffRun(scenario: scenario, cell: cell, server: server, container: container, recorder: recorder)
+        // The flip timeout off (`.zero` is none), and the join commits captured.
+        await container.transportAdapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
+        await container.transportAdapter.captureJoinCommitsForTesting()
+        await server.landRouter.installHolds(run.holds.router.hook)
+        await container.transportAdapter.installHolds(run.holds.adapter.hook)
+        await container.keeper.installHolds(run.holds.keeper.hook)
+        return run
+    }
+
+    /// Runs the scenario: its steps, then the stop (unless a step stopped the land), the
+    /// terminal capture and the record. Cleans up whatever happens.
+    func execute() async throws -> DiffRunResult {
+        do {
+            for (index, step) in scenario.steps.enumerated() {
+                do {
+                    try await run(step)
+                } catch let failure as DiffRunFailure {
+                    throw DiffRunFailure("step \(index + 1) (\(Self.name(of: step))): \(failure)")
+                }
+            }
+            guard let live else { throw DiffRunFailure("no live checkpoint: a scenario must have one") }
+            if !stopped { try await stop() }
+            try await barrier()
+            let terminal = try await capture()
+            let record = try await saveRecord()
+            await cleanUp()
+            return DiffRunResult(live: live, terminal: terminal, record: record)
+        } catch {
+            await cleanUp()
+            throw error
+        }
+    }
+
+    // MARK: Steps
+
+    private func run(_ step: DiffStep) async throws {
+        switch step {
+        case .connect(let name, let session):
+            guard attempts[name] == nil else { throw DiffRunFailure("attempt \(name) connected twice") }
+            let connection = RecordingConnection(hangBound: diffWaitBound)
+            let id = SessionID(session)
+            let acceptance = await transport.handleConnection(sessionID: id, connection: connection, authInfo: nil)
+            guard acceptance == .accepted else { throw DiffRunFailure("\(name)'s connection was \(acceptance)") }
+            attempts[name] = DiffAttempt(session: id, connection: connection)
+            attemptOrder.append(name)
+
+        case .join(let name, let player):
+            try startJoin(name, player: player)
+            try await settleJoin(name)
+
+        case .refusedJoin(let name, let player):
+            try startJoin(name, player: player)
+            try await awaitIngress(name)
+            try await bounded("the refusal frame of \(name)") { [attempt = try self.attempt(name)] in
+                await attempt.connection.waitUntilFrames { $0.contains { if case .error = $0.payload { return true } else { return false } } }
+            }
+
+        case .startJoin(let name, let player):
+            try startJoin(name, player: player)
+
+        case .awaitJoin(let name):
+            try await settleJoin(name)
+
+        case .bump(let name, let requestID, let amount):
+            try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
+            try await awaitIngress(name)
+            try await applyInputs()
+
+        case .held(let name, let requestID, let key):
+            try send(name, try action(requestID: requestID, DiffHeldAction(key: key)))
+            try await awaitIngress(name)
+            pendingAnswers += 1
+            try await bounded("resolver \(key)'s arrival") { await DiffGates.gate(key).waitForArrivals(1) }
+
+        case .openGate(let key):
+            DiffGates.gate(key).open()
+
+        case .tick:
+            if cell.land == .tick { await keeper.stepTickOnce() }
+
+        case .disconnect(let name):
+            let attempt = try attempt(name)
+            try await bounded("\(name)'s disconnect") { [transport] in
+                await transport.handleDisconnection(sessionID: attempt.session)
+            }
+            // A tickless land applies the leave in a drain of its own: wait for it, so the
+            // next step's inputs never share its pass (a tick land's scenario steps a tick).
+            if cell.land == .tickless {
+                try await bounded("\(name)'s leave drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
+            }
+            if cell.sync == .legacy { await adapter.syncNow() }
+
+        case .arm(let hold, let arrival):
+            holds.arm(hold, arrival: arrival)
+
+        case .observe(let hold):
+            holds.observe(hold)
+
+        case .reach(let hold, let count):
+            guard let gate = holds.gate(hold) else { throw DiffRunFailure("\(hold) is neither armed nor observed") }
+            let reached = try await bounded("\(hold)") { await gate.waitForArrivals(count) }
+            guard reached else { throw DiffRunFailure("\(hold) wasn't reached \(count) time(s) (the reach rule)") }
+
+        case .release(let hold):
+            guard let gate = holds.gate(hold) else { throw DiffRunFailure("\(hold) was never armed") }
+            gate.open()
+
+        case .liveCheckpoint:
+            guard live == nil else { throw DiffRunFailure("a second live checkpoint") }
+            try await barrier()
+            live = try await capture()
+
+        case .stop:
+            try await stop()
+
+        case .check(let name, let body):
+            do {
+                try await body(self)
+            } catch let failure as DiffRunFailure {
+                throw DiffRunFailure("check \"\(name)\": \(failure)")
+            }
+        }
+    }
+
+    static func name(of step: DiffStep) -> String {
+        switch step {
+        case .connect(let name, _): return "connect \(name)"
+        case .join(let name, _): return "join \(name)"
+        case .refusedJoin(let name, _): return "refused join \(name)"
+        case .startJoin(let name, _): return "start join \(name)"
+        case .awaitJoin(let name): return "await join \(name)"
+        case .bump(let name, let requestID, _): return "bump \(name) \(requestID)"
+        case .held(let name, let requestID, _): return "held action \(name) \(requestID)"
+        case .openGate(let key): return "open gate \(key)"
+        case .tick: return "tick"
+        case .disconnect(let name): return "disconnect \(name)"
+        case .arm(let hold, _): return "arm \(hold)"
+        case .observe(let hold): return "observe \(hold)"
+        case .reach(let hold, _): return "reach \(hold)"
+        case .release(let hold): return "release \(hold)"
+        case .liveCheckpoint: return "live checkpoint"
+        case .stop: return "stop"
+        case .check(let name, _): return "check \(name)"
+        }
+    }
+
+    func attempt(_ name: String) throws -> DiffAttempt {
+        guard let attempt = attempts[name] else { throw DiffRunFailure("no attempt \(name)") }
+        return attempt
+    }
+
+    /// The handshake join, always JSON.
+    private func startJoin(_ name: String, player: String) throws {
+        let frame = try JSONEncoder().encode(TransportMessage.join(
+            requestID: "join-\(name)", landType: diffLandType, landInstanceId: diffLandID.instanceId,
+            playerID: player, deviceID: nil, metadata: StateUpdateFeature.joinMetadata
+        ))
+        try send(name, frame)
+    }
+
+    /// A frame from `name`'s client, delivered through the transport in a task of its own (the
+    /// NIO session handler awaits each frame before the next, and so does the runner).
+    private func send(_ name: String, _ frame: Data) throws {
+        let attempt = try attempt(name)
+        if let previous = ingress[name] {
+            spawned.append(previous)
+        }
+        let transport = self.transport
+        ingress[name] = Task { await transport.handleIncomingMessage(sessionID: attempt.session, data: frame) }
+    }
+
+    private func action<A: ActionPayload>(requestID: String, _ payload: A) throws -> Data {
+        let envelope = ActionEnvelope(typeIdentifier: String(describing: A.self), payload: AnyCodable(payload))
+        return try cell.encoding.config.makeCodec().encode(TransportMessage.action(requestID: requestID, action: envelope))
+    }
+
+    private func awaitIngress(_ name: String) async throws {
+        guard let task = ingress[name] else { return }
+        try await bounded("\(name)'s frame") { await task.value }
+    }
+
+    /// A join's ingress has returned (the router spawns the in-turn flip wait and returns), the
+    /// inputs it submitted are applied, and its flip has settled.
+    private func settleJoin(_ name: String) async throws {
+        try await awaitIngress(name)
+        try await applyInputs()
+        try await bounded("no pending flip after \(name)'s join") { [router] in
+            await router.waitForNoPendingFlipForTesting()
+        }
+    }
+
+    /// Applies what the last step submitted: one tick on a tick land; then, with in-turn sync
+    /// off, the sync cycle a loop would run (the loops are off).
+    private func applyInputs() async throws {
+        if cell.land == .tick { await keeper.stepTickOnce() }
+        if cell.sync == .legacy { await adapter.syncNow() }
+    }
+
+    // MARK: Checkpoints
+
+    /// The capture barrier (plan §5.3), in dependency order.
+    func barrier() async throws {
+        // 1. The scenario's own work: its frames' tasks, and every flip settled.
+        for (name, task) in ingress {
+            try await bounded("\(name)'s frame") { await task.value }
+        }
+        for task in spawned {
+            try await bounded("a spawned task") { await task.value }
+        }
+        try await bounded("no pending flip") { [router] in await router.waitForNoPendingFlipForTesting() }
+        guard !stopped else {
+            try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
+            return
+        }
+        // 2. The adapter settles, twice: a drain can start a sync after the first pass.
+        for _ in 0..<2 {
+            for attempt in attempts.values {
+                try await bounded("\(attempt.session)'s inbound drain") { [adapter] in
+                    await adapter.waitForInboundDrainForTesting(attempt.session)
+                }
+            }
+            if pendingAnswers > 0 {
+                let count = pendingAnswers
+                try await bounded("\(count) pending answer(s)") { [adapter] in
+                    await adapter.waitForActionResponsesFinishedForTesting(count)
+                }
+            }
+            let quiet = try await bounded("sync quiescence") { [adapter] in await adapter.waitForSyncQuiescenceForTesting() }
+            guard quiet else { throw DiffRunFailure("the adapter's sync work didn't settle") }
+        }
+        // 3. The outbound writer is idle; 4. every queued frame reached its connection.
+        try await bounded("outbound idle") { [adapter] in await adapter.waitForOutboundIdleForTesting() }
+        try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
+    }
+
+    private func capture() async throws -> DiffCapture {
+        var connections: [String: DiffConnectionCapture] = [:]
+        for (name, attempt) in attempts {
+            let connection = attempt.connection
+            let frames = try await connection.frames.map { try DiffFrame(bytes: $0) }
+            let close: DiffClose? = await connection.closed
+                ? DiffClose(code: await connection.closeCode ?? 0, reason: await connection.closeReason ?? "")
+                : nil
+            connections[name] = DiffConnectionCapture(frames: frames, close: close)
+        }
+        return DiffCapture(connections: connections)
+    }
+
+    /// Stops the land and waits for its stop to finish; one that passes its bound fails the run.
+    private func stop() async throws {
+        guard !stopped else { throw DiffRunFailure("the land was stopped twice") }
+        stopped = true
+        let result = await server.stopLand(landID: diffLandID)
+        guard result == .stopped(timedOut: false) else { throw DiffRunFailure("the stop ended \(result)") }
+        let atBound = await transport.finalFrameClosesAtBound
+        guard atBound == 0 else { throw DiffRunFailure("\(atBound) final-frame close(s) ended at their bound") }
+    }
+
+    private func saveRecord() async throws -> DiffRecordCapture {
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("differential-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("record.sstr").path
+        try await recorder.saveCopyForTesting(to: path)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let contents = try ReevaluationRecordLog.decodeForTesting(Array(bytes))
+        return DiffRecordCapture(bytes: bytes, decoded: try Self.decodedView(contents), complete: contents.completeness == .complete)
+    }
+
+    /// The record's decoded view: its metadata and frames as JSON, its completeness and flag.
+    static func decodedView(_ contents: ReevaluationRecordLogContents) throws -> DiffValue {
+        struct View: Encodable {
+            let metadata: ReevaluationRecordMetadata
+            let frames: [ReevaluationTickFrame]
+            let completeness: String
+            let holdsNonNFCText: Bool
+        }
+        let completeness: String
+        switch contents.completeness {
+        case .complete: completeness = "complete"
+        case .incomplete(let reason, let tick): completeness = "incomplete: \(reason) \(tick.map(String.init) ?? "-")"
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(View(
+            metadata: contents.metadata, frames: contents.frames,
+            completeness: completeness, holdsNonNFCText: contents.holdsNonNFCText
+        ))
+        return try DiffValue.fromJSON(data)
+    }
+
+    /// Opens every gate, stops the land if it still runs, closes the connections and awaits
+    /// the run's tasks, each under its own bound. Work left past the bounds touches only this
+    /// run's instances.
+    private func cleanUp() async {
+        holds.openAll()
+        DiffGates.openAll()
+        if !stopped {
+            stopped = true
+            _ = try? await bounded("the cleanup stop") { [server] in await server.stopLand(landID: diffLandID) }
+        }
+        for attempt in attempts.values {
+            _ = try? await bounded("the cleanup disconnect") { [transport] in
+                await transport.handleDisconnection(sessionID: attempt.session)
+            }
+        }
+        for task in Array(ingress.values) + spawned {
+            _ = try? await bounded("a task at cleanup") { await task.value }
+        }
+    }
+}
+
+/// `work`, or a failure naming `what` once `diffWaitBound` passes.
+func bounded<T: Sendable>(_ what: String, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
+    switch await raceDeadline(diffWaitBound, work) {
+    case .finished(let result): return try result.get()
+    case .timedOut: throw DiffRunFailure("\(what) didn't finish within \(diffWaitBound)")
+    }
+}
+#endif
