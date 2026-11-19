@@ -125,6 +125,12 @@ private actor ClientIDRecorder: TransportDelegate {
     func onMessage(_ message: Data, from sessionID: SessionID) async {}
 }
 
+/// Entries in the order they were appended.
+private actor OrderLog {
+    private(set) var entries: [String] = []
+    func append(_ entry: String) { entries.append(entry) }
+}
+
 /// `body`, or false when it doesn't return within the hang bound.
 private func bounded(_ body: @escaping @Sendable () async -> Void) async -> Bool {
     switch await raceDeadline(testHangBound, body) {
@@ -297,6 +303,48 @@ struct DifferentialHarnessHooksTests {
         }
         #expect(await bounded { await early.value }, "the waiter cancelled first returned")
         #expect(await connection.waitUntilFrames { $0.filter { $0.kind == .actionResponse }.count == 2 })
+    }
+
+    @Test("The action-response waiter returns only after its acknowledgement ends, across a cancellation and a completion")
+    func actionResponseWaiterJoinsItsAcknowledgement() async throws {
+        let h = try await HooksHarness.make()
+        let session = SessionID("s1")
+        let connection = await h.connect(session)
+        try await h.join(session, player: "p1")
+        #expect(await connection.waitForFirstSync())
+
+        // Held across a cancellation: the waiter is resumed, but returns only after the ack.
+        let log = OrderLog()
+        let heldAcrossCancel = TestGate()
+        let cancelled = Task {
+            await h.adapter.waitForActionResponsesFinishedForTesting(1) {
+                await heldAcrossCancel.arrive()
+                await log.append("ack ended")
+            }
+            await log.append("returned")
+        }
+        #expect(await heldAcrossCancel.waitForArrivals(1))
+        cancelled.cancel()
+        heldAcrossCancel.open()
+        #expect(await bounded { await cancelled.value })
+        #expect(await log.entries == ["ack ended", "returned"])
+
+        // Held across a completion: the same.
+        let completionLog = OrderLog()
+        let heldAcrossCompletion = TestGate()
+        let completed = Task {
+            await h.adapter.waitForActionResponsesFinishedForTesting(1) {
+                await heldAcrossCompletion.arrive()
+                await completionLog.append("ack ended")
+            }
+            await completionLog.append("returned")
+        }
+        #expect(await heldAcrossCompletion.waitForArrivals(1))
+        try await h.ping(session, tag: "one")
+        #expect(await bounded { await h.adapter.waitForActionResponsesFinishedForTesting(1) }, "the completion counted")
+        heldAcrossCompletion.open()
+        #expect(await bounded { await completed.value })
+        #expect(await completionLog.entries == ["ack ended", "returned"])
     }
 
     // MARK: Flip timeout

@@ -9,14 +9,21 @@
 // fields that depend on a decoded value. The probe runs twice: once answering every scalar with
 // one value (`""`, `0`, `false`) and once with another (`"\u{2}"`, `1`, `true`). A type whose
 // fields or success differ between the two runs branches on a decoded value (a discriminator, a
-// version gate); unless the caller lists its discriminator values in `cases`, it is reported in
-// `branching`, so a branch the probe can't see is never skipped silently.
+// version gate) is reported in `branching`, so a branch the probe can't see is never skipped
+// silently. A type with a string discriminator listed in `cases` is probed once per listed value
+// in each run, with only the discriminator key fixed; its other scalars still differ between the
+// runs, so a gate added beside the discriminator is still reported. In the second run a
+// `CaseIterable` enum takes its last case, and a type with two samples takes the second.
 //
 // Limits, each reported rather than skipped, except the first:
 // - A string discriminator with a silent default branch (an unknown value taken as one of the
 //   cases) can't be found: no answer the probe picks is a case, so both runs take the default.
 //   One that rejects an unknown value fails in both runs and is reported in `opaque`; list its
 //   values in `cases`. Integer and Boolean gates are found by the second run.
+// - A sample is checked to be a single-value leaf: a type that asks for a keyed or unkeyed
+//   container, or decodes anything but a scalar from its single value, is in `nonLeafSamples`.
+//   A single-value wrapper around a scalar (a hash read from hex) passes as a leaf by design:
+//   its one value is the field.
 // - An unkeyed container (an array) is probed with one element, so an array whose elements
 //   differ by position names only the first element's fields.
 // - A type the probe can't build (an enum whose raw value it can't guess, a value that validates
@@ -34,7 +41,8 @@ package struct RecordFieldProbeResult: Equatable {
     package var opaque: Set<String> = []
     /// Paths where a type recurred inside itself.
     package var recursive: Set<String> = []
-    /// Paths of types (not in `cases`) whose fields or success depend on a decoded value.
+    /// Paths of types whose fields or success depend on a decoded value other than a listed
+    /// discriminator.
     package var branching: Set<String> = []
     /// Paths where a boundary type was returned unprobed.
     package var boundaries: Set<String> = []
@@ -55,26 +63,40 @@ package struct RecordFieldProbeResult: Equatable {
     }
 }
 
+/// A type's string discriminator: the coding key that holds it and every value it takes.
+package struct ProbeCases: Sendable {
+    package let key: String
+    package let values: [String]
+
+    package init(key: String, values: [String]) {
+        self.key = key
+        self.values = values
+    }
+}
+
 package enum RecordFieldProbe {
     /// - Parameters:
     ///   - samples: values returned for their types instead of probing them: enums whose raw
     ///     values the probe can't guess, and leaves that validate what they decode. Each must be
-    ///     a single-value leaf; a sample type that asks for a container is in `nonLeafSamples`.
+    ///     a single-value leaf; a sample type that isn't is in `nonLeafSamples`. Give a second
+    ///     sample of the same type for the second run, so a type that branches on it is found.
     ///   - boundaries: values returned for dynamic types (a payload, a snapshot value), whose
     ///     content isn't a fixed field set. Their paths are reported in `boundaries`.
     ///   - cases: for a type that picks its fields by a string discriminator (a JSON Patch `op`),
-    ///     every discriminator value. The type is probed once per value, with each string decoded
-    ///     at its own level answered with that value.
+    ///     its key and every value. The type is probed once per value in each run, with only that
+    ///     key answered with the value.
     package static func probe<T: Decodable>(
         _ type: T.Type,
         at path: String = "",
         samples: [any Decodable] = [],
         boundaries: [any Decodable] = [],
-        cases: [ObjectIdentifier: [String]] = [:]
+        cases: [ObjectIdentifier: ProbeCases] = [:]
     ) -> RecordFieldProbeResult {
         let runs = [0, 1].map { variant -> ProbeState in
             let state = ProbeState(variant: variant)
-            for sample in samples { state.samples[ObjectIdentifier(Swift.type(of: sample))] = sample }
+            var byType: [ObjectIdentifier: [Any]] = [:]
+            for sample in samples { byType[ObjectIdentifier(Swift.type(of: sample)), default: []].append(sample) }
+            for (id, values) in byType { state.samples[id] = values[min(variant, values.count - 1)] }
             for boundary in boundaries { state.boundaries[ObjectIdentifier(Swift.type(of: boundary))] = boundary }
             state.cases = cases
             _ = try? state.decode(type, at: path)
@@ -87,21 +109,19 @@ package enum RecordFieldProbe {
             result.recursive.formUnion(run.recursive)
             result.boundaries.formUnion(run.boundaryPaths)
         }
-        result.branching = branching(runs[0], runs[1], cases: cases)
+        result.branching = branching(runs[0], runs[1])
         result.nonLeafSamples = Set(samples.filter { !isSingleValueLeaf($0) }.map { "\(Swift.type(of: $0))" })
         return result
     }
 
     /// The composite paths whose subtree or success differs between the runs, deepest only (a
-    /// parent of a branching type differs through it), leaving out the types listed in `cases`.
-    private static func branching(_ a: ProbeState, _ b: ProbeState, cases: [ObjectIdentifier: [String]]) -> Set<String> {
+    /// parent of a branching type differs through it).
+    private static func branching(_ a: ProbeState, _ b: ProbeState) -> Set<String> {
         func below(_ parent: String, _ path: String) -> Bool {
             parent.isEmpty ? !path.isEmpty : (path.hasPrefix(parent + ".") || path.hasPrefix(parent + "[]"))
         }
         var differing = Set<String>()
         for path in Set(a.composites.keys).union(b.composites.keys) {
-            let id = a.composites[path]?.type ?? b.composites[path]?.type
-            if let id, cases[id] != nil { continue }
             let subA = a.paths.filter { below(path, $0) }, subB = b.paths.filter { below(path, $0) }
             if subA != subB || a.composites[path]?.ok != b.composites[path]?.ok {
                 differing.insert(path)
@@ -129,14 +149,14 @@ private final class ProbeState {
     var active: [ObjectIdentifier] = []
     var samples: [ObjectIdentifier: Any] = [:]
     var boundaries: [ObjectIdentifier: Any] = [:]
-    var cases: [ObjectIdentifier: [String]] = [:]
-    /// The discriminator answer of the type being probed at this level; nil inside other types.
-    var stringAnswers: [String?] = [nil]
+    var cases: [ObjectIdentifier: ProbeCases] = [:]
+    /// The discriminator key and answer of the type being probed at this level; nil inside other
+    /// types.
+    var discriminators: [(key: String, answer: String)?] = [nil]
 
     init(variant: Int) { self.variant = variant }
 
     func decode<T: Decodable>(_ type: T.Type, at path: String) throws -> T {
-        if type == String.self, let answer = stringAnswers.last ?? nil { return answer as! T }
         if let value = leaf(type, variant: variant) { return value }
         let id = ObjectIdentifier(type)
         if let sample = samples[id] as? T { return sample }
@@ -144,7 +164,7 @@ private final class ProbeState {
             boundaryPaths.insert(path)
             return boundary
         }
-        if let value = Self.firstCase(type) { return value }
+        if let value = Self.enumCase(type, variant: variant) { return value }
         if active.contains(id) {
             recursive.insert(path)
             throw ProbeStop.recursion
@@ -167,15 +187,15 @@ private final class ProbeState {
     }
 
     private func build<T: Decodable>(_ type: T.Type, id: ObjectIdentifier, at path: String) throws -> T {
-        guard let answers = cases[id] else {
-            stringAnswers.append(nil)
-            defer { stringAnswers.removeLast() }
+        guard let listed = cases[id] else {
+            discriminators.append(nil)
+            defer { discriminators.removeLast() }
             return try T(from: ProbeDecoder(state: self, path: path))
         }
         var last: T?
-        for answer in answers {
-            stringAnswers.append(answer)
-            defer { stringAnswers.removeLast() }
+        for answer in listed.values {
+            discriminators.append((listed.key, answer))
+            defer { discriminators.removeLast() }
             last = try T(from: ProbeDecoder(state: self, path: path))
         }
         guard let last else { throw ProbeStop.opaque }
@@ -184,13 +204,15 @@ private final class ProbeState {
 
     func field(_ path: String) { paths.insert(path) }
 
-    /// A `CaseIterable` enum is a leaf: its first case.
-    static func firstCase<T>(_ type: T.Type) -> T? {
+    /// A `CaseIterable` enum is a leaf: its first case in the first run, its last in the second.
+    static func enumCase<T>(_ type: T.Type, variant: Int) -> T? {
         guard let iterable = type as? any CaseIterable.Type else { return nil }
-        return first(of: iterable) as? T
+        return pick(of: iterable, last: variant != 0) as? T
     }
 
-    private static func first<C: CaseIterable>(of type: C.Type) -> Any? { type.allCases.first }
+    private static func pick<C: CaseIterable>(of type: C.Type, last: Bool) -> Any? {
+        last ? Array(type.allCases).last : type.allCases.first
+    }
 }
 
 /// The scalar answer of a run: `variant` 0 or 1 gives two different values for each type.
@@ -264,6 +286,9 @@ private struct ProbeKeyed<Key: CodingKey>: KeyedDecodingContainerProtocol {
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
         let child = childPath(key)
         if Self.dictionaryKey == nil { state.field(child) }
+        if type == String.self, let listed = state.discriminators.last ?? nil, listed.key == key.stringValue {
+            return listed.answer as! T
+        }
         return try state.decode(type, at: child)
     }
 
@@ -336,8 +361,8 @@ private struct ProbeSingle: SingleValueDecodingContainer {
     }
 }
 
-/// Records whether a type asks for a keyed or unkeyed container; scalars get the first run's
-/// answers, anything else fails.
+/// Records whether a type asks for a keyed or unkeyed container, or decodes a non-scalar from its
+/// single value; scalars get the first run's answers, anything else fails.
 private final class ShapeDecoder: Decoder {
     var askedForContainer = false
     var codingPath: [any CodingKey] { [] }
@@ -353,14 +378,19 @@ private final class ShapeDecoder: Decoder {
         throw ProbeStop.opaque
     }
 
-    func singleValueContainer() throws -> any SingleValueDecodingContainer { ShapeSingle() }
+    func singleValueContainer() throws -> any SingleValueDecodingContainer { ShapeSingle(shape: self) }
 }
 
 private struct ShapeSingle: SingleValueDecodingContainer {
+    let shape: ShapeDecoder
     var codingPath: [any CodingKey] { [] }
     func decodeNil() -> Bool { false }
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        guard let value = leaf(type, variant: 0) else { throw ProbeStop.opaque }
+        guard let value = leaf(type, variant: 0) else {
+            // A composite inside the single value: its fields would be hidden.
+            shape.askedForContainer = true
+            throw ProbeStop.opaque
+        }
         return value
     }
 }
