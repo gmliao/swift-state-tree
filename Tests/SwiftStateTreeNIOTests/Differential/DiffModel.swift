@@ -122,8 +122,15 @@ enum DiffStep: Sendable {
     /// Opens resolver gate `key`.
     case openGate(Int)
     /// Waits until every action job has left the keeper's job table (its result delivered as an
-    /// input, or its release), then applies the inputs.
+    /// input, or its release), then until every pending answer has been sent, then applies the
+    /// inputs. With the loops off, the sync that follows is the runner's: an answer's task and
+    /// that sync aren't ordered by anything else, so the answers go first.
     case settleJobs
+    /// `settleJobs` without waiting for the answers: for a scenario that holds an answer at
+    /// `heldAt` across the sync, so the sync goes first. It first reaches `heldAt`: the answer's
+    /// slot is filled, so the pass that applied the job has run (on a legacy tickless land a task
+    /// of its own, which the jobs wait doesn't cover), and the sync carries its state change.
+    case settleJobsBeforeAnswers(heldAt: DiffHold)
     /// Waits for every spawned task and the background syncs, then applies the inputs they
     /// queued.
     case settleSpawned

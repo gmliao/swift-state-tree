@@ -267,34 +267,10 @@ let diffScenarios: [DiffScenario] = [
         lifecycle: ["pb": [.join, .leave], "pa": [.join, .leave]]
     ),    // A stale action reply after a leave: A's answer is held across A2's join and A2's own
     // pending action. A's request gets nothing on A or A2; A2 gets its reply.
-    DiffScenario(
-        name: "stale-action-reply",
-        cells: .all,
-        steps: [
-            .connect("A", session: "s-a"),
-            .join("A", player: "pa"),
-            .arm(.adapter(.actionResponse), arrival: 1),
-            .held("A", requestID: "held-a", key: 1),
-            .disconnect("A"),
-            .reach(.adapter(.actionResponse)),
-            // A fresh SessionID, as the server mints one per connection: a router join on a
-            // SessionID whose disconnect ran is refused as stale (`endedSessions`), so the
-            // same-session reconnect stays with `staleAnswerAfterReconnect`.
-            .connect("A2", session: "s-a2"),
-            .join("A2", player: "pa"),
-            .held("A2", requestID: "held-a2", key: 2),
-            .release(.adapter(.actionResponse)),
-            // A's job was rejected at the leave; its resolver's end only releases it. The jobs
-            // wait counts every job, so both gates open before the one settle.
-            .openGate(2),
-            .openGate(1),
-            .settleJobs,
-            .liveCheckpoint,
-            .disconnect("A2"),
-        ],
-        outcomes: ["join-A": .reply, "held-a": .none, "join-A2": .reply, "held-a2": .reply],
-        lifecycle: ["pa": [.join, .leave, .join, .leave]]
-    ),
+    // An answer and the runner's sync aren't ordered by anything with the loops off (nor, in
+    // production, by anything but timing: #658), so the row pins each order as its own row.
+    staleActionReplyRow("stale-action-reply", answerFirst: true),
+    staleActionReplyRow("stale-action-reply-diff-first", answerFirst: false),
     // #548: a teardown while the keeper's join holds. The ticket is issued at admission, after
     // the hold, so on main A's admission after the teardown yields a current ticket: the bug,
     // which the golden records. The branch's outcome is the #548 expected difference.
@@ -422,3 +398,45 @@ let diffScenarios: [DiffScenario] = [
     ),
 ]
 #endif
+
+/// A's held action is answered after A disconnected and A2 (a fresh SessionID, #652) joined
+/// as the same player: the stale answer reaches nobody. A2's own held action then ends with its
+/// answer either before the sync that carries its state change (`answerFirst`) or after it,
+/// with A2's answer held across that sync.
+private func staleActionReplyRow(_ name: String, answerFirst: Bool) -> DiffScenario {
+    let settle: [DiffStep] = answerFirst
+        ? [.settleJobs]
+        : [.settleJobsBeforeAnswers(heldAt: .adapter(.actionResponse)), .release(.adapter(.actionResponse))]
+    // Armed again once A's answer is released (A's task already waits at the old gate). The
+    // hook counts arrivals at the point from the start, so A2's answer is arrival 2.
+    let holdA2: [DiffStep] = answerFirst ? [] : [.arm(.adapter(.actionResponse), arrival: 2)]
+    return DiffScenario(
+        name: name,
+        cells: .all,
+        steps: [
+            .connect("A", session: "s-a"),
+            .join("A", player: "pa"),
+            .arm(.adapter(.actionResponse), arrival: 1),
+            .held("A", requestID: "held-a", key: 1),
+            .disconnect("A"),
+            .reach(.adapter(.actionResponse)),
+            // A fresh SessionID, as the server mints one per connection: a router join on a
+            // SessionID whose disconnect ran is refused as stale (`endedSessions`), so the
+            // same-session reconnect stays with `staleAnswerAfterReconnect`.
+            .connect("A2", session: "s-a2"),
+            .join("A2", player: "pa"),
+            .held("A2", requestID: "held-a2", key: 2),
+            .release(.adapter(.actionResponse)),
+        ] + holdA2 + [
+            // A's job was rejected at the leave; its resolver's end only releases it. The jobs
+            // wait counts every job, so both gates open before the one settle.
+            .openGate(2),
+            .openGate(1),
+        ] + settle + [
+            .liveCheckpoint,
+            .disconnect("A2"),
+        ],
+        outcomes: ["join-A": .reply, "held-a": .none, "join-A2": .reply, "held-a2": .reply],
+        lifecycle: ["pa": [.join, .leave, .join, .leave]]
+    )
+}

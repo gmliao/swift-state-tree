@@ -327,8 +327,21 @@ final class DiffRun: @unchecked Sendable {
         case .openGate(let key):
             DiffGates.gate(key).open()
 
+        case .settleJobsBeforeAnswers(let hold):
+            try await bounded("the action jobs") { [keeper] in await keeper.waitForActionJobsForTesting() }
+            guard let gate = holds.gate(hold) else { throw DiffRunFailure("\(hold) was never armed") }
+            let reached = try await bounded("\(hold)") { await gate.waitForArrivals(1) }
+            guard reached else { throw DiffRunFailure("\(hold) wasn't reached before the sync") }
+            try await applyInputs()
+
         case .settleJobs:
             try await bounded("the action jobs") { [keeper] in await keeper.waitForActionJobsForTesting() }
+            if pendingAnswers > 0 {
+                let count = pendingAnswers
+                try await bounded("\(count) pending answer(s)") { [adapter] in
+                    await adapter.waitForActionResponsesFinishedForTesting(count)
+                }
+            }
             try await applyInputs()
 
         case .settleSpawned:
@@ -440,6 +453,7 @@ final class DiffRun: @unchecked Sendable {
         case .held(let name, let requestID, _): return "held action \(name) \(requestID)"
         case .openGate(let key): return "open gate \(key)"
         case .settleJobs: return "settle jobs"
+        case .settleJobsBeforeAnswers(let hold): return "settle jobs before answers (\(hold) held)"
         case .settleSpawned: return "settle spawned"
         case .awaitSpawned: return "await spawned"
         case .tick: return "tick"
