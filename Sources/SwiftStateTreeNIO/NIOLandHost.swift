@@ -377,14 +377,10 @@ public actor NIOLandHost {
         webSocketPath: String,
         configuration: NIOLandServerConfiguration
     ) async throws {
-        // The state's synced-state rows (#464, #179, #535) and the land's payload types in its
-        // encoding (EV1, #521), in one throw.
-        try land.validateForRegistration(
-            context: LandRegistrationContext(
-                payloadsCompressed: configuration.effectiveTransportEncoding.shouldEncodePayloadAsArray,
-                recordsForReplay: configuration.enableLiveStateHashRecording
-            )
-        )
+        // The state's synced-state rows (#464, #179, #535), the land's payload types in its
+        // encoding (EV1, #521) and its event names against the schema and the host's table (EV2,
+        // EV3), in one throw.
+        try land.validateForRegistration(context: configuration.registrationContext)
 
         let initialStateFunc = initialState
 
@@ -867,4 +863,26 @@ private final class EndedCount: @unchecked Sendable {
 public enum NIOLandHostError: Error, Sendable {
     /// No lands have been registered.
     case noLandsRegistered
+}
+
+extension NIOLandServerConfiguration {
+    /// What registration checks a land served with this configuration against: its encoding,
+    /// whether it records, and its `eventHashes` (#521 EV1-EV3, D15). One builder for `register`
+    /// and the reevaluation helpers' up-front checks, so the two can't drift.
+    var registrationContext: LandRegistrationContext {
+        LandRegistrationContext(
+            payloadsCompressed: effectiveTransportEncoding.shouldEncodePayloadAsArray,
+            recordsForReplay: enableLiveStateHashRecording,
+            eventHashes: eventHashes
+        )
+    }
+    /// `registrationContext` with recording forced on: the context the reevaluation helpers check a
+    /// replayed live definition with. Its record needs a fingerprint whatever the configuration
+    /// says (#521 D15), and its other rows are the ones `register` checks, so one throw reports
+    /// them all.
+    var replayedDefinitionContext: LandRegistrationContext {
+        var context = registrationContext
+        context.recordsForReplay = true
+        return context
+    }
 }
