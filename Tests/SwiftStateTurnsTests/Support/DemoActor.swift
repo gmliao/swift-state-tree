@@ -115,6 +115,14 @@ actor DemoActor: TurnActor {
         }
     }
 
+    /// Sends from inside `read`'s body, which steps at once (the core is idle): a stop.
+    func sendFromInsideRead() {
+        _ = core.read { _ in
+            self.send(.ping)
+            return 0
+        }
+    }
+
     // MARK: Collaborators between steps
 
     /// A collaborator called by the driver between steps (from `flush`) reads, asks and sends.

@@ -19,6 +19,17 @@ struct RuntimeStopTests {
         #expect(Self.standardError(result).contains("TurnCore: the machine was read from inside its own step"))
     }
 
+    @Test("a step entered from inside read stops the process")
+    func stepInsideRead() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let demo = DemoActor()
+            await demo.sendFromInsideRead()
+        }
+        // The core's own stop, or the runtime's exclusivity check: both name the overlap.
+        let text = Self.standardError(result)
+        #expect(text.contains("TurnCore: a step was entered from inside read") || text.contains("Simultaneous accesses"))
+    }
+
     @Test("query from inside a step stops the process")
     func askInsideStep() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
