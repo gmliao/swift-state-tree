@@ -31,6 +31,26 @@ struct EHBellEvent: ServerEventPayload {
     static var _payloadWireName: String { "EHOldBell" }
 }
 
+/// `a` is keyed `"b"`, and `b` (defaulted) is left out of `CodingKeys`: one wire key, two fields,
+/// which the record fingerprint refuses.
+@Payload
+struct EHCollidingKeys: ServerEventPayload {
+    let a: Int
+    var b: Int = 0
+
+    enum CodingKeys: String, CodingKey {
+        case a = "b"
+    }
+}
+
+enum EHInputs {
+    /// A server input with the colliding event's short type name. In the base's fingerprint walk
+    /// its schema replaces the event's, so the collision is hidden there; the generic alias drops
+    /// the server inputs and finds it.
+    @Payload
+    struct EHCollidingKeys: ServerInputPayload {}
+}
+
 private let logger = Logger(label: "event-name-host")
 
 private func makeHost() -> NIOLandHost {
@@ -149,6 +169,62 @@ struct EventNameHostRegistrationTests {
         )
         #expect(await host.realm.isRegistered(landType: "eh-generic"))
         #expect(await host.realm.isRegistered(landType: "eh-generic-replay"))
+    }
+
+    @Test("The helpers' live check reports EV2 and EV3 in one throw, and maps nothing", arguments: [false, true])
+    func liveCheckReportsEveryRow(generic: Bool) async throws {
+        let host = makeHost()
+        let landType = generic ? "eh-both-generic" : "eh-both-same"
+        let land = Land(landType, using: EventNameHostState.self) {
+            ServerEvents {
+                Register(EHBellEvent.self)
+                Register(EHLiveEvent.self)
+            }
+            Rules {}
+        }
+        var configuration = NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
+        configuration.eventHashes = ["EHBell": 1]
+        let error = try await #require(throws: LandRegistrationError.self) {
+            if generic {
+                try await host.registerWithGenericReplay(
+                    landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
+                    liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
+                )
+            } else {
+                try await host.registerWithReevaluationSameLand(
+                    landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
+                    liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
+                )
+            }
+        }
+        #expect(error.wireNameMismatches.count == 1, "\(error)")
+        #expect(error.serverEventsWithoutHash.map { $0.hasPrefix("EHLive (") } == [true], "\(error)")
+        #expect(await host.transportForTesting(webSocketPath: "/game/\(landType)") == nil)
+    }
+
+    @Test("The generic alias's fingerprint can fail where the base's passes; the up-front check keeps the live route unpublished")
+    func genericAliasFingerprintRefusedUpFront() async throws {
+        let host = makeHost()
+        let land = Land("eh-hidden", using: EventNameHostState.self) {
+            ServerEvents { Register(EHCollidingKeys.self) }
+            Rules {
+                HandleServerInput(EHInputs.EHCollidingKeys.self) { (_: inout EventNameHostState, _: EHInputs.EHCollidingKeys, _: LandContext) in }
+            }
+        }
+        // The base passes with recording on: the input hides the collision in its walk.
+        try land.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        // The live land records, so the alias's own registration computes its fingerprint.
+        var configuration = NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
+        configuration.enableLiveStateHashRecording = true
+        let error = try await #require(throws: LandRegistrationError.self) {
+            try await host.registerWithGenericReplay(
+                landType: "eh-hidden", liveLand: land, liveInitialState: EventNameHostState(),
+                liveWebSocketPath: "/game/eh-hidden", configuration: configuration, reevaluation: feature()
+            )
+        }
+        #expect(error.schemaFingerprint == .wireKeyCollision(type: "EHCollidingKeys", key: "b"), "\(error)")
+        #expect(await host.realm.isRegistered(landType: "eh-hidden") == false)
+        #expect(await host.transportForTesting(webSocketPath: "/game/eh-hidden") == nil, "the live path isn't mapped")
     }
 
     @Test("The generic alias runs EV3 itself: registered directly with a table missing its event, it is refused")

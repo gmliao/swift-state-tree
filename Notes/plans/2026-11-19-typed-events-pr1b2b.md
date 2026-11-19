@@ -7,6 +7,13 @@
 - the wire claims qualified by message encoding (§ EV3);
 - the gate's wording (§ Entry points).
 
+The code PR's review (#656 at bf353a8f, GO on green, four shoulds and a nit) is folded in too:
+- the helpers' live check uses the full context (§ Entry points);
+- the replay setup stays behind `enabled` (§ Replay registrations);
+- EV3's server-only boundary is pinned (§ Tests);
+- the generic up-front check's rationale is corrected and the check is tested (§ Replay registrations);
+- the nit, `LandRegistrationContext.init`'s new signature, is a PR comment.
+
 Rev 2 folded in rev 1's review (#653 at 3f9d79dc), five shoulds and a nit:
 - the fingerprint gate includes the new rows;
 - the examples' test is relabelled;
@@ -83,7 +90,7 @@ Together they give every registered type a wire name of its own. This PR adds no
 
 **One context builder.** `register` and the reevaluation helpers' up-front checks read one computed property, `NIOLandServerConfiguration.registrationContext` (`NIOLandHost.swift`). It takes `effectiveTransportEncoding.shouldEncodePayloadAsArray`, `enableLiveStateHashRecording` and `eventHashes`. So a helper checks the replay definition with exactly the context its own `register` will use.
 - The replay ticket gate acts when an instance is created, not at registration, so it adds nothing to the context.
-- The live definition's forced `recordsForReplay: true` check (`ReevaluationFeature.swift:133`) stays separate: it asks for a fingerprint whatever the configuration says.
+- The helpers' check of the live definition, which asks for a fingerprint whatever the configuration says, reads `replayedDefinitionContext`: `registrationContext` with recording forced on. With the bare `LandRegistrationContext(recordsForReplay: true)` it had before, a live land failing EV2 and EV3 threw EV2 alone, before `register` would have reported both.
 
 **The verdict cache.** `LandManager.checkRegistration` caches a verdict per `definition.id` (`LandManager.swift:438`). That is today's design for the existing rows, and the new rows keep it. The cache relies on one assumption, now stated in its doc comment: a land type has one definition per manager. EV2 is a fact about the definition and EV3 about it and the manager's table, and the table is fixed at the manager's init.
 
@@ -95,13 +102,13 @@ Together they give every registered type a wire name of its own. This PR adds no
 - Today it registers the live land and publishes its route (:145), then registers the replay definition (:169) with the live configuration plus the replay ticket gate.
 - **Which table:** the live one. The replay land's adapter encodes with that configuration, so the live table is the one its events are sent under, and EV3 checks the replay definition against it.
 - **A replay-only event** (registered by the replay definition, not the live one) with no entry in that table would fail EV3 at :169, after the live route is published. Today a throw there leaves the live land registered and serving, with no replay land.
-- **The change:** the overload builds the replay configuration first and checks the replay definition with its `registrationContext`, which carries the live table, before the live land registers. A refusal then throws before anything is registered, so no route is published. The registration of the replay land checks again, as every `register` does.
+- **The change:** with reevaluation enabled, the overload builds the replay configuration first and checks the replay definition with its `registrationContext`, which carries the live table, before the live land registers. With it off, none of the replay setup runs (the path resolver, `NIOEnvConfig.fromEnvironment()`, the ticket gate), as before. A refusal then throws before anything is registered, so no route is published. The registration of the replay land checks again, as every `register` does.
 
 **`registerWithGenericReplay`** (`ReevaluationFeature.swift:215-290`).
 - The alias (`GenericReplayLand.makeLand(basedOn:)`) copies only the base's server-event registry (#521 plan §4, M5) and gets the live configuration. So with the base passing, the alias passes.
 - A test of a failing base doesn't reach the alias, so the tests register the alias itself (below).
-- It gets the same up-front check: the alias is built once, from `liveLand` alone, before the live registration, checked with the replay configuration's `registrationContext`, and that same value is registered.
-- **Not observable today:** the alias's rows are a subset of the base's under the same context, so the base's own `register` refuses first, and removing the alias's up-front check changes no outcome. It guards against the alias diverging from the base (an event of its own, say). The tests pin the alias's row by registering the alias directly; no test can see the up-front check itself, and the code PR says so.
+- It gets the same up-front check, behind `enabled` too: the alias is built once, from `liveLand` alone, before the live registration, checked with the replay configuration's `registrationContext`, and that same value is registered.
+- **The alias isn't a subset of the base for every row.** Its event rows are, but it drops the server inputs, so its fingerprint walk differs from the base's (`SchemaFingerprint.swift`, the server-input loop; `ActionEventExtractor.extractEvent` stores a def by the type's short name). A server input with the same short type name as a server event replaces that event's def in the base's walk and can hide a wire-key collision; the alias's walk finds it. With recording on, the base then passes and the alias fails, and without the up-front check the live route would already be published. A test registers such a land (`genericAliasFingerprintRefusedUpFront`), and the check's removal is a killed mutant.
 
 **What can still fail after the live route is published.** The guarantee covers refusals of the live or replay definition only. These failures happen after the live land is registered, as they do today:
 - the realm's registration of the replay or monitor land type (an empty or duplicate land type, `LandRealm.swift:115-136`);
@@ -170,11 +177,14 @@ All additive:
   - `eventHashes` nil;
   - the schema's own table (`SchemaExtractor.extract(...).eventHashes`), passed explicitly to `NIOLandHost.register` and to a `LandManager`;
   - a table with extra names;
-  - a complete foreign table with wrong opcodes, which passes: the limit, pinned.
+  - a complete foreign table with wrong opcodes, which passes: the limit, pinned;
+  - a land with a client event and an action, whose table holds only the server events' keys: EV3 checks server events only.
 - **Replay:**
   - **`registerWithReevaluation`:** with an opcode encoding and the live schema's table, a replay definition with a replay-only event is refused with that event's missing-hash entry. Neither the live path nor a realm entry for either land type exists afterwards.
+  - **The helpers' live check:** a live land failing EV2 and EV3, through `registerWithReevaluationSameLand` and `registerWithGenericReplay`, reports both in one throw and maps nothing.
   - **`registerWithGenericReplay`:**
     - a valid alias with a non-empty table registers;
+    - a base whose server input hides a wire-key collision from its own fingerprint is refused through the alias's up-front check, with the live route unpublished;
     - the alias's own registration (`makeLand(basedOn:)` given to `NIOLandHost.register`), with a table missing one of its events, is refused with that event named. This shows the alias runs the row itself.
 - **The fingerprint gate:**
   - with recording on, a land failing only EV2 and EV3 reports both in one `LandRegistrationError`, with no fingerprint error and no other error in their place. The four-row test below can't show this, since its EV1 and #599 rows skip the fingerprint;
@@ -189,7 +199,8 @@ All additive:
   - `LandManager` not passing `eventHashes`;
   - the fingerprint gate without EV2, and without EV3;
   - the custom overload's up-front replay check removed (the live path is then mapped);
-  - the generic overload's up-front check removed, expected to survive (above).
+  - the generic overload's up-front check removed (the live path is then mapped);
+  - the helpers' live check without the configuration's context.
 
 ## Not in scope
 

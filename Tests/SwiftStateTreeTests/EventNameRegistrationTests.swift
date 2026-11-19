@@ -186,6 +186,21 @@ struct EventNameRegistrationTests {
         try land.validateForRegistration(context: LandRegistrationContext(eventHashes: ["ENNotice": 9, "ENPlain": 7]))
     }
 
+    @Test("EV3 checks server events only: a client event and an action need no entry in the table")
+    func tableNeedsServerEventsOnly() throws {
+        let land = Land("event-names-server-only", using: EventNameState.self) {
+            ClientEvents { Register(ENTap.self) }
+            ServerEvents {
+                Register(ENNotice.self)
+                Register(ENPlainEvent.self)
+            }
+            Rules {
+                HandleAction(ENOpenAction.self) { (_: inout EventNameState, _: ENOpenAction, _: LandContext) in ENAck(ok: true) }
+            }
+        }
+        try land.validateForRegistration(context: LandRegistrationContext(eventHashes: ["ENNotice": 1, "ENPlain": 2]))
+    }
+
     @Test("With recording on and only EV2 and EV3 failing, both are reported, and the fingerprint isn't computed in their place")
     func fingerprintGateKeepsBothRows() throws {
         let land = Land("event-names-gate", using: EventNameState.self) {
