@@ -275,7 +275,20 @@ The tests are also examples. Each one below shows a way to check a turn-based ac
 - **The three-version comparison** ([`Tests/SwiftStateTurnsTests/ComparisonTests.swift`](../../Tests/SwiftStateTurnsTests/ComparisonTests.swift)). A hold inside the profile store's `load` stops a join in the middle of its `await`. The test then sends the leave and releases the load. The order is the same on every run, with no sleeps, so the plain actor's bug happens every time.
 - **Runtime stops** ([`Tests/SwiftStateTurnsTests/RuntimeStopTests.swift`](../../Tests/SwiftStateTurnsTests/RuntimeStopTests.swift)). A few mistakes can only be caught while running, such as reading the machine from inside its own step. Each one runs in a child process (an exit test), which must stop with the core's message.
 
-## Related
+## Exclusivity checks in release builds
+
+Swift checks at run time that a variable isn't changed while something else is using it. This is the exclusivity check. On a class's stored property it costs a pair of runtime calls on every use.
+
+The core skips this check on its own stored state in a release build. Inlined into an adopter, the core touches that state many times per input, and the check made a `read` cost about twice what the same lookup costs by hand. The check isn't needed there for safety: the actor runs one call at a time, and the core stops the process on the overlaps the check would catch. These are a step inside a step, a step started from inside `read`, and `read` or `query` called from inside a step.
+
+Debug builds keep the check. A release build keeps it too when built with the `TURNS_EXCLUSIVITY_CHECKED` flag:
+
+```sh
+swift build -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED
+```
+
+Build with it when you suspect two accesses to the core's state overlap in a release build, and to run the tests on the release path with the check on. The default release build has no check.
+
 
 - The design and its rules: `Notes/plans/2026-11-18-swift-state-turns-core.md`
 - The reentrancy rule for code outside turns: "Actor Reentrancy" in `AGENTS.md`
