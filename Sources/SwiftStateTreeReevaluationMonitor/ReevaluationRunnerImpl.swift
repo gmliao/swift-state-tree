@@ -111,6 +111,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     }
 
     private let keeper: LandKeeper<State>
+    /// The base land's definition: its registry resolves each tick's server events (#521 PR 1b).
+    private let definition: LandDefinition<State>
     private let source: any ReevaluationSource
     /// What the record's state hashes cover, from its version.
     private let hashDefinition: ReevaluationHashDefinition
@@ -148,6 +150,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         recordFilePath: String,
         requiredRecordVersion: String? = nil
     ) async throws {
+        self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
@@ -157,6 +160,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
+        // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
+        // decoded in `step()`, so a server event type without a decoder can't replay.
+        try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         // A land without a tick handler is tickless, as the keeper and the engine decide it: from
@@ -219,6 +225,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         requiredRecordVersion: String? = nil,
         services: LandServices = LandServices()
     ) async throws {
+        self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
@@ -228,6 +235,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         try Self.validateSchemaFingerprint(metadata: metadata, definition: definition)
+        // EV8 (#521 PR 1b), after the record's own checks: every recorded server event is
+        // decoded in `step()`, so a server event type without a decoder can't replay.
+        try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         // A land without a tick handler is tickless, as the keeper and the engine decide it: from
@@ -358,19 +368,34 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
         // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String
-        var actualStatePayload: AnyCodable?
+        let snapshot: StateSnapshot?
         do {
-            let (hash, snapshot) = try ReevaluationEngine.stateHashAndSnapshot(state, definition: hashDefinition)
+            let (hash, computed) = try ReevaluationEngine.stateHashAndSnapshot(state, definition: hashDefinition)
             stateHash = hash
-            if let data = try? snapshotEncoder.encode(snapshot), let jsonText = String(data: data, encoding: .utf8) {
-                actualStatePayload = AnyCodable(jsonText)
-            }
+            snapshot = computed
         } catch {
             stateHash = ReevaluationEngine.unavailableHash(error)
+            snapshot = nil
+        }
+        // A snapshot that doesn't encode fails the run (A10, #521 PR 1b): the replay land would
+        // have no state to show for the tick.
+        var actualStatePayload: AnyCodable?
+        if let snapshot {
+            do {
+                actualStatePayload = AnyCodable(String(decoding: try snapshotEncoder.encode(snapshot), as: UTF8.self))
+            } catch {
+                throw ReevaluationReplayResolutionError.stateEncode(tickId: tickId, error: "\(error)")
+            }
         }
 
-        // Get recorded hash
-        let recordedHash = try? await source.getStateHash(for: tickId)
+        // A read error fails the run (A9, #521 PR 1b); a record without a hash for the tick
+        // (nil) is unchanged.
+        let recordedHash: String?
+        do {
+            recordedHash = try await source.getStateHash(for: tickId)
+        } catch {
+            throw ReevaluationReplayResolutionError.recordRead(tickId: tickId, read: "state hash", error: "\(error)")
+        }
 
         // A hash that could not be computed, live or here, is never a match.
         // A tick whose recorded passes didn't match applied none of its inputs (#325): never a
@@ -390,7 +415,23 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         let emittedServerEvents = passEvents + (await capturingSink.takeEmittedEvents(for: tickId))
         passEvents.removeAll()
         syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedServerEvents)
-        let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []
+        let recordedServerEvents: [ReevaluationRecordedServerEvent]
+        do {
+            recordedServerEvents = try await source.getServerEvents(for: tickId)
+        } catch {
+            throw ReevaluationReplayResolutionError.recordRead(tickId: tickId, read: "server events", error: "\(error)")
+        }
+        // D14 (a′): the tick resolved here, so a record/code mismatch fails the run (EV7, A11).
+        // It runs after the tick was applied and the driver stepped: a failure stops only what
+        // would be published; nothing is rolled back, and the run's keeper isn't reused.
+        let replayFrame = try ReevaluationReplayFrame.resolve(
+            tickId: tickId,
+            recordedServerEvents: recordedServerEvents,
+            emittedServerEvents: emittedServerEvents,
+            actualState: actualStatePayload,
+            definition: definition,
+            integralFloats: ReevaluationReplayFrame.integralFloats(for: source)
+        )
 
         return ReevaluationStepResult(
             tickId: tickId,
@@ -400,7 +441,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             actualState: actualStatePayload,
             emittedServerEvents: emittedServerEvents,
             recordedServerEvents: recordedServerEvents,
-            recordedPassMismatch: recordedPassMismatch
+            recordedPassMismatch: recordedPassMismatch,
+            replayFrame: replayFrame
         )
     }
 

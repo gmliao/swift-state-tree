@@ -35,6 +35,11 @@ public struct ReevaluationStepResult: Sendable {
     /// Why the tick's recorded passes (a tickless land's, 3.1 on) didn't match its inputs, if
     /// they didn't. The tick's inputs were not applied, so `isMatch` is false (#325).
     public let recordedPassMismatch: String?
+    /// The tick resolved for the replay land (#521 PR 1b): its events decoded into their types
+    /// and its state built back. Set by `ConcreteReevaluationRunner.step()`; a custom runner sets
+    /// it with `ReevaluationReplayFrame.resolve`. A result without one isn't queued for a replay
+    /// land.
+    public let replayFrame: ReevaluationReplayFrame?
 
     public init(
         tickId: Int64,
@@ -45,7 +50,8 @@ public struct ReevaluationStepResult: Sendable {
         emittedServerEvents: [ReevaluationRecordedServerEvent] = [],
         recordedServerEvents: [ReevaluationRecordedServerEvent] = [],
         projectedFrame: ProjectedReplayFrame? = nil,
-        recordedPassMismatch: String? = nil
+        recordedPassMismatch: String? = nil,
+        replayFrame: ReevaluationReplayFrame? = nil
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -56,6 +62,17 @@ public struct ReevaluationStepResult: Sendable {
         self.recordedServerEvents = recordedServerEvents
         self.projectedFrame = projectedFrame
         self.recordedPassMismatch = recordedPassMismatch
+        self.replayFrame = replayFrame
+    }
+
+    /// This result with `projectedFrame` set, every other field kept (#521 M2).
+    public func with(projectedFrame: ProjectedReplayFrame?) -> ReevaluationStepResult {
+        ReevaluationStepResult(
+            tickId: tickId, stateHash: stateHash, recordedHash: recordedHash, isMatch: isMatch,
+            actualState: actualState, emittedServerEvents: emittedServerEvents,
+            recordedServerEvents: recordedServerEvents, projectedFrame: projectedFrame,
+            recordedPassMismatch: recordedPassMismatch, replayFrame: replayFrame
+        )
     }
 }
 

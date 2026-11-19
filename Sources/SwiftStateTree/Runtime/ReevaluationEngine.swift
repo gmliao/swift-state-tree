@@ -228,6 +228,9 @@ public enum ReevaluationEngine {
         // A record without a schema fingerprint, or with another one, is refused before anything
         // is replayed (#521 D15).
         try ReevaluationSchemaFingerprint.checkRecord(metadata, against: definition)
+        // The rows that hold for a land whose records replay (EV8, #521 PR 1b), after the
+        // record's own checks: a bad file, version or fingerprint is the more basic error.
+        try definition.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
         let maxTickId = try await source.getMaxTickId()
         let capturingSink = CapturingSink(downstream: sink)
 
@@ -442,12 +445,14 @@ public enum ReevaluationEngine {
                   r.tickId == e.tickId,
                   r.typeIdentifier == e.typeIdentifier
             else { return false }
-            let rData = (try? encoder.encode(r.payload)) ?? Data()
-            let eData = (try? encoder.encode(e.payload)) ?? Data()
-            if rData != eData { return false }
-            let rTarget = (try? encoder.encode(r.target)) ?? Data()
-            let eTarget = (try? encoder.encode(e.target)) ?? Data()
-            if rTarget != eTarget { return false }
+            // A payload or target that doesn't encode is a mismatch (A6, #521 PR 1b), never an
+            // empty value on both sides, which compared two unencodable payloads equal.
+            guard let rData = try? encoder.encode(r.payload), let eData = try? encoder.encode(e.payload),
+                  rData == eData
+            else { return false }
+            guard let rTarget = try? encoder.encode(r.target), let eTarget = try? encoder.encode(e.target),
+                  rTarget == eTarget
+            else { return false }
         }
         return true
     }

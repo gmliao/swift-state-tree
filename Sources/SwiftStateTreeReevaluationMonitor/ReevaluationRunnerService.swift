@@ -19,6 +19,10 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
     private let factory: any ReevaluationTargetFactory
     private let projectorResolver: ReevaluationReplayProjectorResolver
+    /// The state type of the replay land this service feeds, when it feeds one
+    /// (`expectReplayLandState`): a result is queued only with a resolved frame of that type, so
+    /// the land's tick can't meet a frame it can't show (#521 PR 1b, S1).
+    private var replayLandState: (id: ObjectIdentifier, name: String)?
 
     public init(
         factory: any ReevaluationTargetFactory,
@@ -32,6 +36,14 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     deinit {
         requestContinuation.finish()
         driverTask?.cancel()
+    }
+
+    /// Makes this service feed a replay land of state `State`: each result must carry a
+    /// `ReevaluationReplayFrame` of that state type, or the run fails before it is queued.
+    package func expectReplayLandState(_ state: any StateNodeProtocol.Type) {
+        lock.lock()
+        defer { lock.unlock() }
+        replayLandState = (ObjectIdentifier(state), String(reflecting: state))
     }
 
     // MARK: Requests from land turns
@@ -224,20 +236,28 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         // A replaced run's result is dropped, and the replaced run stops.
         guard isCurrentLocked(ticket) else { return false }
 
+        // A replay land reads only a resolved frame of its own state type (#521 PR 1b, S1).
+        if let expected = replayLandState {
+            let refusal: ReevaluationReplayResolutionError?
+            if let frame = result.replayFrame {
+                refusal = frame.stateType == expected.id ? nil : .stateTypeMismatch(
+                    tickId: result.tickId, runner: frame.stateTypeName ?? "none (events only)", replayLand: expected.name
+                )
+            } else {
+                refusal = .unresolvedResult(tickId: result.tickId)
+            }
+            if let refusal {
+                _status.phase = .failed
+                _status.errorMessage = refusal.description
+                return false
+            }
+        }
+
         var queuedResult = result
         if let replayProjector {
             do {
-                let projectedFrame = try replayProjector.project(result)
-                queuedResult = ReevaluationStepResult(
-                    tickId: result.tickId,
-                    stateHash: result.stateHash,
-                    recordedHash: result.recordedHash,
-                    isMatch: result.isMatch,
-                    actualState: result.actualState,
-                    emittedServerEvents: result.emittedServerEvents,
-                    recordedServerEvents: result.recordedServerEvents,
-                    projectedFrame: projectedFrame
-                )
+                // A copy that keeps every other field (#521 M2): the pass mismatch and the frame.
+                queuedResult = result.with(projectedFrame: try replayProjector.project(result))
             } catch {
                 _status.phase = .failed
                 _status.errorMessage = error.localizedDescription
