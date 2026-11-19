@@ -40,6 +40,9 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case syncLagClose
     /// A terminal lag close's Task (#332), after the transport's close returned.
     case syncLagClosed
+    /// A busy skip's deferred retry, before its delay: the cycle in flight hasn't ended yet, and
+    /// the retry hasn't asked for a sync again.
+    case busyRetry
     /// A public `registerSession` (#531), after it read the keeper's entry and before it acts
     /// on what it read.
     case registrationAfterKeeperRead
@@ -1503,7 +1506,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// implement the generation-aware close (the `Transport` default) closes by ID (#531).
     func closeSessionDetached(_ sessionID: SessionID, generation: UInt64?) {
         let transport = self.transport
-        Task { await transport.closeSession(sessionID, with: .normal, generation: generation) }
+        let id = nextDetachedCloseID
+        nextDetachedCloseID += 1
+        // The Task ends on this actor, after this segment, so the handle is stored before then.
+        detachedCloses[id] = Task {
+            await transport.closeSession(sessionID, with: .normal, generation: generation)
+            self.detachedCloses[id] = nil
+        }
+    }
+
+    /// The closes `closeSessionDetached` started, by id, until each returns.
+    private var detachedCloses: [UInt64: Task<Void, Never>] = [:]
+    private var nextDetachedCloseID: UInt64 = 0
+
+    /// Tests only (#555): returns once every close `closeSessionDetached` started (a supersede's)
+    /// has returned from the transport.
+    package func waitForDetachedClosesForTesting() async {
+        while let task = detachedCloses.values.first {
+            await task.value
+        }
     }
 
     /// The realtime adapter's rule for a player's sessions (#531): newest wins.
@@ -3165,10 +3186,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let writer = outboundWriter
         startBackgroundSync { adapter in
             // After a busy rejection, let the cycle in flight reach `endSync` first.
-            if afterBusy { try? await safeTaskSleep(for: .milliseconds(1)) }
+            if afterBusy {
+                await adapter.atBusyRetryHold()
+                try? await safeTaskSleep(for: .milliseconds(1))
+            }
             await writer.waitForSyncCycleDrain()
             await adapter.runBacklogDeferredSync()
         }
+    }
+
+    /// The busy retry's hold point, on the adapter (its holds are actor state).
+    private func atBusyRetryHold() async {
+        await holds.at(.busyRetry)
     }
 
     /// Number of deferred retries started so far (tests).
