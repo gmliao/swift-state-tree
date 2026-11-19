@@ -176,9 +176,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var drainWaitTimeout: Duration = landDrainWaitTimeout
     /// Forced-interleaving hold points (tests only; a no-op unless installed).
     private var holds = HoldPoints<LandManagerHoldPoint>()
-    /// Each land type's registration verdict in this manager's encoding (EV1, #521), by
-    /// definition ID: nil when it passed, else the refusal. Keyed by `definition.id`, it assumes
-    /// one definition per land type in a manager, as its `landFactory` gives.
+    /// Each land type's registration verdict in this manager's encoding and `eventHashes` (EV1-EV3,
+    /// #521), by definition ID: nil when it passed, else the refusal. Keyed by `definition.id`, it
+    /// assumes one definition per land type in a manager, as its `landFactory` gives; both the
+    /// encoding and the table are fixed at the manager's init.
     private var registrationVerdicts: [String: LandRegistrationError?] = [:]
     /// Tests only: how many definitions `checkRegistration(of:)` validated.
     private(set) var registrationValidations = 0
@@ -445,7 +446,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 try definition.validateForRegistration(
                     context: LandRegistrationContext(
                         payloadsCompressed: transportEncoding.shouldEncodePayloadAsArray,
-                        recordsForReplay: enableLiveStateHashRecording
+                        recordsForReplay: enableLiveStateHashRecording,
+                        eventHashes: eventHashes
                     )
                 )
                 verdict = nil

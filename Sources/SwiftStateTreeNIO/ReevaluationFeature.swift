@@ -142,6 +142,23 @@ public extension NIOLandHost {
             effectiveConfiguration = configuration
         }
 
+        let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
+        let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
+
+        // The replay land is created only from a replay ticket the admin replay start issued
+        // (#366). This registration starts no runner, so the accepted land keeps its mode.
+        var replayConfigForDifferentState = effectiveConfiguration.injectingReplayTicketGate(
+            replayLandType: replayLandType,
+            recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+        )
+        replayConfigForDifferentState.replayLandSuffix = reevaluation.replayLandSuffix
+        if reevaluation.enabled {
+            // The replay definition is checked before the live land registers, with the context
+            // its own registration uses (the live table): a refusal then publishes no route
+            // (#521 PR 1b-2b).
+            try replayLand.validateForRegistration(context: replayConfigForDifferentState.registrationContext)
+        }
+
         try await register(
             landType: landType,
             land: liveLand,
@@ -154,16 +171,6 @@ public extension NIOLandHost {
             return
         }
 
-        let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
-        let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
-
-        // The replay land is created only from a replay ticket the admin replay start issued
-        // (#366). This registration starts no runner, so the accepted land keeps its mode.
-        var replayConfigForDifferentState = effectiveConfiguration.injectingReplayTicketGate(
-            replayLandType: replayLandType,
-            recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
-        )
-        replayConfigForDifferentState.replayLandSuffix = reevaluation.replayLandSuffix
         replayLandSuffix = reevaluation.replayLandSuffix
 
         try await register(
@@ -234,18 +241,6 @@ public extension NIOLandHost {
             effectiveConfiguration = configuration
         }
 
-        try await register(
-            landType: landType,
-            land: liveLand,
-            initialState: liveInitialState(),
-            webSocketPath: liveWebSocketPath,
-            configuration: effectiveConfiguration
-        )
-
-        guard reevaluation.enabled else {
-            return
-        }
-
         let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
@@ -263,9 +258,27 @@ public extension NIOLandHost {
             )
         replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
 
-        replayLandSuffix = reevaluation.replayLandSuffix
-
+        // Built once, from the live definition alone, and checked before the live land registers
+        // with the context its own registration uses: a refusal then publishes no route (#521
+        // PR 1b-2b).
         let replayLand = GenericReplayLand<State>.makeLand(basedOn: liveLand)
+        if reevaluation.enabled {
+            try replayLand.validateForRegistration(context: replayConfig.registrationContext)
+        }
+
+        try await register(
+            landType: landType,
+            land: liveLand,
+            initialState: liveInitialState(),
+            webSocketPath: liveWebSocketPath,
+            configuration: effectiveConfiguration
+        )
+
+        guard reevaluation.enabled else {
+            return
+        }
+
+        replayLandSuffix = reevaluation.replayLandSuffix
 
         try await register(
             landType: replayLandType,

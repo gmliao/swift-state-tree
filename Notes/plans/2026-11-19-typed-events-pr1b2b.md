@@ -1,6 +1,13 @@
 # #521 PR 1b-2b: the event name checks at registration (EV2, EV3)
 
-**Status:** rev 2, plan only. Rev 1 was GO (#653 at 3f9d79dc), with five shoulds and a nit. Rev 2 adds them:
+**Status:** rev 3, with the code (the 1b-2b code PR). Rev 2 was GO (#653 at 730192e5, merged as bc29cc09), with three shoulds and a nit, folded in here:
+- the guarantee is narrowed to definition refusals, and the residue named (§ Replay registrations);
+- one context builder (§ Entry points);
+- the tests named in should 3, and the host tests' target (§ Tests, § Files);
+- the wire claims qualified by message encoding (§ EV3);
+- the gate's wording (§ Entry points).
+
+Rev 2 folded in rev 1's review (#653 at 3f9d79dc), five shoulds and a nit:
 - the fingerprint gate includes the new rows;
 - the examples' test is relabelled;
 - the replay paths are named;
@@ -28,7 +35,7 @@ The wire and the schema name a type by two derivations:
 - **The schema and the registries** use the runtime rule: `generateEventID` → `payloadEventName` (`SchemaExtractor.swift:218`), so `eventHashes` and the registry's name index (`EventRegistry.swift:99-103`) are keyed by it.
 
 `@Payload` writes `_payloadWireName` as a literal at expansion (`PayloadMacro.swift:65`), by the same rule, and a type without `@Payload` gets the runtime rule (`EventPayload.swift:55`). But `_payloadWireName` is a public protocol requirement: a type can implement it by hand, and an expansion bug would go unseen. Where the two names differ:
-- the hash lookup misses, so the event goes out under its string name, which a client built from the schema doesn't know;
+- with opcode JSON or MessagePack messages, the hash lookup misses, so the event goes out under its string name, which a client built from the schema doesn't know (plain JSON sends names anyway);
 - a client event sent under the wire name doesn't find its registry entry.
 
 EV2 makes the two names one fact. With it, the wire name is the registry's name, so the registry's existing checks cover the wire too.
@@ -51,28 +58,32 @@ Together they give every registered type a wire name of its own. This PR adds no
 
 ### EV3: a registered event without a hash
 
-`eventHashes` is the host's opcode table, normally the schema's (`SchemaExtractor.swift:168-171`). An event whose name isn't in it is sent under its string name (the encoders' fallback, cited above), which a client built from that table can't map. EV3 refuses the land at registration instead.
+`eventHashes` is the host's opcode table, normally the schema's (`SchemaExtractor.swift:168-171`). With opcode JSON or MessagePack messages, an event whose name isn't in it is sent under its string name (the encoders' fallback, cited above), which a client built from that table can't map. Plain JSON doesn't use the table; EV3 still checks a table that is passed, since the configuration names one. EV3 refuses the land at registration instead.
 - **No `eventHashes`:** no row, and that is the right default. It is how every example runs today: DemoServer takes the nil default, and GameServer and ServerLoadTest pass nil. The encoders then send string names, which the SDK accepts.
 - **Entries for names the land doesn't register:** allowed. A host can share one table across lands.
 - **Client events (`clientEventHashes`):** not in scope. N8 is about what the server sends.
 
 **The limits.**
 - **An omitted table looks like nil.** A host that meant to pass a table and didn't gets no check.
-- **EV3 checks that a table is complete, not that it is right.** It reads the keys. A foreign table with every key and the wrong opcodes passes, and a client built from the land's own schema mis-maps those events. Comparing the values with the land's schema would need the schema at every entry point; that is not in scope.
+- **EV3 checks that a table is complete, not that it is right.** It reads the keys. A foreign table with every key and the wrong opcodes passes, and, with opcode JSON or MessagePack messages, a client built from the land's own schema mis-maps those events. Comparing the values with the land's schema would need the schema at every entry point; that is not in scope.
 
 ## Entry points
 
 | Entry point | Context it passes after this PR | EV2 | EV3 |
 |---|---|---|---|
-| `NIOLandHost.register` (`NIOLandHost.swift:382`), and the reevaluation helpers and the monitor land that call it | encoding, recording, and `configuration.eventHashes` (new) | yes | when the configuration has `eventHashes` |
+| `NIOLandHost.register` (`NIOLandHost.swift:382`), and the reevaluation helpers and the monitor land that call it | `NIOLandServerConfiguration.registrationContext` (new): encoding, recording and `eventHashes`, from the configuration the land registers with | yes | when the configuration has `eventHashes` |
 | `LandManager.checkRegistration` (`LandManager.swift:445`), at the first `getOrCreateLand` per land type | encoding, recording, and the manager's `eventHashes` (new) | yes | when the manager has `eventHashes` |
 | `ReevaluationEngine.run`, `ReevaluationRunnerImpl.init`, `ReevaluationFeature`'s `recordsForReplay` calls, `SchemaExtractor.extract` | unchanged: no transport | yes | no |
 | `LandKeeper` or `TransportAdapter` built directly (tests, benchmarks) | none | no | no |
 
 **The fingerprint gate.** `validateForRegistration` computes the record schema fingerprint only when the other rows hold (`LandRegistration.swift:104`).
 - The reason: the fingerprint runs `SchemaExtractor.extract`, which runs `validateForRegistration(.encodingIndependent)` again. A row failing there throws from inside the fingerprint as an error that isn't a `SchemaFingerprintError`, which would replace the outer aggregate.
-- EV2 runs in that inner call, so with only EV2 failing, its error would replace the outer one, and EV3 and EV8 would be lost.
-- So the gate's condition gains both new rows: the fingerprint is computed only when EV2 and EV3 also hold.
+- EV2 runs in that inner call. When EV2 fails alongside EV3 or EV8, its inner error would replace the outer aggregate and those rows would be lost. When it fails alone, nothing else is lost.
+- So the gate's condition gains both new rows: the fingerprint is computed only when EV2 and EV3 also hold. A test pins each condition (§ Tests).
+
+**One context builder.** `register` and the reevaluation helpers' up-front checks read one computed property, `NIOLandServerConfiguration.registrationContext` (`NIOLandHost.swift`). It takes `effectiveTransportEncoding.shouldEncodePayloadAsArray`, `enableLiveStateHashRecording` and `eventHashes`. So a helper checks the replay definition with exactly the context its own `register` will use.
+- The replay ticket gate acts when an instance is created, not at registration, so it adds nothing to the context.
+- The live definition's forced `recordsForReplay: true` check (`ReevaluationFeature.swift:133`) stays separate: it asks for a fingerprint whatever the configuration says.
 
 **The verdict cache.** `LandManager.checkRegistration` caches a verdict per `definition.id` (`LandManager.swift:438`). That is today's design for the existing rows, and the new rows keep it. The cache relies on one assumption, now stated in its doc comment: a land type has one definition per manager. EV2 is a fact about the definition and EV3 about it and the manager's table, and the table is fixed at the manager's init.
 
@@ -84,12 +95,20 @@ Together they give every registered type a wire name of its own. This PR adds no
 - Today it registers the live land and publishes its route (:145), then registers the replay definition (:169) with the live configuration plus the replay ticket gate.
 - **Which table:** the live one. The replay land's adapter encodes with that configuration, so the live table is the one its events are sent under, and EV3 checks the replay definition against it.
 - **A replay-only event** (registered by the replay definition, not the live one) with no entry in that table would fail EV3 at :169, after the live route is published. Today a throw there leaves the live land registered and serving, with no replay land.
-- **The change:** the overload checks the replay definition up front, next to the live definition's existing `recordsForReplay` check (:133), with the replay registration's context, which is the live table. A refusal then throws before anything is registered, so no route is published. The registration at :169 checks again, as every `register` does.
+- **The change:** the overload builds the replay configuration first and checks the replay definition with its `registrationContext`, which carries the live table, before the live land registers. A refusal then throws before anything is registered, so no route is published. The registration of the replay land checks again, as every `register` does.
 
 **`registerWithGenericReplay`** (`ReevaluationFeature.swift:215-290`).
 - The alias (`GenericReplayLand.makeLand(basedOn:)`) copies only the base's server-event registry (#521 plan §4, M5) and gets the live configuration. So with the base passing, the alias passes.
 - A test of a failing base doesn't reach the alias, so the tests register the alias itself (below).
-- It gets the same up-front check of the alias as the custom overload, so a refusal never leaves a published live route.
+- It gets the same up-front check: the alias is built once, from `liveLand` alone, before the live registration, checked with the replay configuration's `registrationContext`, and that same value is registered.
+- **Not observable today:** the alias's rows are a subset of the base's under the same context, so the base's own `register` refuses first, and removing the alias's up-front check changes no outcome. It guards against the alias diverging from the base (an event of its own, say). The tests pin the alias's row by registering the alias directly; no test can see the up-front check itself, and the code PR says so.
+
+**What can still fail after the live route is published.** The guarantee covers refusals of the live or replay definition only. These failures happen after the live land is registered, as they do today:
+- the realm's registration of the replay or monitor land type (an empty or duplicate land type, `LandRealm.swift:115-136`);
+- the monitor land's schema extraction or its registration (`ReevaluationFeature.swift`, the monitor block);
+- a WebSocket path collision, which overwrites the mapping without throwing.
+
+This PR doesn't change them. Rolling a published route back while connections arrive would be its own race.
 
 **The monitor land's** `eventHashes` come from its own schema, and only when the incoming table is non-nil (`ReevaluationFeature.swift:432-437`). So they are complete.
 
@@ -110,7 +129,11 @@ All additive:
 - `Sources/SwiftStateTreeNIO/NIOLandHost.swift`: passes `eventHashes` (one argument).
 - `Sources/SwiftStateTreeTransport/LandManager.swift`: passes `eventHashes` (one argument), and the cache's doc comment.
 - `Sources/SwiftStateTreeNIO/ReevaluationFeature.swift`: the up-front replay-definition check in the custom and generic overloads.
-- A new test file in `Tests/SwiftStateTreeTests` and one in `Tests/SwiftStateTreeTransportTests` for the two entry points that throw from the transport layer.
+- `Sources/SwiftStateTree/SchemaGen/SchemaFingerprint.swift`: a test-only flag that says whether a definition's fingerprint was computed.
+- Tests:
+  - `Tests/SwiftStateTreeTests/EventNameRegistrationTests.swift`: the rows, the gate, schema extraction and the engine;
+  - `Tests/SwiftStateTreeTransportTests/LandRegistrationEventHashTests.swift`: `LandManager`;
+  - `Tests/SwiftStateTreeNIOTests/EventNameHostRegistrationTests.swift`: `NIOLandHost.register` and the reevaluation helpers.
 - `docs/core/failure-handling.md` and `.zh-TW.md`.
 
 ## The adapter freeze (#555 step 2b)
@@ -134,7 +157,7 @@ All additive:
 - **EV2, refused:** a server event, a client event and an action type, each with a hand-written `_payloadWireName` that differs from the schema's ID. The refusal must hold at each entry point that runs the row:
   - `NIOLandHost.register` throws, and the path isn't mapped;
   - `getOrCreateLand` throws and creates no land;
-  - `ReevaluationEngine.run` and the runner's init throw before a keeper exists;
+  - `ReevaluationEngine.run` throws before it opens the record. The runner's init runs the same row after the record's own checks, and a record of a definition EV2 refuses can't be made through registration, so it isn't tested separately;
   - `SchemaExtractor.extract` throws.
 - **EV2, passes:**
   - the same types without the override;
@@ -149,11 +172,13 @@ All additive:
   - a table with extra names;
   - a complete foreign table with wrong opcodes, which passes: the limit, pinned.
 - **Replay:**
-  - **`registerWithReevaluation`:** a replay definition with a replay-only event missing from the live table is refused before anything is registered: the live path isn't mapped, and no land type is registered.
+  - **`registerWithReevaluation`:** with an opcode encoding and the live schema's table, a replay definition with a replay-only event is refused with that event's missing-hash entry. Neither the live path nor a realm entry for either land type exists afterwards.
   - **`registerWithGenericReplay`:**
     - a valid alias with a non-empty table registers;
     - the alias's own registration (`makeLand(basedOn:)` given to `NIOLandHost.register`), with a table missing one of its events, is refused with that event named. This shows the alias runs the row itself.
-- **The fingerprint gate:** with recording on, a land failing only EV2 and EV3 reports both in one `LandRegistrationError`, with no fingerprint error and no other error in their place. The four-row test below can't show this, since its EV1 and #599 rows skip the fingerprint.
+- **The fingerprint gate:**
+  - with recording on, a land failing only EV2 and EV3 reports both in one `LandRegistrationError`, with no fingerprint error and no other error in their place. The four-row test below can't show this, since its EV1 and #599 rows skip the fingerprint;
+  - an EV3-only case and an EV2-only case observe whether the fingerprint ran: not while the row fails; for EV3, yes once the table is complete. The EV2 and EV3 case alone would survive deleting either condition, since the other row still skips the fingerprint.
 - **One throw:** a land with an EV1 type (compressed), an EV2 type, an event without a hash and a #599 shared name reports all four in one `LandRegistrationError`.
 - **The examples:** they keep passing nil `eventHashes`, so EV3 doesn't run for them. Switching them to their schema's tables would move their events from string names to opcodes, a wire change outside this PR. Their tests pass on a clean build (`swift package clean`).
 - **Mutants:**
@@ -162,8 +187,9 @@ All additive:
   - the EV3 row off;
   - `NIOLandHost` not passing `eventHashes`;
   - `LandManager` not passing `eventHashes`;
-  - the fingerprint gate without the new rows;
-  - the custom overload's up-front replay check removed (the live path is then mapped).
+  - the fingerprint gate without EV2, and without EV3;
+  - the custom overload's up-front replay check removed (the live path is then mapped);
+  - the generic overload's up-front check removed, expected to survive (above).
 
 ## Not in scope
 

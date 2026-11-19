@@ -189,6 +189,9 @@ final class SchemaFingerprintCache: @unchecked Sendable {
     private let lock = NSLock()
     private var result: Result<String, any Error>?
 
+    /// Whether the fingerprint was computed (tests).
+    var isComputedForTesting: Bool { lock.withLock { result != nil } }
+
     func value(_ compute: () throws -> String) -> Result<String, any Error> {
         if let result = lock.withLock({ result }) { return result }
         let computed = Result { try compute() }
