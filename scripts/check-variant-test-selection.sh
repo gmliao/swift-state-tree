@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Safe test selection for the push runs' variant jobs, in the sense of Rothermel and Harrold
-# (TOSEM 1997): a run is left out only if it can't reach the variable its job varies. The nightly
-# runs everything (full_matrix), as the backstop. Two sections:
+# The build job's variants run on one build, and its sync-tables-off variant leaves tests out on a
+# push. Both are safe only while what they assume holds; this check fails when it doesn't. The
+# nightly runs everything (full_matrix), as the backstop. Two sections:
 #
-# 1. sync-tables-off. The sync-tables-off job runs only the Transport and NIO tests, with USE_SYNC_TABLES=false and
-# TYPED_LEAF_VALUES=false. That is safe only while no other test can read those two flags, so this
-# check fails if one could.
+# 1. The sync-tables-off variant's test selection, safe in the sense of Rothermel and Harrold
+# (TOSEM 1997): a test is left out only if it can't reach the variables the variant varies. The
+# build job's `Tests, sync tables off` step runs only the Transport and NIO tests, with
+# USE_SYNC_TABLES=false and TYPED_LEAF_VALUES=false. That is safe only while no other test can read
+# those two flags, so this check fails if one could.
 #
 # The flags are read by every TransportEnvConfig (its `useSyncTables` and `typedLeafValues` default
 # to the environment, a config built with `init` included) and by every TransportAdapter built
@@ -18,12 +20,12 @@
 #      and none comes from `fromEnvironment`;
 #   R3 nothing builds a LandManager, LandRouter, LandRealm or a land server or host, which build
 #      adapters from the environment.
-# The filtered targets are read from the job itself: its FILTER line in
-# .github/workflows/build-and-test.yml, whose alternatives must each be a whole target (`Name\.`),
-# and its one `swift test`, which must pass `${FILTER:+--filter "$FILTER"}`. So the job and this
-# check can't name different targets, and the job can't run without the filter it declares.
+# The filtered targets are read from the step itself: its one FILTER env line, whose alternatives
+# must each be a whole target (`Name\.`), and its one `swift test`, which must pass
+# `${FILTER:+--filter "$FILTER"}`; the step sets both flags to "false". So the step and this check
+# can't name different targets, and the step can't run without the filter it declares.
 #
-# What it can't see (the nightly runs the whole suite in that job, as the backstop): R1 reads the
+# What it can't see (the nightly runs the whole suite in that step, as the backstop): R1 reads the
 # argument labels, not their types, so a non-optional expression that is nil at run time isn't
 # caught; R2 is textual, so it doesn't check that the pins set the same variable as the
 # construction, and it counts a pin under an inactive `#if` or in a closure that never runs. The
@@ -31,21 +33,29 @@
 # and a comma in a generic argument (`make<A, B>(…)`) ends the extracted expression there. A dump of
 # the package this check can't read fails it rather than scanning nothing.
 #
-# 2. The build job's in-turn sync legs. On a push, the false leg skips the steps whose `if:` is
-# `matrix.in_turn_sync == 'true' || inputs.full_matrix`.
-#   S6 the job's matrix has one axis, in_turn_sync, used only as IN_TURN_SYNC (and in the job's
-#      name and that `if:`): the legs differ in one variable, read at run time. A new axis, or the
-#      axis in a compiler flag or another env var, fails until it is examined; so does the
-#      `strategy` context (`strategy.job-index` tells the legs apart without naming the axis).
-#      The matrix and strategy rules read expressions: each `${{ … }}` (one spanning lines
-#      included) and each bare `if:` value (a folded one included), so display text such as
-#      `name: Dump strategy` doesn't count. A `#` line is a YAML comment and skipped, except inside
-#      a block scalar (`run: |`), where it is script text that Actions still interpolates. The
-#      IN_TURN_SYNC rule reads whole lines (a run line's `$IN_TURN_SYNC` is no expression), so the
-#      name in display text or a script comment fails too (a false alarm, fixed by rewording).
-#   S4 a one-leg step runs only `scripts/<name>.sh [--self-test]`, and neither those scripts nor any
-#      script they name (`scripts/*.sh` or `.py`, followed) mentions IN_TURN_SYNC, inTurnSync or
-#      InTurnSync. Textual: a script that builds the flag's name from parts isn't seen.
+# 2. One build for every variant. The variants (IN_TURN_SYNC, USE_SYNC_TABLES, TYPED_LEAF_VALUES,
+# PER_PLAYER_SYNC_TABLES) are test steps of the build job that run `swift test --skip-build` on the
+# products of its one `swift build --build-tests`. That is valid only while nothing reads the
+# variables when the package is built, and the steps every variant shares read none:
+#   E1 each variable appears only in a test step (a build-job step that runs `swift test`): as an
+#      env entry with a literal true or false, or as plain text in its script (a pin test's name),
+#      never as a shell expansion (`$VAR`, `${VAR}`). Never in an expression (`${{ … }}`, `if:`,
+#      `env.VAR` or `env['VAR']` included), the workflow's or a job's env, another step or another
+#      job. Outside the test steps, whole lines count, so the name in display text fails too (a
+#      false alarm, fixed by rewording). A `#` line is skipped, except inside a block scalar
+#      (`run: |`), where it is script text that Actions still interpolates.
+#   E2 the build job has no `strategy` (a matrix would bring back the variant runs this reasons
+#      about), and no expression in it uses the matrix or strategy context.
+#   E3 Package.swift reads no environment (`ProcessInfo`, `getenv`, `Context.environment`,
+#      `environment[`), comments and strings stripped.
+#   E4 one build: one step runs `swift build`, as exactly `swift build --build-tests` with
+#      `id: build`; every `swift test` in the job passes `--skip-build` and no flag but `--filter`
+#      and `--no-parallel` (another flag may need a build of its own); every test step's `if:` is
+#      `${{ !cancelled() && steps.build.outcome == 'success' }}`, so no variant runs on missing or
+#      partial products.
+#   E5 the shared steps' scripts (`scripts/*.sh` or `.py`, and every script they name, followed)
+#      don't name a variable or its key (inTurnSync, useSyncTables, typedLeafValues,
+#      perPlayerSyncTables). Textual: a script that builds a name from parts isn't seen.
 #
 # Usage: scripts/check-variant-test-selection.sh [--self-test] [--package-json <file>]
 set -euo pipefail
@@ -59,9 +69,10 @@ import sys
 import tempfile
 
 WORKFLOW = ".github/workflows/build-and-test.yml"
-JOB = "sync-tables-off"
+BUILD_JOB = "build"
+TABLES_STEP = "Tests, sync tables off"
 TRANSPORT = "SwiftStateTreeTransport"
-# The job's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`, and the
+# The step's filter on a push: `FILTER: ${{ !inputs.full_matrix && '<regex>' || '' }}`, and the
 # one `swift test` that must use it.
 FILTERED_RUN = '${FILTER:+--filter "$FILTER"}'
 FILTER_LINE = re.compile(r"""^\s*FILTER:\s*\$\{\{\s*!inputs\.full_matrix\s*&&\s*'([^']*)'\s*\|\|\s*''\s*\}\}\s*$""")
@@ -167,18 +178,28 @@ def argument(args, label):
 
 
 def filtered_targets(workflow):
-    """The test targets the job runs on a push, from its FILTER line, and any error reading it."""
-    lines = workflow.splitlines()
-    start = next((i for i, line in enumerate(lines) if re.match(r"^  " + JOB + r":\s*$", line)), None)
-    if start is None:
-        return set(), [f"{WORKFLOW}: no {JOB} job"]
-    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [\w-]+:\s*$", lines[i])), len(lines))
-    found = [m for m in map(FILTER_LINE.match, lines[start:end]) if m]
-    if len(found) != 1:
-        return set(), [f"{WORKFLOW}: the {JOB} job has {len(found)} FILTER lines of the form this check reads, not one"]
-    runs = [line for line in lines[start:end] if not line.lstrip().startswith("#") and re.search(r"\bswift test\b", line)]
+    """The test targets the sync-tables-off step runs on a push, from its FILTER line, and any
+    error reading it."""
+    lines = job_lines(workflow, BUILD_JOB)
+    if lines is None:
+        return set(), [f"{WORKFLOW}: no {BUILD_JOB} job"]
+    where = f"{WORKFLOW}: the {BUILD_JOB} job's {TABLES_STEP!r} step"
+    steps = [s for s in job_steps(lines) if step_name(s) == TABLES_STEP]
+    if len(steps) != 1:
+        return set(), [f"{WORKFLOW}: the {BUILD_JOB} job has {len(steps)} steps named {TABLES_STEP!r}, not one"]
+    step = yaml_code(steps[0])
+    found = [m for m in map(FILTER_LINE.match, step) if m]
+    elsewhere = sum(1 for line in yaml_code(lines) if FILTER_LINE.match(line)) - len(found)
+    if len(found) != 1 or elsewhere:
+        return set(), [f"{where} has {len(found)} FILTER lines of the form this check reads, not one"
+                       + (f", and the job {elsewhere} more" if elsewhere else "")]
+    env = step_env(steps[0])
+    unset = [v for v in ("USE_SYNC_TABLES", "TYPED_LEAF_VALUES") if env.get(v) not in ('"false"', "'false'", "false")]
+    if unset:
+        return set(), [f"{where} doesn't set {' and '.join(unset)} to false in its env"]
+    runs = [line for line in step if re.search(r"\bswift test\b", line)]
     if len(runs) != 1 or FILTERED_RUN not in runs[0]:
-        return set(), [f"{WORKFLOW}: the {JOB} job must run one `swift test {FILTERED_RUN}`; it has {len(runs)} swift test line(s)"
+        return set(), [f"{where} must run one `swift test --skip-build {FILTERED_RUN}`; it has {len(runs)} swift test line(s)"
                        + ("" if len(runs) != 1 else " and that one ignores FILTER")]
     names, errors = set(), []
     for alternative in found[0].group(1).split("|"):
@@ -186,7 +207,7 @@ def filtered_targets(workflow):
         if m:
             names.add(m.group(1))
         else:
-            errors.append(f"{WORKFLOW}: the {JOB} filter's alternative {alternative!r} isn't a whole target (Name\\.)")
+            errors.append(f"{where}'s filter alternative {alternative!r} isn't a whole target (Name\\.)")
     return names, errors
 
 
@@ -314,24 +335,24 @@ def check(root, package, filtered):
     return errors, files
 
 
-# Section 2: the build job's in-turn-sync legs. Steps that run in one leg only are safe while the
-# leg's one variable can't change what they check.
-BUILD_JOB = "build"
-BUILD_NAME = "build (in-turn sync ${{ matrix.in_turn_sync }})"
-LEG_AXIS = "in_turn_sync"
-LEG_ENV = "IN_TURN_SYNC"
-ONE_LEG_IF = "if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}"
-# What the one-leg steps' scripts must not name: the flag, its key constant or its reader.
-FLAG_NAMES = re.compile(r"IN_TURN_SYNC|\binTurnSync\b|\bInTurnSync\b")
+# Section 2: one build for every variant.
+VARIABLES = ("IN_TURN_SYNC", "USE_SYNC_TABLES", "TYPED_LEAF_VALUES", "PER_PLAYER_SYNC_TABLES")
+# No left boundary: `-DIN_TURN_SYNC` names it too.
+VARIABLE_USE = re.compile(r"(" + "|".join(VARIABLES) + r")\b")
+EXPANSION = re.compile(r"\$\{?(" + "|".join(VARIABLES) + r")\b")
+ENV_ENTRY = re.compile(r"^        (" + "|".join(VARIABLES) + r"):\s*(\"(?:true|false)\"|'(?:true|false)'|true|false)\s*$")
+# What the shared steps' scripts must not name: a variable, its key constant or its reader.
+FLAG_NAMES = re.compile(r"\b(?:" + "|".join(VARIABLES) + r"|inTurnSync|InTurnSync|useSyncTables|typedLeafValues|perPlayerSyncTables)\b")
 SCRIPT_REF = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.(?:sh|py))\b")
 # The matrix context in any form (`matrix.x`, `matrix['x']`, `toJSON(matrix)`), not the YAML key.
 MATRIX_USE = re.compile(r"\bmatrix\b(?!\s*:)")
-# The strategy context: `strategy.job-index` (or `toJSON(strategy)`) differs between the legs as the
-# axis does. The YAML key `strategy:` isn't a use.
+# The strategy context (`strategy.job-index`, `toJSON(strategy)`), not the YAML key.
 STRATEGY_USE = re.compile(r"\bstrategy\b(?!\s*:)")
-# The leg's variable anywhere but its env line: `env.IN_TURN_SYNC` in an `if:`, `$IN_TURN_SYNC` in a
-# run line, or a second env var built from it.
-LEG_ENV_USE = re.compile(r"\bIN_TURN_SYNC\b")
+PACKAGE_ENV = re.compile(r"\bProcessInfo\b|\bgetenv\b|\bContext\s*\.\s*environment\b|\benvironment\s*\[")
+BUILD_RUN = "      run: swift build --build-tests"
+TEST_IF = "      if: ${{ !cancelled() && steps.build.outcome == 'success' }}"
+# A `swift test` flag that runs the products as built.
+TEST_FLAG = re.compile(r"--skip-build|--no-parallel|--filter|\$\{FILTER:\+--filter")
 
 
 def job_lines(workflow, job):
@@ -344,18 +365,37 @@ def job_lines(workflow, job):
     return lines[start:end]
 
 
-def job_steps(lines):
-    """The job's steps, each a list of its lines (a step starts at `    - `)."""
+def job_steps(lines, indexed=False):
+    """The job's steps, each a list of its lines (a step starts at `    - `), or of (index, line)."""
     steps, current = [], None
-    for line in lines:
+    for i, line in enumerate(lines):
         if re.match(r"^    - ", line):
-            current = [line]
+            current = [(i, line)]
             steps.append(current)
         elif current is not None and (line.startswith("      ") or not line.strip()):
-            current.append(line)
+            current.append((i, line))
         elif not line.lstrip().startswith("#"):
             current = None
-    return steps
+    return steps if indexed else [[line for _, line in step] for step in steps]
+
+
+def step_name(step):
+    return next((re.sub(r"^\s*-?\s*name:\s*", "", line).strip() for line in step if re.match(r"^\s*-?\s*name:", line)), "?")
+
+
+def step_env(step):
+    """The step's own env entries, {key: raw value}."""
+    env, inside = {}, False
+    for line in yaml_code(step):
+        if re.match(r"^      env:\s*$", line):
+            inside = True
+        elif inside and (not line.strip() or line.startswith("        ")):
+            m = re.match(r"^        ([\w-]+):\s*(.*?)\s*$", line)
+            if m:
+                env[m.group(1)] = m.group(2)
+        else:
+            inside = False
+    return env
 
 
 BLOCK_SCALAR = re.compile(r"^(\s*)(-\s+)?[\w-]+:\s*[|>][-+0-9]*\s*(?:#.*)?$")
@@ -363,15 +403,16 @@ EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
 IF_KEY = re.compile(r"^\s*(?:-\s+)?if:\s*(.*?)\s*$")
 
 
-def yaml_code(lines):
-    """`lines` without YAML comment lines. A line inside a block scalar (`run: |`) is content,
-    kept whatever it starts with, since Actions interpolates its expressions."""
+def yaml_code(lines, indexed=False):
+    """`lines` without YAML comment lines, or their (index, line). A line inside a block scalar
+    (`run: |`) is content, kept whatever it starts with, since Actions interpolates its
+    expressions."""
     out, block = [], None  # block: the indent the block's content must exceed
-    for line in lines:
+    for i, line in enumerate(lines):
         indent = len(line) - len(line.lstrip())
         if block is not None:
             if not line.strip() or indent > block:
-                out.append(line)
+                out.append((i, line))
                 continue
             block = None
         if line.lstrip().startswith("#"):
@@ -379,8 +420,8 @@ def yaml_code(lines):
         m = BLOCK_SCALAR.match(line)
         if m:
             block = len(m.group(1)) + (len(m.group(2)) if m.group(2) else 0)
-        out.append(line)
-    return out
+        out.append((i, line))
+    return out if indexed else [line for _, line in out]
 
 
 def expressions(code):
@@ -407,82 +448,109 @@ def expressions(code):
     return sorted(found)
 
 
-def leg_errors(workflow, read_script):
-    """S6: the build job's matrix has one axis, in_turn_sync, used only as IN_TURN_SYNC (and in the
-    job's name and the one-leg `if:`), so the legs differ in that one runtime variable. S4: a step
-    that runs in one leg only runs scripts, and neither they nor the scripts they name read it.
-    Returns the errors and the one-leg steps' names."""
-    lines = job_lines(workflow, BUILD_JOB)
-    if lines is None:
+def variant_errors(workflow, package_swift, read_script):
+    """Section 2 (E1–E5). Returns the errors and the test steps' names."""
+    lines = workflow.splitlines()
+    job = job_lines(workflow, BUILD_JOB)
+    if job is None:
         return [f"{WORKFLOW}: no {BUILD_JOB} job"], []
+    offset = next(i for i, line in enumerate(lines) if re.match(r"^  " + re.escape(BUILD_JOB) + r":\s*$", line))
     errors, where = [], f"{WORKFLOW}: the {BUILD_JOB} job"
-    code = yaml_code(lines)
-    m = next((i for i, line in enumerate(code) if re.match(r"^      matrix:\s*$", line)), None)
-    axes = []
-    if m is not None:
-        for line in code[m + 1:]:
-            if not line.startswith("        "):
-                break
-            key = re.match(r"^        ([\w-]+):", line)
-            if key:
-                axes.append(key.group(1))
-    if axes != [LEG_AXIS]:
-        errors.append(f"{where}'s matrix has the axes {axes}, not only {LEG_AXIS}: a new axis must be examined before its legs skip steps (S6)")
-    allowed = (
-        re.compile(r"^    name: " + re.escape(BUILD_NAME) + r"\s*$"),
-        re.compile(r"^      " + LEG_ENV + r": \$\{\{ matrix\.in_turn_sync \}\}\s*$"),
-        re.compile(r"^      " + re.escape(ONE_LEG_IF) + r"\s*$"),
-    )
-    for i, expression in expressions(code):
-        line = code[i]
-        if STRATEGY_USE.search(expression):
-            errors.append(f"{where} uses the strategy context: {line.strip()!r}; it tells the legs apart as the axis does (S6)")
-        elif MATRIX_USE.search(expression) and not any(a.match(line) for a in allowed):
-            errors.append(f"{where} uses the matrix outside {LEG_ENV}, its name and the one-leg if: {line.strip()!r} (S6)")
-    for line in code:
-        if LEG_ENV_USE.search(line) and not allowed[1].match(line):
-            errors.append(f"{where} uses {LEG_ENV} outside its env line: {line.strip()!r}; a step that reads it must run in both legs (S6)")
-    one_leg, seen = [], set()  # a script named twice is read once
-    for step in job_steps(lines):
-        conditioned = [line for line in step if re.match(r"^\s*-?\s*if:", line)]
-        if not any(MATRIX_USE.search(line) for line in conditioned):
-            continue
-        name = next((re.sub(r"^\s*-?\s*name:\s*", "", line).strip() for line in step if re.match(r"^\s*-?\s*name:", line)), "?")
-        one_leg.append(name)
-        run = [line for line in step if not line.lstrip().startswith("#")]
-        start = next((i for i, line in enumerate(run) if re.match(r"^\s*-?\s*run:", line)), None)
-        if start is None:
-            errors.append(f"{where}'s one-leg step {name!r} has no run: (S4)")
-            continue
-        head = re.sub(r"^\s*-?\s*run:\s*", "", run[start]).strip()
-        if head == "|":
-            body = []
-            for line in run[start + 1:]:
-                if line.strip() and not line.startswith("        "):
-                    break  # the step's next key (`timeout-minutes:`)
-                body.append(line.strip())
-            commands = [c for c in body if c]
-        else:
-            commands = [head]
-        for command in commands:
-            if not re.fullmatch(r"scripts/[\w./-]+\.sh(\s+--self-test)?", command):
-                errors.append(f"{where}'s one-leg step {name!r} runs {command!r}: only scripts that don't read {LEG_ENV} may skip a leg (S4)")
+    steps = job_steps(job, indexed=True)
+    is_test = lambda step: any(re.search(r"\bswift test\b", line) for line in yaml_code([l for _, l in step]))
+    tests = [s for s in steps if is_test(s)]
+    # E1: where a variable may appear. A test step's env entries and its script's plain text.
+    allowed_entry, allowed_text = set(), set()
+    for step in tests:
+        inside = False
+        for i, line in yaml_code([l for _, l in step], indexed=True):
+            n = step[i][0] + offset
+            if re.match(r"^      env:\s*$", line):
+                inside = True
                 continue
-            todo = [command.split()[0]]
-            while todo:
-                script = todo.pop()
-                if script in seen:
-                    continue
-                seen.add(script)
-                text = read_script(script)
-                if text is None:
-                    errors.append(f"{where}'s one-leg step {name!r}: {script} doesn't exist (S4)")
-                    continue
-                hit = FLAG_NAMES.search(text)
-                if hit:
-                    errors.append(f"{script}:{line_of(text, hit.start())}: names {hit.group(0)}, so its step can't run in one leg only (S4)")
-                todo += SCRIPT_REF.findall(text)
-    return errors, one_leg
+            if inside and (not line.strip() or line.startswith("        ")):
+                allowed_entry.add(n)
+                continue
+            inside = False
+            if not re.match(r"^\s*-?\s*(?:if|name):", line):
+                allowed_text.add(n)
+    code = yaml_code(lines, indexed=True)
+    for n, line in code:
+        hit = VARIABLE_USE.search(line)
+        if not hit:
+            continue
+        var = hit.group(1)
+        if n in allowed_entry:
+            if not ENV_ENTRY.match(line):
+                errors.append(f"{WORKFLOW}:{n + 1}: E1 {var} in a test step's env with a value that isn't a literal true or false: {line.strip()!r}")
+        elif n in allowed_text:
+            if EXPANSION.search(line):
+                errors.append(f"{WORKFLOW}:{n + 1}: E1 a shell expansion of {var} in a test step's script: {line.strip()!r}; set it in the step's env")
+        else:
+            errors.append(f"{WORKFLOW}:{n + 1}: E1 {var} outside a test step's env: {line.strip()!r}; read at build time or by a shared step, it would let one build serve variants that differ")
+    for k, expression in expressions([l for _, l in code]):
+        n, line = code[k]
+        if VARIABLE_USE.search(expression) and n in allowed_entry | allowed_text:
+            errors.append(f"{WORKFLOW}:{n + 1}: E1 {VARIABLE_USE.search(expression).group(1)} in an expression: {line.strip()!r}")
+    # E2: no matrix.
+    job_code = yaml_code(job, indexed=True)
+    for i, line in job_code:
+        if re.match(r"^    strategy:", line):
+            errors.append(f"{WORKFLOW}:{i + offset + 1}: E2 the {BUILD_JOB} job has a strategy: a matrix would run the variants on builds of their own")
+    for k, expression in expressions([l for _, l in job_code]):
+        i, line = job_code[k]
+        if STRATEGY_USE.search(expression):
+            errors.append(f"{WORKFLOW}:{i + offset + 1}: E2 the {BUILD_JOB} job uses the strategy context: {line.strip()!r}")
+        elif MATRIX_USE.search(expression):
+            errors.append(f"{WORKFLOW}:{i + offset + 1}: E2 the {BUILD_JOB} job uses the matrix context: {line.strip()!r}")
+    # E3: the manifest reads no environment.
+    if package_swift is None:
+        errors.append("Package.swift: not found (E3)")
+    else:
+        stripped = strip(package_swift)
+        for m in PACKAGE_ENV.finditer(stripped):
+            errors.append(f"Package.swift:{line_of(stripped, m.start())}: E3 reads the environment ({m.group(0)}), so a variable could change the build")
+    # E4: one build, run as built.
+    builds = [(i, line) for i, line in job_code if re.search(r"\bswift build\b", line)]
+    build_steps = [s for s in steps if any(re.search(r"\bswift build\b", l) for l in yaml_code([l for _, l in s]))]
+    if len(builds) != 1 or builds[0][1] != BUILD_RUN:
+        errors.append(f"{where} must build once, with `{BUILD_RUN.strip()}`; it has {len(builds)} swift build line(s)"
+                      + (f": {builds[0][1].strip()!r}" if len(builds) == 1 else ""))
+    elif not any(re.match(r"^      id:\s*build\s*$", l) for _, l in build_steps[0]):
+        errors.append(f"{where}'s build step has no `id: build`, which the test steps' if: reads (E4)")
+    for step in tests:
+        name = step_name([l for _, l in step])
+        if not any(l == TEST_IF for _, l in step):
+            errors.append(f"{where}'s test step {name!r} doesn't have `{TEST_IF.strip()}`: it could run on missing or partial products (E4)")
+        for line in yaml_code([l for _, l in step]):
+            for m in re.finditer(r"\bswift test\b(.*)", line):
+                rest = re.split(r"\s(?:2>&1|\||>|&&|\|\|)", m.group(1))[0]
+                if "--skip-build" not in rest:
+                    errors.append(f"{where}'s test step {name!r} runs swift test without --skip-build: it builds again (E4)")
+                for flag in re.findall(r"(?:^|\s)(\$\{FILTER:\+--filter|-[-\w]+)", rest):
+                    if not TEST_FLAG.fullmatch(flag):
+                        errors.append(f"{where}'s test step {name!r} passes {flag}: only --skip-build, --filter and --no-parallel run the products as built (E4)")
+    # E5: the shared steps' scripts.
+    seen = set()  # a script named twice is read once
+    for step in steps:
+        if step in tests:
+            continue
+        name = step_name([l for _, l in step])
+        todo = [s for line in yaml_code([l for _, l in step]) for s in SCRIPT_REF.findall(line)]
+        while todo:
+            script = todo.pop()
+            if script in seen:
+                continue
+            seen.add(script)
+            text = read_script(script)
+            if text is None:
+                errors.append(f"{where}'s step {name!r}: {script} doesn't exist (E5)")
+                continue
+            hit = FLAG_NAMES.search(text)
+            if hit:
+                errors.append(f"{script}:{line_of(text, hit.start())}: names {hit.group(0)}, so the step every variant shares could read it (E5)")
+            todo += SCRIPT_REF.findall(text)
+    return errors, [step_name([l for _, l in s]) for s in tests]
 
 
 def read_repo_script(path):
@@ -525,11 +593,12 @@ def self_test():
         *extra,
     ]}
     job = lambda regex: (
-        "jobs:\n  build:\n    steps:\n    - run: swift test\n"
-        f"  {JOB}:\n    steps:\n    - name: Run\n      env:\n"
+        f"jobs:\n  {BUILD_JOB}:\n    steps:\n    - name: Tests, in-turn sync off\n      run: swift test --skip-build\n"
+        f"    - name: {TABLES_STEP}\n      env:\n        USE_SYNC_TABLES: \"false\"\n        TYPED_LEAF_VALUES: \"false\"\n"
         f"        FILTER: ${{{{ !inputs.full_matrix && '{regex}' || '' }}}}\n"
-        "      run: |\n        set -o pipefail\n        swift test ${FILTER:+--filter \"$FILTER\"} 2>&1 | tee out.log\n"
-        "  per-player:\n    steps:\n    - run: swift test --filter 'X\\.'\n"
+        "      run: |\n        set -o pipefail\n        swift test --skip-build ${FILTER:+--filter \"$FILTER\"} 2>&1 | tee out.log\n"
+        "    - name: Tests, per-player sync tables off\n      run: swift test --skip-build --filter 'X\\.'\n"
+        "  other:\n    steps:\n    - run: x\n"
     )
     both = job(r"SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.")
     filtered, filter_errors = filtered_targets(both)
@@ -580,16 +649,26 @@ def self_test():
          "        c.useSyncTables = false\n        c.typedLeafValues = false\n        return c\n    }\n}\n", None),
     ]
     failed = 0
-    # The filter is the job's own FILTER line.
+    # The filter is the step's own FILTER line.
+    names2 = {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}
     for name, workflow, want_names, want_error in [
-        ("the job's filter names Transport and NIO", both, {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}, None),
+        ("the step's filter names Transport and NIO", both, names2, None),
         ("a filter without NIO names only Transport", job(r"SwiftStateTreeTransportTests\."), {"SwiftStateTreeTransportTests"}, None),
-        ("no FILTER line in the job fails", both.replace("FILTER:", "FILTERS:"), set(), "FILTER lines"),
-        ("a FILTER line in another job only fails", both.replace(f"  {JOB}:", "  other:"), set(), f"no {JOB} job"),
+        ("no FILTER line in the step fails", both.replace("FILTER:", "FILTERS:"), set(), "0 FILTER lines"),
+        ("a FILTER line in another step fails",
+         both.replace("        FILTER: ", "        X: y\n    - name: Other\n      env:\n        FILTER: "), set(), "0 FILTER lines"),
+        ("a second FILTER line in another step fails",
+         both.replace("    - name: Tests, per-player", "    - name: Other\n      env:\n        FILTER: ${{ !inputs.full_matrix && 'A\\.' || '' }}\n      run: x\n    - name: Tests, per-player"),
+         set(), "and the job 1 more"),
+        ("no step of that name fails", both.replace(f"name: {TABLES_STEP}", "name: Tests, tables off"), set(), "0 steps named"),
+        ("two steps of that name fail", both.replace("name: Tests, in-turn sync off", f"name: {TABLES_STEP}"), set(), "2 steps named"),
+        ("the step in another job only fails", both.replace(f"  {BUILD_JOB}:", "  other2:"), set(), f"no {BUILD_JOB} job"),
+        ("a step that leaves USE_SYNC_TABLES on fails", both.replace('USE_SYNC_TABLES: "false"', 'USE_SYNC_TABLES: "true"'), set(), "doesn't set USE_SYNC_TABLES to false"),
+        ("a step without TYPED_LEAF_VALUES fails", both.replace('        TYPED_LEAF_VALUES: "false"\n', ""), set(), "doesn't set TYPED_LEAF_VALUES to false"),
         ("an alternative that isn't a whole target fails", job(r"SwiftStateTreeTransportTests\.|NIO"), None, "isn't a whole target"),
         ("a swift test that ignores FILTER fails", both.replace(' ${FILTER:+--filter "$FILTER"}', ""), None, "ignores FILTER"),
-        ("a second swift test in the job fails", both.replace("2>&1 | tee out.log\n", "2>&1 | tee out.log\n        swift test\n"), None, "2 swift test line(s)"),
-        ("a swift test only in a comment doesn't count", both.replace("      run: |\n", "      # swift test\n      run: |\n"), {"SwiftStateTreeTransportTests", "SwiftStateTreeNIOTests"}, None),
+        ("a second swift test in the step fails", both.replace("2>&1 | tee out.log\n", "2>&1 | tee out.log\n        swift test --skip-build\n"), None, "2 swift test line(s)"),
+        ("a swift test only in a comment doesn't count", both.replace("      run: |\n", "      # swift test\n      run: |\n"), names2, None),
     ]:
         names, errors = filtered_targets(workflow)
         ok = (not errors and names == want_names) if want_error is None else any(want_error in e for e in errors)
@@ -659,71 +738,100 @@ def self_test():
     if filter_errors:
         print(f"FAIL self-test: the sample job's filter doesn't parse: {filter_errors}")
         failed += 1
-    failed += leg_self_test()
+    failed += variant_self_test()
     return failed
 
 
-def leg_self_test():
-    """Section 2's cells: the build job's matrix (S6) and its one-leg steps' scripts (S4)."""
-    def build(matrix="        in_turn_sync: [\"true\", \"false\"]\n", env="      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}\n",
-              lint_if="      " + ONE_LEG_IF + "\n", lint_run="      run: |\n        scripts/lint.sh --self-test\n        scripts/lint.sh\n",
-              extra=""):
-        return ("jobs:\n  build:\n    name: build (in-turn sync ${{ matrix.in_turn_sync }})\n    strategy:\n      matrix:\n"
-                "        # a comment\n" + matrix + "    env:\n" + env + "\n    steps:\n    - uses: actions/checkout@v4\n"
-                "    - name: Lint\n" + lint_if + lint_run + "\n    - name: Snippets\n" + lint_if + "      run: scripts/snippets.sh\n"
-                "      timeout-minutes: 5\n" + extra + "    - name: Run tests\n      run: swift test\n  other:\n    steps:\n    - run: x\n")
+def variant_self_test():
+    """Section 2's cells (E1–E5), against a sample of the build job's shape."""
+    IF = TEST_IF + "\n"
+    def build(workflow_env="", job_env="", strategy="", lint="      run: |\n        scripts/lint.sh --self-test\n        scripts/lint.sh\n",
+              build_step="    - name: Build\n      id: build\n" + BUILD_RUN + "\n",
+              on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test --skip-build 2>&1 | tee on.log\n',
+              tables=('      env:\n        USE_SYNC_TABLES: "false"\n        TYPED_LEAF_VALUES: "false"\n'
+                      "      run: |\n        swift test --skip-build --filter 'A\\.' 2>&1 | tee t.log\n"
+                      "        grep -q 'takes USE_SYNC_TABLES' t.log\n"),
+              test_if=IF, extra="", other=""):
+        return ("on: push\n" + workflow_env + "jobs:\n  build:\n    name: build (variants)\n" + strategy + job_env +
+                "    steps:\n    - uses: actions/checkout@v4\n    - name: Lint\n" + lint + build_step +
+                "    - name: Snippets\n      run: scripts/snippets.sh\n"
+                "    - name: Tests, in-turn sync on\n      id: on\n" + test_if + on +
+                "    - name: Tests, sync tables off\n      id: tables\n" + test_if + tables +
+                "    - name: Wall clock\n" + test_if + "      run: WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter W\n" +
+                extra + "    - name: Summary\n      if: ${{ always() }}\n      env:\n        ON: ${{ steps.on.outcome }}\n      run: echo \"$ON\"\n"
+                "  other:\n    steps:\n    - run: x\n" + other)
     scripts = {"scripts/lint.sh": "echo lint\n", "scripts/snippets.sh": "swift build --target \"$t\"\nscripts/helper.py\n",
                "scripts/helper.py": "print(1)\n"}
+    manifest = "// swift-tools-version:6.0\nimport PackageDescription\nlet package = Package(name: \"P\")\n"
+    tests = ["Tests, in-turn sync on", "Tests, sync tables off", "Wall clock"]
     cells = [
-        ("today's shape: two one-leg steps, scripts only", build(), scripts, None),
-        ("a second matrix axis fails", build(matrix="        in_turn_sync: [\"true\", \"false\"]\n        rows: [on, off]\n"), scripts, "not only in_turn_sync"),
-        ("a renamed axis fails", build(matrix="        sync: [\"true\", \"false\"]\n", env="      IN_TURN_SYNC: ${{ matrix.sync }}\n"), scripts, "not only in_turn_sync"),
-        ("the axis as another env var fails", build(env="      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}\n      ROWS: ${{ matrix.in_turn_sync }}\n"), scripts, "outside IN_TURN_SYNC"),
-        ("the axis in a compiler flag fails",
-         build(extra="    - name: Build\n      run: swift build -Xswiftc -DSYNC_${{ matrix.in_turn_sync }}\n"), scripts, "outside IN_TURN_SYNC"),
-        ("a one-leg if of another form fails", build(lint_if="      if: matrix.in_turn_sync == 'true'\n"), scripts, "outside IN_TURN_SYNC"),
-        ("the axis in the bracket form fails", build(lint_if="      if: ${{ matrix['in_turn_sync'] == 'true' || inputs.full_matrix }}\n"), scripts, "outside IN_TURN_SYNC"),
-        ("the env var in an if: fails", build(lint_if="      if: ${{ env.IN_TURN_SYNC == 'true' || inputs.full_matrix }}\n"), scripts, "IN_TURN_SYNC outside its env line"),
-        ("the env var in a run line fails",
-         build(extra="    - name: Echo\n      run: echo \"$IN_TURN_SYNC\"\n"), scripts, "IN_TURN_SYNC outside its env line"),
-        ("the env var under another name fails",
-         build(env="      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}\n      SYNC: ${{ env.IN_TURN_SYNC }}\n"), scripts, "IN_TURN_SYNC outside its env line"),
-        ("a one-leg step running swift test fails",
-         build(lint_run="      run: swift test --filter X\n"), scripts, "only scripts that don't read"),
-        ("a one-leg script naming IN_TURN_SYNC fails", build(), {**scripts, "scripts/lint.sh": "[ \"$IN_TURN_SYNC\" = true ]\n"}, "names IN_TURN_SYNC"),
-        ("a one-leg script naming InTurnSync fails", build(), {**scripts, "scripts/lint.sh": "grep InTurnSync x\n"}, "names InTurnSync"),
-        ("a script it calls naming the key fails", build(), {**scripts, "scripts/helper.py": "k = 'inTurnSync'\n"}, "helper.py:1: names inTurnSync"),
-        ("a one-leg script that doesn't exist fails", build(), {k: v for k, v in scripts.items() if k != "scripts/lint.sh"}, "doesn't exist"),
-        ("a step with no if runs in both legs, whatever it runs", build(extra="    - name: Free\n      run: scripts/free.sh\n"),
-         {**scripts, "scripts/free.sh": "echo $IN_TURN_SYNC\n"}, None),
-        ("the axis only in a comment doesn't count", build(extra="    # ${{ matrix.rows }}\n"), scripts, None),
-        ("strategy.job-index in an if: fails", build(lint_if="      if: ${{ strategy.job-index == 0 || inputs.full_matrix }}\n"), scripts, "the strategy context"),
-        ("strategy.job-index in a run line fails",
-         build(extra="    - name: Index\n      run: scripts/x.sh ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
-        ("toJSON(matrix) fails", build(extra="    - name: Dump\n      run: echo '${{ toJSON(matrix) }}'\n"), scripts, "outside IN_TURN_SYNC"),
-        ("toJSON(strategy) fails", build(extra="    - name: Dump\n      run: echo '${{ toJSON(strategy) }}'\n"), scripts, "the strategy context"),
-        ("a one-leg if folded over two lines fails",
-         build(lint_if="      if: >-\n        ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}\n"), scripts, "outside IN_TURN_SYNC"),
-        ("a strategy use folded into a run block fails",
-         build(extra="    - name: Index\n      run: |\n        scripts/x.sh \\\n          ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
-        ("a matrix use in a run block's # line fails",
-         build(extra="    - name: Dump\n      run: |\n        # ${{ toJSON(matrix) }}\n        echo hi\n"), scripts, "outside IN_TURN_SYNC"),
-        ("a strategy use in a run block's # line fails",
-         build(extra="    - name: Dump\n      run: |\n        # ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
-        ("an expression spanning two lines fails",
-         build(extra="    - name: Dump\n      run: |\n        echo ${{ toJSON(\n          matrix) }}\n"), scripts, "outside IN_TURN_SYNC"),
-        ("a bare folded if fails", build(lint_if="      if: >-\n        matrix.in_turn_sync == 'true'\n"), scripts, "outside IN_TURN_SYNC"),
+        ("today's shape", build(), scripts, manifest, None),
+        # E1
+        ("a variable in the workflow's env fails", build(workflow_env='env:\n  IN_TURN_SYNC: "false"\n'), scripts, manifest, "E1 IN_TURN_SYNC outside a test step's env"),
+        ("a variable in the job's env fails", build(job_env='    env:\n      USE_SYNC_TABLES: "false"\n'), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
+        ("a variable on the build step fails",
+         build(build_step="    - name: Build\n      id: build\n      env:\n        TYPED_LEAF_VALUES: \"false\"\n" + BUILD_RUN + "\n"), scripts, manifest, "E1 TYPED_LEAF_VALUES outside"),
+        ("a variable on a shared script step fails",
+         build(lint='      env:\n        PER_PLAYER_SYNC_TABLES: "false"\n      run: scripts/lint.sh\n'), scripts, manifest, "E1 PER_PLAYER_SYNC_TABLES outside"),
+        ("a variable in a compiler flag fails",
+         build(build_step="    - name: Build\n      id: build\n      run: swift build --build-tests -Xswiftc -DIN_TURN_SYNC\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+        ("a variable in another job fails", build(other="    - run: IN_TURN_SYNC=false swift test\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+        ("$VAR in a test step's script fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: echo "$IN_TURN_SYNC" && swift test --skip-build\n'), scripts, manifest, "E1 a shell expansion of IN_TURN_SYNC"),
+        ("${VAR} in a test step's script fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: |\n        echo "${IN_TURN_SYNC}"\n        swift test --skip-build\n'), scripts, manifest, "E1 a shell expansion of IN_TURN_SYNC"),
+        ("env.VAR in a test step's if: fails",
+         build(test_if="      if: ${{ !cancelled() && steps.build.outcome == 'success' && env.IN_TURN_SYNC == 'true' }}\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+        ("env['VAR'] in a shared step's if: fails",
+         build(lint="      if: ${{ env['USE_SYNC_TABLES'] != 'false' }}\n      run: scripts/lint.sh\n"), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
+        ("a variable in an expression in a test step's script fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: echo ${{ env.IN_TURN_SYNC }} && swift test --skip-build\n'), scripts, manifest, "E1 IN_TURN_SYNC in an expression"),
+        ("an env value that isn't a literal fails",
+         build(on='      env:\n        IN_TURN_SYNC: ${{ inputs.sync }}\n      run: swift test --skip-build\n'), scripts, manifest, "isn't a literal true or false"),
+        ("another env var built from a variable fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n        SYNC: ${{ env.IN_TURN_SYNC }}\n      run: swift test --skip-build\n'), scripts, manifest, "isn't a literal true or false"),
+        ("a variable in a test step's name fails",
+         build(extra="    - name: Tests, IN_TURN_SYNC off\n" + IF + '      env:\n        IN_TURN_SYNC: "false"\n      run: swift test --skip-build\n'), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+        ("a variable in a run block's # line of a shared step fails",
+         build(lint="      run: |\n        # $IN_TURN_SYNC\n        scripts/lint.sh\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+        ("a YAML comment naming a variable doesn't count", build(extra="    # IN_TURN_SYNC and USE_SYNC_TABLES\n"), scripts, manifest, None),
+        # E2
+        ("a matrix fails", build(strategy="    strategy:\n      matrix:\n        x: [a, b]\n"), scripts, manifest, "E2"),
+        ("the matrix context fails", build(extra="    - name: Dump\n      run: echo '${{ toJSON(matrix) }}'\n"), scripts, manifest, "E2 the build job uses the matrix context"),
+        ("strategy.job-index in a run block's # line fails",
+         build(extra="    - name: Dump\n      run: |\n        # ${{ strategy.job-index }}\n"), scripts, manifest, "E2 the build job uses the strategy context"),
         ("display text naming matrix or strategy doesn't count",
-         build(extra="    - name: Dump strategy and matrix\n      run: echo matrix strategy\n"), scripts, None),
-        ("a second matrix use in the job's name fails",
-         build().replace("    name: build (in-turn sync ${{ matrix.in_turn_sync }})\n",
-                         "    name: build (in-turn sync ${{ matrix.in_turn_sync }}) ${{ matrix.rows }}\n"), scripts, "outside IN_TURN_SYNC"),
+         build(extra="    - name: Dump strategy and matrix\n      run: echo matrix strategy\n"), scripts, manifest, None),
+        # E3
+        ("Package.swift reading ProcessInfo fails", build(), scripts, manifest + 'let x = ProcessInfo.processInfo.environment["X"]\n', "E3 reads the environment (ProcessInfo)"),
+        ("Package.swift calling getenv fails", build(), scripts, manifest + 'let x = getenv("X")\n', "E3 reads the environment (getenv)"),
+        ("Package.swift reading Context.environment fails", build(), scripts, manifest + 'let x = Context.environment["X"]\n', "E3 reads the environment (Context.environment)"),
+        ("Package.swift naming them only in comments and strings passes", build(), scripts, manifest + '// ProcessInfo getenv\nlet s = "Context.environment["\n', None),
+        # E4
+        ("a second swift build fails",
+         build(extra="    - name: Again\n      run: swift build\n"), scripts, manifest, "2 swift build line(s)"),
+        ("a build without --build-tests fails",
+         build(build_step="    - name: Build\n      id: build\n      run: swift build\n"), scripts, manifest, "'run: swift build'"),
+        ("a build step without its id fails", build(build_step="    - name: Build\n" + BUILD_RUN + "\n"), scripts, manifest, "no `id: build`"),
+        ("a test step without --skip-build fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test\n'), scripts, manifest, "without --skip-build"),
+        ("a test step with another flag fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test --skip-build -c release\n'), scripts, manifest, "passes -c"),
+        ("a test step with -Xswiftc fails",
+         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test --skip-build -Xswiftc -DX\n'), scripts, manifest, "passes -Xswiftc"),
+        ("a test step without the build's if: fails", build(test_if="      if: ${{ always() }}\n"), scripts, manifest, "could run on missing or partial products"),
+        ("a test step with no if: fails", build(test_if=""), scripts, manifest, "could run on missing or partial products"),
+        # E5
+        ("a shared script naming IN_TURN_SYNC fails", build(), {**scripts, "scripts/lint.sh": "[ \"$IN_TURN_SYNC\" = true ]\n"}, manifest, "names IN_TURN_SYNC"),
+        ("a shared script naming useSyncTables fails", build(), {**scripts, "scripts/lint.sh": "grep useSyncTables x\n"}, manifest, "names useSyncTables"),
+        ("a script it calls naming the key fails", build(), {**scripts, "scripts/helper.py": "k = 'perPlayerSyncTables'\n"}, manifest, "helper.py:1: names perPlayerSyncTables"),
+        ("a shared script that doesn't exist fails", build(), {k: v for k, v in scripts.items() if k != "scripts/lint.sh"}, manifest, "doesn't exist"),
     ]
     failed = 0
-    for name, workflow, files, want in cells:
-        errors, one_leg = leg_errors(workflow, files.get)
-        ok = (not errors and one_leg == ["Lint", "Snippets"]) if want is None else any(want in e for e in errors)
-        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {one_leg} {errors}"))
+    for name, workflow, files, package_swift, want in cells:
+        errors, names = variant_errors(workflow, package_swift, files.get)
+        ok = (not errors and names == tests) if want is None else any(want in e for e in errors)
+        print(f"{'ok  ' if ok else 'FAIL'} self-test: {name}" + ("" if ok else f": {names} {errors}"))
         failed += not ok
     return failed
 
@@ -737,13 +845,14 @@ files = 0
 if not errors:
     package = package_from(args)
     errors, files = check(pathlib.Path("."), package, filtered)
-leg, one_leg = leg_errors(workflow, read_repo_script)
+manifest = pathlib.Path("Package.swift")
+leg, test_steps = variant_errors(workflow, manifest.read_text(encoding="utf-8") if manifest.is_file() else None, read_repo_script)
 for e in errors + leg:
     print(f"::error::{e}")
 if not errors:
     names = ", ".join(n for n, _ in scanned_targets(package, filtered)) or "none"
-    print(f"variant test selection: {JOB} runs {', '.join(sorted(filtered))} on a push; {files} files in the other targets that reach {TRANSPORT} ({names}) pin both flags")
+    print(f"variant test selection: {TABLES_STEP!r} runs {', '.join(sorted(filtered))} on a push; {files} files in the other targets that reach {TRANSPORT} ({names}) pin both flags")
 if not leg:
-    print(f"variant test selection: the {BUILD_JOB} job's legs differ only in {LEG_ENV}; {len(one_leg)} steps run in one leg ({', '.join(one_leg) or 'none'}), and their scripts don't read it")
+    print(f"variant test selection: one build serves {len(test_steps)} test steps ({', '.join(test_steps)}); the variables appear only in their env, and nothing shared reads them")
 sys.exit(1 if errors or leg else 0)
 PY
