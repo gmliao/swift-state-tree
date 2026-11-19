@@ -144,6 +144,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     private var passEvents: [ReevaluationRecordedServerEvent] = []
     private var initialize: ReevaluationEngine.InitializeVerification = .notRecorded
     private var prepared = false
+    /// Faults injected into `step()` (tests only, A9 and A10).
+    private var faultsForTesting = ReplayRunnerFaults()
 
     public init(
         definition: LandDefinition<State>,
@@ -369,6 +371,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String
         let snapshot: StateSnapshot?
+        // A state that can't be converted (a NaN, keys that collide as strings) is unverifiable,
+        // never a match (#180): the run goes on, and its frame has no state, with the reason. A
+        // replay land refuses that frame (`stateUnavailable`); a monitor-only run doesn't.
+        var stateUnavailable: String?
         do {
             let (hash, computed) = try ReevaluationEngine.stateHashAndSnapshot(state, definition: hashDefinition)
             stateHash = hash
@@ -376,12 +382,14 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         } catch {
             stateHash = ReevaluationEngine.unavailableHash(error)
             snapshot = nil
+            stateUnavailable = "the state can't be converted for its hash: \(error)"
         }
         // A snapshot that doesn't encode fails the run (A10, #521 PR 1b): the replay land would
         // have no state to show for the tick.
         var actualStatePayload: AnyCodable?
         if let snapshot {
             do {
+                if faultsForTesting.snapshotEncode { throw ReplayRunnerFaults.Injected.snapshotEncode }
                 actualStatePayload = AnyCodable(String(decoding: try snapshotEncoder.encode(snapshot), as: UTF8.self))
             } catch {
                 throw ReevaluationReplayResolutionError.stateEncode(tickId: tickId, error: "\(error)")
@@ -392,7 +400,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // (nil) is unchanged.
         let recordedHash: String?
         do {
-            recordedHash = try await source.getStateHash(for: tickId)
+            if faultsForTesting.stateHashRead { throw ReplayRunnerFaults.Injected.stateHashRead }
+            recordedHash = faultsForTesting.stateHashMissing ? nil : try await source.getStateHash(for: tickId)
         } catch {
             throw ReevaluationReplayResolutionError.recordRead(tickId: tickId, read: "state hash", error: "\(error)")
         }
@@ -417,6 +426,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedServerEvents)
         let recordedServerEvents: [ReevaluationRecordedServerEvent]
         do {
+            if faultsForTesting.serverEventsRead { throw ReplayRunnerFaults.Injected.serverEventsRead }
             recordedServerEvents = try await source.getServerEvents(for: tickId)
         } catch {
             throw ReevaluationReplayResolutionError.recordRead(tickId: tickId, read: "server events", error: "\(error)")
@@ -430,7 +440,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             emittedServerEvents: emittedServerEvents,
             actualState: actualStatePayload,
             definition: definition,
-            integralFloats: ReevaluationReplayFrame.integralFloats(for: source)
+            integralFloats: ReevaluationReplayFrame.integralFloats(for: source),
+            stateUnavailable: stateUnavailable
         )
 
         return ReevaluationStepResult(
@@ -444,6 +455,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             recordedPassMismatch: recordedPassMismatch,
             replayFrame: replayFrame
         )
+    }
+
+    /// Installs faults for the next steps (tests only).
+    package func setFaultsForTesting(_ faults: ReplayRunnerFaults) {
+        faultsForTesting = faults
     }
 
     public func setPaused(_: Bool) {
@@ -490,5 +506,27 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
                 recordedVersion: metadata.version
             )
         }
+    }
+}
+
+/// Faults a test injects into `ConcreteReevaluationRunner.step()`: the record reads (A9) and the
+/// snapshot encode (A10) throw as if the source or the encoder had failed, or the source has no
+/// hash for the tick.
+package struct ReplayRunnerFaults: Sendable {
+    package var stateHashRead = false
+    package var serverEventsRead = false
+    package var snapshotEncode = false
+    /// The source has no hash for the tick (nil), as a land that records none.
+    package var stateHashMissing = false
+
+    package init(stateHashRead: Bool = false, serverEventsRead: Bool = false, snapshotEncode: Bool = false, stateHashMissing: Bool = false) {
+        self.stateHashRead = stateHashRead
+        self.serverEventsRead = serverEventsRead
+        self.snapshotEncode = snapshotEncode
+        self.stateHashMissing = stateHashMissing
+    }
+
+    package enum Injected: Error, Equatable {
+        case stateHashRead, serverEventsRead, snapshotEncode
     }
 }

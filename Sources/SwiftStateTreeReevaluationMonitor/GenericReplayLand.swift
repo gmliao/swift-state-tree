@@ -42,7 +42,8 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
     /// as the base definition, and registers the same server events (#521 PR 1b, M5).
     ///
     /// Inject a `ReevaluationRunnerService` into the replay land's services before
-    /// starting it. The service must already have a verification run in progress so
+    /// starting it. A result the land can't show (no resolved frame, another state type, no
+    /// state) fails the service's run. The service must already have a verification run in progress so
     /// that results appear in the queue each tick. `registerWithGenericReplay` does both, and
     /// starts the run only for a land whose ID is a replay ticket the admin replay start issued;
     /// the land never starts a run from its own ID.
@@ -77,7 +78,7 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
                         defaultValue: false
                     )
 
-                    guard let result = runnerService.consumeNextResult() else {
+                    guard let (result, ticket) = runnerService.consumeNextResultWithTicket() else {
                         if debugEnabled {
                             let phase = runnerService.getStatus().phase.rawValue
                             ctx.logger.debug("Generic replay result queue empty", metadata: [
@@ -88,14 +89,20 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
                         return
                     }
 
-                    // The service queues only results resolved for this land's state type
-                    // (`expectReplayLandState`), so the frame and its state are always there.
-                    guard let frame = result.replayFrame, let decoded = frame.state as? State else {
-                        ctx.logger.error("Generic replay result without a frame of this land's state type", metadata: [
+                    // Through `registerWithGenericReplay` the service queues only results this
+                    // land can show (`expectReplayLandState`). A land built with `makeLand` alone
+                    // checks here and fails the run that queued it, never dropping it silently.
+                    if let refusal = ReevaluationReplayFrame.refusal(
+                        of: result, forStateType: ObjectIdentifier(State.self), named: String(reflecting: State.self)
+                    ) {
+                        ctx.logger.error("Generic replay: the run's result can't be shown; the run fails", metadata: [
                             "tickId": .stringConvertible(result.tickId),
+                            "error": .string(refusal.description),
                         ])
+                        runnerService.failRun(ticket: ticket, error: refusal)
                         return
                     }
+                    guard let frame = result.replayFrame, let decoded = frame.state as? State else { return }
 
                     state = decoded
                     ctx.requestSyncBroadcastOnly()

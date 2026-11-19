@@ -102,12 +102,33 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     }
 
     public func consumeNextResult() -> ReevaluationStepResult? {
+        consumeNextResultWithTicket()?.result
+    }
+
+    /// The next result and the ticket of the run that queued it, read under one lock: a start
+    /// clears the queue when it takes a new ticket, so the result is that run's.
+    package func consumeNextResultWithTicket() -> (result: ReevaluationStepResult, ticket: UInt64)? {
         lock.lock()
         defer { lock.unlock() }
         guard !resultsQueue.isEmpty else {
             return nil
         }
-        return resultsQueue.removeFirst()
+        return (resultsQueue.removeFirst(), generation)
+    }
+
+    /// Fails the run `ticket` names, from the replay land that read one of its results and can't
+    /// show it (#521 PR 1b): the status becomes `.failed` with `error`, the queue is cleared and
+    /// the run stops. A later run (a newer ticket) is left alone.
+    package func failRun(ticket: UInt64, error: ReevaluationReplayResolutionError) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isCurrentLocked(ticket) else { return }
+        // A new ticket, so the failed run can neither queue nor overwrite the status.
+        generation &+= 1
+        verificationTask?.cancel()
+        resultsQueue.removeAll()
+        _status.phase = .failed
+        _status.errorMessage = error.description
     }
 
     private func updateStatus(_ block: (inout ReevaluationStatus) -> Void) {
@@ -236,17 +257,11 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         // A replaced run's result is dropped, and the replaced run stops.
         guard isCurrentLocked(ticket) else { return false }
 
-        // A replay land reads only a resolved frame of its own state type (#521 PR 1b, S1).
+        // A replay land reads only a resolved frame of its own state type, with a state to show
+        // (#521 PR 1b, S1). A run that feeds no replay land queues a stateless tick: it is
+        // unverifiable, never a match (#180).
         if let expected = replayLandState {
-            let refusal: ReevaluationReplayResolutionError?
-            if let frame = result.replayFrame {
-                refusal = frame.stateType == expected.id ? nil : .stateTypeMismatch(
-                    tickId: result.tickId, runner: frame.stateTypeName ?? "none (events only)", replayLand: expected.name
-                )
-            } else {
-                refusal = .unresolvedResult(tickId: result.tickId)
-            }
-            if let refusal {
+            if let refusal = ReevaluationReplayFrame.refusal(of: result, forStateType: expected.id, named: expected.name) {
                 _status.phase = .failed
                 _status.errorMessage = refusal.description
                 return false
