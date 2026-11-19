@@ -155,8 +155,33 @@ struct PayloadDecodeDifferentialTests {
     }
 
     /// The cases where the typed decode and today's path disagree on MessagePack, by direction
-    /// (N1). Each is named in the PR.
-    static let expectedDifferences: Set<String> = []
+    /// (N1). Each is named in the PR. Both kinds are refusals of what today accepted, and the SDK
+    /// sends neither (it writes integers as MessagePack integers and strings as strings):
+    /// - an integer field sent as an integral float (`3.0`, `-0.0`, a float `2.0`): the typed
+    ///   decode takes only MessagePack integers;
+    /// - a string field (`String` or an ID type) sent as binary: today's tree turned binary into
+    ///   base64 text.
+    static let expectedDifferences: Set<String> = {
+        let integralFloats = ["double -0.0", "double 3.0", "float 2.0"]
+        let integerFields = [
+            "FuzzLeavesAction": ["int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64"],
+            "PFClientEvent": ["step"],
+        ]
+        let stringFields = [
+            "FuzzLeavesAction": ["string", "player", "client", "session", "land"],
+            "PFClientEvent": ["player"],
+        ]
+        var set: Set<String> = []
+        for (type, fields) in integerFields {
+            for field in fields {
+                for value in integralFloats { set.insert("\(type) \(field): \(value): today accepts, typed refuses") }
+            }
+        }
+        for (type, fields) in stringFields {
+            for field in fields { set.insert("\(type) \(field): binary: today accepts, typed refuses") }
+        }
+        return set
+    }()
 
     @Test("On MessagePack the typed decode agrees with today's path except where listed; recording doesn't change what is accepted")
     func differential() throws {
