@@ -303,7 +303,7 @@ struct InputDecodeOnceTests {
         await fixture.adapter.onMessage(try fixture.actionFrame("after"), from: fixture.session)
         #expect(await fixture.keeper.currentState().hits == ["action:after"])
         let codes = await fixture.errors().map(\.code)
-        #expect(codes.contains(.eventInvalidPayload))
+        #expect(codes.contains(ErrorCode.eventInvalidPayload.rawValue))
         #expect(codes.count == 2)
     }
 }
