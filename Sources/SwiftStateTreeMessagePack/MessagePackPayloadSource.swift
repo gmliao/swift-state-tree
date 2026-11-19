@@ -27,7 +27,7 @@ package struct MessagePackPayloadSource: PayloadDecodingSource {
     }
 
     package func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        try MessagePackValueDecoder().decode(type, from: value)
+        try MessagePackValueDecoder(clientPayload: true).decode(type, from: value)
     }
 
     /// Throws `PayloadNesting.TooDeep` for a payload nested past the limit, as the depth check

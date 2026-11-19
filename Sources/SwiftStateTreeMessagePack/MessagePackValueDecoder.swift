@@ -1,8 +1,13 @@
 import Foundation
 
 struct MessagePackValueDecoder {
+    /// Set for a client input's payload (`MessagePackPayloadSource`): its `AnyCodable` fields
+    /// decode as the JSON round trip built them (`decodeAnyCodable`). Frames the server builds
+    /// decode `AnyCodable` from the value directly, as before.
+    var clientPayload = false
+
     func decode<T: Decodable>(_ type: T.Type, from value: MessagePackValue) throws -> T {
-        let decoder = MessagePackValueBoxDecoder(value: value, codingPath: [])
+        let decoder = MessagePackValueBoxDecoder(value: value, codingPath: [], clientPayload: clientPayload)
         return try T(from: decoder)
     }
 }
@@ -11,10 +16,12 @@ private final class MessagePackValueBoxDecoder: Decoder {
     let value: MessagePackValue
     var codingPath: [CodingKey]
     var userInfo: [CodingUserInfoKey: Any] = [:]
+    let clientPayload: Bool
 
-    init(value: MessagePackValue, codingPath: [CodingKey]) {
+    init(value: MessagePackValue, codingPath: [CodingKey], clientPayload: Bool) {
         self.value = value
         self.codingPath = codingPath
+        self.clientPayload = clientPayload
     }
 
     func container<Key>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> {
@@ -144,20 +151,23 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
         if type == Decimal.self, let decimal = try decodeValue(forKey: key).decodeDecimalNumber(codingPath: codingPath + [key]) {
             return decimal as! T
         }
+        if type == AnyCodable.self, decoder.clientPayload {
+            return try MessagePackValueBox(value: decodeValue(forKey: key).value).decodeAnyCodable() as! T
+        }
         let value = try decodeValue(forKey: key).value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key])
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key], clientPayload: decoder.clientPayload)
         return try T(from: nestedDecoder)
     }
 
     func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type, forKey key: Key) throws -> KeyedDecodingContainer<NestedKey> {
         let value = try decodeValue(forKey: key).value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key])
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key], clientPayload: decoder.clientPayload)
         return try nestedDecoder.container(keyedBy: type)
     }
 
     func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
         let value = try decodeValue(forKey: key).value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key])
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key], clientPayload: decoder.clientPayload)
         return try nestedDecoder.unkeyedContainer()
     }
 
@@ -165,12 +175,12 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
         if let key = Key(stringValue: "super") {
             return try superDecoder(forKey: key)
         }
-        return MessagePackValueBoxDecoder(value: .nil, codingPath: codingPath)
+        return MessagePackValueBoxDecoder(value: .nil, codingPath: codingPath, clientPayload: decoder.clientPayload)
     }
 
     func superDecoder(forKey key: Key) throws -> Decoder {
         let value = map[key.stringValue] ?? .nil
-        return MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key])
+        return MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key], clientPayload: decoder.clientPayload)
     }
 
     private func decodeValue(forKey key: Key) throws -> MessagePackValueBox {
@@ -272,25 +282,28 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath) {
             return decimal as! T
         }
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
+        if type == AnyCodable.self, decoder.clientPayload {
+            return try MessagePackValueBox(value: value).decodeAnyCodable() as! T
+        }
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
         return try T(from: nestedDecoder)
     }
 
     mutating func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type) throws -> KeyedDecodingContainer<NestedKey> {
         let value = try nextBox().value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
         return try nestedDecoder.container(keyedBy: type)
     }
 
     mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
         let value = try nextBox().value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
         return try nestedDecoder.unkeyedContainer()
     }
 
     mutating func superDecoder() throws -> Decoder {
         let value = try nextBox().value
-        return MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
+        return MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
     }
 
     private mutating func nextBox() throws -> MessagePackValueBox {
@@ -382,7 +395,10 @@ private struct MessagePackSingleValueDecodingContainer: SingleValueDecodingConta
         if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath) {
             return decimal as! T
         }
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath)
+        if type == AnyCodable.self, decoder.clientPayload {
+            return try MessagePackValueBox(value: value).decodeAnyCodable() as! T
+        }
+        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
         return try T(from: nestedDecoder)
     }
 }
@@ -434,6 +450,15 @@ private struct MessagePackValueBox {
         return float
     }
 
+    /// An `AnyCodable` field, as the JSON round trip built it: the value's tree, through
+    /// `JSONEncoder` and `JSONDecoder`. So an integral float is an `Int` and a binary value a
+    /// base64 string, as before (#521 PR 2), which a handler reading the field's `base` relies on.
+    /// The tree was already walked (depth, keys, finite numbers) by the payload's source.
+    func decodeAnyCodable() throws -> AnyCodable {
+        let tree = try MessagePackPayloadSource.anyCodable(from: value)
+        return try JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(tree))
+    }
+
     /// A `Decimal` sent as a number, as a client writes one, read as the JSON round trip read it:
     /// from the number's shortest decimal text, so `0.1` is `0.1`. Nil for any other value, which
     /// `Decimal`'s own keyed `Codable` form then decodes (the form the server's encoders write).
@@ -443,7 +468,8 @@ private struct MessagePackValueBox {
         case .int(let value): return Decimal(value)
         case .uint(let value): return Decimal(value)
         case .double(let value) where value.isFinite: text = value.description
-        case .float(let value) where value.isFinite: text = value.description
+        // The `AnyCodable` tree held a float as a `Double`, and `JSONEncoder` wrote that.
+        case .float(let value) where value.isFinite: text = Double(value).description
         case .double, .float:
             throw DecodingError.dataCorrupted(DecodingError.Context(
                 codingPath: codingPath,

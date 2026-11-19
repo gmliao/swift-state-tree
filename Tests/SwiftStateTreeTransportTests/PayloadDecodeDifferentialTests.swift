@@ -212,6 +212,20 @@ struct PayloadDecodeDifferentialTests {
         }
     }
 
+    @Test("An AnyCodable field holds what the round trip built: an integral float as an Int, binary as base64")
+    func anyCodableField() throws {
+        struct Box: Codable { let a: AnyCodable }
+        func decoded(_ value: MessagePackValue) throws -> Any {
+            try MessagePackPayloadSource(validating: .map([.string("a"): value])).decode(Box.self).a.base
+        }
+        #expect(try decoded(.double(3)) as? Int == 3)
+        #expect(try decoded(.binary(Data([1, 2, 3]))) as? String == "AQID")
+        #expect(try decoded(.double(2.5)) as? Double == 2.5)
+        // A frame the server builds decodes it from the value, as before.
+        let plain = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("a"): .double(3)])).a.base
+        #expect(plain as? Double == 3)
+    }
+
     @Test("A Float field refuses a double it can't hold, as the round trip did",
           arguments: [Double.greatestFiniteMagnitude, 1e39, -1e39, .leastNonzeroMagnitude, 1e-50])
     func floatRange(double: Double) {
