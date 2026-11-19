@@ -26,7 +26,63 @@ An effect's result, a deadline or a timer comes back as a new input. Each entry 
 - **Effects come back as inputs.** When a step needs work done, it makes a request. `perform` does the work off the actor. Its result is a new input to a later step, and that step decides what the result means on the state as it is then. A result whose request has closed goes to `handleLateResult`, not to `handle`. A request closes when its key ends or is superseded, its deadline passes, or it is cancelled.
 - **What a step can't own, the core owns:** keys and generations, holds with their deadlines, and withdraw tokens. A handler holds no tickets.
 - **A supersede ends the old generation's queued inputs too.** Calling `start` on a key that is still live *supersedes* it. That closes the old generation's requests, drops its timer, and withdraws the inputs queued under that key's scope, as `end` does. A queued input carries no generation, so without this, an input sent under the old binding would step under the new one. Its caller gets `withdrawn` and can retry. That includes an input sent while a batch runs and admitted after the supersede. Limit: an input that arrives while the key isn't live (before its first `start`, or after an `end`) steps under the next generation; use a fresh key per binding, such as a connection or session id, when that matters.
-- **Only plain data.** `@PlainData` checks at compile time that a machine stores only plain values. Only a `PlainData` machine can be run.
+- **Only plain data.** `@PlainData` checks at compile time that a machine stores only plain values. Only a `PlainData` machine can be run. See [Plain data and tools](#plain-data-and-tools).
+
+## Plain data and tools
+
+### What counts as plain data
+
+`PlainData` (`Sources/SwiftStateTurns/PlainData.swift`) marks a value that can't call through to anything or change behind its holder: no class, closure, actor, existential, lock or token, at any depth.
+
+- **Built-ins that conform:** `Bool`, the integer types, `Double`, `Float`, `String`, `Character`, `Duration`, and the turn core's own values (`InputID`, `RequestID`, `Generation`, `TurnInstant`, `Abandonment`, `TurnError`).
+- **Containers conform when their contents do:** `Optional`, `Array`, `ContiguousArray`, `Set`, `Dictionary` (key and value), and `Result` (success and failure).
+- **A tuple can't conform.** Store `PlainPair` instead.
+
+| Stored type | Plain data? |
+|---|---|
+| `[PlayerID: Seat]`, where both are `@PlainData` | yes |
+| `Set<Int>`, `String?`, `Result<Int, TurnError>` | yes |
+| `[String: Any]`, `Result<Int, any Error>` | no: an existential |
+| `[() -> Void]` | no: a function type |
+| `[PlayerID: Connection]`, where `Connection` is a class | no: a class |
+
+The refusals are compile errors, pinned by the must-not-compile cases in `scripts/must-not-compile/turns/` (`plaindata-class-in-dictionary.swift`, `plaindata-closure.swift`, `plaindata-any-error.swift` and their siblings).
+
+### Your own types
+
+Mark a struct or an enum with `@PlainData` where it is defined. The macro writes the conformance and adds one check per stored property or associated value, which fails to compile unless that type is plain data.
+- Every stored property needs a type annotation, so that the macro can check it.
+- A generic type needs `where T: PlainData`.
+- `@PlainData` on a class or an actor is refused, and so is a field whose type is a class, an actor, a closure or an existential.
+- A hand-written `: PlainData` outside `SwiftStateTurns`, `@retroactive` included, is refused by `scripts/lint-turns.sh`: it would conform without checking anything.
+- A type from the standard library or another module can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
+
+```swift
+// Before: a class and a clock instant in the state.
+struct Room {
+    var players: [PlayerID: Connection]       // Connection is a class
+    var lastChat: ContinuousClock.Instant
+}
+
+// After: plain values. The connections stay on the actor, keyed by PlayerID.
+@PlainData
+struct Room {
+    var players: Set<PlayerID>                // PlayerID is @PlainData
+    var lastChat: TurnInstant
+}
+```
+
+### Why: it keeps the phases honest
+
+- **The state is a value.** Code outside a turn can hold a copy of it, but can't change the machine's state through that copy.
+- **A step is the only way the state changes.** No other task can reach into it, and since the state holds no closure, it carries no code that could run outside a turn.
+- **A value can be compared, copied and recorded.** A test can feed a machine a sequence of inputs and compare its state and outputs with what it expects, and none of this needs a lock.
+
+### Where reference types go: tools
+
+Some things a machine works with are objects by nature: a connection, an encoder, a layout table. They stay on the actor that runs the machine, never in the machine's state.
+- **The state stores IDs.** The actor keeps a map from each ID to its object.
+- **A step that needs one asks for work.** It returns an output or an effect naming the ID, and the actor, or `perform` off the actor, uses the object. What comes back reaches the state as plain data, in a later input.
 
 ## A worked example
 
