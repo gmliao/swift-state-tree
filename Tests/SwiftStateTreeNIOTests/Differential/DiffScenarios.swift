@@ -401,7 +401,6 @@ let diffScenarios: [DiffScenario] = [
         lifecycle: ["pa": [.join, .leave], "pb": [.join, .leave]]
     ),
 ]
-#endif
 
 /// A's held action is answered after A disconnected and A2 (a fresh SessionID, #652) joined
 /// as the same player: the stale answer reaches nobody. A2's own held action then ends with its
@@ -444,3 +443,4 @@ private func staleActionReplyRow(_ name: String, answerFirst: Bool) -> DiffScena
         lifecycle: ["pa": [.join, .leave, .join, .leave]]
     )
 }
+#endif
