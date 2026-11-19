@@ -72,6 +72,7 @@ jobs:
     # curl for the server readiness checks; apt retried on mirror errors (#453).
     - name: Install curl
       run: scripts/ci-apt-install.sh curl
+      timeout-minutes: 26  # above ci-apt-install.sh's worst case, 24 min 20 s (#659)
 
     # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
@@ -295,6 +296,7 @@ jobs:
     # curl for the server readiness checks; apt retried on mirror errors (#453).
     - name: Install curl
       run: scripts/ci-apt-install.sh curl
+      timeout-minutes: 26  # above ci-apt-install.sh's worst case, 24 min 20 s (#659)
 
     # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
@@ -408,6 +410,7 @@ jobs:
     # curl and lsof for the matchmaking scripts; apt retried on mirror errors (#453).
     - name: Install curl and lsof
       run: scripts/ci-apt-install.sh curl lsof
+      timeout-minutes: 26  # above ci-apt-install.sh's worst case, 24 min 20 s (#659)
 
     # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js

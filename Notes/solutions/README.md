@@ -158,3 +158,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [An explicit config still reads the environment through its stored defaults](2026-11-19-an-explicit-config-still-reads-the-environment.md) | testing, environment, transport-env-config, sync-tables, ci, test-selection |
 | 2026-11-19 | [A harness with its loops off must order the work it starts](2026-11-19-a-harness-with-its-loops-off-must-order-the-work-it-starts.md) | testing, differential, determinism, golden, sync, hold-points |
 | 2026-11-19 | [A Swift block in the Turns docs must appear in a tested file](2026-11-19-a-turns-doc-block-must-appear-in-a-tested-file.md) | documentation, turns, docc, testing, pre-push |
+| 2026-11-19 | [A retry loop catches failures, not hangs](2026-11-19-a-retry-loop-catches-failures-not-hangs.md) | ci, apt, retry, timeout, hang, shell |
