@@ -134,6 +134,9 @@ final class DiffRun: @unchecked Sendable {
     /// Answers of actions whose job outlived their turn (`held`): the barrier waits for them.
     private(set) var pendingAnswers = 0
     private(set) var live: DiffCapture?
+    /// Disconnects the router forwarded, counted at `forwardedHold` (observed in every run).
+    private var disconnects = 0
+    static let forwardedHold = DiffHold.router(.disconnectForwarded)
     private(set) var stopped = false
 
     var transport: WebSocketTransport { server.transport }
@@ -191,6 +194,7 @@ final class DiffRun: @unchecked Sendable {
         // The flip timeout off (`.zero` is none), and the join commits captured.
         await container.transportAdapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
         await container.transportAdapter.captureJoinCommitsForTesting()
+        run.holds.observe(forwardedHold)
         await server.landRouter.installHolds(run.holds.router.hook)
         await container.transportAdapter.installHolds(run.holds.adapter.hook)
         await container.keeper.installHolds(run.holds.keeper.hook)
@@ -273,6 +277,14 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("\(name)'s disconnect") { [transport] in
                 await transport.handleDisconnection(sessionID: attempt.session)
             }
+            // The router forwards the disconnect to the adapter in a task of its own: wait
+            // until it has returned from the adapter (its leave is submitted by then).
+            disconnects += 1
+            let forwarded = disconnects
+            let reached = try await bounded("\(name)'s disconnect forward") { [holds] in
+                await holds.gate(Self.forwardedHold)?.waitForArrivals(forwarded) ?? false
+            }
+            guard reached else { throw DiffRunFailure("\(name)'s disconnect was never forwarded") }
             // A tickless land applies the leave in a drain of its own: wait for it, so the
             // next step's inputs never share its pass (a tick land's scenario steps a tick).
             if cell.land == .tickless {
