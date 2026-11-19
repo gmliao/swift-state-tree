@@ -1,6 +1,6 @@
 # A differential test harness for TransportAdapter's adoption levels (#555)
 
-**Status:** rev 5, for review. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 5, GO (2026-11-19), with the review's last shoulds folded in. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
 **Rev 5** answers the review of rev 4 (432e4221):
 - a witness client B in each single-player disconnect row, and the turn that completes each join (§8);
@@ -168,7 +168,7 @@ A run ends at a defined point, not when its last step returns. The trap is the o
 The transport already has the right primitive. A `.flush(id)` element in a session's queue resumes its waiter when the drain reaches it (`flushSessionQueues`, `SessionFlushWaiters`). It is a barrier through the queue, not a wait for its end. The capture waits, in this order:
 The order follows what waits on what. An answer can wait for an input that still has to drain and for a tick that still has to apply, and a drain can start a sync after a first quiescence check. So:
 1. **The scenario's own work ends:** the runner's ingress tasks and any explicit `syncNow` tasks are joined, and the flips settle: no pending flip wait in the router. Step 1 adds that report. The flip is registered before its task is spawned, and the registration ends on every exit of `awaitFlip`, error sends included.
-2. **The adapters settle, as one pass, repeated until it finds all of them idle together:**
+2. **The adapters settle, as one pass, repeated until it finds all of them idle together, the whole loop under one deadline:**
    - the deferred inbound drains: the flip starts each in a task of its own (`TransportAdapter.swift:4130–4135`), and they produce frames after it. The harness awaits `waitForInboundDrainForTesting(session)` for each flipped session. That registry is filled in debug builds only, so the harness is compiled under `#if DEBUG`, as the suites that run it are;
    - `waitForActionResponsesFinishedForTesting` with the scenario's count of *pending* answers: actions whose job outlived their turn. It counts finished pending answers (`TransportAdapter.swift:5679`), so passing the total action count would hang when some actions reply directly;
    - each adapter's `waitForSyncQuiescenceForTesting`, which returns `Bool` (`TransportAdapter+Outbound.swift:179`). `false` fails the run.
@@ -181,12 +181,12 @@ The order follows what waits on what. An answer can wait for an input that still
   2. stops the land, under its own bound;
   3. closes the fake connections through the transport, under its own bound;
   4. awaits its own spawned tasks, under a final bound.
-- `waitForActionResponsesFinishedForTesting` installs a checked continuation (`TransportAdapter.swift:5679–5683`), so a count that can't be reached would leave it hanging past the run. Step 1 makes the waiter resume when its task is cancelled, and the runner cancels it in cleanup.
+- `waitForActionResponsesFinishedForTesting` installs a checked continuation (`TransportAdapter.swift:5679–5683`), so a count that can't be reached would leave it hanging past the run. Step 1 makes the waiter cancellable: each waiter has an ID, is removed under actor isolation and resumed exactly once, and checks for cancellation when it is installed. The runner keeps the task handle, because `raceDeadline` starts the work unstructured, and cancels it in cleanup.
 - Every run builds its own transport, manager, router and adapters. Work left running after the final bound touches only that run's instances, never the next run's.
 
 **Two checkpoints.** The stop produces leaves, closes and record entries of its own, so a capture taken before it misses them, and one taken only after it misses the live state.
 - **Live:** the barrier, then a capture of frames, closes and responses. Convergence is checked here (§5.6).
-- **Terminal:** stop each land once and wait for its stop flight to finish, then the barrier again, a second capture, and then the record (§5.5). The public stop can return `timedOut: true` while teardown goes on (`NIOLandServer.swift:154–185`, `224–235`). In that case the runner waits for the flight itself, under a bound, and a run whose stop never finishes fails.
+- **Terminal:** stop each land once and wait for its stop flight to finish, then the barrier again, a second capture, and then the record (§5.5). The public stop can return `timedOut: true` while teardown goes on (`NIOLandServer.swift:154–185`, `224–235`). In that case the runner waits for the flight itself, under a bound, and a run whose stop never finishes fails. The flight registry's `flight(for:)` is get-or-create, and its entry is removed when the flight completes (`NIOLandServer.swift:499–534`), so a lookup after a timeout could start a second flight. The stop entry the harness uses hands back the original `Flight.task`, and the runner awaits its value. The sessions-closed latch and the after-destroy hook fire before the flight completes, so neither is the signal.
 
 **Positive milestones.** Each scenario lists what it must observe before capture. Examples: the join reply and the first sync for each session; each input applied; each response; each close. A milestone that isn't observed fails the run. A scenario with no milestone is refused as vacuous. So two empty captures can't compare equal.
 
@@ -328,13 +328,19 @@ The rows of §2's tables, each with a check:
 
 **TestGate in the NIO target** comes from the shared test-support target (§3).
 
-**A witness client.** Each single-player race row (`beforeAdmit`, `afterAdmit`, the two send holds, `.admitJoinEntry`, keeper `.join`, `registerSession`) has a second client B. B joins and settles before the race, and stays. So the live checkpoint has a client to check convergence on, and B's frames show whether A's race leaked anything to the others. B's joins and syncs have finished before any `membershipQueued` observer is installed (§8.1).
+**A witness client.** Each single-player race row (`beforeAdmit`, `afterAdmit`, the two send holds, `.admitJoinEntry`, keeper `.join`, `registerSession`) has a second client B. B joins and settles before the race, and stays. So the live checkpoint has a client to check convergence on, and B's frames show whether A's race leaked anything to the others. "B settled" means that, before the observer is installed, B's ingress, its router flip and its sync work have all been awaited, with both join timers already off when B joins (§8.1). The race fixtures admit two players, and their `CanJoin` admits A while B is present.
 
-**Which turn completes a join.** On a tick land the runner steps `stepTickOnce()` until the join's lifecycle input has applied, before the next step and before each checkpoint. On a tickless land the input's own turn applies it. With in-turn sync on, the join's flip completes in the sync phase of the turn that applied it; with it off, in the router's own path. The runner waits for each through the barrier's flip report (§5.3).
+The plain join–act–leave row has no witness, so its live checkpoint comes before its final leave.
+
+**Loops off, every input stepped.** The harness builds the assembly with `autoStartLoops: false` (`LandKeeper.swift:1169`), so no tick or sync runs during a hold, changes a capture, or keeps the settle pass busy. So the runner steps every input itself, not only joins:
+- **Tick land:** after each step that submits inputs (a join, an action, a leave), the runner calls `stepTickOnce()` until those inputs have applied, before the next step and before each checkpoint.
+- **Tickless land:** the input's own turn applies it.
+- **The flip:** with in-turn sync on, an in-turn join's flip can complete in a later turn than the one that applied the join, because it also waits for the transport's registration (`TransportAdapter.swift:2218–2225`). So the runner steps until the barrier's flip report (§5.3) shows no pending flip. With in-turn sync off, the flip is the router's own path.
+- **The tick stop row:** the runner steps after both leaves have enqueued and before the stop, so the leaves apply in the order the holds forced.
 
 **Timers pinned off.** The join budget (the router's, `LandRouter.swift:1227–1262`) can end an attempt held before admission, and the flip timer can enqueue `timeOutJoin` on the membership queue (`startJoinWaiter`, `TransportAdapter.swift:1687–1698`). That enqueue passes `membershipQueued` too, and could be counted as the disconnect's arrival. On a slow CI runner a hold can last as long as either budget. So every scenario runs with both off:
 - the router's budget override set to `.zero`, which already means none (`LandRouter.swift:229–232`);
-- the flip timeout through `setJoinFlipLimitsForTesting`. Step 1 makes a `.zero` timeout there mean none, as the router's override does. Today `nil` only means "no override", and the 12 s `JOIN_TIMEOUT_MS` default would still apply.
+- the flip timeout through `setJoinFlipLimitsForTesting`. Step 1 makes an explicit `.zero` there mean none, as the router's override does. Today `nil` only means "no override", and the 12 s `JOIN_TIMEOUT_MS` default would still apply. The "none" branch is taken only for the explicit override, before the fallback: a `.zero` computed by `JoinTimeoutConfig.flipWait(deadline:)` from an expired deadline keeps today's immediate timeout. No caller passes `.zero` to the setter today.
 
 Arrivals are counted from the moment the observer is installed.
 
@@ -399,14 +405,16 @@ For each row: where the hold stops, what the scenario does while it is closed, t
   4. A disconnects through the transport. The router's chain → `adapter.onDisconnect` → the leave rejects the pending job, whose answer reaches `finishActionResponse` → `holds.at(.actionResponse)` (`:5636`). The milestone is the hold's arrival; the answer runs in its own task, outside the membership queue.
   5. The runner awaits the transport's own disconnect, the `handleDisconnection` call it made, which clears `closingSessions` before it returns (`WebSocketTransport.swift:411–418`, `452–477`). `disconnectForwarded` comes from the router's task and doesn't show that.
   6. A2 connects with the same `SessionID`. The runner requires that the connection was accepted and that A2's join finished. Then A2 sends an action of its own, whose resolver is held too.
-  7. Release A's `actionResponse` hold, then `waitForActionResponsesFinishedForTesting(1)` for A's answer, then a flush. A's checkpoint: no reply and no error frame for A's request ID on A or A2, matched by request ID in replies and in `ErrorPayload.details["requestID"]`. With the mutant, the stale answer goes out as an error frame stamped with A2's generation, so the error-frame match is what catches it.
+  7. Release A's `actionResponse` hold, then `waitForActionResponsesFinishedForTesting(1)` for A's answer, then `waitForOutboundIdleForTesting()`, then a flush. The waiter returns once the answer is in the adapter's writer (`TransportAdapter.swift:5671–5683`), and the flush covers only frames already handed to the transport (`WebSocketTransport.swift:502–511`), so the outbound wait sits between them. A's checkpoint: no reply and no error frame for A's request ID on A or A2, matched by request ID in replies and in `ErrorPayload.details["requestID"]`. With the mutant, the stale answer goes out as an error frame stamped with A2's generation, so the error-frame match is what catches it.
   8. Release A2's resolver, then wait for a count of 2. A2's own action gets its reply.
+  9. A's resolver gate is opened and its job's cleanup awaited, as `TransportAdapterActionJobTests:286–309` does. The resolver has its own 5 s deadline (`ResolverDeadline.swift:23`), so the join timers being off doesn't make this row deterministic by itself.
 - **cycleBeforeEndSync.** A legacy cycle is started explicitly, `Task { adapter.syncNow() }`, as `syncDuringLegacyCycleRunsAfterEndSync` does. It stops at `holds.at(.cycleBeforeEndSync)` (`:3222`), holding the keeper's sync flag and suspended on the adapter.
   - While held: B starts a join. Milestone: B's `admitJoinEntry`, observed. The router reaches it through `preparePlayerSession`, an adapter call that the suspended cycle doesn't block. Nothing waits on the sync flag before it.
   - Release: the cycle's `endSync`, then B's admission, initial sync and the rest, all captured by the barrier.
 - **Land stop.** `closeSessions(boundTo:)` snapshots A and B and reaches the task group. Each task stops at `stopLeave(<its session>)`, before its `adapter.onDisconnect`.
   - Milestone: both holds reached. Neither leave is in the membership queue yet.
   - Release `stopLeave(A)` → A's `adapter.onDisconnect` → `enqueueMembership` → `membershipQueued`, observed (A is in the queue). Then release `stopLeave(B)`, so B's leave queues behind A's.
+  - On a tick land, `stepTickOnce()` after both leaves have enqueued, so they apply in the forced order.
   - Then the barrier, the terminal capture and the record.
 
 **Growth.** Each slice's PR adds scenarios for the orders it moves, each with its cell rule, and names the hold points it adds. A slice that moves a path no scenario holds adds the hold point first, as its own commit. A slice's review checks that every await the slice removes or adds has a scenario holding it.

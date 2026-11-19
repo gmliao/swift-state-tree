@@ -38,7 +38,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-13 | [A player's second session gets no per-player changes (#531): findings and fix spec](2026-11-13-second-session-findings.md) | open | Rev 5, decided (2026-11-13): spec GO; Q1 = A (the realtime adapter's rule, `.replaceOld` only), Q2 = (a), Q3 = (a) (stays public, with the keeper check); implementation next; several sessions per player deferred to #539: reachable only through the public `registerSession`, for cached diffs; recipient order unspecified. Fix spec under option A: supersede in `registerSession`, run it in the membership queue, write its connection generation under a ticket, refuse a registration the keeper's entry doesn't name, generation-aware delayed closes. Q1–Q3 are the maintainer's (recommended: A with the keeper check; keep the multi-session branches with an assertion; keep `registerSession` public). |
 | 2026-11-18 | [SwiftStateTurns: the turn core target (#551)](2026-11-18-swift-state-turns-core.md) | open | #551 (part of #546). Rev 2, GO; implementation next |
 | 2026-11-18 | [Extract TransportAdapter's stateless encoding and frame-building code (#554)](2026-11-18-adapter-stateless-extraction.md) | open | #554 (part of #546, step 3). Rev 1, for review |
-| 2026-11-19 | [A differential test harness for TransportAdapter's adoption levels (#555)](2026-11-19-adapter-differential-harness.md) | open | #555 (part of #546). Rev 5, for review |
+| 2026-11-19 | [A differential test harness for TransportAdapter's adoption levels (#555)](2026-11-19-adapter-differential-harness.md) | open | #555 (part of #546). Rev 5, GO; step 1 next |
 
 ## Reevaluation and replay
 
