@@ -135,6 +135,14 @@ jobs:
       run: swift test -c release --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
       timeout-minutes: 40
 
+    # Nightly only: the same tests in release with the turn core's runtime exclusivity checks
+    # back on (TURNS_EXCLUSIVITY_CHECKED lifts `@exclusivity(unchecked)` on its stored state,
+    # #624), so an overlapping access the unchecked build would let through traps here.
+    - name: Run the turn core's tests in release with exclusivity checked
+      if: ${{ inputs.full_matrix }}
+      run: swift test -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
+      timeout-minutes: 40
+
     - name: Check the step path's specialization
       run: scripts/check-turns-inlinable.sh
 
@@ -368,9 +376,10 @@ jobs:
 
   # The deep-research Python tests, in a job of their own: they need no Swift build, so they run
   # beside the Swift jobs instead of after the examples job's builds. On the runner itself, not
-  # in the Swift image: the tests use stand-in `swift` binaries and need only Python, git and
-  # Node, and the image has no python3 binary. Python 3.12 and Node 20 come from official
-  # builds, so the job doesn't depend on the Ubuntu mirrors (#453, #635); the full history.
+  # in the Swift image: the tests need no Swift build and no particular Swift version, only
+  # Python, git and Node, and the image has no python3 binary. Python 3.12 and Node 20 come
+  # from official builds, so the job doesn't depend on the Ubuntu mirrors (#453, #635); the
+  # full history.
   deep-research-tests:
     runs-on: ubuntu-22.04
     steps:
