@@ -44,8 +44,9 @@ COUNTS=$(grep -E "^Differential harness: [0-9]+ cell\(s\) compared" "$LOG" | tai
 [[ -n "$COUNTS" ]] || { echo "differential-gate: the harness suite didn't run" >&2; exit 1; }
 RAN=$(sed -E 's/^Differential harness: ([0-9]+) cell.*/\1/' <<< "$COUNTS")
 MASKED=$(sed -E 's/.* ([0-9]+) masked.*/\1/' <<< "$COUNTS")
-echo "differential-gate: $RAN compared, $MASKED masked, $LISTED listed"
-[[ "$RAN" -gt 0 && "$MASKED" == "0" && "$RAN" == "$LISTED" ]] \
+REPLACED=$(sed -E 's/.* ([0-9]+) replaced.*/\1/' <<< "$COUNTS")
+echo "differential-gate: $RAN compared, $REPLACED replaced (retired rows), $MASKED masked, $LISTED listed"
+[[ "$RAN" -gt 0 && "$MASKED" == "0" && $((RAN + REPLACED)) == "$LISTED" ]] \
     || { echo "differential-gate: the counts don't cover the index" >&2; exit 1; }
 if grep -q "decoded views only" "$LOG"; then
     echo "differential-gate: the goldens weren't recorded with this toolchain; bytes weren't compared" >&2
