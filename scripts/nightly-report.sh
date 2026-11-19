@@ -72,9 +72,10 @@ while IFS= read -r candidate; do
     break
   fi
 done <<< "$greens"
-# Every job that didn't pass: failed, cancelled or timed out.
+# Every completed job that didn't pass: failed, cancelled or timed out. Not this report job: it
+# is still in progress, and gh gives such a job `"conclusion": ""`, not null.
 failed=$(gh run view "$GITHUB_RUN_ID" --json jobs \
-  --jq '.jobs[] | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped") | "- \(.name) (\(.conclusion))"')
+  --jq '.jobs[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped") | "- \(.name) (\(.conclusion))"')
 if [ -n "$last" ]; then
   range="Commits since the last green scheduled nightly ($last):"
   commits=$(git log --oneline "$last..$sha")
