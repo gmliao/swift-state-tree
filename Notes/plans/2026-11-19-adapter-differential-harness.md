@@ -1,48 +1,164 @@
 # A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 6 (2026-11-19): the delta below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 7 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
-## Rev 6: one rewrite branch, compared with golden captures
+## Rev 7: one rewrite branch, compared with golden captures
 
 **Decision (maintainer, 2026-11-19).** #546 rewrites `TransportAdapter` onto the turn core on one branch, in one go, instead of slice by slice behind an adoption level on `main`. The harness compares that branch with golden captures recorded on `main`. This section is the delta. Where it and the sections below disagree, this section holds. Q3 and everything else the review passed in rev 5 stay.
 
-**What stays.** The harness still lands on `main` first: the scenarios and holds (§8), the barrier and the two checkpoints (§5.3), the stable identities (§5.4), the record capture and its field list (§5.5), the property oracle (§5.6) and the comparator's strictness (§5.7). Both approaches need them.
+Rev 7 answers the review of rev 6 (b4ac6e88): cross-process stability of the goldens, holds as semantic boundaries, the freeze from recording on, the protected paths and the gate, the nondeterminism inventory, and the decoded-view check.
+
+**What stays.** The harness still lands on `main` first: the scenarios (§8), the barrier and the two checkpoints (§5.3), the stable identities (§5.4), the record capture and its field list (§5.5), the property oracle (§5.6) and the comparator's strictness (§5.7). Both approaches need them.
 
 **Dropped.**
 - §4 as a whole: no `TransportAdapterAdoption`, no `TRANSPORT_ADAPTER_ADOPTION` key, no `adoption` parameter on `LandManager` or the adapter, no configuration override, and no startup refusal. Step 1 had them in code; they are taken out again before its PR, so no new server setting ships.
 - The in-process comparison of two levels, and the clean capture under `.build` (§7 (b)).
 - §1's "one level only until slice 1" and §9's "twice that once a second level exists".
 
-**Changes by section.**
-- **§1 Goal.** The two implementations are `main`'s adapter, as recorded in its golden captures, and the rewrite branch's adapter. Each runs in its own build. The harness ships on `main` before the rewrite, and its own checks (§7) run against `main`.
-- **§2 Prior art.** Differential testing still applies: two implementations, the same inputs. The reference side's outputs are stored rather than produced in the same run, so the golden table's failure modes now cover every scenario, not two.
-- **§3 Assembly.** Unchanged except that the build no longer forwards a level. Step 1 as built: the build is `NIOLandServer`'s `package` init with `autoStartLoops`, which the public init calls with `true`; `attach()` installs the router as the transport's delegate, and the host awaits it before the route goes live. Two findings change §3's text:
-  - the failure-stop wiring stays in the init, which is synchronous and runs before any land exists, so `attach()` only installs the delegate;
-  - `Deadline` stays in `Sources`: `WebSocketSessionHandler` uses `raceDeadline` for its close grace. So the support target holds `TestGate` and `RecordingConnection`, and `SwiftStateTreeTests` doesn't need to depend on it.
-- **§5.1 Shape.** A run produces one `RunResult` per scenario and cell from the build's own adapter. The runner takes no level.
-- **§5.7 Comparison.** The branch's `RunResult` is compared with the golden capture for the same scenario and cell. Frames are still compared byte for byte, so a golden file stores each frame's exact bytes next to its decoded view. The report shows both decoded frames, as before.
-- **§5.8 Golden captures (replaces it).**
-  - **Set:** every scenario, in every cell it applies to (sync mode × land kind × encoding). One file per scenario and cell, at the path §5.8 gives.
-  - **Format:** stable and diffable. JSON with sorted keys; per connection, each frame as base64 bytes plus its decoded JSON; the closes; the responses; and the decoded record with the replaced fields (§5.5) set to their constants. The file names the `main` commit it was recorded at.
-  - **Recording:** on `main` only, with `SST_UPDATE_GOLDEN=1`. The update runs each scenario twice in each cell. If the two runs differ, it writes nothing for that cell and fails, naming the first difference. It also writes nothing when the property oracle (§5.6) fails on the run, so a shared bug isn't frozen into a golden.
-  - **Changes on `main`:** a PR that changes shared code and re-records goldens names each changed file, and review reads the diffs. The rewrite branch picks them up by merging `main`.
-  - **On the rewrite branch:** the goldens are read-only. The branch's PR CI checks that `Tests/SwiftStateTreeNIOTests/Differential/Golden/` is the same as on `main` (a `git diff --quiet` against the merge base), so a golden can't be re-recorded to match the branch.
-- **§6 Expected differences.** The list applies to golden versus branch. `legacy:` becomes `golden:` and `adopted:` becomes `branch:`; the rules (exact, one cell, one use, stale and overlap fail, masked cells) are unchanged. The first list moves from slice 1 to the rewrite branch: the #548 entry, and the pre-admission disconnect as no difference (Q3). For #588, each refusal source is compared with its golden.
-- **§7 Checks of the harness.**
-  - **(a) Determinism:** the double run moves into recording (§5.8 above). A normal run compares each cell once with its golden.
-  - **(b) Mutants:** each mutant's run is compared with the golden captures, and the scenario that claims its channel must fail.
-  - **(d) Golden:** adds a check that an update whose two runs differ writes nothing.
-  - **(f) Oracle:** a mutant that breaks a property on `main` must fail the recording, not only a normal run.
-  - (c), (e) and (g) are unchanged.
-- **§8 Scenarios and holds.** Unchanged. The hold points the rows use (§8.1) and the test hooks of §5.3 and §5.4 become the harness's interface to the adapter. The rewrite branch keeps each one at the matching await of its own code, and the reach rule still fails a hold that isn't reached. Where the rewrite removes the race a row forces, the row moves to the expected list or is retired, with the reason in the branch's PR.
-- **§9 Matrix and CI cost.** One run per cell in CI: about 162 runs in the unrestricted leg and 84 in the `IN_TURN_SYNC=false` leg. Recording runs twice per cell, on `main`, only when goldens are updated. Step 2 also states the golden set's file count and size.
-- **§10 What it can't see.** E2E and the load test compare the branch's server build with `main`'s, as for any PR; there is no level to choose.
-- **§11 Steps.** Step 1 loses the adoption items. Step 2 records goldens for every scenario and adds the read-only check. Step 3 is the rewrite branch (#546) instead of slice 1.
+### Goal and prior art (§1, §2)
 
-**Rewrite branch rules.**
-- **Freeze:** while the branch is open, the adapter's files on `main` (`Sources/SwiftStateTreeTransport/TransportAdapter*.swift`, `MembershipCoordinator.swift`, `AdapterErrorMapping.swift`) take no changes except the harness's own hooks. A fix that can't wait goes to the maintainer, and lands on the branch in the same change.
-- **Commits:** sized so Review can take them one at a time. The branch merges `main` to stay current, never rebases.
-- **Merge:** when every scenario in every cell matches its golden capture or a listed expected difference, the property oracle passes, and the usual gates pass.
+The two implementations are `main`'s adapter, as recorded in its golden captures, and the rewrite branch's adapter. Each runs in its own build and process. The harness ships on `main` before the rewrite, and its own checks (§7) run against `main`.
+
+Differential testing still applies: two implementations, the same inputs. But the reference side's outputs are stored, not produced in the same run. Two things follow:
+- the golden table's failure modes now cover every scenario;
+- variation that both sides used to share in one process (the hash seed, the platform, the toolchain) no longer cancels out. The goldens have to be stable across processes, below.
+
+### Assembly and test support (§3)
+
+Unchanged except that the build forwards no level. Step 1 as built:
+- the build is `NIOLandServer`'s `package` init with `autoStartLoops`, which the public init calls with `true`;
+- `attach()` installs the router as the transport's delegate, and the host awaits it before the route goes live;
+- the failure-stop wiring stays in the init, which is synchronous and runs before any land exists, so `attach()` only installs the delegate.
+
+`Deadline` stays in `Sources` for now. No library code calls `raceDeadline`: `WebSocketSessionHandler`'s close grace uses the event loop's `scheduleTask`. Its callers are tests in all three test targets. Moving it would make `SwiftStateTreeTests` depend on the support target, which step 1 doesn't otherwise need, so the move is a later cleanup. The support target holds `TestGate`, `RecordingConnection` and the record field walk and list.
+
+### Golden captures (§5.8, replaced)
+
+**Rules of §5.8 that stay:** the folder found from the harness's own source file (`#filePath`), with no `resources:` entry; frame-changing env settings pinned through the harness's parameters, else in the file's key; the update key as a named constant beside the harness, printing the changed paths; a PR that changes a golden names each file, and review reads the diff; a missing file fails. **Replaced:** the set, the format, what is compared, and how files are recorded.
+
+**Set.** Every scenario, in every cell it applies to (sync mode × land kind × encoding), one file per scenario and cell. An index file in the golden folder lists every expected scenario and cell. A cell without a file fails, and so does a file that no scenario and cell claims.
+
+**Format.** JSON with sorted keys, stable and diffable:
+- per connection, each frame as base64 bytes plus its decoded view;
+- the closes and the responses;
+- the record as base64 bytes of the saved file plus its decoded view, with the replaced fields (§5.5) set to their constants;
+- the commit, platform and Swift version it was recorded with.
+
+**A golden's decoded view is checked against its bytes,** when it is recorded and each time it is compared. The harness decodes each frame's bytes with the cell's encoding, and the record's bytes with the record decoder and the field rules. Each must equal the stored decoded view. At recording, a mismatch writes nothing; at comparison, the file fails as corrupt. So review can trust the readable diff: a decoded view can't differ from its bytes.
+
+**Nondeterminism inventory.** Every value that can reach a capture without being fixed by the code under test, and how it is pinned. The list comes from a search of the library's sources for `UUID()`, `Date()`, `random` and process identity, plus hash-seeded order. It is the full list; the five-process recording below catches a source it misses.
+
+| Value | Where it reaches a capture | Pinned by |
+|---|---|---|
+| `ClientID` (random six characters) | record entries, event targets | the client-ID supplier, by connection attempt (§5.4) |
+| `SessionID.mint()` (random UUID) | frames, record | not used: the runner names every session (§5.4) |
+| `LandID.generate` (random instance) | frames, record | not used: every join and create names its instance |
+| player IDs, request IDs, join metadata | frames, record | fixed in the scenario (§5.4) |
+| record `createdAt` | record metadata | a replaced field, set to a constant (§5.5) |
+| record `hardwareInfo` | record metadata | a replaced field, set to a constant (§5.5) |
+| `rngSeed` and the land's `random` | record metadata, state | derived from the land ID, which the scenario fixes |
+| tick IDs, sequences, sync marker indices | frames, record | advanced only by stepped inputs: loops off, every input stepped (§8) |
+| dictionary and set order | any encoded map | not pinned in-process: per-process hash seeds; caught by the five-process recording |
+| real ports and addresses | none | the fake connections have none (§5.2) |
+| join budget and flip timer | whether a join times out | pinned off (§8) |
+| resolver deadline (5 s) | a held resolver's outcome | each held resolver's gate is opened before its deadline matters (§8.1, `actionResponse`) |
+
+Wall-clock values outside this list don't reach a capture: the land manager's activity and creation times and the transport's log throttling feed admin routes and logs, which aren't compared (§3), and the recorder's spool file name is a path, not record content.
+
+**Cross-process stability.** Swift seeds hashing per process, so dictionary and set order can differ between two processes and agree within one. Recording therefore:
+- runs in the pinned `swift:6.2.4-noble` image, the one CI uses, through a script step 2 adds;
+- runs the harness in five separate `swift test` processes, each writing its candidates to its own folder, with `SWIFT_DETERMINISTIC_HASHING` unset (the recorder refuses if it is set);
+- runs the harness suite serialized within each process;
+- writes nothing unless all five folders are byte-identical. A difference fails, naming the scenario, cell and first differing field.
+
+Five, not two: an order over two keys agrees between two seeds half the time, so two processes miss a seed dependency often; five miss it one time in sixteen. After that, every CI run is one more fresh process compared with the goldens, so a dependency that slipped through shows as a failing cell with its decoded diff.
+
+The recording also writes nothing when the property oracle (§5.6) fails on any of the runs, so a shared bug isn't frozen into a golden.
+
+**Where it is the gate.** The CI jobs in the pinned image compare bytes and decoded views. A run on another platform or toolchain (a local macOS run on Swift 6.3) compares the decoded views only and skips the byte comparison. It prints one line naming the golden's platform and Swift version and its own, and says the pinned-image CI is the gate.
+
+**Recording on `main`.** Only with `SST_UPDATE_GOLDEN=1`, through the script, on a branch for `main`. Step 2 lands the recorder and the first goldens in one PR:
+- the code commits come first;
+- the goldens are recorded by the script at the last code commit, in their own commit that adds only golden files and names that commit;
+- the PR's CI then compares the goldens in a fresh process, which is the first cross-process check after the five;
+- Review checks that the golden commit touches only the golden folder and names the commit before it.
+
+### Expected differences (§6)
+
+The list applies to golden versus branch. `legacy:` becomes `golden:` and `adopted:` becomes `branch:`. The rules (exact, one cell, one use, stale and overlap fail, masked cells) are unchanged. The first list moves from slice 1 to the rewrite branch: the #548 entry, and the pre-admission disconnect as no difference (Q3). For #588, each refusal source is compared with its golden.
+
+### Checks of the harness itself (§7)
+
+- **(a) Determinism:** the five-process recording above. A normal run compares each cell once with its golden.
+- **(b) Mutants:** each mutant's run is compared with the goldens, and the scenario that claims its channel must fail.
+- **(d) Golden:** adds three checks:
+  - an update whose processes differ writes nothing;
+  - a golden whose decoded view doesn't match its bytes is refused at recording and fails at comparison;
+  - under the verify key (below), `SST_UPDATE_GOLDEN=1` fails the run at start.
+- **(f) Oracle:** a mutant that breaks a property on `main` must fail the recording, not only a normal run.
+- (c), (e) and (g) are unchanged.
+
+### Holds as semantic boundaries (§8)
+
+A rewrite onto the turn core can't keep "the matching await": inside a turn there is none, and the adapter's operations change shape. So each hold is defined by a semantic boundary, and every gate sits outside the adapter's turns. A hold is one of:
+- **(a) A neighbour's boundary:** a hold point in the router, the keeper or the transport, or a gated land resolver. These components aren't rewritten, so the hold is the same on both sides.
+- **(b) The adapter's input boundary:** where a call enters the adapter, before its input is accepted; or where an input is accepted and waits for its turn. Both are outside any turn. The branch provides each such hold under the same name.
+
+No hold sits inside a turn, or between two awaits of one adapter operation. The rows map as follows; step 2 moves the rows that need it before recording.
+
+| Row's hold | Kind | Boundary |
+|---|---|---|
+| router `beforeAdmit`, `afterAdmit`, `sendingJoinResponse`, `sendingInitialSync`, `stopLeave` | (a) | unchanged |
+| keeper `.join` | (a) | unchanged |
+| adapter `membershipQueued` (the disconnect's arrival) | (b) | a membership input accepted, waiting for its turn |
+| adapter `admitJoinEntry` | (b) | a join enters the adapter, not yet accepted |
+| adapter `registerSession` | (a), moved | the transport receives the session's registration, after the keeper's admission |
+| adapter `actionResponse` | (b) | an action job's answer arrives at the adapter, before it is accepted |
+| adapter `cycleBeforeEndSync` | (a), moved | the keeper's end of the sync phase, while the cycle holds the sync flag; step 2 adds the keeper hold point if none exists |
+| #548's `endSessionTicketsForTeardown()` | (b) | the teardown request enters the adapter while the keeper's `.join` is held |
+
+The test hooks of §5.3 and §5.4 keep their meaning on the branch. One that returns early leaves frames or record entries out of the capture, and the golden comparison reports that.
+
+**Retired rows.** Where the rewrite removes the race a row forces, the row can be retired:
+- it needs a replacement test of the invariant the row protected;
+- it goes in a "retired rows" list in the branch PR, with the reason and the test;
+- Main approves each one after Review, and the maintainer is told of the list at merge.
+
+### Matrix and CI cost (§9) and what it can't see (§10)
+
+- One run per cell in CI: about 162 runs in the unrestricted leg and 84 in the `IN_TURN_SYNC=false` leg. Recording runs five times per cell, on `main`, only when goldens are updated. Step 2 states the golden set's file count and size.
+- E2E and the load test compare the branch's server build with `main`'s, as for any PR. There is no level to choose.
+
+### Freeze, protection and the gate
+
+**Freeze.**
+- It starts when the goldens are recorded, at step 2's merge, and ends when the rewrite branch merges.
+- While it holds, the adapter's files on `main` (`Sources/SwiftStateTreeTransport/TransportAdapter*.swift`, `MembershipCoordinator.swift`, `AdapterErrorMapping.swift`) take only the harness's own hooks.
+- A fix that can't wait goes to the maintainer. Its PR re-records the cells it changes, with the diffs reviewed, and the same fix lands on the branch.
+- **#638** lands before step 2 records. If it slips, step 2 doesn't wait: #638 re-records the hybrid cells in its own PR, and Review checks that the golden diff is empty.
+
+**Protected paths.** The branch may not change:
+- the golden folder and its index;
+- the harness's runner, scenarios, barrier, comparator and oracle (`Tests/SwiftStateTreeNIOTests/Differential/`), except the expected-difference list (`ExpectedDifferences.swift`);
+- the record field walk and list, including the replaced fields (`Tests/SwiftStateTreeTestSupport/RecordField*.swift`).
+
+A change to them goes to `main` first, under the same review, and reaches the branch by merging `main`.
+
+**The gate.** A required job on the branch's PR:
+1. fetches `main` and requires that the branch contains its current tip (`git merge-base --is-ancestor origin/main HEAD`);
+2. requires that the protected paths equal `main`'s tip (`git diff --quiet origin/main HEAD -- <paths>`);
+3. runs the harness in the pinned image with the verify key `SST_DIFFERENTIAL_VERIFY=1`. Under it, `SST_UPDATE_GOLDEN=1` fails at start, and a missing golden is fatal, as it always is.
+
+**Branch rules.**
+- Commits are sized so Review can take them one at a time.
+- The branch merges `main` to stay current, and never rebases.
+- It merges when every scenario in every cell matches its golden or a listed expected difference, the oracle passes, the gate passes, and the usual gates pass.
+
+### Steps (§11)
+
+- Step 1 loses the adoption items.
+- Step 2 adds the harness, the recorder script, the index, the semantic-boundary moves (`registerSession`, `cycleBeforeEndSync`), the gate job's script, and the first goldens in their own commit.
+- Step 3 is the rewrite branch (#546), instead of slice 1.
 
 **Rev 5** answered the review of rev 4 (432e4221):
 - a witness client B in each single-player disconnect row, and the turn that completes each join (§8);
