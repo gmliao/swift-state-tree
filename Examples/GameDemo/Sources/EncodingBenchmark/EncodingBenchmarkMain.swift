@@ -16,7 +16,7 @@ import SwiftStateTreeMessagePack
 struct LandRoomContext<State: StateNodeProtocol>: Sendable {
     let landID: LandID
     let keeper: LandKeeper<State>
-    let adapter: TransportAdapter<State>
+    let adapter: TransportAdapterBenchmarkHandle<State>
     let transport: CountingTransport
 }
 
@@ -131,7 +131,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             logger: benchmarkLogger
         )
         
-        let adapter = TransportAdapter<State>(
+        let adapter = TransportAdapterBenchmarkHandle<State>(
             keeper: keeper,
             transport: transport,
             landID: landID.stringValue,
@@ -142,8 +142,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             suppressMissingPathHashesWarning: !format.usesPathHash,
             logger: benchmarkLogger
         )
-        await keeper.setTransport(adapter)
-        await transport.setDelegate(adapter)
+        await keeper.setTransport(adapter.keeperTransport)
+        await transport.setDelegate(adapter.transportDelegate)
         if let recorder = await keeper.getReevaluationRecorder() {
             // As LandManager sets it, with a fixed creation date and this run's land knobs.
             await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -462,7 +462,7 @@ func runMultiRoomBenchmark(
             logger: benchmarkLogger
         )
         
-        let adapter = TransportAdapter<HeroDefenseState>(
+        let adapter = TransportAdapterBenchmarkHandle<HeroDefenseState>(
             keeper: keeper,
             transport: transport,
             landID: landID.stringValue,
@@ -474,8 +474,8 @@ func runMultiRoomBenchmark(
             logger: benchmarkLogger
         )
         
-        await keeper.setTransport(adapter)
-        await transport.setDelegate(adapter)
+        await keeper.setTransport(adapter.keeperTransport)
+        await transport.setDelegate(adapter.transportDelegate)
         
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
@@ -873,7 +873,7 @@ func runBenchmark(
         logger: benchmarkLogger
     )
 
-    let adapter = TransportAdapter<BenchmarkState>(
+    let adapter = TransportAdapterBenchmarkHandle<BenchmarkState>(
         keeper: keeper,
         transport: mockTransport,
         landID: "benchmark-land",
@@ -885,8 +885,8 @@ func runBenchmark(
         logger: benchmarkLogger
     )
     
-    await keeper.setTransport(adapter)
-    await mockTransport.setDelegate(adapter)
+    await keeper.setTransport(adapter.keeperTransport)
+    await mockTransport.setDelegate(adapter.transportDelegate)
 
     // Connect players
     let playerIDs = (0 ..< playerCount).map { PlayerID("player-\($0)") }

@@ -50,7 +50,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         public let landID: LandID
         public let keeper: LandKeeper<State>
         public let transport: WebSocketTransport
-        public let transportAdapter: TransportAdapter<State>
+        package let transportAdapter: TransportAdapter<State>
         /// Identifies this instance among all instances stored under `landID` over time, so a
         /// callback of a destroyed instance never removes its replacement.
         public let epoch: Epoch
@@ -68,7 +68,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         ///   - transportAdapter: The adapter connecting keeper and transport.
         ///   - epoch: The instance's epoch (`LandManager` assigns one per created instance).
         ///   - logger: Optional logger instance.
-        public init(
+        package init(
             landID: LandID,
             keeper: LandKeeper<State>,
             transport: WebSocketTransport,
