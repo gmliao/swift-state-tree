@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 284" width="800" height="284" role="img" aria-label="A supersede over time: start begins generation 2; generation 1's request is abandoned, its late result is stale, and its queued inputs are withdrawn">
+  <title>A supersede over time: start begins generation 2; generation 1's request is abandoned, its late result is stale, and its queued inputs are withdrawn</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#24292f"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, "PingFang TC", "Noto Sans CJK TC", sans-serif; fill: #24292f; }
+    .lane { font-size: 13px; font-weight: 600; }
+    .s { font-size: 12px; }
+    .n { font-size: 12px; fill: #57606a; }
+    .l { stroke: #24292f; stroke-width: 1.5; fill: none; marker-end: url(#a); }
+    .d { stroke: #8c959f; stroke-width: 1; stroke-dasharray: 4 4; }
+  </style>
+  <rect x="0" y="0" width="800" height="284" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+  <text class="lane" x="20" y="52">key player 7</text>
+  <text class="lane" x="20" y="108">load (gen 1)</text>
+  <text class="lane" x="20" y="164">chat (queued)</text>
+  <path class="l" d="M150,250 L780,250"/>
+  <text class="n" x="780" y="270" text-anchor="end">time →</text>
+  <rect x="170" y="38" width="230" height="20" rx="4" fill="#eef4ff" stroke="#0550ae"/>
+  <text class="s" x="285.0" y="52" text-anchor="middle">generation 1</text>
+  <rect x="400" y="38" width="370" height="20" rx="4" fill="#eefbf0" stroke="#1a7f37"/>
+  <text class="s" x="585.0" y="52" text-anchor="middle">generation 2</text>
+  <rect x="180" y="94" width="220" height="20" rx="4" fill="#fff8e6" stroke="#9a6700"/>
+  <text class="s" x="290.0" y="108" text-anchor="middle">request of generation 1</text>
+  <circle cx="700" cy="104" r="5" fill="#24292f"/>
+  <text class="s" x="700" y="84" text-anchor="middle">late result: handleLateResult</text>
+  <rect x="250" y="150" width="150" height="20" rx="4" fill="#f6f8fa" stroke="#8c959f"/>
+  <text class="s" x="325.0" y="164" text-anchor="middle">scope: player 7</text>
+  <line class="d" x1="400" y1="30" x2="400" y2="240"/>
+  <text class="s" x="408" y="109">start: handleAbandoned (keyEnded)</text>
+  <text class="s" x="408" y="165">withdrawn: caller gets withdrawn</text>
+  <text class="n" x="20" y="222">Nothing from generation 1 steps under generation 2.</text>
+</svg>

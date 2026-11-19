@@ -12,12 +12,136 @@ import SwiftStateTreeMessagePack
 /// during the handshake phase (always JSON). This pipeline focuses on state updates and
 /// events sent after join completes.
 ///
-/// **Performance**: This is a value type (struct) with zero allocation overhead. All logic remains
-/// within TransportAdapter's actor isolation domain (no actor hopping).
+/// **Performance**: This is a value type (struct) with zero allocation overhead. It has no isolation
+/// of its own; it runs in its caller's (no actor hopping).
+///
+/// It reads none of the adapter's state: every per-cycle value (the sync sequence, a resync, the
+/// fault hooks' results) is an argument (#554), so code outside the actor can call it as is. Its
+/// one side effect is the encoders' shared `UnmappedPathCounter`.
 struct EncodingPipeline: Sendable {
     let stateUpdateEncoder: any StateUpdateEncoder
+    /// `stateUpdateEncoder` as a sequenced encoder (#332), cast once here instead of per
+    /// recipient. Every built-in encoder is one; a sequence is planned only with sync-lag tracking.
+    let sequencedStateUpdateEncoder: (any SyncSequencedStateUpdateEncoder)?
     let messageEncoder: any TransportMessageEncoder
     let landID: String
+
+    init(stateUpdateEncoder: any StateUpdateEncoder, messageEncoder: any TransportMessageEncoder, landID: String) {
+        self.stateUpdateEncoder = stateUpdateEncoder
+        self.sequencedStateUpdateEncoder = stateUpdateEncoder as? any SyncSequencedStateUpdateEncoder
+        self.messageEncoder = messageEncoder
+        self.landID = landID
+    }
+
+    /// A state update, carrying `syncSeq` when one is planned (the encoder must then be able to
+    /// carry it).
+    func encodeStateUpdate(
+        update: StateUpdate,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64?
+    ) throws -> Data {
+        if let syncSeq {
+            guard let sequenced = sequencedStateUpdateEncoder else {
+                preconditionFailure("a sync sequence planned with an encoder that can't carry it")
+            }
+            return try sequenced.encode(
+                update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: syncSeq
+            )
+        }
+        return try encodeStateUpdate(update: update, playerID: playerID, playerSlot: playerSlot, scope: scope)
+    }
+
+    /// A per-player state update (per-player key scope). `resync` marks the frame as a resync's
+    /// when a sync sequence is planned.
+    func encodePerPlayerUpdate(
+        _ update: StateUpdate,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        syncSeq: UInt64?,
+        resync: Bool
+    ) throws -> Data {
+        if let syncSeq {
+            guard let sequenced = sequencedStateUpdateEncoder else {
+                preconditionFailure("a sync sequence planned with an encoder that can't carry it")
+            }
+            return try sequenced.encode(
+                update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: .perPlayer,
+                syncSeq: syncSeq, resync: resync
+            )
+        }
+        return try stateUpdateEncoder.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
+    }
+
+    /// The broadcast state part of a merged frame: an array to merge in place with opcode
+    /// MessagePack, encoded bytes otherwise.
+    enum MergedBroadcastUpdate {
+        case array([MessagePackValue])
+        case data(Data)
+    }
+
+    /// The broadcast state update a merged frame (opcode 107) carries, encoded once for every
+    /// recipient. `mergeEvents` completes the frame.
+    func encodeMergedBroadcastUpdate(update: StateUpdate, playerID: PlayerID, syncSeq: UInt64?) throws -> MergedBroadcastUpdate {
+        if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+            return .array(try mpEncoder.encodeToMessagePackArray(
+                update: update,
+                landID: landID,
+                playerID: playerID,
+                playerSlot: nil,
+                scope: .broadcast,
+                syncSeq: syncSeq
+            ))
+        }
+        return .data(try encodeStateUpdate(update: update, playerID: playerID, playerSlot: nil, scope: .broadcast, syncSeq: syncSeq))
+    }
+
+    /// The merged frame: `update` with `eventBodies` (opcode 107). When it doesn't pack (or
+    /// `failsPack`, a test's fault), the state frame alone, unless that would lose events
+    /// (`refuseLosingMergedEvents`).
+    func mergeEvents(into update: MergedBroadcastUpdate, eventBodies: [MessagePackValue], failsPack: Bool) throws -> Data {
+        switch update {
+        case .array(let updateArray):
+            if !failsPack, let combined = buildStateUpdateWithEventBodies(
+                stateUpdateArray: updateArray,
+                eventBodies: eventBodies,
+                allowEmptyEvents: true
+            ) {
+                return combined
+            }
+            try Self.refuseLosingMergedEvents(eventBodies)
+            return try pack(.array(updateArray))
+        case .data(let updateData):
+            if !failsPack, let combined = buildStateUpdateWithEventBodies(
+                stateUpdateData: updateData,
+                eventBodies: eventBodies,
+                allowEmptyEvents: true
+            ) {
+                return combined
+            }
+            try Self.refuseLosingMergedEvents(eventBodies)
+            return updateData
+        }
+    }
+
+    /// The merged frame didn't pack. Without events the state-only frame says the same; with
+    /// events, the plan has already staged them, so sending the state alone would lose them: the
+    /// land ends (#535 row 17).
+    static func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue]) throws {
+        guard !eventBodies.isEmpty else { return }
+        throw LandFailure(
+            kind: .eventEncode,
+            detail: "the opcode 107 frame merging \(eventBodies.count) broadcast event(s) didn't pack",
+            position: LandFailurePosition(stage: .syncPhase)
+        )
+    }
+
+    /// An event frame (opcode 103) for one event body, or nil for a body that isn't an array.
+    func packEventFrame(_ body: MessagePackValue) throws -> Data? {
+        guard case .array(let bodyArray) = body else { return nil }
+        return try pack(.array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray))
+    }
     
     /// Encode a state update.
     ///
@@ -134,4 +258,23 @@ struct EncodingPipeline: Sendable {
             return nil
         }
     }
+}
+
+/// A per-player sync update before encoding.
+struct PendingSyncUpdate: Sendable {
+    let sessionID: SessionID
+    let playerID: PlayerID
+    let playerSlot: Int32?
+    let update: StateUpdate
+    let updateType: String
+    let patchCount: Int
+}
+
+/// An encoded per-player sync update, ready to send.
+struct EncodedSyncUpdate: Sendable {
+    let sessionID: SessionID
+    let playerID: PlayerID
+    let updateType: String
+    let patchCount: Int
+    let payload: Data
 }

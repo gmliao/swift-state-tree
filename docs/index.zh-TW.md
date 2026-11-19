@@ -21,6 +21,7 @@
 - **[概觀](overview.zh-TW.md)** - 系統架構、模組組成、核心概念
 - **[架構概念總覽](programming-model.zh-TW.md)** - StateTree 架構的完整概念說明（狀態層、動作層、Resolver、語意模型等）
 - **[架構分層](architecture.zh-TW.md)** - 組件分層架構與關係說明
+- **[Turn Core](turns/README.zh-TW.md)** - SwiftStateTurns：狀態只在同步 step 中改變的 actor，以及原因
 - **[快速開始](quickstart.zh-TW.md)** - 從零開始建立第一個伺服器
 
 ### 核心概念

@@ -149,3 +149,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A checker's trigger must cover every path it reads, not its own directory](2026-11-19-a-checkers-trigger-must-cover-what-it-reads.md) | pre-push, ci, deep-research, shell, pipefail |
 | 2026-11-19 | [A branch cut from a PR head that was then squash-merged duplicates on merge, with no conflict](2026-11-19-a-branch-from-a-squash-merged-pr-head-duplicates-on-merge.md) | git, merge, squash, stacked-branches, ci |
 | 2026-11-19 | [A small generic wrapper used from another module runs unspecialized unless it's `@inlinable`](2026-11-19-a-cross-module-generic-wrapper-runs-unspecialized.md) | performance, generics, specialization, inlinable, existential, proof-type |
+| 2026-11-19 | [A test harness under errexit dies without naming the failing case](2026-11-19-a-test-harness-under-errexit-dies-unnamed.md) | shell, errexit, set-e, test-harness, mutation |

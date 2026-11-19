@@ -24,6 +24,11 @@ let package = Package(
             name: "SwiftStateTreeTransport",
             targets: ["SwiftStateTreeTransport"]
         ),
+        // 🔁 Turn core: synchronous steps over a value machine, for actors that own state
+        .library(
+            name: "SwiftStateTurns",
+            targets: ["SwiftStateTurns"]
+        ),
         // 🔢 Deterministic Math: Fixed-point math for server-authoritative games
         .library(
             name: "SwiftStateTreeDeterministicMath",
@@ -147,6 +152,46 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
             path: "Sources/SwiftStateTreeNIOProvisioning"
+        ),
+
+        // 🔁 Turn core: depends on nothing else in this package
+        .target(
+            name: "SwiftStateTurns",
+            dependencies: ["SwiftStateTurnsMacros"],
+            path: "Sources/SwiftStateTurns"
+        ),
+        .macro(
+            name: "SwiftStateTurnsMacros",
+            dependencies: [
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+            ],
+            path: "Sources/SwiftStateTurnsMacros"
+        ),
+        .testTarget(
+            name: "SwiftStateTurnsTests",
+            // SwiftStateTree only for the documentation's comparison (a hand-fixed actor with
+            // GenerationTable); the turn core itself doesn't depend on it.
+            dependencies: ["SwiftStateTurns", "SwiftStateTree"],
+            path: "Tests/SwiftStateTurnsTests"
+        ),
+        .testTarget(
+            name: "SwiftStateTurnsMacrosTests",
+            dependencies: [
+                "SwiftStateTurnsMacros",
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacroExpansion", package: "swift-syntax"),
+                .product(name: "SwiftParser", package: "swift-syntax"),
+                .product(name: "SwiftDiagnostics", package: "swift-syntax"),
+            ],
+            path: "Tests/SwiftStateTurnsMacrosTests"
+        ),
+        // The turn core's cost against a direct baseline (release only)
+        .executableTarget(
+            name: "TurnsBench",
+            dependencies: ["SwiftStateTurns"],
+            path: "Sources/TurnsBench"
         ),
 
         // 🔹 Macro Implementation: Compile-time macro expansion

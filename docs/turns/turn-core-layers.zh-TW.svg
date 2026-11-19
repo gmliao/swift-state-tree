@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440" width="800" height="440" role="img" aria-label="各部分如何組合：TurnActor、TurnCore 與 TurnMachine">
+  <title>各部分如何組合：TurnActor、TurnCore 與 TurnMachine</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#24292f"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, "PingFang TC", "Noto Sans CJK TC", sans-serif; fill: #24292f; }
+    .t { font-size: 15px; font-weight: 600; }
+    .s { font-size: 12.5px; }
+    .n { font-size: 12px; fill: #57606a; }
+    .l { stroke: #24292f; stroke-width: 1.6; fill: none; marker-end: url(#a); }
+  </style>
+  <rect x="0" y="0" width="800" height="440" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+  <!-- TurnActor: the shell -->
+  <rect x="190" y="30" width="420" height="250" rx="10" fill="#eef4ff" stroke="#0550ae" stroke-width="1.6"/>
+  <text class="t" x="206" y="54">TurnActor：外殼</text>
+  <text class="s" x="206" y="72">send 與 sendAndWait 進來 · perform 執行 effect · flush 送出輸出</text>
+  <!-- TurnCore: the mechanics -->
+  <rect x="215" y="86" width="370" height="178" rx="8" fill="#fff8e6" stroke="#9a6700" stroke-width="1.6"/>
+  <text class="t" x="231" y="109">TurnCore：機制</text>
+  <text class="s" x="231" y="127">佇列 · key 與 generation</text>
+  <text class="s" x="231" y="144">hold 與其 deadline · timer</text>
+  <!-- TurnMachine: pure -->
+  <rect x="240" y="158" width="320" height="92" rx="8" fill="#eefbf0" stroke="#1a7f37" stroke-width="1.6"/>
+  <text class="t" x="256" y="181">TurnMachine：純狀態機</text>
+  <text class="s" x="256" y="200">(state, input) → 新的 state</text>
+  <text class="s" x="256" y="217">+ outputs、replies、effects</text>
+  <text class="n" x="256" y="236">同步 · 只存純資料 · 不能 await</text>
+  <!-- In and out -->
+  <rect x="14" y="130" width="96" height="44" rx="22" fill="#ffffff" stroke="#24292f"/>
+  <text class="s" x="62" y="157" text-anchor="middle">呼叫端</text>
+  <path class="l" d="M110,152 L188,152"/>
+  <text class="n" x="149" y="128" text-anchor="middle">send,</text>
+  <text class="n" x="149" y="143" text-anchor="middle">sendAndWait</text>
+  <rect x="690" y="130" width="96" height="44" rx="22" fill="#ffffff" stroke="#24292f"/>
+  <text class="s" x="738" y="157" text-anchor="middle">輸出端</text>
+  <path class="l" d="M610,152 L688,152"/>
+  <text class="s" x="650" y="142" text-anchor="middle">flush</text>
+  <!-- Effects go out; results, deadlines and timers come back as inputs -->
+  <rect x="250" y="340" width="150" height="44" rx="6" fill="#ffffff" stroke="#24292f"/>
+  <text class="s" x="325" y="367" text-anchor="middle">非同步工作</text>
+  <rect x="460" y="340" width="150" height="44" rx="6" fill="#ffffff" stroke="#24292f"/>
+  <text class="s" x="535" y="367" text-anchor="middle">時鐘</text>
+  <path class="l" d="M290,280 L290,338"/>
+  <text class="s" x="282" y="304" text-anchor="end">effects：perform，</text>
+  <text class="s" x="282" y="320" text-anchor="end">在 actor 之外</text>
+  <path class="l" d="M360,338 L360,282"/>
+  <text class="s" x="368" y="304">結果：</text>
+  <text class="s" x="368" y="320">新的 input</text>
+  <path class="l" d="M560,338 L560,282"/>
+  <text class="s" x="568" y="304">deadline、timer：</text>
+  <text class="s" x="568" y="320">新的 input</text>
+  <text class="n" x="400" y="416" text-anchor="middle">每次進入執行一個 batch 的 step；沒有常駐的 run loop。</text>
+</svg>

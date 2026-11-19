@@ -1,0 +1,281 @@
+[English](README.md) | [中文版](README.zh-TW.md)
+
+# Turn core（SwiftStateTurns）
+
+`SwiftStateTurns` 是本套件裡的一個小型函式庫 target。它用來撰寫「狀態只在同步 step 中改變」的 actor。Land 作者不會直接使用它。傳輸層自己的 actor 會逐一遷移到它上面。API 參考與文章在 DocC 目錄 `Sources/SwiftStateTurns/SwiftStateTurns.docc`，本頁是它們的摘要。
+
+## 什麼是 turn
+
+actor 的方法一次只跑一個。但方法裡的每個 `await`，都會讓其他呼叫先執行。方法在 `await` 之前檢查過的狀態，在 `await` 之後可能已經過期。在 `await` 之後才改狀態的方法，面對的是一個已經變了的世界。
+
+*turn* 是 actor 的工作單位：一個 job 從頭跑到尾，中間沒有任何暫停。這是 actor 模型裡的意思，不是遊戲的「回合」。turn core 讓 actor 狀態的每一次改變，都發生在一個 turn 裡，也就是一個值型別狀態機的同步 *step*。一個 step 就是用一個 input 呼叫一次狀態機的 handler。
+
+## 各部分如何組合
+
+![TurnActor（外殼）包住 TurnCore（機制），TurnCore 包住 TurnMachine（純狀態機）。呼叫端以 send 與 sendAndWait 送入 input；flush 送出輸出；effect 在 actor 之外執行；結果、deadline 與 timer 都以新的 input 回來。](turn-core-layers.zh-TW.svg)
+
+- **`TurnMachine`**（純狀態機）：一個 step 接收狀態與一個 input，回傳新的狀態，以及 outputs、replies 和 effects。step 是同步的，只存純資料，不能 `await`。
+- **`TurnCore`**（機制）：它保管*佇列*（queue，排在進行中工作後面的 input）、*key* 與其 *generation*（哪些工作仍然需要）、*hold* 與其 deadline（讓後來的 input 等待的東西），以及 timer。
+- **`TurnActor`**（外殼）：`send` 與 `sendAndWait` 把 input 帶進來。`perform` 在 actor 之外執行 effect。`flush` 把 output 送出去。
+
+effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次進入 actor（一次 `send`、一次 `sendAndWait`、一個回來的結果）執行一個 *batch*：這次進入引起的 step。`maxReleasesPerBatch` 限制一次 hold 釋放在一個 batch 裡能讓多少個佇列的 input 執行。兩次進入之間，沒有等待中的 run loop。這個模式稱為「functional core, imperative shell」（函式式核心、命令式外殼）。Elm 的 `Cmd`/`Msg` 與 Erlang 的 `gen_server` 也是同樣的形狀。
+
+## 規則
+
+- **狀態只在 step 裡改變。** 狀態機的 handler 不是 `async`，所以 step 不能 await。只有 step 拿到的 `Turn` 能接觸 core。
+- **Effect 以 input 的形式回來。** step 需要完成某項工作時，會發出一個 request。`perform` 在 actor 之外執行這項工作。結果成為之後某個 step 的新 input，由那個 step 依當下的狀態決定它的意義。request 已經關閉的結果，會交給 `handleLateResult`，而不是 `handle`。request 在這些情況下關閉：它的 key 結束或被取代、deadline 已過、或被取消。
+- **step 管不到的，由 core 管：** key 與 generation、帶 deadline 的 hold、withdraw token。handler 不持有任何 ticket。
+- **取代（supersede）也會結束舊 generation 在佇列中的 input。** 對一個仍有效的 key 再次呼叫 `start`，就是*取代*它。這會關閉舊 generation 的 request、取消它的 timer，並撤回（withdraw）以該 key 為 scope、在佇列中的 input，和 `end` 一樣。佇列中的 input 不帶 generation；少了這一步，在舊綁定下送出的 input 會在新綁定下執行。它的呼叫端會收到 `withdrawn`，可以重試。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。
+- **只存純資料。** `@PlainData` 在編譯時檢查狀態機只存純值。只有 `PlainData` 的狀態機能被執行。
+
+## 範例
+
+一個大廳：每位玩家入座前，先載入其個人資料，一次只載入一份。完整程式碼在 `Tests/SwiftStateTurnsTests/WorkedExampleTests.swift`。這個測試會編譯並執行範例，並檢查本頁與 DocC 的每段節錄都與它一致。載入結果以 input 的形式回來，而且只在它的 request 仍開著時才會到 `handle`：
+
+```swift
+case .loaded(let player, let name):
+    // The load's result, back as an input. It reaches `handle` only while its request
+    // is open, so the player is still joining: the state changes here, in a step.
+    loading = loading.filter { $0.value != player }
+    seats[player] = name
+```
+
+effect 在 actor 之外執行：
+
+```swift
+@concurrent nonisolated func perform(_ effect: Lobby.Effect) async -> Lobby.Input? {
+    switch effect {
+    case .loadProfile(let player):
+        return .loaded(player: player, name: await profiles.load(player))
+```
+
+### 為什麼 `perform` 同時是 `nonisolated` 和 `@concurrent`
+
+`nonisolated` 讓 `perform` 碰不到 actor 的狀態。它不能讀 `core`，所以 effect 無法在 step 背後查看或改動狀態機。有一個必須編譯失敗的檢查守住這一點。
+
+光有 `nonisolated`，並沒有決定 `perform` 在哪裡執行。啟用 `NonisolatedNonsendingByDefault` 功能時，`nonisolated async` 函式會在呼叫端的 actor 上執行（Swift 6.2 的 approachable-concurrency 設定會啟用這個功能）。core 是從 actor 呼叫 `perform` 的，於是一次緩慢的載入會佔住 actor，所有 input 都得排在它後面。`@concurrent` 讓 `perform` 一律在 actor 之外執行，不論模組的設定為何。
+
+限制：這裡不能只寫 `@concurrent`。少了 `nonisolated`，這個方法會隔離在 actor 上，而 `@concurrent` 不允許這樣，編譯器會拒絕這個組合。
+
+## 不用框架的話
+
+同一個大廳的三種寫法，用同一個情境測試。玩家加入。個人資料還在載入時，玩家離開。接著載入完成。`Tests/SwiftStateTurnsTests/ComparisonTests.swift` 用個人資料存取端 `load` 裡的 hold 強制這個順序，從不依賴時間。
+
+**一般的 actor**：檢查狀態、await 載入、寫入結果：
+
+```swift
+guard seats[player] == nil else { return seats.count }
+let name = await profiles.load(player)
+// Other calls ran during the await: the player may have left. This write doesn't know.
+seats[player] = name
+```
+
+這個 `await` 讓 `leave` 在 `join` 的中途執行，於是 `join` 讓一位已經離開的玩家入座：幽靈座位。測試斷言幽靈座位確實出現；它記錄這個危險，而不是因它失敗。這裡沒有資料競爭，所以編譯器和 thread sanitizer 都不會標出它。
+
+**手動修正**，也就是本專案目前的做法：在 `await` 之前取得 `GenerationTable` 的 ticket，`await` 之後用 `ifCurrent` 檢查：
+
+```swift
+let ticket = joins.issue(player)
+let name = await profiles.load(player)
+// Still this join's generation? `ifCurrent`'s closure can't await, so the check and the
+// write are one synchronous segment.
+guard joins.ifCurrent(ticket, { _ in seats[player] = name }) != nil else {
+    throw LobbyError.left
+```
+
+限制：每個含 `await` 的方法都得記得這個修正。每一個都需要自己的 ticket、自己的檢查，以及一個強制交錯順序的測試。
+
+**用 turn core**，`leave` 會結束該玩家的 key：
+
+```swift
+case .leave(let player):
+    // Ends the binding: a load in flight is abandoned, and its late result is stale.
+    turn.end(.player(player))
+    seats[player] = nil
+```
+
+載入的 request 屬於這個 key，所以它會關閉，加入的呼叫端在同一個 batch 就得到回覆。回來的結果交給 `handleLateResult`，不會讓任何人入座。同一個情境會通過，而且這種危險寫不出來。handler 不能 `await`，也不能啟動碰得到狀態機的 task。`scripts/must-not-compile/turns/` 下的 `await-in-handle` 與 `task-in-handle` snippet 無法編譯。
+
+## 核心概念
+
+core 用到十幾個概念。下面每一個都建立在前面幾個之上，也各自回答遊戲伺服器會遇到的一個問題。範例來自上方範例的大廳，以及一個加上其餘工具的房間（room）；兩者都以測試編譯並執行。
+
+### Input 與 step
+
+*input* 是送給狀態機的一則訊息，例如「player 7 想加入」。*step* 是狀態機處理一個 input。step 一次只跑一個，而且不能 `await`，所以 step 讀狀態時，沒有任何東西會改變它。
+
+input 有三種送達方式。`send` 送出 input，不等回覆就返回；它在 input 執行完或排入佇列（見「Input policy」）後返回。`sendAndWait` 送出 input，並等待狀態機的回覆，step 用 `reply` 給出回覆。`query` 向狀態機提出一個同步的問題，在一個 step 裡回答，並傳回答案。
+
+```swift
+let connection = WithdrawToken()
+let seated = try await room.sendAndWait(.join(player: 7, connection: connection), cancellation: .cancelsCall)
+let count = await room.query(.seatCount)
+```
+
+API：`send`、`sendAndWait`、`reply`、`query`、`answer`。
+
+### Effect 與 perform
+
+*effect* 是狀態機需要在 step 之外完成的工作，以資料表示：「載入 player 7 的個人資料」。step 不能等資料庫，所以它提出這項工作，由 actor 的 `perform` 在 actor 之外完成。結果以新的 input 回來。
+
+提出的方式有兩種。*request* 是由某個 key 擁有、由 core 追蹤的工作（接下來幾節會說明兩者）。`run` 是不追蹤的工作：沒有 key 擁有它，也沒有人等它，例如一行日誌。
+
+```swift
+// Untracked work: no key owns it, and nothing waits for it.
+turn.run(.log("joined \(player)"))
+```
+
+API：`perform`、`request`、`run`。
+
+### Key
+
+*key* 為某件「工作可能不再需要」的事物命名，例如玩家在大廳裡的位置。`start` 開始它，`end` 結束它。玩家在加入途中離開時，結束他的 key，就是狀態機表達「這位玩家的資料載入不再需要」的方式。
+
+```swift
+case .leave(let player):
+    // Ends the binding: a load in flight is abandoned, and its late result is stale.
+    turn.end(.player(player))
+    seats[player] = nil
+```
+
+API：`start`、`end`、`isLive`。
+
+### Generation
+
+*generation* 是 key 的一段生命週期，從一次 `start` 到下一次。對仍有效的 key 呼叫 `start`，就是*取代*（supersede）它：舊的 generation 結束，新的開始。這回答了重新連線的情況。玩家斷線後再加入，會得到新的 generation，所以為舊連線開始的資料載入，不會讓新的連線入座。
+
+![key player 7 的 generation 1 擁有一個載入 request，並有一個 chat input 以它為 scope 排入佇列。start 開始 generation 2：request 以 keyEnded 被放棄，遲到的結果交給 handleLateResult，佇列中的 chat 被撤回。](supersede-timeline.zh-TW.svg)
+
+key 被取代時，舊的 generation 會發生三件事。它的 request 關閉（`handleAbandoned` 執行，原因是 `keyEnded`）。之後才回來的結果交給 `handleLateResult`。以該 key 為 scope、在佇列中的 input 被撤回，呼叫端收到 `withdrawn`。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。這樣的 input 屬於該 `start` 開始的 generation，所以之後取代這個 generation 時，它同樣會被撤回。多個呼叫端同時被撤回時，它們收到回覆的順序沒有保證。
+
+API：`start`（取代時回傳 true）、`generation(of:)`、`Generation`。
+
+### Request
+
+*request* 是由某個 key 目前的 generation 擁有的 effect。它有一個 ID，並以兩種方式之一結束。結果在它仍開著時回來：結果在 `handle` 裡執行。或者它先關閉，也就是被*放棄*（abandoned）：`handleAbandoned` 帶著原因執行（deadline 已過、key 結束、或被取消）。在那之後才到的結果交給 `handleLateResult`，所以一個卡住的資料庫載入最後才回來，也不會改變任何東西。
+
+```swift
+let hold = Hold.untilRequestCloses(Key.store, deadline: .seconds(2))
+guard let id = turn.request(.loadProfile(player: player), for: .player(player), holding: hold) else { return }
+loading[id] = player
+```
+
+API：`RequestID`、`cancel`、`Abandonment`、`handleAbandoned`、`handleLateResult`。
+
+### Hold
+
+*hold* 讓之後的 input 排在進行中的工作後面。個人資料存取端一次只服務一個載入；少了 hold，第二次加入會在第一次的載入還在跑時，開始第二個載入。request 對一個 key 取得 hold，指定該 key 的 input 會等到 hold 結束。
+
+![join 7 執行並發出佔住 store 的載入 request。join 8 在載入進行中到達並排入佇列。載入結果執行時 request 關閉、hold 結束，join 8 接著執行。](hold-timeline.zh-TW.svg)
+
+hold 有兩種。`untilRequestCloses` 在 request 關閉時結束，不論原因。`untilWorkerReturns` 只在工作回來時結束，即使 request 先被放棄也一樣。執行期間會改動其他東西的工作，例如資料庫寫入，就用這一種：
+
+```swift
+// The write changes the database while it runs: the hold lasts until the worker
+// returns, even if the request is abandoned first.
+let hold = Hold.untilWorkerReturns(Key.database, deadline: .seconds(5))
+if let id = turn.request(.writeStats(player: player), for: .player(player), holding: hold) {
+    saving[id] = player
+```
+
+每個 hold 都有 deadline，而且編譯器要求一定要有。少了它，一個卡住的載入會讓之後每一次加入都跟著一直等。
+
+API：`Hold`、`request(_:for:holding:)`。
+
+### Input policy（輸入規則）
+
+*input policy*（輸入規則）是狀態機對每種 input 的規則：它是否排在某個 hold 後面，以及它屬於哪個 key（它的 *scope*）。必須等待的 input 會*排入佇列*（queued）。如果它的 scope 所指的玩家在等待期間離開，它會被撤回，永遠不會執行。
+
+```swift
+// Waits while a save holds the database; withdrawn if the player leaves meanwhile.
+case .chat(let player, _): .normal(waitsFor: .database, belongsTo: .player(player))
+case .saveStats: .normal(waitsFor: .database, belongsTo: nil)
+```
+
+佇列有上限，在建立 core 時設定。超過上限的 input 會以 `queueFull` 被拒絕，所以大量湧入的 input 不會讓記憶體無限成長。`control` input 從不受限：斷線或停止一定會執行。step 自己的後續工作可以用 `queue` 在 hold 後面保留位置。這種*釘住*（pinned）的 input 不會因 scope 被撤回，也不會因上限被拒絕。
+
+API：`InputPolicy`、`queue(_:behind:)`、`TurnError`。
+
+### Withdraw token
+
+*withdraw token* 讓送出者在 input 執行前放棄它。key 做不到這件事，因為 input 還沒開始任何東西。從一個在加入執行前就關閉的連線送來的加入，不應該讓任何人入座：
+
+```swift
+let late = WithdrawToken()
+late.withdraw()
+await #expect(throws: TurnError.withdrawn) {
+    try await room.sendAndWait(.join(player: 8, connection: late), cancellation: .cancelsCall)
+```
+
+core 在 input 到達時讀取 token，離開佇列時再讀一次。狀態機從不保存 token。
+
+API：`WithdrawToken`、`revoke`。
+
+### Timer 與時鐘
+
+*timer* 是 key 排定在之後送出的 input，例如「這位玩家一分鐘都沒說話就踢掉」。每個 key 最多一個 timer，新的會取代舊的。結束或取代該 key 會取消它。
+
+```swift
+// Kicked after a minute without a word; each chat line re-arms it.
+turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: player))
+```
+
+`turn.now` 讀取 core 的時鐘，每個 batch 一次。時鐘是注入的，沒有預設值。測試傳入一個由它手動推進的時鐘，所以一分鐘的 timer 在測試指定的時候觸發，而不是真的等一分鐘。
+
+API：`timer(at:for:_:)`、`now`、`TurnClock`、`TurnInstant`。
+
+### Batch 與 `maxReleasesPerBatch`
+
+*batch* 是一次進入 actor 所引起的 step：一次 `send`、一次 `sendAndWait`、或一個回來的結果。載入結果釋放 hold 時，排在後面的加入會在同一個 batch 裡執行。兩次進入之間沒有 run loop。`maxReleasesPerBatch` 限制一次釋放在一個 batch 裡能讓多少個佇列的 input 執行；其餘的在之後的 batch 繼續，所以排在同一個 hold 後面的一長串 input，不會把其他呼叫端擋在外面。限制：它只計算 hold 釋放後讓它執行的佇列中 input；batch 期間的放棄與新到的 send 不計入。
+
+```swift
+queueLimit: 64,
+maxReleasesPerBatch: 16,
+clock: ContinuousTurnClock()
+```
+
+API：`TurnCore.init`。
+
+### Incarnation
+
+*incarnation* 是每個 core 建立時取得的一個隨機數。core 啟動的每個 task 都帶著它。incarnation 與 actor 的 core 不符的結果會被丟棄並計數，永遠不會執行。它防範的是結果送到了另一個 core 的情況：否則那個 core 的 request ID 可能剛好相符。這裡不需要寫任何東西：core 會檢查。
+
+API：`TurnStats`（`foreignCompletions`）。
+
+### 呼叫端取消
+
+`sendAndWait` 會等待，而等待的 task 可能被取消，例如客戶端的連線 task 結束時。每個 `sendAndWait` 都要說明這代表什麼；沒有預設值。`.ignoresCancel`：呼叫端繼續等，並拿到真正的結果。呼叫端必須知道結果時選它，例如等待存檔的關機流程。`.cancelsCall`：actor 一處理取消，呼叫端就收到 `CancellationError`，除非回覆先到；仍在佇列的 input 被撤回，永遠不會執行。已經執行的 input 會繼續。呼叫端消失就代表不再需要這個 input 時選它，例如已離開的客戶端送來的加入。
+
+API：`CallerCancellation`。
+
+### 總表
+
+| 概念 | 它回答的問題 | API |
+|---|---|---|
+| Input 與 step | 工作如何一次一個地改變狀態？ | `send`、`sendAndWait`、`reply`、`query` |
+| Effect 與 perform | step 如何不 await 就完成非同步工作？ | `perform`、`request`、`run` |
+| Key | 這項工作還需要嗎？ | `start`、`end` |
+| Generation | 重新連線後，這個結果屬於目前的綁定嗎？ | `start`、`Generation` |
+| Request | 工作完成了，還是被放棄了？ | `RequestID`、`handleAbandoned`、`handleLateResult` |
+| Hold | 什麼必須排在進行中的工作後面？ | `Hold` |
+| Input policy | 這個 input 要等嗎？它屬於誰？ | `InputPolicy`、`queue` |
+| Withdraw token | 送出者能在 input 執行前放棄它嗎？ | `WithdrawToken`、`revoke` |
+| Timer 與時鐘 | step 如何在之後行動？測試如何控制時間？ | `timer`、`now`、`TurnClock` |
+| Batch | 每次進入執行多少？ | `maxReleasesPerBatch` |
+| Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |
+| 呼叫端取消 | 呼叫端的 task 被取消時會怎樣？ | `CallerCancellation` |
+
+## 如何測試
+
+這些測試也是範例。下面每一個，都示範一種檢查 turn 架構 actor 的方法。
+
+- **產生的順序**（[`Tests/SwiftStateTurnsTests/GeneratedOrderTests.swift`](../../Tests/SwiftStateTurnsTests/GeneratedOrderTests.swift)）。一個帶 seed 的產生器，混合 send、call、完成、取消與時鐘推進。每次操作之後，測試都檢查 core 的不變量：沒有 step 在另一個 step 裡執行、排在同一個 hold 後面的 input 依到達順序執行、每個 call 只被回覆一次、只有在有效 key 下發出的 output 會到達輸出端。在大的 batch 上限下，同一個 seed 每次都產生同樣的順序；上限為 2 的 seed 會守住不變量，但沒有固定的排程。失敗的 seed 會被印出；手動把它加進 `replays` 測試，就留作固定案例。CI 跑一組固定的 seed；`TURNS_SEEDS=<數量>` 可以跑更多。
+- **必須編譯失敗的程式碼**（[`scripts/must-not-compile/turns/`](../../scripts/must-not-compile/turns/)，由 [`scripts/check-must-not-compile.sh`](../../scripts/check-must-not-compile.sh) 執行）。每個檔案都必須以指定的錯誤編譯失敗。它們合起來說明哪些東西寫不出來：會 await 的 handler、會啟動 task 的 handler、讀取 `core` 的 effect、存放 class 或 closure 的狀態機（包括在 `#if` 裡）、以及沒有 `@PlainData` 卻交給 core 的狀態機。
+- **範例**（[`Tests/SwiftStateTurnsTests/WorkedExampleTests.swift`](../../Tests/SwiftStateTurnsTests/WorkedExampleTests.swift)）。它執行這些頁面上的大廳。最後一個測試是防腐檢查：DocC 與 `docs/turns/` 裡的每段 Swift 程式碼，都必須出現在受測的檔案中，所以範例不會和程式碼脫節。
+- **三種寫法的比較**（[`Tests/SwiftStateTurnsTests/ComparisonTests.swift`](../../Tests/SwiftStateTurnsTests/ComparisonTests.swift)）。個人資料存取端 `load` 裡的 hold，讓一次加入停在 `await` 的中途。測試接著送出離開，再放行載入。每次執行的順序都相同，不用 sleep，所以一般 actor 的 bug 每次都會發生。
+- **執行期停止**（[`Tests/SwiftStateTurnsTests/RuntimeStopTests.swift`](../../Tests/SwiftStateTurnsTests/RuntimeStopTests.swift)）。少數錯誤只能在執行時發現，例如在狀態機自己的 step 裡讀取它。每一個都在子行程裡執行（exit test），而且必須帶著 core 的訊息停止。
+
+## 相關文件
+
+- 設計與規則：`Notes/plans/2026-11-18-swift-state-turns-core.md`
+- turn 之外程式碼的 reentrancy 規則：`AGENTS.md` 的「Actor Reentrancy」一節

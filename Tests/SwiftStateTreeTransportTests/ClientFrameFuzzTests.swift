@@ -371,10 +371,10 @@ enum ClientFrameTargets {
             authInfo: AuthenticatedInfo(playerID: "token-player"),
             authenticatesPlayers: true
         )
-        if let missing = FuzzAdapter.missingStateUpdateFeatures(
+        if let missing = StateUpdateFeatureNegotiation.missingStateUpdateFeatures(
             required: StateUpdateFeature.supported, metadata: join.metadata
         ) {
-            _ = FuzzAdapter.missingFeaturesMessage(missing)
+            _ = StateUpdateFeatureNegotiation.missingFeaturesMessage(missing)
         }
         if let instance = join.landInstanceId {
             _ = LandID(landType: join.landType, instanceId: instance).rawValue
