@@ -26,7 +26,67 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 - **Effect 以 input 的形式回來。** step 需要完成某項工作時，會發出一個 request。`perform` 在 actor 之外執行這項工作。結果成為之後某個 step 的新 input，由那個 step 依當下的狀態決定它的意義。request 已經關閉的結果，會交給 `handleLateResult`，而不是 `handle`。request 在這些情況下關閉：它的 key 結束或被取代、deadline 已過、或被取消。
 - **step 管不到的，由 core 管：** key 與 generation、帶 deadline 的 hold、withdraw token。handler 不持有任何 ticket。
 - **取代（supersede）也會結束舊 generation 在佇列中的 input。** 對一個仍有效的 key 再次呼叫 `start`，就是*取代*它。這會關閉舊 generation 的 request、取消它的 timer，並撤回（withdraw）以該 key 為 scope、在佇列中的 input，和 `end` 一樣。佇列中的 input 不帶 generation；少了這一步，在舊綁定下送出的 input 會在新綁定下執行。它的呼叫端會收到 `withdrawn`，可以重試。batch 執行期間送出、在取代之後才被接受的 input 也一樣。限制：在 key 無效時（第一次 `start` 之前，或 `end` 之後）到達的 input，會在下一個 generation 下執行；若這會造成問題，請每次綁定都用新的 key，例如連線或 session id。
-- **只存純資料。** `@PlainData` 在編譯時檢查狀態機只存純值。只有 `PlainData` 的狀態機能被執行。
+- **只存純資料。** `@PlainData` 在編譯時檢查狀態機只存純值。只有 `PlainData` 的狀態機能被執行。見[純資料與工具](#純資料與工具)。
+
+## 純資料與工具
+
+### 什麼算純資料
+
+`PlainData`（`Sources/SwiftStateTurns/PlainData.swift`）標示的值，不會呼叫到別的東西，也不會在持有者背後改變：任何深度都沒有 class、closure、actor、existential、lock 或 token。
+
+- **已符合的內建型別：** `Bool`、各種整數型別、`Double`、`Float`、`String`、`Character`、`Duration`，以及 turn core 自己的值（`InputID`、`RequestID`、`Generation`、`TurnInstant`、`Abandonment`、`TurnError`）。
+- **容器在內容符合時符合：** `Optional`、`Array`、`ContiguousArray`、`Set`、`Dictionary`（key 與 value），以及 `Result`（成功與失敗）。
+- **tuple 無法符合。** 請改存 `PlainPair`。
+
+| 儲存的型別 | 是純資料嗎？ |
+|---|---|
+| `[PlayerID: Seat]`，兩者都是 `@PlainData` | 是 |
+| `Set<Int>`、`String?`、`Result<Int, TurnError>` | 是 |
+| `[String: Any]`、`Result<Int, any Error>` | 否：existential |
+| `[() -> Void]` | 否：函式型別 |
+| `[PlayerID: Connection]`，`Connection` 是 class | 否：class |
+
+這些拒絕都是編譯錯誤，由 `scripts/must-not-compile/turns/` 裡的 must-not-compile 案例固定（`plaindata-class-in-dictionary.swift`、`plaindata-closure.swift`、`plaindata-any-error.swift` 及同目錄的其他案例）。
+
+### 自己的型別
+
+在 struct 或 enum 定義處加上 `@PlainData`。macro 會寫出 conformance，並為每個儲存屬性或 associated value 加一項檢查；該型別不是純資料就無法編譯。
+- 每個儲存屬性都要有型別標註，macro 才能檢查。
+- 泛型型別需要 `where T: PlainData`。
+- `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure 或 existential 的欄位也會被拒絕。
+- 在 `SwiftStateTurns` 之外手寫 `: PlainData`（包括 `@retroactive`）會被 `scripts/lint-turns.sh` 拒絕：那樣會不經任何檢查就符合。
+- 標準函式庫或其他模組的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
+
+之前，狀態裡有 class 和時鐘的 instant：
+
+```swift
+struct Room {
+    var players: [PlayerID: Connection]       // Connection 是 class
+    var lastChat: ContinuousClock.Instant
+}
+```
+
+之後，狀態只存純值；連線留在 actor 上，以 `PlayerID` 為鍵：
+
+```swift
+@PlainData
+struct Room {
+    var players: Set<PlayerID>                // PlayerID 是 @PlainData
+    var lastChat: TurnInstant
+}
+```
+
+### 為什麼：它讓各階段名副其實
+
+- **狀態是一個值。** turn 之外的程式碼可以持有它的副本，但無法透過副本改變狀態機的狀態。
+- **step 是改變狀態的唯一途徑。** 其他 task 碰不到它；狀態裡也沒有 closure，所以它不帶任何可能在 turn 之外執行的程式碼。
+- **值可以比較、複製和記錄。** 測試可以餵給狀態機一串 input，再拿它的狀態和輸出與預期比較；這些都不需要 lock。
+
+### reference type 放哪裡：工具
+
+狀態機用到的某些東西本質上是物件：連線、encoder、版面配置表。它們留在執行狀態機的 actor 上，絕不放進狀態機的狀態。
+- **狀態存的是 ID。** actor 保有從 ID 到物件的對照表。
+- **需要物件的 step 發出工作請求。** 它回傳一個指名該 ID 的 output 或 effect，由 actor（或在 actor 之外執行的 `perform`）使用那個物件。回來的結果以純資料的形式，透過之後的 input 進入狀態。
 
 ## 範例
 
