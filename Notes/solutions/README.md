@@ -150,3 +150,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A branch cut from a PR head that was then squash-merged duplicates on merge, with no conflict](2026-11-19-a-branch-from-a-squash-merged-pr-head-duplicates-on-merge.md) | git, merge, squash, stacked-branches, ci |
 | 2026-11-19 | [A small generic wrapper used from another module runs unspecialized unless it's `@inlinable`](2026-11-19-a-cross-module-generic-wrapper-runs-unspecialized.md) | performance, generics, specialization, inlinable, existential, proof-type |
 | 2026-11-19 | [A test harness under errexit dies without naming the failing case](2026-11-19-a-test-harness-under-errexit-dies-unnamed.md) | shell, errexit, set-e, test-harness, mutation |
+| 2026-11-19 | [`Bundle.allBundles` crashes a Linux test process (null dereference in CFBundleGetAllBundles)](2026-11-19-bundle-allbundles-crashes-on-linux.md) | linux, foundation, bundle, test-support, cross-platform |
