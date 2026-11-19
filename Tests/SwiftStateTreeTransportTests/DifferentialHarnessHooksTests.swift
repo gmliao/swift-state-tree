@@ -379,10 +379,6 @@ struct DifferentialHarnessHooksTests {
         // Admitted, and neither the adapter nor the transport's player table has it registered.
         #expect(await h.adapter.admittedNotRegisteredForTesting(session))
         #expect(await h.transport.playerSessionsForTesting(PlayerID("p1")).isEmpty)
-        // The transport's table has the session while the adapter's bit is still unset: the
-        // read is false, so it doesn't rest on the bit alone.
-        _ = await h.transport.registerSession(session, for: PlayerID("p1"))
-        #expect(await !h.adapter.admittedNotRegisteredForTesting(session), "the transport's table has it")
         gate.open()
         try await join.value
         await h.router.waitForNoPendingFlipForTesting()
@@ -394,6 +390,25 @@ struct DifferentialHarnessHooksTests {
         #expect(await h.adapter.initialSyncCommittedForTesting(Key(sessionID: session, attempt: 1)))
         #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: nil)))
         #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: 2)))
+    }
+
+    @Test("admittedNotRegistered reads the transport's player table, not only the adapter's bit")
+    func admittedNotRegisteredReadsTheTransport() async throws {
+        let h = try await HooksHarness.make(autoStartLoops: false)
+        guard await h.keeper.isUsingInTurnSync() else { return }
+        let gate = TestGate()
+        await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
+        let session = SessionID("s-table")
+        _ = await h.connect(session)
+        let join = Task { try await h.join(session, player: "p1") }
+        #expect(await gate.waitForArrivals(1), "the join reached keeperJoinReturned")
+        #expect(await h.adapter.admittedNotRegisteredForTesting(session))
+        // The transport's table has the session while the adapter's bit is still unset.
+        _ = await h.transport.registerSession(session, for: PlayerID("p1"))
+        #expect(await !h.adapter.admittedNotRegisteredForTesting(session), "the transport's table has it")
+        gate.open()
+        try await join.value
+        await h.router.waitForNoPendingFlipForTesting()
     }
 
     // MARK: Record decoder
