@@ -1,6 +1,6 @@
 # A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 10 (2026-11-19): the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 10 (2026-11-19), with the #548 row fixed after the closing review: the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
 ## Rev 10: one rewrite branch, compared with golden captures
 
@@ -109,8 +109,10 @@ Unchanged except that the build forwards no level. Step 1 as built:
 The assembly passes it to every adapter it builds. A test checks the mode by its behaviour, not by the stored value: a session that withholds acks across many syncs gets every frame, no resync and no close, and no lag timer is armed.
 
 **Timed waits that end a run.** Two waits in the paths the scenarios reach have a timer as a fallback:
-- the final-frame close (`WebSocketTransport.swift:556–569`): the barrier that completes it is the frame's hand-off to the fake connection, whose `send` returns at once;
-- the land-drain wait at a stop (`LandManager.swift:549–552`): the barrier is the stop flight (§5.3), which finishes when the bound sessions' leaves have run.
+- the final-frame close (`WebSocketTransport.swift:556–569`): handing the frame to the fake connection doesn't complete the close. The session's drain must still process the `.close` marker, which races the timeout (`:113–126`, `:584–609`). The barrier is the marker being processed;
+- the land drain: `LandManager.waitForDrains` runs only when a replacement is created for a land that is still draining (`LandManager.swift:465–468`, `554–562`), which no stop-only scenario reaches (§10). The stop path's barrier is the stop flight (§5.3): the land destroyed and dropped.
+
+Step 2 confirms both barriers in code.
 
 If either ends by its timer, the run fails; step 2 adds a `package` count of each timeout if none exists, and the runner requires zero.
 
@@ -191,10 +193,15 @@ Reaching a hold proves only that the code passed there. So each row also states 
 | a disconnect at the in-turn registration | adapter `keeperJoinReturned`, then `joinSyncRequested`, then keeper `.leave` (below) | (b), (c), (a) | at `keeperJoinReturned`: `admittedNotRegistered(A)`, the keeper has the player, no join response, not `joinFlipped(A1)`; the disconnect is sent and `disconnectQueuedBehind(A)` holds. At `joinSyncRequested`: registered, still not `joinFlipped(A1)`, `disconnectQueuedBehind(A)` still holds, and no sync-producing step runs. After release, at the keeper's held `.leave` for A: `joinFlipped(A1)`, and OnLeave hasn't run. After that release: OnLeave once |
 | a join while a sync cycle is in flight | adapter `cycleBeforeEndSync` | (c) | while held, the runner makes a state change and steps a tick; `syncDeferredByCycle` holds as its mode defines it, and A has not received the change. B's join is a second step under the same hold. After release, the producers run in the order below, and A receives the change exactly once, as `syncDuringLegacyCycleRunsAfterEndSync` asserts |
 | a stale action reply after a leave | adapter `actionResponse` | (b) | A's answer is held across A2's join and A2's pending action; after release, A's request gets no reply and no error frame on A or A2, A2 gets its own reply, and `pendingActionCount(A2) == 1` until that reply, then 0 |
-| #548, a teardown during the keeper join | keeper `.join`, then the teardown input | (a), (b) | before the teardown, while `.join` holds, the runner takes `sessionTicket(A)` and checks `ticketIsCurrent` is true; after the teardown, the same token is no longer current. The membership-and-generation snapshot is taken at the router's held `afterAdmit` (§8.1), after the admission returns and before the join response |
+| #548, a teardown during the keeper join | keeper `.join`, then the teardown input, then the snapshot hold (below) | (a), (b) | A has no ticket while `.join` holds: the ticket is issued at admission (`sessionTickets.issue`, `TransportAdapter.swift:1664`), after that hold. So the row asserts what the admission after the teardown yields. While `.join` holds: the teardown runs and `teardownTicketEnds == 1`. At the snapshot hold, after the release: on `main`, where #548 is open, A has a current ticket issued after the teardown (`ticketIsCurrent(sessionTicket(A))`), with its membership and connection generation; that is the bug, and the golden records it. The branch's outcome is the #548 entry (§6): no current ticket for A, or A's join ends with `landClosed`, whichever the branch does, named in the entry; `teardownTicketEnds == 1`; and no initial sync commits for A (`initialSyncCommitted(A1)` false) |
 | a land stop | router `stopLeave(A)`, `stopLeave(B)` | (a) | both holds reached before either leave is queued; A's `membershipQueued` before B's release; OnLeave order A, B |
 
 **Every observation and post-condition ships with a mutation witness.** In step 2, each named observation and each row's post-condition comes with a source mutant that breaks the race or the observation, and that mutant must turn the row red. A row without a witness that does so doesn't merge. So a vacuous observation fails as a step 2 test, not in a plan review.
+
+**The #548 row's snapshot position and witnesses.**
+- **Position:** the snapshot is taken after the admission and before the router sends its join response. In-turn, the admission commits the flip and queues the response inside `admitJoin` (`TransportAdapter.swift:2234`), before the router reaches `afterAdmit` (`LandRouter.swift:1067–1081`), so there the snapshot hold is `joinSyncRequested`: after the admission and registration, before the flip and the response. With in-turn off, it is the router's held `afterAdmit`. The no-sync-step rule applies while either holds.
+- **Observation:** `initialSyncCommitted(attempt)` joins the table: the attempt's initial sync committed, recorded at that commit, keyed by the attempt.
+- **Witnesses:** on `main`, a mutant that makes the teardown a no-op leaves `teardownTicketEnds` at 0 and turns the row red. On the branch, reverting the #548 fix makes the branch match the golden, so the #548 entry goes unused and fails as stale.
 
 **The moved holds.**
 - **`keeperJoinReturned`** replaces `registerSession`. `WebSocketTransport.registerSession` (`:500`) is synchronous, so a hold can't sit there. It is a hold of its own, `await holds.at(.keeperJoinReturned)`, right after a successful `await keeper.joinReportingAdmission` (`TransportAdapter.swift:2173`), taken only when the join completes in the turn (`completesInTurn`), as today's hold is (`:2205–2209`). The keeper's admission has already run, through the transport admission callback, so `admittedNotRegistered` holds there. On the branch it is where the keeper's join result arrives as an input.
