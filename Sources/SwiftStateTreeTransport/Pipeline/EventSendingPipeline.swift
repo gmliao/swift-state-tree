@@ -6,8 +6,10 @@ import Logging
 /// Pipeline component for sending server events.
 ///
 /// This component centralizes event sending logic, supporting two strategies:
-/// - **Queue mode** (opcode 107): Events are queued and merged with next state update (no await)
-/// - **Immediate mode**: Events are encoded and sent immediately (async)
+/// - **Queue mode** (opcode 107 with MessagePack messages): Events are queued and merged with next state update (no await)
+/// - **Immediate mode**: Events are encoded and sent immediately (async). Without opcode 107, and in a
+///   hybrid configuration (opcode 107 with `json` or `opcodeJsonArray` messages), where the adapter
+///   sends every event this way, decided at init (#521 D10).
 ///
 /// **Performance**: This is a value type (struct) with zero allocation overhead.
 /// Queue operations are synchronous (no actor hopping). Immediate sends are async.
@@ -16,6 +18,8 @@ struct EventSendingPipeline: Sendable {
     let codec: any TransportCodec
     let landID: String
     let logger: Logger
+    /// Counts the events' own frame encodes (tests only, #521 D10); nil in production.
+    var encodeCounts: EventEncodeCountsForTesting? = nil
     
     /// Send decision result.
     enum SendDecision {
@@ -77,7 +81,8 @@ struct EventSendingPipeline: Sendable {
     
     /// Prepare event for immediate sending (encodes and validates).
     ///
-    /// This path is used when opcode 107 is disabled or encoding fails.
+    /// This path is used when opcode 107 is disabled, and for every event in a hybrid configuration
+    /// (#521 D10). It is not a fallback for a merged body that didn't encode: that event is lost.
     /// Returns send decision with encoded data ready for transport.
     ///
     /// - Parameters:
@@ -91,6 +96,7 @@ struct EventSendingPipeline: Sendable {
         membershipCoordinator: MembershipCoordinator
     ) throws -> SendDecision? {
         let transportMsg = TransportMessage.event(event: .fromServer(event: event))
+        encodeCounts?.countOwnFrame()
         let data = try messageEncoder.encode(transportMsg)
         
         // Convert SwiftStateTree.EventTarget to SwiftStateTreeTransport.EventTarget
@@ -139,4 +145,22 @@ struct EventSendingPipeline: Sendable {
         
         return .immediate(data: data, target: transportTarget, description: targetDescription)
     }
+}
+
+/// The event encodes an adapter made (tests only, #521 D10): merged bodies
+/// (`EncodingPipeline.encodeServerEventBody`) and events' own frames
+/// (`EventSendingPipeline.prepareImmediateSend`). Counted before the encode, so one that throws
+/// counts too.
+package final class EventEncodeCountsForTesting: @unchecked Sendable {
+    private let lock = NSLock()
+    private var body = 0
+    private var ownFrame = 0
+
+    package init() {}
+
+    func countBody() { lock.withLock { body += 1 } }
+    func countOwnFrame() { lock.withLock { ownFrame += 1 } }
+
+    /// (merged bodies, own frames) so far.
+    package var counts: (body: Int, ownFrame: Int) { lock.withLock { (body, ownFrame) } }
 }

@@ -322,8 +322,10 @@ struct ReplayTypedReEmitTests {
         #expect(service.getStatus().phase == .failed)
         let first = service.getStatus().errorMessage
         #expect(first == RunnerFault().localizedDescription)
+        let ticket = service.generationForTesting()
         await land.tick()   // reads tick 0, which it can't show, and fails the run again
         await land.adapter.waitForOutboundIdleForTesting()
+        #expect(service.generationForTesting() == ticket + 1, "the land's failRun took the current ticket")
         #expect(service.getStatus().phase == .failed)
         #expect(service.getStatus().errorMessage == first, "the runner's error stays")
         #expect(service.consumeNextResult() == nil)
