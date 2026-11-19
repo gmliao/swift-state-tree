@@ -378,6 +378,11 @@ The host runs the A/B at the end of B2 (the sync path) and again before the merg
   - **(c)** These fields stay outside the machine as `let` tools, like `perPlayerTables`, under the "mutated only in turns" guard (§1). The machine holds only the adapter's own value types. The layering and the hot path are unchanged, but less of the state is checked at compile time.
 
   I don't propose one; the choice is the maintainer's. Whichever is chosen, B0 carries it out, and §2.2's "representation per D4" entries follow it.
+- **D5 (#658). An action's response against its turn's diff.** MessagePack promises the response before the action's events and state (#420). JSON and opcode promise nothing, and on a tickless in-turn land the two are unordered today: the response goes out from the adapter's task, and the diff from the turn's commit. The harness found this as a recording that differed between runs, and it pins both orders as two cells. In the machine, the response can be an output of the applying turn (§2.2, actions). The options:
+  - **ordered by the turn's outputs:** the order is the same in every encoding, which extends #420 to JSON and opcode;
+  - **explicitly unordered:** the docs say so for JSON and opcode, and the harness keeps both cells.
+
+  Until this is decided, B4 keeps today's behaviour, and the docs' promise is unchanged.
 
 ## 11. Risks
 
