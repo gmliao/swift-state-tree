@@ -38,6 +38,8 @@ def flat(text: str) -> str:
 def check(root: Path, min_blocks: int = MIN_BLOCKS) -> list[str]:
     """The findings: one per block that no tested file contains, and one for too few blocks."""
     articles = sorted((root / CATALOG).glob("*.md"))
+    # Stricter than the test, on purpose: the test lists the catalog and adds the two READMEs
+    # whatever it finds, so a moved or emptied catalog would pass there on the READMEs alone.
     if not articles:
         return [f"{CATALOG.as_posix()}: no .md file (the test reads the catalog's articles)"]
     pages = articles + [root / p for p in PAGES]
@@ -81,6 +83,14 @@ def self_test() -> bool:
         findings = check(root, min_blocks=3)
         if len(findings) != 1 or "README.zh-TW.md" not in findings[0] or "let missing = 1" not in findings[0]:
             print(f"self-test: wanted one finding for the missing block, got {findings}")
+            return False
+        # A CRLF page: its fence line is "```swift\r\n", which the test's split on "```swift\n"
+        # doesn't match, so the test sees no block there. Read with newlines kept, neither does
+        # this; translated to LF, the untested block would be reported.
+        (root / PAGES[1]).write_text(block + "\n" + FENCE + "swift\r\nlet missing = 1\r\n" + FENCE + "\r\n", encoding="utf-8", newline="")
+        findings = check(root, min_blocks=3)
+        if findings:
+            print(f"self-test: a CRLF block the test doesn't see was reported: {findings}")
             return False
         (root / CATALOG / "Article.md").unlink()
         if not any("no .md file" in f for f in check(root, min_blocks=0)):
