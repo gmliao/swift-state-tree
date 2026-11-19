@@ -20,6 +20,7 @@ private struct AdapterSyncStateInventory {
     var backlogRetryScheduled: Bool
     var lastSyncSeq: UInt64
     var planSyncSeq: UInt64?
+    var planResyncPlayers: Set<PlayerID>
     var syncEngine: SyncEngine.Caches
     var pendingEventManager: PendingEventManager
     var carriedDirtyFields: Set<String>
