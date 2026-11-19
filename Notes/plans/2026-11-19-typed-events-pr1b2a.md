@@ -1,6 +1,6 @@
 # #521 PR 1b-2a: hybrid events go alone, decided at init (D10)
 
-**Status:** rev 3, plan only (the code follows once the plan is reviewed). Rev 3 folds in the review of rev 2 (#638 at 3fd95d38: NOT GO, 3 must-fix, 3 should, 1 nit): the order after #632, a dedicated land for the gated verifier test, the record header's 107 decision read from the stored value, the counters' places, the capture window, and the parity claim scoped to deterministic encoders. Rev 2 folded in the review of rev 1 (#638 at 7beeb822: NOT GO, 2 must-fix, 2 should, 1 nit): the tests count both encodes, the verifier test keeps its mixed coverage, a raw hybrid golden is captured on `main` first, a non-deterministic encode is named, and the 107 decision is stored once. This is D10 of #521's plan ([`2026-11-13-typed-events-actions.md`](2026-11-13-typed-events-actions.md), §2.3's encoding table, the hybrid row). It was split out after that plan's rev 18. EV2 and EV3 follow in PR 1b-2b; they don't touch `TransportAdapter`. Read at `main` b7da92fb.
+**Status:** rev 4, plan only (the code follows once the plan is reviewed). Rev 4 folds in the review of rev 3 (#638 at 075a70b0: NOT GO, 1 must-fix, 4 should, 1 nit): a real pre-D10 record is committed and replayed, the golden pins typed leaf values and waits for its joins by event, the capture's text is corrected, and the reason for the stored decision is restated. Rev 3 folded in the review of rev 2 (#638 at 3fd95d38: NOT GO, 3 must-fix, 3 should, 1 nit): the order after #632, a dedicated land for the gated verifier test, the record header's 107 decision read from the stored value, the counters' places, the capture window, and the parity claim scoped to deterministic encoders. Rev 2 folded in the review of rev 1 (#638 at 7beeb822: NOT GO, 2 must-fix, 2 should, 1 nit): the tests count both encodes, the verifier test keeps its mixed coverage, a raw hybrid golden is captured on `main` first, a non-deterministic encode is named, and the 107 decision is stored once. This is D10 of #521's plan ([`2026-11-13-typed-events-actions.md`](2026-11-13-typed-events-actions.md), §2.3's encoding table, the hybrid row). It was split out after that plan's rev 18. EV2 and EV3 follow in PR 1b-2b; they don't touch `TransportAdapter`. Read at `main` b7da92fb.
 
 **Ordering (rev 3):**
 - **After #632.** The MessagePack loss test uses #632's package hook `emitAnyServerEventForTesting`, which replaces the public `LandContext.emitAnyServerEvent` (`main`'s `LandContext.swift:245`). So D10's code branches from `main` after #632 merges. The capture commit below holds no D10 code and is carried over.
@@ -59,13 +59,13 @@ Both encoders are `let`s (:332-333), so neither answer can change later. In `enq
 ## Tests
 
 **First, on `main`, before any D10 code (rev 2):** no hybrid golden exists (`git grep` finds no hybrid capture under `Tests/`), and the differential harness compares decoded output, not bytes. So the order is:
-1. Capture, in a commit made from `main`'s code, the raw frames a hybrid land sends (`json` and `opcodeJsonArray` messages, `opcodeMessagePack` state updates), and its record's `eventsNotMerged`. Done (rev 3): `HybridEventFrameGoldenTests` and `Fixtures/HybridEventFrames/`, one file per sync mode, recorded at `main` b7da92fb with no D10 code. The window:
+1. Capture, in a commit made from `main`'s code, the raw frames a hybrid land sends (`json` and `opcodeJsonArray` messages, `opcodeMessagePack` state updates), and its record's `eventsNotMerged`. Done (rev 3): `HybridEventFrameGoldenTests` and `Fixtures/HybridEventFrames/`, one file per sync path (in-turn and legacy, run under CI's three settings), recorded at `main` b7da92fb with no D10 code. The window:
    - **Land:** each tick sets its state (`ticks += 1`) and emits to `.all`, to `.players([])` and to `.player(p1)`, then requests a sync. `OnInitialize` emits nothing.
-   - **Cells:** `json` and `opcodeJsonArray` messages, each with event hashes off and on. Session, client and player IDs are pinned (`s1`/`c1`/`p1`, `s2`/`c2`/`p2`). The environment's sync options are given, not read.
-   - **Steps:** both players join (their first sync frames are in the capture), two ticks, then one `sendEvent` to `c1` from outside a turn, with a drain after each.
+   - **Cells:** `json` and `opcodeJsonArray` messages, each with event hashes off and on. Session, client and player IDs are pinned (`s1`/`c1`/`p1`, `s2`/`c2`/`p2`). The environment's sync options are given, not read: sync tables on, per-player tables off, and (rev 4) typed leaf values on, since an explicit `TransportEnvConfig` still inherits `TYPED_LEAF_VALUES` (the sync-tables-off CI job sets it to false).
+   - **Steps:** both players join (their first sync frames are in the capture), two ticks, then one `sendEvent` to `c1` from outside a turn. After each step the test waits for the outbound writer by its event (`waitForOutboundIdleForTesting`); rev 4: the joins too, with `simulateRouterJoin`'s steps inlined, since that helper polls.
    - **Captured per session, in send order.** The order between sessions follows a dictionary and isn't stable, so it isn't recorded.
-   - **Expected, and seen:** for each tick, `s1` gets the `.all` frame and the `.player(p1)` frame alone, in emission order, then the 107 frame with an empty event array. `s2` gets the `.all` frame, then the 107 frame. `.players([])` has no frame and is the third `sentAlone` entry of the tick's output (`[0, 1, 2]`, then `[3, 4, 5]`).
-   - **Stable:** a second recording in the same process gives the same bytes (a test), in all three sync modes.
+   - **Expected, and seen:** for each tick, `s1` gets the `.all` frame and the `.player(p1)` frame alone, in emission order, then the 107 frame with an empty event array. `s2` gets the `.all` frame, then the 107 frame. `.players([])` is the second emission: it has no frame, and its sequence is in the tick's `sentAlone` list at index 1 (`[0, 1, 2]`), then 4 (`[3, 4, 5]`) (rev 4). **The record part holds for the in-turn path only:** the legacy path's file has `eventsNotMerged: []` for every output, so it covers the frames.
+   - **Stable:** a second recording in the same process gives the same bytes (a test), on both sync paths under CI's three settings.
 2. Verify D10 against those captures, byte for byte.
 3. Merge D10 before the adapter rewrite records its freeze captures. If a freeze capture is already taken, compare D10 with it and name any delta in the PR.
 
@@ -81,21 +81,26 @@ The tests assert the pair:
 
 **The moved tests (rev 2):**
 - `SyncOutputVerifierTests.unmergedEventIsUnverifiable` (:1204). Its land emits three events every tick (:117-119), and today's fault is on for the middle tick only. That gives `[0, 3, 0]` unmerged, `events.compared == 2` and `unverifiable == 1`. On a hybrid fixture every tick's events go alone, so the hybrid version keeps the mix another way.
-  - **Its own land definition (rev 3), used both to record and to replay.** The replay helper rebuilds `makeVerifierLand()` (:194), which emits on every tick and in `OnInitialize` (:99-103). In a hybrid configuration that init event goes alone too, and adds an unverifiable output.
+  - **Its own land definition (rev 3), used both to record and to replay.** The replay helper rebuilds `makeVerifierLand()` (:423; :194 builds the recording fixture), which emits on every tick and in `OnInitialize` (:99-103). In a hybrid configuration that init event goes alone too, and adds an unverifiable output.
   - The dedicated land emits only when the recorded state says so (`ticks == 2`), emits nothing in `OnInitialize`, and keeps the sync request on all three ticks. `makeVerifierLand()` is unchanged for the other tests.
   - An output with no events still gets an events hash (`commitSyncPhase` records `hash([])` when `useStateUpdateWithEvents`, `TransportAdapter.swift:4046-4053`, :3781), and the verifier compares it (`SyncOutputVerifier.swift:485-503`). So the test asserts compared, unverifiable, compared: `events.compared == 2`, `unverifiable == 1`.
 - `TransportAdapterSyncPhaseTests` (:818-829) keeps two arms. Today the sent-alone arm uses the `.mergedBody` fault, and the outside-turn loss arm uses `.all` (rev 3: rev 2 had these swapped):
   - the sent-alone arm runs on a hybrid fixture, with no fault;
   - the loss arm runs on real MessagePack with the dictionary payload above, instead of `.all`.
 
-**Old records:** a hybrid record written before the change (the capture above) reads and verifies with the same verdict and counts.
+**Old records (rev 4):** a real record written by `main`'s code, before D10, is committed as `Fixtures/HybridEventFrames/hybrid-record.sstr`. It is the golden land's in-turn run, `json` messages, event hashes off; the `opcodeJsonArray` cell writes the same bytes, since a record doesn't hold the message encoding. Its bytes aren't compared: a test replays it (`ReevaluationEngine.run`), and today gives:
+- ticks 0 and 1, with every recorded state hash matched and no server event mismatch;
+- `eventsSentAlone == 6`, `eventsLost == 0`;
+- the sync output verdict `partial`, with events `compared 0 / unverifiable 2 / skipped 0` (each tick's events went alone).
+
+After D10 the same test must pass unchanged on the same file.
 
 **Mutants:**
 - the init decision ignored, so the body is attempted in hybrid: the pair becomes (1, 1);
 - the second encode put back for MessagePack: the pair becomes (1, 1);
 - `eventsMerge` inverted: the merge test gives (0, 1) with no merged event, and fails;
-- `syncConfigForRecord` computed live again: like the next one, no test can see it while the encoders are `let`s;
-- `useStateUpdateWithEvents` computed per call again: no test can see it while the encoders are `let`s, so these two are review items, not mutants.
+- `syncConfigForRecord` computed live again: the framework's state update encoders return a constant `encoding`, so no test sees a difference;
+- `useStateUpdateWithEvents` computed per call again: the same. These two are review items, not mutants (rev 4). A `let` existential fixes which encoder is used, but `StateUpdateEncoder.encoding` is a protocol getter that a conformer could compute. The stored value is right because it pins the decision once, whatever that getter does.
 
 **Runs:**
 - the touched suites;

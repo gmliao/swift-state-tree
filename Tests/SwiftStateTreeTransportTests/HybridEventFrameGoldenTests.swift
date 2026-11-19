@@ -4,8 +4,15 @@
 // event body can be merged into it, so every event goes as its own frame. D10 moves that
 // decision to init; the frames and the record must not change.
 //
-// One file per sync mode (`IN_TURN_SYNC`), since the two modes send through different paths.
-// The other environment knobs (sync tables, per-player tables) are given, not read.
+// One file per sync path (`IN_TURN_SYNC`), since the two paths send differently. The legacy
+// path records no `eventsNotMerged` (every output's list is empty): its file covers the frames.
+// The other environment knobs (sync tables, per-player tables, typed leaf values) are given, not
+// read.
+//
+// A real record of the in-turn path (`hybrid-record.sstr`, `json` messages, event hashes off) is
+// committed with them, written by `main`'s code. The record doesn't depend on the message
+// encoding: the `opcodeJsonArray` cell writes the same bytes. They are replayed, not compared by bytes: an old
+// hybrid record must replay with the same verdict and counts after D10.
 
 import Foundation
 import Testing
@@ -84,8 +91,15 @@ struct HybridEventFrameGoldenTests {
         return (land.pathHashes!, land.eventHashes!)
     }()
 
+    static var recordPath: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/HybridEventFrames/hybrid-record.sstr").path
+    }
+
     /// Two players join, two ticks run, and the adapter sends one event to a client directly.
-    static func record(_ cell: HybridGoldenCell) async throws -> AnyCodable {
+    /// With `saveRecordTo`, the land's record is saved there as well.
+    static func record(_ cell: HybridGoldenCell, saveRecordTo recordPath: String? = nil) async throws -> AnyCodable {
         let keeper = LandKeeper<HybridGoldenState>(
             definition: makeHybridGoldenLand(),
             initialState: HybridGoldenState(),
@@ -95,6 +109,7 @@ struct HybridEventFrameGoldenTests {
         var env = TransportEnvConfig(enableDirtyTracking: true, useSnapshotForSync: false, syncStrategy: .delta, profilingConfig: nil)
         env.useSyncTables = true
         env.perPlayerSyncTables = false
+        env.typedLeafValues = true
         let transport = HybridGoldenTransport()
         let adapter = TransportAdapter<HybridGoldenState>(
             keeper: keeper,
@@ -109,12 +124,22 @@ struct HybridEventFrameGoldenTests {
         await transport.setDelegate(adapter)
         await keeper.awaitInitialization()
         await keeper.setTransport(adapter)
+        // `simulateRouterJoin`'s steps, waiting for the writer by its event instead of polling.
         for n in 1 ... 2 {
-            await adapter.onConnect(sessionID: SessionID("s\(n)"), clientID: ClientID("c\(n)"))
-            try await simulateRouterJoin(
-                adapter: adapter, keeper: keeper,
-                sessionID: SessionID("s\(n)"), clientID: ClientID("c\(n)"), playerID: PlayerID("p\(n)")
+            let (session, client) = (SessionID("s\(n)"), ClientID("c\(n)"))
+            await adapter.onConnect(sessionID: session, clientID: client)
+            let decision = try await keeper.join(
+                session: PlayerSession(playerID: "p\(n)", deviceID: "dev-mock-p\(n)", metadata: [:]),
+                clientID: client, sessionID: session, services: LandServices()
             )
+            guard case .allow(let player) = decision else {
+                Issue.record("join denied")
+                return AnyCodable("join denied")
+            }
+            await adapter.registerSession(sessionID: session, clientID: client, playerID: player, authInfo: nil)
+            _ = await adapter.allocatePlayerSlot(accountKey: player.rawValue, for: player)
+            await adapter.syncStateForNewPlayer(playerID: player, sessionID: session)
+            await adapter.waitForOutboundIdleForTesting()
         }
         for _ in 0 ..< 2 {
             await keeper.stepTickOnce()
@@ -145,6 +170,19 @@ struct HybridEventFrameGoldenTests {
                 "lost": AnyCodable(notMerged.lost.map { AnyCodable(Int($0)) }),
             ])
         }
+        if let recordPath {
+            await recorder.setMetadata(ReevaluationRecordMetadata(
+                landID: "hybrid-event-frames",
+                landType: "hybrid-event-frames",
+                createdAt: Date(timeIntervalSince1970: 0),
+                metadata: [:],
+                landDefinitionID: makeHybridGoldenLand().id,
+                version: ReevaluationRecordVersion.current,
+                recordsSyncStream: true,
+                syncConfig: adapter.syncConfigForRecord
+            ))
+            try await recorder.saveCopyForTesting(to: recordPath)
+        }
         return AnyCodable([
             "cell": AnyCodable(cell.description),
             "frames": AnyCodable(frames.mapValues { AnyCodable($0) }),
@@ -173,10 +211,35 @@ struct HybridEventFrameGoldenTests {
                 withIntermediateDirectories: true
             )
             try data.write(to: URL(fileURLWithPath: Self.fixturePath))
+            if InTurnSync.isEnabled() {
+                _ = try await Self.record(HybridGoldenCell(message: .json, eventHashes: false), saveRecordTo: Self.recordPath)
+            }
             return
         }
         let committed = try Data(contentsOf: URL(fileURLWithPath: Self.fixturePath))
         #expect(data == committed, "regenerate with \(HybridEventFrameGoldenEnvKeys.regenerate)=1, and say why in the PR")
+    }
+
+    /// What `main`'s code gives for the committed records, before D10.
+    static let expectedVerdict: SyncOutputVerdict = .partial
+    static let expectedEvents = SyncOutputScopeCounts(compared: 0, unverifiable: 2, skipped: 0)
+
+    @Test("An old hybrid record replays: its state hashes and events match, and every event counts as sent alone")
+    func oldRecordReplays() async throws {
+        let result = try await ReevaluationEngine.run(
+            definition: makeHybridGoldenLand(),
+            initialState: HybridGoldenState(),
+            recordFilePath: Self.recordPath
+        )
+        #expect(result.maxTickId == 1)
+        #expect(!result.recordedStateHashes.isEmpty)
+        #expect(result.tickHashes.filter { result.recordedStateHashes[$0.key] != nil }
+            == result.recordedStateHashes)
+        #expect(result.serverEventMismatches.isEmpty)
+        let sync = result.syncOutput
+        #expect((sync.eventsSentAlone, sync.eventsLost) == (6, 0), "\(sync.summary)")
+        #expect(sync.verdict == Self.expectedVerdict, "\(sync.summary)")
+        #expect(sync.events == Self.expectedEvents, "\(sync.summary)")
     }
 
     @Test("Recording twice gives the same bytes")
