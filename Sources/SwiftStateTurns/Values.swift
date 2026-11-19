@@ -1,0 +1,177 @@
+// The values a machine and its turn exchange with the core.
+
+import Foundation
+
+// MARK: - Identities
+
+/// Names one `sendAndWait`'s waiter. A step reads it from `Turn.input` and answers it with `Turn.reply`.
+public struct InputID: Hashable, Sendable {
+    @usableFromInline let raw: UInt64
+    @inlinable init(raw: UInt64) { self.raw = raw }
+}
+
+/// Names one request: asynchronous work owned by a key's generation.
+public struct RequestID: Hashable, Sendable {
+    @usableFromInline let raw: UInt64
+    @inlinable init(raw: UInt64) { self.raw = raw }
+}
+
+/// One life of a key, from `Turn.start` to `Turn.end`. For comparisons and logs only: a handler
+/// never needs one to know whether a result is still wanted, because the core decides that.
+public struct Generation: Hashable, Sendable {
+    @usableFromInline let raw: UInt64
+    @inlinable init(raw: UInt64) { self.raw = raw }
+}
+
+// MARK: - Withdraw tokens
+
+/// Evidence, owned upstream, that an input is no longer wanted (a router's join attempt that
+/// ended). It travels with the input, so it covers an end that reaches the core before the input
+/// does, which no key can: there is nothing to end yet. It lives as long as the input.
+///
+/// The core reads it when the input is about to step: on arrival, and on release from queuing.
+/// Marking it upstream doesn't remove a queued input; that input keeps its place until it is
+/// released (and is then withdrawn), or until a step calls `Turn.revoke`. An end after the read
+/// belongs to the started input, and is the machine's to handle. A machine never stores a token.
+public final class WithdrawToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
+
+    public init() {}
+
+    public var isWithdrawn: Bool { lock.withLock { ended } }
+
+    public func withdraw() { lock.withLock { ended = true } }
+}
+
+// MARK: - InputPolicy, holds, outcomes
+
+/// How an input is admitted.
+public enum InputPolicy<Key: Hashable & Sendable>: Sendable {
+    /// From outside: refused `closed` after `close`, refused `withdrawn` if `withdrawnBy` is
+    /// withdrawn, queued while `waitsFor` is held (refused `queueFull` over the queue limit).
+    /// `belongsTo`: the key the input belongs to. Ending that key, or starting it again over a
+    /// live generation, after the input arrives and before it steps withdraws it. An input that
+    /// arrives after an `end` and before the next `start` steps under the new generation, so
+    /// use a fresh key per binding (a connection or session id) when that matters.
+    case normal(waitsFor: Key?, belongsTo: Key?, withdrawnBy: WithdrawToken? = nil)
+    /// Never gated, queued or refused: a disconnect, a stop, a teardown, a `run`'s result.
+    case control
+}
+
+/// A key that a request keeps busy: normal inputs that name it as their hold wait.
+///
+/// Every holding request has a deadline, and the deadline bounds the request: when it passes,
+/// the request is abandoned, its caller can be answered and `handleAbandoned` runs. An
+/// `.untilRequestCloses` hold ends with the request; an `.untilWorkerReturns` hold ends only when
+/// its worker returns, so the adopter bounds that worker. A request with no bound would leave
+/// every input queued behind its key waiting for as long as its work hangs.
+public enum Hold<Key: Hashable & Sendable>: Sendable {
+    /// Held until the request closes, for any reason.
+    case untilRequestCloses(Key, deadline: Duration)
+    /// Held until the worker's result arrives, also after the request closed without it: for
+    /// work that changes another domain while it runs.
+    case untilWorkerReturns(Key, deadline: Duration)
+
+    @inlinable var key: Key {
+        switch self {
+        case .untilRequestCloses(let key, _), .untilWorkerReturns(let key, _): key
+        }
+    }
+
+    @inlinable var deadline: Duration {
+        switch self {
+        case .untilRequestCloses(_, let deadline), .untilWorkerReturns(_, let deadline): deadline
+        }
+    }
+
+    @inlinable var untilRetire: Bool {
+        if case .untilWorkerReturns = self { return true }
+        return false
+    }
+}
+
+/// Why a request closed without its completion.
+public enum Abandonment: Sendable, Equatable {
+    case keyEnded, deadline, cancelled
+}
+
+/// Why a normal input never stepped.
+public enum TurnError: Error, Sendable, Equatable {
+    /// The core is closed to normal inputs.
+    case closed
+    /// The queue is full.
+    case queueFull
+    /// Its scope ended or was superseded, or its token was withdrawn, before it stepped.
+    case withdrawn
+}
+
+/// What a `sendAndWait` does when its task is cancelled. There is no default: each call states it.
+public enum CallerCancellation: Sendable {
+    /// Nothing: the caller keeps waiting and gets the real result.
+    case ignoresCancel
+    /// A normal input not yet submitted isn't; one still queued when the cancellation is
+    /// handled is withdrawn and never steps; one that stepped goes on, and only its caller stops
+    /// waiting. A control input is always submitted and stepped. The caller gets
+    /// `CancellationError`.
+    case cancelsCall
+}
+
+// MARK: - Time
+
+/// An instant on the core's clocks: signed nanoseconds since the process's origin, so a
+/// difference can be negative. Every production clock measures from one origin per process,
+/// captured once, so an instant a machine stored stays meaningful under a replaced core or a
+/// second clock. A test clock starts at zero and is never mixed with a production one.
+public struct TurnInstant: Hashable, Comparable, Sendable {
+    public let nanoseconds: Int64
+
+    @inlinable public init(nanoseconds: Int64) { self.nanoseconds = nanoseconds }
+
+    @inlinable public static func < (lhs: TurnInstant, rhs: TurnInstant) -> Bool {
+        lhs.nanoseconds < rhs.nanoseconds
+    }
+
+    @inlinable public static func + (lhs: TurnInstant, rhs: Duration) -> TurnInstant {
+        TurnInstant(nanoseconds: lhs.nanoseconds &+ rhs.turnNanoseconds)
+    }
+
+    @inlinable public static func - (lhs: TurnInstant, rhs: TurnInstant) -> Duration {
+        .nanoseconds(lhs.nanoseconds &- rhs.nanoseconds)
+    }
+
+    /// The process's origin for production clocks, captured on first use.
+    public static let processOrigin = ContinuousClock.now
+
+    /// The continuous clock's instant, measured from the process's origin.
+    public init(_ instant: ContinuousClock.Instant) {
+        self.init(nanoseconds: (instant - Self.processOrigin).turnNanoseconds)
+    }
+
+    /// This instant on the continuous clock.
+    public var continuous: ContinuousClock.Instant {
+        Self.processOrigin + .nanoseconds(nanoseconds)
+    }
+}
+
+extension Duration {
+    /// Whole nanoseconds, saturating at `Int64`'s range.
+    @inlinable var turnNanoseconds: Int64 {
+        let (seconds, attoseconds) = components
+        let (scaled, overflow) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        if overflow { return seconds < 0 ? .min : .max }
+        let (sum, overflow2) = scaled.addingReportingOverflow(attoseconds / 1_000_000_000)
+        if overflow2 { return seconds < 0 ? .min : .max }
+        return sum
+    }
+}
+
+/// The clock a core reads and sleeps on. Injected, with no default: a production adopter passes
+/// one that measures from `TurnInstant.processOrigin` and sleeps with its own safe sleep; a test
+/// passes one it drives by hand.
+public protocol TurnClock: Sendable {
+    var now: TurnInstant { get }
+    /// Returns at `instant`, or earlier when its task is cancelled. A caller that wakes re-checks
+    /// whatever it slept for: the core does, before it abandons a request or fires a timer.
+    func sleep(until instant: TurnInstant) async
+}
