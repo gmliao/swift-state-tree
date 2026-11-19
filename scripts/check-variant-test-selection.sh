@@ -35,7 +35,10 @@
 # `matrix.in_turn_sync == 'true' || inputs.full_matrix`.
 #   S6 the job's matrix has one axis, in_turn_sync, used only as IN_TURN_SYNC (and in the job's
 #      name and that `if:`): the legs differ in one variable, read at run time. A new axis, or the
-#      axis in a compiler flag or another env var, fails until it is examined.
+#      axis in a compiler flag or another env var, fails until it is examined; so does the
+#      `strategy` context (`strategy.job-index` tells the legs apart without naming the axis).
+#      The scan is per line, outside comment lines: IN_TURN_SYNC in a step's display text or an
+#      inline comment fails too (a false alarm, fixed by rewording).
 #   S4 a one-leg step runs only `scripts/<name>.sh [--self-test]`, and neither those scripts nor any
 #      script they name (`scripts/*.sh` or `.py`, followed) mentions IN_TURN_SYNC, inTurnSync or
 #      InTurnSync. Textual: a script that builds the flag's name from parts isn't seen.
@@ -310,6 +313,7 @@ def check(root, package, filtered):
 # Section 2: the build job's in-turn-sync legs. Steps that run in one leg only are safe while the
 # leg's one variable can't change what they check.
 BUILD_JOB = "build"
+BUILD_NAME = "build (in-turn sync ${{ matrix.in_turn_sync }})"
 LEG_AXIS = "in_turn_sync"
 LEG_ENV = "IN_TURN_SYNC"
 ONE_LEG_IF = "if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}"
@@ -317,6 +321,8 @@ ONE_LEG_IF = "if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}"
 FLAG_NAMES = re.compile(r"IN_TURN_SYNC|\binTurnSync\b|\bInTurnSync\b")
 SCRIPT_REF = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.(?:sh|py))\b")
 MATRIX_USE = re.compile(r"\bmatrix\s*(?:\.\s*\w+|\[)")
+# The strategy context: `strategy.job-index` differs between the legs as the axis does.
+STRATEGY_USE = re.compile(r"\bstrategy\s*(?:\.|\[)")
 # The leg's variable anywhere but its env line: `env.IN_TURN_SYNC` in an `if:`, `$IN_TURN_SYNC` in a
 # run line, or a second env var built from it.
 LEG_ENV_USE = re.compile(r"\bIN_TURN_SYNC\b")
@@ -368,12 +374,14 @@ def leg_errors(workflow, read_script):
     if axes != [LEG_AXIS]:
         errors.append(f"{where}'s matrix has the axes {axes}, not only {LEG_AXIS}: a new axis must be examined before its legs skip steps (S6)")
     allowed = (
-        re.compile(r"^    name: .*\$\{\{ matrix\.in_turn_sync \}\}.*$"),
+        re.compile(r"^    name: " + re.escape(BUILD_NAME) + r"\s*$"),
         re.compile(r"^      " + LEG_ENV + r": \$\{\{ matrix\.in_turn_sync \}\}\s*$"),
         re.compile(r"^      " + re.escape(ONE_LEG_IF) + r"\s*$"),
     )
     for line in code:
-        if MATRIX_USE.search(line) and not any(a.match(line) for a in allowed):
+        if STRATEGY_USE.search(line):
+            errors.append(f"{where} uses the strategy context: {line.strip()!r}; it tells the legs apart as the axis does (S6)")
+        elif MATRIX_USE.search(line) and not any(a.match(line) for a in allowed):
             errors.append(f"{where} uses the matrix outside {LEG_ENV}, its name and the one-leg if: {line.strip()!r} (S6)")
         elif LEG_ENV_USE.search(line) and not allowed[1].match(line):
             errors.append(f"{where} uses {LEG_ENV} outside its env line: {line.strip()!r}; a step that reads it must run in both legs (S6)")
@@ -632,6 +640,12 @@ def leg_self_test():
         ("a step with no if runs in both legs, whatever it runs", build(extra="    - name: Free\n      run: scripts/free.sh\n"),
          {**scripts, "scripts/free.sh": "echo $IN_TURN_SYNC\n"}, None),
         ("the axis only in a comment doesn't count", build(extra="    # ${{ matrix.rows }}\n"), scripts, None),
+        ("strategy.job-index in an if: fails", build(lint_if="      if: ${{ strategy.job-index == 0 || inputs.full_matrix }}\n"), scripts, "the strategy context"),
+        ("strategy.job-index in a run line fails",
+         build(extra="    - name: Index\n      run: scripts/x.sh ${{ strategy.job-index }}\n"), scripts, "the strategy context"),
+        ("a second matrix use in the job's name fails",
+         build().replace("    name: build (in-turn sync ${{ matrix.in_turn_sync }})\n",
+                         "    name: build (in-turn sync ${{ matrix.in_turn_sync }}) ${{ matrix.rows }}\n"), scripts, "outside IN_TURN_SYNC"),
     ]
     failed = 0
     for name, workflow, files, want in cells:

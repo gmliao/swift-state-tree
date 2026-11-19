@@ -8,7 +8,7 @@
 #               (CI: wall-clock-tests)
 #   turns       scripts/lint-turns.sh --self-test, then the repository (CI: build › Lint turns)
 #   plan-index  scripts/check-plan-index.sh --self-test, then Notes/plans/README.md: one row per plan
-#               and no conflict marker, after a union merge (CI: shellcheck › Plan index)
+#               and no conflict marker, after a union merge (CI: the Plan index workflow)
 #   text-encoding  scripts/lint-text-encoding.py --self-test, then deep-research/ and scripts/:
 #               Python text I/O without encoding= (a non-UTF-8 locale, such as cp950 on Windows,
 #               breaks it). Not in CI yet.
