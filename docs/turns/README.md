@@ -58,17 +58,20 @@ Mark a struct or an enum with `@PlainData` where it is defined. The macro writes
 - A type from the standard library or Foundation can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
 - A type from another module of this repository takes `@PlainData` at its definition, in its own module, never through an extension elsewhere. The IDs and values a land's state and its transport keep are marked this way: `SessionID`, `PlayerID`, `ClientID`, `EventTarget`, `StateSnapshot`, `SnapshotValue` and `MessagePackValue`. A machine can store them as they are.
 
-In the example below, the first `Room` is refused: the macro names its fields that aren't plain data. The second one compiles.
+In the example below, marking the first `Room` with `@PlainData` is refused: the macro names its fields that aren't plain data. The second one compiles.
+
+Before, the state holds a class and a clock instant:
 
 ```swift
-// Before: refused. A class and a clock instant in the state.
-@PlainData
 struct Room {
     var players: [PlayerID: Connection]       // Connection is a class
     var lastChat: ContinuousClock.Instant
 }
+```
 
-// After: plain values. The connections stay on the actor, keyed by PlayerID.
+After, it holds plain values; the connections stay on the actor, keyed by `PlayerID`:
+
+```swift
 @PlainData
 struct Room {
     var players: Set<PlayerID>                // PlayerID is @PlainData

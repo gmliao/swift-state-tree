@@ -58,17 +58,20 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 - 標準函式庫或 Foundation 的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
 - 本 repository 其他模組的型別，在它自己的模組、它的定義處加上 `@PlainData`，絕不在別處用 extension 加。land 的狀態與 transport 保存的 ID 和值都已這樣標註：`SessionID`、`PlayerID`、`ClientID`、`EventTarget`、`StateSnapshot`、`SnapshotValue` 和 `MessagePackValue`。machine 可以直接儲存它們。
 
-下面的例子中，第一個 `Room` 會被拒絕：macro 會指出其中不是純資料的欄位。第二個可以編譯。
+下面的例子中，替第一個 `Room` 加上 `@PlainData` 會被拒絕：macro 會指出其中不是純資料的欄位。第二個可以編譯。
+
+之前，狀態裡有 class 和時鐘的 instant：
 
 ```swift
-// 之前：會被拒絕。狀態裡有 class 和時鐘的 instant。
-@PlainData
 struct Room {
     var players: [PlayerID: Connection]       // Connection 是 class
     var lastChat: ContinuousClock.Instant
 }
+```
 
-// 之後：純值。連線留在 actor 上，以 PlayerID 為鍵。
+之後，狀態只存純值；連線留在 actor 上，以 `PlayerID` 為鍵：
+
+```swift
 @PlainData
 struct Room {
     var players: Set<PlayerID>                // PlayerID 是 @PlainData

@@ -167,60 +167,49 @@ struct ConceptsTests {
     }
 }
 
-/// The guide's plain-data example ("Your own types"). The guide's block holds the refused
-/// `Room` and the plain one together, so it sits whole under `#if false` for the documentation
-/// test's text match (once per language); the plain `Room` compiles below it, and
-/// `scripts/must-not-compile/turns/plaindata-guide-room.swift` pins the refused one's error.
-enum PlainDataGuideExample {
-    final class Connection {}
+// docs/turns/README.md § Plain data and tools: the before/after example, in both languages, each
+// block in its own namespace so the two `Room`s compile side by side. `PlayerID` is the
+// repository's own (SwiftStateTree), which is plain data. `Connection` sits at file scope: the
+// macro's extension is written there and names the field types unqualified.
+final class Connection {}
 
-    #if false
-    // Before: refused. A class and a clock instant in the state.
-    @PlainData
-    struct Room {
-        var players: [PlayerID: Connection]       // Connection is a class
-        var lastChat: ContinuousClock.Instant
+enum PlainDataDocExample {
+    enum Before {
+        struct Room {
+            var players: [PlayerID: Connection]       // Connection is a class
+            var lastChat: ContinuousClock.Instant
+        }
     }
 
-    // After: plain values. The connections stay on the actor, keyed by PlayerID.
-    @PlainData
-    struct Room {
-        var players: Set<PlayerID>                // PlayerID is @PlainData
-        var lastChat: TurnInstant
-    }
-    #endif
-
-    #if false
-    // 之前：會被拒絕。狀態裡有 class 和時鐘的 instant。
-    @PlainData
-    struct Room {
-        var players: [PlayerID: Connection]       // Connection 是 class
-        var lastChat: ContinuousClock.Instant
+    enum After {
+        @PlainData
+        struct Room {
+            var players: Set<PlayerID>                // PlayerID is @PlainData
+            var lastChat: TurnInstant
+        }
     }
 
-    // 之後：純值。連線留在 actor 上，以 PlayerID 為鍵。
-    @PlainData
-    struct Room {
-        var players: Set<PlayerID>                // PlayerID 是 @PlainData
-        var lastChat: TurnInstant
+    enum BeforeZH {
+        struct Room {
+            var players: [PlayerID: Connection]       // Connection 是 class
+            var lastChat: ContinuousClock.Instant
+        }
     }
-    #endif
 
-    // The plain `Room`, compiled.
-    @PlainData
-    struct Room {
-        var players: Set<PlayerID>                // PlayerID is @PlainData
-        var lastChat: TurnInstant
+    enum AfterZH {
+        @PlainData
+        struct Room {
+            var players: Set<PlayerID>                // PlayerID 是 @PlainData
+            var lastChat: TurnInstant
+        }
     }
 }
 
-@Suite("The guide's plain-data example")
-struct PlainDataGuideExampleTests {
-    @Test("The guide's plain Room stores the repository's IDs and a turn instant")
-    func plainRoomCompiles() {
-        func isPlain<T: PlainData>(_: T.Type) -> Bool { true }
-        #expect(isPlain(PlainDataGuideExample.Room.self))
-        #expect(isPlain(PlayerID.self))
-        #expect(isPlain(SessionID.self))
-    }
+@Test("The plain-data example's after form is plain data")
+func plainDataDocExampleIsPlain() {
+    func isPlain<T: PlainData>(_: T.Type) -> Bool { true }
+    #expect(isPlain(PlainDataDocExample.After.Room.self))
+    #expect(isPlain(PlainDataDocExample.AfterZH.Room.self))
+    #expect(isPlain(PlayerID.self))
+    #expect(isPlain(SessionID.self))
 }
