@@ -259,6 +259,7 @@ let package = Package(
                 "SwiftStateTreeNIO",
                 "SwiftStateTreeTransport",
                 "SwiftStateTree",
+                "SwiftStateTreeMessagePack",
                 "SwiftStateTreeReevaluationMonitor",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
