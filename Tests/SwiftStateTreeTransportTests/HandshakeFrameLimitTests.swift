@@ -329,14 +329,15 @@ struct HandshakeFrameLimitTests {
         #expect(await connection.closes.isEmpty)
     }
 
-    /// `boundRanOutFirst`: the close's bound runs out while the error is held, the interleaving
+    /// `waitsForBound`: the close's bound runs out while the error is held, the interleaving
     /// that failed on a loaded runner (#647); it is held, so the error still goes out first.
     @Test("The error reaches the connection before the 1009 close, and a join sent after the refusal is dropped", arguments: [false, true])
-    func errorBeforeCloseAndTerminal(boundRanOutFirst: Bool) async throws {
+    func errorBeforeCloseAndTerminal(waitsForBound: Bool) async throws {
         let fixture = try LimitFixture(limit: 512)
         let session = SessionID("s-ordered")
         let connection = await fixture.connect(session)
         let bound = await fixture.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
         // The drain stops inside the first send: the error is held at the connection.
         await connection.holdSends()
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513))
@@ -348,7 +349,7 @@ struct HandshakeFrameLimitTests {
         // A valid join sent before the close goes out is dropped, not handled.
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "join-2"))
         #expect(await fixture.router.framesDroppedAfterRefusalForTesting == 1)
-        if boundRanOutFirst {
+        if waitsForBound {
             #expect(await bound.waitForArrivals(1), "the bound ran out")
         }
 
@@ -356,7 +357,6 @@ struct HandshakeFrameLimitTests {
         await connection.waitFor { !$0.closes.isEmpty }
         let events = await connection.events
         #expect(events == [.sent(.error), .closed(.handshakeFrameTooBig)], "\(events)")
-        bound.open()
         #expect(await fixture.router.getBoundLandID(for: session) == nil)
         #expect(await fixture.manager.getLand(landID: fixture.landID) == nil, "no land was looked up or created")
     }
@@ -488,18 +488,19 @@ struct HandshakeFrameLimitTests {
     /// Through the router: the refusal ends with the connection. The delayed closes' generation
     /// checks are covered at the transport (`staleMarkerClose`, `staleBoundClose`): here the
     /// disconnect cancels the drain, so the marker isn't read.
-    /// `boundRanOutFirst`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
+    /// `waitsForBound`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
     @Test("A client that disconnects between the refusal and its close: the new connection under the ID joins and stays open", arguments: [false, true])
-    func disconnectBeforeMarker(boundRanOutFirst: Bool) async throws {
+    func disconnectBeforeMarker(waitsForBound: Bool) async throws {
         let fixture = try LimitFixture(limit: 512)
         let session = SessionID("s-reconnect")
         let first = await fixture.connect(session)
         // The close's bound is held: it must not close before the disconnect (#647).
         let bound = await fixture.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
         await first.holdSends()
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513))
         await first.waitFor { $0.sendAttempts >= 1 }
-        if boundRanOutFirst {
+        if waitsForBound {
             #expect(await bound.waitForArrivals(1), "the bound ran out")
         }
         // The client goes before the drain reaches the close marker.
@@ -513,7 +514,6 @@ struct HandshakeFrameLimitTests {
         await second.waitFor { $0.kinds.contains(.joinResponse) || !$0.closes.isEmpty }
         #expect(await second.closes.isEmpty)
         #expect(await fixture.router.getBoundLandID(for: session) != nil)
-        bound.open()
     }
 
     /// Only a join not yet in the keeper's join: one already in it (CanJoin, the admission) isn't
@@ -724,9 +724,9 @@ struct HandshakeFrameLimitTests {
         #expect(await second.errorCodes == Array(repeating: ErrorCode.invalidJSON.rawValue, count: 3))
     }
 
-    /// `boundRanOutFirst`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
+    /// `waitsForBound`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
     @Test("While the over-budget error is held, the session is already refused: a join and an oversized frame are dropped, then one 1008 close", arguments: [false, true])
-    func overBudgetTerminalWhileErrorHeld(boundRanOutFirst: Bool) async throws {
+    func overBudgetTerminalWhileErrorHeld(waitsForBound: Bool) async throws {
         let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 2)
         let session = SessionID("s-held-ninth")
         let connection = await fixture.connect(session)
@@ -738,6 +738,7 @@ struct HandshakeFrameLimitTests {
         // The close's bound is held while the error is (#647). The drain stops inside the
         // over-budget error's send.
         let bound = await fixture.transport.holdBoundClosesForTesting()
+        defer { bound.open() }
         await connection.holdSends()
         await fixture.transport.handleIncomingMessage(sessionID: session, data: Data())
         await connection.waitFor { $0.sendAttempts >= 3 }
@@ -747,7 +748,7 @@ struct HandshakeFrameLimitTests {
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 400, requestID: "join-late"))
         await fixture.transport.handleIncomingMessage(sessionID: session, data: try join(bytes: 513, requestID: "join-big"))
         #expect(await fixture.router.framesDroppedAfterRefusalForTesting == 2)
-        if boundRanOutFirst {
+        if waitsForBound {
             #expect(await bound.waitForArrivals(1), "the bound ran out")
         }
 
@@ -755,7 +756,6 @@ struct HandshakeFrameLimitTests {
         await connection.waitFor { !$0.closes.isEmpty }
         let events = await connection.events
         #expect(events == [.sent(.error), .sent(.error), .sent(.error), .closed(.handshakeRefusedFrames)], "\(events)")
-        bound.open()
         #expect(await fixture.router.getBoundLandID(for: session) == nil)
         #expect(await fixture.manager.getLand(landID: fixture.landID) == nil, "no land was looked up or created")
     }

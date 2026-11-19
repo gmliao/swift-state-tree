@@ -316,7 +316,10 @@ ONE_LEG_IF = "if: ${{ matrix.in_turn_sync == 'true' || inputs.full_matrix }}"
 # What the one-leg steps' scripts must not name: the flag, its key constant or its reader.
 FLAG_NAMES = re.compile(r"IN_TURN_SYNC|\binTurnSync\b|\bInTurnSync\b")
 SCRIPT_REF = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.(?:sh|py))\b")
-MATRIX_USE = re.compile(r"\bmatrix\.(\w+)")
+MATRIX_USE = re.compile(r"\bmatrix\s*(?:\.\s*\w+|\[)")
+# The leg's variable anywhere but its env line: `env.IN_TURN_SYNC` in an `if:`, `$IN_TURN_SYNC` in a
+# run line, or a second env var built from it.
+LEG_ENV_USE = re.compile(r"\bIN_TURN_SYNC\b")
 
 
 def job_lines(workflow, job):
@@ -372,6 +375,8 @@ def leg_errors(workflow, read_script):
     for line in code:
         if MATRIX_USE.search(line) and not any(a.match(line) for a in allowed):
             errors.append(f"{where} uses the matrix outside {LEG_ENV}, its name and the one-leg if: {line.strip()!r} (S6)")
+        elif LEG_ENV_USE.search(line) and not allowed[1].match(line):
+            errors.append(f"{where} uses {LEG_ENV} outside its env line: {line.strip()!r}; a step that reads it must run in both legs (S6)")
     one_leg, seen = [], set()  # a script named twice is read once
     for step in job_steps(lines):
         conditioned = [line for line in step if re.match(r"^\s*-?\s*if:", line)]
@@ -612,6 +617,12 @@ def leg_self_test():
         ("the axis in a compiler flag fails",
          build(extra="    - name: Build\n      run: swift build -Xswiftc -DSYNC_${{ matrix.in_turn_sync }}\n"), scripts, "outside IN_TURN_SYNC"),
         ("a one-leg if of another form fails", build(lint_if="      if: matrix.in_turn_sync == 'true'\n"), scripts, "outside IN_TURN_SYNC"),
+        ("the axis in the bracket form fails", build(lint_if="      if: ${{ matrix['in_turn_sync'] == 'true' || inputs.full_matrix }}\n"), scripts, "outside IN_TURN_SYNC"),
+        ("the env var in an if: fails", build(lint_if="      if: ${{ env.IN_TURN_SYNC == 'true' || inputs.full_matrix }}\n"), scripts, "IN_TURN_SYNC outside its env line"),
+        ("the env var in a run line fails",
+         build(extra="    - name: Echo\n      run: echo \"$IN_TURN_SYNC\"\n"), scripts, "IN_TURN_SYNC outside its env line"),
+        ("the env var under another name fails",
+         build(env="      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}\n      SYNC: ${{ env.IN_TURN_SYNC }}\n"), scripts, "IN_TURN_SYNC outside its env line"),
         ("a one-leg step running swift test fails",
          build(lint_run="      run: swift test --filter X\n"), scripts, "only scripts that don't read"),
         ("a one-leg script naming IN_TURN_SYNC fails", build(), {**scripts, "scripts/lint.sh": "[ \"$IN_TURN_SYNC\" = true ]\n"}, "names IN_TURN_SYNC"),
