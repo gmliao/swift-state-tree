@@ -1,0 +1,74 @@
+# The differential harness's path check (#555, plan rev 10 "The gate"), job 1 of 2.
+#
+# A pull_request workflow runs from the PR's own branch, so a branch could change the gate
+# outside the protected paths. This job runs main's copy of this file (pull_request_target) and
+# executes none of the PR's code: it reads git objects only (no checkout, no diff drivers),
+# with a read-only token and no secrets. Event values reach the script through env, quoted. It checks the rewrite branch's PR (head branch `rewrite/546-*`):
+# - the head contains the fetched main tip;
+# - the protected paths at the head equal main's.
+# It reports both SHAs, so the result is bound to one head and one main.
+
+name: Differential paths
+
+on:
+  pull_request_target:
+    branches: [ "main" ]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  paths:
+    name: differential protected paths
+    if: github.event_name == 'merge_group' || startsWith(github.event.pull_request.head.ref, 'rewrite/546-')
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Check the protected paths
+      env:
+        REPO: ${{ github.repository }}
+        TOKEN: ${{ github.token }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        git init -q gate && cd gate
+        git remote add origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+        git fetch -q --no-tags origin main
+        MAIN_SHA=$(git rev-parse FETCH_HEAD)
+        if [ -n "${PR_NUMBER}" ]; then
+          git fetch -q --no-tags origin "pull/${PR_NUMBER}/head"
+        else
+          git fetch -q --no-tags origin "${HEAD_SHA}"
+        fi
+        FETCHED=$(git rev-parse FETCH_HEAD)
+        echo "main ${MAIN_SHA}"
+        echo "head ${HEAD_SHA} (fetched ${FETCHED})"
+        [ "${FETCHED}" = "${HEAD_SHA}" ] || { echo "::error::the fetched head isn't the event's head SHA"; exit 1; }
+        git merge-base --is-ancestor "${MAIN_SHA}" "${HEAD_SHA}" \
+          || { echo "::error::the head doesn't contain main's tip ${MAIN_SHA}: merge main first"; exit 1; }
+        # The protected paths: the harness, the support code that captures frames and orders
+        # interleavings, the client view the oracles apply frames with, the gate's workflows and
+        # scripts, and the build inputs (the package and its pins).
+        PROTECTED=(
+          'Tests/SwiftStateTreeNIOTests/Differential'
+          ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/ExpectedDifferences.swift'
+          ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/RetiredRows.swift'
+          ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/Branch'
+          'Tests/SwiftStateTreeNIOTests/ResolverDeadlinesOffTrait.swift'
+          'Tests/SwiftStateTreeTestSupport'
+          'Sources/SwiftStateTree/Sync/SnapshotPatchApplier.swift'
+          '.github/workflows/differential-harness.yml'
+          '.github/workflows/differential-paths.yml'
+          'scripts/record-differential-goldens.sh'
+          'scripts/differential-gate.sh'
+          'scripts/ci-apt-install.sh'
+          'Package.swift'
+          'Package.resolved'
+        )
+        if ! git diff --quiet --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- "${PROTECTED[@]}"; then
+          git diff --stat --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- "${PROTECTED[@]}"
+          echo "::error::a protected path differs from main ${MAIN_SHA}: change it on main first"
+          exit 1
+        fi
+        echo "protected paths equal main ${MAIN_SHA} at head ${HEAD_SHA}"

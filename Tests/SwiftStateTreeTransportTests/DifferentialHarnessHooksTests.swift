@@ -379,10 +379,6 @@ struct DifferentialHarnessHooksTests {
         // Admitted, and neither the adapter nor the transport's player table has it registered.
         #expect(await h.adapter.admittedNotRegisteredForTesting(session))
         #expect(await h.transport.playerSessionsForTesting(PlayerID("p1")).isEmpty)
-        // The transport's table has the session while the adapter's bit is still unset: the
-        // read is false, so it doesn't rest on the bit alone.
-        _ = await h.transport.registerSession(session, for: PlayerID("p1"))
-        #expect(await !h.adapter.admittedNotRegisteredForTesting(session), "the transport's table has it")
         gate.open()
         try await join.value
         await h.router.waitForNoPendingFlipForTesting()
@@ -394,6 +390,58 @@ struct DifferentialHarnessHooksTests {
         #expect(await h.adapter.initialSyncCommittedForTesting(Key(sessionID: session, attempt: 1)))
         #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: nil)))
         #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: 2)))
+    }
+
+    @Test("admittedNotRegistered reads the transport's player table, not only the adapter's bit")
+    func admittedNotRegisteredReadsTheTransport() async throws {
+        let h = try await HooksHarness.make(autoStartLoops: false)
+        guard await h.keeper.isUsingInTurnSync() else { return }
+        let gate = TestGate()
+        await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
+        let session = SessionID("s-table")
+        _ = await h.connect(session)
+        let join = Task { try await h.join(session, player: "p1") }
+        #expect(await gate.waitForArrivals(1), "the join reached keeperJoinReturned")
+        #expect(await h.adapter.admittedNotRegisteredForTesting(session))
+        // The transport's table has the session while the adapter's bit is still unset.
+        _ = await h.transport.registerSession(session, for: PlayerID("p1"))
+        #expect(await !h.adapter.admittedNotRegisteredForTesting(session), "the transport's table has it")
+        gate.open()
+        try await join.value
+        await h.router.waitForNoPendingFlipForTesting()
+    }
+
+    @Test("waitForDisconnectForwards returns only after the forward reached the adapter")
+    func disconnectForwardsWait() async throws {
+        let h = try await HooksHarness.make(autoStartLoops: false)
+        let session = SessionID("s-forward")
+        _ = await h.connect(session)
+        try await h.join(session, player: "p1")
+        await h.router.waitForNoPendingFlipForTesting()
+        let forwarded = TestGate()
+        let waiting = TestGate()
+        waiting.open()
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.disconnectForwarded) { await forwarded.arrive() }
+            .on(.waitingForDisconnectForwards) { await waiting.arrive() }
+            .hook)
+        await h.transport.handleDisconnection(sessionID: session)
+        #expect(await forwarded.waitForArrivals(1), "the forward reached disconnectForwarded")
+        let returned = TestGate()
+        returned.open()
+        let waiter = Task {
+            await h.router.waitForDisconnectForwardsForTesting()
+            await returned.arrive()
+        }
+        // The forward is held after the adapter's onDisconnect and before it ends: the waiter
+        // finds it in flight and waits.
+        #expect(await waiting.waitForArrivals(1), "the waiter found the forward in flight")
+        #expect(returned.arrivalCount == 0, "the wait returned while the forward was in flight")
+        forwarded.open()
+        #expect(await returned.waitForArrivals(1), "the wait returned after the forward ended")
+        await waiter.value
+        // With none in flight it returns at once.
+        await h.router.waitForDisconnectForwardsForTesting()
     }
 
     // MARK: Record decoder
