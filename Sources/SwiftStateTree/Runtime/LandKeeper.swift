@@ -59,6 +59,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case leave
     /// The start of each input drain, before its first turn.
     case inputDrain
+    /// The task `endSync` starts for the sync-only turn a turn left to it (a turn that found a
+    /// legacy cycle in flight), before that turn runs.
+    case syncOnlyAfterLegacyCycle
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
     case serverInputKick
     /// After an input turn's record is enqueued (in the turn's synchronous segment), or after a
@@ -1361,10 +1364,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A turn found this cycle in flight and left its sync phase to a sync-only turn now.
         if syncOnlyTurnAfterLegacyCycle {
             syncOnlyTurnAfterLegacyCycle = false
+            // One hop onto the keeper: the closure captures `self` weakly, so it isn't isolated
+            // to it, and the hold and the turn run in one isolated call.
             Task { [weak self] in
-                await self?.runSyncOnlyTurnIfInTurn()
+                await self?.runSyncOnlyTurnAfterLegacyCycle()
             }
         }
+    }
+
+    /// The sync-only turn `endSync` leaves to a Task, behind its test hold point.
+    private func runSyncOnlyTurnAfterLegacyCycle() async {
+        await holds.at(.syncOnlyAfterLegacyCycle)
+        await runSyncOnlyTurnIfInTurn()
     }
 
     /// End a sync operation, releasing the sync flag.
