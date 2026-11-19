@@ -124,6 +124,3 @@ Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/WallClockCadenceSmokeTests.swift helper-poll 1
-Tests/SwiftStateTreeTransportTests/WebSocketTransportSessionIDTests.swift clock-poll 1
-Tests/SwiftStateTreeTransportTests/WebSocketTransportSessionIDTests.swift helper-poll 4
-Tests/SwiftStateTreeTransportTests/WebSocketTransportSessionIDTests.swift sleep-poll 1

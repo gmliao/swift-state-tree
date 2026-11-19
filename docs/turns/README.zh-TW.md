@@ -57,14 +57,18 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 - 在 `SwiftStateTurns` 之外手寫 `: PlainData`（包括 `@retroactive`）會被 `scripts/lint-turns.sh` 拒絕：那樣會不經任何檢查就符合。
 - 標準函式庫或其他模組的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
 
+之前，狀態裡有 class 和時鐘的 instant：
+
 ```swift
-// 之前：狀態裡有 class 和時鐘的 instant。
 struct Room {
     var players: [PlayerID: Connection]       // Connection 是 class
     var lastChat: ContinuousClock.Instant
 }
+```
 
-// 之後：純值。連線留在 actor 上，以 PlayerID 為鍵。
+之後，狀態只存純值；連線留在 actor 上，以 `PlayerID` 為鍵：
+
+```swift
 @PlainData
 struct Room {
     var players: Set<PlayerID>                // PlayerID 是 @PlainData

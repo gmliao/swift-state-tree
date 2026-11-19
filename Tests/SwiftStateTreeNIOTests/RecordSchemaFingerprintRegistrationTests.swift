@@ -28,6 +28,10 @@ struct FingerprintHostEvent: ServerEventPayload {
     let inner: FingerprintHostInner
 }
 
+/// Registered through `ServerEventNode(type:)`, not `Register`: a server event type with no
+/// decoder, which a replay can't decode (EV8). Fieldless, so the fingerprint can list it.
+struct FingerprintHostNotAPayload: Codable, Sendable {}
+
 @Suite("NIOLandHost record schema fingerprint")
 struct RecordSchemaFingerprintRegistrationTests {
     @Test("register refuses a recording land whose fingerprint can't be computed, naming the type, and registers nothing")
@@ -120,6 +124,56 @@ struct RecordSchemaFingerprintRegistrationTests {
         #expect(error.schemaFingerprint == .unbuildableType("FingerprintHostInner"))
         #expect(await host.realm.isRegistered(landType: "fingerprint-reeval") == false)
         #expect(await host.realm.isRegistered(landType: "fingerprint-reeval-replay") == false)
+    }
+
+    @Test(
+        "Registering a land for reevaluation refuses a server event a replay can't decode, even without recording (EV8)",
+        arguments: ["same land", "separate replay land", "generic replay"]
+    )
+    func reevaluationRefusesUndecodable(overload: String) async throws {
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "test-admin-key"))
+        let land = Land("fingerprint-ev8", using: FingerprintHostState.self) {
+            Rules {}
+            ServerEventNode(type: FingerprintHostNotAPayload.self)
+        }
+        // Recording off: `register` alone wouldn't run EV8, so this pins the helpers' forced flag.
+        let configuration = NIOLandServerConfiguration(transportEncoding: .json)
+        let probe = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "test-admin-key"))
+        try await probe.register(
+            landType: "fingerprint-ev8", land: land, initialState: FingerprintHostState(),
+            webSocketPath: "/game/fingerprint-ev8", configuration: configuration
+        )
+        let feature = ReevaluationFeatureConfiguration(
+            enabled: true,
+            replayEventPolicy: .projectedOnly,
+            runnerServiceFactory: { ReevaluationRunnerService(factory: UnusedFingerprintTargetFactory()) }
+        )
+        let error = try await #require(throws: LandRegistrationError.self) {
+            switch overload {
+            case "same land":
+                try await host.registerWithReevaluationSameLand(
+                    landType: "fingerprint-ev8", liveLand: land, liveInitialState: FingerprintHostState(),
+                    liveWebSocketPath: "/game/fingerprint-ev8", configuration: configuration, reevaluation: feature
+                )
+            case "separate replay land":
+                try await host.registerWithReevaluation(
+                    landType: "fingerprint-ev8", liveLand: land, liveInitialState: FingerprintHostState(),
+                    liveWebSocketPath: "/game/fingerprint-ev8",
+                    replayLand: Land("fingerprint-ev8-replay", using: FingerprintHostState.self) { Rules {} },
+                    replayInitialState: FingerprintHostState(),
+                    configuration: configuration, reevaluation: feature
+                )
+            default:
+                try await host.registerWithGenericReplay(
+                    landType: "fingerprint-ev8", liveLand: land, liveInitialState: FingerprintHostState(),
+                    liveWebSocketPath: "/game/fingerprint-ev8", configuration: configuration, reevaluation: feature
+                )
+            }
+        }
+        #expect(error.serverEventsWithoutDecoder.count == 1, "\(error)")
+        #expect(error.schemaFingerprint == nil, "\(error)")
+        #expect(await host.realm.isRegistered(landType: "fingerprint-ev8") == false)
+        #expect(await host.transportForTesting(webSocketPath: "/game/fingerprint-ev8") == nil)
     }
 
     @Test("A registered land type reports its definition's fingerprint to the admin replay start")
