@@ -10,7 +10,8 @@ import Testing
 @testable import SwiftStateTreeTransport
 import SwiftStateTreeTestSupport
 
-/// Records sends and the close in order; a send can be stalled on a gate.
+/// Records sends and the close in order; a send can be stalled on a gate, and each send and close
+/// can signal a gate once recorded, so a test waits for the event instead of polling for it.
 private actor OrderedConnection: WebSocketConnection {
     enum Entry: Equatable {
         case frame(String)
@@ -20,14 +21,18 @@ private actor OrderedConnection: WebSocketConnection {
     private(set) var entries: [Entry] = []
     private var stall: TestGate?
     private var closeSignal: TestGate?
+    private var sendSignal: TestGate?
 
     func setStall(_ gate: TestGate?) { stall = gate }
+    /// `gate` gets an arrival for each recorded send.
+    func setSendSignal(_ gate: TestGate?) { sendSignal = gate }
     /// `gate` gets an arrival for each close.
     func setCloseSignal(_ gate: TestGate?) { closeSignal = gate }
 
     func send(_ data: Data) async throws {
         if let stall { await stall.arrive() }
         entries.append(.frame(String(decoding: data, as: UTF8.self)))
+        if let sendSignal { await sendSignal.arrive() }
     }
 
     func close() async throws {
@@ -56,13 +61,12 @@ private final class HoldingDelegate: TransportDelegate, @unchecked Sendable {
     func onMessage(_ message: Data, from sessionID: SessionID) async {}
 }
 
-private func orderedPoll(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await safeTaskSleep(for: .milliseconds(5))
-    }
-    return await condition()
+/// An open gate that counts `connection`'s closes.
+private func closeSignal(on connection: OrderedConnection) async -> TestGate {
+    let gate = TestGate()
+    gate.open()
+    await connection.setCloseSignal(gate)
+    return gate
 }
 
 @Suite("WebSocketTransport: one SessionID per connection, and final frames before the close")
@@ -114,24 +118,37 @@ struct WebSocketTransportSessionIDTests {
         #expect(await transport.handleConnection(sessionID: id, connection: OrderedConnection()) == .accepted)
     }
 
-    @Test("closeSessionAfterQueuedFrames hands every queued frame over before the close; later frames are dropped")
-    func finalFrameThenClose() async {
+    /// `waitsForBound`: the close's bound runs out while the first frame's send is held, the
+    /// interleaving that failed on a loaded runner (#488); it is held, so the frames still go first.
+    @Test("closeSessionAfterQueuedFrames hands every queued frame over before the close; later frames are dropped", arguments: [false, true])
+    func finalFrameThenClose(waitsForBound: Bool) async {
         let transport = WebSocketTransport()
         await transport.setDelegate(HoldingDelegate())
         let id = SessionID("final")
         let connection = OrderedConnection()
+        let stall = TestGate()
+        await connection.setStall(stall)
+        let closed = await closeSignal(on: connection)
         await transport.handleConnection(sessionID: id, connection: connection)
         let generation = await transport.connectionGeneration(for: id)
         let frame = { (text: String) in SessionFrame(data: Data(text.utf8), sessionID: id, connectionGeneration: generation) }
         await transport.sendSessionFrames([frame("one"), frame("error")])
-        await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(5))
+        // The drain is held writing the first frame, so the close queues behind both frames.
+        #expect(await stall.waitForArrivals(1))
+        // The close's bound is held: only the queue's order can close the session (#488). Its
+        // length doesn't matter then; a short one lets the bound run out at once.
+        let bound = await transport.holdBoundClosesForTesting()
+        defer { bound.open() }
+        await transport.closeSessionAfterQueuedFrames(id, timeout: .milliseconds(1))
         await transport.sendSessionFrames([frame("after")])
-        let closed = await orderedPoll { await connection.entries.contains(.close) }
+        if waitsForBound {
+            #expect(await bound.waitForArrivals(1), "the bound ran out")
+        }
+        stall.open()
+        #expect(await closed.waitForArrivals(1), "the session was closed")
         let entries = await connection.entries
-        let dropped = await transport.framesDroppedAfterCloseMarker
-        #expect(closed, "no close within 5 s; entries: \(entries), dropped after the marker: \(dropped)")
         #expect(entries == [.frame("one"), .frame("error"), .close], "entries: \(entries)")
-        #expect(dropped == 1)
+        #expect(await transport.framesDroppedAfterCloseMarker == 1)
     }
 
     /// `waitsForBound`: the close's bound runs out while the send is held (#647); it is held, so the order is the same.
@@ -143,6 +160,7 @@ struct WebSocketTransportSessionIDTests {
         let connection = OrderedConnection()
         let stall = TestGate()
         await connection.setStall(stall)
+        let closed = await closeSignal(on: connection)
         await transport.handleConnection(sessionID: id, connection: connection)
         let generation = await transport.connectionGeneration(for: id)
         await transport.sendSessionFrames([SessionFrame(data: Data("error".utf8), sessionID: id, connectionGeneration: generation)])
@@ -157,7 +175,7 @@ struct WebSocketTransportSessionIDTests {
             #expect(await bound.waitForArrivals(1), "the bound ran out")
         }
         stall.open()
-        #expect(await orderedPoll { await connection.entries.contains(.close) })
+        #expect(await closed.waitForArrivals(1), "the session was closed")
         #expect(await connection.entries == [.frame("error"), .close])
     }
 
@@ -169,6 +187,10 @@ struct WebSocketTransportSessionIDTests {
         let connection = OrderedConnection()
         let stall = TestGate()
         await connection.setStall(stall)
+        let closed = await closeSignal(on: connection)
+        let sent = TestGate()
+        sent.open()
+        await connection.setSendSignal(sent)
         await transport.handleConnection(sessionID: id, connection: connection)
         let generation = await transport.connectionGeneration(for: id)
         await transport.sendSessionFrames([SessionFrame(data: Data("error".utf8), sessionID: id, connectionGeneration: generation)])
@@ -176,10 +198,10 @@ struct WebSocketTransportSessionIDTests {
         await transport.closeSessionAfterQueuedFrames(id, timeout: .milliseconds(50))
         // The timer closes the session although the frame is still being written: on NIO the
         // guarantee is the handoff order, not delivery to a stalled client.
-        #expect(await orderedPoll { await connection.entries.contains(.close) })
+        #expect(await closed.waitForArrivals(1), "the timer closed the session")
         stall.open()
         // The stalled send finishes after the close; the marker's own close doesn't run again.
-        #expect(await orderedPoll { await connection.entries.contains(.frame("error")) })
+        #expect(await sent.waitForArrivals(1), "the stalled send finished")
         #expect(await connection.entries.filter { $0 == .close }.count == 1)
     }
 
@@ -196,9 +218,7 @@ struct WebSocketTransportSessionIDTests {
         let current = await transport.connectionGeneration(for: id)
         #expect(older != current)
 
-        let closed = TestGate()
-        closed.open()
-        await connection.setCloseSignal(closed)
+        let closed = await closeSignal(on: connection)
 
         // The older connection's close does nothing; had it queued a close marker, the frame
         // after it would be dropped and the close would come first.
