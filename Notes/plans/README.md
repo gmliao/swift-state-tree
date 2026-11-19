@@ -68,6 +68,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-07 | [Streaming record format (record 3.0)](2026-11-07-streaming-record-format.md) | open | #245; rev 3.1, canonical MessagePack (maintainer), review GO |
 | 2026-11-09 | [Recorder flush at a turn boundary signalled by the keeper](2026-11-09-recorder-turn-boundary-flush.md) | open | #327 (option A); review GO on the plan |
 | 2026-11-09 | [Tickless replay in recorded apply order, with per-pass sequence watermarks](2026-11-09-tickless-replay-passes.md) | open | #325 with #321; record format 3.1 (`passes`); review GO |
+| 2026-11-20 | [Replay on typed inputs and the keeper's turns (#612, with #550)](2026-11-20-replay-on-turn-core.md) | open | #612 (#550 folded in). Rev 1, design for review: one keeper machine fed by an input source (live intake or record reader), outputs as a port (adapter, sync-plan check, none) plus record sinks (recorder, turn comparator); no `-replay` land type or `LandMode`; record format 4.0 with typed inputs; steps S0–S6, S6 deletes the keeper's off-in-turn path and `beginSync`/`endSync`; nine questions for the maintainer |
 
 ## State encoding and send path
 
