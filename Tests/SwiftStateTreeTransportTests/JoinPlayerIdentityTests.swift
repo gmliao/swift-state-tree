@@ -12,6 +12,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 /// Records what the transport sends to one session.
 private actor IdentityReplyConnection: WebSocketConnection {

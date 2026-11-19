@@ -5,6 +5,7 @@
 
 import Foundation
 import Testing
+import SwiftStateTreeTestSupport
 
 @Suite("TestGate", .timeLimit(.minutes(1)))
 struct TestGateTests {

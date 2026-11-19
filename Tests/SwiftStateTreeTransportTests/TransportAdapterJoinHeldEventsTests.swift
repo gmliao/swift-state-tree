@@ -10,6 +10,7 @@ import Foundation
 import Testing
 import SwiftStateTreeMessagePack
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 @StateNodeBuilder

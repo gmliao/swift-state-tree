@@ -8,6 +8,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 /// A value whose number lives outside it, in a slot of `verifierBoxSlots` that every copy

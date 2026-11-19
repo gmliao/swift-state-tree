@@ -9,6 +9,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct JoinAttemptState: StateNodeProtocol {
