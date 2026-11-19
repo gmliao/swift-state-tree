@@ -1,6 +1,6 @@
 # A differential test harness for TransportAdapter's turn-core rewrite (#555)
 
-**Status:** rev 10 (2026-11-19), with the #548 row fixed after the closing review: the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
+**Status:** rev 10, GO (2026-11-19), with the #548 row fixed after the closing review: the section below changes the comparison from two adoption levels to golden captures; rev 5 was GO. **Issue:** #555 (part of #546). **Base:** `main` at cef7177c.
 
 ## Rev 10: one rewrite branch, compared with golden captures
 
