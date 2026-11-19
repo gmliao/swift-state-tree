@@ -32,7 +32,7 @@ func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> Diff
 enum DifferentialHarness {}
 
 extension DifferentialHarness {
-    @Suite("Differential harness (#555)", .serialized, .resolverDeadlinesOff)
+    @Suite("Differential harness (#555)", .resolverDeadlinesOff)
     struct DifferentialHarnessTests {
         @Test("Every scenario in every cell passes the oracle and matches its golden")
         func scenariosMatchTheirGoldens() async throws {
@@ -93,7 +93,7 @@ extension DifferentialHarness {
                     bytesCompared = bytesCompared && checkBytes
                     let differences = DiffCompare.differences(golden.result, actual, checkBytes: checkBytes)
                     let entries = diffExpectedDifferences.filter { $0.scenario == scenario.name && $0.cell == cell }
-                    let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries)
+                    let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries, checkBytes: checkBytes)
                     #expect(unexpected.isEmpty, "\(name):\n\(unexpected.map(\.description).joined(separator: "\n"))")
                     #expect(stale.isEmpty, "\(name): stale expected difference(s): \(stale.map { "\($0.checkpoint) \($0.channel.rawValue) \($0.place) (\($0.reason))" })")
                 }

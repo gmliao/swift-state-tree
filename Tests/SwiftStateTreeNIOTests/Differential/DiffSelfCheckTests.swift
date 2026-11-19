@@ -14,7 +14,7 @@ import Testing
 @testable import SwiftStateTreeNIO
 
 extension DifferentialHarness {
-    @Suite("Differential harness self-checks (#555)", .serialized, .resolverDeadlinesOff)
+    @Suite("Differential harness self-checks (#555)", .resolverDeadlinesOff)
     struct DiffSelfCheckTests {
         /// One real run, the transforms' base: two players, so frames, events and a close exist.
         private func baseRun() async throws -> DiffRunResult {
@@ -50,15 +50,26 @@ extension DifferentialHarness {
                 $0.checkpoint == "terminal" && $0.channel == .frames && $0.place == name
             }
             #expect(swappedFrames.count == 2, "\(swappedFrames)")
-            #expect(swappedFrames.allSatisfy { $0.detail.contains("(bytes fnv64:") })
+            #expect(swappedFrames.allSatisfy { $0.digests?.hasPrefix("fnv64:") == true })
             if let first = swappedFrames.first {
                 let entry = DiffExpectedDifference(
                     scenario: "two-players", cell: DiffCell(sync: .legacy, encoding: .json, land: .tickless),
                     checkpoint: first.checkpoint, channel: first.channel, place: first.place,
-                    detail: first.detail, reason: "self-check"
+                    detail: first.detail, digests: first.digests, reason: "self-check"
                 )
                 let judged = DiffBranchLists.judge(swappedFrames, entries: [entry])
                 #expect(judged.unexpected.count == 1 && judged.stale.isEmpty)
+                // Other bytes with the same decoded frame don't match the entry.
+                var otherBytes = first
+                otherBytes.digests = "fnv64:0000000000000000 vs fnv64:0000000000000000"
+                #expect(!entry.matches(otherBytes))
+                // A decoded-only run matches the entry without its digests.
+                let decoded = DiffCompare.differences(base, swapped, checkBytes: false).filter {
+                    $0.checkpoint == "terminal" && $0.channel == .frames && $0.place == name
+                }
+                #expect(decoded.count == 2 && decoded.allSatisfy { $0.digests == nil })
+                let decodedJudged = DiffBranchLists.judge(decoded, entries: [entry], checkBytes: false)
+                #expect(decodedJudged.unexpected.count == 1 && decodedJudged.stale.isEmpty)
             }
 
             var closed = base
@@ -82,9 +93,13 @@ extension DifferentialHarness {
             recordFrames.removeLast()
             root["frames"] = .array(recordFrames)
             recordDropped.record = DiffRecordCapture(bytes: base.record.bytes + Data([0]), decoded: .object(root), complete: true)
-            #expect(DiffCompare.differences(base, recordDropped).contains { $0.channel == .record })
-            // Decoded views only (another toolchain): still reported, by field.
-            #expect(DiffCompare.differences(base, recordDropped, checkBytes: false).contains { $0.channel == .record })
+            // Byte mode: the bytes difference with its digests, and the field paths beside it.
+            let byBytes = DiffCompare.differences(base, recordDropped).filter { $0.channel == .record }
+            #expect(byBytes.contains { $0.place == DiffCompare.recordBytesPlace && $0.digests != nil })
+            #expect(byBytes.contains { $0.place != DiffCompare.recordBytesPlace })
+            // Decoded views only (another toolchain): the field paths, no bytes difference.
+            let byFields = DiffCompare.differences(base, recordDropped, checkBytes: false).filter { $0.channel == .record }
+            #expect(!byFields.isEmpty && byFields.allSatisfy { $0.place != DiffCompare.recordBytesPlace && $0.digests == nil })
         }
 
         @Test("Record bytes that differ while no field does fail; decoded-only comparison skips them")
@@ -153,7 +168,7 @@ extension DifferentialHarness {
             #expect(DiffBranchLists.problems(expected: [], retired: [noWitness], indexFiles: index).count == 1)
             // The lists on main are empty. Judged only where the protected workflow says the lists
             // are main's (`SST_DIFFERENTIAL_MAIN_LISTS=1`): the rewrite branch's PR fills them.
-            if ProcessInfo.processInfo.environment["SST_DIFFERENTIAL_MAIN_LISTS"] == "1" {
+            if EnvHelpers.getEnvBool(key: DiffBranchLists.mainListsKey, defaultValue: false) {
                 #expect(diffExpectedDifferences.isEmpty && diffRetiredRows.isEmpty, "main's lists aren't empty")
             }
         }

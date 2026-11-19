@@ -59,34 +59,40 @@ func expect(_ condition: Bool, _ what: @autoclosure () -> String) throws {
 /// held before its `endSync`; A's change applies under it and isn't sent; B's join starts under
 /// the same hold (`underHold`). After the release, the deferred sync and B's join run, and A
 /// converges.
+/// MessagePack cells, for `.only`: a named function keeps the scenario literals cheap to
+/// type-check.
+@Sendable func isMessagePackCell(_ cell: DiffCell) -> Bool { cell.encoding == .messagepack }
+
 func syncCycleRow(
     _ name: String, cells: DiffCellRule, beforeBump: [DiffStep] = [], bump: DiffStep,
     underHold: [DiffStep], afterRelease: [DiffStep]
 ) -> DiffScenario {
-    DiffScenario(
+    // Built step by step: one concatenated literal is too slow for the type checker.
+    var steps: [DiffStep] = [
+        .connect("A", session: "s-a"),
+        .join("A", player: "pa"),
+        // The writer has no backlog, so the cycle's `syncNow` doesn't take the backlog branch.
+        .flushOutbound,
+        .arm(.adapter(.cycleBeforeEndSync), arrival: nil),
+        .spawn("a legacy cycle") { run in await run.adapter.syncNow() },
+        .reach(.adapter(.cycleBeforeEndSync)),
+    ]
+    steps += beforeBump
+    steps.append(bump)
+    steps.append(.check("the change applied") { run in
+        let counter = await run.keeper.currentState().counter
+        try expect(counter == 1, "the change didn't apply: counter \(counter)")
+    })
+    steps.append(.connect("B", session: "s-b"))
+    steps += underHold
+    steps.append(.release(.adapter(.cycleBeforeEndSync)))
+    steps += afterRelease
+    let tail: [DiffStep] = [.awaitJoin("B"), .liveCheckpoint, .disconnect("B"), .disconnect("A")]
+    steps += tail
+    return DiffScenario(
         name: name,
         cells: cells,
-        steps: [
-            .connect("A", session: "s-a"),
-            .join("A", player: "pa"),
-            .arm(.adapter(.cycleBeforeEndSync), arrival: nil),
-            .spawn("a legacy cycle") { run in await run.adapter.syncNow() },
-            .reach(.adapter(.cycleBeforeEndSync)),
-        ] + beforeBump + [
-            bump,
-            .check("the change applied") { run in
-                let counter = await run.keeper.currentState().counter
-                try expect(counter == 1, "the change didn't apply: counter \(counter)")
-            },
-            .connect("B", session: "s-b"),
-        ] + underHold + [
-            .release(.adapter(.cycleBeforeEndSync)),
-        ] + afterRelease + [
-            .awaitJoin("B"),
-            .liveCheckpoint,
-            .disconnect("B"),
-            .disconnect("A"),
-        ],
+        steps: steps,
         outcomes: ["join-A": .reply, "join-B": .reply, "bump-a": .reply],
         lifecycle: ["pa": [.join, .leave], "pb": [.join, .leave]]
     )
@@ -132,6 +138,8 @@ let diffScenarios: [DiffScenario] = [
             .connect("A", session: "s-a"),
             .join("A", player: "p1"),
             .connect("A2", session: "s-a2"),
+            // A2's join supersedes A: A's queued frames reach it before its close.
+            .flushOutbound,
             .join("A2", player: "p1"),
             .bump("A2", requestID: "bump-a2", amount: 1),
             .liveCheckpoint,
@@ -303,6 +311,7 @@ let diffScenarios: [DiffScenario] = [
             .release(.router(.afterAdmit)),
             .awaitJoin("A"),
             .connect("A2", session: "s-a2"),
+            .flushOutbound,
             .join("A2", player: "pa"),
             .bump("A2", requestID: "bump-a2", amount: 1),
             .liveCheckpoint,
@@ -326,6 +335,7 @@ let diffScenarios: [DiffScenario] = [
         .arm(.adapter(.busyRetry)),
     ], bump: .bumpUnderCycle("A", requestID: "bump-a", amount: 1), underHold: [
         .reach(.adapter(.busyRetry)),
+        .only("messagepack", isMessagePackCell, [.arm(.adapter(.followUpSynced))]),
         .check("syncDeferredByCycle") { run in
             let busy = await run.adapter.syncDeferredByCycleCountForTesting
             try expect(busy == 1, "syncSkips.busy is \(busy)")
@@ -337,6 +347,14 @@ let diffScenarios: [DiffScenario] = [
         // The cycle's end, then the retry its busy skip scheduled, before B goes on:
         // otherwise they race B's first sync, and its sequence number varies.
         .awaitSpawned,
+        // With MessagePack the cycle's end starts a follow-up (`withSyncState` asks for one
+        // while the adapter's pending events aren't empty, and only this encoding's bump event
+        // is held there): it runs before the retry is let go, so the two don't race. In every
+        // cell, nothing but the held retry is left to run.
+        .only("messagepack", isMessagePackCell, [
+            .reach(.adapter(.followUpSynced)),
+            .release(.adapter(.followUpSynced)),
+        ]),
         .release(.adapter(.busyRetry)),
         .settleSpawned,
         .check("one busy skip") { run in

@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 EXPECTED_SWIFT="Swift version 6.2.4"
-FILTER='SwiftStateTreeNIOTests\.DifferentialHarness/(DifferentialHarnessTests|DiffSelfCheckTests)/'
+FILTER='^SwiftStateTreeNIOTests\.DifferentialHarness/(DifferentialHarnessTests|DiffSelfCheckTests)/'
 INDEX=Tests/SwiftStateTreeNIOTests/Differential/Golden/index.json
 SUITES=(Tests/SwiftStateTreeNIOTests/Differential/DifferentialHarnessTests.swift
         Tests/SwiftStateTreeNIOTests/Differential/DiffSelfCheckTests.swift)
@@ -59,16 +59,19 @@ try:
     cases = ET.parse(results).getroot().iter("testcase")
 except (OSError, ET.ParseError) as error:
     sys.exit(f"differential-gate: no Swift Testing results ({error})")
+# A completed result: a `time`, and no failure, skip or error. Keyed by the fully qualified ID.
 passed = set()
 for case in cases:
-    if case.find("failure") is None and case.find("skipped") is None and case.find("error") is None:
-        passed.add((case.get("classname", "").rsplit(".", 1)[-1], case.get("name", "")))
+    if case.get("time") and all(case.find(tag) is None for tag in ("failure", "skipped", "error")):
+        passed.add((case.get("classname", ""), case.get("name", "")))
 missing = []
 for path in files:
-    suite = path.rsplit("/", 1)[-1].removesuffix(".swift")
-    names = re.findall(r"@Test\b[^\n]*\n\s*func\s+(\w+)\(", open(path).read())
-    if not names:
-        sys.exit(f"differential-gate: {path} declares no test")
+    suite = "SwiftStateTreeNIOTests.DifferentialHarness." + path.rsplit("/", 1)[-1].removesuffix(".swift")
+    text = open(path).read()
+    names = re.findall(r"@Test\b[^\n]*\n\s*func\s+(\w+)\(", text)
+    declared = len(re.findall(r"^\s*@Test\b", text, re.M))
+    if not names or len(names) != declared:
+        sys.exit(f"differential-gate: {path} has {declared} @Test line(s) but {len(names)} test name(s) found: put each @Test on the line before its func")
     missing += [f"{suite}.{name}()" for name in names if (suite, f"{name}()") not in passed]
 if missing:
     sys.exit("differential-gate: these tests didn't pass in the results: " + ", ".join(missing))

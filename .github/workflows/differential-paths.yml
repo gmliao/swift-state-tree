@@ -47,21 +47,27 @@ jobs:
         [ "${FETCHED}" = "${HEAD_SHA}" ] || { echo "::error::the fetched head isn't the event's head SHA"; exit 1; }
         git merge-base --is-ancestor "${MAIN_SHA}" "${HEAD_SHA}" \
           || { echo "::error::the head doesn't contain main's tip ${MAIN_SHA}: merge main first"; exit 1; }
-        if ! git diff --quiet --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- \
-            'Tests/SwiftStateTreeNIOTests/Differential' \
-            ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/ExpectedDifferences.swift' \
-            ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/RetiredRows.swift' \
-            ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/Branch' \
-            'Tests/SwiftStateTreeTestSupport/RecordFieldProbe.swift' \
-            'Tests/SwiftStateTreeTestSupport/RecordFieldList.swift' \
-            '.github/workflows/differential-harness.yml' \
-            '.github/workflows/differential-paths.yml' \
-            'scripts/record-differential-goldens.sh' \
-            'scripts/differential-gate.sh' \
-            'scripts/ci-apt-install.sh' \
-            'Tests/SwiftStateTreeNIOTests/ResolverDeadlinesOffTrait.swift' \
-            'Package.swift'; then
-          git diff --stat --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- 'Tests/SwiftStateTreeNIOTests/Differential' 'Tests/SwiftStateTreeTestSupport' '.github/workflows' 'scripts'
+        # The protected paths: the harness, the support code that captures frames and orders
+        # interleavings, the client view the oracles apply frames with, the gate's workflows and
+        # scripts, and the build inputs (the package and its pins).
+        PROTECTED=(
+          'Tests/SwiftStateTreeNIOTests/Differential'
+          ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/ExpectedDifferences.swift'
+          ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/RetiredRows.swift'
+          ':(exclude)Tests/SwiftStateTreeNIOTests/Differential/Branch'
+          'Tests/SwiftStateTreeNIOTests/ResolverDeadlinesOffTrait.swift'
+          'Tests/SwiftStateTreeTestSupport'
+          'Sources/SwiftStateTree/Sync/SnapshotPatchApplier.swift'
+          '.github/workflows/differential-harness.yml'
+          '.github/workflows/differential-paths.yml'
+          'scripts/record-differential-goldens.sh'
+          'scripts/differential-gate.sh'
+          'scripts/ci-apt-install.sh'
+          'Package.swift'
+          'Package.resolved'
+        )
+        if ! git diff --quiet --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- "${PROTECTED[@]}"; then
+          git diff --stat --no-ext-diff --no-textconv "${MAIN_SHA}" "${HEAD_SHA}" -- "${PROTECTED[@]}"
           echo "::error::a protected path differs from main ${MAIN_SHA}: change it on main first"
           exit 1
         fi

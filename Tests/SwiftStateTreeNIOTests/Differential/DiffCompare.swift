@@ -5,7 +5,7 @@
 // each differing field path of the decoded records as well. Every differing frame is its own
 // difference, naming the checkpoint, the connection, the frame's index, both frames decoded and,
 // when bytes are compared, both frames' digests: an expected difference covers exactly one frame
-// with exactly those bytes, never the frames after it.
+// (with exactly those bytes, where bytes are compared), never the frames after it.
 
 #if DEBUG
 import Foundation
@@ -24,8 +24,13 @@ struct DiffDifference: Equatable, Sendable, CustomStringConvertible {
     /// The connection attempt, or the record's field path.
     let place: String
     let detail: String
+    /// When bytes are compared: both sides' digests (`expected vs actual`), so an expected
+    /// difference names the exact bytes. `nil` in a decoded-only comparison.
+    var digests: String? = nil
 
-    var description: String { "\(checkpoint) \(channel.rawValue) \(place): \(detail)" }
+    var description: String {
+        "\(checkpoint) \(channel.rawValue) \(place): \(detail)" + (digests.map { " (bytes \($0))" } ?? "")
+    }
 }
 
 enum DiffCompare {
@@ -50,11 +55,9 @@ enum DiffCompare {
                 let left = index < a.frames.count ? a.frames[index] : nil
                 let right = index < b.frames.count ? b.frames[index] : nil
                 let text = { (frame: DiffFrame?) in frame.map { DiffValue.canonicalText($0.decoded) } ?? "<none>" }
-                var detail = "frame \(index) of \(a.frames.count) vs \(b.frames.count): expected \(text(left)), got \(text(right))"
-                if checkBytes {
-                    detail += " (bytes \(digest(left?.bytes)) vs \(digest(right?.bytes)))"
-                }
-                found.append(.init(checkpoint: checkpoint, channel: .frames, place: name, detail: detail))
+                let detail = "frame \(index) of \(a.frames.count) vs \(b.frames.count): expected \(text(left)), got \(text(right))"
+                let digests = checkBytes ? "\(digest(left?.bytes)) vs \(digest(right?.bytes))" : nil
+                found.append(.init(checkpoint: checkpoint, channel: .frames, place: name, detail: detail, digests: digests))
             }
             if a.close != b.close {
                 found.append(.init(checkpoint: checkpoint, channel: .close, place: name,
@@ -69,6 +72,9 @@ enum DiffCompare {
         }
         return found
     }
+
+    /// The place of the record's bytes difference, which only a byte comparison reports.
+    static let recordBytesPlace = "<bytes>"
 
     /// Every index where the two streams differ, a frame only one of them has included.
     private static func differingFrames(_ a: [DiffFrame], _ b: [DiffFrame], checkBytes: Bool) -> [Int] {
@@ -104,8 +110,9 @@ enum DiffCompare {
         var found: [DiffDifference] = []
         if checkBytes {
             if expected.bytes == actual.bytes { return [] }
-            found.append(.init(checkpoint: "terminal", channel: .record, place: "<bytes>",
-                               detail: "\(digest(expected.bytes)) vs \(digest(actual.bytes))"))
+            found.append(.init(checkpoint: "terminal", channel: .record, place: DiffCompare.recordBytesPlace,
+                               detail: "the record's bytes differ",
+                               digests: "\(digest(expected.bytes)) vs \(digest(actual.bytes))"))
         }
         var paths: [(String, String)] = []
         walk(expected.decoded, actual.decoded, path: "", into: &paths)

@@ -208,6 +208,7 @@ final class DiffRun: @unchecked Sendable {
         await container.transportAdapter.captureJoinCommitsForTesting()
         await server.landRouter.installHolds(run.holds.router.hook)
         await container.transportAdapter.installHolds(run.holds.adapter.hook)
+        await container.transportAdapter.trackDetachedClosesForTesting()
         // On a tickless land with in-turn sync, a join's OnJoin turn and its registration race:
         // the turn can run before the registration (the join then flips in a sync-only turn of
         // its own) or after it (and flips in the OnJoin turn), and the record names the turn
@@ -358,6 +359,13 @@ final class DiffRun: @unchecked Sendable {
         case .tick:
             if cell.land == .tick { try await stepTick() }
 
+        case .flushOutbound:
+            try await flushOutbound()
+
+        case .only(_, let selects, let steps):
+            guard selects(cell) else { break }
+            for inner in steps { try await run(inner) }
+
         case .awaitSpawned:
             for task in spawned {
                 try await bounded("a spawned task") { await task.value }
@@ -371,8 +379,9 @@ final class DiffRun: @unchecked Sendable {
             disconnected.insert(name)
             // The frames queued before the disconnect reach their connections first: the
             // disconnect cancels the session's drain and drops its queue, so otherwise whether
-            // they're delivered depends on the scheduler. A row about undelivered frames holds
-            // the writer instead, and says so.
+            // they're delivered depends on the scheduler. A row about undelivered frames needs a
+            // step of its own (a disconnect without this flush): with the writer held, this
+            // flush would wait out its bound.
             try await flushOutbound()
             try await bounded("\(name)'s disconnect") { [transport] in
                 await transport.handleDisconnection(sessionID: attempt.session)
@@ -474,6 +483,8 @@ final class DiffRun: @unchecked Sendable {
         case .settleJobsBeforeAnswers(let hold): return "settle jobs before answers (\(hold) held)"
         case .settleSpawned: return "settle spawned"
         case .awaitSpawned: return "await spawned"
+        case .flushOutbound: return "flush outbound"
+        case .only(let label, _, let steps): return "only \(label): \(steps.map(name(of:)).joined(separator: ", "))"
         case .tick: return "tick"
         case .tickUnsynced: return "tick unsynced"
         case .disconnect(let name): return "disconnect \(name)"
@@ -576,10 +587,10 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("a spawned task") { await task.value }
         }
         try await bounded("no pending flip") { [router] in await router.waitForNoPendingFlipForTesting() }
-        try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
         // A supersede closes the old connection from a task of its own, which a zero forward
-        // count can precede.
+        // count can precede, and the close then starts a forward of its own: the closes first.
         try await bounded("the supersedes' closes") { [adapter] in await adapter.waitForDetachedClosesForTesting() }
+        try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
         guard !stopped else {
             try await bounded("the transport's queues") { [transport] in await transport.flushSessionQueues() }
             return

@@ -5,7 +5,7 @@
 // and `RetiredRows.swift`, unprotected; this file is protected, so the branch can't loosen the
 // rules.
 // - An expected difference names one cell and one difference, exactly (checkpoint, channel,
-//   place and detail). Each is used once: one that matches nothing fails as stale, two for the
+//   place and detail, and the digests where bytes are compared). Each is used once: one that matches nothing fails as stale, two for the
 //   same difference fail as an overlap. One aimed at a masked cell isn't judged in that run.
 // - A retired row names a scenario, its cells, the reason, a mutation witness and a replacement
 //   the runner calls instead of the row. Its (scenario, cell) keys are unique, the index has each,
@@ -22,14 +22,23 @@ struct DiffExpectedDifference: Sendable {
     let channel: DiffDifference.Channel
     let place: String
     let detail: String
+    /// Both sides' digests, as the byte comparison reports them: matched only where bytes are
+    /// compared (the pinned image). A decoded-only run (another toolchain) matches the rest.
+    var digests: String? = nil
     /// Why the branch differs, with its issue.
     let reason: String
 
     var key: String { "\(scenario).\(cell)" }
 
+    /// Only a byte comparison has this difference: the record's bytes.
+    var isBytesOnly: Bool { channel == .record && place == DiffCompare.recordBytesPlace }
+
     func matches(_ difference: DiffDifference) -> Bool {
-        difference.checkpoint == checkpoint && difference.channel == channel
-            && difference.place == place && difference.detail == detail
+        guard difference.checkpoint == checkpoint, difference.channel == channel,
+              difference.place == place, difference.detail == detail else { return false }
+        // Byte mode: the exact bytes. An entry without digests matches no byte-mode difference.
+        if let actual = difference.digests { return digests == actual }
+        return true
     }
 }
 
@@ -44,6 +53,9 @@ struct DiffRetiredRow: Sendable {
 }
 
 enum DiffBranchLists {
+    /// The protected workflow's statement that the lists are main's ("1"), so they must be empty.
+    static let mainListsKey = "SST_DIFFERENTIAL_MAIN_LISTS"
+
     /// What's wrong with the two lists against the index's files, or nothing.
     static func problems(
         expected: [DiffExpectedDifference], retired: [DiffRetiredRow], indexFiles: [String]
@@ -75,9 +87,11 @@ enum DiffBranchLists {
 
     /// One cell's comparison against its entries: the differences no entry covers, and the
     /// entries that covered nothing (stale).
+    /// `checkBytes` false (a decoded-only run): an entry for the record's bytes isn't judged.
     static func judge(
-        _ differences: [DiffDifference], entries: [DiffExpectedDifference]
+        _ differences: [DiffDifference], entries allEntries: [DiffExpectedDifference], checkBytes: Bool = true
     ) -> (unexpected: [DiffDifference], stale: [DiffExpectedDifference]) {
+        let entries = checkBytes ? allEntries : allEntries.filter { !$0.isBytesOnly }
         var used = Array(repeating: false, count: entries.count)
         var unexpected: [DiffDifference] = []
         for difference in differences {

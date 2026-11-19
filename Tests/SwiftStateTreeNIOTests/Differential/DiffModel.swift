@@ -136,6 +136,12 @@ enum DiffStep: Sendable {
     case settleSpawned
     /// Waits for every spawned task, nothing else.
     case awaitSpawned
+    /// The outbound writer is idle and every queued frame reached its connection: before a step
+    /// that ends a connection some other way than `disconnect` (a superseding join), or before
+    /// a cycle that must find the writer without a backlog.
+    case flushOutbound
+    /// `steps`, in the cells `label`'s predicate selects; nothing in the others.
+    indirect case only(String, @Sendable (DiffCell) -> Bool, [DiffStep])
     /// One tick and the sync cycle after it (a tick land only; nothing on a tickless one).
     case tick
     /// One tick on a tick land, with no sync asked for (nothing on a tickless land).
