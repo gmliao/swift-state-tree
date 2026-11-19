@@ -115,6 +115,12 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     private let definition: LandDefinition<State>
     /// A test's faults wrap it (`setFaultsForTesting`), so the reads below are the real calls.
     private var source: any ReevaluationSource
+    /// The record's own source, before any test fault wraps it: each `setFaultsForTesting` wraps
+    /// this one, so faults don't stack (#646).
+    private let recordSource: any ReevaluationSource
+    /// Whether the record decodes with the JSON view's allowance, from the record's own source:
+    /// a fault wrapper doesn't change the policy (#646).
+    private let integralFloats: Bool
     /// What the record's state hashes cover, from its version.
     private let hashDefinition: ReevaluationHashDefinition
     private let snapshotEncoder: JSONEncoder
@@ -156,6 +162,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     ) async throws {
         self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
+        recordSource = source
+        integralFloats = ReevaluationReplayFrame.integralFloats(for: source)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
             metadata: metadata,
@@ -231,6 +239,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     ) async throws {
         self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
+        recordSource = source
+        integralFloats = ReevaluationReplayFrame.integralFloats(for: source)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
             metadata: metadata,
@@ -440,7 +450,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             emittedServerEvents: emittedServerEvents,
             actualState: actualStatePayload,
             definition: definition,
-            integralFloats: ReevaluationReplayFrame.integralFloats(for: source),
+            integralFloats: integralFloats,
             stateUnavailable: stateUnavailable
         )
 
@@ -457,14 +467,12 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         )
     }
 
-    /// Installs faults for the next steps (tests only). The record source is wrapped so its reads
-    /// throw or find no hash, and the snapshot encode throws. Both go through the calls `step()`
-    /// makes, so a `try?` put back on one of them is seen.
+    /// Installs faults for the next steps (tests only), replacing any earlier ones. The record
+    /// source is wrapped so its reads throw or find no hash, and the snapshot encode throws. Both
+    /// go through the calls `step()` makes, so a `try?` put back on one of them is seen.
     package func setFaultsForTesting(_ faults: ReplayRunnerFaults) {
-        source = FaultingReevaluationSource(base: source, faults: faults)
-        if faults.snapshotEncode {
-            encodeSnapshot = { _ in throw ReplayRunnerFaults.Injected.snapshotEncode }
-        }
+        source = FaultingReevaluationSource(base: recordSource, faults: faults)
+        encodeSnapshot = faults.snapshotEncode ? { _ in throw ReplayRunnerFaults.Injected.snapshotEncode } : nil
     }
 
     public func setPaused(_: Bool) {
