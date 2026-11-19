@@ -175,11 +175,11 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
         return try nestedDecoder.unkeyedContainer()
     }
 
+    /// The value under `"super"`, as `JSONDecoder` reads it, whether or not `Key` has a `super`
+    /// case; nil when it's missing.
     func superDecoder() throws -> Decoder {
-        if let key = Key(stringValue: "super") {
-            return try superDecoder(forKey: key)
-        }
-        return MessagePackValueBoxDecoder(value: .nil, codingPath: codingPath, clientPayload: decoder.clientPayload)
+        let key = SuperCodingKey()
+        return MessagePackValueBoxDecoder(value: map[key.stringValue] ?? .nil, codingPath: codingPath + [key], clientPayload: decoder.clientPayload)
     }
 
     func superDecoder(forKey key: Key) throws -> Decoder {
@@ -198,6 +198,15 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
     }
 }
 
+/// The key `superDecoder()` reads, as `JSONDecoder`'s `"super"`.
+private struct SuperCodingKey: CodingKey {
+    var stringValue: String { "super" }
+    var intValue: Int? { nil }
+    init() {}
+    init?(stringValue: String) { guard stringValue == "super" else { return nil } }
+    init?(intValue: Int) { nil }
+}
+
 private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     let decoder: MessagePackValueBoxDecoder
     var codingPath: [CodingKey]
@@ -213,7 +222,17 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     }
 
     mutating func decodeNil() throws -> Bool {
-        guard !isAtEnd else { return true }
+        guard !isAtEnd else {
+            // A client payload's read past the end throws, as `JSONDecoder` does. A frame the
+            // server builds keeps the old answer (true).
+            if decoder.clientPayload {
+                throw DecodingError.valueNotFound(Optional<Any>.self, DecodingError.Context(
+                    codingPath: codingPath,
+                    debugDescription: "Unkeyed container is at end."
+                ))
+            }
+            return true
+        }
         if case .nil = values[currentIndex] {
             currentIndex += 1
             return true

@@ -228,7 +228,11 @@ struct PayloadDecodeDifferentialTests {
     /// - `extended into string`: a string field, `Data` included (a client sends it as base64
     ///   text), sent as a MessagePack extension value. Today's tree turned its bytes into base64
     ///   text too.
-    /// A field's kind is its seed value's: an integer, or a string.
+    /// A field's kind is its seed value's: an integer, or a string. So the string classes also
+    /// count the fields a client sends as strings: `URL` (binary into it is refused; today's
+    /// base64 text could parse as a relative URL) and `Data` (base64 text).
+    /// These are refusals only because a field's error reaches the top. A hand-written
+    /// `init(from:)` that falls back with `try?` sees a different value instead (its fallback's).
     static func expectedDifference(seedField: MessagePackValue?, mutation: String) -> String? {
         switch seedField {
         case .int?, .uint?:
@@ -332,6 +336,32 @@ struct PayloadDecodeDifferentialTests {
         let list: MessagePackValue = .array([.string("a"), .int(1), .string("b")])
         #expect(Self.today(Fallback.self, list) == .accepted(#"["string a","int 1","string b"]"#))
         #expect(Self.typed(Fallback.self, list, recording: false) == Self.today(Fallback.self, list))
+        // Unkeyed `decodeNil()` past the end throws, as `JSONDecoder` does.
+        struct NilAtEnd: Codable {
+            init(from decoder: Decoder) throws {
+                var container = try decoder.unkeyedContainer()
+                _ = try container.decodeNil()
+            }
+            func encode(to encoder: Encoder) throws {}
+        }
+        #expect(Self.today(NilAtEnd.self, .array([])) == .refused)
+        #expect(Self.typed(NilAtEnd.self, .array([]), recording: false) == .refused)
+        // Keyed `superDecoder()` reads `"super"`, though `CodingKeys` has no such case.
+        struct SuperProbe: Codable {
+            enum CodingKeys: String, CodingKey { case x }
+            let value: Int
+            init(from decoder: Decoder) throws {
+                value = try Int(from: decoder.container(keyedBy: CodingKeys.self).superDecoder())
+            }
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.singleValueContainer()
+                try container.encode(value)
+            }
+        }
+        let withSuper: MessagePackValue = .map([.string("super"): .int(5)])
+        #expect(Self.today(SuperProbe.self, withSuper) == .accepted("5"))
+        #expect(Self.typed(SuperProbe.self, withSuper, recording: false) == Self.today(SuperProbe.self, withSuper))
+        #expect(Self.typed(SuperProbe.self, .map([:]), recording: false) == Self.today(SuperProbe.self, .map([:])))
     }
 
     @Test("Decimal decodes from each numeric kind as the round trip read it, and its keyed form still decodes")
