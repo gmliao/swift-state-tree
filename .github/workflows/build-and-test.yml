@@ -22,6 +22,14 @@ on:
       - 'Notes/**'
       - '.devcontainer/**'
       - 'README*'
+  # The nightly (nightly.yml) calls this workflow with full_matrix: true. The work the push runs
+  # leave out (Notes/plans/2026-11-19-ci-test-audit.md, V1–V5) is kept behind that input.
+  workflow_call:
+    inputs:
+      full_matrix:
+        description: Run the variant reruns the push runs leave out
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -450,6 +458,11 @@ jobs:
 
     # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
     # proves the check still finds what it looks for before the workflows are checked.
+    # The nightly's gate and report, against a stub gh (nightly.yml runs them only on main).
+    - name: Nightly scripts
+      run: scripts/test-nightly-scripts.sh
+      timeout-minutes: 2
+
     - name: Swift image pinned by one digest
       run: |
         scripts/check-ci-image-pin.sh --self-test
