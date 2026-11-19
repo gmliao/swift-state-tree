@@ -1,6 +1,6 @@
 # Typed server events and client actions, without AnyCodable (#521)
 
-**Status:** rev 12, for a delta review of U1–U3: answers review of rev 11. D14 and D15 decided (2026-11-18); PR 1f before PR 1b; the N3 scan dropped. Rev 6 reviewed GO (2026-11-13). PR 0 (#540) and PR 1a (#559) are merged. No PR 1b code before rev 8 is reviewed.
+**Status:** rev 13, for a delta review of PR 2's scope (§9.1): PR 2 adds the decode source itself, since PR 1b isn't built; #616's single check goes into the typed path without a proof type; #606's strict decode and #611 go to a PR 2c; the lookup and replay staging go to a PR 2b. Rev 12 answered review of rev 11. D14 and D15 decided (2026-11-18); PR 1f before PR 1b; the N3 scan dropped. Rev 6 reviewed GO (2026-11-13). PR 0 (#540) and PR 1a (#559) are merged. No PR 1b code before rev 8 is reviewed.
 - Read at `main` 882cabe7; the cited lines are unchanged at 06125d40. Each fact is marked **checked** (read in the code or run) or **inferred** (reasoned, to be pinned by a test in the PR).
 - **Rev 2** answers review of rev 1: the handler lookup (M1), record payloads (M2), non-finite numbers (M3), replay loading (M4), the replay land's registry (M5), `Sendable` (M6), `PendingActionItem` (M7), the unit for untyped events (M8), EV5's bound (M9), what a failed cycle has already sent (M10), and the shoulds. Decisions review settled are recorded as such (§10). Those left to the maintainer are D1, D7, D9, D13 and the compatibility exceptions N3, N7–N10.
 - **Rev 3** answers review of rev 2:
@@ -754,6 +754,63 @@ package protocol PayloadDecodingSource: Sendable {
    - "the positional event payload is name-sorted, not declaration order", if the review agrees it is a trap (#521's text had it the other way);
    - "a lookup that replaces a predicate scan needs one index per predicate, keyed by what the predicate compares" (M1's trap);
    - another entry if the work finds a reusable lesson about encoders that must reproduce a cast chain's per-type forms.
+
+### 9.1 PR 2's scope after 2026-11-19 (rev 13)
+
+Read at `main` 353c296a. As above, each fact is marked **checked** or **inferred**.
+
+**PR 1b isn't built (checked: no branch or PR for it).** PR 2 needs `PayloadDecodingSource` and its `AnyCodable` source, which §4 gave to PR 1b. Apart from that, the two PRs don't overlap:
+- PR 1b covers server events and the replay runner;
+- PR 2 covers client input at intake.
+
+So **PR 2 adds the protocol and both sources**, and PR 1b, whenever it is built, uses them for `decodeServerEvent`. The order of PR 1b and PR 2 is then free. §4's "What PR 1b adds" moves the protocol to whichever of the two merges first.
+
+**Three things folded in by the decisions of 2026-11-19:**
+
+1. **#616's "check the depth once" goes into the typed path, without a proof type.** #616 is parked: its proof type cost more than the walk it saved (`Notes/solutions/2026-11-19-a-cross-module-generic-wrapper-runs-unspecialized.md`). PR 2 doesn't need one, because on each encoding the one walk an input gets already does other work:
+   - **MessagePack:** the frame is unpacked at `PayloadNesting.clientFrameMaxDepth` (checked: `MessagePackTransportCodec.swift:26`). The source then holds the payload's `MessagePackValue` (opcode 101 and 103, `MessagePackDirectDecoder.swift:81-115`, today `decodeAnyCodable`). Two walks follow, and neither is extra:
+     - `validateRecordable()` (§2.4) walks the whole tree for string keys and finite numbers. It is required anyway, and it also checks the depth, so the depth check costs no walk of its own. `InboundPayloadDecoding`'s `PayloadNesting.check` isn't run on this source.
+     - The typed decode reads the declared fields only.
+     So a live MessagePack action gets one whole-tree walk and no `Any` tree. Main builds the tree (`decodeAnyCodable`), walks it again (`PayloadNesting.check`), then re-encodes it with `JSONEncoder` and parses it with `JSONDecoder` (checked: `InboundPayloadDecoding.swift`, `LandKeeper.swift:2765`, :3365).
+   - **Opcode JSON and JSON object:** today's semantics (§2.4). The source holds the `AnyCodable` tree, and `decode` is today's `InboundPayloadDecoding.decode`: one `PayloadNesting.check`, then the round trip. That is main's cost on these encodings, so PR 2 moves nothing there.
+   - **Recorded input in replay:** an `AnyCodable` source, the same rule as the JSON encodings.
+   - **The hot-path rules from the lesson:**
+     - No small generic struct is built in one module and read in another on the input path. The source is a protocol existential, and the pending item stores `decoded: (any ActionPayload)?` and `source: (any PayloadDecodingSource)?` as existentials. A generic helper that the transport and the keeper both call is `@inlinable` or isn't generic.
+     - The source's kind is fixed by the decoder that builds the envelope: the MessagePack decoder builds a MessagePack source, and the JSON decoders build an `AnyCodable` one. No step tests a codec's or a source's concrete type per input.
+     - The payload is stored once per item. When nothing records, the item holds `decoded` and `source`, and no tree. `action` (public, computed) is built from the source when it is read; the intake's `validateRecordable()` guarantees that the build can't fail.
+   - **The walk counter** (`PayloadNesting.walks`, a task-local bound only by tests, from #616's branch) comes into PR 2. It counts the whole-tree walks an input gets, and pins one per input on every encoding: the recordability walk on MessagePack, and `PayloadNesting.check` on the JSON encodings. This is where #616's two review points land:
+     - **r4622519525:** the job path gets a positive control, a case that expects its walks to be counted (a nonzero count on the job's apply, as the live cases have). If the apply ever moves to a detached task, or to one created before the binding, the counting tests then fail instead of passing at 0.
+     - **r4622519396:** any text-matching tripwire PR 2 adds says only "it matches text", with the cases that get past it (a name built by reflection, a call outside `Sources/`). It doesn't claim that a split line gets past it.
+
+2. **#606's strict decode and #611 go to a PR 2c, after PR 2 (recommended).** PR 2's acceptance contract is "the accepted inputs are today's, and the differential test names each difference" (§2.4, N1, D7). Strict decode breaks that on purpose:
+   - Extra fields are refused, on every encoding, so clients sending extra keys get errors. It is a wire-behavior change, and the SDK and the E2E scenarios have to be checked first (inferred: the TypeScript SDK sends the declared fields only, `protocol.ts:156-166`, to be checked).
+   - #606 also asks for the JSON encodings to decode from the bytes, without the tree. That needs the frame decoders to keep the payload's byte range, which PR 2 doesn't touch.
+   - #611, refusing `let x = <initializer>` in `@Payload`, is a macro diagnostic and a source break. It names #606's change as its home.
+
+   PR 2c therefore holds: strict decode on all encodings, the JSON decode from bytes, #611's diagnostic with its macro test, and the docs row for "a client payload with undeclared fields". PR 2's MessagePack source is written so that strict mode is a switch on its decoder (the `@Payload` wire-key list is already there, `_payloadFieldForms`), not a second path. If Review prefers #611 earlier, it is small enough to be its own PR at any time: it touches only `PayloadMacro.swift` and the macro tests.
+
+3. **#616's review points:** covered in 1 above.
+
+**What PR 2 ships (the measured path; §9 step 5 otherwise unchanged):**
+- `PayloadDecodingSource`, with the `AnyCodable` source and the MessagePack source. The record check and the non-finite rule run in `validateRecordable()`, and that walk is also the depth check (1 above).
+- Decode once: `PendingActionItem`'s package init and its `with(resolverOutputs:resolvedAtTick:)`. The apply step decodes nothing.
+- Client events (D2, N2), `decodeClientEvent` at intake, and the A3 rejection with an error frame (#537, with #593's client-event decode-failure item). Closes #537.
+- Records built from the intake tree, only when something reads them.
+- The walk counter and its tests, including r4622519525's positive control.
+- The differential tests (§7) and the `failure-handling` row for the client event (#537), in both languages.
+
+**What moves to a PR 2b (off the measured path):**
+- The three-index lookup, with A4 and A8 in `validateForRegistration`.
+- The replay staged batch (A5), with its `failure-handling` row "Replay can't load or match a recorded input".
+
+The lookup replaces a linear scan of a land's few handlers. Its gain is small, and it adds registration refusals of its own (N9), which are reviewed better on their own. The staged batch is replay-only. Both are independent of the decode source.
+
+**Gates for PR 2:**
+- Review, and the Codex second track at medium effort.
+- **A host A/B** on `vis-act-mp` and `vis-act-json`, the cells ab-616 used, in the `nonsync` window, against main (with #605) at run time.
+  - Expected: a GAIN on `vis-act-mp`, since one whole-tree walk, the `Any` tree, `JSONEncoder` and `JSONDecoder` all go.
+  - `vis-act-json` within the bar, since that path is unchanged.
+- Before the host: a symbol diff, base against head, on `vis-act-mp` (`perf record`, DWARF callchains, in the throwaway container). If a value-witness or metadata-cache symbol rises, as in #616's A/B, PR 2 stops and reports it before the host run.
 
 ## 10. Decisions
 
