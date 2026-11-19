@@ -153,3 +153,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A test harness under errexit dies without naming the failing case](2026-11-19-a-test-harness-under-errexit-dies-unnamed.md) | shell, errexit, set-e, test-harness, mutation |
 | 2026-11-19 | [`Bundle.allBundles` crashes a Linux test process (null dereference in CFBundleGetAllBundles)](2026-11-19-bundle-allbundles-crashes-on-linux.md) | linux, foundation, bundle, test-support, cross-platform |
 | 2026-11-19 | [A typed decoder that replaces a JSON round trip misses the round trip's coercions](2026-11-19-a-typed-decoder-misses-the-round-trips-coercions.md) | testing, differential, decode, messagepack, decimal, float, anycodable |
+| 2026-11-19 | [An explicit config still reads the environment through its stored defaults](2026-11-19-an-explicit-config-still-reads-the-environment.md) | testing, environment, transport-env-config, sync-tables, ci, test-selection |
