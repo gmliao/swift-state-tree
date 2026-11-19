@@ -817,12 +817,19 @@ struct TransportAdapterSyncPhaseTests {
 
     @Test("an event sent outside a turn that reaches no frame ends the land; one sent alone doesn't (#535 row 17)", arguments: [true, false])
     func lostEventOutsideATurnEndsTheLand(lost: Bool) async throws {
-        let f = try await SyncPhaseFixture.make(encoding: .messagepack)
+        // The loss: MessagePack messages, and a payload whose positional form fails (an untyped
+        // dictionary with payload compression on). Sent alone: a hybrid fixture (JSON messages,
+        // opcodeMessagePack state updates), where every event goes as its own frame (#521 D10).
+        let f = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: lost)
         await f.keeper.setTransport(f.adapter)
         await f.sync()
-        let fault: TransportAdapter<SyncPhaseTestState>.EventEncodingFault = lost ? .all : .mergedBody
-        await f.adapter.setEventEncodingFaultForTesting { _ in fault }
-        await f.queueEvent("unencodable", to: .all)
+        if lost {
+            await f.adapter.sendEvent(
+                AnyServerEvent(type: AnyServerEvent(SyncPhaseEvent(message: "")).type, payload: AnyCodable(["message": AnyCodable("unencodable")])), to: .all
+            )
+        } else {
+            await f.queueEvent("unencodable", to: .all)
+        }
         if lost {
             try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
             #expect(f.keeper.failure?.kind == .eventEncode)

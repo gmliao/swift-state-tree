@@ -25,6 +25,8 @@ struct EncodingPipeline: Sendable {
     let sequencedStateUpdateEncoder: (any SyncSequencedStateUpdateEncoder)?
     let messageEncoder: any TransportMessageEncoder
     let landID: String
+    /// Counts the event body encodes (tests only, #521 D10); nil in production.
+    var encodeCounts: EventEncodeCountsForTesting?
 
     init(stateUpdateEncoder: any StateUpdateEncoder, messageEncoder: any TransportMessageEncoder, landID: String) {
         self.stateUpdateEncoder = stateUpdateEncoder
@@ -240,11 +242,14 @@ struct EncodingPipeline: Sendable {
     ///
     /// Succeeds only when the message encoder is MessagePack (typical production: clients use encoding from joinResponse).
     /// Returns nil when the message encoder is JSON or opcodeJsonArray: we encode to bytes then try MessagePack unpack,
-    /// which fails. Caller must then send the event as a separate frame.
+    /// which fails. The adapter doesn't call this in such a hybrid configuration: it sends each
+    /// event as its own frame, decided at init (#521 D10). With MessagePack messages, a nil body
+    /// means the event is lost.
     ///
     /// - Parameter event: Server event to encode
     /// - Returns: Event body as MessagePackValue, or nil if encoding failed
     func encodeServerEventBody(_ event: AnyServerEvent) -> MessagePackValue? {
+        encodeCounts?.countBody()
         do {
             if let mpEncoder = messageEncoder as? MessagePackTransportMessageEncoder {
                 return try mpEncoder.encodeServerEventBody(event)

@@ -237,6 +237,13 @@ struct HybridEventFrameGoldenTests {
             == result.recordedStateHashes)
         #expect(result.serverEventMismatches.isEmpty)
         let sync = result.syncOutput
+        #expect(sync.eventsAfterLastOutput == 0, "\(sync.summary)")
+        let stream = try await ReevaluationRecordFile.openSource(filePath: Self.recordPath).getSyncStream()
+        let sentAlone = stream.compactMap { entry -> [Int64]? in
+            guard case .output(let o) = entry, o.turnKind == .tick else { return nil }
+            return o.eventsNotMerged?.sentAlone ?? []
+        }
+        #expect(sentAlone == [[0, 1, 2], [3, 4, 5]])
         #expect((sync.eventsSentAlone, sync.eventsLost) == (6, 0), "\(sync.summary)")
         #expect(sync.verdict == Self.expectedVerdict, "\(sync.summary)")
         #expect(sync.events == Self.expectedEvents, "\(sync.summary)")

@@ -171,9 +171,11 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
 /// Opcode 107 events that had recipients but did not reach a merged frame, by what became of
 /// them; keeper sequences, sorted.
 public struct ReevaluationUnmergedEvents: Codable, Sendable, Equatable {
-    /// Sent as their own frame.
+    /// Sent as their own frame: in a hybrid configuration (opcode 107 with `json` or
+    /// `opcodeJsonArray` messages) every event; otherwise none, since an event that doesn't encode
+    /// is lost (#521 D10). Records written before D10 can list a MessagePack event here.
     public var sentAlone: [Int64]
-    /// Their own frame did not encode either: no client got them.
+    /// They did not encode: no client got them.
     public var lost: [Int64]
 
     public init(sentAlone: [Int64] = [], lost: [Int64] = []) {

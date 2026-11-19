@@ -170,10 +170,32 @@ actor VerifierTransport: Transport {
     func sendBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) async {}
 }
 
+/// The verifier land with server events on its second tick only, and none in OnInitialize: in a
+/// hybrid configuration (#521 D10) every event goes alone, so the outputs around that tick carry
+/// no events and stay compared.
+func makeGatedVerifierLand() -> LandDefinition<VerifierState> {
+    Land("sync-output-verifier-test", using: VerifierState.self) {
+        ServerEvents { Register(SyncStreamTestEvent.self) }
+        Lifetime {
+            Tick(every: .seconds(3600)) { (state: inout VerifierState, ctx: LandContext) in
+                state.ticks += 1
+                state.board["t\(state.ticks)"] = state.ticks
+                if state.ticks == 2 {
+                    ctx.emitEvent(SyncStreamTestEvent(message: "a-\(state.ticks)"), to: .all)
+                    ctx.emitEvent(SyncStreamTestEvent(message: "nobody-\(state.ticks)"), to: .players([]))
+                    ctx.emitEvent(SyncStreamTestEvent(message: "b-\(state.ticks)"), to: .all)
+                }
+                ctx.requestSyncNow()
+            }
+        }
+    }
+}
+
 struct VerifierFixture {
     let keeper: LandKeeper<VerifierState>
     let adapter: TransportAdapter<VerifierState>
-    let definition = makeVerifierLand()
+    /// The land the fixture records, and its replay rebuilds.
+    var definition = makeVerifierLand()
     /// Joins go through the adapter's in-turn router path (`performJoin`), as a hosted land's do.
     var throughRouter = false
 
@@ -189,9 +211,9 @@ struct VerifierFixture {
         pathIndex: Bool = false,
         pathHashes: [String: UInt32]? = nil,
         fieldMerge: Bool = false,
-        syncSequence: Bool = false
+        syncSequence: Bool = false,
+        definition: LandDefinition<VerifierState> = makeVerifierLand()
     ) async -> VerifierFixture {
-        let definition = makeVerifierLand()
         let keeper = LandKeeper<VerifierState>(
             definition: definition,
             initialState: VerifierState(),
@@ -223,7 +245,7 @@ struct VerifierFixture {
             await keeper.awaitInitialization()
         }
         await keeper.setTransport(adapter)
-        return VerifierFixture(keeper: keeper, adapter: adapter)
+        return VerifierFixture(keeper: keeper, adapter: adapter, definition: definition)
     }
 
     /// A land as a hosted server runs it: joins through the router (`performJoin`), the sync
@@ -360,7 +382,7 @@ struct VerifierFixture {
         if let rewrite {
             try VerifierRecordFile.rewrite(path, rewrite)
         }
-        return try await Self.replay(recordAt: path)
+        return try await Self.replay(recordAt: path, definition: definition)
     }
 
     /// Replays the record as a copy of the live recorder (`ReevaluationRecorder.encode()`, the
@@ -397,7 +419,7 @@ struct VerifierFixture {
             for record in records { bytes += try ReevaluationRecordLog.framed(record) }
         }
         try Data(bytes).write(to: URL(fileURLWithPath: path))
-        return try await Self.replay(recordAt: path)
+        return try await Self.replay(recordAt: path, definition: definition)
     }
 
     /// Saves the record as `replay` does, to `path`.
@@ -417,10 +439,13 @@ struct VerifierFixture {
         try await recorder.saveCopyForTesting(to: path)
     }
 
-    /// Replays a saved record of the verifier land.
-    static func replay(recordAt path: String) async throws -> ReevaluationEngine.RunResult {
+    /// Replays a saved record of the verifier land (or of `definition`).
+    static func replay(
+        recordAt path: String,
+        definition: LandDefinition<VerifierState> = makeVerifierLand()
+    ) async throws -> ReevaluationEngine.RunResult {
         try await ReevaluationEngine.run(
-            definition: makeVerifierLand(),
+            definition: definition,
             initialState: VerifierState(),
             recordFilePath: path
         )
@@ -1201,17 +1226,16 @@ struct SyncOutputVerifierTests {
         #expect(sync.tailEventsNotSynced > 0, "\(sync.summary)")
     }
 
-    @Test("Opcode 107: an event sent alone, outside the merged frame, makes that output's events unverifiable")
+    @Test("Opcode 107 with JSON messages (hybrid): an event sent alone, outside the merged frame, makes that output's events unverifiable")
     func unmergedEventIsUnverifiable() async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = await VerifierFixture.make(encoding: .messagepack)
-        let fails = VerifierSwitch()
-        await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? .mergedBody : nil }
+        // JSON messages with opcodeMessagePack state updates; events on the second tick only.
+        let f = await VerifierFixture.make(
+            encoding: .json, encoder: OpcodeMessagePackStateUpdateEncoder(), definition: makeGatedVerifierLand()
+        )
         try await f.join(1)
         await f.tick()
-        fails.set(true)
-        await f.tick()      // its three events do not reach a merged frame; each goes alone
-        fails.set(false)
+        await f.tick()      // its three events can't merge; each goes alone
         await f.tick()
         let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
         try #require(ticks.count == 3)

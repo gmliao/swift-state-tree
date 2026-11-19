@@ -85,7 +85,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
     public nonisolated var syncConfigForRecord: ReevaluationSyncConfig {
         ReevaluationSyncConfig(
-            mergedBroadcastFrame: stateUpdateEncoder.encoding == .opcodeMessagePack,
+            mergedBroadcastFrame: useStateUpdateWithEvents,
             fullSnapshot: syncStrategy == .fullSnapshot
         )
     }
@@ -207,10 +207,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Which encodings of an event fail (tests only).
     enum EventEncodingFault: Sendable {
-        /// The opcode 107 body: the event falls back to its own frame.
-        case mergedBody
         /// Every encoding: the event is lost.
         case all
+    }
+
+    /// Counts the event encodes from now on (tests only, #521 D10).
+    func setEventEncodeCountingForTesting(_ counts: EventEncodeCountsForTesting?) {
+        encodingPipeline.encodeCounts = counts
+        eventSendingPipeline.encodeCounts = counts
     }
 
     /// Installs `eventEncodingFaultForTesting` (tests only).
@@ -392,10 +396,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let routingTable: MessageRoutingTable
     
     /// Encoding pipeline (centralizes all encoding logic).
-    private let encodingPipeline: EncodingPipeline
+    private var encodingPipeline: EncodingPipeline
     
     /// Event sending pipeline (centralizes event sending logic: queue vs immediate).
-    private let eventSendingPipeline: EventSendingPipeline
+    private var eventSendingPipeline: EventSendingPipeline
 
     /// Dirty tracking toggle - default is enabled.
     ///
@@ -810,9 +814,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Debug freeze bookkeeping (see `TransportAdapter+DebugFreeze.swift`).
     var debugFreezeState = DebugFreezeState<State>()
 
-    /// Whether to merge server events with state update (opcode 107). True when state update encoding is opcodeMessagePack.
-    private var useStateUpdateWithEvents: Bool {
-        stateUpdateEncoder.encoding == .opcodeMessagePack
+    /// Whether to merge server events with state update (opcode 107): the state update encoding
+    /// is `opcodeMessagePack`. Decided once at init (#521 D10): `StateUpdateEncoder.encoding` is a
+    /// protocol getter, and the record header (`syncConfigForRecord`), the sync path and the event
+    /// path must read one decision.
+    private nonisolated let useStateUpdateWithEvents: Bool
+
+    /// Whether an event's body can be merged into the opcode 107 frame: opcode 107 is on and
+    /// messages are MessagePack, the only encoding whose event body is a MessagePack value.
+    /// Decided once at init (#521 D10). In a hybrid configuration (`json` or `opcodeJsonArray`
+    /// messages with `opcodeMessagePack` state updates) every event goes as its own frame, with
+    /// no body attempt.
+    private nonisolated let eventsMerge: Bool
+
+    /// `useStateUpdateWithEvents` and `eventsMerge` for these encoders, decided once at init.
+    private static func mergeDecisions(
+        _ stateUpdateEncoder: any StateUpdateEncoder,
+        _ messageEncoder: any TransportMessageEncoder
+    ) -> (useStateUpdateWithEvents: Bool, eventsMerge: Bool) {
+        let merged = stateUpdateEncoder.encoding == .opcodeMessagePack
+        return (merged, merged && messageEncoder is MessagePackTransportMessageEncoder)
     }
 
     /// Merged broadcast frames with a shared broadcast key table: a late joiner needs a key scope
@@ -974,18 +995,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.rowAddressing = rowAddressing
         if let encodingConfig = encodingConfig?.withRowAddressing(rowAddressing) {
             self.codec = encodingConfig.makeCodec()
-            self.messageEncoder = encodingConfig.makeMessageEncoder(
+            let madeMessageEncoder = encodingConfig.makeMessageEncoder(
                 eventHashes: eventHashes,
                 clientEventHashes: clientEventHashes
             )
+            self.messageEncoder = madeMessageEncoder
             // Built here, at registration, and kept on the encoder: frames go out in the land's
             // canonical order (`CanonicalPatchOrder`).
-            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
+            let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
                 pathHashes: pathHashes,
                 warnIfMissingPathHashes: !suppressMissingPathHashesWarning,
                 atomicLayout: AtomicLayoutTable.forState(State.self),
                 unmappedPaths: unmappedPathCounter
             ))
+            self.stateUpdateEncoder = madeStateUpdateEncoder
+            (self.useStateUpdateWithEvents, self.eventsMerge) = Self.mergeDecisions(madeStateUpdateEncoder, madeMessageEncoder)
             self.pathHashes = pathHashes
             // The router requires the same list (from the same effective config).
             self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
@@ -1008,8 +1032,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         } else {
             self.codec = codec
-            self.messageEncoder = JSONTransportMessageEncoder()
-            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
+            let madeMessageEncoder = JSONTransportMessageEncoder()
+            let madeStateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
+            self.messageEncoder = madeMessageEncoder
+            self.stateUpdateEncoder = madeStateUpdateEncoder
+            (self.useStateUpdateWithEvents, self.eventsMerge) = Self.mergeDecisions(madeStateUpdateEncoder, madeMessageEncoder)
             self.pathHashes = pathHashes
             self.tracksSyncLag = false
             self.stateUpdateFeatures = []
@@ -2649,20 +2676,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Helper Methods
 
-    /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack),
-    /// events are queued and sent merged with the next state update instead of separate frames.
-    /// When body encoding fails (e.g. message encoder is JSON in a hybrid config), falls back to sending a separate frame.
+    /// Send server event to specified target. When opcode 107 is enabled (opcodeMessagePack) and
+    /// messages are MessagePack, events are queued and sent merged with the next state update
+    /// instead of separate frames.
     ///
-    /// **When fallback is used:** In typical production the message encoder is MessagePack (clients use the encoding
-    /// from joinResponse, so with `TransportEncodingConfig.messagepack` body encoding succeeds and events are merged).
-    /// The fallback matters for hybrid configs only: `message: .json` or `.opcodeJsonArray` with `stateUpdate: .opcodeMessagePack`
-    /// (e.g. debugging or migration), where `encodeServerEventBody` returns nil.
+    /// **Hybrid configurations** (`message: .json` or `.opcodeJsonArray` with `stateUpdate:
+    /// .opcodeMessagePack`, e.g. debugging or migration): opcode 107 merges events as MessagePack
+    /// values, which only a MessagePack message encoder produces. So every event goes as its own
+    /// frame. That is decided once at init (`eventsMerge`, #521 D10), with no body attempt.
     ///
-    /// **Core issue (why fallback is required):** Opcode 107 merges events with state updates as a MessagePack array.
-    /// That requires an event "body" as `MessagePackValue`. `encodeServerEventBody` can only produce that when the
-    /// message encoder is MessagePack. If the message encoder is JSON or opcodeJsonArray, it encodes to JSON bytes
-    /// then tries `unpack(JSON bytes)` as MessagePack, which fails → returns nil. Without fallback, the event would
-    /// be dropped silently. We therefore fall through to the normal send path and send the event as a separate frame.
+    /// **With MessagePack messages,** an event whose body doesn't encode is lost (its own frame
+    /// would fail the same way: one encoder, one conversion), which ends the land (#535 row 17).
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         guard enqueueEventSynchronously(event, to: target) == .lost else { return }
         // An event that reached no frame ends the land (#535 row 17).
@@ -2692,19 +2716,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if !heldEventOverflows.isEmpty { failHeldEventOverflows() }
         }
         let fault = eventEncodingFaultForTesting?(event.type)
-        // Queue mode (opcode 107)
+        // Queue mode (opcode 107, MessagePack messages)
+        if eventsMerge {
+            // A body that doesn't encode means a frame that wouldn't either (one encoder, one
+            // conversion): the event is lost after one encode, with no second attempt (#521 D10).
+            guard fault == nil, let body = encodingPipeline.encodeServerEventBody(event) else { return .lost }
+            let queued = eventSendingPipeline.queueForMergedSend(
+                eventBody: body,
+                target: target,
+                pendingEventManager: &pendingEventManager,
+                membershipCoordinator: membershipCoordinator,
+                digest: digest
+            )
+            return queued ? .queued : .noRecipient
+        }
+        // Hybrid (opcode 107, messages not MessagePack): no body can merge, so the event goes as
+        // its own frame, decided at init (#521 D10).
         if useStateUpdateWithEvents {
-            if fault == nil, let body = encodingPipeline.encodeServerEventBody(event) {
-                let queued = eventSendingPipeline.queueForMergedSend(
-                    eventBody: body,
-                    target: target,
-                    pendingEventManager: &pendingEventManager,
-                    membershipCoordinator: membershipCoordinator,
-                    digest: digest
-                )
-                return queued ? .queued : .noRecipient
-            }
-            // The body did not encode: the event goes out as its own frame, or is lost.
             return sendEventImmediately(event, to: target, failsEncoding: fault == .all) ? .sentAlone : .lost
         }
 
@@ -2720,10 +2748,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// Opcode 107, and nothing to queue: no recipient (`.players([])`, a client without a
         /// session).
         case noRecipient
-        /// Opcode 107, but the body did not encode: sent as its own frame.
+        /// Opcode 107 in a hybrid configuration (messages not MessagePack): sent as its own frame,
+        /// or nothing to send (a stale target).
         case sentAlone
-        /// The event did not encode: with opcode 107 neither its body nor its own frame, without it
-        /// its frame. Lost, so the land ends (#535 row 17).
+        /// The event did not encode: with opcode 107 and MessagePack messages its body, otherwise
+        /// its own frame. Lost, so the land ends (#535 row 17).
         case lost
         /// Not opcode 107: sent as its own frame.
         case immediate
@@ -2776,7 +2805,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
             if outcome == .lost {
                 // An event that reached no frame ends the land (#535 row 17). One sent alone
-                // after its merged body failed isn't a loss.
+                // (a hybrid configuration) isn't a loss.
                 let failure = LandFailure(
                     kind: .eventEncode,
                     detail: "event \(item.event.type) did not encode",
