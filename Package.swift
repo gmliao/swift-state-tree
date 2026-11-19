@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import CompilerPluginSupport
 import PackageDescription
@@ -71,6 +71,7 @@ let package = Package(
             name: "SwiftStateTree",
             dependencies: [
                 "SwiftStateTreeMacros",
+                "SwiftStateTurns",
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/SwiftStateTree",
@@ -88,6 +89,7 @@ let package = Package(
             dependencies: [
                 "SwiftStateTree",
                 "SwiftStateTreeMessagePack",
+                "SwiftStateTurns",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Atomics", package: "swift-atomics"),
             ],
@@ -99,6 +101,7 @@ let package = Package(
             name: "SwiftStateTreeMessagePack",
             dependencies: [
                 "SwiftStateTree",
+                "SwiftStateTurns",
             ],
             path: "Sources/SwiftStateTreeMessagePack"
         ),
@@ -243,6 +246,7 @@ let package = Package(
                 "SwiftStateTreeMessagePack",
                 "SwiftStateTreeDeterministicMath",
                 "SwiftStateTreeReevaluationMonitor",
+                "SwiftStateTurns",
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "Logging", package: "swift-log"),
             ],

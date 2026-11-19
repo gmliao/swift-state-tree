@@ -33,11 +33,12 @@ cd Examples/Demo/WebClient && npm run codegen
 
 ## Module Architecture
 
-The dependency chain flows: `SwiftStateTree` → `SwiftStateTreeTransport` → `SwiftStateTreeNIO`
+The dependency chain flows: `SwiftStateTurns` → `SwiftStateTree` → `SwiftStateTreeTransport` → `SwiftStateTreeNIO` (Transport also depends on `SwiftStateTurns` directly)
 
 | Module | Role |
 |--------|------|
 | **SwiftStateTree** | Core DSL: `Land`, `@Sync`, `StateTree`, `Runtime`, `SchemaGen`, macros (`@StateNodeBuilder`, `@Payload`) |
+| **SwiftStateTurns** | Turn core: `TurnActor`, `TurnCore`, `@PlainData` (its macros in `SwiftStateTurnsMacros`); a dependency of SwiftStateTree, its MessagePack target and Transport |
 | **SwiftStateTreeTransport** | Framework-agnostic layer: `WebSocketTransport`, `TransportAdapter`, `LandManager`, `LandRouter`, `LandTypeRegistry`, `LandRealm` |
 | **SwiftStateTreeNIO** | NIO hosting: `NIOLandHost` (actor), `NIOLandServer`, `NIOWebSocketServer`, `NIOAdminRoutes`, `ReevaluationFeature` |
 | **SwiftStateTreeNIOProvisioning** | Optional middleware for control-plane registration (`ProvisioningHTTPClient`) |

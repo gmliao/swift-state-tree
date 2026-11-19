@@ -15,6 +15,7 @@ SwiftStateTree 採用模組化設計，各模組職責明確：
 | **SwiftStateTreeTransport** | Transport 層 | Transport 抽象、WebSocketTransport、Land 管理、多房間路由 |
 | **SwiftStateTreeNIO** | NIO 伺服器 | WebSocket Hosting、JWT/Guest 認證、Admin 路由（預設伺服器） |
 | **SwiftStateTreeNIOProvisioning** | Provisioning | 啟動時向 matchmaking control plane 註冊 GameServer |
+| **SwiftStateTurns** | Turn 核心 | `TurnActor`、`TurnCore`、`@PlainData`：SwiftStateTree、其 MessagePack target 與 SwiftStateTreeTransport 共用的序列化 turn 機制 |
 | **SwiftStateTreeMacros** | 編譯期工具 | `@StateNodeBuilder`、`@Payload`、`@SnapshotConvertible` |
 | **SwiftStateTreeDeterministicMath** | 確定性數學運算 | 固定點運算、碰撞檢測、向量運算，用於伺服器權威遊戲 |
 | **SwiftStateTreeBenchmarks** | 基準測試 | 效能測試執行檔 |
@@ -30,9 +31,12 @@ graph TD
     NIO[SwiftStateTreeNIO<br/>NIO 伺服器]
     Provisioning[SwiftStateTreeNIOProvisioning<br/>Provisioning]
     Macros[SwiftStateTreeMacros<br/>編譯期 Macro]
+    Turns[SwiftStateTurns<br/>Turn 核心]
     
+    Turns --> Core
+    Turns --> Transport
+    Macros --> Core
     Core --> Transport
-    Core --> Macros
     Transport --> NIO
     NIO --> Provisioning
     
@@ -41,7 +45,10 @@ graph TD
     style NIO fill:#e8f5e9
     style Provisioning fill:#f3e5f5
     style Macros fill:#fce4ec
+    style Turns fill:#fffde7
 ```
+
+箭頭從模組指向依賴它的模組。
 
 **說明**：
 - **SwiftStateTree** 是核心模組，不依賴網路，提供核心邏輯

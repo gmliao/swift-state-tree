@@ -21,9 +21,9 @@ For detailed instructions, please refer to [README.md](../README.md#-quick-start
 ### Q: What are the system requirements?
 
 A: 
-- Swift 6.0+
+- Swift 6.2+
 - macOS 14.0+ (development environment)
-- Platforms supporting Swift 6 (deployment environment)
+- Platforms with a Swift 6.2+ toolchain (deployment environment)
 
 ### Q: How do I verify the project runs correctly?
 
