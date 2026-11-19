@@ -289,7 +289,7 @@ actor 一次只執行一個呼叫。在同一個呼叫裡，core 在每種 build
 | 一個以上的 `read` | 執行 | 停止行程 |
 | 一個 step | 停止行程 | `query` 停止行程；`send` 在這裡不算開始一個 step：它會等著，在這個 step 結束後才執行 |
 
-所以 read 可以巢狀，而在 `read` 的 closure 裡 `send` 或 `query`，即使裡面另一個 `read` 已經執行完並返回，也會停止行程。
+所以 read 可以巢狀，而在 `read` 的 closure 裡，一個會立刻執行的 `send`，或一個 `query`，即使裡面另一個 `read` 已經執行完並返回，也會停止行程。不會立刻執行的 `send`（在 batch 執行中送出的、它的 hold 正生效的、在 admission 被拒的）不會停止。
 
 **採用者必須守住的事。** core 在改自己的狀態時，也會執行採用者的一些程式碼，這時它擋不住重疊：
 - key 型別的 `==` 和 `hash(into:)`，在 core 更新它的表時執行；

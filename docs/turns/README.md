@@ -289,7 +289,7 @@ The actor runs one call at a time. Within one call, the core keeps its own rule,
 | a `read` (one or more) | runs | stops the process |
 | a step | stops the process | a `query` stops the process; a `send` isn't a step start here: it waits, and steps after the step ends |
 
-So reads nest, and a `send` or a `query` from a `read`'s body stops the process even when another `read` ran and returned inside it.
+So reads nest, and a `send` that would step now, or a `query`, from a `read`'s body stops the process, even when another `read` ran and returned inside it. A `send` that doesn't step now (one made during a batch, one whose hold is active, one refused on admission) doesn't stop.
 
 **What the adopter must keep.** The core also runs some of the adopter's code while it is changing its own state, and there it can't stop an overlap:
 - the key type's `==` and `hash(into:)`, which run inside the core's table updates;
