@@ -155,3 +155,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A typed decoder that replaces a JSON round trip misses the round trip's coercions](2026-11-19-a-typed-decoder-misses-the-round-trips-coercions.md) | testing, differential, decode, messagepack, decimal, float, anycodable |
 | 2026-11-19 | [Decode a record with the codec that wrote it](2026-11-19-decode-a-record-with-the-codec-that-wrote-it.md) | replay, record-format, decode, canonical-messagepack, anycodable, date, json |
 | 2026-11-19 | [A stale example build crashes after a library struct changes its layout](2026-11-19-a-stale-example-build-crashes-after-a-library-layout-change.md) | build, swiftpm, incremental, examples, crash, linux |
+| 2026-11-19 | [An explicit config still reads the environment through its stored defaults](2026-11-19-an-explicit-config-still-reads-the-environment.md) | testing, environment, transport-env-config, sync-tables, ci, test-selection |

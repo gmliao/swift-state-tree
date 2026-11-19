@@ -362,17 +362,24 @@ jobs:
       timeout-minutes: 10
 
   # The deep-research Python tests, in a job of their own: they need no Swift build, so they run
-  # beside the Swift jobs instead of after the examples job's builds. The same image as the other
-  # jobs (Ubuntu 24.04's python3 and git), Node 20, and the full history.
+  # beside the Swift jobs instead of after the examples job's builds. On the runner itself, not
+  # in the Swift image: the tests use stand-in `swift` binaries and need only Python, git and
+  # Node, and the image has no python3 binary. Python 3.12 and Node 20 come from official
+  # builds, so the job doesn't depend on the Ubuntu mirrors (#453, #635); the full history.
   deep-research-tests:
     runs-on: ubuntu-22.04
-    container:
-      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
     steps:
     - uses: actions/checkout@v4
       with:
         # Full history: deep-research's wire-form tests resolve recorded commits and their parents.
         fetch-depth: 0
+
+    # Python 3.12, the version the Swift image's apt gave this job before (3.12.3), from the
+    # official builds: a slow archive.ubuntu.com used up the test step's budget (#635).
+    - name: Install Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
 
     # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
@@ -387,9 +394,7 @@ jobs:
     - name: deep-research Python tests
       shell: bash
       run: |
-        scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
         python3 --version
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         log="$(mktemp)"
         count=0
         failed=()
