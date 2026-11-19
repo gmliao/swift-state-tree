@@ -80,7 +80,17 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
     }
 
     func decodeNil(forKey key: Key) throws -> Bool {
-        guard let value = map[key.stringValue] else { return true }
+        guard let value = map[key.stringValue] else {
+            // A client payload's missing key throws, as `JSONDecoder` does. A frame the server
+            // builds keeps the old answer (true).
+            if decoder.clientPayload {
+                throw DecodingError.keyNotFound(key, DecodingError.Context(
+                    codingPath: codingPath,
+                    debugDescription: "No value associated with key \(key.stringValue)"
+                ))
+            }
+            return true
+        }
         if case .nil = value {
             return true
         }
@@ -144,18 +154,11 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
     }
 
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
-        if type == Data.self {
-            let box = try decodeValue(forKey: key)
-            let data = try box.decodeData(codingPath: codingPath + [key])
-            return data as! T
+        let box = try decodeValue(forKey: key)
+        if let special = try box.decodeSpecial(type, codingPath: codingPath + [key], clientPayload: decoder.clientPayload) {
+            return special
         }
-        if type == Decimal.self, let decimal = try decodeValue(forKey: key).decodeDecimalNumber(codingPath: codingPath + [key], clientPayload: decoder.clientPayload) {
-            return decimal as! T
-        }
-        if type == AnyCodable.self, decoder.clientPayload {
-            return try MessagePackValueBox(value: decodeValue(forKey: key).value).decodeAnyCodable() as! T
-        }
-        let value = try decodeValue(forKey: key).value
+        let value = box.value
         let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath + [key], clientPayload: decoder.clientPayload)
         return try T(from: nestedDecoder)
     }
@@ -219,104 +222,105 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     }
 
     mutating func decode(_ type: Bool.Type) throws -> Bool {
-        try nextBox().decodeBool(codingPath: codingPath)
+        try next { try $0.decodeBool(codingPath: $1) }
     }
 
     mutating func decode(_ type: String.Type) throws -> String {
-        try nextBox().decodeString(codingPath: codingPath)
+        try next { try $0.decodeString(codingPath: $1) }
     }
 
     mutating func decode(_ type: Double.Type) throws -> Double {
-        try nextBox().decodeDouble(codingPath: codingPath)
+        try next { try $0.decodeDouble(codingPath: $1) }
     }
 
     mutating func decode(_ type: Float.Type) throws -> Float {
-        try nextBox().decodeFloat(codingPath: codingPath)
+        try next { try $0.decodeFloat(codingPath: $1) }
     }
 
     mutating func decode(_ type: Int.Type) throws -> Int {
-        try nextBox().decodeInt(codingPath: codingPath)
+        try next { try $0.decodeInt(codingPath: $1) }
     }
 
     mutating func decode(_ type: Int8.Type) throws -> Int8 {
-        try nextBox().decodeInteger(Int8.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(Int8.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: Int16.Type) throws -> Int16 {
-        try nextBox().decodeInteger(Int16.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(Int16.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: Int32.Type) throws -> Int32 {
-        try nextBox().decodeInteger(Int32.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(Int32.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: Int64.Type) throws -> Int64 {
-        try nextBox().decodeInteger(Int64.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(Int64.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: UInt.Type) throws -> UInt {
-        try nextBox().decodeInteger(UInt.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(UInt.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: UInt8.Type) throws -> UInt8 {
-        try nextBox().decodeInteger(UInt8.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(UInt8.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: UInt16.Type) throws -> UInt16 {
-        try nextBox().decodeInteger(UInt16.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(UInt16.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: UInt32.Type) throws -> UInt32 {
-        try nextBox().decodeInteger(UInt32.self, codingPath: codingPath)
+        try next { try $0.decodeInteger(UInt32.self, codingPath: $1) }
     }
 
     mutating func decode(_ type: UInt64.Type) throws -> UInt64 {
-        try nextBox().decodeUInt(codingPath: codingPath)
+        try next { try $0.decodeUInt(codingPath: $1) }
     }
 
     mutating func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        if type == Data.self {
-            let data = try nextBox().decodeData(codingPath: codingPath)
-            return data as! T
+        let (codingPath, clientPayload) = (codingPath, decoder.clientPayload)
+        return try next { box, _ in
+            if let special = try box.decodeSpecial(type, codingPath: codingPath, clientPayload: clientPayload) {
+                return special
+            }
+            return try T(from: MessagePackValueBoxDecoder(value: box.value, codingPath: codingPath, clientPayload: clientPayload))
         }
-        let value = try nextBox().value
-        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath, clientPayload: decoder.clientPayload) {
-            return decimal as! T
-        }
-        if type == AnyCodable.self, decoder.clientPayload {
-            return try MessagePackValueBox(value: value).decodeAnyCodable() as! T
-        }
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
-        return try T(from: nestedDecoder)
     }
 
     mutating func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type) throws -> KeyedDecodingContainer<NestedKey> {
-        let value = try nextBox().value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
-        return try nestedDecoder.container(keyedBy: type)
+        let (codingPath, clientPayload) = (codingPath, decoder.clientPayload)
+        return try next { box, _ in
+            try MessagePackValueBoxDecoder(value: box.value, codingPath: codingPath, clientPayload: clientPayload).container(keyedBy: type)
+        }
     }
 
     mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
-        let value = try nextBox().value
-        let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
-        return try nestedDecoder.unkeyedContainer()
+        let (codingPath, clientPayload) = (codingPath, decoder.clientPayload)
+        return try next { box, _ in
+            try MessagePackValueBoxDecoder(value: box.value, codingPath: codingPath, clientPayload: clientPayload).unkeyedContainer()
+        }
     }
 
     mutating func superDecoder() throws -> Decoder {
-        let value = try nextBox().value
-        return MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
+        let (codingPath, clientPayload) = (codingPath, decoder.clientPayload)
+        return try next { box, _ in
+            MessagePackValueBoxDecoder(value: box.value, codingPath: codingPath, clientPayload: clientPayload)
+        }
     }
 
-    private mutating func nextBox() throws -> MessagePackValueBox {
+    /// Decodes the current element with `body`, and moves past it only when that succeeds, as
+    /// `JSONDecoder`'s unkeyed container does: a decode that throws leaves the element for a
+    /// fallback read (a hand-written `init(from:)` that tries one type, then another).
+    private mutating func next<R>(_ body: (MessagePackValueBox, [CodingKey]) throws -> R) throws -> R {
         guard !isAtEnd else {
             throw DecodingError.dataCorrupted(DecodingError.Context(
                 codingPath: codingPath,
                 debugDescription: "Unkeyed container is at end"
             ))
         }
-        let value = values[currentIndex]
+        let result = try body(MessagePackValueBox(value: values[currentIndex]), codingPath)
         currentIndex += 1
-        return MessagePackValueBox(value: value)
+        return result
     }
 }
 
@@ -389,15 +393,8 @@ private struct MessagePackSingleValueDecodingContainer: SingleValueDecodingConta
     }
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        if type == Data.self {
-            let data = try MessagePackValueBox(value: value).decodeData(codingPath: codingPath)
-            return data as! T
-        }
-        if type == Decimal.self, let decimal = try MessagePackValueBox(value: value).decodeDecimalNumber(codingPath: codingPath, clientPayload: decoder.clientPayload) {
-            return decimal as! T
-        }
-        if type == AnyCodable.self, decoder.clientPayload {
-            return try MessagePackValueBox(value: value).decodeAnyCodable() as! T
+        if let special = try MessagePackValueBox(value: value).decodeSpecial(type, codingPath: codingPath, clientPayload: decoder.clientPayload) {
+            return special
         }
         let nestedDecoder = MessagePackValueBoxDecoder(value: value, codingPath: codingPath, clientPayload: decoder.clientPayload)
         return try T(from: nestedDecoder)
@@ -439,7 +436,13 @@ private struct MessagePackValueBox {
     /// A `Float`, refusing what the JSON round trip refused: a finite value past `Float`'s range
     /// (it would become infinite) and a nonzero one too small for it (it would become zero).
     func decodeFloat(codingPath: [CodingKey]) throws -> Float {
-        if case .float(let value) = value { return value }
+        switch value {
+        case .float(let value): return value
+        // Straight from the integer, as the round trip parsed its text: one rounding, not two.
+        case .int(let value): return Float(value)
+        case .uint(let value): return Float(value)
+        default: break
+        }
         let double = try decodeDouble(codingPath: codingPath)
         let float = Float(double)
         if double.isFinite && float.isInfinite || double != 0 && float == 0 {
@@ -449,6 +452,46 @@ private struct MessagePackValueBox {
             ))
         }
         return float
+    }
+
+    /// The types `JSONDecoder` reads in its own way rather than through their `Codable` form, read
+    /// the same way here. Nil when `type` isn't one of them, or, outside a client payload, when
+    /// the value is in the type's keyed `Codable` form.
+    /// - `Data`: binary, or base64 text.
+    /// - `Decimal`: a number. Outside a client payload, also the string `MessagePackValueEncoder`
+    ///   writes, or the keyed form. A client payload refuses anything else, as `JSONDecoder` does:
+    ///   the keyed form accepted live would be refused by replay's round trip.
+    /// - `URL`: a string, as `JSONDecoder` reads it and `MessagePackValueEncoder` writes it. A
+    ///   client payload refuses the keyed form, for the same reason.
+    /// - `AnyCodable`, in a client payload only: `decodeAnyCodable()`.
+    func decodeSpecial<T>(_ type: T.Type, codingPath: [CodingKey], clientPayload: Bool) throws -> T? {
+        if type == Data.self {
+            return try decodeData(codingPath: codingPath) as? T
+        }
+        if type == Decimal.self {
+            if let decimal = try decodeDecimalNumber(codingPath: codingPath, clientPayload: clientPayload) {
+                return decimal as? T
+            }
+            if clientPayload { throw typeMismatch(Decimal.self, codingPath: codingPath) }
+            return nil
+        }
+        if type == URL.self {
+            if case .string(let text) = value {
+                guard let url = URL(string: text) else {
+                    throw DecodingError.dataCorrupted(DecodingError.Context(
+                        codingPath: codingPath,
+                        debugDescription: "Invalid URL string."
+                    ))
+                }
+                return url as? T
+            }
+            if clientPayload { throw typeMismatch(URL.self, codingPath: codingPath) }
+            return nil
+        }
+        if clientPayload, type == AnyCodable.self {
+            return try decodeAnyCodable() as? T
+        }
+        return nil
     }
 
     /// An `AnyCodable` field, as the JSON round trip built it: the value's tree, through

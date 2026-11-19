@@ -6,11 +6,15 @@
 // (`InboundPayloadDecoding`, which refuses a non-finite number anywhere in the tree). PR 2 decodes
 // the `MessagePackValue` straight into the type, after one walk that keeps both refusals.
 //
-// The corpus mutates a valid value of each fixture type, field by field. Each case's outcome on
-// both paths is compared, on accept/reject and on the decoded value (canonical JSON). The
-// non-finite and non-string-key cases must agree (refused). Every other disagreement is listed in
-// `expectedDifferences`, with its direction; the test fails on any case not listed and on any
-// listed case that no longer differs.
+// The corpus mutates a valid value of each fixture type, field by field, at the top level and one
+// level into a nested value. Each case's outcome on both paths is compared, on accept/reject and
+// on the decoded value (canonical JSON). The non-finite and non-string-key cases must agree
+// (refused). Every other disagreement must be a planned one (`expectedDifference`): a refusal of
+// what today accepts, never an acceptance of what today refuses. Their count per class is pinned.
+//
+// Each case the typed decode accepts is also replayed: its recorded tree (`makeRecordPayload()`)
+// decoded with today's round trip, as replay decodes it, must give the same value. A live input
+// that replay refuses would stop a record replaying.
 //
 // Duplicate map keys can't differ: the unpacker builds one map before either path reads it, so
 // both see the same value. The JSON encodings decode with today's round trip itself (their
@@ -96,6 +100,14 @@ struct PayloadDecodeDifferentialTests {
         ("nil", .nil), ("bool", .bool(true)), ("empty array", .array([])), ("empty map", .map([:])),
         ("map int key", .map([.int(1): .nil])),
         ("map int key depth 3", .map([.string("a"): .map([.string("b"): .map([.int(1): .nil])])])),
+        ("extended", .extended(type: 5, data: Data("x".utf8))),
+        // `Decimal`'s keyed `Codable` form, and `URL`'s.
+        ("keyed decimal", .map([
+            .string("exponent"): .int(-1), .string("length"): .int(1), .string("isNegative"): .bool(false),
+            .string("isCompact"): .bool(true), .string("mantissa"): .array([.int(25), .int(0), .int(0), .int(0), .int(0), .int(0), .int(0), .int(0)]),
+        ])),
+        ("keyed url", .map([.string("relative"): .string("https://example.com/")])),
+        ("url string", .string("https://example.com/x")),
     ]
 
     /// Values added under a key no type declares, at the top level and nested two deep.
@@ -111,12 +123,48 @@ struct PayloadDecodeDifferentialTests {
         let name: String
         let message: TransportMessage
         let outcome: (MessagePackValue, _ typed: Bool, _ recording: Bool) -> Outcome
+        let replay: (MessagePackValue) -> Outcome
     }
 
     static func fixture<T: Codable>(_ name: String, _ type: T.Type, _ message: TransportMessage) -> Fixture {
-        Fixture(name: name, message: message) { value, isTyped, recording in
+        Fixture(name: name, message: message, outcome: { value, isTyped, recording in
             isTyped ? typed(type, value, recording: recording) : today(type, value)
+        }, replay: { value in replayed(type, value) })
+    }
+
+    /// Replay's decode of what the live intake recorded: the source's record tree, through
+    /// today's round trip. Refused when the live intake refused.
+    static func replayed<T: Codable>(_ type: T.Type, _ value: MessagePackValue) -> Outcome {
+        guard let source = try? MessagePackPayloadSource(validating: value),
+              let record = try? source.makeRecordPayload(),
+              let decoded = try? AnyCodablePayloadSource(record).decode(type) else { return .refused }
+        return .accepted(canonical(decoded))
+    }
+
+    /// A fixture with the types `JSONDecoder` reads in its own way (`URL`, `Decimal`, `Data`) and
+    /// a nested value, for the mutations one level down.
+    struct DiffSpecials: Codable, Sendable {
+        struct Inner: Codable, Sendable {
+            let int: Int
+            let name: String
+            let ints: [Int]
+            let optional: Int?
         }
+        let url: URL
+        let decimal: Decimal
+        let data: Data
+        let float: Float
+        let inner: Inner
+    }
+
+    static let specials = DiffSpecials(
+        url: URL(string: "https://example.com/a?b=1")!, decimal: Decimal(string: "2.5")!, data: Data([1, 2, 3]),
+        float: 1.5, inner: .init(int: 7, name: "n", ints: [1, 2], optional: nil)
+    )
+
+    /// A value as a client sends it: its JSON form, then MessagePack.
+    static func clientShaped<T: Encodable>(_ value: T) -> AnyCodable {
+        (try? JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(value))) ?? AnyCodable(value)
     }
 
     static var fixtures: [Fixture] {
@@ -126,6 +174,9 @@ struct PayloadDecodeDifferentialTests {
             fixture("FuzzMathAction", FuzzMathAction.self, messages["t5/math"]!),
             fixture("FuzzContainersEvent", FuzzContainersEvent.self, messages["t5/containers"]!),
             fixture("PFClientEvent", PFClientEvent.self, messages["t5/pf-client-event"]!),
+            fixture("DiffSpecials", DiffSpecials.self, .event(event: .fromClient(event: AnyClientEvent(
+                type: "DiffSpecials", payload: clientShaped(specials)
+            )))),
         ]
     }
 
@@ -143,6 +194,18 @@ struct PayloadDecodeDifferentialTests {
                 replaced[.string(key)] = value
                 cases.append(("\(key): \(name)", .map(replaced)))
             }
+            // One level down, inside a nested value.
+            guard case .map(let inner)? = fields[.string(key)] else { continue }
+            let innerKeys = inner.keys.compactMap { key -> String? in if case .string(let s) = key { return s } else { return nil } }.sorted()
+            for innerKey in innerKeys {
+                for (name, value) in replacements {
+                    var replacedInner = inner
+                    replacedInner[.string(innerKey)] = value
+                    var replaced = fields
+                    replaced[.string(key)] = .map(replacedInner)
+                    cases.append(("\(key).\(innerKey): \(name)", .map(replaced)))
+                }
+            }
         }
         for (name, value) in extras {
             var extra = fields
@@ -154,39 +217,47 @@ struct PayloadDecodeDifferentialTests {
         return cases
     }
 
-    /// The cases where the typed decode and today's path disagree on MessagePack, by direction
-    /// (N1). Each is named in the PR. Both kinds are refusals of what today accepted, and the SDK
-    /// sends neither (it writes integers as MessagePack integers and strings as strings):
-    /// - an integer field sent as an integral float (`3.0`, `-0.0`, a float `2.0`): the typed
-    ///   decode takes only MessagePack integers;
-    /// - a string field (`String` or an ID type) sent as binary: today's tree turned binary into
-    ///   base64 text.
-    static let expectedDifferences: Set<String> = {
-        let integralFloats = ["double -0.0", "double 3.0", "float 2.0"]
-        let integerFields = [
-            "FuzzLeavesAction": ["int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64"],
-            "PFClientEvent": ["step"],
-        ]
-        let stringFields = [
-            "FuzzLeavesAction": ["string", "player", "client", "session", "land"],
-            "PFClientEvent": ["player"],
-        ]
-        var set: Set<String> = []
-        for (type, fields) in integerFields {
-            for field in fields {
-                for value in integralFloats { set.insert("\(type) \(field): \(value): today accepts, typed refuses") }
-            }
+    /// The planned differences (N1), each a refusal of what today accepts. The SDK sends none of
+    /// them: it writes integers as MessagePack integers and strings as strings. Each class is
+    /// named in the PR, with its count pinned in `expectedCounts`.
+    /// - `integral float`: an integer field sent as an integral float (`3.0`, `-0.0`, a float
+    ///   `2.0`). The typed decode takes only MessagePack integers.
+    /// - `binary into string`: a string field (`String` or an ID type) sent as binary. Today's
+    ///   tree turned binary into base64 text.
+    /// - `extended into string`: a string field, `Data` included (a client sends it as base64
+    ///   text), sent as a MessagePack extension value. Today's tree turned its bytes into base64
+    ///   text too.
+    /// A field's kind is its seed value's: an integer, or a string.
+    static func expectedDifference(seedField: MessagePackValue?, mutation: String) -> String? {
+        switch seedField {
+        case .int?, .uint?:
+            return ["double -0.0", "double 3.0", "float 2.0"].contains(mutation) ? "integral float" : nil
+        case .string?:
+            if mutation == "binary" { return "binary into string" }
+            if mutation == "extended" { return "extended into string" }
+            return nil
+        default:
+            return nil
         }
-        for (type, fields) in stringFields {
-            for field in fields { set.insert("\(type) \(field): binary: today accepts, typed refuses") }
+    }
+
+    static let expectedCounts: [String: Int] = [:]
+
+    /// The seed's value at a case's field path (`key` or `key.inner`).
+    static func seedField(_ seed: MessagePackValue, _ path: String) -> MessagePackValue? {
+        var value: MessagePackValue? = seed
+        for part in path.split(separator: ".") {
+            guard case .map(let map)? = value else { return nil }
+            value = map[.string(String(part))]
         }
-        return set
-    }()
+        return value
+    }
 
     @Test("On MessagePack the typed decode agrees with today's path except where listed; recording doesn't change what is accepted")
     func differential() throws {
-        var differences: Set<String> = []
-        var mustAgreeViolations: [String] = []
+        var counts: [String: Int] = [:]
+        var unplanned: [String] = []
+        var replayViolations: [String] = []
         var recordingViolations: [String] = []
         var caseCount = 0
         for fixture in Self.fixtures {
@@ -198,25 +269,68 @@ struct PayloadDecodeDifferentialTests {
                 let old = fixture.outcome(value, false, false)
                 let new = fixture.outcome(value, true, false)
                 if fixture.outcome(value, true, true) != new { recordingViolations.append(label) }
-                guard old != new else { continue }
-                let mustAgree = Self.nonFinite.contains { name.hasSuffix(": \($0.0)") || name.hasSuffix(": \($0.0) two deep") }
-                    || name.contains("map int key")
-                if mustAgree { mustAgreeViolations.append("\(label): today \(old), typed \(new)") }
-                let direction: String = switch (old, new) {
-                case (.accepted, .refused): "today accepts, typed refuses"
-                case (.refused, .accepted): "today refuses, typed accepts"
-                default: "both accept, values differ"
+                // What live accepts, replay must accept, with the same value.
+                if new != .refused, fixture.replay(value) != new {
+                    replayViolations.append("\(label): live \(new), replay \(fixture.replay(value))")
                 }
-                differences.insert("\(label): \(direction)")
+                guard old != new else { continue }
+                let parts = name.components(separatedBy: ": ")
+                let planned = parts.count == 2 && old != .refused && new == .refused
+                    ? Self.expectedDifference(seedField: Self.seedField(seed, parts[0]), mutation: parts[1])
+                    : nil
+                if let planned {
+                    counts[planned, default: 0] += 1
+                } else {
+                    let direction: String = switch (old, new) {
+                    case (.accepted, .refused): "today accepts, typed refuses"
+                    case (.refused, .accepted): "today refuses, typed accepts"
+                    default: "both accept, values differ"
+                    }
+                    unplanned.append("\(label): \(direction) (today \(old), typed \(new))")
+                }
             }
         }
-        #expect(caseCount > 500)
-        #expect(mustAgreeViolations.isEmpty, "\(mustAgreeViolations.sorted().joined(separator: "\n"))")
+        #expect(caseCount > 2000)
+        #expect(unplanned.isEmpty, "unplanned:\n\(unplanned.sorted().joined(separator: "\n"))")
+        #expect(replayViolations.isEmpty, "live accepts, replay doesn't:\n\(replayViolations.sorted().joined(separator: "\n"))")
         #expect(recordingViolations.isEmpty, "\(recordingViolations.sorted())")
-        let unlisted = differences.subtracting(Self.expectedDifferences).sorted()
-        let gone = Self.expectedDifferences.subtracting(differences).sorted()
-        #expect(unlisted.isEmpty, "not listed:\n\(unlisted.joined(separator: "\n"))")
-        #expect(gone.isEmpty, "listed but no longer differ:\n\(gone.joined(separator: "\n"))")
+        #expect(counts == Self.expectedCounts, "planned counts: \(counts.sorted { $0.key < $1.key })")
+    }
+
+    @Test("A hand-written decoder sees JSONDecoder's container behaviour in a client payload")
+    func handWrittenDecoders() throws {
+        // `decodeNil(forKey:)` on a missing key throws, as `JSONDecoder` does.
+        struct NilProbe: Codable {
+            enum CodingKeys: String, CodingKey { case x }
+            let isNil: Bool
+            init(from decoder: Decoder) throws {
+                isNil = try decoder.container(keyedBy: CodingKeys.self).decodeNil(forKey: .x)
+            }
+            func encode(to encoder: Encoder) throws {}
+        }
+        #expect(Self.today(NilProbe.self, .map([:])) == .refused)
+        #expect(Self.typed(NilProbe.self, .map([:]), recording: false) == .refused)
+        // An unkeyed decode that throws doesn't move past the element: a fallback reads it.
+        struct Fallback: Codable, Equatable {
+            var values: [String] = []
+            init(from decoder: Decoder) throws {
+                var container = try decoder.unkeyedContainer()
+                while !container.isAtEnd {
+                    if let int = try? container.decode(Int.self) {
+                        values.append("int \(int)")
+                    } else {
+                        values.append("string \(try container.decode(String.self))")
+                    }
+                }
+            }
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.singleValueContainer()
+                try container.encode(values)
+            }
+        }
+        let list: MessagePackValue = .array([.string("a"), .int(1), .string("b")])
+        #expect(Self.today(Fallback.self, list) == .accepted(#"["string a","int 1","string b"]"#))
+        #expect(Self.typed(Fallback.self, list, recording: false) == Self.today(Fallback.self, list))
     }
 
     @Test("Decimal decodes from each numeric kind as the round trip read it, and its keyed form still decodes")
@@ -255,6 +369,16 @@ struct PayloadDecodeDifferentialTests {
         // A frame the server builds decodes it from the value, as before.
         let plain = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("a"): .double(3)])).a.base
         #expect(plain as? Double == 3)
+    }
+
+    @Test("An integer for a Float field rounds once, as the round trip parsed its text")
+    func floatFromInteger() {
+        struct Box: Codable { let f: Float }
+        // 2^62 + 2^38 + 1: rounded through Double it lands on a midpoint and goes to 2^62.
+        for value in [MessagePackValue.int((1 << 62) + (1 << 38) + 1), .uint((1 << 62) + (1 << 38) + 1), .int(-((1 << 62) + (1 << 38) + 1))] {
+            let box: MessagePackValue = .map([.string("f"): value])
+            #expect(Self.typed(Box.self, box, recording: false) == Self.today(Box.self, box), "\(value)")
+        }
     }
 
     @Test("A Float field refuses a double it can't hold, as the round trip did",

@@ -351,6 +351,9 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
             // drops the event here, as before; one nested too deep is also logged and counted (#362).
             let event: E
             do {
+                // The whole-tree check first, as the intake runs it: a MessagePack source refuses
+                // a non-finite number or a too-deep tree here, as the round trip did before.
+                try anyEvent.source.validateRecordable()
                 event = try anyEvent.source.decode(E.self)
             } catch let tooDeep as PayloadNesting.TooDeep {
                 PayloadNesting.noteDroppedClientEvent(type: String(describing: E.self), tooDeep)

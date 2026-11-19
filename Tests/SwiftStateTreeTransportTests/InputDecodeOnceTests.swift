@@ -181,9 +181,16 @@ private struct DecodeOnceFixture {
 
 /// A tickless land: an action without resolvers is applied before the adapter's `onMessage`
 /// returns, and so is a client event sent before it. A job's action is answered later.
-private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false) async throws -> DecodeOnceFixture {
+/// `tick`: a land with a tick (every hour, stepped by hand with `stepTickOnce()`), whose inputs
+/// wait for the tick. `recording`: the keeper records its inputs (`ReevaluationRecorder`).
+private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, tick: Bool = false, recording: Bool = false) async throws -> DecodeOnceFixture {
     let definition = Land("decode-once", using: DecodeOnceState.self) {
         ClientEvents { Register(DecodeOnceEvent.self) }
+        if tick {
+            Lifetime {
+                Tick(every: .seconds(3600)) { (_: inout DecodeOnceState, _: LandContext) in }
+            }
+        }
         Rules {
             HandleAction(DecodeOnceAction.self) { (state: inout DecodeOnceState, action: DecodeOnceAction, _: LandContext) in
                 state.hits.append("action:\(action.tag)")
@@ -199,7 +206,12 @@ private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false) as
         }
     }
     let sent = DecodeOnceFrames()
-    let keeper = LandKeeper(definition: definition, initialState: DecodeOnceState())
+    let keeper = LandKeeper(
+        definition: definition,
+        initialState: DecodeOnceState(),
+        enableLiveStateHashRecording: recording,
+        autoStartLoops: !tick
+    )
     let adapter: TransportAdapter<DecodeOnceState>
     if let config = choice.config {
         adapter = TransportAdapter(keeper: keeper, transport: sent, landID: "decode-once", enableLegacyJoin: legacyJoin, encodingConfig: config)
@@ -290,6 +302,25 @@ struct InputDecodeOnceTests {
         #expect(await fixture.keeper.currentState().hits == ["action:after"])
         let errors = await fixture.errors()
         #expect(errors.map(\.code) == [ErrorCode.eventInvalidPayload.rawValue])
+    }
+
+    @Test("#537: on a tickless and a tick land, a client event that doesn't decode gets EVENT_INVALID_PAYLOAD and isn't applied or recorded",
+          arguments: DecodeOnceCodec.all, [false, true])
+    func undecodableEventNotRecorded(choice: DecodeOnceCodec, tick: Bool) async throws {
+        let fixture = try await makeFixture(choice, tick: tick, recording: true)
+        await fixture.adapter.onMessage(try fixture.eventFrame("before"), from: fixture.session)
+        await fixture.adapter.onMessage(try fixture.eventFrame(["tag": 5]), from: fixture.session)
+        await fixture.adapter.onMessage(try fixture.eventFrame("after"), from: fixture.session)
+        // A tick land applies its queued inputs at the tick; a tickless one already has.
+        await fixture.keeper.stepTickOnce()
+        #expect(await fixture.keeper.currentState().hits == ["event:before", "event:after"])
+        #expect(await fixture.errors().map(\.code) == [ErrorCode.eventInvalidPayload.rawValue])
+        let recorder = try #require(await fixture.keeper.getReevaluationRecorder())
+        let recorded = await recorder.getAllFrames().flatMap(\.clientEvents)
+        // Only the two that decoded, each once; the refused one took no sequence.
+        #expect(recorded.count == 2)
+        #expect(recorded.map { ($0.payload.base as? [String: Any])?["tag"] as? String } == ["before", "after"])
+        #expect(Set(recorded.map(\.sequence)).count == 2)
     }
 
     @Test("A MessagePack client event or action holding a non-finite number is refused, as the round trip refused it",
