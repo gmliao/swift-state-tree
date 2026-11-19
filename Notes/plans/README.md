@@ -163,3 +163,9 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 | 2026-11-18 | [Two-phase handlers: validate, then apply (#586, minimal)](2026-11-18-two-phase-handlers.md) | open | Rev 5, GO; implementation in a draft PR; replaces #535 PR 4 (#585, parked) for #87; maintainer chose it 2026-11-18 |
 | 2026-11-18 | [Fuzz the decoders that read client frames (#528, #362)](2026-11-18-client-frame-fuzz.md) | done | #595 (c5d7c357) |
 | 2026-11-13 | [A patch's path built on demand from its split (#392, the remaining step)](2026-11-13-patch-path-on-demand.md) | open | #392. Rev 3, accepted (GO): `StatePatch` stores the split, `path` rebuilt from templates in the hasher's identity, split form only where lossless (else today's stored pair); the typed diff stops building strings; encoder call sites lazy; field merge's frame identity by bytes, `mergePatches` index once per sync; per-player splits are #547. Gate: identical bytes and digests, computed path byte-equal to the old string (DEBUG oracle, differential test), `iteration`-window instruction A/B with six cells, one at 100 players. Q1–Q4 decided |
+
+## CI and development speed
+
+| Date | Plan | Status | Evidence |
+|---|---|---|---|
+| 2026-11-19 | [Development speed: CI wall-clock and local builds](2026-11-19-dev-speed.md) | open | Rev 2. Measurement and plan; no changes yet. Proposed first: split e2e-game's row-addressing-off step into its own legs, with the SwiftPM checkout cache; then the deep-research Python tests in their own job |

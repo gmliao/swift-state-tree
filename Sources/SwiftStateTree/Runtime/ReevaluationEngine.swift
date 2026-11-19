@@ -195,7 +195,8 @@ public enum ReevaluationEngine {
     ///
     /// Throws `LandRegistrationError` before anything is read or a keeper is built when the
     /// definition fails the encoding-independent registration rows (#535): such a land can't
-    /// have run live.
+    /// have run live. Throws `ReevaluationRecordFingerprintError` before the first step for a
+    /// record whose schema fingerprint is missing or differs from the definition's (#521 D15).
     public static func run<State: StateNodeProtocol>(
         definition: LandDefinition<State>,
         initialState: State,
@@ -224,6 +225,9 @@ public enum ReevaluationEngine {
                 required: requiredRecordVersion ?? ReevaluationRecordVersion.current
             )
         }
+        // A record without a schema fingerprint, or with another one, is refused before anything
+        // is replayed (#521 D15).
+        try ReevaluationSchemaFingerprint.checkRecord(metadata, against: definition)
         let maxTickId = try await source.getMaxTickId()
         let capturingSink = CapturingSink(downstream: sink)
 

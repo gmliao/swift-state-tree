@@ -740,9 +740,11 @@ struct SyncOutputVerifierTests {
 
     /// #446: this build writes keys and IDs in NFC, so the digests of an older record that
     /// holds another spelling cannot be reproduced. Unlike #175 (2.3), which changed no path,
-    /// the sync-output digests hash the same keys as the state hash does.
-    @Test("A sync-output mismatch in a record older than 3.3 holding non-NFC text is skipped with the reason, not failed")
-    func olderRecordWithNonNFCTextIsNotComparable() async throws {
+    /// the sync-output digests hash the same keys as the state hash does. Such a record (3.2)
+    /// has no schema fingerprint, so replay refuses it before the first step (#521 D15); the
+    /// reason it would carry is checked directly (`NFCKeyTests`).
+    @Test("A sync-output mismatch in a current record holding non-NFC text fails; a record older than 3.3 is refused")
+    func olderRecordWithNonNFCTextIsRefused() async throws {
         guard InTurnSync.isEnabled() else { return }
         let fault = DigestFault { digest in
             guard var patches = digest.broadcastPatches, !patches.isEmpty else { return false }
@@ -761,15 +763,15 @@ struct SyncOutputVerifierTests {
 
         let current = try await f.replay()
         guard case .failed = current.syncOutput.verdict else {
-            Issue.record("a 3.3 record: expected a failed verdict, got \(current.syncOutput.summary)")
+            Issue.record("a current record: expected a failed verdict, got \(current.syncOutput.summary)")
             return
         }
-        let older = try await f.replay(version: "3.2")
-        guard case .skipped(let reason) = older.syncOutput.verdict else {
-            Issue.record("a 3.2 record: expected a skipped verdict, got \(older.syncOutput.summary)")
-            return
+        do {
+            _ = try await f.replay(version: "3.2")
+            Issue.record("a 3.2 record: expected it to be refused")
+        } catch ReevaluationRecordFingerprintError.missing(let recorded) {
+            #expect(recorded == "3.2")
         }
-        #expect(reason.contains("#446"), "\(reason)")
     }
 
     #if DEBUG  // The diff fault hook exists in debug builds only.

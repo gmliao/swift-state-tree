@@ -52,6 +52,10 @@ public extension NIOLandHost {
         configuration: NIOLandServerConfiguration,
         reevaluation: ReevaluationFeatureConfiguration
     ) async throws {
+        if reevaluation.enabled {
+            // The definition is replayed, so it must have a record schema fingerprint (#521 D15).
+            try liveLand.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
         let effectiveConfiguration: NIOLandServerConfiguration
         if reevaluation.enabled {
             effectiveConfiguration = configuration.injectingReevaluationServices(
@@ -124,6 +128,10 @@ public extension NIOLandHost {
         configuration: NIOLandServerConfiguration,
         reevaluation: ReevaluationFeatureConfiguration
     ) async throws {
+        if reevaluation.enabled {
+            // The definition is replayed, so it must have a record schema fingerprint (#521 D15).
+            try liveLand.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
         let effectiveConfiguration: NIOLandServerConfiguration
         if reevaluation.enabled {
             effectiveConfiguration = configuration.injectingReevaluationServices(
@@ -212,6 +220,10 @@ public extension NIOLandHost {
         configuration: NIOLandServerConfiguration,
         reevaluation: ReevaluationFeatureConfiguration
     ) async throws {
+        if reevaluation.enabled {
+            // The definition is replayed, so it must have a record schema fingerprint (#521 D15).
+            try liveLand.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
         let effectiveConfiguration: NIOLandServerConfiguration
         if reevaluation.enabled {
             effectiveConfiguration = configuration.injectingReevaluationServices(

@@ -43,6 +43,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 其他僅由型別就能決定的型別錯誤：不支援的 dictionary key 型別、在 broadcast 欄位下有 player-dependent 欄位的 node | 註冊時拒絕：`LandRegistrationError.sync` 的 `.unsupportedKey`、`.policyNesting`（#535）。只有之後的實例才有的值（預設為空的集合中的一般 struct 元素、預設實例沒有採用的 enum case）與手寫 `toSnapshotValue()` 背後的儲存內容，在同步時才發現，處理方式同「結束 land」第一列；直接建立的 keeper 則在初始化時執行同一個檢查 | 已符合 |
 | existential 型別的同步欄位（`Any`、`any P`） | 宣告的型別寫出 `any`、`Any`、`AnyObject` 或 `P & Q` 時在編譯期拒絕，`AnyHashable` 與 `AnyCodable` 依名稱拒絕；在一般 struct 或 `@SnapshotConvertible` 型別中，以集合的元素、key 或 value，或 optional 包住的型別出現的 `Any`、`AnyObject`、`AnyHashable` 與 `AnyCodable`，在註冊時以 `.existentialField` 拒絕。抓不到的有：未加 `any` 的 protocol 名稱、指向 existential 的 typealias、一般 struct 自己宣告為 `Any` 或 `any P` 的 property（只能看到其預設值的型別），以及手寫的轉換；這類欄位在第一次轉換失敗時結束 land（#535） | 已符合 |
 | 同一種 action、client event 或 server input 型別有兩個 handler，或兩種不同的輸入型別或已註冊 event 型別共用同一個 wire 名稱（#599） | 註冊時拒絕：`LandRegistrationError.duplicateHandlers`，指出該型別與兩處宣告的 `fileID:line`；未經註冊直接建立的 keeper 在初始化時拒絕（[Land DSL](land-dsl.zh-TW.md#每種型別一個-handler)） | 已符合（#586、#599） |
+| 會錄製或為 reevaluation 註冊的 land，含有 record schema fingerprint 無法列出欄位的型別：有欄位但沒有 `@Payload` 的 payload 或 server input、無法建出 sample 的巢狀值、這種值的 `Set`，或兩個 `@Payload` 欄位共用一個 wire key | 註冊時拒絕：`LandRegistrationError.schemaFingerprint`，指出該型別（[Reevaluation](reevaluation.zh-TW.md#schema-fingerprint36)）。不錄製時照常註冊；直接建立的 keeper 不記錄 fingerprint、記錄一則警告，其錄製在 replay 時被拒絕 | 已符合（#521） |
 
 ### 結束 land
 
@@ -72,6 +73,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 路徑 | 目前 | 狀態 |
 |---|---|---|
 | payload 無法解碼的 action | 在 intake 拒絕；client 收到錯誤（`LandKeeper.swift:2721`、`TransportAdapter.swift:6079`） | 已符合 |
+| 任何編碼中巢狀超過 32 層的 frame（陣列與物件，或 MessagePack 的 array 與 map） | 在解析之前就被拒絕，處理方式與無法解碼的 frame 相同：join 之前計入該 session 的拒絕 frame 額度（`HANDSHAKE_REFUSED_FRAME_BUDGET`），join 之後 client 收到解碼錯誤。巢狀這麼深的已錄製 action 在重播時以錯誤失敗，而不是耗盡 stack。更深的資料會在解碼鏈中耗盡 Darwin cooperative pool 執行緒的 544 KiB stack；範例 land 送出的 frame 最深為 7 層（#362）。#362 之前，JSON frame 最多接受 512 層，MessagePack frame 最多 64 層。client 的 JSON 必須是 UTF-8：UTF-16 或 UTF-32 的 frame，或含有 NUL byte 的 frame，以同樣方式拒絕 | 已符合（#362） |
 | 寫入狀態後才拋出錯誤的 input handler | 不會發生：`HandleAction`、`HandleEvent`、`HandleServerInput`、`OnJoin` 與 `OnLeave` 的 body 都不會拋出錯誤，因此沒有輸入會留下部分寫入（#87）。輸入以其 `validate` 拋出錯誤來拒絕，此時什麼都還沒寫入；它單獨失敗，之後的輸入繼續，並被記錄為 rejected（[Runtime](runtime.zh-TW.md#input-與-turn)）。`OnInitialize` 與 destroy 階段的 handler（`OnFinalize`、`OnDestroyWhenEmpty`）仍可拋出錯誤，並保留寫入的內容 | 已符合（#586） |
 | `CanJoin` 允許、但在 `OnJoin` 套用時已不適合的 join | `OnJoin` 無法拒絕它：`CanJoin` 在 join intake 時決定，`OnJoin` 在之後的 turn 才套用，因此 `CanJoin` 對其他輸入會改變的狀態所做的檢查可能已過時。玩家照常加入，由 `OnJoin` 處理不適合的 joiner（讓他成為旁觀者，或發出 event 請他離開）；見 [Land DSL](land-dsl.zh-TW.md#join-檢查)。`MaxPlayers` 不受影響：它在插入玩家時檢查，並計入等待中的 joiner | 目標：turn 內的 join 檢查（#588） |
 | payload 無法解碼的 client event | 直接丟棄，不回錯誤給 client（`LandDefinition.swift:276-277`），卻仍被記錄為已套用，因為記錄發生在 handler 執行之前（`LandKeeper.swift:3487-3498`） | 目標：比照 action 拒絕，且不記錄（#537） |

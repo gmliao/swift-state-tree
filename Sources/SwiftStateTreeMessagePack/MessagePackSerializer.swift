@@ -23,7 +23,14 @@ public struct MessagePackSerializer: Sendable {
     }
 
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        let unpacked = try unpack(data)
+        try decode(type, from: data, maxDepth: messagePackMaxNestingDepth)
+    }
+
+    /// Decodes `data`, refusing arrays and maps nested deeper than `maxDepth` (a client's frames
+    /// pass `PayloadNesting.clientFrameMaxDepth`; `decode(_:from:)` uses the limit for frames the
+    /// server builds).
+    package func decode<T: Decodable>(_ type: T.Type, from data: Data, maxDepth: Int) throws -> T {
+        let unpacked = try unpack(data, maxDepth: maxDepth)
         let directDecoder = MessagePackDirectDecoder()
         if type == TransportMessage.self {
             return try directDecoder.decodeTransportMessage(from: unpacked) as! T

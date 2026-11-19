@@ -559,6 +559,42 @@ struct HandshakeFrameLimitTests {
         #expect(await connection.errorCodes.count == refused.count + 1)
     }
 
+    @Test("A valid join nested one past the client-frame limit is refused before it is parsed, and counts against the budget (#362)")
+    func tooDeepCountsAgainstBudget() async throws {
+        let fixture = try LimitFixture(limit: 512, refusedFrameBudget: 2)
+        let session = SessionID("s-budget-deep")
+        let connection = await fixture.connect(session)
+        // A valid join, one level past the limit: its metadata holds nested objects. Without the
+        // check it would be admitted, so the refusals below are the depth's.
+        let limit = PayloadNesting.clientFrameMaxDepth
+        func deepJoin(_ inner: Int) throws -> Data {
+            var value: Any = [String: Any]()
+            for _ in 0..<inner { value = ["a": value] }
+            var metadata = StateUpdateFeature.joinMetadata
+            metadata["deep"] = AnyCodable(value)
+            return try JSONEncoder().encode(TransportMessage.join(
+                requestID: "join-deep", landType: "handshake-limit", landInstanceId: "one",
+                playerID: "p1", deviceID: nil, metadata: metadata
+            ))
+        }
+        // The frame, its payload, the join and its metadata hold the value: 4 levels.
+        let deep = try deepJoin(limit + 1 - 5)
+        try PayloadNesting.checkJSON(deep, limit: limit + 1)
+        #expect(throws: PayloadNesting.TooDeep.self) { try PayloadNesting.checkJSON(deep, limit: limit) }
+        #expect(deep.count <= 512)
+        for _ in 0..<2 {
+            await fixture.transport.handleIncomingMessage(sessionID: session, data: deep)
+        }
+        await connection.waitFor { $0.kinds.count >= 2 || !$0.closes.isEmpty }
+        #expect(await connection.closes.isEmpty)
+        #expect(await connection.errorCodes == Array(repeating: ErrorCode.invalidJSON.rawValue, count: 2))
+
+        await fixture.transport.handleIncomingMessage(sessionID: session, data: deep)
+        await connection.waitFor { !$0.closes.isEmpty }
+        #expect(await connection.closes == [.handshakeRefusedFrames])
+        #expect(await connection.errorCodes.count == 3)
+    }
+
     @Test("Views joining over one connection get JOIN_IN_PROGRESS without reaching the budget; the first join completes")
     func joinInProgressWithinBudget() async throws {
         let fixture = try LimitFixture(limit: 512, refusedFrameBudget: HandshakeFrameLimit.defaultMaxRefusedFrames)

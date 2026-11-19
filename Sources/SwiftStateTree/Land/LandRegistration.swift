@@ -11,9 +11,14 @@ public struct LandRegistrationContext: Sendable {
     /// Whether payloads go out in their positional (compressed) form: the `messagepack` and
     /// `opcodeJsonArray` message encodings.
     public var payloadsCompressed: Bool?
+    /// Whether the land's records will be replayed: it records (`enableLiveStateHashRecording`),
+    /// or its definition is registered for reevaluation. Such a land must have a record schema
+    /// fingerprint (#521 D15), or none of its records could replay.
+    public var recordsForReplay: Bool?
 
-    public init(payloadsCompressed: Bool? = nil) {
+    public init(payloadsCompressed: Bool? = nil, recordsForReplay: Bool? = nil) {
         self.payloadsCompressed = payloadsCompressed
+        self.recordsForReplay = recordsForReplay
     }
 
     /// The rows that hold whatever the encoding.
@@ -45,22 +50,28 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Client-event or server-input types declared with more than one handler (#586): an input
     /// runs exactly one `validate` and one `apply`. Empty when there are none.
     public let duplicateHandlers: [DuplicateHandlerDeclaration]
+    /// Why a land whose records will be replayed has no record schema fingerprint (#521 D15).
+    /// Checked only under `LandRegistrationContext.recordsForReplay`, and only when `sync` is nil.
+    public let schemaFingerprint: SchemaFingerprintError?
 
     init(
         landType: String,
         payload: PayloadRegistrationError?,
         sync: SyncRegistrationError? = nil,
-        duplicateHandlers: [DuplicateHandlerDeclaration] = []
+        duplicateHandlers: [DuplicateHandlerDeclaration] = [],
+        schemaFingerprint: SchemaFingerprintError? = nil
     ) {
         self.landType = landType
         self.payload = payload
         self.sync = sync
         self.duplicateHandlers = duplicateHandlers
+        self.schemaFingerprint = schemaFingerprint
     }
 
     public var description: String {
         "land type '\(landType)' can't be registered: "
-            + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description))
+            + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description)
+                + [schemaFingerprint?.description].compactMap { $0 })
             .joined(separator: "; ")
     }
 }
@@ -75,8 +86,22 @@ extension LandDefinition {
         let payload = context.payloadsCompressed == true ? payloadsWithoutWriter() : nil
         let problems = SyncRegistration.cachedProblems(State.self)
         let sync = problems.isEmpty ? nil : SyncRegistrationError(problems: problems)
-        if payload != nil || sync != nil || !duplicateHandlers.isEmpty {
-            throw LandRegistrationError(landType: id, payload: payload, sync: sync, duplicateHandlers: duplicateHandlers)
+        // A land whose records will be replayed needs a fingerprint (#521 D15, U3). Computed once
+        // per definition and cached; any error other than the fingerprint's own propagates. Only
+        // when every other row holds: an error from the schema walk would replace those rows.
+        var fingerprint: SchemaFingerprintError?
+        if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty {
+            do {
+                _ = try ReevaluationSchemaFingerprint.cached(for: self)
+            } catch let error as SchemaFingerprintError {
+                fingerprint = error
+            }
+        }
+        if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil {
+            throw LandRegistrationError(
+                landType: id, payload: payload, sync: sync,
+                duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint
+            )
         }
     }
 

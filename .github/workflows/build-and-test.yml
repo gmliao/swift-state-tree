@@ -28,7 +28,7 @@ jobs:
     name: build (in-turn sync ${{ matrix.in_turn_sync }})
     runs-on: ubuntu-22.04 # Linux runner (matching production environment)
     container:
-      image: swift:6.2.4-noble
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +39,19 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        restore-keys: |
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
     # Lessons enforced in code (CLAUDE.md § Coding Conventions); the self-test proves the
     # checks still find what they look for before the repository is checked for zero findings.
@@ -53,16 +66,22 @@ jobs:
         scripts/lint-turns.sh --self-test
         scripts/lint-turns.sh
 
+    # `swift package clean` only: .build is never restored, and removing it would also remove the
+    # local clones SwiftPM made from the shared cache.
     - name: Clean build artifacts
-      run: |
-        rm -rf .build
-        swift package clean
+      run: swift package clean
     
     - name: Show toolchain
       run: swift --version
     
     - name: Build
       run: swift build
+
+    # Where SwiftPM put its shared cache, and what the cache step will save.
+    - name: SwiftPM shared cache contents
+      run: |
+        echo "HOME=$HOME"
+        du -sh ~/.cache/org.swift.swiftpm/* 2>/dev/null || echo "no SwiftPM shared cache under $HOME"
 
     # Handler bodies that must not compile (#586): a throw after the write, a wrong response type,
     # validate's context. Each snippet builds as a target of a generated package under .build/.
@@ -93,9 +112,19 @@ jobs:
     name: turns (release)
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
     steps:
     - uses: actions/checkout@v4
+
+    # SwiftPM's shared cache, as in the build job: keyed by the image digest and the tracked
+    # Package.resolved files. .build is not cached.
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        restore-keys: |
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
     - name: Show toolchain
       run: swift --version
@@ -120,13 +149,26 @@ jobs:
     name: build (sync tables off)
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
     env:
       USE_SYNC_TABLES: "false"
       TYPED_LEAF_VALUES: "false"
 
     steps:
     - uses: actions/checkout@v4
+
+    # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        restore-keys: |
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
     - name: Show toolchain
       run: swift --version
@@ -155,12 +197,25 @@ jobs:
     name: build (per-player sync tables off)
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
     env:
       PER_PLAYER_SYNC_TABLES: "false"
 
     steps:
     - uses: actions/checkout@v4
+
+    # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        restore-keys: |
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
     - name: Show toolchain
       run: swift --version
@@ -184,13 +239,26 @@ jobs:
   examples:
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
 
     steps:
     - uses: actions/checkout@v4
       with:
         # Full history: deep-research's wire-form tests resolve recorded commits and their parents.
         fetch-depth: 0
+
+    # SwiftPM's shared cache (its clones of the pinned dependencies and the prebuilts it downloads),
+    # under the container's $HOME (/github/home). Keyed by the image digest and the tracked
+    # Package.resolved files, named one by one: the post step evaluates the key again, and a '**'
+    # glob then walks .build and fails. actions/cache saves in its post step only when the job
+    # succeeded and the key wasn't an exact hit. .build is not cached.
+    - name: SwiftPM shared cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/org.swift.swiftpm
+        key: swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-${{ hashFiles('Package.resolved', 'Examples/*/Package.resolved') }}
+        restore-keys: |
+          swiftpm-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12-
 
     - name: Show toolchain
       run: swift --version
@@ -199,6 +267,23 @@ jobs:
       working-directory: Examples/GameDemo
       run: swift test
       timeout-minutes: 30
+
+    # The GameDemo pacing tests that bound wall-clock time, in a process of their own (#466):
+    # beside the parallel suite, another test's subprocess delays their wakes. It fails the job
+    # when they didn't run (a renamed suite would otherwise match nothing and pass). The log goes
+    # to the runner's temp directory: the working tree must stay unchanged.
+    - name: GameDemo wall-clock tests
+      working-directory: Examples/GameDemo
+      shell: bash
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/gamedemo-wall-clock.log"
+        WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter LoadTestPacingWallClockTests 2>&1 | tee "$log"
+        if ! grep -q '✔ Suite "LoadTestPacing (wall clock)" passed' "$log"; then
+          echo "::error::the GameDemo wall-clock tests did not run"
+          exit 1
+        fi
+      timeout-minutes: 5
 
     - name: Demo build
       working-directory: Examples/Demo
@@ -343,6 +428,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # One digest for every Swift container image, named by every SwiftPM cache key.
+    - name: Swift image pinned by one digest
+      run: scripts/check-ci-image-pin.sh
+
     - name: Install ShellCheck 0.11.0
       run: |
         curl -sSfL --retry 3 --retry-all-errors -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
@@ -374,7 +463,7 @@ jobs:
   test-typescript-sdk:
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2.4-noble
+      image: swift:6.2.4-noble@sha256:3459518b2e723a7c363d0f8cfa44fc796c77ecd8c18e92fd10e6f92dd78c0b12
       env:
         NODE_VERSION: 20
 

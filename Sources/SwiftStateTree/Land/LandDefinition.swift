@@ -42,6 +42,9 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     package let duplicateHandlers: [DuplicateHandlerDeclaration]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
+    /// This definition's record schema fingerprint, computed once (#521 D15). A copy of the
+    /// definition shares it; a definition built again computes its own.
+    let schemaFingerprintCache = SchemaFingerprintCache()
 }
 
 // MARK: - Lifetime Handlers
@@ -335,10 +338,19 @@ public struct AnyClientEventHandler<State: StateNodeProtocol>: LandNode {
         self.site = site
         self.handler = { state, anyEvent, ctx in
             // Decode the event from AnyClientEvent
+            // A payload that doesn't decode drops the event, live and replayed alike (#537 is to
+            // reject it). One nested too deep is also logged and counted (#362).
             let decoder = JSONDecoder()
-            if let event = try? InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, decoder: decoder) {
-                try invoke(&state, event, ctx)
+            let event: E
+            do {
+                event = try InboundPayloadDecoding.decode(E.self, from: anyEvent.payload, decoder: decoder)
+            } catch let tooDeep as PayloadNesting.TooDeep {
+                PayloadNesting.noteDroppedClientEvent(type: String(describing: E.self), tooDeep)
+                return
+            } catch {
+                return
             }
+            try invoke(&state, event, ctx)
         }
     }
 

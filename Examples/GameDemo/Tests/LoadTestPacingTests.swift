@@ -32,6 +32,28 @@ private func milliseconds(_ d: Duration) -> Double {
     Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
 }
 
+/// Runs `periods` periods of `keys` sessions at 1 send per period, recording when each send
+/// started and which planned send it was.
+private func dryRun(mode: LoadTestPacing.Mode, keys: Int, period: Duration, periods: Int)
+    async -> (times: [ContinuousClock.Instant], sends: [PlannedSend], origin: ContinuousClock.Instant)
+{
+    let log = SendLog()
+    let names = dryRunNames(keys)
+    let origin = ContinuousClock.now + .milliseconds(20)
+    await LoadTestPacing.runPeriods(
+        origin: origin,
+        period: period,
+        count: periods,
+        limit: LoadTestPacing.InFlightLimit(cap: 10_000),
+        plan: { p in
+            LoadTestPacing.actionPlan(keys: names, perKey: 1, period: period, mode: mode)
+                .map { LoadTestPacing.Scheduled(offset: $0.offset, item: PlannedSend(period: p, offset: $0.offset)) }
+        },
+        perform: { send in await log.record(send) }
+    )
+    return (await log.times, await log.sends, origin)
+}
+
 @Suite("LoadTestPacing")
 struct LoadTestPacingTests {
     @Test("A ramp-down period's actions never target a session it closes")
@@ -89,28 +111,6 @@ struct LoadTestPacingTests {
         #expect(LoadTestPacing.joinPlan(count: 3, period: .seconds(1), mode: .aligned).allSatisfy { $0.offset == .zero })
     }
 
-    /// Runs `periods` periods of `keys` sessions at 1 send per period, recording when each send
-    /// started and which planned send it was.
-    private func dryRun(mode: LoadTestPacing.Mode, keys: Int, period: Duration, periods: Int)
-        async -> (times: [ContinuousClock.Instant], sends: [PlannedSend], origin: ContinuousClock.Instant)
-    {
-        let log = SendLog()
-        let names = dryRunNames(keys)
-        let origin = ContinuousClock.now + .milliseconds(20)
-        await LoadTestPacing.runPeriods(
-            origin: origin,
-            period: period,
-            count: periods,
-            limit: LoadTestPacing.InFlightLimit(cap: 10_000),
-            plan: { p in
-                LoadTestPacing.actionPlan(keys: names, perKey: 1, period: period, mode: mode)
-                    .map { LoadTestPacing.Scheduled(offset: $0.offset, item: PlannedSend(period: p, offset: $0.offset)) }
-            },
-            perform: { send in await log.record(send) }
-        )
-        return (await log.times, await log.sends, origin)
-    }
-
     @Test("Dry run: spread sends cover the period, and none starts before its planned time")
     func dryRunSpread() async {
         let period = Duration.milliseconds(400)
@@ -139,7 +139,25 @@ struct LoadTestPacingTests {
         }
         #expect(early.isEmpty, "\(early.count) sends started before their planned time")
     }
+}
 
+/// The pacing tests that bound wall-clock time: a start lag, a wake after a cancel or a past
+/// deadline, a run's total. CPU-heavy neighbours in the parallel suite (another test's
+/// subprocess, a build) delay their wakes and break those bounds on a loaded runner (#466), so
+/// they run only with `WALL_CLOCK_TESTS=1`, in a process of their own:
+///
+///     WALL_CLOCK_TESTS=1 swift test --no-parallel --filter LoadTestPacingWallClockTests
+///
+/// CI runs that after the GameDemo tests. The fix that removes the bounds' dependence on the
+/// runner is an injected clock (#466).
+@Suite(
+    "LoadTestPacing (wall clock)",
+    .enabled(
+        if: ProcessInfo.processInfo.environment["WALL_CLOCK_TESTS"] == "1",
+        "WALL_CLOCK_TESTS=1 runs it, in a process of its own"
+    )
+)
+struct LoadTestPacingWallClockTests {
     @Test("Dry run: aligned sends arrive together at the period start")
     func dryRunAligned() async {
         let period = Duration.milliseconds(400)
