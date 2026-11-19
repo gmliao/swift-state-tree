@@ -17,6 +17,13 @@
 #                and its steps start no work and share nothing.
 #   isolated     no `assumeIsolated` outside the boundary files listed below, and no more calls in
 #                a listed file than its count.
+#   unchecked-state  every stored `var` of `TurnCore` (Sources/SwiftStateTurns/TurnCore.swift)
+#                carries `@exclusivity(unchecked)` under exactly
+#                `#if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED`, on the three lines above it (#621), and
+#                no `@exclusivity(unchecked)` there sits under any other line. A missing one
+#                isn't unsafe, only a release-build slowdown: every use of that var pays the
+#                runtime exclusivity check. Debug builds, and release builds with
+#                `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED`, keep the checks.
 #
 # A deliberate site (a test that shows at run time what a rule refuses) carries
 # `// lint-allow: turns-<rule>: <reason>` on its line, or on any line of a multi-line header. A
@@ -300,10 +307,42 @@ lint() {  # root
     }' >> "$findings"
   rm -f "$findings.counts"
 
+  unchecked_state >> "$findings"
+
   if [ -s "$findings" ]; then
     sort "$findings"
     return 1
   fi
+}
+
+# unchecked-state, over TurnCore.swift as written (its `#if` lines are what it checks).
+unchecked_state() {
+  local file=Sources/SwiftStateTurns/TurnCore.swift
+  if [ ! -f "$file" ]; then
+    echo "$file: [unchecked-state] not found: the rule checks TurnCore's stored vars there"
+    return
+  fi
+  # shellcheck disable=SC2016 # awk program, not shell
+  awk -v path="$file" '
+    /^public final class TurnCore</ { inClass = 1; next }
+    inClass && /^}/ { inClass = 0 }
+    !inClass { next }
+    {
+      line = $0
+      if (line ~ /^    @exclusivity\(unchecked\)[[:space:]]*$/) {
+        if (prev != "    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED") print path ":" NR ": [unchecked-state] @exclusivity(unchecked) outside #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED: debug builds and that flag keep the checks"
+      } else if (line ~ /^    #endif[[:space:]]*$/) {
+        guarded = (prev == "    @exclusivity(unchecked)" && prev2 == "    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED")
+      } else if (line ~ /^    (@[A-Za-z_]+ |(public|package|internal|private|fileprivate) )*var [A-Za-z_]+/ && line !~ /[{]/) {
+        stored++
+        if (!guarded) print path ":" NR ": [unchecked-state] a stored var of TurnCore without #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED / @exclusivity(unchecked) / #endif on the lines above it"
+        guarded = 0
+      } else if (line != "    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED") {
+        guarded = 0
+      }
+      prev2 = prev; prev = line
+    }
+    END { if (stored == 0) print path ": [unchecked-state] no stored var of TurnCore found: the rule matches nothing" }' "$file"
 }
 
 self_test() {
@@ -319,6 +358,24 @@ self_test() {
     for _ in $(seq "$n"); do echo 'x.assumeIsolated { _ in }'; done > "$dir/$path"
   done <<<"$ISOLATED_BOUNDARIES"
   # Passing fixture. The marked file carries as many markers as ALLOW_MARKERS lists.
+  cat > "$dir/Sources/SwiftStateTurns/TurnCore.swift" <<'EOF'
+public final class TurnCore<M: TurnMachine> {
+    /// A doc line above the condition.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var machine: M
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onDiagnostic: ((TurnDiagnostic) -> Void)?
+    @usableFromInline let clock: any TurnClock
+    public var stats: TurnStats {
+        var stats = counters
+        return stats
+    }
+}
+EOF
   cat > "$dir/Sources/App/Good.swift" <<'EOF'
 // struct Fake: PlainData {} in a comment, and "extension X: PlainData" in a string.
 let text = "struct S: PlainData {}"
@@ -440,6 +497,27 @@ let y = 0 // lint-allow: turns-isolated:
 let z = 0 // lint-allow: turns-isolated: unlisted file, but a reason
 EOF
   echo 'y.assumeIsolated { _ in }' > "$dir/Sources/App/Calls.swift"
+  cp "$dir/Sources/SwiftStateTurns/TurnCore.swift" "$dir/GoodTurnCore.swift"
+  cat > "$dir/Sources/SwiftStateTurns/TurnCore.swift" <<'EOF'
+public final class TurnCore<M: TurnMachine> {
+    @usableFromInline var bare = 0
+    @exclusivity(unchecked)
+    @usableFromInline var always = 0
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    /// A line between the condition and the var.
+    @usableFromInline var separated = 0
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    private var hidden = false
+    #if !DEBUG
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var oldCondition = 0
+}
+EOF
   out="$(lint "$dir" 2>&1)" && { echo "self-test: the failing fixture passed"; return 1; }
   local want wants
   wants='Bad.swift:1: [plain-data] a hand-written
@@ -467,7 +545,13 @@ BadMachine.swift:9: [machine-file]
 BadMachine.swift:12: [machine-file]
 Marked.swift:1: [allow] a lint-allow marker names a rule
 Tests/Marked.swift: [allow] 1 marker(s), 0 listed
-Calls.swift: [isolated]'
+Calls.swift: [isolated]
+TurnCore.swift:2: [unchecked-state] a stored var
+TurnCore.swift:3: [unchecked-state] @exclusivity(unchecked) outside
+TurnCore.swift:4: [unchecked-state] a stored var
+TurnCore.swift:9: [unchecked-state] a stored var
+TurnCore.swift:15: [unchecked-state] @exclusivity(unchecked) outside
+TurnCore.swift:17: [unchecked-state] a stored var'
   while IFS= read -r want; do
     if ! grep -q -F -- "$want" <<<"$out"; then
       echo "self-test: missing '$want' in:"; echo "$out"; return 1
@@ -481,6 +565,7 @@ Calls.swift: [isolated]'
   # A listed count that went down must be lowered.
   rm "$dir/Sources/App/Bad.swift" "$dir/Sources/App/BadConformance.swift" "$dir/Sources/App/BadMachine.swift" \
      "$dir/Sources/App/Calls.swift" "$dir/Tests/Marked.swift"
+  mv "$dir/GoodTurnCore.swift" "$dir/Sources/SwiftStateTurns/TurnCore.swift"
   local first
   first="$(awk 'NF { print $1; exit }' <<<"$ISOLATED_BOUNDARIES")"
   sed -i.bak '1d' "$dir/$first" && rm -f "$dir/$first.bak"
