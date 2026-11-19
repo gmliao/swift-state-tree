@@ -23,7 +23,7 @@ FILTER='SwiftStateTreeNIOTests\.DifferentialHarnessTests'
 
 # The pinned image, read from the CI workflow, so the two can't name different images.
 image() {
-    sed -n 's/^ *image: *\(swift:[^ ]*@sha256:[0-9a-f]\{64\}\).*/\1/p' .github/workflows/build-and-test.yml | head -1
+    sed -n '/^ *image: *swift:[^ ]*@sha256:[0-9a-f]\{64\}/{s/^ *image: *\(swift:[^ ]*@sha256:[0-9a-f]\{64\}\).*/\1/p;q;}' .github/workflows/build-and-test.yml
 }
 
 if [[ "${1:-}" != "--inside" ]]; then
@@ -51,7 +51,8 @@ command -v python3 >/dev/null || scripts/ci-apt-install.sh python3
 git config --global --add safe.directory "$PWD" 2>/dev/null || true
 [[ -z "$(git status --porcelain)" ]] || { echo "record-differential-goldens: the tree isn't clean; commit the code first" >&2; exit 1; }
 COMMIT=$(git rev-parse HEAD)
-TOOLCHAIN="$(uname -sm) $(swift --version 2>&1 | head -1)"
+SWIFT_VERSION=$(swift --version 2>&1)
+TOOLCHAIN="$(uname -sm) ${SWIFT_VERSION%%$'\n'*}"
 SCRATCH=${SST_RECORD_SCRATCH:-/build}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -127,6 +128,6 @@ done
 rm -f "$GOLDEN"/*.json
 mkdir -p "$GOLDEN"
 cp "$WORK"/run1/*.json "$GOLDEN"/
-COUNT=$(ls "$GOLDEN"/*.json | wc -l | tr -d ' ')
+COUNT=$(find "$GOLDEN" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')
 SIZE=$(du -sk "$GOLDEN" | cut -f1)
 echo "record-differential-goldens: published $COUNT files (${SIZE} KB) recorded at $COMMIT; commit only $GOLDEN"

@@ -12,7 +12,8 @@ EXPECTED_SWIFT="Swift version 6.2.4"
 FILTER='SwiftStateTreeNIOTests\.(DifferentialHarnessTests|DiffSelfCheckTests)'
 INDEX=Tests/SwiftStateTreeNIOTests/Differential/Golden/index.json
 
-VERSION=$(swift --version 2>&1 | head -1)
+VERSION=$(swift --version 2>&1)
+VERSION=${VERSION%%$'\n'*}
 case "$VERSION" in
     *"$EXPECTED_SWIFT"*) ;;
     *) echo "differential-gate: expected $EXPECTED_SWIFT, got: $VERSION" >&2; exit 1 ;;
@@ -27,7 +28,8 @@ LISTED=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['fi
 git config --global --add safe.directory "$PWD" 2>/dev/null || true
 echo "differential-gate: building $(git rev-parse HEAD) with $VERSION"
 export SST_DIFFERENTIAL_VERIFY=1
-export SST_TOOLCHAIN="$(uname -sm) $VERSION"
+SST_TOOLCHAIN="$(uname -sm) $VERSION"
+export SST_TOOLCHAIN
 unset SST_UPDATE_GOLDEN
 
 swift build --build-tests
