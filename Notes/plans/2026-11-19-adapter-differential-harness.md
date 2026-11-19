@@ -232,7 +232,7 @@ The test hooks of §5.3 and §5.4 keep their meaning on the branch. One that ret
 
 ### Matrix and CI cost (§9) and what it can't see (§10)
 
-- One run per cell in CI: about 162 runs in the unrestricted leg and 84 in the `IN_TURN_SYNC=false` leg. Recording runs five times per cell, on `main`, only when goldens are updated. Step 2 states the golden set's file count and size.
+- One run per cell in CI: about 174 runs in the unrestricted leg and 90 in the `IN_TURN_SYNC=false` leg. Recording runs five times per cell, on `main`, only when goldens are updated. Step 2 states the golden set's file count and size.
 - E2E and the load test compare the branch's server build with `main`'s, as for any PR. There is no level to choose.
 
 ### Freeze, protection and the gate
@@ -716,7 +716,7 @@ For each row: where the hold stops, what the scenario does while it is closed, t
 - **Sync modes in one process:**
   - `LandManager`'s `inTurnSync` parameter turns in-turn sync off for one manager. `IN_TURN_SYNC=false` in the environment turns it off for all of them, since "an explicit off in either place wins".
   - The required CI matrix in `build-and-test.yml` has one leg with `IN_TURN_SYNC=false`. In that leg the harness runs only the in-turn-off cells. It records the in-turn-on cells as disabled, with that reason. The other leg runs every cell in one process.
-- **Count.** The first set has 15 scenarios after the split rows (§8). Their cell rules give about 162 cells (scenario × sync mode × land kind × encoding) in the unrestricted leg, and about 84 in the `IN_TURN_SYNC=false` leg. With two runs per level (§7 (a)), that is about 324 runs at one level in the unrestricted leg and 168 in the masked leg, and twice that once a second level exists (648 and 336). The tables-off jobs come on top. Step 2 states the exact numbers from the cell rules.
+- **Count.** The first set has 16 scenarios after the split rows (§8; the stale reply is two rows, one per order of the answer and the sync, #658). Their cell rules give 174 cells (scenario × sync mode × land kind × encoding) in the unrestricted leg, and 90 in the `IN_TURN_SYNC=false` leg. With two runs per level (§7 (a)), that is 348 runs at one level in the unrestricted leg and 180 in the masked leg, and twice that once a second level exists (696 and 360). The tables-off jobs come on top. Step 2 states the exact numbers from the cell rules.
 - **Build configuration.** The harness is compiled under `#if DEBUG` (§5.3). No CI job runs the NIO suite in release today, so every leg that runs the suite runs the harness. A release NIO job added later would skip it, and the PR that adds such a job states that.
 - **Time.** Each run has real holds, flushes and a stop, so "a few milliseconds per run" is an assumption to measure, not a number. Step 2 measures it at that count, on the CI runner.
 - **Other jobs.** `build-and-test.yml` also runs the NIO suite in its tables-off and per-player-tables-off runs, so the harness's time counts in each of them. Step 2 states the total.
