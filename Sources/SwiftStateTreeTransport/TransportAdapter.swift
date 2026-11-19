@@ -3353,7 +3353,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// synchronous pass, which also decides whether the loop goes on: no `await` sits between
     /// what the pass reads and what it does.
     private func startSyncLagTimerIfNeeded() {
-        guard syncLagTimer == nil else { return }
+        guard syncLagTimer == nil, !syncLagPolicy.decisionsOff else { return }
         syncLagTimerEpoch += 1
         let epoch = syncLagTimerEpoch
         let interval = syncLagTimerInterval
@@ -3364,6 +3364,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
     }
+
+    /// Tests: whether the lag timer is running.
+    var syncLagTimerRunningForTesting: Bool { syncLagTimer != nil }
 
     /// Stops the timer (teardown).
     func stopSyncLagTimer() {

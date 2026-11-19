@@ -19,6 +19,11 @@ public struct SyncLagPolicy: Sendable, Equatable {
     /// as soon as the frame is written. Writing the frame itself stays bounded by the session
     /// handler's close-frame timeout (#229).
     public var closeGrace: Duration
+    /// Tests: no lag decision at all (no resync, no suppression, no lag close) and no lag timer,
+    /// while the wire keeps its sequence numbers and acks (#555). A test's held step can last
+    /// past any threshold on a slow runner, so the differential harness turns the decisions off
+    /// instead of raising them. Only `off` sets it.
+    package private(set) var decisionsOff = false
 
     public init(
         resyncAfter: Duration = .seconds(3),
@@ -37,6 +42,13 @@ public struct SyncLagPolicy: Sendable, Equatable {
     }
 
     public static let `default` = SyncLagPolicy()
+
+    /// Tests: sequencing kept, every lag decision and the lag timer off (#555).
+    package static let off: SyncLagPolicy = {
+        var policy = SyncLagPolicy()
+        policy.decisionsOff = true
+        return policy
+    }()
 
     /// The policy from the environment: `SYNC_LAG_RESYNC_MS`, `SYNC_LAG_SLOW_CONSUMER_COUNT`,
     /// `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`, `SYNC_ACK_TIMEOUT_MS`, `SYNC_ACK_FRESHNESS_MS` and
@@ -167,7 +179,7 @@ struct SyncLagSession: Sendable {
 
     /// The check's decision, in the design's order (§ 3). Pure: `apply` makes it happen.
     func decide(now: ContinuousClock.Instant, policy: SyncLagPolicy) -> SyncLagDecision {
-        guard phase != .closing else { return .none }
+        guard phase != .closing, !policy.decisionsOff else { return .none }
         let fresh = now - lastAckAt <= policy.ackFreshness
         if let first = unacked.first {
             // 1. Its own full view unacked for the ack timeout while it still reads: too slow.

@@ -188,7 +188,8 @@ struct TransportAdapterSyncLagTests {
         failViewEncode: Bool = false,
         keeperTransport: Bool = false,
         fragileToken: Int = 0,
-        holds: HoldRegistry<TransportAdapterHoldPoint>? = nil
+        holds: HoldRegistry<TransportAdapterHoldPoint>? = nil,
+        policy: SyncLagPolicy? = nil
     ) async throws -> Fixture {
         // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.
         var envConfig = TransportEnvConfig.fromEnvironment()
@@ -215,6 +216,7 @@ struct TransportAdapterSyncLagTests {
         let clock = SyncLagManualClock()
         await adapter.setSyncLagClockForTesting { clock.now }
         await adapter.setSyncLagTimerIntervalForTesting(timerInterval)
+        if let policy { await adapter.setSyncLagPolicy(policy) }
         let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock, binary: binary)
         if failViewEncode {
             // Every update of the player fails to encode, even its empty fallback.
@@ -277,6 +279,34 @@ struct TransportAdapterSyncLagTests {
         await f.ack(try #require(resync.first).seq)
         try await f.bump()
         #expect(try await f.stateFrames().map(\.op) == [2])
+    }
+
+    @Test("Lag off (#555): a reader that never acks gets every frame, with no resync, no pending mark, no close and no lag timer")
+    func lagOffMakesNoDecision() async throws {
+        let on = try await makeFixture()
+        _ = try await on.stateFrames()
+        #expect(await on.adapter.syncLagTimerRunningForTesting, "tracking arms the timer when lag is on")
+
+        let f = try await makeFixture(policy: .off)
+        let firstSync = try #require(try await f.stateFrames().first)
+        #expect(firstSync.op == 1)
+        #expect(await !f.adapter.syncLagTimerRunningForTesting, "no lag timer")
+        // Past every threshold without an ack: the resync (3 s), the ack timeout (10 s) and the
+        // slow-consumer count, one sync at a time.
+        var sequences = [firstSync.seq]
+        for _ in 0..<6 {
+            f.clock.advance(4)
+            try await f.bump()
+            let frames = try await f.stateFrames()
+            #expect(frames.map(\.op) == [2], "every sync still sends its diff")
+            sequences.append(contentsOf: frames.map(\.seq))
+        }
+        #expect(sequences == sequences.sorted() && Set(sequences).count == sequences.count, "sequencing kept")
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagResyncs == 0)
+        #expect(await f.adapter.syncLagPendingMarks == 0)
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
+        #expect(await f.adapter.syncLagSlowConsumerCloses == 0)
     }
 
     @Test("Silent past 3 s: frames are withheld; acks resuming bring a resync")
