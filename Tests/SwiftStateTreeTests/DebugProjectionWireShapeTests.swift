@@ -29,8 +29,23 @@ private actor WireShapeRecordingTransport: Transport {
     }
 }
 
-@Test("Debug projection carries Position2 in the state-wire shape (raw fixed-point integers)")
-func debugProjectionUsesWireShapeForFixedPoint() async throws {
+/// The adapter's default config with both diff paths pinned: the typed sync tables with typed leaf
+/// values (the default), and the snapshot diff (the fallback). Pinned, so every build job runs both
+/// and no environment flag reaches this test (scripts/check-filtered-tests-pin-transport-env.sh).
+private func wireShapeConfig(tables: Bool) -> TransportEnvConfig {
+    var config = TransportEnvConfig(
+        enableDirtyTracking: true,
+        useSnapshotForSync: true,
+        syncStrategy: .delta,
+        profilingConfig: nil
+    )
+    config.useSyncTables = tables
+    config.typedLeafValues = tables
+    return config
+}
+
+@Test("Debug projection carries Position2 in the state-wire shape (raw fixed-point integers), on the sync tables and on the snapshot diff", arguments: [true, false])
+func debugProjectionUsesWireShapeForFixedPoint(tables: Bool) async throws {
     let definition = Land("debug-projection-wire-shape", using: DebugProjectionWireShapeState.self) {
         Rules {}
     }
@@ -42,8 +57,12 @@ func debugProjectionUsesWireShapeForFixedPoint() async throws {
     let adapter = TransportAdapter<DebugProjectionWireShapeState>(
         keeper: keeper,
         transport: transport,
-        landID: "debug-projection-wire-shape"
+        landID: "debug-projection-wire-shape",
+        transportEnvConfig: wireShapeConfig(tables: tables)
     )
+    // The cell runs the path it names.
+    #expect(await adapter.usesSyncTablesForTesting() == tables)
+    #expect(await adapter.usesTypedLeafValuesForTesting() == tables)
     await transport.setDelegate(adapter)
     await keeper.setTransport(adapter)
 

@@ -135,12 +135,23 @@ jobs:
       run: swift test -c release --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
       timeout-minutes: 40
 
+    # Nightly only: the same tests in release with the turn core's runtime exclusivity checks
+    # back on (TURNS_EXCLUSIVITY_CHECKED lifts `@exclusivity(unchecked)` on its stored state,
+    # #624), so an overlapping access the unchecked build would let through traps here.
+    - name: Run the turn core's tests in release with exclusivity checked
+      if: ${{ inputs.full_matrix }}
+      run: swift test -c release -Xswiftc -DTURNS_EXCLUSIVITY_CHECKED --filter "SwiftStateTurnsTests|SwiftStateTurnsMacrosTests"
+      timeout-minutes: 40
+
     - name: Check the step path's specialization
       run: scripts/check-turns-inlinable.sh
 
   # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
-  # job runs the whole suite again with both opted out (USE_SYNC_TABLES=false,
-  # TYPED_LEAF_VALUES=false), so the snapshot-diff fallback keeps coverage until it is removed.
+  # job runs the tests again with both opted out (USE_SYNC_TABLES=false, TYPED_LEAF_VALUES=false),
+  # so the snapshot-diff fallback keeps coverage until it is removed. On a push it runs only the
+  # Transport and NIO targets: the flags reach no other test, which the shellcheck job checks
+  # (scripts/check-filtered-tests-pin-transport-env.sh: the other targets that reach the
+  # transport pin both flags on every config). The nightly runs the whole suite here.
   # In-turn sync is at its default. Row addressing (on by default) keeps the tables on whatever
   # USE_SYNC_TABLES says, and in-process configs don't read ROW_ADDRESSING: a test with rows in
   # effect (a router join with the sync sequence and path hashes) runs the tables here too. The
@@ -180,9 +191,11 @@ jobs:
     # not only the environment.
     - name: Run the tests with the tables and typed leaves off
       shell: bash
+      env:
+        FILTER: ${{ !inputs.full_matrix && 'SwiftStateTreeTransportTests\.|SwiftStateTreeNIOTests\.' || '' }}
       run: |
         set -o pipefail
-        swift test 2>&1 | tee sync-tables-off.log
+        swift test ${FILTER:+--filter "$FILTER"} 2>&1 | tee sync-tables-off.log
         for pin in 'A config built with init takes USE_SYNC_TABLES' 'A config built with init takes TYPED_LEAF_VALUES'; do
           if ! grep -q "✔ Test \"$pin" sync-tables-off.log; then
             echo "::error::the test \"$pin\" did not run"
@@ -363,9 +376,10 @@ jobs:
 
   # The deep-research Python tests, in a job of their own: they need no Swift build, so they run
   # beside the Swift jobs instead of after the examples job's builds. On the runner itself, not
-  # in the Swift image: the tests use stand-in `swift` binaries and need only Python, git and
-  # Node, and the image has no python3 binary. Python 3.12 and Node 20 come from official
-  # builds, so the job doesn't depend on the Ubuntu mirrors (#453, #635); the full history.
+  # in the Swift image: the tests need no Swift build and no particular Swift version, only
+  # Python, git and Node, and the image has no python3 binary. Python 3.12 and Node 20 come
+  # from official builds, so the job doesn't depend on the Ubuntu mirrors (#453, #635); the
+  # full history.
   deep-research-tests:
     runs-on: ubuntu-22.04
     steps:
@@ -475,6 +489,16 @@ jobs:
       run: |
         scripts/check-ci-image-pin.sh --self-test
         scripts/check-ci-image-pin.sh
+
+    # sync-tables-off runs only the Transport and NIO targets on a push; that is safe only while
+    # no other test can read USE_SYNC_TABLES or TYPED_LEAF_VALUES. Here, not in that job: the check
+    # is Python, which the Swift image lacks, and the runner's own Swift only parses the manifest
+    # (`swift package dump-package`) for the test targets' dependencies.
+    - name: No test outside the sync-tables-off filter reads its flags
+      run: |
+        swift --version
+        scripts/check-filtered-tests-pin-transport-env.sh --self-test
+        scripts/check-filtered-tests-pin-transport-env.sh
 
     - name: Install ShellCheck 0.11.0
       run: |
