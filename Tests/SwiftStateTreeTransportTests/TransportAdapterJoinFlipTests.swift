@@ -404,7 +404,7 @@ struct TransportAdapterJoinFlipTests {
         #expect(await !fixture.adapter.admittedNotRegisteredForTesting(s1), "registered")
         #expect(await !fixture.adapter.joinFlippedForTesting(attempt))
         #expect(await !fixture.adapter.initialSyncCommittedForTesting(attempt))
-        #expect(await fixture.adapter.waitForOutboundDrain())
+        await fixture.adapter.waitForOutboundIdleForTesting()
         #expect(await fixture.sent.kinds(for: s1) == [])
         gate.open()
         await fixture.adapter.installHolds(nil)
@@ -419,7 +419,7 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.ticketIsCurrentForTesting(ticket))
         await fixture.adapter.endSessionTicketsForTeardown()
         #expect(await !fixture.adapter.ticketIsCurrentForTesting(ticket))
-        #expect(await fixture.adapter.waitForOutboundDrain())
+        await fixture.adapter.waitForOutboundIdleForTesting()
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 

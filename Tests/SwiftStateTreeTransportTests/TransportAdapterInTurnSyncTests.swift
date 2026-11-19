@@ -13,6 +13,7 @@
 import Foundation
 import Testing
 import SwiftStateTreeMessagePack
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
@@ -925,19 +926,16 @@ struct TransportAdapterInTurnSyncTests {
     @Test("In-turn off: a sync request that meets a cycle in flight is deferred and counted (syncDeferredByCycle, #555)")
     func syncDeferredByCycleCountsWithInTurnOff() async throws {
         let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)
-        let gate = InTurnGate()
-        await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.wait() })
+        let gate = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.arrive() })
         let legacy = Task { await f.adapter.syncNow() }
-        for _ in 0..<400 where await gate.waiting == 0 {
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
-        #expect(await gate.waiting == 1)
+        #expect(await gate.waitForArrivals(1), "the cycle is held before its endSync")
         await f.adapter.installHolds(nil)
         let before = await f.adapter.syncDeferredByCycleCountForTesting
-        #expect(await f.adapter.waitForOutboundDrain())
-        await f.adapter.syncNow()  // a real request, with the writer drained: it meets the cycle
+        await f.adapter.waitForOutboundIdleForTesting()
+        await f.adapter.syncNow()  // a real request, with the writer idle: it meets the cycle
         #expect(await f.adapter.syncDeferredByCycleCountForTesting == before + 1)
-        await gate.release()
+        gate.open()
         await legacy.value
     }
 
