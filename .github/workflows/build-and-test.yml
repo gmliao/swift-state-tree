@@ -33,8 +33,9 @@ on:
 
 # A new push to a pull request cancels that pull request's run still in progress. Nothing else
 # shares a group, so nothing else is ever cancelled: a push (main, exp/**) and every call from the
-# nightly (`full_matrix`, whatever event started the nightly) each get a group of their own run. That matters even with cancel-in-progress false: GitHub keeps one pending run
-# per group and cancels the older pending one. The prefix keeps this workflow's groups apart from
+# nightly (`full_matrix`, whatever event started the nightly) each get a group of their own run.
+# That matters even with cancel-in-progress false: GitHub keeps one pending run per group and
+# cancels the older pending one. The prefix keeps this workflow's groups apart from
 # the other called workflow's in the same nightly run, which shares its run_id.
 concurrency:
   group: build-and-test-${{ github.event_name == 'pull_request' && !inputs.full_matrix && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
@@ -383,6 +384,7 @@ jobs:
     # The router check parses the benchmark's JSON with python3, which the image doesn't have.
     - name: Install python3
       run: scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
+      timeout-minutes: 26  # above ci-apt-install.sh's worst case, 24 min 20 s (#659)
 
     - name: EncodingBenchmark router flags
       working-directory: Examples/GameDemo
@@ -498,6 +500,11 @@ jobs:
     - name: Nightly scripts
       run: scripts/test-nightly-scripts.sh
       timeout-minutes: 2
+
+    # The apt helper's retries, against a stub apt-get that fails or hangs (#659).
+    - name: apt helper
+      run: scripts/test-ci-apt-install.sh
+      timeout-minutes: 3
 
     # One digest for every Swift container image, named by every SwiftPM cache key. The self-test
     # proves the check still finds what it looks for before the workflows are checked.

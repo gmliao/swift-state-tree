@@ -57,14 +57,18 @@ Mark a struct or an enum with `@PlainData` where it is defined. The macro writes
 - A hand-written `: PlainData` outside `SwiftStateTurns`, `@retroactive` included, is refused by `scripts/lint-turns.sh`: it would conform without checking anything.
 - A type from the standard library or another module can't take the macro. Store the turn core's value type in its place, for example `TurnInstant` instead of `ContinuousClock.Instant`.
 
+Before, the state holds a class and a clock instant:
+
 ```swift
-// Before: a class and a clock instant in the state.
 struct Room {
     var players: [PlayerID: Connection]       // Connection is a class
     var lastChat: ContinuousClock.Instant
 }
+```
 
-// After: plain values. The connections stay on the actor, keyed by PlayerID.
+After, it holds plain values; the connections stay on the actor, keyed by `PlayerID`:
+
+```swift
 @PlainData
 struct Room {
     var players: Set<PlayerID>                // PlayerID is @PlainData
