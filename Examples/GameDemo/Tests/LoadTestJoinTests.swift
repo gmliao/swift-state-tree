@@ -36,7 +36,7 @@ struct LoadTestJoinTests {
                 // or a join missing it would still pass here.
                 #expect(Set(config.stateUpdateFeatures) == Set(StateUpdateFeature.supported), "\(name)")
             }
-            let missing = TransportAdapter<HeroDefenseState>.missingStateUpdateFeatures(
+            let missing = StateUpdateFeatureNegotiation.missingStateUpdateFeatures(
                 required: config.stateUpdateFeatures,
                 metadata: join.metadata
             )
