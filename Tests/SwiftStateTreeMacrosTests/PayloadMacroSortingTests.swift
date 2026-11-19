@@ -60,6 +60,10 @@ final class PayloadMacroSortingTests: XCTestCase {
                 public static var _payloadFieldForms: [_PayloadFieldFormEntry] {
                     [_PayloadFieldFormEntry("a", _payloadFieldForm(of: \\Self.a)), _PayloadFieldFormEntry("m", _payloadFieldForm(of: \\Self.m)), _PayloadFieldFormEntry("z", _payloadFieldForm(of: \\Self.z))]
                 }
+
+                public static var _payloadWireKeys: [String: String] {
+                    [:]
+                }
             }
             """,
             macros: testMacros

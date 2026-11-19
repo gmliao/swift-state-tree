@@ -8,10 +8,11 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 3.1 and reads 2.5 and later")
+    @Test("The producer writes 3.6, reads 2.5 and later, and replays 3.6 and later")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.5")
+        #expect(ReevaluationRecordVersion.current == "3.6")
         #expect(ReevaluationRecordVersion.minimumSupported == "2.5")
+        #expect(ReevaluationRecordVersion.minimumReplayable == "3.6")
     }
 
     @Test("Only an affected land's record older than 2.3 has a not-comparable hash (#175)")
@@ -174,16 +175,20 @@ struct ReevaluationRecordVersionTests {
         }
     }
 
-    @Test("ReevaluationEngine.run accepts a 2.5 record")
-    func engineAcceptsSameMajor() async throws {
+    /// A 2.5 record is still read, but replay refuses it: it has no schema fingerprint
+    /// (#521 D15). Readers that don't replay keep reading from `minimumSupported`.
+    @Test("ReevaluationEngine.run refuses a 2.5 record as having no schema fingerprint")
+    func engineRefusesRecordWithoutFingerprint() async throws {
         let url = try Self.writeEmptyRecord(version: "2.5")
         defer { try? FileManager.default.removeItem(at: url) }
-        let result = try await ReevaluationEngine.run(
-            definition: makeReevaluationEngineTestDefinition(),
-            initialState: ReevaluationEngineTestState(),
-            recordFilePath: url.path
-        )
-        #expect(result.hashDefinition == .fullState)
+        await #expect(throws: ReevaluationRecordFingerprintError.missing(recordedVersion: "2.5")) {
+            _ = try await ReevaluationEngine.run(
+                definition: makeReevaluationEngineTestDefinition(),
+                initialState: ReevaluationEngineTestState(),
+                recordFilePath: url.path
+            )
+        }
+        #expect(try await ReevaluationRecordFile.openSource(filePath: url.path).getMetadata().version == "2.5")
     }
 
     private static func writeEmptyRecord(version: String?) throws -> URL {

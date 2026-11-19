@@ -60,6 +60,7 @@ public struct PayloadMacro: MemberMacro {
         
         // The positional writer, its field forms and the wire name (#521), fields in name order
         members.append(contentsOf: generateWriterMembers(properties: properties))
+        members.append(generateWireKeys(of: structDecl, properties: properties))
         if let wireName = wireName(of: structDecl, in: context) {
             members.append("public static var _payloadWireName: String { \(literal: wireName) }")
         }
@@ -215,7 +216,7 @@ public struct PayloadMacro: MemberMacro {
                 expression: ExprSyntax(
                     """
                     FieldMetadata(
-                        name: "\(raw: property.name)",
+                        name: "\(raw: property.wireName)",
                         type: \(raw: typeName).self,
                         policy: nil,
                         nodeKind: SchemaHelper.determineNodeKind(from: \(raw: typeName).self),
@@ -247,7 +248,7 @@ public struct PayloadMacro: MemberMacro {
     private static func generateWriterMembers(properties: [PropertyInfo]) -> [DeclSyntax] {
         let writes = properties.map { "    try writer.field(self.\($0.name))" }.joined(separator: "\n")
         let forms = properties
-            .map { "_PayloadFieldFormEntry(\"\($0.name)\", _payloadFieldForm(of: \\Self.\($0.name)))" }
+            .map { "_PayloadFieldFormEntry(\"\($0.wireName)\", _payloadFieldForm(of: \\Self.\($0.name)))" }
             .joined(separator: ", ")
         return [
             """
@@ -258,6 +259,33 @@ public struct PayloadMacro: MemberMacro {
             "public static var _payloadHasTypedWriter: Bool { true }",
             "public static var _payloadFieldForms: [_PayloadFieldFormEntry] { [\(raw: forms)] }",
         ]
+    }
+
+    /// `_payloadWireKeys` (#521 D15): each stored property whose `CodingKeys` case has a raw
+    /// value other than its name. Only a `CodingKeys` enum in the struct's own body is read; one
+    /// declared in an extension, and a custom `encode(to:)`, are outside the expansion.
+    private static func generateWireKeys(of structDecl: StructDeclSyntax, properties: [PropertyInfo]) -> DeclSyntax {
+        var keys: [(String, String)] = []
+        let stored = Set(properties.map(\.wireName))
+        for member in structDecl.memberBlock.members {
+            guard let enumDecl = member.decl.as(EnumDeclSyntax.self), enumDecl.name.text == "CodingKeys" else { continue }
+            for caseMember in enumDecl.memberBlock.members {
+                guard let caseDecl = caseMember.decl.as(EnumCaseDeclSyntax.self) else { continue }
+                for element in caseDecl.elements {
+                    let name = String(element.name.text.filter { $0 != "`" })
+                    guard stored.contains(name),
+                          let literal = element.rawValue?.value.as(StringLiteralExprSyntax.self),
+                          let raw = literal.representedLiteralValue,
+                          raw != name
+                    else { continue }
+                    keys.append((name, raw))
+                }
+            }
+        }
+        let entries = keys.sorted { $0.0 < $1.0 }
+            .map { "\(StringLiteralExprSyntax(content: $0.0)): \(StringLiteralExprSyntax(content: $0.1))" }
+        let body = entries.isEmpty ? "[:]" : "[\(entries.joined(separator: ", "))]"
+        return "public static var _payloadWireKeys: [String: String] { \(raw: body) }"
     }
 
     /// The schema's name for the type, fixed at expansion: an event's name without an `Event`
@@ -296,6 +324,10 @@ private struct PropertyInfo {
     let name: String
     let typeName: String?
     let initializer: String?
+
+    /// The name a synthesized `Codable` gives the property: without the backticks a keyword
+    /// name (`` `default` ``) is declared with.
+    var wireName: String { String(name.filter { $0 != "`" }) }
 }
 
 private struct PayloadDiagnostics: DiagnosticMessage, @unchecked Sendable {

@@ -316,6 +316,7 @@ public struct TypeToSchemaConverter {
         let declaredFields = (type as? any SchemaMetadataProvider.Type)?.getFieldMetadata()
             ?? (type as? any SnapshotFieldListProvider.Type)?.snapshotFieldMetadata
         if let fieldMetadata = declaredFields {
+            SchemaExtractionProbe.current?.noteFields(of: type, listed: fieldMetadata.count)
             
             var properties: [String: JSONSchema] = [:]
             var required: [String] = []
@@ -400,6 +401,26 @@ public struct TypeToSchemaConverter {
                 // If we can't create an instance, try to extract from CodingKeys using reflection
                 // This is more complex and may not work in all cases
                 // For now, we'll leave properties empty and return a basic object schema
+                // The record schema fingerprint refuses such a type (#521 D15): its empty object
+                // can't tell its fields apart. SchemaGen's output is unchanged.
+                // A collection, a raw-value type or a Foundation scalar has no fields to tell
+                // apart; the fingerprint notes what its def leaves out: a set's element (whose
+                // fields it then lists, or refuses) and a `CaseIterable` enum's raw values.
+                if let probe = SchemaExtractionProbe.current, !isOptionalTypeName(typeName) {
+                    if !isFieldlessValueType(type) {
+                        probe.noteUnbuildable(typeName)
+                    } else {
+                        if let element = SyncSetHelper.elementType(of: type) {
+                            probe.noteSetElement(
+                                of: typeName,
+                                convert(element, definitions: &definitions, visitedTypes: &visitedTypes)
+                            )
+                        }
+                        if let cases = caseIterableRawValues(of: type) {
+                            probe.noteEnumCases(of: typeName, cases)
+                        }
+                    }
+                }
             }
         }
         
@@ -442,6 +463,41 @@ public struct TypeToSchemaConverter {
         return JSONSchema(ref: "#/defs/\(typeName)")
     }
     
+    /// Whether `type` has no stored fields: an empty sample decodes from `{}` and Mirror finds no
+    /// children. A type with a field list of its own (`SchemaMetadataProvider`) that lists none
+    /// is described truthfully only when this holds (#521 D15).
+    static func isFieldless(_ type: Any.Type) -> Bool {
+        guard let codable = type as? any Codable.Type, let sample = createSampleInstance(of: codable) else {
+            return false
+        }
+        return Mirror(reflecting: sample).children.isEmpty
+    }
+
+    /// A `CaseIterable` raw-value enum's raw values, as text; nil for any other type.
+    private static func caseIterableRawValues(of type: Any.Type) -> [String]? {
+        guard let enumType = type as? any (CaseIterable & RawRepresentable).Type else { return nil }
+        return rawValues(of: enumType)
+    }
+
+    private static func rawValues<T: CaseIterable & RawRepresentable>(of _: T.Type) -> [String] {
+        T.allCases.map { "\($0.rawValue)" }
+    }
+
+    /// Whether `type` is a value whose wire form isn't its stored fields: a collection (`Set`),
+    /// a raw-value type, a Foundation scalar, or a value with its own snapshot conversion
+    /// (`SnapshotValueConvertible` without `@SnapshotConvertible`, which would have a sample). No
+    /// `{}` sample decodes into one, and Mirror's fields wouldn't describe its wire form anyway:
+    /// the fingerprint doesn't count it as unbuildable (#521 D15). `Any` (an `AnyCodable` field)
+    /// holds any value by design, and is hashed as its def.
+    private static func isFieldlessValueType(_ type: Any.Type) -> Bool {
+        type is any Collection.Type
+            || type is any RawRepresentable.Type
+            || type is any SnapshotValueConvertible.Type
+            || type == Any.self || type == AnyCodable.self
+            || type == Date.self || type == Data.self || type == URL.self
+            || type == UUID.self || type == Decimal.self
+    }
+
     /// Create a sample instance of a Codable type for Mirror inspection.
     ///
     /// This is a workaround to extract property information from types

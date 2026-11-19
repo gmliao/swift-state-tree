@@ -455,8 +455,13 @@ struct LandReleaseTests {
                 landType: "land-release",
                 createdAt: Date(timeIntervalSince1970: 1_700_000_000),
                 metadata: [:],
-                landDefinitionID: "land-release-replay",
-                version: ReevaluationRecordVersion.current
+                landDefinitionID: "land-release",
+                version: ReevaluationRecordVersion.current,
+                // The live land's, as a live recording holds it; the keeper checks it before its
+                // first step, under the live type though the replay definition has the alias id (#521 D15).
+                schemaFingerprint: try ReevaluationSchemaFingerprint.compute(
+                    for: releaseTestLand(LandID(landType: "land-release", instanceId: "live"))
+                )
             ),
             frames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
         ).write(to: recordFile)

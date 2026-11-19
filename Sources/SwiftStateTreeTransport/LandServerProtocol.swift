@@ -88,6 +88,11 @@ public protocol LandServerProtocol<State> {
     ///
     /// - Returns: nil if the land does not exist on this server.
     func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse?
+
+    /// The record schema fingerprint of this land type's definition (#521 D15), which the admin
+    /// replay start compares with a record's. Nil when the server doesn't provide one; replay
+    /// itself still checks the record.
+    func recordSchemaFingerprint() throws -> String?
 }
 
 extension LandServerProtocol {
@@ -99,4 +104,7 @@ extension LandServerProtocol {
 
     /// Default: debug freeze is not supported, the land is reported as not found.
     public func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse? { nil }
+
+    /// Default: no fingerprint; the admin replay start leaves the check to replay.
+    public func recordSchemaFingerprint() throws -> String? { nil }
 }

@@ -23,6 +23,8 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     private let stopTimeout: Duration
     /// One stop per land ID at a time, shared by the requests that arrive during it.
     private let stops = LandStopFlights()
+    /// The land type's definition, for its record schema fingerprint.
+    private let landFactory: @Sendable (LandID) -> LandDefinition<State>
     
     /// Create a NIOLandServer.
     ///
@@ -42,6 +44,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         transport: WebSocketTransport
     ) throws {
         self.landType = landType
+        self.landFactory = landFactory
         self.transport = transport
         self.logger = configuration.logger ?? Logger(label: "com.swiftstatetree.nio.server.\(landType)")
         self.stopTimeout = configuration.landStopTimeout
@@ -63,6 +66,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             enableLoopPhaseOffset: configuration.enableLoopPhaseOffset,
             inTurnSync: configuration.inTurnSync,
             syncLagPolicy: configuration.syncLag,
+            replayLandSuffix: configuration.replayLandSuffix,
             logger: configuration.logger
         )
         
@@ -298,6 +302,12 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         }
     }
     
+    /// The record schema fingerprint of this land type's definition (#521 D15), computed once
+    /// per definition and cached.
+    public func recordSchemaFingerprint() throws -> String? {
+        try ReevaluationSchemaFingerprint.cached(for: landFactory(LandID(landType: landType, instanceId: "schema")))
+    }
+
     public func getReevaluationRecord(landID: LandID) async throws -> Data? {
         guard let container = await landManager.getLand(landID: landID) else { return nil }
         guard let recorder = await container.keeper.getReevaluationRecorder() else { return nil }
