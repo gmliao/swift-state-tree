@@ -317,7 +317,7 @@ struct TransportAdapterSyncLagTests {
         await f.transport.clearMessages()
         await f.adapter.sendEvent(AnyServerEvent(Opcode107MessageEvent(message: "kept")), to: .client(f.clientID))
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain())
+        await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.transport.recordedMessages().contains { String(decoding: $0, as: UTF8.self).contains("kept") }, "the event was sent")
         #expect(await f.adapter.syncLagDroppedEvents == 0)
         #expect(await f.adapter.syncLagTimerPassForTesting())
