@@ -59,6 +59,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case leave
     /// The start of each input drain, before its first turn.
     case inputDrain
+    /// The task `endSync` starts for the sync-only turn a turn left to it (a turn that found a
+    /// legacy cycle in flight), before that turn runs.
+    case syncOnlyAfterLegacyCycle
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
     case serverInputKick
     /// After an input turn's record is enqueued (in the turn's synchronous segment), or after a
@@ -1362,6 +1365,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if syncOnlyTurnAfterLegacyCycle {
             syncOnlyTurnAfterLegacyCycle = false
             Task { [weak self] in
+                await self?.holds.at(.syncOnlyAfterLegacyCycle)
                 await self?.runSyncOnlyTurnIfInTurn()
             }
         }

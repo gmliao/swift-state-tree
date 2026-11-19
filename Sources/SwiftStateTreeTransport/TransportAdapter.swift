@@ -3090,6 +3090,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Tests: returns once no background sync task is left: a deferred retry, or a follow-up
+    /// that started another. The differential harness runs with its loops off and awaits this
+    /// after each sync it asks for, so a skipped cycle's retry is part of that step.
+    package func waitForBackgroundSyncsForTesting() async {
+        while let task = backgroundSyncTasks.values.first {
+            await task.value
+        }
+    }
+
     private func startDelayedFollowUpSync() {
         startBackgroundSync { adapter in
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
