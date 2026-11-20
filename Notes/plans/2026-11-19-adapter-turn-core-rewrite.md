@@ -1,6 +1,6 @@
 # TransportAdapter on the turn core: the rewrite (#546)
 
-**Status:** rev 13, plan only; GO as a whole (B0 rev 7, L1 and decision 5 at rev 12), rev 13 folds rev 12's shoulds.
+**Status:** rev 13, plan only. GO for B0 (rev 7), E, L1, B1 and B2 (decision 5 at rev 12; rev 13 folds rev 12's shoulds). L2 (a placeholder) and B3–B6 (outlined) each get their own review before their PRs.
 - **Detail:** B0–B2 in full; B3–B6 as outlines. Each of B3–B6 gets its own plan PR before its code, reviewed against the B0–B2 code that exists by then. Each outline's "open" list carries what the reviews of rev 1–3 raised for that step.
 - **Decided:** D4 = (a), by the maintainer (§2.2), with its rule documented as a B0 deliverable.
 - **Decisions in this rev:** the order S0 → L1 → L2 (the maintainer and Main, 2026-11-20): #612's S0 removes the reevaluation-mode adapter first, so L1 is written against `main` after S0, L2 deletes the adapter's off mode completely, and B2 starts with one sync path; rev 9's replay-only cycle (b) and rev 10's provisional off arms are dropped. L2 (2a–2e) is a placeholder until its own layout; the standalone initial sync stays outside L2. Decision 5 with the commit's own outputs. B0's two cells settled by Main (§5.1).
