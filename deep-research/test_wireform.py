@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import sys
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import wireform  # noqa: E402
@@ -114,6 +115,29 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(wireform.check({"a": on, "b": on}, on), [])
         self.assertEqual(wireform.check({"b": off, "a": on}, on),
                          ["b: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on"])
+
+
+class GitQueryTests(unittest.TestCase):
+    """The history query is bounded and reads no input (#484)."""
+
+    def setUp(self):
+        wireform.contains.cache_clear()
+        self.addCleanup(wireform.contains.cache_clear)
+
+    def test_the_query_has_a_timeout_no_stdin_and_no_prompt(self):
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with unittest.mock.patch.object(wireform.subprocess, "run", return_value=done) as run:
+            self.assertIs(wireform.contains("b" * 40, "a" * 40), True)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["timeout"], wireform.GIT_TIMEOUT_SECONDS)
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_a_stuck_git_is_an_error_naming_the_command(self):
+        stuck = subprocess.TimeoutExpired(["git"], wireform.GIT_TIMEOUT_SECONDS)
+        with unittest.mock.patch.object(wireform.subprocess, "run", side_effect=stuck):
+            with self.assertRaisesRegex(RuntimeError, r"git -C .* merge-base --is-ancestor a+ b+ took more than 60 s"):
+                wireform.contains("b" * 40, "a" * 40)
 
 
 if __name__ == "__main__":
