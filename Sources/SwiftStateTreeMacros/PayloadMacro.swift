@@ -49,10 +49,15 @@ public struct PayloadMacro: MemberMacro {
         let properties = collectStoredProperties(from: structDecl, diagnostics: &diagnostics)
             .sorted { $0.name < $1.name }
         
+        // A Decimal field has no wire form (#597). Only Decimal: a payload may hold an AnyCodable.
+        let refusedDecimal = diagnoseRefusedFieldTypes(in: structDecl, onlySynced: false, kinds: [.decimal], context: context)
         if !diagnostics.isEmpty {
             throw DiagnosticsError(diagnostics: diagnostics)
         }
-        
+        if refusedDecimal {
+            throw RefusedFieldTypeError()
+        }
+
         // Generate getFieldMetadata() method
         let getFieldMetadataMethod = try generateGetFieldMetadata(properties: properties)
         

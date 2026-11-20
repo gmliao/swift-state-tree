@@ -1,8 +1,21 @@
 import Foundation
 import SwiftStateTree
 
-enum MessagePackDirectEncodingError: Error {
+enum MessagePackDirectEncodingError: Error, CustomStringConvertible {
     case unsupportedAnyCodable(String)
+    /// A `Decimal` has no wire form (#597); registration refuses one in a payload or synced
+    /// field, so this is a value registration couldn't see (an `AnyCodable`, or a field a
+    /// hand-written decoder hides).
+    case decimal
+
+    var description: String {
+        switch self {
+        case .unsupportedAnyCodable(let typeName):
+            return "unsupportedAnyCodable(\(typeName))"
+        case .decimal:
+            return "a Decimal has no wire form (#597); store an integer of the smallest unit or a String"
+        }
+    }
 }
 
 private struct AnyEncodable: Encodable {
@@ -264,6 +277,13 @@ struct MessagePackDirectEncoder {
     }
 
     func encodeAnyCodable(_ value: AnyCodable) throws -> MessagePackValue {
+        // First: on Darwin an NSDecimalNumber would match a numeric case below through bridging,
+        // on Linux it wouldn't. Refused the same way as a `Decimal` on both (#597).
+        var base = value.base
+        while let inner = base as? AnyCodable { base = inner.base }
+        if type(of: base) is NSDecimalNumber.Type {
+            throw MessagePackDirectEncodingError.decimal
+        }
         switch value.base {
         case is Void:
             return .nil
@@ -303,12 +323,9 @@ struct MessagePackDirectEncoder {
             return .string(value.uuidString)
         case let value as URL:
             return .string(value.absoluteString)
-        case let value as Decimal:
-            let number = NSDecimalNumber(decimal: value)
-            if number == .notANumber {
-                return .string(number.stringValue)
-            }
-            return .double(number.doubleValue)
+        case is Decimal:
+            // Before NSNumber, which a bridged Decimal would match (as a lossy double).
+            throw MessagePackDirectEncodingError.decimal
         case let value as NSNumber:
             return encodeNSNumber(value)
         case let value as PlayerID:

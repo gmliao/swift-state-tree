@@ -30,7 +30,6 @@ struct ReplayDomainEvent: ServerEventPayload, Equatable {
     let at: Date
     let blob: Data
     let link: URL
-    let amount: Decimal
     let ratio: Double
     let whole: Double
     let small: Float
@@ -76,7 +75,6 @@ func replayDomainEvent(at seconds: Double) -> ReplayDomainEvent {
         at: Date(timeIntervalSince1970: seconds),
         blob: Data([0, 1, 2, 255]),
         link: URL(string: "https://example.com/a?b=c")!,
-        amount: Decimal(string: "12.345")!,
         ratio: 2.5,
         whole: 3.0,
         small: 0.1,
@@ -237,7 +235,7 @@ struct ReplayTypedEventDecodeTests {
         let replayed = try #require(frame.recordedEvents[0].event as? ReplayDomainEvent)
         // The JSON view's one stated difference: `-0.0` reads back as the integer 0.
         let expected = form == .saved ? live : ReplayDomainEvent(
-            at: live.at, blob: live.blob, link: live.link, amount: live.amount, ratio: live.ratio, whole: live.whole,
+            at: live.at, blob: live.blob, link: live.link, ratio: live.ratio, whole: live.whole,
             small: live.small, count: live.count, largest: live.largest, flag: live.flag, name: live.name, negativeZero: 0.0
         )
         #expect(replayed == expected, "\(form)")
@@ -278,7 +276,7 @@ struct ReplayTypedEventDecodeTests {
         // Year 10000 is outside the record codec's dates, so a round trip would throw.
         let event = ReplayDomainEvent(
             at: Date(timeIntervalSince1970: 253_402_300_800), blob: Data(), link: URL(string: "https://example.com")!,
-            amount: 1, ratio: 1, whole: 1, small: 1, count: 1, largest: 1, flag: false, name: "", negativeZero: 0
+            ratio: 1, whole: 1, small: 1, count: 1, largest: 1, flag: false, name: "", negativeZero: 0
         )
         #expect(throws: CanonicalMessagePackError.self) { try CanonicalMessagePack.encode(AnyCodable(event)) }
         #expect(try RecordPayloadSource(AnyCodable(event)).decode(ReplayDomainEvent.self) == event)

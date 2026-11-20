@@ -12,7 +12,7 @@ struct WNPlayerShotEvent: ServerEventPayload {
     let a: Int
     let b: [Int]
     let c: Position2
-    let d: Decimal
+    let d: Date
 }
 
 @Payload
@@ -56,7 +56,7 @@ struct PayloadWireNameTests {
         #expect(WNOpenDoorAction._payloadWireName == "WNOpenDoor")
         #expect(WNOpenDoorAction._payloadWireName == payloadActionName(for: WNOpenDoorAction.self))
         #expect(WNBox<Int>.InnerEvent._payloadWireName == payloadEventName(for: WNBox<Int>.InnerEvent.self))
-        #expect(AnyServerEvent(WNPlayerShotEvent(a: 1, b: [], c: Position2(x: 0, y: 0), d: 1)).type == "WNPlayerShot")
+        #expect(AnyServerEvent(WNPlayerShotEvent(a: 1, b: [], c: Position2(x: 0, y: 0), d: Date(timeIntervalSinceReferenceDate: 0))).type == "WNPlayerShot")
     }
 
     @Test("A payload with a generic parameter named W writes its field through Codable")

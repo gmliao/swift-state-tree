@@ -28,6 +28,11 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
         /// `any P`, which is seen only as its default value's type. The land ends at the first
         /// conversion that throws.
         case existentialField(path: String, typeName: String)
+        /// A synced `Decimal` (#597): it has no sync form, so the conversion would read its private
+        /// stored fields and throw at the land's first sync. `path` is the field, from the root
+        /// type (`Root.prices[*]`). A `.serverOnly` or `@Internal` field isn't synced and may
+        /// hold one.
+        case decimalField(path: String)
         /// Two distinct types in the state share a name (#602), such as `A.Item` and `B.Item`.
         /// The schema and the atomic layout key each type by its name, so one would stand for
         /// both: in the path hashes, the generated client and the positional encoding.
@@ -45,6 +50,8 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
             case .existentialField(let path, let typeName):
                 return "\(path): \(typeName) holds a value of any type, which can't be checked; use a concrete "
                     + "type, or an enum with a case for each kind of value"
+            case .decimalField(let path):
+                return "\(path): \(DecimalFields.advice)"
             case .typeNameCollision(let collision):
                 return "the state's types are keyed by name, and \(collision)"
             }
@@ -205,7 +212,9 @@ package enum SyncRegistration {
         }
 
         mutating func visitValue(_ type: Any.Type, sample: Any?, path: String) {
-            if isOpenType(type) {
+            if type == Decimal.self {
+                problems.append(.decimalField(path: path))
+            } else if isOpenType(type) {
                 problems.append(.existentialField(path: path, typeName: String(describing: type)))
             } else if let node = type as? any StateNodeProtocol.Type {
                 visitNode(node, sample: sample ?? node.init(), path: path)

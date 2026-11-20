@@ -13,7 +13,10 @@ import SwiftStateTreeMacros
 private func diagnostics(_ source: String) -> [String] {
     let context = BasicMacroExpansionContext()
     _ = Parser.parse(source: source).expand(
-        macros: ["StateNodeBuilder": StateNodeBuilderMacro.self, "SnapshotConvertible": SnapshotConvertibleMacro.self],
+        macros: [
+            "StateNodeBuilder": StateNodeBuilderMacro.self, "SnapshotConvertible": SnapshotConvertibleMacro.self,
+            "Payload": PayloadMacro.self,
+        ],
         contextGenerator: { _ in context }
     )
     return context.diagnostics.map(\.message)
@@ -101,5 +104,80 @@ struct RefusedFieldTypeDiagnosticTests {
                 var tags: [String] = []
             }
             """).isEmpty)
+    }
+
+    // MARK: Decimal (#597)
+
+    static let decimalSpellings: [(String, String)] = [
+        ("Decimal", "Decimal"),
+        ("Decimal?", "Decimal"),
+        ("[Decimal]", "Decimal"),
+        ("[String: Decimal]", "Decimal"),
+        ("Foundation.Decimal", "Foundation.Decimal"),
+        ("Swift.Optional<Decimal>", "Decimal"),
+        ("[Decimal]?", "Decimal"),
+        ("(Int, Decimal)", "Decimal"),
+    ]
+
+    @Test("A synced Decimal is refused at compile time, at any depth", arguments: decimalSpellings)
+    func syncedDecimal(field: String, spelling: String) {
+        let messages = diagnostics(stateNode(field))
+        #expect(messages.first?.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal has no wire form") == true, "\(messages)")
+    }
+
+    @Test("A @Payload Decimal field is refused at compile time, at any depth", arguments: decimalSpellings)
+    func payloadDecimal(field: String, spelling: String) {
+        let messages = diagnostics("""
+            @Payload
+            struct PriceEvent: ServerEventPayload {
+                let value: \(field)
+            }
+            """)
+        #expect(messages.contains { $0.hasPrefix("property 'value' can't have '\(spelling)' in its type: Decimal has no wire form") }, "\(messages)")
+        // `Decimal?` also gets @Payload's Optional diagnostic: both are reported.
+        if field.hasSuffix("?") {
+            #expect(messages.contains { $0.hasPrefix("Payload field 'value' cannot be Optional") }, "\(messages)")
+        }
+    }
+
+    @Test("@SnapshotConvertible refuses a Decimal property")
+    func snapshotConvertibleDecimal() {
+        let messages = diagnostics("""
+            @SnapshotConvertible
+            struct Line {
+                var amount: Decimal = 0
+            }
+            """)
+        #expect(messages.first?.hasPrefix("property 'amount' can't have 'Decimal' in its type") == true, "\(messages)")
+    }
+
+    @Test("Not refused: a server-only or @Internal Decimal, a @Payload AnyCodable, and a Decimal of another module")
+    func decimalAllowed() {
+        #expect(diagnostics("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.serverOnly) var hidden: Decimal = 0
+                @Internal var scratch: Decimal = 0
+            }
+            """).isEmpty)
+        #expect(diagnostics("""
+            @Payload
+            struct ReportEvent: ServerEventPayload {
+                let state: AnyCodable
+                let byName: [String: AnyCodable]
+            }
+            """).isEmpty)
+        #expect(diagnostics(stateNode("Money.Decimal")).isEmpty)
+    }
+
+    @Test("The serverOnly skip reads the policy, not the text: a policy closure that names serverOnly is still checked")
+    func serverOnlyFromThePolicy() {
+        let messages = diagnostics("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.perPlayer({ value, serverOnly in value })) var value: Decimal = 0
+            }
+            """)
+        #expect(messages.contains { $0.hasPrefix("property 'value' can't have 'Decimal' in its type") }, "\(messages)")
     }
 }

@@ -70,7 +70,7 @@ package struct AnyCodablePayloadSource: PayloadDecodingSource {
 
 /// A recorded payload, decoded with the codec that wrote its record (#521 PR 1b): the tree is
 /// encoded with `CanonicalMessagePack` and the type decoded with its strict decoder, so a
-/// `Date` reads from its ISO string and `Data`, `URL` and `Decimal` from their own `Codable`
+/// `Date` reads from its ISO string and `Data` and `URL` from their own `Codable`
 /// forms, as the recorder wrote them. Both record sources hold trees in that form: a saved
 /// record, and the JSON view, which is rendered from frames read back from the log.
 ///

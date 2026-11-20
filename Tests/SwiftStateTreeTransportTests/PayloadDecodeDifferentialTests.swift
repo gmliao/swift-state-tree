@@ -101,11 +101,7 @@ struct PayloadDecodeDifferentialTests {
         ("map int key", .map([.int(1): .nil])),
         ("map int key depth 3", .map([.string("a"): .map([.string("b"): .map([.int(1): .nil])])])),
         ("extended", .extended(type: 5, data: Data("x".utf8))),
-        // `Decimal`'s keyed `Codable` form, and `URL`'s.
-        ("keyed decimal", .map([
-            .string("exponent"): .int(-1), .string("length"): .int(1), .string("isNegative"): .bool(false),
-            .string("isCompact"): .bool(true), .string("mantissa"): .array([.int(25), .int(0), .int(0), .int(0), .int(0), .int(0), .int(0), .int(0)]),
-        ])),
+        // `URL`'s keyed `Codable` form.
         ("keyed url", .map([.string("relative"): .string("https://example.com/")])),
         ("url string", .string("https://example.com/x")),
     ]
@@ -141,7 +137,7 @@ struct PayloadDecodeDifferentialTests {
         return .accepted(canonical(decoded))
     }
 
-    /// A fixture with the types `JSONDecoder` reads in its own way (`URL`, `Decimal`, `Data`) and
+    /// A fixture with the types `JSONDecoder` reads in its own way (`URL`, `Data`) and
     /// a nested value, for the mutations one level down.
     struct DiffSpecials: Codable, Sendable {
         struct Inner: Codable, Sendable {
@@ -151,7 +147,6 @@ struct PayloadDecodeDifferentialTests {
             let optional: Int?
         }
         let url: URL
-        let decimal: Decimal
         let data: Data
         let float: Float
         let date: Date
@@ -159,7 +154,7 @@ struct PayloadDecodeDifferentialTests {
     }
 
     static let specials = DiffSpecials(
-        url: URL(string: "https://example.com/a?b=1")!, decimal: Decimal(string: "2.5")!, data: Data([1, 2, 3]),
+        url: URL(string: "https://example.com/a?b=1")!, data: Data([1, 2, 3]),
         float: 1.5, date: Date(timeIntervalSinceReferenceDate: 12.5), inner: .init(int: 7, name: "n", ints: [1, 2], optional: nil)
     )
 
@@ -364,27 +359,32 @@ struct PayloadDecodeDifferentialTests {
         #expect(Self.typed(SuperProbe.self, .map([:]), recording: false) == Self.today(SuperProbe.self, .map([:])))
     }
 
-    @Test("Decimal decodes from each numeric kind as the round trip read it, and its keyed form still decodes")
-    func decimal() throws {
+    @Test("A Decimal has no wire form (#597): the MessagePack encoders refuse it, and the decoder reads no number as one")
+    func decimalIsRefused() throws {
         struct Box: Codable, Equatable { let d: Decimal }
-        let cases: [(MessagePackValue, String)] = [
-            (.int(-2), "-2"), (.uint(7), "7"), (.float(2.5), "2.5"), (.double(2.5), "2.5"), (.double(0.1), "0.1"),
-        ]
-        for (value, expected) in cases {
-            let decoded = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("d"): value]))
-            #expect(decoded.d == Decimal(string: expected), "\(value)")
-            #expect(Self.today(Box.self, .map([.string("d"): value])) == .accepted(Self.canonical(decoded)), "\(value)")
-        }
-        // A client payload refuses a Decimal sent as a string, as the round trip did.
-        #expect(throws: DecodingError.self) {
-            _ = try MessagePackPayloadSource(validating: .map([.string("d"): .string("2.5")])).decode(Box.self)
-        }
-        #expect(Self.today(Box.self, .map([.string("d"): .string("2.5")])) == .refused)
-        // A frame the server builds writes a Decimal as its string (`MessagePackValueEncoder`):
-        // it round-trips. On main it didn't decode at all (the decoder took only the keyed form).
         let codec = MessagePackTransportCodec()
-        for decimal in [Decimal(string: "2.5")!, Decimal(string: "-0.001")!, Decimal(12345678901234567890 as UInt64)] {
-            #expect(try codec.decode(Box.self, from: codec.encode(Box(d: decimal))) == Box(d: decimal))
+        // A NaN too: it was written as a bare `NaN` on the JSON encodings (#557), and as a
+        // string here.
+        for decimal in [Decimal(2.5), Decimal.nan] {
+            #expect(throws: MessagePackDirectEncodingError.self, "\(decimal)") { _ = try codec.encode(Box(d: decimal)) }
+            #expect(throws: MessagePackDirectEncodingError.self, "\(decimal)") {
+                _ = try MessagePackDirectEncoder().encodeAnyCodable(AnyCodable(decimal))
+            }
+            #expect(throws: MessagePackDirectEncodingError.self, "\(decimal)") {
+                _ = try MessagePackValueEncoder().encode(Box(d: decimal))
+            }
+        }
+        // An NSDecimalNumber in an AnyCodable, on every platform, boxed once or twice.
+        #expect(throws: MessagePackDirectEncodingError.self) {
+            _ = try MessagePackDirectEncoder().encodeAnyCodable(AnyCodable(NSDecimalNumber(string: "2.5")))
+        }
+        #expect(throws: MessagePackDirectEncodingError.self) {
+            _ = try MessagePackDirectEncoder().encodeAnyCodable(AnyCodable(AnyCodable(NSDecimalNumber(string: "2.5"))))
+        }
+        for value: MessagePackValue in [.int(2), .double(2.5), .string("2.5")] {
+            #expect(throws: DecodingError.self, "\(value)") {
+                _ = try MessagePackValueDecoder().decode(Box.self, from: .map([.string("d"): value]))
+            }
         }
     }
 
