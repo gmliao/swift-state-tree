@@ -1080,6 +1080,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await shutdownIfIdle(cause: .initializationFailed)
     }
 
+    /// A record's resolver outputs as the replayed handler reads them: each held as recorded, and
+    /// decoded by `LandContext`'s subscript with the record's codec when the handler asks (#707).
+    /// The JSON view gets its integer-to-float allowance, as its recorded events do
+    /// (`ReevaluationReplayFrame.integralFloats(for:)`).
+    private func replayedResolverOutputs(
+        _ recorded: [String: ReevaluationRecordedResolverOutput]
+    ) -> [String: any ResolverOutput] {
+        let integralFloats = reevaluationSource is JSONReevaluationSource
+        return recorded.mapValues {
+            AnyCodableResolverOutput(typeIdentifier: $0.typeIdentifier, value: $0.value, integralFloats: integralFloats)
+        }
+    }
+
     /// Re-evaluation of a record with an initialize record (format 2.1): OnInitialize runs here,
     /// before tick 0, as in the live run: at the recorded sequence, at tick -1 and with the
     /// recorded resolver outputs. Its events are flushed at tick -1 for the initialize check.
@@ -1091,10 +1104,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
               let recorded = try? await source.getLifecycleEvents(for: 0)
                 .first(where: { $0.kind == LifecycleKind.initialize.rawValue })
         else { return }
-        var resolverOutputs: [String: any ResolverOutput] = [:]
-        for (key, output) in recorded.resolverOutputs {
-            resolverOutputs[key] = AnyCodableResolverOutput(typeIdentifier: output.typeIdentifier, value: output.value)
-        }
+        let resolverOutputs = replayedResolverOutputs(recorded.resolverOutputs)
         outputCollector.nextSequence = record.sequence
         _ = outputCollector.takeNextSequence()
         let ctx = makeContext(
@@ -4410,16 +4420,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         continue
                     }
 
-                    // Convert resolver outputs back to ResolverOutput.
-                    // In re-evaluation mode, we wrap them in AnyCodableResolverOutput for lazy decoding.
-                    // The actual decoding happens when accessed via LandContext.subscript
-                    var resolverOutputs: [String: any ResolverOutput] = [:]
-                    for (key, recordedOutput) in recordedAction.resolverOutputs {
-                        resolverOutputs[key] = AnyCodableResolverOutput(
-                            typeIdentifier: recordedOutput.typeIdentifier,
-                            value: recordedOutput.value
-                        )
-                    }
+                    let resolverOutputs = replayedResolverOutputs(recordedAction.resolverOutputs)
 
                     let pendingItem = PendingItem.action(
                         PendingActionItem(
@@ -4495,13 +4496,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         continue
                     }
 
-                    var resolverOutputs: [String: any ResolverOutput] = [:]
-                    for (key, recordedOutput) in recordedLifecycleEvent.resolverOutputs {
-                        resolverOutputs[key] = AnyCodableResolverOutput(
-                            typeIdentifier: recordedOutput.typeIdentifier,
-                            value: recordedOutput.value
-                        )
-                    }
+                    let resolverOutputs = replayedResolverOutputs(recordedLifecycleEvent.resolverOutputs)
 
                     let pendingItem = PendingItem.lifecycle(
                         PendingLifecycleItem(

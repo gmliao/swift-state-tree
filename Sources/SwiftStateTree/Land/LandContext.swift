@@ -291,11 +291,10 @@ public struct LandContext: Sendable {
     /// - `ProductInfoResolver` -> `productInfo`
     /// - `UserProfileResolver` -> `userProfile`
     ///
-    /// **Replay Mode Support**: In replay mode, resolver outputs are stored as `AnyCodableResolverOutput`
-    /// wrappers. This subscript automatically decodes them to the requested type when accessed.
-    /// 
-    /// **Type Safety**: If the recorded type identifier doesn't match the expected type,
-    /// this will attempt to decode anyway (for compatibility), but ideally types should match.
+    /// **Replay:** a recorded output is held as `AnyCodableResolverOutput`, and this subscript decodes
+    /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
+    /// replayed server event is: a `Date`, `Data`, `URL` or `Decimal` field reads back in the form the
+    /// recorder wrote. An output that doesn't decode into the requested type reads as `nil`.
     public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {
         guard let output = resolverOutputs[member] else {
             return nil
@@ -306,30 +305,10 @@ public struct LandContext: Sendable {
             return direct
         }
         
-        // In replay mode, outputs may be wrapped in AnyCodableResolverOutput
-        // Decode from AnyCodable using the recorded type information
+        // A recorded output, in replay: decoded with the codec that wrote the record. A JSON round
+        // trip can't read a `Date`, `Data` or `URL` field back (#707).
         if let wrapped = output as? AnyCodableResolverOutput {
-            let encoder = JSONEncoder()
-            let decoder = JSONDecoder()
-            do {
-                // Encode the AnyCodable value
-                let encoded = try encoder.encode(wrapped.value)
-                // Decode as the target type T
-                let decoded = try decoder.decode(T.self, from: encoded)
-                
-                // Optional: Log type mismatch warnings for debugging
-                let expectedTypeName = String(describing: T.self)
-                if wrapped.typeIdentifier != expectedTypeName {
-                    // Type names don't match, but decoding succeeded (might be compatible types)
-                    // This is acceptable but worth noting for debugging
-                }
-                
-                return decoded
-            } catch {
-                // Decoding failed - this indicates a type mismatch
-                // Return nil to indicate the resolver output is not available
-                return nil
-            }
+            return try? RecordPayloadSource(wrapped.value, integralFloats: wrapped.integralFloats).decode(T.self)
         }
         
         return nil
@@ -346,10 +325,15 @@ internal struct AnyCodableResolverOutput: ResolverOutput {
     let typeIdentifier: String
     /// The actual resolver output value as AnyCodable
     let value: AnyCodable
-    
-    init(typeIdentifier: String, value: AnyCodable) {
+    /// The JSON view's integer-to-float allowance (`RecordPayloadSource.integralFloats`): true when
+    /// the record was read from its JSON view, which doesn't keep the float/integer split. Not
+    /// encoded: a decoded wrapper reads strictly.
+    let integralFloats: Bool
+
+    init(typeIdentifier: String, value: AnyCodable, integralFloats: Bool = false) {
         self.typeIdentifier = typeIdentifier
         self.value = value
+        self.integralFloats = integralFloats
     }
     
     enum CodingKeys: String, CodingKey {
@@ -361,6 +345,7 @@ internal struct AnyCodableResolverOutput: ResolverOutput {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.typeIdentifier = try container.decode(String.self, forKey: .typeIdentifier)
         self.value = try container.decode(AnyCodable.self, forKey: .value)
+        self.integralFloats = false
     }
     
     func encode(to encoder: Encoder) throws {
