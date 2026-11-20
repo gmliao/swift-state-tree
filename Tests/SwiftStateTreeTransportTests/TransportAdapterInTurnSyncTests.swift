@@ -885,48 +885,6 @@ struct TransportAdapterInTurnSyncTests {
 
     // MARK: - No lost requests (A.4)
 
-    @Test("a sync request during the freeze settle's cycle is latched, runs after its endSync, and leaves its sync to the resume")
-    func syncDuringSettleCycleIsLatched() async throws {
-        let f = try await InTurnSyncFixture.make(encoding: .json)
-        let gate = InTurnGate()
-        await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.wait() })
-        // In-turn, only the freeze settle still runs a legacy cycle (until #546 L2b).
-        let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
-        for _ in 0..<400 where await gate.waiting == 0 {
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
-        #expect(await gate.waiting == 1)
-        await f.adapter.installHolds(nil)
-
-        #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
-        // A requested turn meets the cycle's sync flag: latched with its port, nothing run.
-        #expect(await f.adapter.syncNowReportingOutcome() == .skipped)
-        #expect(await f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
-        #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch counts as requested work")
-
-        // The latch's rerun is held between endSync and its turn: the work stays counted there.
-        let rerunGate = TestGate()
-        await f.keeper.installHolds { point in
-            if point == .syncOnlyAfterLegacyCycle { await rerunGate.arrive() }
-        }
-        await gate.release()
-        let token = try await freeze.value.freezeToken
-        #expect(await rerunGate.waitForArrivals(1), "endSync started the rerun")
-        #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "endSync consumed the latch")
-        #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "counted until the rerun's turn")
-        rerunGate.open()
-        #expect(await withinHangBound { await adapter.waitForBackgroundSyncsForTesting() }, "the latch's rerun never finished")
-        await f.keeper.installHolds(nil)
-        #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch's turn ran")
-        // The latch's turn ran while frozen: its phase leaves the sync to the resume.
-        #expect(await f.adapter.debugFreezeState.deferredSyncNow)
-
-        _ = await f.adapter.debugResume(freezeToken: token)
-        #expect(await withinHangBound { await adapter.waitForBackgroundSyncsForTesting() }, "the resume's sync never finished")
-        #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
-    }
-
     @Test("In-turn off: a sync request that meets a cycle in flight is deferred and counted (syncDeferredByCycle, #555)")
     func syncDeferredByCycleCountsWithInTurnOff() async throws {
         let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)

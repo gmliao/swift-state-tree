@@ -139,7 +139,9 @@ private struct Fixture {
     let alice = (session: SessionID("s-alice"), client: ClientID("c-alice"), player: PlayerID("alice"))
     let bob = (session: SessionID("s-bob"), client: ClientID("c-bob"), player: PlayerID("bob"))
 
-    init() async throws {
+    /// `inTurnSync: false`: the adapter's package-only off mode, whose settle still takes the
+    /// keeper's sync flag (until #546 L2c).
+    init(inTurnSync: Bool = true) async throws {
         keeper = LandKeeper<DebugFreezeAdapterState>(
             definition: makeDefinition(),
             initialState: DebugFreezeAdapterState()
@@ -153,7 +155,8 @@ private struct Fixture {
                 useSnapshotForSync: true,
                 syncStrategy: .delta,
                 profilingConfig: nil
-            )
+            ),
+            inTurnSync: inTurnSync
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -294,9 +297,10 @@ struct TransportAdapterDebugFreezeTests {
         }
     }
 
-    @Test("Settle waits for a sync cycle already in flight, then runs its own")
+    @Test("Off adapter: settle waits for a sync cycle already in flight, then runs its own")
     func settleRetriesUntilBeginSyncAccepts() async throws {
-        let f = try await Fixture()
+        // In-turn, the settle takes no sync flag (#546 L2b): this is the off settle's, until L2c.
+        let f = try await Fixture(inTurnSync: false)
         try await f.update(headline: "retry-marker-7d0e", score: 1)
 
         // Hold the keeper's sync flag, as a running cycle would.
@@ -451,19 +455,96 @@ struct TransportAdapterDebugFreezeTests {
         #expect(await f.keeper.isDebugFrozen() == false)
     }
 
-    @Test("A freeze released before its settle finished reports released, not a token")
+    @Test("A freeze released before its settle commits reports released, not a token, and plans nothing")
     func releasedBeforeSettleFinished() async throws {
         let f = try await Fixture()
-        await f.adapter.setDebugFreezeAutoResumeTimeout(.milliseconds(100))
-        // Hold the sync flag so the settle keeps retrying past the auto-resume.
-        _ = await f.keeper.beginSync(clearDirtyFlags: false)
+        // The auto-resume fires at once; the settle is held between its writer wait and its
+        // keeper job, so the release lands there (#546 L2b).
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
+        let settle = TestGate(), fired = TestGate()
+        let holds = HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.settleBeforeCommit) { await settle.arrive() }
+            .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
+        await f.adapter.installHolds(holds.hook)
+        let plansBefore = await f.adapter.perPlayerExtractionsForTesting
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        #expect(await settle.waitForArrivals(1), "the settle didn't reach its commit")
+        #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
+        let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
+        fired.open()
+        await timer.value
+        #expect(await f.keeper.isDebugFrozen() == false, "the auto-resume released the keeper")
+        settle.open()
 
         await #expect(throws: DebugFreezeError.released) {
-            try await f.adapter.debugFreeze()
+            try await freeze.value
         }
+        #expect(await f.adapter.perPlayerExtractionsForTesting == plansBefore, "the job's fence planned nothing")
         #expect(await f.adapter.isDebugFrozen() == false)
         #expect(await f.keeper.isDebugFrozen() == false)
-        await f.keeper.endSync()
+        await f.adapter.installHolds(nil)
+    }
+
+    @Test("A keeper-side release before the settle's keeper job is caught by the job's fence")
+    func keeperReleaseBeforeSettleCommit() async throws {
+        let f = try await Fixture()
+        let settle = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        let plansBefore = await f.adapter.perPlayerExtractionsForTesting
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        #expect(await settle.waitForArrivals(1), "the settle didn't reach its commit")
+        // Only the keeper's freeze ends: the adapter's generation is still current, so only the
+        // keeper's own check can refuse.
+        await f.keeper.debugResume(generation: await f.adapter.debugFreezeState.generation)
+        settle.open()
+
+        await #expect(throws: DebugFreezeError.released) {
+            try await freeze.value
+        }
+        #expect(await f.adapter.perPlayerExtractionsForTesting == plansBefore, "the job's fence planned nothing")
+        await f.adapter.installHolds(nil)
+    }
+
+    @Test("A settle whose deadline passed before its keeper job times out and plans nothing")
+    func settleDeadlineCheckedInTheJob() async throws {
+        let f = try await Fixture()
+        // Nothing is in flight and the writer is idle, so the drain and the writer wait pass
+        // at once; the job's fence then finds the zero deadline passed (#546 L2b).
+        await f.adapter.setDebugFreezeSettleDeadline(.zero)
+        let plansBefore = await f.adapter.perPlayerExtractionsForTesting
+        await #expect(throws: DebugFreezeError.settleTimedOut) {
+            try await f.adapter.debugFreeze()
+        }
+        #expect(await f.adapter.perPlayerExtractionsForTesting == plansBefore)
+        #expect(await f.adapter.isDebugFrozen() == false)
+        #expect(await f.keeper.isDebugFrozen() == false)
+    }
+
+    @Test("A land that fails before the settle's keeper job ends the freeze as released and plans nothing")
+    func settleOfAFailedLandPlansNothing() async throws {
+        let f = try await Fixture()
+        let settle = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        let plansBefore = await f.adapter.perPlayerExtractionsForTesting
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        #expect(await settle.waitForArrivals(1), "the settle didn't reach its commit")
+        await f.keeper.submitLandFailure(LandFailure(
+            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        #expect(await f.keeper.waitForFailureForTesting())
+        settle.open()
+
+        await #expect(throws: DebugFreezeError.released) {
+            try await freeze.value
+        }
+        #expect(await f.adapter.perPlayerExtractionsForTesting == plansBefore, "the job's fence planned nothing")
+        await f.adapter.installHolds(nil)
     }
 
     @Test("Freezing an empty land keeps its dirty flags for the next real sync")

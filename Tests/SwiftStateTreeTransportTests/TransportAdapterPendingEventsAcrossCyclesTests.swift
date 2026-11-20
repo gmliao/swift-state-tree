@@ -993,16 +993,17 @@ struct TransportAdapterKeptEventsDebugFreezeTests {
         #expect(count("bc-frozen-follow-up", in: f.frames(f.a)) == 1, "the event was resent after resume")
     }
 
-    // Since #60 the cycle has no suspension point between reading the event queue and its
-    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
-    // stay covered by the PendingEventManager unit tests. This test queues its event while the
-    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
-    @Test("An event queued after the settle cycle's cleanup arrives once after resume")
+    // The in-turn settle commits in one keeper job (#546 L2b), so its read→cleanup window can't
+    // be reached from outside; the marks stay covered by the PendingEventManager unit tests.
+    // This test queues its event while the settle is held after its commit, before it publishes,
+    // and checks that the settle's kept-events check leaves it to the resume.
+    @Test("An event queued after the settle's commit arrives once after resume")
     func eventKeptBySettleArrivesAfterResume() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
         try await f.set("score", 2)
 
-        // The settle cycle is the held one: the event is queued after its merged frame was built.
+        // The settle is the held one: the event is queued after its frame was built.
+        await f.hold.install(on: f.adapter, at: .settleBeforePublish)
         f.hold.arm()
         let adapter = f.adapter
         let freeze = Task { try await adapter.debugFreeze() }
@@ -1020,12 +1021,13 @@ struct TransportAdapterKeptEventsDebugFreezeTests {
         #expect(count("bc-kept-by-settle", in: f.frames(f.a)) == 1)
     }
 
-    @Test("A leave during the settle cycle's sends sets membershipChanged")
+    @Test("A leave after the settle's commit sets membershipChanged")
     func leaveDuringSettleSendsFlagsMembership() async throws {
         let f = try await KeptEventsFixture.make(.tickless, members: ["a", "b"])
         try await f.set("score", 3)
 
-        // Hold the settle cycle's batch: its state copy is already taken.
+        // Hold the settle after its commit: its state copy is already taken.
+        await f.hold.install(on: f.adapter, at: .settleBeforePublish)
         f.hold.arm()
         let adapter = f.adapter
         let freeze = Task { try await adapter.debugFreeze() }
