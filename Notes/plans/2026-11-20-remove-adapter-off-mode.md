@@ -1,10 +1,10 @@
 # Remove the adapter's off mode on live lands (#546 L2)
 
-**Status:** rev 5, plan only, for review. No code until this plan is GO. L1 (#677) is merged (7a462bd1).
+**Status:** rev 6, plan only, for review. No code until this plan is GO. L1 (#677) is merged (7a462bd1).
 - **Decided (the maintainer, 2026-11-20):**
   - §8's Q1 (a), Q2 (a) and Q3 (a);
   - a requested sync turn is a keeper input that carries its reason and a ticket, validated in the turn (§3.2, §8).
-- **Rev 5** answers rev 4's review (#680: 4 must-fix, 4 should, 2 nit) and records that decision. What changed is in §11; rev 4's, rev 3's and rev 2's changes follow it.
+- **Rev 6** answers rev 5's review (#680: 2 must-fix, 5 should, 2 nit). What changed is in §11; the earlier revisions' changes follow it.
 - **Order changed in rev 5:** L2c now deletes the off adapter, and L2d moves every live keeper onto turns. So there is no transitional routing rule and no `portless` parameter (§3.5).
 
 **Issue:** #546, step L2 of `2026-11-19-adapter-turn-core-rewrite.md` (rev 13). That plan holds L2's placeholder (§3.2, groups 2a–2e) and the "Inputs to L2's own plan" block; §9 here maps each input to the section that settles it. "Group 2a"–"2e" name #655's groups; "L2a"–"L2d" name this plan's PRs.
@@ -60,7 +60,7 @@ The L2d PR prints the census from a script, as a migration list (§3.5), so the 
 **Live keepers with no transport** (group 2e): about 19 `SwiftStateTreeTests` files, `HashCostBenchmark.swift:50`, and `ReevaluationRunner/main.swift:452` (a live keeper that records a game).
 
 **In-turn adapters whose keeper has no port attached.** The adapter shares its keeper's executor whether or not it is attached (TA:112). But `isAttached(to:)` checks only the keeper's identity (TA:116), not the keeper's transport slot:
-- `TransportAdapterSyncLagTests.makeFixture` defaults `keeperTransport` to `false` (:184), and `timerRequestsSync` (:378) expects a resync from that fixture;
+- `TransportAdapterSyncLagTests.makeFixture` defaults `keeperTransport` to `false` (:189), and `timerRequestsSync` (:378) expects a resync from that fixture;
 - EncodingBenchmark's static and dynamic worker pools build a keeper with no transport, never attach the adapter, and call `syncNow()` in their loop (`BenchmarkExecution.swift:491`, :603, :687, :791).
 
 **Explicit off callers** pass `inTurnSync: false`, directly or through a fixture:
@@ -71,7 +71,7 @@ The L2d PR prints the census from a script, as a migration list (§3.5), so the 
 
 **Direct `beginSync`/`endSync` callers:** `LandKeeperSyncLockTests` (:74, :115), `TransportAdapterOrderedSendTests.swift:575`, `SyncStreamProducerTests.swift:543`, `TransportAdapterSyncDirtyWindowTests.swift:273`.
 
-**Other readers of the off mode:** `LandManager` reads `inTurnSyncEnabled` for `recordsSyncStream` and the sync configuration (`LandManager.swift:700–701`); EncodingBenchmark reads `TransportAdapterBenchmarkHandle.inTurnSyncEnabled` (`EncodingBenchmarkMain.swift:158–159`).
+**Other readers of the off mode:** `LandManager` reads `inTurnSyncEnabled` for `recordsSyncStream` and the sync configuration (`LandManager.swift:697–698`); EncodingBenchmark reads `TransportAdapterBenchmarkHandle.inTurnSyncEnabled` (`EncodingBenchmarkMain.swift:158–159`).
 
 ## 3. Decisions
 
@@ -80,7 +80,7 @@ The L2d PR prints the census from a script, as a migration list (§3.5), so the 
 *On an in-turn adapter, `syncNow()` runs one sync-only turn on the keeper now, and returns after it. On an off adapter it runs the cycle, as today, until L2c.*
 - The keeper gets a package entry point, `syncTurnNow(via port: any LandKeeperTransport) -> InTurnSyncResult`. The adapter passes itself. It is an outside request (§3.2): one keeper job validates it, with `port.runsSyncPhaseInTurn(of: self)` among the checks, runs `runSyncOnlyTurn(transport: port)` (LK:5039), and returns the phase's result. The adapter shares the keeper's executor when it runs in-turn (TA:112, :974), so no other turn runs between the request and the turn.
 - The port is the adapter the call names, not the keeper's transport slot. So the adapters whose keeper has no port attached (§2: the SyncLag fixture and EncodingBenchmark's worker pools) keep working, with their routing and outputs as they are; only `syncNow()`'s path moves. The lag timer's and the other outside requests name their adapter the same way.
-- What it returns: `.committed` when the phase committed (its frames are with the writer); `.skipped` when nothing was planned (no members, a failed land, frozen, or the keeper's `isSyncing` held by a legacy cycle, when the latch reruns it after `endSync`); `.deferredBackPressure` when the writer held an earlier phase, with the keeper's one retry pending (LK:5068); `.failed` or `.landFailed` when the phase ended the land. A request that fails validation (a failed or draining land, a stale ticket) returns `.skipped`. The caller that needs a retry's frames awaits the test wait (§3.2).
+- What it returns: `.committed` when the phase committed (its frames are with the writer); `.skipped` when nothing was planned (no members, a failed land, frozen, or the keeper's `isSyncing` held by a legacy cycle, when the latch reruns it after `endSync`); `.deferredBackPressure` when the writer held an earlier phase, with the keeper's one retry pending (LK:5068); `.failed` or `.landFailed` when the phase ended the land. A request that fails validation (a failed or draining land, a stale ticket, a port that fails the binding check, §3.2) returns `.skipped`. The caller that needs a retry's frames awaits the test wait (§3.2).
 - Between L2a and L2b the in-turn settle still takes `beginSync` (§3.4), so a turn requested during a settle meets `isSyncing`: it sets the latch and returns `.skipped`, and the latch's turn runs after the settle's `endSync`. The test wait counts that rerun (§3.2).
 - No fold. The sync loop folds a sync into a tick due within the coincident-sync window (LK:5539–5557). An explicit `syncNow()` is a test's or a benchmark's request for a sync at that point, so it runs at once.
 - No busy outcome on the in-turn path. A sync-only turn is synchronous, so a request can't meet one in flight.
@@ -100,7 +100,10 @@ What changes for an in-turn caller:
 
 **The input.** `SyncTurnRequest` has three fields:
 - **`reason`**: `.keptEvents`, `.outOfTurnEvent`, `.lagTimer`, `.behindCommitRepair` or `.resume`. It is for diagnostics and tests. No handling depends on it.
-- **`ticket`**: the keeper's own lifecycle generation, captured when the request is made. It is bumped when the land fails and when the drain starts.
+- **`ticket`**: the keeper's own lifecycle generation. It is bumped when the land fails and when the drain starts. Where it is captured:
+  - an inside request captures it in the turn that makes it;
+  - a delayed request (the repair, the lag timer's) captures it when its delay starts, before the sleep and the hold;
+  - an immediate outside request (`syncNow()`, an out-of-turn event, the resume) captures it at the call. Its job runs right after, so for these the check rarely fails; it matters for the other two.
 - **`port`**: the port to sync through. An outside request carries the requesting adapter (§3.1), and an inside request carries the port of the turn that made it.
 
 **A control input.** It isn't queued with the tick's inputs and isn't recorded as an input. The sync-only turn it runs is recorded as that turn is today: a turn record on a tickless land (#327). On a hand-stepped tick land it runs when requested, not at the next step.
@@ -119,10 +122,37 @@ What changes for an in-turn caller:
    Retiring clears the request's pending entry and wakes the test wait, so the wait never hangs on a failed or draining land.
 
 **Outside requests run now; only inside requests wait.**
-- **From outside the keeper:** the adapter's requests (the lag timer, the repair, an out-of-turn event, the resume) and `syncNow()`. The request's job runs the turn at once and also consumes any pending inside request. It never returns early because a request is pending, so when the caller's await returns, the turn that covers its request has run. The resume relies on this (§3.4).
+- **From outside the keeper:** the adapter's requests (the lag timer, the repair, an out-of-turn event, the resume) and `syncNow()`. The request's job runs the turn at once. It also consumes a pending inside request for the same port: it clears that entry before the phase runs, so the phase can arm a successor. It never returns early because a request is pending, so when the caller's await returns, the turn that covers its request has run. What that turn delivered is a separate question (below). The resume relies on both (§3.4).
 - **From inside a turn** (caller 1 below, in `applyInTurnSyncResult`): a turn can't run inside a turn. The keeper adds a pending entry and enqueues the job, which runs right after the current turn. A later inside request made while one is pending joins it. A job whose entry an outside request has consumed retires it without a turn.
 
-So requests coalesce only before a job runs, and no caller's await returns before the turn that covers its request has run.
+So requests coalesce only before a job runs, and only for the same port. No caller's await returns before the turn that covers its request has run.
+
+**Which adapters may request.** A request's port must pass two checks:
+- `port.runsSyncPhaseInTurn(of: self)`: an in-turn adapter of this keeper. This proves identity and the shared executor, so `assumeIsolated` is valid.
+- **The binding check:** the keeper's slot is that port (`transport === port`), or the slot is nil and has never held a port.
+
+So the attached adapter may request, and so may an adapter whose keeper has never been attached: the SyncLag fixture, EncodingBenchmark's worker pools, and `TransportAdapterSyncBackPressureTests`' fixture unless `keeperDrivesSync`. A formerly attached adapter may not. `setTransport` replaced it (LK:467–470), or the teardown installed the released placeholder. The binding check runs at validation and again before every follow-up below.
+
+**The port goes through everything a request's turn arms.** Today the follow-ups read the keeper's slot, which is nil for a never-attached adapter. L2a gives each one the port of the turn that armed it, and each re-checks the binding:
+- **The writer-drain retry** (LK:5068) already waits on the given port. Its turn becomes `runSyncOnlyTurn(transport: port)`, not `runRetriedSyncOnlyTurn` → `runSyncOnlyTurnIfInTurn`, which guards on the slot (LK:5061–5079).
+- **The latch** stores the port (`syncOnlyTurnAfterLegacyCycle: (any LandKeeperTransport)?` in place of the Boolean). Its rerun after `endSync` (LK:1367–1383) syncs through that port.
+- **The join-sync follow-up** a commit arms (`scheduleJoinSyncTurn`, LK:4663–4665) and **the inside request** for kept events (caller 1) carry the port of the turn that armed them.
+- **A failure** goes through the port. A plan failure on an explicit port reaches `failLand`, which closes and tells `self.transport` (LK:5285–5293). `failLand` gains the failing port: it closes and tells the slot's transport, or the failing port when the slot is nil. So a never-attached adapter that fails is closed and told.
+
+The periodic sync loop and the handler's sync requests (LK:637) keep reading the slot: they run only on an attached keeper.
+
+**A turn that ran isn't a delivery.** The outcome of the turn that covers a request names who delivers its work:
+
+| Outcome | Who delivers |
+|---|---|
+| `.committed` | this phase: its frames are with the writer |
+| `.skipped`, frozen | the resume: the phase set `deferredSyncNow` (freeze checked first, above) |
+| `.skipped`, latched (between L2a and L2b, while the settle holds `beginSync`) | the latch's rerun after `endSync`, through the stored port |
+| `.deferredBackPressure`, land without periodic sync | the writer-drain retry, through the same port (LK:5068) |
+| `.deferredBackPressure`, periodic land | the next periodic phase; there is no retry (LK:4663) |
+| `.skipped`, nothing to plan, or retired (failed, draining, stale, binding) | nobody; there is nothing to deliver, or the land is ending |
+
+`syncTurnNow(via:)` returns the outcome (§3.1). Every test that awaits a request asserts on the phase that delivers, not just on the await.
 
 **The freeze comes before back-pressure.** The in-turn phase checks writer back-pressure (TA:2894–2899) before the freeze (TA:2903). At `.settleBeforePublish` the settle's own frames can still be in the writer, so a request made then would return `.deferredBackPressure` without setting the resume's deferred sync. L2a swaps the two checks, so the phase checks the freeze first, as the legacy cycle does (TA:3132). A frozen phase then always sets `deferredSyncNow` and plans nothing.
 
@@ -140,7 +170,11 @@ During a freeze this changes two things for in-turn phases:
 
 **Delays and holds stay on the adapter.** The keeper runs only immediate requests. A delayed caller waits on the adapter's side, in a background Task, then requests:
 - **The behind-commit repair** (TA:5657): sleep `syncFailedPlanFollowUpDelay`, `await holds.at(.failedPlanFollowUp)`, then request. The hold is an `AdapterHoldPoint` (TA:20) and stays one. Its request is an outside request, so it runs its own turn when it's made, after its delay and hold.
-- **The lag timer** (TA:3605): `syncLagTimerPass` checks the epoch in its segment (`syncLagTimerEpoch`, TA:379, private to the adapter), then spawns `runSyncLagTimerSync(epoch:)`. That function holds at `.syncLagTimerSync` (TA:39). After the hold it checks the epoch again, requests, and only then clears the pending mark. The mark becomes the epoch of the pass that set it, replacing today's Boolean (`syncLagTimerSyncRequested`, TA:3605–3624), and a callback clears it only if the mark still holds its own epoch. So a stale callback (the timer restarted and the epoch bumped) neither requests nor clears a newer pass's mark.
+- **The lag timer** (TA:3605): `syncLagTimerPass` checks the epoch in its segment (`syncLagTimerEpoch`, TA:379, private to the adapter), then spawns `runSyncLagTimerSync(epoch:)`. That function holds at `.syncLagTimerSync` (TA:39). After the hold it checks the epoch again, requests, and only then clears the pending mark. The mark becomes the epoch of the pass that set it, replacing today's Boolean (`syncLagTimerSyncRequested`; admission at TA:3470–3476, the callback at :3575–3625). It is checked against the epoch at both ends:
+  - **at admission:** a pass admits a request unless the mark already holds the pass's own epoch, so a pass of a new epoch can request while an old callback is held;
+  - **at retirement:** a callback clears the mark only if it still holds the callback's own epoch.
+
+  So a stale callback (the timer restarted and the epoch bumped) neither requests nor clears a newer pass's mark. Test: hold an old callback at `.syncLagTimerSync`, restart the timer, let the new epoch request, then release the old callback. The new mark stays, and the old callback doesn't request.
 
 **The callers on an in-turn land.** Callers 1–4 are on lands without periodic sync. The resume, caller 5, isn't limited to those, because `debugReleaseFreeze` has no such guard (TA:6641).
 1. **Kept events after a commit.** The phase reports whether events are still queued after its commit, whether it kept them or they were queued after it. The signal is a package field on `InTurnSyncOutput`, `keepsEvents`, set by the adapter's package init. `InTurnSyncResult` and the public init don't change. In `applyInTurnSyncResult`'s `.committed` case, `keepsEvents && !hasPeriodicSync` makes an inside request. This is the legacy follow-up's rule (TA:3280–3287). A phase that ends the land requests nothing.
@@ -157,7 +191,7 @@ The writer-drain retry (LK:5068) and the join-budget follow-ups (`scheduleJoinSy
 
 **Where each case is tested.**
 - **At once on a hand-stepped tick land:** the harness's `.tick` cells, which DR steps by hand (DR:307). A request made between two steps runs before the next step.
-- **The repair:** `InitialSyncBehindCommitTests`.
+- **The repair:** `InitialSyncBehindCommitTests`. Its adapter is built with `inTurnSync: false` (:97), so L2a adds an in-turn arm, which the repair request needs. The off arm goes in L2c.
 - **The timer:** `TransportAdapterSyncLagTests`.
 
 Both of those suites are tickless.
@@ -193,14 +227,19 @@ On an in-turn land a broadcast-only request already runs the full phase (LK:637�
 1. **The deferred sync**, as one outside request (§3.2), awaited. An outside request runs its turn before it returns, even when an inside request is pending, so the turn that covers the deferred sync has run when the resume goes on.
 2. **The join-sync turn request**, as today (TA:6648–6650; `requestJoinSyncTurn` runs its turn synchronously, LK:1932–1942).
 
-The first turn's phase flips ready joins up to the join budget (TA:1863), and the join-sync turn takes those it left. Joins beyond that, and work deferred by back-pressure, progress as §3.2's joins paragraph says:
-- **on a land without periodic sync:** the join-sync follow-ups and the writer-drain retry;
-- **on a periodic land:** the next periodic phase.
+The freeze is off when step 1 runs, and after L2b the settle takes no `beginSync`, so step 1's turn can't be frozen or latched. Its outcome names who delivers (§3.2's table), and step 2 goes on in every case:
+- **`.committed`:** step 1's phase delivers the deferred work and flips ready joins up to the join budget (TA:1863). Step 2's join-sync turn flips the joins it left.
+- **`.deferredBackPressure`, land without periodic sync:** the writer-drain retry delivers the deferred work and flips the ready joins. Step 2 finds that earlier deferral and skips (LK:1934–1941); the retry covers it.
+- **`.deferredBackPressure`, periodic land:** the next periodic phase delivers both. Step 2 skips on the pending fold or the earlier deferral (LK:1934–1941); that phase covers it.
 
-Tests:
-- deferred output and a ready join across one resume;
-- more ready joins than the budget across one resume;
-- a request at `.settleBeforePublish` with the writer held: the deferred sync is set, and the resume delivers it once.
+Joins beyond the budget go on as §3.2's joins paragraph says.
+
+Tests, each naming the phase that delivers:
+- writer free: deferred output and a ready join, both delivered by the resume's own phase;
+- writer held, land without periodic sync: both delivered by the writer-drain retry after the release;
+- writer held, periodic land: both delivered by the next periodic phase;
+- more ready joins than the budget: the rest delivered by the join-sync turn;
+- a request at `.settleBeforePublish` with the writer held: the deferred sync is set, and the resume's path delivers it once.
 
 **The settle's tests, in L2b:**
 - `eventKeptBySettleArrivesAfterResume` and `leaveDuringSettleSendsFlagsMembership` (`TransportAdapterPendingEventsAcrossCyclesTests` :1020–1057) arm the cycle hold and wait for the settle to reach it. They move to a new adapter hold, `.settleBeforePublish`, after `debugSettleTurn` returns and before step 4. The segment itself is synchronous and can't hold, and a hold before it would invert both tests: a leave before the copy gives the settle the epoch after the leave, and an event queued before it would go out in the settle's phase while frozen. After step 3, the leave flags `membershipChanged`, and the event takes §3.2's caller 2 during the freeze: its requested turn defers and sets `deferredSyncNow`, so it is delivered once, after the resume.
@@ -250,9 +289,10 @@ No init parameter and no transitional rule. `setTransport` doesn't change, and n
 
 L2d keeps that outcome: the initialize turn takes the event, records it in its turn record and delivers it nowhere. First-frame delivery of pre-attach outputs is not a goal of L2.
 
-**The pin test** is written first and run on L2d's base, then kept through the change. It holds `.wiring`, awaits the initialization, releases the hold and syncs, on a tick land and a tickless land:
-- **on the base:** the event stays in the collector, and no client receives it;
-- **after the change:** the event is in the initialize turn record, the collector holds none, and no client receives it.
+**The pin test** is written first and run on L2d's base, then kept through the change. It runs with a recorder on, on a tick land and a tickless land. It holds `.wiring`, awaits the initialization, runs one tick (or one input on the tickless land) under the hold, releases the hold, and syncs:
+- **on the base:** the event stays in the collector, the initialize record holds it, and no client receives it;
+- **after the change:** the event is in the initialize turn record, the collector holds none, and no client receives it;
+- **both:** the tick or input under the hold is recorded in its own turn, after initialize.
 
 **Keepers with no port, by the census** (should 1). The L2d PR prints a migration list from a script, covering:
 - omitted and conditional `transport:` arguments;
@@ -264,7 +304,7 @@ For each keeper the list gives its builder, whether a port ever comes, and what 
   - the 2e keepers (`SwiftStateTreeTests`);
   - `HashCostBenchmark.swift:50` and `ReevaluationRunner/main.swift:452`;
   - EncodingBenchmark's worker pools (`BenchmarkExecution.swift:491`, :603, :687, :791);
-  - `TransportAdapterSyncLagTests.makeFixture` with `keeperTransport: false` (:184);
+  - `TransportAdapterSyncLagTests.makeFixture` with `keeperTransport: false` (:189);
   - the bare keepers outside the core tests: `MonitorTicketTests:351`, and GameDemo's `HeroDefenseStatsTests:35` and `HeroDefenseFreezeResumeTests:42`.
 
   Their `syncNow()` keeps working through the adapter it names (§3.1). Today their inputs also deliver nothing: the legacy path has no port to call.
@@ -294,7 +334,6 @@ For each keeper the list gives its builder, whether a port ever comes, and what 
 
 **Recording.** LK:4881 is the sync-stream gate. The state hash's gate is `enableLiveStateHashRecording && reevaluationRecorder != nil` (LK:4741, :4555; the initialize record at :4844). It has no transport term and doesn't change.
 - `ReevaluationRunner/main.swift:452` records with no port. Today it runs the legacy `runTick` (LK:4503, :4555–4581), which writes its record through separate calls (`record`, `setStateHash`, `recordServerEvents`). On `runTickTurn` it writes one turn record per tick, so the raw bytes may differ.
-- A hosted land whose initialization runs before the attach records its initialize as a turn from L2d on.
 
 The comparison must hold for a tick land, a tickless land and a hosted land whose initialize runs before the attach, each with initialize and a land-failure prefix:
 - decoded equality of the inputs, the state hashes, the events and the watermarks, old record against new;
@@ -316,7 +355,6 @@ It runs on a controlled schedule: inputs are submitted between steps, and no inp
   - `TicklessReplayPassTests.legacyPassesRecordInApplyOrder` (:390). It awaits a second input while the first pass is held, so it deadlocks on the turn path. Its claim moves to two inputs in one batch.
 
   The assertions about the legacy path's suspension windows are retired.
-- **`LandReleaseTests.lateDeliveryIsCounted`** (:407) holds `.legacyDelivery` through teardown and asserts that the released placeholder counts the late event once. Its lasting claim: keeper work that reaches the transport after destruction is counted by the placeholder, once. On the turn path the late call is a held resolver whose continuation reaches the port after teardown. The PR converts the test to that call if the turn path still has it. If it doesn't, the PR retires the test with its reason, and `DrainTurnTests.swift:326` gains the count beside the drop.
 
 The PR gives each test its fate and reason.
 
@@ -331,20 +369,28 @@ Rejected:
 ### 3.6 What L2c and L2d delete
 
 **L2c: the off adapter.**
-- the adapter's `inTurnSync` init parameter and `inTurnSyncEnabled` (TA:974), `ownExecutorHost` and `AdapterExecutorHost` (TA:106–112), and the package `inTurnSync` on `LandManager`'s init and `NIOLandServerConfiguration`. `LandManager.swift:700–701` read `true` in its place;
+- the adapter's `inTurnSync` init parameter and `inTurnSyncEnabled` (TA:974), `ownExecutorHost` and `AdapterExecutorHost` (TA:106–112), and the package `inTurnSync` on `LandManager`'s init and `NIOLandServerConfiguration`. `LandManager.swift:697–698` read `true` in its place;
 - `withSyncState` (TA:3297), `beginSyncLocatedIfRecording` (TA:3917), `legacyCycleRead` (TA:3903), `beginSyncRequests` (TA:748);
-- the off adapter's cycle: `_syncNowImpl`'s cycle branch, `_syncBroadcastOnlyImpl` and `planBroadcastOnlySyncPhase` (TA:5234, :5281), the kept-event follow-up, the backlog and busy retry (`deferSyncForOutboundBacklog`, `runBacklogDeferredSync` and their fields), `syncSkips.busy` with `SyncSkipCounts.busy`, and `startBackgroundSync`/`backgroundSyncTasks` once their last user goes;
+- the off adapter's cycle: `_syncNowImpl`'s cycle branch, `_syncBroadcastOnlyImpl` and `planBroadcastOnlySyncPhase` (TA:5234, :5281), the kept-event follow-up, the backlog and busy retry (`deferSyncForOutboundBacklog`, `runBacklogDeferredSync` and their fields), and `syncSkips.busy` with `SyncSkipCounts.busy`. The background-work tracker (`startBackgroundSync`/`backgroundSyncTasks`, TA:3166–3191) stays: the delayed repair and the lag timer's request use it;
 - the off settle and resume (§3.4);
 - the adapter's `syncNowFromTransport`/`syncBroadcastOnlyFromTransport` (`TransportAdapter+LandKeeperTransport.swift:15–21`). No live keeper calls them on an in-turn adapter, and no `.reevaluation` keeper has an adapter;
 - the adapter's hold points only the off cycle reaches: `.cycleBeforeEndSync`, `.busyRetry` and `.followUpSynced`;
 - the off arms of every explicit off caller (§2). `WallClockCadenceSmokeTests` keeps its on leg, and CI keeps the check that it ran;
-- the legacy witnesses (`join-during-sync-cycle`, `TransportAdapterInTurnSyncTests.swift:927–937`), the remaining legacy-cycle cases, and the harness's legacy cells (§5.3).
+- the legacy witnesses (`join-during-sync-cycle`, `TransportAdapterInTurnSyncTests.swift:927–937`), the remaining legacy-cycle cases, and the harness's legacy cells (§5.3);
+- the readers of what L2c deletes, each converted or deleted:
+  - `inTurnSyncEnabled`: `HybridEventsAtInitTests.swift:163`, `SyncStreamInitializeRecordTests.swift:178`, `TransportAdapterInTurnSyncTests.swift:987`;
+  - `SyncSkipCounts.busy`: `TransportAdapterInTurnSyncTests.swift:833`, in the in-turn comparison;
+- **`LandReleaseTests.lateDeliveryIsCounted`** (:412). It builds its manager with `inTurnSync: false` and holds `.legacyDelivery` through teardown, so it can't outlive L2c. It is retired there. Its lasting claim, that the released placeholder counts late keeper work, is already asserted by `DrainTurnTests.swift:325–328` (0, then 2).
+
+The L2c PR prints this census from a script: every reader of each deleted symbol, with its fate.
 
 The keeper's routing doesn't change in L2c. Its callers of `beginSync`/`endSync` are only tests by then: L2b's settle uses `debugSettleTurn`.
 
 **L2d: the keeper's legacy path,** with §3.5:
 - on the keeper: `beginSync`, `beginSyncLocated`, `endSync()` and `endSync(clearDirtyFlags:)` (LK:1336–1395), `isSyncing` (LK:663), and the latch `syncOnlyTurnAfterLegacyCycle` (LK:704) with its reads in `runTurnOutputs` (LK:4629) and `runSyncOnlyTurn` (LK:5043);
-- **the live legacy pass**: `finishTicklessLegacyPass`, `deliverLegacyPass`, `legacyDeliveries`, `runLegacyPass`, and `runSyncRequests`' `else if mode == .live` branch (LK:641–647). They are entered only from live branches (LK:3758, :1650, :5648), so `.reevaluation` keepers never reach them;
+- **the live legacy pass**: `finishTicklessLegacyPass`, `deliverLegacyPass`, `legacyDeliveries`, `runLegacyPass`, and `runSyncRequests`' `else if mode == .live` branch (LK:641–647). They are entered only from live branches (`runLegacyPass` around LK:1654, :1892, :2588 and :2914; `finishTicklessLegacyPass` at :3758), so `.reevaluation` keepers never reach them;
+- `runTicklessJobPass`, its hold `.ticklessJobPass` and the `legacyPass*` fields (LK:3884–3890), unreachable once LK:2202 routes by mode. `TicklessActionJobTests.swift:425` holds `.ticklessJobPass` on its off arm, so that arm is deleted with them;
+- `runSync`'s fallback call `transport?.syncNowFromTransport()` (LK:5564) is restricted to `.reevaluation` keepers. A live fake that doesn't opt in no longer receives it;
 - the keeper's hold points `.syncOnlyAfterLegacyCycle`, `.legacyDelivery` and `.legacyShutdownPass`;
 - `LandKeeperSyncLockTests` and the direct `beginSync`/`endSync` calls (§2).
 
@@ -390,7 +436,7 @@ Each PR leaves `main` green, with the harness byte-identical except where §5 sa
 **L2b: the freeze settle on in-turn adapters** (group 2c). §3.4, its tests included. The off settle stays until L2c.
 
 **L2c: the off adapter deleted.** §3.6's L2c list, and the harness's legacy cells (§5.3).
-- Gate: the full `swift test`, and the harness, which lists 84 cells and runs every one.
+- Gate: the full `swift test`; the harness, which lists 84 cells and runs every one; the deletion census; and the GameDemo build, since L2c removes API EncodingBenchmark reads.
 - The in-turn goldens are unchanged by this PR. The byte-identical check is the pinned-image job's: the Mac harness falls back to a decoded comparison when its toolchain differs from the recorder's.
 
 **L2d: every live keeper on the turn path** (groups 2d, 2e). §3.5, and §3.6's L2d list. Its gate:
@@ -400,7 +446,7 @@ Each PR leaves `main` green, with the harness byte-identical except where §5 sa
 - the census script and its migration list;
 - the GameDemo build, for the migrated callers;
 - a `HashCostBenchmark` smoke run (`HashCostBenchmark.swift:50`);
-- the harness, with §5.1's check script over the in-turn goldens. The one change it may show is initialize becoming a turn before the attach (§5.1, cause 7).
+- the harness, with §5.1's check script over the in-turn goldens as a guard: no change is expected.
 
 **Docs, en and zh-TW, by PR:**
 - **L2a:** `docs/core/runtime.md`'s sync deduplication and `syncNow` text (:94–104); `docs/transport/README.md:264`.
@@ -425,9 +471,8 @@ The L2a PR carries a check script, run over the old and new goldens. It reports 
 5. **A phase deferred and retried:** where the writer held an earlier phase, the in-turn path defers and retries where the legacy cycle skipped.
 6. **The freeze before back-pressure** (§3.2): a frozen phase with the writer held now records the freeze's deferral, not a back-pressure deferral.
 
-L2d runs the same script, for one more cause:
 
-7. **Initialize as a turn before the attach** (§3.5): a hosted land's initialize, run before the attach, is now a turn, so on a tickless land later turn positions move by one. If any cell shows it, L2d regenerates those goldens in the pinned image and takes the protected-path route (§5.3).
+L2d runs the same script as a guard. No change is expected: the legacy initialize already ends a tickless turn (LK:1233–1250), as `submitTurnRecord` does (LK:5030–5033), and neither harness land defines `OnInitialize` (`DiffLand.swift:108–175`). A change it shows is a bug.
 
 Every other change is reported on its own, and the PR body has the table. A change outside these causes needs its own explanation, or it is a bug. Frames that none of these causes touch are byte-identical: both paths plan with `runFullSyncPhase` from the same state.
 
@@ -443,11 +488,18 @@ Every other change is reported on its own, and the PR body has the table. A chan
 | `disconnect-sending-join-response` (`.legacyOnly`, DS:182) | L2c | Retired as unreachable (below). |
 | `disconnect-sending-initial-sync` (`.legacyOnly`, DS:184) | L2c | Retired as unreachable (below). |
 
-**`join-during-writer-backlog`**, on the in-turn cells, added in L2a. A join becomes ready while the writer holds a phase's frames. A barrier checks that the phase was deferred while the writer is held. After the writer is released, the row asserts exactly one JoinResponse and one firstSync for the joiner, with no explicit or periodic phase run after the release. So the deferred phase's retry is the only thing that can flip it. Mutant: drop the retry after the writer drains (LK:5068); the row then fails for want of the join's frames.
+**`join-during-writer-backlog`**, on the in-turn cells, added in L2a. The harness's `sync()` waits for background syncs (DR:577–580), and the barrier waits for sync quiescence (DR:602–620). Both would wait for the held retry too, so neither can run while the writer is held. The row uses two new steps that don't wait:
+1. Hold the writer, and make a join ready.
+2. **`.syncNoWait`** calls `syncNow()` and returns its outcome without the quiescence waits.
+3. **`.expectSyncDeferred`** asserts, with the writer still held, that the outcome was `.deferredBackPressure`, that the backlog skip count went up by one, and that the joiner has no JoinResponse yet.
+4. Release the writer, then run the barrier.
+5. Assert exactly one JoinResponse and one firstSync for the joiner. No explicit or periodic phase runs after the release (the harness's loops are off), so the writer-drain retry is the only thing that can flip it.
+
+Mutant: drop the retry after the writer drains (LK:5068). The row then fails for want of the join's frames.
 
 **The two router rows** cover the router's non-flip branch (LR:1123–1156), taken when the admission returns `completedInTurn == false`. After L2c no router join reaches it:
 - the router always passes a response builder (LR:1050–1056);
-- the adapter installs `expectedAdmissions` before `joinReportingAdmission`, in the membership job (TA:1968–1977);
+- the adapter installs `expectedAdmissions` before `joinReportingAdmission`, in the membership job (the write at TA:2242);
 - an in-turn keeper's admission consumes it synchronously and admits in-turn when it is there (`admitJoiningSessionIsolated`, TA:1969–1977).
 
 So with every adapter in-turn, a router join always completes in-turn. L2c states this proof in its body and retires the rows on that ground. The general adapter API keeps a tested fallback with no port, and B3 deletes the branch with the standalone initial sync.
@@ -463,7 +515,7 @@ So with every adapter in-turn, a router join always completes in-turn. L2c state
 
 `ran > 0 && ran + replaced == listed` holds at each head. L2c deletes the `.legacy` sync axis, its 90 goldens, the expected differences that name it, and the legacy cells embedded in `DiffSelfCheckTests.swift` (:23, :56, :140).
 
-The harness files are protected paths. Every PR that edits the runner, the scenarios or the goldens (L2a, L2c, and L2d if §5.1's cause 7 shows) is a normal PR to `main`, outside `rewrite/546-*`, with no merge queue (`differential-paths.yml:24` runs on `merge_group`). Its goldens are recorded in the pinned image.
+The harness files are protected paths. Every PR that edits the runner, the scenarios or the goldens (L2a and L2c) is a normal PR to `main`, outside `rewrite/546-*`, with no merge queue (`differential-paths.yml:24` runs on `merge_group`). Its goldens are recorded in the pinned image.
 
 ## 6. Gates and the A/B
 
@@ -485,7 +537,7 @@ CI runs the full `swift test` and the E2E.
   - a `HashCostBenchmark` smoke run;
   - the GameDemo build.
 
-  The worker pools' ticks move onto turns in L2d. The serial multi-room runs time `syncNow()` alone (`BenchmarkExecution.swift:193`). The L2d PR states which measured cells also time the ticks, and each one that does gets a scoped A/B.
+  Some measured windows include ticks, which move onto turns in L2d: the worker-pool cells with `ticksPerSync > 0` (`BenchmarkExecution.swift:585–610`, :785–807), and the serial runs' `timeMs` (:193–198, :1008–1024). L2d gets a scoped A/B on those cells.
 
 ## 7. Public API
 
@@ -548,7 +600,20 @@ Main settles the rest: the A/B cells (§6), and where L2a–L2d sit among the ot
   - an inside request made during a requested turn arms a new one;
   - a stale lag-timer callback neither requests nor clears a newer pass's mark.
 
-## 11. Rev 5: what changed
+## 11. Rev 6: what changed
+
+| Change (from #680's rev 5 review) | Where |
+|---|---|
+| Which adapters may request (the attached one, or one whose keeper was never attached) and the binding check; the port carried through the writer-drain retry, the latch's rerun, the join-sync follow-up and the inside request; `failLand` closes the failing port when the slot is nil; coalescing only for the same port, with the entry cleared before the phase (MF1) | §3.1, §3.2 |
+| A turn that ran isn't a delivery: each outcome names who delivers; the resume's tests name the delivering phase for a free writer, a held writer without periodic sync and a periodic land; `join-during-writer-backlog` observes the deferral with steps that don't wait, then releases the writer before the barrier (MF2) | §3.2, §3.4, §5.2 |
+| L2c's deletion census: the readers of `inTurnSyncEnabled` and `SyncSkipCounts.busy`; `LandReleaseTests.lateDeliveryIsCounted` retired in L2c, its claim already in `DrainTurnTests`; the background-work tracker stays (should 1) | §3.5, §3.6 |
+| Where each request's ticket is captured; the lag mark checked against the epoch at admission and at retirement, with its test (should 2) | §3.2 |
+| An in-turn arm for `InitialSyncBehindCommitTests` in L2a (should 3) | §3.2 |
+| L2d also deletes `runTicklessJobPass`, `.ticklessJobPass` and the `legacyPass*` fields, and restricts `runSync`'s fallback to `.reevaluation` (should 4) | §3.6 |
+| Cause 7 dropped, the L2d script kept as a guard; the pin runs with a recorder and a tick under the hold (should 5) | §3.5, §4, §5.1 |
+| Nits: `LandManager.swift:697–698`, the admissions write at TA:2242, the SyncLag default at :189, the `runLegacyPass` callers; the L2d A/B names the cells whose windows include ticks; the GameDemo build in L2c's gate | §2, §3.6, §4, §5.2, §6 |
+
+## 12. Rev 5: what changed
 
 Pointers now refer to `main` at 1075c23c (B0 in). Only TA, `TransportAdapter+Outbound.swift`, DS, DR and `ReevaluationSyncStream.swift` moved, by a few lines.
 
@@ -565,7 +630,7 @@ Pointers now refer to `main` at 1075c23c (B0 in). Only TA, `TransportAdapter+Out
 | Nits: the tick cell for the at-once check (DR's `.tick` cells), the SyncLag and repair suites kept for their callers; 21 `usesInTurnSync` reads; LK:670–671 | §3.2, §3.5 |
 | L2c's byte-identical claim is the pinned-image job's; the GameDemo build is in L2d's gate | §4, §6 |
 
-## 12. Rev 4: what changed
+## 13. Rev 4: what changed
 
 | Change (from #680's rev 3 review) | Where |
 |---|---|
@@ -578,7 +643,7 @@ Pointers now refer to `main` at 1075c23c (B0 in). Only TA, `TransportAdapter+Out
 | `BroadcastSpyTransport` and its L2d fate (should 4) | §2, §3.5 |
 | Nits: the internal callers of `_syncBroadcastOnlyImpl()`; the admission cases :274, :302, :326; `LandManager.swift:700–701` | §3.3, §2, §3.6 |
 
-## 13. Rev 3: what changed
+## 14. Rev 3: what changed
 
 | Change (from #680's rev 2 review) | Where |
 |---|---|
@@ -598,7 +663,7 @@ Pointers now refer to `main` at 1075c23c (B0 in). Only TA, `TransportAdapter+Out
 | `DiffLeaveTurnTests.heldCycleMovesTheLeaveSync` (#678), one more in-turn cycle-hold user (Review's addendum) | §2, §5.2 |
 | Cross-references; whether requested turns fold (nits 2, 3) | header, §3.2 |
 
-## 14. Rev 2: what changed
+## 15. Rev 2: what changed
 
 | Change (from #680's review) | Where |
 |---|---|
