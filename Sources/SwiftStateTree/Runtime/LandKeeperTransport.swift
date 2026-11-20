@@ -259,8 +259,6 @@ package enum SyncTurnReason: Hashable, Sendable {
     case syncNow
     /// Events still queued after a committed phase, on a land without periodic sync.
     case keptEvents
-    /// An event queued for a merged frame outside a turn, on a land without periodic sync.
-    case outOfTurnEvent
     /// The sync-lag timer found a pending mark or a resync due.
     case lagTimer
     /// The repair after a standalone firstSync found its commit behind.

@@ -95,16 +95,16 @@ What changes for an in-turn caller:
 
 ### 3.2 Pending sync work: one rule, one keeper input
 
-*Rule: whenever sync work is due outside a turn on an in-turn land, something asks the keeper for a sync-only turn. No flag waits for an adapter cycle to read it.* On an off adapter the legacy follow-up and retries stay until L2c.
+*Rule: whenever sync work is due outside a turn on an in-turn land, something asks the keeper for a sync-only turn. No flag waits for an adapter cycle to read it.* One exception: an event queued outside a turn, on a land without periodic sync, waits for the next sync, as it does today on both adapters (L2a delta, below). On an off adapter the legacy follow-up and retries stay until L2c.
 
 **Decided (the maintainer, 2026-11-20): a requested sync turn is a keeper input that carries its reason and a ticket, validated in the turn.** This is the shape B2 gives the adapter's other callbacks: one place to inspect, and one thing to hold in tests. Not chosen: a keeper entry point with a pending flag.
 
 **The input.** `SyncTurnRequest` has three fields:
-- **`reason`**: `.syncNow`, `.keptEvents`, `.outOfTurnEvent`, `.lagTimer`, `.behindCommitRepair` or `.resume`. It is for diagnostics and tests. No handling depends on it.
+- **`reason`**: `.syncNow`, `.keptEvents`, `.lagTimer`, `.behindCommitRepair` or `.resume`. It is for diagnostics and tests. No handling depends on it.
 - **`ticket`**: the keeper's own lifecycle generation. It is bumped when the land fails and when the drain starts. Where it is captured:
   - an inside request captures it in the turn that makes it;
   - a delayed request (the repair, the lag timer's) captures it when its delay starts, before the sleep and the hold;
-  - an immediate outside request (`syncNow()`, an out-of-turn event, the resume) captures it at the call. Its job runs right after, so for these the check rarely fails; it matters for the other two.
+  - an immediate outside request (`syncNow()`, the resume) captures it at the call. Its job runs right after, so for these the check rarely fails; it matters for the other two.
 
   Each request captures its ticket and its binding generation (below) in the adapter's segment before its `await`, and the synchronous keeper job validates both. The shared executor makes `assumeIsolated` valid, but the `await` between them is a suspension point, so they are two segments, and the job re-checks. The latch's rerun enters a synchronous handler after its hold (LK:1380–1384), and validates there. The exact segments are checked at L2a's code review.
 - **`port`**: the port to sync through. An outside request carries the requesting adapter (§3.1), and an inside request carries the port of the turn that made it.
@@ -125,7 +125,7 @@ What changes for an in-turn caller:
    Retiring clears the request's pending entry and wakes the test wait, so the wait never hangs on a failed or draining land.
 
 **Outside requests run now; only inside requests wait.**
-- **From outside the keeper:** the adapter's requests (the lag timer, the repair, an out-of-turn event, the resume) and `syncNow()`. The request's job runs the turn at once. It also consumes a pending inside request for the same port: it clears that entry before the phase runs, so the phase can arm a successor. It never returns early because a request is pending, so when the caller's await returns, the turn that covers its request has run. What that turn delivered is a separate question (below). The resume relies on both (§3.4).
+- **From outside the keeper:** the adapter's requests (the lag timer, the repair, the resume) and `syncNow()`. The request's job runs the turn at once. It also consumes a pending inside request for the same port: it clears that entry before the phase runs, so the phase can arm a successor. It never returns early because a request is pending, so when the caller's await returns, the turn that covers its request has run. What that turn delivered is a separate question (below). The resume relies on both (§3.4).
 - **From inside a turn** (caller 1 below, in `applyInTurnSyncResult`): a turn can't run inside a turn. The keeper adds a pending entry and enqueues the job, which runs right after the current turn. A later inside request made while one is pending joins it. A job whose entry an outside request has consumed retires it without a turn.
 
 So requests coalesce only before a job runs, and only for the same port. No caller's await returns before the turn that covers its request has run.
@@ -183,12 +183,11 @@ During a freeze this changes two things for in-turn phases:
 
   So a stale callback (the timer restarted and the epoch bumped) neither requests nor clears a newer pass's mark. Test: hold an old callback at `.syncLagTimerSync`, restart the timer, and let the new epoch admit a request. Hold the new callback too, until the old one has retired. Then release the old callback: it doesn't request, and the new mark stays. The new callback then requests and clears its own mark.
 
-**The callers on an in-turn land.** Callers 1–4 are on lands without periodic sync. The resume, caller 5, isn't limited to those, because `debugReleaseFreeze` has no such guard (TA:6641).
+**The callers on an in-turn land.** Callers 1–3 are on lands without periodic sync. The resume, caller 4, isn't limited to those, because `debugReleaseFreeze` has no such guard (TA:6641).
 1. **Kept events after a commit.** The phase reports whether events are still queued after its commit, whether it kept them or they were queued after it. The signal is a package field on `InTurnSyncOutput`, `keepsEvents`, set by the adapter's package init. `InTurnSyncResult` and the public init don't change. In `applyInTurnSyncResult`'s `.committed` case, `keepsEvents && !hasPeriodicSync` makes an inside request. This is the legacy follow-up's rule (TA:3280–3287). A phase that ends the land requests nothing.
-2. **An event queued outside a turn.** `sendEvent` outside a phase, on a land without periodic sync, queues a merged event that only a phase delivers (opcode 107). The adapter makes an outside request when it queues one. An immediate send needs no request.
-3. **The lag timer**, as above.
-4. **The behind-commit repair**, as above. The standalone firstSync it follows keeps its re-checks (§1).
-5. **The settle's kept events** and **the resume's deferred syncs** (§3.4).
+2. **The lag timer**, as above.
+3. **The behind-commit repair**, as above. The standalone firstSync it follows keeps its re-checks (§1).
+4. **The settle's kept events** and **the resume's deferred syncs** (§3.4).
 
 The writer-drain retry (LK:5068) and the join-budget follow-ups (`scheduleJoinSyncTurn`, LK:5089) stay as they are.
 
@@ -254,7 +253,7 @@ Tests, each naming the phase that delivers:
 - a refreeze between step 1 and step 2: step 2 isn't requested, and the next resume delivers what was left.
 
 **The settle's tests, in L2b:**
-- `eventKeptBySettleArrivesAfterResume` and `leaveDuringSettleSendsFlagsMembership` (`TransportAdapterPendingEventsAcrossCyclesTests` :1020–1057) arm the cycle hold and wait for the settle to reach it. They move to a new adapter hold, `.settleBeforePublish`, after `debugSettleTurn` returns and before step 4. The segment itself is synchronous and can't hold, and a hold before it would invert both tests: a leave before the copy gives the settle the epoch after the leave, and an event queued before it would go out in the settle's phase while frozen. After step 3, the leave flags `membershipChanged`, and the event takes §3.2's caller 2 during the freeze: its requested turn defers and sets `deferredSyncNow`, so it is delivered once, after the resume.
+- `eventKeptBySettleArrivesAfterResume` and `leaveDuringSettleSendsFlagsMembership` (`TransportAdapterPendingEventsAcrossCyclesTests` :1020–1057) arm the cycle hold and wait for the settle to reach it. They move to a new adapter hold, `.settleBeforePublish`, after `debugSettleTurn` returns and before step 4. The segment itself is synchronous and can't hold, and a hold before it would invert both tests: a leave before the copy gives the settle the epoch after the leave, and an event queued before it would go out in the settle's phase while frozen. After step 3, the leave flags `membershipChanged`, and the event takes §3.2's caller 2 during the freeze: its requested turn defers and sets `deferredSyncNow`, so it is delivered once, after the resume. (L2a dropped caller 2; L2b restates this event's path in its plan delta.)
 - `settleRetriesUntilBeginSyncAccepts` and `releasedBeforeSettleFinished` (`TransportAdapterDebugFreezeTests` :297, :454) build a busy `beginSync`. The first is retired for the in-turn adapter (there is no busy outcome) and kept for the off adapter until L2c. The second moves to a release between step 2 and step 3.
 - The gate also runs `TransportAdapterSyncBackPressureTests:275` (the writer-backlog settle) and `SyncOutputVerifierTests:1541` (the failed-plan settle).
 - New tests: a release and refreeze, a shutdown, and the deadline's expiry, each between the last writer check and the commit; nothing is planned in any of them.
@@ -551,7 +550,7 @@ Every step runs, on the Mac with the slot held:
 
 CI runs the full `swift test` and the E2E.
 
-**L2a: a host A/B.** It measures EncodingBenchmark's driver path: its measured loop calls `syncNow()` (30 calls), which moves from the adapter's cycle to a keeper job. The claim is scoped to that driver. L2a also moves the lag timer's and the out-of-turn events' scheduling, which the benchmark doesn't measure. Production's periodic sync already runs `runSyncOnlyTurn`, so this sets that tool's new baseline. Base against L2a, both built from the pinned image, on the measurement host. The cell list is fixed with Main before the run, as B0's was (#655 §5.1), with MessagePack and JSON included. `MeasuredSync`'s skip check stays meaningful: the in-turn path counts a deferred phase in `syncSkips.outboundBacklog`. Attached and unattached keepers both appear among the measured cells: the worker pools' keepers are unattached (`BenchmarkExecution.swift:491`, :603, :687, :791), and the serial and multi-room builders attach (:314, :910, :1143). In both, `syncNow()` takes the same path, `syncTurnNow(via:)`.
+**L2a: a host A/B.** It measures EncodingBenchmark's driver path: its measured loop calls `syncNow()` (30 calls), which moves from the adapter's cycle to a keeper job. The claim is scoped to that driver. L2a also moves the lag timer's scheduling, which the benchmark doesn't measure. Production's periodic sync already runs `runSyncOnlyTurn`, so this sets that tool's new baseline. Base against L2a, both built from the pinned image, on the measurement host. The cell list is fixed with Main before the run, as B0's was (#655 §5.1), with MessagePack and JSON included. `MeasuredSync`'s skip check stays meaningful: the in-turn path counts a deferred phase in `syncSkips.outboundBacklog`. Attached and unattached keepers both appear among the measured cells: the worker pools' keepers are unattached (`BenchmarkExecution.swift:491`, :603, :687, :791), and the serial and multi-room builders attach (:314, :910, :1143). In both, `syncNow()` takes the same path, `syncTurnNow(via:)`.
 
 **L2b–L2d: a Mac output check.**
 - **L2b:** the freeze frames and records (`freeze-resume-messagepack` byte-identical).
@@ -624,6 +623,11 @@ Main settles the rest: the A/B cells (§6), and where L2a–L2d sit among the ot
   - an outside request that finds an inside request pending consumes it, and the pending job then retires without a turn;
   - an inside request made during a requested turn arms a new one;
   - a stale lag-timer callback neither requests nor clears a newer pass's mark.
+
+## 10a. L2a delta
+
+- **§3.2's caller 2 is dropped** (agreed in L2a's review). An event queued outside a turn on a land without periodic sync doesn't request a sync-only turn: on both adapters today it waits for the next sync, and requesting one would be new behavior. Four tests pin today's semantics: `TransportAdapterMembershipTests` (:130, :214), `SyncStreamProducerTests:479` and `TransportAdapterOrderedSendTests` test 5. The reason `.outOfTurnEvent` goes with it, and the callers are renumbered 1–4. Auto-delivery, if wanted, is a separate behavior change.
+- **L2b** restates the path of `eventKeptBySettleArrivesAfterResume`'s event (§3.4), which relied on caller 2.
 
 ## 11. Rev 7: what changed
 
