@@ -120,7 +120,8 @@ private func emptyAndDestroy(_ container: LandContainer<LifecycleLogTestState>) 
     let client = ClientID("c1")
     _ = try await container.keeper.join(playerID: player, clientID: client, sessionID: SessionID("s1"))
     try await container.keeper.leave(playerID: player, clientID: client)
-    await container.keeper.waitUntilDrainStartedForTesting()
+    let drainingKeeper = container.keeper
+    #expect(await withinHangBound { await drainingKeeper.waitUntilDrainStartedForTesting() }, "the destruction never started")
     await container.keeper.waitUntilDrained()
 }
 
@@ -255,7 +256,8 @@ struct LandLifecycleLogTests {
                 metadata: [:]
             )
         }
-        await container.keeper.waitUntilDrainStartedForTesting()
+        let drainingKeeper = container.keeper
+        #expect(await withinHangBound { await drainingKeeper.waitUntilDrainStartedForTesting() }, "the destruction never started")
         await container.keeper.waitUntilDrained()
 
         #expect(sink.records.map(\.event) == [.created, .destroyed])

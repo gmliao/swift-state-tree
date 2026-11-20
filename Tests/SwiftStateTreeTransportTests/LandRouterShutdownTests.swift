@@ -128,7 +128,8 @@ private struct RouterShutdownHarness {
         // The router's join has returned: the player was admitted, and an in-turn join's flip
         // wait is counted; it ends once the flip has run.
         try await startJoin(session, player: player).value
-        await router.waitForNoPendingFlipForTesting()
+        let router = self.router
+        #expect(await withinHangBound { await router.waitForNoPendingFlipForTesting() }, "\(player)'s flip wait never ended")
         #expect(await keeper.currentState().players.contains(player), "\(player) joined")
         return connection
     }

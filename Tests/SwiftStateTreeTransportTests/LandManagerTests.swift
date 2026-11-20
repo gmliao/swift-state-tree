@@ -6,6 +6,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 // MARK: - Test State
 
@@ -290,7 +291,8 @@ func testLandManagerAutoRemovesDestroyedLand() async throws {
 
     // The empty-room timer starts the destruction; it ends after the manager's onLandDestroyed
     // removed the land.
-    await container.keeper.waitUntilDrainStartedForTesting()
+    let drainingKeeper = container.keeper
+    #expect(await withinHangBound { await drainingKeeper.waitUntilDrainStartedForTesting() }, "the destruction never started")
     await container.keeper.waitUntilDrained()
     let landAfterDestroy = await manager.getLand(landID: landID)
 
@@ -358,7 +360,8 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
 
     // The empty-room timer starts the destruction; it ends after the manager's onLandDestroyed
     // removed the land.
-    await container1.keeper.waitUntilDrainStartedForTesting()
+    let drainingKeeper = container1.keeper
+    #expect(await withinHangBound { await drainingKeeper.waitUntilDrainStartedForTesting() }, "the destruction never started")
     await container1.keeper.waitUntilDrained()
     let landAfterDestroy = await manager.getLand(landID: landID)
 
@@ -379,15 +382,19 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     #expect(playerCountAfterRecreate == 0, "New land should start with no players")
 }
 
-@Test("LandManager starts each land's loops with the instance ID's phase offset, not the type's")
+@Test("LandManager starts each land's loops with the instance ID's phase offset, not the type's", .timeLimit(.minutes(2)))
 func testLandManagerLoopPhaseOffsetUsesInstanceID() async throws {
     let interval = Duration.milliseconds(100)
-    let landFactory: @Sendable (LandID) -> LandDefinition<ManagerTestState> = { _ in
+    // Each land's first tick: the manager started its loops (the eager initialization), no
+    // caller of this test did.
+    let ticks = EventLog()
+    let landFactory: @Sendable (LandID) -> LandDefinition<ManagerTestState> = { landID in
         Land("phase-type", using: ManagerTestState.self) {
             Rules {}
             Lifetime {
                 Tick(every: interval) { (state: inout ManagerTestState, _: LandContext) in
                     state.ticks += 1
+                    ticks.append("tick:\(landID.stringValue)")
                 }
                 StateSync(every: interval) { (_: ManagerTestState, _: LandContext) in }
             }
@@ -408,8 +415,12 @@ func testLandManagerLoopPhaseOffsetUsesInstanceID() async throws {
             metadata: [:]
         )
         let keeper = container.keeper
-        // Both loops are configured, their offsets set, inside the initialization.
-        await keeper.awaitInitialization()
+        // Both loops are configured in one segment of the keeper's initialization (no suspension
+        // between them), and a tick runs on the keeper: after its first tick, both offsets are set.
+        guard await ticks.waitFor("tick:\(landID.stringValue)") else {
+            Issue.record("\(landID) never ticked: its loops never started")
+            return
+        }
         let expected = LandLoopPhase.offset(landID: landID.stringValue, interval: interval)
         #expect(await keeper.appliedTickPhaseOffset == expected, "tick offset of \(landID)")
         #expect(await keeper.appliedSyncPhaseOffset == expected, "sync offset of \(landID)")

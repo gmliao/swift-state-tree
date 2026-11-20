@@ -25,20 +25,18 @@ private func plainLand(_ landID: LandID) -> LandDefinition<SingleFlightTestState
 }
 
 /// Lifecycle events from the instances under test, in the order they happened.
-private final class LifecycleLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String] = []
+private final class LifecycleLog: Sendable {
+    private let log = EventLog()
 
     func record(_ event: String) {
-        lock.lock()
-        entries.append(event)
-        lock.unlock()
+        log.append(event)
     }
 
-    var events: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return entries
+    var events: [String] { log.events }
+
+    /// Waits until `event` was recorded (bounded by `testHangBound`).
+    func waitFor(_ event: String) async -> Bool {
+        await log.waitFor(event)
     }
 
     func isOrdered(_ first: String, before second: String) -> Bool {
@@ -284,9 +282,8 @@ struct LandManagerSingleFlightTests {
         drainGate.open()
         await destruction.value
         let fresh = try await recreate.value
-        // Live keepers initialize eagerly after creation; OnInitialize logs it.
-        await fresh.keeper.awaitInitialization()
-        #expect(log.events.contains("new-initialize"))
+        // Live keepers initialize eagerly after creation: nothing here starts it.
+        #expect(await log.waitFor("new-initialize"))
 
         #expect(ObjectIdentifier(fresh.keeper) != ObjectIdentifier(old.keeper))
         #expect(fresh.epoch != old.epoch)
@@ -422,8 +419,7 @@ struct LandManagerSingleFlightTests {
         drainGate.open()
         await destruction.value
         let fresh = try await recreate.value
-        await fresh.keeper.awaitInitialization()
-        #expect(log.events.contains("new-initialize"))
+        #expect(await log.waitFor("new-initialize"))
         #expect(log.isOrdered("old-finalize", before: "new-initialize"), "events: \(log.events)")
         let stored = try #require(await manager.getLand(landID: landID))
         #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
@@ -486,17 +482,26 @@ struct LandManagerSingleFlightTests {
             _ = await lateCall.result
             shutdownSteps.append("late-ended")
         }
-        #expect(await shutdownSteps.waitFor { events in
+        let settled = await shutdownSteps.waitFor { events in
             events.contains("late-ended") || events.filter { $0 == "creation" }.count >= 2
-        })
-        #expect(gate.arrivalCount == 1, "a creation started during the shutdown")
+        }
+        // Read from the log, which the hold appends to before it arrives at the gate: the gate's
+        // own count can lag a second creation.
+        let creations = shutdownSteps.events.filter { $0 == "creation" }.count
+        #expect(settled, "the late creation neither ended nor reached the creation hold")
+        #expect(creations == 1, "a creation started during the shutdown")
 
         gate.open()
-        do {
-            _ = try await lateCall.value
-            Issue.record("a creation started during the shutdown")
-        } catch {
-            #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+        if settled {
+            do {
+                _ = try await lateCall.value
+                Issue.record("a creation started during the shutdown")
+            } catch {
+                #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+            }
+        } else {
+            // Released, not awaited: a call that never settled may not end.
+            lateCall.cancel()
         }
         let heldResult = await heldCall.result
         await shutdown.value

@@ -552,21 +552,39 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Callers of `waitUntilDrainStartedForTesting`, resumed when `drainTask` is installed.
-    private var drainStartedWaitersForTesting: [CheckedContinuation<Void, Never>] = []
+    private var drainStartedWaitersForTesting: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var nextDrainStartedWaiterForTesting = 0
 
     /// Test hook: returns once this keeper's destruction has started, `drainTask` installed, so a
     /// `waitUntilDrained()` after it waits for the whole destruction. Keyed on `drainTask`, not
     /// `isDraining`: `forceShutdown` sets the flag before the task exists, and in that window
-    /// `waitUntilDrained()` returns at once. Never resumed when no destruction starts; callers bound it.
+    /// `waitUntilDrained()` returns at once. Also returns when its task is cancelled; a test
+    /// bounds it with that (`withinHangBound`), since no destruction may ever start.
     package func waitUntilDrainStartedForTesting() async {
         guard drainTask == nil else { return }
-        await withCheckedContinuation { drainStartedWaitersForTesting.append($0) }
+        let id = nextDrainStartedWaiterForTesting
+        nextDrainStartedWaiterForTesting += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                drainStartedWaitersForTesting[id] = continuation
+            }
+        } onCancel: {
+            Task { await self.cancelDrainStartedWaiterForTesting(id) }
+        }
+    }
+
+    private func cancelDrainStartedWaiterForTesting(_ id: Int) {
+        drainStartedWaitersForTesting.removeValue(forKey: id)?.resume()
     }
 
     /// Resumes `waitUntilDrainStartedForTesting` callers; call right after installing `drainTask`.
     private func resumeDrainStartedWaitersForTesting() {
         guard !drainStartedWaitersForTesting.isEmpty else { return }
-        let waiters = drainStartedWaitersForTesting
+        let waiters = drainStartedWaitersForTesting.values
         drainStartedWaitersForTesting.removeAll()
         waiters.forEach { $0.resume() }
     }

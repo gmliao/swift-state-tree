@@ -41,14 +41,18 @@ The test now observes the failure path itself instead of waiting through it:
 - The `.creation` hold appends `creation` to the test's `EventLog` before it arrives at the gate.
 - The late call runs in its own task, which appends `late-ended` when the call ends.
 - The test waits for either event: `late-ended`, or a second `creation`. `EventLog.waitFor` is bounded by `testHangBound`.
-- Then it checks that only one creation started, opens the gate, and reads the late call's result.
+- Then it counts the creations **from the log**, not from the gate's `arrivalCount`. The hold appends to the log before it arrives at the gate, so at that moment the gate's count can still read 1 with a second creation on its way.
+- It opens the gate. Only if the wait settled does it read the late call's result; if the bound ran out, it cancels the call instead of awaiting something that may never end.
 
-Under the mutant, the second arrival ends the wait, and the test fails at once with "a creation started during the shutdown".
+Under the mutant, the second `creation` entry ends the wait, and the test fails at once with "a creation started during the shutdown".
+
+The waits on hooks that only resume on an event, such as `LandKeeper.waitUntilDrainStartedForTesting` and `LandRouter.waitForNoPendingFlipForTesting`, return when their task is cancelled. Tests run them under `withinHangBound` (in `SwiftStateTreeTestSupport`), which cancels them after `testHangBound` and reports `false`.
 
 ## Prevention
 
 - When a regression can park the test at its own hold or gate, wait through a bounded event wait that ends on **either** outcome: the expected one, or the arrival that shows the regression. Never await an operation the test itself may be holding.
-- A suite's `.timeLimit` is a report, not a bound. Every wait the test makes must already be bounded: `EventLog.waitFor`, `TestGate.waitForArrivals`, `RecordingConnection`'s waits (all `testHangBound`), or a value that can't park.
+- A suite's `.timeLimit` is a report, not a bound. Every wait the test makes must already be bounded: `EventLog.waitFor`, `TestGate.waitForArrivals`, `RecordingConnection`'s waits (all `testHangBound`), a hook wait run under `withinHangBound`, or a value that can't park.
+- Read the outcome from the record the test's own hook writes first, not from a counter the hook updates later in the same path.
 - Prove it with the mutant that parks the operation. The mutant must fail in seconds on every run, not hang.
 
 #674's inbound backlog suite was checked for the same assumption, and it doesn't rely on it. The test's own waits are `EventLog` waits bounded by `testHangBound`, and loop tasks always run. The delegate's held `onMessage` parks on the handler's chain, not in the test, so a test that ends leaves it parked without hanging. Its comment says a wait that runs out "reports its own message before the time limit ends the test". That reads as if the limit ended the test. The bound that actually ends it is `testHangBound`.

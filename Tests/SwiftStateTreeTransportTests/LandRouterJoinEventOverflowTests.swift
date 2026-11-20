@@ -76,13 +76,12 @@ struct LandRouterJoinEventOverflowTests {
             deviceID: nil,
             metadata: nil
         ))
-        // The router handles the join inline: once this returns, the admitted join's flip wait
-        // is counted.
+        // The router handles the join inline: once this returns, an admitted join's flip wait is
+        // counted, or has already ended (the flip can finish first).
         await transport.handleIncomingMessage(sessionID: session, data: join)
-        #expect(await router.pendingFlipWaitCountForTesting() == 1, "the join was not admitted in turn")
         // The flip wait ends after the failure's handling: the error frame and the close handed
         // to the adapter's writer, and the adapter's cleanup, the keeper's leave included.
-        await router.waitForNoPendingFlipForTesting()
+        #expect(await withinHangBound { await router.waitForNoPendingFlipForTesting() }, "the join's flip wait never ended")
         // The writer hands the close over after the error frame.
         #expect(await connection.waitUntilClosed(), "the session is closed")
         #expect(await connection.errorCodes == [ErrorCode.joinEventOverflow.rawValue])

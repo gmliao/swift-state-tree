@@ -186,8 +186,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var registrationVerdicts: [String: LandRegistrationError?] = [:]
     /// Tests only: how many definitions `checkRegistration(of:)` validated.
     private(set) var registrationValidations = 0
-    /// Calls that joined a creation already in flight (tests: proves the calls shared it).
-    private var creationJoins = 0
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
     private let servicesFactory: (LandID, [String: String]) -> LandServices
@@ -406,9 +404,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
         guard !isShuttingDown else { throw JoinError.landShuttingDown }
         let joinsFlight = creations.inFlight(landID) != nil
-        if joinsFlight {
-            creationJoins += 1
-        }
         // Reserve the creation before the first await (CLAUDE.md, "Actor reentrancy").
         let creation = creations.flight(for: landID) { token in
             Task {
@@ -931,11 +926,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Sets the bound on waiting for a previous instance's destruction (tests).
     func setDrainWaitTimeout(_ timeout: Duration) {
         drainWaitTimeout = timeout
-    }
-
-    /// Calls that joined a creation already in flight (tests).
-    func creationJoinCount() -> Int {
-        creationJoins
     }
 
     /// Installs (or, with `nil`, removes) a callback run when a call joined a creation already in
