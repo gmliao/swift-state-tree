@@ -37,16 +37,35 @@ private actor CollidingKeysTransport: Transport {
     }
 }
 
+/// The message of the `collidingKeys` that `body` throws; nil when it throws nothing or another
+/// error.
+private func collidingKeysMessage(_ body: () throws -> SnapshotValue) -> String? {
+    do {
+        _ = try body()
+        return nil
+    } catch SyncError.collidingKeys(let message) {
+        return message
+    } catch {
+        return nil
+    }
+}
+
+/// The message for a `[CollidingCode: Int]` whose keys convert to "same". The type name isn't
+/// compared whole: in a release build the test's `type(of:)` spells the `private` key type with
+/// its file discriminator (`(CollidingCode in _F7DF…)`) and the library's doesn't (#609).
+private func namesCollidingCodesOnSame(_ message: String) -> Bool {
+    message.hasPrefix("Two keys of Dictionary<") && message.contains("CollidingCode")
+        && message.hasSuffix(", Int> convert to \"same\"")
+}
+
 @Suite("Colliding map keys end the land (#535 D8)")
 struct CollidingKeysTests {
     @Test("The sync conversion of a map whose keys collide as strings throws collidingKeys; one key or distinct keys don't")
     func conversionThrows() throws {
         let colliding: [CollidingCode: Int] = [CollidingCode(id: 1): 1, CollidingCode(id: 2): 2]
-        #expect(throws: SyncError.collidingKeys("Two keys of \(type(of: colliding)) convert to \"same\"")) {
-            try SnapshotValue.make(from: colliding)
-        }
-        #expect(throws: SyncError.collidingKeys("Two keys of \(type(of: colliding)) convert to \"same\"")) {
-            try SnapshotValue.makeFull(from: colliding)
+        for message in [collidingKeysMessage { try SnapshotValue.make(from: colliding) },
+                        collidingKeysMessage { try SnapshotValue.makeFull(from: colliding) }] {
+            #expect(message.map(namesCollidingCodesOnSame) == true, "\(message ?? "no collidingKeys thrown")")
         }
         #expect(try SnapshotValue.make(from: [CollidingCode(id: 1): 1]) == .object(["same": .int(1)]))
         let distinct: [DistinctCode: Int] = [DistinctCode(id: 1): 1, DistinctCode(id: 2): 2]
