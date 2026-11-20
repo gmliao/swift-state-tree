@@ -22,6 +22,8 @@ public struct TurnStats: Sendable, Equatable {
     public var drainContinuations = 0
     /// Calls answered with `CancellationError` under `.cancelsCall`.
     public var cancelledCalls = 0
+    /// Follow-ups armed and not yet stepped, consumed or closed.
+    public var pendingFollowUps = 0
 
     @inlinable public init() {}
 }
@@ -37,7 +39,26 @@ public enum TurnDiagnostic: Sendable, Equatable {
     /// A timer woke (on time, or early because it was cancelled) after it was replaced or
     /// dropped, and did nothing.
     case staleTimer
+    /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
+    /// nothing for it.
+    case staleFollowUp
     case clockRead
+}
+
+/// A `waitForQuiescence` caller.
+@usableFromInline
+struct QuiescenceWaiter<M: TurnMachine> {
+    @usableFromInline var kinds: TurnWork
+    @usableFromInline var key: M.Key?
+    @usableFromInline var atMost: Int
+    @usableFromInline var continuation: CheckedContinuation<Bool, Never>
+
+    @inlinable init(kinds: TurnWork, key: M.Key?, atMost: Int, continuation: CheckedContinuation<Bool, Never>) {
+        self.kinds = kinds
+        self.key = key
+        self.atMost = atMost
+        self.continuation = continuation
+    }
 }
 
 /// The machine, the runtime and the step. Not `Sendable`: only its actor reaches it, through
@@ -133,6 +154,28 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var timerTasks: [M.Key: (generation: UInt64, task: Task<Void, Never>)] = [:]
+    /// A job is scheduled to step the due `.afterBatch` follow-ups.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var followUpJobScheduled = false
+    /// Follow-ups taken by the current follow-up job, to step in this batch.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var followUpsToStep = FIFO<RequestID>()
+    /// `waitForQuiescence` callers, by id: each returns once at most `atMost` of its kinds are
+    /// pending.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var quiescenceWaiters: [UInt64: QuiescenceWaiter<M>] = [:]
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var nextQuiescenceWaiter: UInt64 = 0
+    /// Tests: how many quiescence waiters are registered.
+    package var quiescenceWaitersForTesting: Int { quiescenceWaiters.count }
     // Debug builds fill these (`effectsByInput`). Stored in every build, because inlined code
     // in a client compiled in another configuration may name them.
     /// The case name of the input stepping now.
@@ -202,6 +245,7 @@ public final class TurnCore<M: TurnMachine> {
         stats.droppedOutputs = rt.droppedOutputs
         stats.droppedSends += rt.droppedParkedSends
         stats.ignoredAfterEnd = rt.ignoredAfterEnd
+        stats.pendingFollowUps = rt.followUps.count
         return stats
     }
 

@@ -44,6 +44,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         let superseded = core.rt.live[key] != nil
         if superseded {
             core.rt.closeRequests(of: key)
+            core.rt.closeFollowUps(of: key)
             core.rt.dropTimer(of: key)
             if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key && !$0.pinned } }
             core.scopeEnded(key)
@@ -58,6 +59,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     /// deferred ones when they are admitted), whether or not the key is live.
     @inlinable public mutating func end(_ key: M.Key) {
         core.rt.closeRequests(of: key)
+        core.rt.closeFollowUps(of: key)
         core.rt.dropTimer(of: key)
         core.rt.live.removeValue(forKey: key)
         if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key } }
@@ -83,6 +85,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     @inlinable public mutating func endAll() {
         let ids = core.rt.open.keys.sorted { $0.raw < $1.raw }
         for id in ids { core.rt.closeRequest(id, .keyEnded) }
+        core.rt.closeFollowUps(of: nil)
         core.rt.live.removeAll()
         if !core.rt.timers.isEmpty {
             core.rt.timers.removeAll()
@@ -178,6 +181,61 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         core.rt.timers[key] = generation
         core.rt.timersToArm.append(PendingTimer(key: key, generation: generation, instant: instant, input: input))
         core.rt.dirty = true
+    }
+
+    // MARK: Follow-ups
+
+    /// Arms a coalesced follow-up for `key` and `slot`, owned by `key`'s current generation:
+    /// `input` steps as a control input when `trigger` says. One is pending per key and slot: an
+    /// arm while one is pending joins it and changes nothing (the first arm's input and trigger
+    /// stand). Ending or superseding `key` closes it unrun (`handleAbandoned(id, .keyEnded)`),
+    /// also when it was armed earlier in the same step. The slot is freed before the follow-up
+    /// steps, so its step may arm a successor.
+    ///
+    /// `.refused`: `key` isn't live, or the core has ended (counted in `ignoredAfterEnd`).
+    @inlinable @discardableResult
+    public mutating func followUp(
+        _ input: M.Input,
+        _ slot: M.FollowUpSlot,
+        of key: M.Key,
+        _ trigger: FollowUpTrigger<M.Effect>
+    ) -> FollowUpArming {
+        if core.rt.ended {
+            core.rt.ignoredAfterEnd += 1
+            return .refused
+        }
+        guard core.rt.live[key] != nil else { return .refused }
+        let name = FollowUpKey<M>(key: key, slot: slot)
+        if let pending = core.rt.followUps[name] { return .joined(pending.id) }
+        core.rt.nextRequest &+= 1
+        let id = RequestID(raw: core.rt.nextRequest)
+        switch trigger {
+        case .afterBatch:
+            core.rt.followUps[name] = FollowUpRecord(id: id, input: input, waiting: false, hasDeadline: false)
+            core.rt.dueFollowUps.append(id)
+        case .afterWork(let effect, let deadline):
+            core.rt.followUps[name] = FollowUpRecord(id: id, input: input, waiting: true, hasDeadline: deadline != nil)
+            let instant = deadline.map { core.segmentNow() + $0 }
+            core.rt.followUpGates.append(PendingEffect(effect: effect, request: id, deadline: instant))
+            core.noteEffect()
+        }
+        core.rt.followUpIDs[id] = name
+        core.rt.dirty = true
+        return .armed(id)
+    }
+
+    /// Retires the pending follow-up for `key` and `slot` without stepping it, and returns its
+    /// input; nil when none is pending. No `handleAbandoned` follows. A gate still in flight
+    /// finds it gone when it returns, and steps nothing for it.
+    @inlinable @discardableResult
+    public mutating func consumeFollowUp(_ slot: M.FollowUpSlot, of key: M.Key) -> M.Input? {
+        guard let pending = core.rt.followUps[FollowUpKey<M>(key: key, slot: slot)] else { return nil }
+        return core.rt.removeFollowUp(pending.id)?.input
+    }
+
+    /// The pending follow-up for `key` and `slot`, if any.
+    @inlinable public func followUpPending(_ slot: M.FollowUpSlot, of key: M.Key) -> RequestID? {
+        core.rt.followUps[FollowUpKey<M>(key: key, slot: slot)]?.id
     }
 
     // MARK: Output and answers

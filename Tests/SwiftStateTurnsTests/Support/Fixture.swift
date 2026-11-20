@@ -95,6 +95,8 @@ final class Fixture: @unchecked Sendable {
             open("stale deadline #\(bump("stale deadline"))")
         case .staleTimer:
             open("stale timer #\(bump("stale timer"))")
+        case .staleFollowUp:
+            open("stale follow-up #\(bump("stale follow-up"))")
         case .clockRead:
             bump("clock read")
         }

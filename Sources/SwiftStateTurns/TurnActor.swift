@@ -196,6 +196,13 @@ extension TurnActor {
             return
         }
         core.deadlineTasks.removeValue(forKey: id)
+        if core.rt.open[id] == nil, core.rt.gateDeadlineLive(id) {
+            // A follow-up's gate deadline: the follow-up closes unrun.
+            beginEntry()
+            core.rt.closeFollowUp(id, .deadline)
+            runSegment()
+            return
+        }
         guard core.rt.open[id] != nil else {
             core.onDiagnostic?(.staleDeadline)
             return
@@ -222,6 +229,100 @@ extension TurnActor {
         beginEntry()
         core.step(input, caller: nil)
         runSegment()
+    }
+
+    /// The follow-up job: steps the `.afterBatch` follow-ups armed before it, in arm order, in a
+    /// new batch. Ones armed by those steps go to the next job.
+    @inlinable func continueFollowUps() {
+        let core = self.core
+        core.followUpJobScheduled = false
+        beginEntry()
+        for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
+        core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+        runSegment()
+    }
+
+    /// A follow-up's gate returned. The follow-up, if this arm's is still pending, becomes due
+    /// now. The gate's own result steps first (a control input, as a `run`'s result), and its
+    /// products drain as after any step; the follow-up steps after that, from the driver's loop,
+    /// which re-checks that this arm is still pending (the result's step may have consumed it,
+    /// ended its key or called `endAll`). A gate whose follow-up was already consumed or closed
+    /// reports `.staleFollowUp`; its result still steps, and may arm new work.
+    @inlinable func gateReturned(_ id: RequestID, _ input: M.Input?, incarnation: UInt64) {
+        let core = self.core
+        guard core.incarnation == incarnation else {
+            core.counters.foreignCompletions += 1
+            core.onDiagnostic?(.foreignCompletion)
+            return
+        }
+        beginEntry()
+        if let name = core.rt.followUpIDs[id], core.rt.followUps[name]?.waiting == true {
+            core.rt.followUps[name]?.waiting = false
+            if core.rt.followUps[name]?.hasDeadline == true {
+                core.rt.followUps[name]?.hasDeadline = false
+                core.rt.deadlinesToCancel = true
+            }
+            core.followUpsToStep.push(id)
+        } else {
+            core.onDiagnostic?(.staleFollowUp)
+        }
+        if let input { core.step(input, caller: nil) }
+        core.rt.dirty = true
+        runSegment()
+    }
+
+    // MARK: Quiescence
+
+    /// Pending work of `kinds`, of `key` (every key when nil): follow-ups armed and not yet
+    /// stepped, consumed or closed; open requests; armed timers.
+    @inlinable public func pendingWork(_ kinds: TurnWork = .followUps, of key: M.Key? = nil) -> Int {
+        core.rt.pendingCount(kinds, of: key)
+    }
+
+    /// Tests: returns true once at most `atMost` of `kinds` are pending (of `key`, or every key),
+    /// at once if that holds already. Checked at the end of each of the actor's synchronous
+    /// segments, so a step that retires a follow-up and arms its successor never shows a gap.
+    /// `endAll` closes every request, follow-up and timer, so a waiter never outlives an ended
+    /// core's work. A cancelled waiting task returns false at once. The default counts
+    /// follow-ups only: a periodic timer is never quiet.
+    @inlinable @discardableResult
+    public func waitForQuiescence(_ kinds: TurnWork = .followUps, of key: M.Key? = nil, atMost: Int = 0) async -> Bool {
+        let core = self.core
+        // `fatalError`, not `precondition`: its message prints in release builds too.
+        if atMost < 0 { fatalError("TurnCore: waitForQuiescence's atMost must not be negative") }
+        if core.rt.pendingCount(kinds, of: key) <= atMost { return true }
+        core.nextQuiescenceWaiter &+= 1
+        let id = core.nextQuiescenceWaiter
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                // Re-checked here: a cancellation or a settle may land before the entry exists.
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                    return
+                }
+                if core.rt.pendingCount(kinds, of: key) <= atMost {
+                    continuation.resume(returning: true)
+                    return
+                }
+                core.quiescenceWaiters[id] = QuiescenceWaiter(kinds: kinds, key: key, atMost: atMost, continuation: continuation)
+            }
+        } onCancel: {
+            Task { await self.quiescenceWaiterCancelled(id) }
+        }
+    }
+
+    @inlinable func quiescenceWaiterCancelled(_ id: UInt64) {
+        core.quiescenceWaiters.removeValue(forKey: id)?.continuation.resume(returning: false)
+    }
+
+    /// Wakes the waiters whose condition holds, in the order they started waiting.
+    @inlinable func settleQuiescence() {
+        let core = self.core
+        if core.quiescenceWaiters.isEmpty { return }
+        let reached = core.quiescenceWaiters.filter { core.rt.pendingCount($0.value.kinds, of: $0.value.key) <= $0.value.atMost }
+        for id in reached.keys.sorted() {
+            core.quiescenceWaiters.removeValue(forKey: id)?.continuation.resume(returning: true)
+        }
     }
 
     @inlinable func continueDrain() {
@@ -278,9 +379,22 @@ extension TurnActor {
                 }
                 continue
             }
+            if let id = core.followUpsToStep.pop() {
+                // Skipped when it was consumed or closed after its job took it.
+                if let name = core.rt.followUpIDs[id], core.rt.followUps[name]?.waiting == false,
+                   let record = core.rt.removeFollowUp(id) {
+                    core.step(record.input, caller: nil)
+                }
+                continue
+            }
             break
         }
         if released > 0 { core.onDiagnostic?(.batchEnded(released: released)) }
+        if !core.rt.dueFollowUps.isEmpty, !core.followUpJobScheduled {
+            core.followUpJobScheduled = true
+            Task { self.continueFollowUps() }
+        }
+        settleQuiescence()
         core.rt.dirty = false
     }
 
@@ -325,7 +439,7 @@ extension TurnActor {
             }
             if core.rt.deadlinesToCancel {
                 core.rt.deadlinesToCancel = false
-                for id in Array(core.deadlineTasks.keys) where core.rt.open[id] == nil {
+                for id in Array(core.deadlineTasks.keys) where core.rt.open[id] == nil && !core.rt.gateDeadlineLive(id) {
                     core.deadlineTasks.removeValue(forKey: id)?.cancel()
                 }
             }
@@ -343,6 +457,15 @@ extension TurnActor {
                 swap(&timers, &core.rt.timersToArm)
                 for timer in timers where core.rt.timers[timer.key] == timer.generation {
                     arm(timer)
+                }
+                progressed = true
+            }
+            if !core.rt.followUpGates.isEmpty {
+                var gates: [PendingEffect<M>] = []
+                swap(&gates, &core.rt.followUpGates)
+                // A gate whose follow-up closed in the step that armed it isn't launched.
+                for gate in gates {
+                    if let id = gate.request, core.rt.followUpIDs[id] != nil { launchGate(gate) }
                 }
                 progressed = true
             }
@@ -373,6 +496,26 @@ extension TurnActor {
             let clock = core.clock
             core.deadlineTasks[id] = Task { [weak self] in
                 // Woken early (cancelled) or on time, the core re-checks the request.
+                await clock.sleep(until: instant)
+                await self?.deadlineFired(id, incarnation: incarnation)
+            }
+        }
+    }
+
+    @inlinable func launchGate(_ pending: PendingEffect<M>) {
+        let core = self.core
+        let incarnation = core.incarnation
+        let effect = pending.effect
+        guard let id = pending.request else { return }
+        // Held strongly, as an effect's task: a launched gate runs and its return is handled.
+        Task {
+            let input = await self.perform(effect)
+            self.gateReturned(id, input, incarnation: incarnation)
+        }
+        if let instant = pending.deadline {
+            let clock = core.clock
+            core.deadlineTasks[id] = Task { [weak self] in
+                // Woken early (cancelled) or on time, the core re-checks the follow-up.
                 await clock.sleep(until: instant)
                 await self?.deadlineFired(id, incarnation: incarnation)
             }

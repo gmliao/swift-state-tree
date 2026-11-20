@@ -91,6 +91,41 @@ public enum Hold<Key: Hashable & Sendable>: Sendable {
     }
 }
 
+// MARK: - Follow-ups
+
+/// When a pending follow-up (`Turn.followUp`) steps.
+public enum FollowUpTrigger<Effect: Sendable>: Sendable {
+    /// In a new batch, as the actor's own job after the current one: a follow-up that arms its
+    /// successor makes a chain of jobs, never a loop inside one batch.
+    case afterBatch
+    /// When `perform(effect)` returns (the gate). A `deadline` that passes first closes the
+    /// follow-up with `.deadline`. The gate's own result, if any, steps first, as a `run`'s does.
+    case afterWork(Effect, deadline: Duration?)
+}
+
+/// What `Turn.followUp` did.
+public enum FollowUpArming: Sendable, Equatable {
+    /// A new follow-up, under the key's current generation.
+    case armed(RequestID)
+    /// One was already pending for the key and slot: nothing changed, and the first arm's input
+    /// and trigger stand.
+    case joined(RequestID)
+    /// The key isn't live, or the core has ended: nothing was armed.
+    case refused
+}
+
+/// Kinds of pending work, for `TurnActor.pendingWork` and `waitForQuiescence`.
+public struct TurnWork: OptionSet, Sendable {
+    public let rawValue: UInt8
+    @inlinable public init(rawValue: UInt8) { self.rawValue = rawValue }
+    /// Follow-ups armed and not yet stepped, consumed or closed.
+    public static let followUps = TurnWork(rawValue: 1)
+    /// Open requests.
+    public static let requests = TurnWork(rawValue: 2)
+    /// Armed timers.
+    public static let timers = TurnWork(rawValue: 4)
+}
+
 /// Why a request closed without its completion.
 public enum Abandonment: Sendable, Equatable {
     case keyEnded, deadline, cancelled
