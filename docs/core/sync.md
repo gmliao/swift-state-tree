@@ -115,7 +115,7 @@ The walk covers `.serverOnly` fields for the class check and only sent fields fo
 - **At registration,** where a typealias hides it from the syntax but the field list shows it. A synced field is `.decimalField`. A field of an event, an action, its response or a server input is reported in `LandRegistrationError.decimalFields`, one path per field, such as `server event PriceEvent.amount`.
 - **At the first send,** for what neither sees: an event emitted without being registered, an `AnyCodable` filled with a `Decimal` at runtime, and a `Decimal` in a plain `Codable` type, which lists no fields. The JSON encodings and the MessagePack encoders refuse it, and the land ends (`.eventEncode` or `.responseEncode`). Limit: on a JSON encoding the refusal is a separate walk before the encode, so a hand-written `encode(to:)` that catches it and falls back to another form passes it, and the encode then writes what the fallback writes.
 
-A `.serverOnly` or `@Internal` field may hold a `Decimal`. So may a resolver output, which never reaches the wire; its replay record is #707.
+A `.serverOnly` or `@Internal` field may hold a `Decimal`. So may a resolver output, which never reaches the wire; replay reads it back with the record's own codec ([Resolver Outputs in Replay](reevaluation.md#resolver-outputs-in-replay)).
 
 **At compile time.** `@StateNodeBuilder` (for `@Sync` fields) and `@SnapshotConvertible` (for every stored property) refuse a field whose declared type spells `any P`, `Any`, `AnyObject` or a protocol composition (`P & Q`), at any depth (`[String: Any]`, `(any P)?`, `Box<any P>`), and `AnyHashable` and `AnyCodable` by name. What it holds can't be checked, and the sync may fail to convert it. `@Internal` fields aren't synced and may hold anything.
 
