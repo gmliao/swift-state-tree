@@ -369,7 +369,7 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
         // Invariant 20: the wait returns once every follow-up stepped or closed.
-        if !(await actor.waitForQuiescence()) { failures.append("the follow-up wait returned false") }
+        if !(await bounded({ await actor.waitForQuiescence() })) { failures.append("the follow-up wait returned false") }
         let final = await actor.view()
         failures += check(final, op: "the last completions", parkedBound: 6 + nextWork)
         if !drained { failures.append("parked inputs left after every hold was released: \(final.stats.queued)") }

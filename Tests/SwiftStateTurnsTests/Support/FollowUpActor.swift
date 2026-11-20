@@ -57,12 +57,4 @@ actor FollowUpActor: TurnActor {
     func waiterCount() -> Int {
         core.quiescenceWaitersForTesting
     }
-
-    /// Returns once `count` quiescence waiters are registered: a test starts its waiter in a
-    /// task, and the step it then sends must come after the registration.
-    func waitForWaiters(_ count: Int) async {
-        while core.quiescenceWaitersForTesting < count {
-            await Task.yield()
-        }
-    }
 }

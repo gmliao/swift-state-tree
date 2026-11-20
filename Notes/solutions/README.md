@@ -162,7 +162,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A retry loop catches failures, not hangs](2026-11-19-a-retry-loop-catches-failures-not-hangs.md) | ci, apt, retry, timeout, hang, shell |
 | 2026-11-19 | [Array literals of enum cases joined with `+` time out the pinned type checker](2026-11-19-concatenated-enum-literals-time-out-the-pinned-type-checker.md) | toolchain, type-checking, ci |
 | 2026-11-20 | [A helper that returns on state leaves its operation running](2026-11-20-a-helper-that-returns-on-state-leaves-its-operation-running.md) | testing, fixtures, join, polling, land-stop, flaky |
-| 2026-11-20 | [A time limit does not end a wait that never resumes](2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md) | testing, time-limit, hang-bound, test-gate, mutants, hold-points |
+| 2026-11-20 | [A time limit does not end a wait that never resumes](2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md) | testing, time-limit, hang-bound, test-gate, mutants, hold-points, mutation-run |
 | 2026-11-20 | [A visited set keyed by a lossy name merges distinct types](2026-11-20-a-visited-set-keyed-by-a-lossy-name-merges-distinct-types.md) | schema, type-names, visited-set, codegen, registration |
 | 2026-11-20 | [A concurrent delete stops a recursive removal and leaves the directory](2026-11-20-a-concurrent-delete-stops-a-recursive-removal.md) | testing, cleanup, filesystem, recorder, isolation |
 | 2026-11-20 | [A macro-only change doesn't rebuild the clients that expand it](2026-11-20-a-macro-only-change-does-not-rebuild-its-clients.md) | macros, mutants, incremental-build, toolchain, testing |

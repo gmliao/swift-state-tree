@@ -7,6 +7,8 @@ symptoms:
   - "a test run that never ends although the suite has a .timeLimit"
   - "a mutant run that hangs instead of failing"
   - "a test parked at a held TestGate after a regression"
+  - "a mutant's test process sits at 0% CPU for most of an hour"
+  - "a stopped mutation run starts its next mutant seconds later"
 root_cause: time_limit_records_a_failure_but_cannot_end_an_unbounded_await
 resolution_type: design_rule
 severity: medium
@@ -17,9 +19,11 @@ tags:
   - test-gate
   - mutants
   - hold-points
+  - mutation-run
 related:
   - "#458"
   - "#674"
+  - "#702"
 ---
 
 # A time limit does not end a wait that never resumes
@@ -56,3 +60,30 @@ The waits on hooks that only resume on an event, such as `LandKeeper.waitUntilDr
 - Prove it with the mutant that parks the operation. The mutant must fail in seconds on every run, not hang.
 
 #674's inbound backlog suite was checked for the same assumption, and it doesn't rely on it. The test's own waits are `EventLog` waits bounded by `testHangBound`, and loop tasks always run. The delegate's held `onMessage` parks on the handler's chain, not in the test, so a test that ends leaves it parked without hanging. Its comment says a wait that runs out "reports its own message before the time limit ends the test". That reads as if the limit ended the test. The bound that actually ends it is `testHangBound`.
+
+## Recurrence: #702's follow-up tests
+
+The first draft of `FollowUpTests` (the turn core's follow-ups and quiescence wait) broke the rule above in three ways. The suite had `.timeLimit(.minutes(1))`, and still one mutant held a test process at 0% CPU for 47 minutes:
+
+- **An awaited task's value.** A case starts `Task { await a.waitForQuiescence() }` and later reads `await waiter.value`. The quiescence wait does return when *its* task is cancelled, but the time limit cancels the test's task, not an unstructured task the test made. So a mutant that never wakes the waiter parks `.value` for good.
+- **The test waiting at a fixture gate.** The test side called `Fixture.wait(_:)`, a continuation that ignores cancellation, for an event such as "at gate a" that a mutant may never bring.
+- **A reply awaited with `.ignoresCancel`.** A `sendAndWait` whose reply a mutant holds back parks the same way.
+
+A `Task.yield()` loop on a count (`while count < 2 { await Task.yield() }`) has the same flaw, but it spins rather than parks, so it shows as a busy process instead.
+
+The fix gives the test target its own hang-bound helpers (`Tests/SwiftStateTurnsTests/Support/HangBound.swift`, 60 s like `testHangBound`, since that target doesn't link SwiftStateTreeTestSupport):
+
+- `Fixture.reach(_:)` for the test's own gate waits;
+- `settled(_:)`, which cancels the awaited task when the bound runs out or the test is cancelled;
+- `bounded { ... }` for a direct quiescence wait;
+- `yieldUntil(_:_:)` for a count the test can only read.
+
+Case 35's reply is now awaited with `.cancelsCall` under the bound. Each of these records an issue when the bound runs out, so the mutant fails the test instead of parking it. Effects and checks keep the plain `Fixture.wait`, because a test may end with one of them parked at a gate on purpose.
+
+## Stopping a mutation run
+
+The same 47 minutes showed a second trap. The run was stopped by killing its build and test processes by name, because a shared measurement needed the machine. The driver, a script that applies each mutant, builds and tests, was not among those names. It saw its test exit, restored the source and started the next mutant's build 15 seconds later.
+
+- Stop a mutation run at its driver first, then the build and test processes, so nothing respawns.
+- Give each mutant's test run its own timeout well past the suite's run time, and count a timeout as killed (a hang is a failure the tests detected). Report which mutant hung.
+- Make the driver restore the mutated file on a termination signal as well as on normal exit, and start each run from a clean tree, so a run cut short can't leave a mutant in place for the next build.
