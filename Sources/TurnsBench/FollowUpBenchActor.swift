@@ -40,7 +40,7 @@ actor DirectFollowUpActor {
     func armAndRun() async -> Int {
         if !pending {
             pending = true
-            await Task { await self.runPending() }.value
+            await Task { self.runPending() }.value
         }
         return ran
     }
