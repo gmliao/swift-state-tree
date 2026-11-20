@@ -256,14 +256,19 @@ private struct Fixture {
         ))
     }
 
-    /// Connects a session and joins `player` to the land, and returns once the router's join
-    /// has returned. The land has the player from OnJoin on, but the router's join still checks
-    /// its attempt after the admission (`.afterAdmit`): a stop that removed the session before
-    /// that check makes the join undo itself with an OnLeave (#634).
+    /// Connects a session and joins `player` to the land, and returns once the join is over:
+    /// the router's join has returned, its flip wait has ended and the JoinResponse was sent.
+    /// The land has the player from OnJoin on, but the router's join still checks its attempt
+    /// after the admission (`.afterAdmit`): a stop that removed the session before that check
+    /// makes the join undo itself with an OnLeave (#634). The flip wait runs after the router's
+    /// join returns, and a rejoin while it runs is refused as a join in progress (#614).
     @discardableResult
     func join(_ player: String) async throws -> (SessionID, RecordingConnection) {
         let (session, connection, joined) = try await startJoin(player)
+        let router = server.landRouter
         #expect(await bounded { await joined.value } != nil, "\(player)'s join returned")
+        #expect(await bounded { await router.waitForNoPendingFlipForTesting() } != nil, "\(player)'s flip wait ended")
+        #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } }, "\(player)'s JoinResponse")
         #expect(await players().contains(player), "\(player) joined")
         return (session, connection)
     }
@@ -586,7 +591,8 @@ struct GracefulShutdownTests {
         let (p1, connection) = try await f.join("p1")
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
         await f.server.landManager.detachLand(landID: f.landID)
-        await old.keeper.forceShutdown()
+        // Each await is bounded: a hang names its step instead of holding the run (#614).
+        try #require(await bounded { await old.keeper.forceShutdown() } != nil, "the old instance's forced shutdown returned")
         let router = f.server.landRouter
 
         let gate = Gate()
@@ -602,19 +608,23 @@ struct GracefulShutdownTests {
         let second = try JSONEncoder().encode(TransportMessage.action(
             requestID: "a-second", action: ActionEnvelope(typeIdentifier: "Probe", payload: AnyCodable("x"))
         ))
-        await router.onMessage(second, from: p1)
+        try #require(await bounded { await router.onMessage(second, from: p1) } != nil, "the second frame's forward returned")
         #expect(await router.isBound(sessionID: p1) == false)
-        await router.onMessage(try f.joinFrame(player: "p1"), from: p1)
+        let rejoin = try f.joinFrame(player: "p1")
+        try #require(await bounded { await router.onMessage(rejoin, from: p1) } != nil, "the rejoin returned")
         #expect(await connection.waitUntilFrames { $0.filter { $0.kind == .joinResponse }.count == 2 }, "rejoined")
         #expect(await router.isBound(sessionID: p1))
 
         gate.open()
-        await held.value
+        try #require(await bounded { await held.value } != nil, "the held forward returned")
         // The held forward's epoch is the old one: it leaves the new binding alone.
         #expect(await router.isBound(sessionID: p1), "the newer binding survives")
         #expect(await f.players().contains("p1"))
         withExtendedLifetime(old) {}
-        try await f.host.shutdown()
+        // This file's deadlines never expire a step without a gate: a step that never ends would
+        // hold the shutdown forever.
+        let host = f.host
+        #expect(await bounded { (try? await host.shutdown()) != nil } == true, "the host shut down")
     }
 
     @Test("the router holds a session's instance weakly: a destroyed instance's adapter goes while the session is still bound (#390)")
@@ -1745,20 +1755,23 @@ struct FailedLandStopTests {
         try await f.host.shutdown()
     }
 
-    @Test("the fixture's join returns only after the router's join has returned (#634)")
-    func fixtureJoinWaitsForTheRoutersJoin() async throws {
+    /// `.afterAdmit`: before the router's join returns (#634). `.flipWaitResumed`: in the flip
+    /// wait, after it returned (#614).
+    @Test("the fixture's join returns only after the router's join and its flip wait have ended (#634, #614)", arguments: ["afterAdmit", "flipWaitResumed"])
+    func fixtureJoinWaitsForTheRoutersJoin(point: String) async throws {
         let f = try await Fixture.make(land: makeLand(events: Events()))
         let admitted = Gate()
-        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.afterAdmit) { await admitted.arrive() }.hook)
+        let hold: LandRouterHoldPoint = point == "afterAdmit" ? .afterAdmit : .flipWaitResumed
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(hold) { await admitted.arrive() }.hook)
         let returned = Events()
         let join = Task { try await f.join("p1"); returned.append("returned") }
-        #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
+        #expect(await admitted.waitForArrivals(1), "the join is held at \(point)")
         #expect(await f.players() == ["p1"], "OnJoin ran")
-        // The hold keeps the router's join from returning, so this can't fail on a correct
+        // The hold keeps the join from ending, so this can't fail on a correct
         // helper, whatever the timing. The pause only gives a helper that returns on the state
         // alone (it polls every 5 ms) the time to show it.
         try? await safeTaskSleep(for: .milliseconds(200))
-        #expect(returned.all.isEmpty, "the fixture's join returned while the router's join was held")
+        #expect(returned.all.isEmpty, "the fixture's join returned while the join was held at \(point)")
         admitted.open()
         try await join.value
         #expect(returned.all == ["returned"])
