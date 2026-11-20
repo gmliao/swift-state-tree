@@ -34,7 +34,7 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 
 `PlainData`（`Sources/SwiftStateTurns/PlainData.swift`）標示的值，不會呼叫到別的東西，也不會在持有者背後改變：任何深度都沒有 class、closure、actor、existential、lock 或 token。
 
-- **已符合的內建型別：** `Bool`、各種整數型別、`Double`、`Float`、`String`、`Character`、`Duration`，以及 turn core 自己的值（`InputID`、`RequestID`、`Generation`、`TurnInstant`、`Abandonment`、`TurnError`）。
+- **已符合的內建型別：** `Bool`、各種整數型別、`Double`、`Float`、`String`、`Character`、`Duration`、Foundation 的 `Data`（用 `Data(bytesNoCopy:count:deallocator:)` 搭配自訂 deallocator 建立的 `Data` 帶著 closure，實質上不是純資料；型別檢查看不出來，所以不要儲存這種值），以及 turn core 自己的值（`InputID`、`RequestID`、`Generation`、`TurnInstant`、`Abandonment`、`TurnError`）。
 - **容器在內容符合時符合：** `Optional`、`Array`、`ContiguousArray`、`Set`、`Dictionary`（key 與 value），以及 `Result`（成功與失敗）。
 - **tuple 無法符合。** 請改存 `PlainPair`。
 
@@ -55,7 +55,10 @@ effect 的結果、deadline 或 timer，都會以新的 input 回來。每一次
 - 泛型型別需要 `where T: PlainData`。
 - `@PlainData` 加在 class 或 actor 上會被拒絕；型別是 class、actor、closure 或 existential 的欄位也會被拒絕。
 - 在 `SwiftStateTurns` 之外手寫 `: PlainData`（包括 `@retroactive`）會被 `scripts/lint-turns.sh` 拒絕：那樣會不經任何檢查就符合。
-- 標準函式庫或其他模組的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
+- 標準函式庫或 Foundation 的型別無法加上 macro。請改存 turn core 的值型別，例如用 `TurnInstant` 取代 `ContinuousClock.Instant`。
+- 本 repository 其他模組的型別，在它自己的模組、它的定義處加上 `@PlainData`，絕不在別處用 extension 加。land 的狀態與 transport 保存的 ID 和值都已這樣標註：`SessionID`、`PlayerID`、`ClientID`、`EventTarget`、`StateSnapshot`、`SnapshotValue` 和 `MessagePackValue`。machine 可以直接儲存它們。
+
+下面的例子中，替第一個 `Room` 加上 `@PlainData` 會被拒絕：macro 會指出其中不是純資料的欄位。第二個可以編譯。
 
 之前，狀態裡有 class 和時鐘的 instant：
 

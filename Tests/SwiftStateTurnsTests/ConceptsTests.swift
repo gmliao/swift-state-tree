@@ -4,6 +4,7 @@
 // connection's withdraw token, and an idle timer. Compiled and run here; the rot check in
 // WorkedExampleTests.swift covers its blocks.
 
+import SwiftStateTree
 import SwiftStateTurns
 import Testing
 
@@ -167,15 +168,10 @@ struct ConceptsTests {
 }
 
 // docs/turns/README.md § Plain data and tools: the before/after example, in both languages, each
-// block in its own namespace so the two `Room`s compile side by side. `PlayerID` and `Connection`
-// sit at file scope: the macro's extension is written there and names the field types unqualified.
-// All three are fileprivate, so this PlayerID doesn't shadow SwiftStateTree.PlayerID elsewhere in
-// the target.
-@PlainData
-fileprivate struct PlayerID: Hashable, Sendable {
-    var raw: Int
-}
-
+// block in its own namespace so the two `Room`s compile side by side. `PlayerID` is the
+// repository's own (SwiftStateTree), which is plain data. `Connection` sits at file scope: the
+// macro's extension is written there and names the field types unqualified. It and the example
+// are fileprivate, so they don't leak into the rest of the target.
 fileprivate final class Connection {}
 
 fileprivate enum PlainDataDocExample {
@@ -215,4 +211,6 @@ func plainDataDocExampleIsPlain() {
     func isPlain<T: PlainData>(_: T.Type) -> Bool { true }
     #expect(isPlain(PlainDataDocExample.After.Room.self))
     #expect(isPlain(PlainDataDocExample.AfterZH.Room.self))
+    #expect(isPlain(PlayerID.self))
+    #expect(isPlain(SessionID.self))
 }

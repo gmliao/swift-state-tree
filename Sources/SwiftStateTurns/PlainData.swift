@@ -1,5 +1,7 @@
 // "The machine's stored state is plain data", checked at compile time.
 
+import Foundation
+
 /// A value that can't call through to anything or change behind its holder: no class, closure,
 /// actor, existential, lock or token, at any depth.
 ///
@@ -35,6 +37,7 @@ extension Float: PlainData {}
 extension String: PlainData {}
 extension Character: PlainData {}
 extension Duration: PlainData {}
+extension Data: PlainData {}
 extension Never: PlainData {}
 extension Optional: PlainData where Wrapped: PlainData {}
 extension Array: PlainData where Element: PlainData {}

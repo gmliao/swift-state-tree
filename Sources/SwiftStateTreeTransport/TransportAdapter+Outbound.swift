@@ -6,6 +6,7 @@
 import Foundation
 import SwiftStateTree
 import Logging
+import SwiftStateTurns
 
 extension TransportAdapter {
     /// Enqueues `data` for `sessionID`, in issue order with every other frame of this adapter.
@@ -232,11 +233,12 @@ extension TransportAdapter {
 }
 
 /// Sync cycles an adapter skipped before `beginSync`.
+@PlainData
 public struct SyncSkipCounts: Sendable, Equatable {
     /// Another cycle was in flight (`LandKeeper.beginSync` rejected the request).
-    public var busy = 0
+    public var busy: Int = 0
     /// The writer still held a sync cycle element from an earlier cycle (back-pressure).
-    public var outboundBacklog = 0
+    public var outboundBacklog: Int = 0
 
     public init(busy: Int = 0, outboundBacklog: Int = 0) {
         self.busy = busy

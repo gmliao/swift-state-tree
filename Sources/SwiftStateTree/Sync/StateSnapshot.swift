@@ -1,8 +1,10 @@
 // Sources/SwiftStateTree/Sync/StateSnapshot.swift
 
 import Foundation
+import SwiftStateTurns
 
 /// Filtered state snapshot (JSON-friendly structure).
+@PlainData
 public struct StateSnapshot: Equatable, Codable, Sendable {
     public var values: [String: SnapshotValue]
 
