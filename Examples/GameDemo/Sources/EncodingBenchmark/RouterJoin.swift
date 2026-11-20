@@ -12,6 +12,13 @@
 // connection holds its frames before they are read, and each connection then acks its last
 // sync sequence. Both are outside the timed spans.
 //
+// The players join one at a time: a join is sent, then its room steps until that player has its
+// JoinResponse and firstSync. Concurrent joins complete in a number of sync plans that depends
+// on how their admissions interleave with the steps' turns, and every later frame's sync
+// sequence carries that count: a MessagePack integer one byte wider past 127 and 255, so the
+// window's bytes would vary by run. One join at a time fixes the plan count, and the result
+// reports the window's first sequences (`firstWindowSyncSeq`) so a shift is visible.
+//
 // The bytes are per connection: a frame for several sessions (a broadcast) is counted once per
 // session, as the wire carries it. The default path counts each frame the adapter hands its
 // transport once. The two paths' bytes are not comparable.
@@ -38,8 +45,8 @@ enum RouterJoin {
     /// Set by `main` before any run when `--join-through-router on` is given.
     nonisolated(unsafe) static var config: RouterJoinConfig?
 
-    /// Steps the join phase may take before the run fails: each joiner needs its JoinResponse
-    /// and its firstSync, which come within a couple of steps. Past it, a join was refused or lost.
+    /// Steps one player's join may take before the run fails: the joiner needs its JoinResponse
+    /// and its firstSync, which come within a couple of steps. Past it, the join was refused or lost.
     static let maxJoinSteps = 20
 
     /// A run's encoding on the router path: the format's, with row addressing when asked. The
@@ -55,7 +62,7 @@ enum RouterJoin {
 /// sequence (for the acks), and any close the server sent it.
 final class BenchmarkConnection: WebSocketConnection, @unchecked Sendable {
     let sessionID: SessionID
-    private let room: CountingTransport
+    let room: CountingTransport
     private let lock = NSLock()
     private var framesReceived = 0
     private var firstSyncReceived = false
@@ -76,7 +83,7 @@ final class BenchmarkConnection: WebSocketConnection, @unchecked Sendable {
             if op == 1 || op == 3 { firstSyncReceived = true }
             if let seq, seq > lastSeq ?? 0 { lastSeq = seq }
         }
-        await room.send(data, to: .session(sessionID))
+        await room.sendToSession(data, session: sessionID, syncSeq: seq)
     }
 
     func close() async throws {
@@ -202,6 +209,7 @@ struct RouterRooms: Sendable {
         var rooms: [HeroDefenseRoomContext] = []
         var connections: [[BenchmarkConnection]] = []
         var allClientIDs: [[ClientID]] = []
+        var joins: [[Data]] = []
         for roomIndex in 0 ..< roomCount {
             let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
             let container: LandContainer<HeroDefenseState>
@@ -217,6 +225,7 @@ struct RouterRooms: Sendable {
             }
             let counting = CountingTransport(capturing: captures(roomIndex))
             var roomConnections: [BenchmarkConnection] = []
+            var roomJoins: [Data] = []
             for playerIndex in 0 ..< playersPerRoom {
                 let sessionID = SessionID(fixed: "room\(roomIndex)-session-\(playerIndex)")
                 let connection = BenchmarkConnection(sessionID: sessionID, room: counting)
@@ -230,7 +239,7 @@ struct RouterRooms: Sendable {
                     metadata: StateUpdateFeature.joinMetadata
                 )
                 do {
-                    await transport.handleIncomingMessage(sessionID: sessionID, data: try JSONEncoder().encode(join))
+                    roomJoins.append(try JSONEncoder().encode(join))
                 } catch {
                     fatalError("--join-through-router: a join didn't encode: \(error)")
                 }
@@ -245,6 +254,7 @@ struct RouterRooms: Sendable {
             rooms.append(HeroDefenseRoomContext(
                 landID: landID, keeper: container.keeper, adapter: TransportAdapterBenchmarkHandle(container), transport: counting
             ))
+            joins.append(roomJoins)
             allClientIDs.append(clientIDs)
             connections.append(roomConnections)
         }
@@ -255,23 +265,25 @@ struct RouterRooms: Sendable {
             binaryAcks: encoding.message == .messagepack,
             stateUpdateFeatures: rooms.first?.adapter.effectiveStateUpdateFeatures ?? []
         )
-        // The joins complete in the lands' turns: step them until every joiner has its
-        // JoinResponse and firstSync, reading the connections only after a drain and a flush.
-        // Each step acks too (settle): a long join phase must not run past the ack timeout.
-        var steps = 0
-        while !set.connections.joined().allSatisfy(\.joined) {
-            guard steps < RouterJoin.maxJoinSteps else {
-                let missing = set.connections.joined().filter { !$0.joined }.map(\.sessionID.rawValue)
-                print("Error: --join-through-router: \(missing.count) session(s) without a JoinResponse and firstSync after \(steps) steps: \(missing.prefix(10).joined(separator: ", "))")
-                exit(1)
+        // One join at a time (see the file header): send it, then step its room until the joiner
+        // has its JoinResponse and firstSync, reading the connection only after a drain and a
+        // flush. Each step acks too (settle): a long join phase must not run past the ack timeout.
+        for (roomIndex, room) in rooms.enumerated() {
+            for (playerIndex, connection) in set.connections[roomIndex].enumerated() {
+                await transport.handleIncomingMessage(sessionID: connection.sessionID, data: joins[roomIndex][playerIndex])
+                var steps = 0
+                while !connection.joined {
+                    guard steps < RouterJoin.maxJoinSteps else {
+                        print("Error: --join-through-router: \(connection.sessionID.rawValue) without a JoinResponse and firstSync after \(steps) steps")
+                        exit(1)
+                    }
+                    await room.keeper.stepTickOnce()
+                    await room.adapter.syncNow()
+                    await MeasuredSync.drain([room.adapter])
+                    await set.settle()
+                    steps += 1
+                }
             }
-            for room in rooms {
-                await room.keeper.stepTickOnce()
-                await room.adapter.syncNow()
-            }
-            await MeasuredSync.drain(rooms.map(\.adapter))
-            await set.settle()
-            steps += 1
         }
         await set.requireNoServerClose(during: "the joins")
         if rowAddressingRequired, !set.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing) {
@@ -334,6 +346,13 @@ struct RouterRooms: Sendable {
     /// The router path's metadata for a result, after the run (it checks the acks).
     func metadata(rowAddressingRequested: Bool, syncLag: SyncLagPolicy) async -> [String: Any] {
         let acks = await requireAcksTaken()
+        var low: UInt64?, high: UInt64?
+        for room in connections.compactMap(\.first?.room) {
+            guard let range = await room.firstSyncSeqRange() else { continue }
+            low = min(low ?? range.min, range.min)
+            high = max(high ?? range.max, range.max)
+        }
+        let firstWindowSyncSeq: [String: Any] = low.map { ["min": $0, "max": high ?? $0] } ?? [:]
         func ms(_ d: Duration) -> Double {
             Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
         }
@@ -342,6 +361,9 @@ struct RouterRooms: Sendable {
             "transport": "WebSocketTransport",
             "syncAcks": "lastSequenceAfterEachSync",
             "bytesCounted": "perConnection",
+            // The sessions' first sync sequences in the measured window, lowest and highest over
+            // every room: equal across runs when the join phase ran the same plans.
+            "firstWindowSyncSeq": firstWindowSyncSeq,
             "rowAddressingRequested": rowAddressingRequested,
             "rowAddressingInEffect": stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing),
             "stateUpdateFeatures": stateUpdateFeatures,

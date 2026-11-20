@@ -154,7 +154,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-20 | [A thrown sweep cell hides the cells after it](2026-11-20-a-thrown-sweep-cell-hides-the-cells-after-it.md) | test-harness, differential, golden, fail-closed, reporting |
 | 2026-11-19 | [`Bundle.allBundles` crashes a Linux test process (null dereference in CFBundleGetAllBundles)](2026-11-19-bundle-allbundles-crashes-on-linux.md) | linux, foundation, bundle, test-support, cross-platform |
 | 2026-11-19 | [A typed decoder that replaces a JSON round trip misses the round trip's coercions](2026-11-19-a-typed-decoder-misses-the-round-trips-coercions.md) | testing, differential, decode, messagepack, decimal, float, anycodable |
-| 2026-11-19 | [Decode a record with the codec that wrote it](2026-11-19-decode-a-record-with-the-codec-that-wrote-it.md) | replay, record-format, decode, canonical-messagepack, anycodable, date, json |
+| 2026-11-19 | [Decode a record with the codec that wrote it](2026-11-19-decode-a-record-with-the-codec-that-wrote-it.md) | replay, record-format, decode, canonical-messagepack, anycodable, date, json, resolver-output |
 | 2026-11-19 | [A stale example build crashes after a library struct changes its layout](2026-11-19-a-stale-example-build-crashes-after-a-library-layout-change.md) | build, swiftpm, incremental, examples, crash, linux |
 | 2026-11-19 | [An explicit config still reads the environment through its stored defaults](2026-11-19-an-explicit-config-still-reads-the-environment.md) | testing, environment, transport-env-config, sync-tables, ci, test-selection |
 | 2026-11-19 | [A harness with its loops off must order the work it starts](2026-11-19-a-harness-with-its-loops-off-must-order-the-work-it-starts.md) | testing, differential, determinism, golden, sync, hold-points |
@@ -164,3 +164,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-20 | [A helper that returns on state leaves its operation running](2026-11-20-a-helper-that-returns-on-state-leaves-its-operation-running.md) | testing, fixtures, join, polling, land-stop, flaky |
 | 2026-11-20 | [A time limit does not end a wait that never resumes](2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md) | testing, time-limit, hang-bound, test-gate, mutants, hold-points |
 | 2026-11-20 | [A visited set keyed by a lossy name merges distinct types](2026-11-20-a-visited-set-keyed-by-a-lossy-name-merges-distinct-types.md) | schema, type-names, visited-set, codegen, registration |
+| 2026-11-20 | [A concurrent delete stops a recursive removal and leaves the directory](2026-11-20-a-concurrent-delete-stops-a-recursive-removal.md) | testing, cleanup, filesystem, recorder, isolation |
+| 2026-11-20 | [A macro-only change doesn't rebuild the clients that expand it](2026-11-20-a-macro-only-change-does-not-rebuild-its-clients.md) | macros, mutants, incremental-build, toolchain, testing |

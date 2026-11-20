@@ -8,6 +8,7 @@ symptoms:
   - "a recorded Data, URL or Decimal field fails to decode: Expected String but found an array / a dictionary"
   - "a Double of 3.0 read back from the JSON record view fails a strict decode: expected float64"
   - "-0.0 replays as +0.0 from the JSON view"
+  - "a replayed handler sees nil for a resolver output with a Date, Data or URL field"
 root_cause: a_recorded_payload_was_decoded_with_a_codec_other_than_the_one_that_wrote_it
 resolution_type: design_rule
 severity: high
@@ -19,11 +20,13 @@ tags:
   - anycodable
   - date
   - json
+  - resolver-output
 related:
   - "#521"
   - "#538"
   - "#628"
   - "#633"
+  - "#707"
 ---
 
 # Decode a record with the codec that wrote it
@@ -50,3 +53,5 @@ A recorded payload is a tree whose shape is set by the encoder that wrote it, no
 - Before decoding stored data, find the writer and use its codec, or name every rule where yours differs. Check the special types first: `Date`, `Data`, `URL`, `Decimal`, signed zero, integers past `Int.max`, non-finite floats.
 - Test on what the writer produced (a saved record, then its JSON view), never on a tree built by hand or by a different encoder: the hand-built tree is in the shape you expect, not the shape on disk.
 - A comparison of stored against live values has the same trap: normalize both sides through the stored codec first (#633, the offline verifier).
+- Every reader of a record needs this rule, not only the one that was fixed. A recorded resolver output was still read back through `JSONEncoder` and `JSONDecoder` (`LandContext`'s dynamic member lookup over `AnyCodableResolverOutput`). An output with a `Date`, `Data` or `URL` field failed that read, so the replayed handler saw `nil` instead of the value (#707). A probe through a saved record showed it. When the record codec is fixed for one reader, list the others (events, server inputs, resolver outputs, the verifier) and check each one.
+- A byte-identical re-encode doesn't show that a value reads back: a `Decimal` resolver output re-encoded to the same bytes, in Darwin's keyed form, which no JSON read accepts (#597). Test the reader's decode into the type.

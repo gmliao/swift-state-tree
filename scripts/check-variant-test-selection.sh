@@ -20,7 +20,9 @@
 #      and none comes from `fromEnvironment`;
 #   R3 nothing builds a LandManager, LandRouter, LandRealm or a land server or host, which build
 #      adapters from the environment.
-# The filtered targets are read from the step itself: its one FILTER env line, whose alternatives
+# The filtered targets are read from the step itself: its one FILTER env entry (a second key
+# would override the first; FILTER set anywhere else in the workflow, a script's `FILTER=`
+# included, fails), whose alternatives
 # must each be a whole target (`Name\.`), and its one `swift test`, which must pass
 # `${FILTER:+--filter "$FILTER"}`; the step sets both flags to "false". So the step and this check
 # can't name different targets, and the step can't run without the filter it declares.
@@ -43,18 +45,33 @@
 #      `env.VAR` or `env['VAR']` included), the workflow's or a job's env, another step or another
 #      job. Outside the test steps, whole lines count, so the name in display text fails too (a
 #      false alarm, fixed by rewording). A `#` line is skipped, except inside a block scalar
-#      (`run: |`), where it is script text that Actions still interpolates.
+#      (`run: |`), where it is script text that Actions still interpolates. A test step's script
+#      doesn't assign one (`VAR=x swift test`, `export VAR=x`), and no step of the job writes
+#      `$GITHUB_ENV`, which sets variables for the steps after it under names built at run time.
+#      A test step is one whose own `run:` runs `swift test` (a `uses:` step's `with:` isn't
+#      script). A plain `if:` value that goes on over more lines is read as one expression.
+#      The workflow writes its keys plain and brings in no entries by an anchor, an alias or a
+#      merge key (`&a`, `*a`, `<<:`): the rules read each step's own lines, so those fail.
 #   E2 the build job has no `strategy` (a matrix would bring back the variant runs this reasons
 #      about), and no expression in it uses the matrix or strategy context.
 #   E3 Package.swift reads no environment (`ProcessInfo`, `getenv`, `Context.environment`,
 #      `environment[`), comments and strings stripped.
 #   E4 one build: one step runs `swift build`, as exactly `swift build --build-tests` with
 #      `id: build`; every `swift test` in the job passes `--skip-build` and no flag but `--filter`
-#      and `--no-parallel` (another flag may need a build of its own); every test step's `if:` is
+#      and `--no-parallel` (another flag may need a build of its own), its arguments read as shell
+#      words, so `--skip-build` as `--filter`'s value doesn't count, and each line cut at its list
+#      operators outside quotes, so every `swift test` on it is read; every test step's `if:` is
 #      `${{ !cancelled() && steps.build.outcome == 'success' }}`, so no variant runs on missing or
-#      partial products.
+#      partial products; the four variant steps (VARIANT_STEPS) are each one test step, so
+#      dropping or renaming a variant fails; and each variant step sets its own flags to false
+#      (VARIANT_FLAGS_OFF), so a variant can't keep its name and run the defaults.
 #   E5 the shared steps' scripts (`scripts/*.sh` or `.py`, and every script they name, followed)
 #      don't name a variable or its key (useSyncTables, typedLeafValues, perPlayerSyncTables). Textual: a script that builds a name from parts isn't seen.
+#
+# The rules read text, not commands, and catch the plain ways a change can break the reasoning
+# above. An edit that hides what it does on purpose passes them, for example `: swift test ...`
+# (runs no tests), `printf -v FILTER ...` or `FILTER+=...` in a test step, or a flow mapping
+# (`env: {...}`). Review catches those.
 #
 # Usage: scripts/check-variant-test-selection.sh [--self-test] [--package-json <file>]
 set -euo pipefail
@@ -63,6 +80,7 @@ exec python3 - "$@" <<'PY'
 import json
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -187,11 +205,17 @@ def filtered_targets(workflow):
     if len(steps) != 1:
         return set(), [f"{WORKFLOW}: the {BUILD_JOB} job has {len(steps)} steps named {TABLES_STEP!r}, not one"]
     step = yaml_code(steps[0])
-    found = [m for m in map(FILTER_LINE.match, step) if m]
-    elsewhere = sum(1 for line in yaml_code(lines) if FILTER_LINE.match(line)) - len(found)
-    if len(found) != 1 or elsewhere:
-        return set(), [f"{where} has {len(found)} FILTER lines of the form this check reads, not one"
-                       + (f", and the job {elsewhere} more" if elsewhere else "")]
+    # The step's env as YAML reads it: FILTER once (a second key would override the first), of the
+    # form this check reads. Anywhere else (the workflow's or the job's env, another step, a shell
+    # assignment in a script), it could differ from what the step runs.
+    filters = [value for key, value in step_env_entries(steps[0]) if key == "FILTER"]
+    keys = sum(1 for _, line in yaml_structure(workflow.splitlines()) if re.match(r"^\s*(?:-\s+)?FILTER\s*:", line))
+    assigned = sum(1 for s in job_steps(lines) for line in run_lines(s) if re.search(r"(?<![\w-])FILTER=", line))
+    elsewhere = keys - len(filters) + assigned
+    found = [m for m in (FILTER_LINE.match(f"        FILTER: {value}") for value in filters) if m]
+    if len(filters) != 1 or len(found) != 1 or elsewhere:
+        return set(), [f"{where} has {len(filters)} FILTER entries in its env ({len(found)} of the form this check reads), not one"
+                       + (f", and the workflow sets FILTER {elsewhere} more time(s)" if elsewhere else "")]
     env = step_env(steps[0])
     unset = [v for v in ("USE_SYNC_TABLES", "TYPED_LEAF_VALUES") if env.get(v) not in ('"false"', "'false'", "false")]
     if unset:
@@ -350,8 +374,27 @@ STRATEGY_USE = re.compile(r"\bstrategy\b(?!\s*:)")
 PACKAGE_ENV = re.compile(r"\bProcessInfo\b|\bgetenv\b|\bContext\s*\.\s*environment\b|\benvironment\s*\[")
 BUILD_RUN = "      run: swift build --build-tests"
 TEST_IF = "      if: ${{ !cancelled() && steps.build.outcome == 'success' }}"
-# A `swift test` flag that runs the products as built.
-TEST_FLAG = re.compile(r"--skip-build|--no-parallel|--filter|\$\{FILTER:\+--filter")
+# The `swift test` options that run the products as built (`--filter` takes a value).
+TEST_OPTIONS = ("--skip-build", "--no-parallel", "--filter")
+# The variant steps (E4): each runs once, as a test step, so dropping or renaming one fails.
+VARIANT_STEPS = ("Tests", "Tests, sync tables off", "Tests, per-player sync tables off", "Run wall-clock tests")
+# The flags each variant step turns off (E4). Section 1 also checks the tables step's two.
+VARIANT_FLAGS_OFF = {
+    "Tests, sync tables off": ("USE_SYNC_TABLES", "TYPED_LEAF_VALUES"),
+    "Tests, per-player sync tables off": ("PER_PLAYER_SYNC_TABLES",),
+}
+# A shell assignment of a variable (`VAR=x swift test`, `export VAR=x`, `echo "VAR=x"` into a
+# file): it sets the variable where the step's env doesn't show it (E1).
+ASSIGNMENT = re.compile(r"(?<![\w-])(" + "|".join(VARIABLES) + r")=")
+# `$GITHUB_ENV` sets variables for every later step, under names a script may build at run time.
+GITHUB_ENV = re.compile(r"\bGITHUB_ENV\b")
+# A key written in quotes (`"if": …`, `'run': |`): the rules read plain keys only.
+QUOTED_KEY = re.compile(r"""^\s*(?:-\s+)?("[^"]*"|'[^']*')\s*:(?:\s|$)""")
+# An anchor (`&a`), an alias (`*a`) or a merge key (`<<:`): entries brought in from elsewhere,
+# which a step's own lines don't show.
+ANCHOR = re.compile(r"^\s*(?:-\s+)?(?:[\w-]+\s*:\s+)?[&*][\w-]+(?:\s|$)|^\s*(?:-\s+)?<<\s*:")
+# A step's own `run:` key (`    - run:` or `      run:`), not one nested under `with:`.
+RUN_KEY = re.compile(r"^(    - |      )run:\s*(.*?)\s*$")
 
 
 def job_lines(workflow, job):
@@ -382,19 +425,44 @@ def step_name(step):
     return next((re.sub(r"^\s*-?\s*name:\s*", "", line).strip() for line in step if re.match(r"^\s*-?\s*name:", line)), "?")
 
 
-def step_env(step):
-    """The step's own env entries, {key: raw value}."""
-    env, inside = {}, False
+def step_env_entries(step):
+    """The step's own env entries in order, [(key, raw value)], a repeated key listed each time
+    (YAML keeps the last)."""
+    entries, inside = [], False
     for line in yaml_code(step):
         if re.match(r"^      env:\s*$", line):
             inside = True
         elif inside and (not line.strip() or line.startswith("        ")):
             m = re.match(r"^        ([\w-]+):\s*(.*?)\s*$", line)
             if m:
-                env[m.group(1)] = m.group(2)
+                entries.append((m.group(1), m.group(2)))
         else:
             inside = False
-    return env
+    return entries
+
+
+def step_env(step):
+    """The step's own env entries, {key: raw value}, as YAML reads them (the last of a repeated key)."""
+    return dict(step_env_entries(step))
+
+
+def run_lines(step):
+    """The step's `run:` script: its inline value, or its block scalar's lines; [] without one."""
+    code = yaml_code(step)
+    for i, line in enumerate(code):
+        m = RUN_KEY.match(line)
+        if not m:
+            continue
+        if not re.fullmatch(r"[|>][-+0-9]*(?:\s+#.*)?", m.group(2)):
+            return [m.group(2)]
+        indent = len(m.group(1))
+        rest = []
+        for j in range(i + 1, len(code)):
+            if code[j].strip() and len(code[j]) - len(code[j].lstrip()) <= indent:
+                break
+            rest.append(code[j])
+        return rest
+    return []
 
 
 BLOCK_SCALAR = re.compile(r"^(\s*)(-\s+)?[\w-]+:\s*[|>][-+0-9]*\s*(?:#.*)?$")
@@ -423,6 +491,25 @@ def yaml_code(lines, indexed=False):
     return out if indexed else [line for _, line in out]
 
 
+def yaml_structure(lines):
+    """(index, line) of `lines` that are YAML structure: not a comment and not a block scalar's
+    content (shell text, where `*` and `&` are the shell's)."""
+    out, block = [], None
+    for i, line in enumerate(lines):
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if not line.strip() or indent > block:
+                continue
+            block = None
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = BLOCK_SCALAR.match(line)
+        if m:
+            block = len(m.group(1)) + (len(m.group(2)) if m.group(2) else 0)
+        out.append((i, line))
+    return out
+
+
 def expressions(code):
     """(index in `code`, expression) for each `${{ … }}` and each bare `if:` value."""
     text = "\n".join(code)
@@ -443,8 +530,83 @@ def expressions(code):
             if rest and "${{" not in " ".join(r for _, r in rest):
                 found.append((rest[0][0], " ".join(r.strip() for _, r in rest)))
         elif value:
+            # A plain value may go on over more-indented lines (`if: !cancelled() &&` and then
+            # `  env.X == 'y'`): one value, so the whole of it is the expression.
+            indent = len(line) - len(line.lstrip())
+            for j in range(i + 1, len(code)):
+                if not code[j].strip() or len(code[j]) - len(code[j].lstrip()) <= indent:
+                    break
+                value += " " + code[j].strip()
             found.append((i, value))
     return sorted(found)
+
+
+SHELL_LIST_OPERATORS = {"|", "|&", "||", "&&", ";", "&"}
+
+
+def swift_test_invocations(line):
+    """Each `swift test` on a script line, as its argument words: the line read as shell words,
+    cut at its list operators (`|`, `||`, `&&`, `;`, `&`), so a second invocation after one is
+    read too and an operator inside quotes isn't a cut. Redirections (`2>&1`, `> f`) are dropped.
+    Returns (invocations, error)."""
+    text = line.rstrip()
+    if text.endswith("\\"):
+        # A line continued on the next: its options go on there, out of this check's view.
+        text = text[:-1]
+    lexer = shlex.shlex(text.replace(FILTERED_RUN, "--filter FILTER"), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError as error:
+        return [], f"has a swift test line this check can't split ({error}): {line.strip()!r}"
+    commands, current = [], []
+    for token in tokens:
+        if token in SHELL_LIST_OPERATORS:
+            commands.append(current)
+            current = []
+        else:
+            current.append(token)
+    commands.append(current)
+    found = []
+    for words in commands:
+        starts = [k for k in range(len(words) - 1) if words[k] == "swift" and words[k + 1] == "test"]
+        if not starts:
+            continue
+        args, rest = [], words[starts[0] + 2:]
+        k = 0
+        while k < len(rest):
+            if rest[k][:1] in "<>":
+                # A redirection and its target; a file descriptor before it was its own word.
+                if args and args[-1].isdigit():
+                    args.pop()
+                k += 2
+                continue
+            args.append(rest[k])
+            k += 1
+        found.append(args)
+    return found, None
+
+
+def test_option_errors(words):
+    """What's wrong with one `swift test` invocation's argument words: `--skip-build` must be an
+    option, not a `--filter` value."""
+    problems, options, i = [], [], 0
+    while i < len(words):
+        word = words[i]
+        if word == "--filter":
+            i += 2
+            options.append(word)
+            continue
+        if word.startswith("--filter="):
+            options.append("--filter")
+        elif word in TEST_OPTIONS:
+            options.append(word)
+        else:
+            problems.append(f"passes {word}: only --skip-build, --filter and --no-parallel run the products as built")
+        i += 1
+    if "--skip-build" not in options:
+        problems.insert(0, "runs swift test without --skip-build: it builds again")
+    return problems
 
 
 def variant_errors(workflow, package_swift, read_script):
@@ -456,7 +618,8 @@ def variant_errors(workflow, package_swift, read_script):
     offset = next(i for i, line in enumerate(lines) if re.match(r"^  " + re.escape(BUILD_JOB) + r":\s*$", line))
     errors, where = [], f"{WORKFLOW}: the {BUILD_JOB} job"
     steps = job_steps(job, indexed=True)
-    is_test = lambda step: any(re.search(r"\bswift test\b", line) for line in yaml_code([l for _, l in step]))
+    # A test step runs `swift test` in its own script: a `uses:` step whose `with:` names it isn't one.
+    is_test = lambda step: any(re.search(r"\bswift test\b", line) for line in run_lines([l for _, l in step]))
     tests = [s for s in steps if is_test(s)]
     # E1: where a variable may appear. A test step's env entries and its script's plain text.
     allowed_entry, allowed_text = set(), set()
@@ -489,8 +652,25 @@ def variant_errors(workflow, package_swift, read_script):
             errors.append(f"{WORKFLOW}:{n + 1}: E1 {var} outside a test step's env: {line.strip()!r}; read at build time or by a shared step, it would let one build serve variants that differ")
     for k, expression in expressions([l for _, l in code]):
         n, line = code[k]
-        if VARIABLE_USE.search(expression) and n in allowed_entry | allowed_text:
+        # A line outside the test steps already failed above, unless the variable is on a plain
+        # value's continuation line (a test step's script text, by position).
+        if VARIABLE_USE.search(expression) and (n in allowed_entry | allowed_text or not VARIABLE_USE.search(line)):
             errors.append(f"{WORKFLOW}:{n + 1}: E1 {VARIABLE_USE.search(expression).group(1)} in an expression: {line.strip()!r}")
+    # E1: a variable set where no env shows it. In a test step's script, an assignment; in the
+    # build job, any write to $GITHUB_ENV (a later step would run with what it set).
+    for n in sorted(allowed_text):
+        hit = ASSIGNMENT.search(lines[n])
+        if hit:
+            errors.append(f"{WORKFLOW}:{n + 1}: E1 {hit.group(1)} assigned in a test step's script: {lines[n].strip()!r}; set it in the step's env")
+    for i, line in yaml_code(job, indexed=True):
+        if GITHUB_ENV.search(line):
+            errors.append(f"{WORKFLOW}:{i + offset + 1}: E1 the {BUILD_JOB} job writes $GITHUB_ENV, which sets variables for the steps after it: {line.strip()!r}")
+    # The YAML forms the rules don't read: a quoted key, or entries brought in by an anchor.
+    for n, line in yaml_structure(lines):
+        if QUOTED_KEY.match(line):
+            errors.append(f"{WORKFLOW}:{n + 1}: a quoted YAML key: the rules read plain keys, so write it unquoted: {line.strip()!r}")
+        if ANCHOR.match(line):
+            errors.append(f"{WORKFLOW}:{n + 1}: a YAML anchor, alias or merge key: the rules read each step's own lines, so write the entries out: {line.strip()!r}")
     # E2: no matrix.
     job_code = yaml_code(job, indexed=True)
     for i, line in job_code:
@@ -517,18 +697,30 @@ def variant_errors(workflow, package_swift, read_script):
                       + (f": {builds[0][1].strip()!r}" if len(builds) == 1 else ""))
     elif not any(re.match(r"^      id:\s*build\s*$", l) for _, l in build_steps[0]):
         errors.append(f"{where}'s build step has no `id: build`, which the test steps' if: reads (E4)")
+    names = [step_name([l for _, l in s]) for s in tests]
+    for variant in VARIANT_STEPS:
+        if names.count(variant) != 1:
+            errors.append(f"{where} has {names.count(variant)} test steps named {variant!r}, not one: a variant dropped or doubled (E4)")
     for step in tests:
         name = step_name([l for _, l in step])
         if not any(l == TEST_IF for _, l in step):
             errors.append(f"{where}'s test step {name!r} doesn't have `{TEST_IF.strip()}`: it could run on missing or partial products (E4)")
-        for line in yaml_code([l for _, l in step]):
-            for m in re.finditer(r"\bswift test\b(.*)", line):
-                rest = re.split(r"\s(?:2>&1|\||>|&&|\|\|)", m.group(1))[0]
-                if "--skip-build" not in rest:
-                    errors.append(f"{where}'s test step {name!r} runs swift test without --skip-build: it builds again (E4)")
-                for flag in re.findall(r"(?:^|\s)(\$\{FILTER:\+--filter|-[-\w]+)", rest):
-                    if not TEST_FLAG.fullmatch(flag):
-                        errors.append(f"{where}'s test step {name!r} passes {flag}: only --skip-build, --filter and --no-parallel run the products as built (E4)")
+        for line in run_lines([l for _, l in step]):
+            if not re.search(r"\bswift test\b", line):
+                continue
+            invocations, problem = swift_test_invocations(line)
+            if problem:
+                errors.append(f"{where}'s test step {name!r} {problem} (E4)")
+            for words in invocations:
+                for problem in test_option_errors(words):
+                    errors.append(f"{where}'s test step {name!r} {problem} (E4)")
+        # Each variant step sets its own flag off: a step that keeps its name and turns its flag
+        # back on would run the defaults again, and its pins read their expectation from the env.
+        wanted = VARIANT_FLAGS_OFF.get(name, ())
+        env = step_env([l for _, l in step])
+        unset = [v for v in wanted if env.get(v) not in ('"false"', "'false'", "false")]
+        if unset:
+            errors.append(f"{where}'s test step {name!r} doesn't set {' and '.join(unset)} to false in its env: the variant would run the defaults (E4)")
     # E5: the shared steps' scripts.
     seen = set()  # a script named twice is read once
     for step in steps:
@@ -655,12 +847,18 @@ def self_test():
     for name, workflow, want_names, want_error in [
         ("the step's filter names Transport and NIO", both, names2, None),
         ("a filter without NIO names only Transport", job(r"SwiftStateTreeTransportTests\."), {"SwiftStateTreeTransportTests"}, None),
-        ("no FILTER line in the step fails", both.replace("FILTER:", "FILTERS:"), set(), "0 FILTER lines"),
+        ("no FILTER line in the step fails", both.replace("FILTER:", "FILTERS:"), set(), "0 FILTER entries"),
         ("a FILTER line in another step fails",
-         both.replace("        FILTER: ", "        X: y\n    - name: Other\n      env:\n        FILTER: "), set(), "0 FILTER lines"),
+         both.replace("        FILTER: ", "        X: y\n    - name: Other\n      env:\n        FILTER: "), set(), "0 FILTER entries"),
         ("a second FILTER line in another step fails",
          both.replace("    - name: Tests, per-player", "    - name: Other\n      env:\n        FILTER: ${{ !inputs.full_matrix && 'A\\.' || '' }}\n      run: x\n    - name: Tests, per-player"),
-         set(), "and the job 1 more"),
+         set(), "sets FILTER 1 more time"),
+        ("a second FILTER key in the step fails (YAML keeps the last)",
+         both.replace("        FILTER: ", "        FILTER: ${{ !inputs.full_matrix && 'X\\.' || '' }}\n        FILTER: "), set(), "2 FILTER entries"),
+        ("a FILTER in the job's env fails", both.replace("    steps:\n", "    env:\n      FILTER: ''\n    steps:\n", 1), set(), "sets FILTER 1 more time"),
+        ("a FILTER in the workflow's env fails", "env:\n  FILTER: ''\n" + both, set(), "sets FILTER 1 more time"),
+        ("a FILTER assigned in the step's script fails",
+         both.replace("        set -o pipefail\n", "        set -o pipefail\n        FILTER=''\n"), set(), "sets FILTER 1 more time"),
         ("no step of that name fails", both.replace(f"name: {TABLES_STEP}", "name: Tests, tables off"), set(), "0 steps named"),
         ("two steps of that name fail", both.replace("name: Tests, in-turn sync off", f"name: {TABLES_STEP}"), set(), "2 steps named"),
         ("the step in another job only fails", both.replace(f"  {BUILD_JOB}:", "  other2:"), set(), f"no {BUILD_JOB} job"),
@@ -752,19 +950,24 @@ def variant_self_test():
               tables=('      env:\n        USE_SYNC_TABLES: "false"\n        TYPED_LEAF_VALUES: "false"\n'
                       "      run: |\n        swift test --skip-build --filter 'A\\.' 2>&1 | tee t.log\n"
                       "        grep -q 'takes USE_SYNC_TABLES' t.log\n"),
+              per_player=('      env:\n        PER_PLAYER_SYNC_TABLES: "false"\n'
+                          "      run: |\n        swift test --skip-build --filter 'A\\.|B\\.' 2>&1 | tee p.log \\\n"
+                          "          || exit 1\n"),
+              wall_clock="      run: WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter W\n",
               test_if=IF, extra="", other=""):
         return ("on: push\n" + workflow_env + "jobs:\n  build:\n    name: build (variants)\n" + strategy + job_env +
                 "    steps:\n    - uses: actions/checkout@v4\n    - name: Lint\n" + lint + build_step +
                 "    - name: Snippets\n      run: scripts/snippets.sh\n"
-                "    - name: Tests, defaults\n      id: on\n" + test_if + on +
+                "    - name: Tests\n      id: on\n" + test_if + on +
                 "    - name: Tests, sync tables off\n      id: tables\n" + test_if + tables +
-                "    - name: Wall clock\n" + test_if + "      run: WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter W\n" +
+                "    - name: Tests, per-player sync tables off\n      id: per_player\n" + test_if + per_player +
+                "    - name: Run wall-clock tests\n" + test_if + wall_clock +
                 extra + "    - name: Summary\n      if: ${{ always() }}\n      env:\n        ON: ${{ steps.on.outcome }}\n      run: echo \"$ON\"\n"
                 "  other:\n    steps:\n    - run: x\n" + other)
     scripts = {"scripts/lint.sh": "echo lint\n", "scripts/snippets.sh": "swift build --target \"$t\"\nscripts/helper.py\n",
                "scripts/helper.py": "print(1)\n"}
     manifest = "// swift-tools-version:6.0\nimport PackageDescription\nlet package = Package(name: \"P\")\n"
-    tests = ["Tests, defaults", "Tests, sync tables off", "Wall clock"]
+    tests = list(VARIANT_STEPS)
     cells = [
         ("today's shape", build(), scripts, manifest, None),
         # E1
@@ -827,7 +1030,70 @@ def variant_self_test():
         ("a shared script naming useSyncTables fails", build(), {**scripts, "scripts/lint.sh": "grep useSyncTables x\n"}, manifest, "names useSyncTables"),
         ("a script it calls naming the key fails", build(), {**scripts, "scripts/helper.py": "k = 'perPlayerSyncTables'\n"}, manifest, "helper.py:1: names perPlayerSyncTables"),
         ("a shared script that doesn't exist fails", build(), {k: v for k, v in scripts.items() if k != "scripts/lint.sh"}, manifest, "doesn't exist"),
+        # E1: a variable set where no env shows it (#669)
+        ("an inline assignment in a test step's script fails",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: USE_SYNC_TABLES=false swift test --skip-build\n'), scripts, manifest,
+         "E1 USE_SYNC_TABLES assigned in a test step's script"),
+        ("an export in a test step's run block fails",
+         build(on='      run: |\n        export TYPED_LEAF_VALUES=false\n        swift test --skip-build\n'), scripts, manifest, "E1 TYPED_LEAF_VALUES assigned"),
+        ("a write to $GITHUB_ENV fails",
+         build(extra="    - name: Set\n      run: echo \"X=1\" >> \"$GITHUB_ENV\"\n"), scripts, manifest, "writes $GITHUB_ENV"),
+        ("a uses: step whose with: names swift test isn't a test step",
+         build(extra='    - name: Action\n' + IF + '      uses: some/action@v1\n      env:\n        USE_SYNC_TABLES: "false"\n      with:\n        args: swift test --skip-build\n'),
+         scripts, manifest, "E1 USE_SYNC_TABLES outside"),
+        ("a variable on a plain if:'s continuation line fails",
+         build(test_if="      if: success() &&\n        env.USE_SYNC_TABLES == 'true'\n"), scripts, manifest,
+         "E1 USE_SYNC_TABLES in an expression"),
+        ("a variable on a shared step's plain if: continuation fails",
+         build(lint="      if: always() &&\n        env.TYPED_LEAF_VALUES != 'false'\n      run: scripts/lint.sh\n"), scripts, manifest, "E1 TYPED_LEAF_VALUES"),
+        # The YAML forms the rules don't read (#665, #669)
+        ("a quoted strategy key fails", build(strategy='    "strategy":\n      matrix:\n        x: [a, b]\n'), scripts, manifest, "a quoted YAML key"),
+        ("a quoted run key fails", build(lint="      'run': |\n        scripts/lint.sh\n"), scripts, manifest, "a quoted YAML key"),
+        ("env entries brought in by an alias fail",
+         build(workflow_env="x-pins: &pins\n  A: b\n", extra="    - name: Again\n" + IF + "      env: *pins\n      run: swift test --skip-build\n"), scripts, manifest,
+         "a YAML anchor, alias or merge key"),
+        ("a merge key fails",
+         build(extra="    - name: Again\n" + IF + "      env:\n        <<: {A: b}\n      run: swift test --skip-build\n"), scripts, manifest,
+         "a YAML anchor, alias or merge key"),
+        ("* and & in a run block are the shell's", build(extra="    - name: Glob\n      run: |\n        ls *.swift &\n        wait\n"), scripts, manifest, None),
+        # E4: run as built, read as shell words (#669)
+        ("--skip-build as --filter's value fails",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --filter --skip-build\n'), scripts, manifest, "without --skip-build"),
+        ("--skip-builds isn't --skip-build",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-builds\n'), scripts, manifest, "without --skip-build"),
+        ("a doubled variant step fails",
+         build(extra="    - name: Tests\n" + IF + "      run: swift test --skip-build\n"), scripts, manifest, "2 test steps named 'Tests'"),
+        # E4: every swift test on a line, cut at list operators outside quotes (#703 review)
+        ("a second swift test after && without --skip-build fails",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build && swift test\n'), scripts, manifest, "without --skip-build"),
+        ("a second swift test after ; without --skip-build fails",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: true; swift test --skip-build; swift test --filter X\n'), scripts, manifest, "without --skip-build"),
+        ("a quoted | in --filter's value is one word",
+         build(on="      env:\n        USE_SYNC_TABLES: \"true\"\n      run: swift test --skip-build --filter 'A | B' 2>&1 | tee on.log\n"), scripts, manifest, None),
+        ("a redirection's target isn't an option",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build > on.log 2> err.log\n'), scripts, manifest, None),
     ]
+    # One field of today's shape changed at a time, in each variant step: its name (the variant
+    # dropped), its if:, and its --skip-build.
+    today = build()
+    for variant in VARIANT_STEPS:
+        start = today.index(f"    - name: {variant}\n")
+        end = today.index("    - name: ", start + 1)
+        step = today[start:end]
+        for change, changed, want in [
+            ("renamed", step.replace(f"name: {variant}\n", f"name: {variant} (renamed)\n", 1), f"0 test steps named {variant!r}"),
+            ("without its if:", step.replace(IF, "", 1), "could run on missing or partial products"),
+            ("without --skip-build", step.replace(" --skip-build", "", 1), "without --skip-build"),
+        ] + [
+            # Its flags turned back on, or dropped (#703 review): the variant would run the defaults.
+            (f"with {flag} on", step.replace(f'{flag}: "false"', f'{flag}: "true"', 1), f"doesn't set {flag} to false")
+            for flag in VARIANT_FLAGS_OFF.get(variant, ())
+        ] + [
+            (f"without {flag}", step.replace(f'        {flag}: "false"\n', "", 1), f"doesn't set {flag} to false")
+            for flag in VARIANT_FLAGS_OFF.get(variant, ())
+        ]:
+            assert changed != step, (variant, change)
+            cells.append((f"today's shape, {variant!r} {change}, fails", today[:start] + changed + today[end:], scripts, manifest, want))
     failed = 0
     for name, workflow, files, package_swift, want in cells:
         errors, names = variant_errors(workflow, package_swift, files.get)
