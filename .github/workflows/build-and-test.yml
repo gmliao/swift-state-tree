@@ -421,7 +421,8 @@ jobs:
         python3 --version
         log="$(mktemp)"
         # Per file, about 3x the slowest file on the runner (network-impairment-2026-11/test_topic.py,
-        # 96 s on main at 1075c23c); one hang plus the rest still ends inside the step's 10 minutes.
+        # 96 s on main at 1075c23c). The files take 2 to 4 min together, so the step's 15 minutes
+        # hold two hangs (2 x 310 s) plus the rest; more than that still ends at the step's cap.
         file_timeout=300
         count=0
         failed=()
@@ -431,12 +432,13 @@ jobs:
           echo "::group::$f"
           # Actions runs this with `bash -eo pipefail`: capture the status instead of exiting on it.
           rc=0
-          (cd "$(dirname "$f")" && timeout -s ABRT -k 10 "$file_timeout" python3 -X faulthandler "$(basename "$f")") > "$log" 2>&1 || rc=$?
+          (cd "$(dirname "$f")" && timeout --verbose -s ABRT -k 10 "$file_timeout" python3 -X faulthandler "$(basename "$f")") > "$log" 2>&1 || rc=$?
           cat "$log"
           echo "::endgroup::"
-          if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
-            # 124: stopped at the bound (its stack is in the log above); 137: killed after ignoring it.
-            echo "::error file=$f::$f timed out after ${file_timeout} s (exit $rc); the stack is in its log group"
+          # `--verbose` logs each signal timeout sends, so a test's own exit 124 or 137 isn't read
+          # as the bound.
+          if grep -q '^timeout: sending signal' "$log"; then
+            echo "::error file=$f::$f timed out after ${file_timeout} s (exit $rc); Python's stack at the SIGABRT is in its log group"
             failed+=("$f")
           elif [ $rc -ne 0 ]; then
             echo "::error file=$f::$f failed (exit $rc)"
@@ -463,7 +465,7 @@ jobs:
           printf '  %s\n' "${failed[@]}"
           exit 1
         fi
-      timeout-minutes: 10
+      timeout-minutes: 15
 
   # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
   # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
