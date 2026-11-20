@@ -12,6 +12,7 @@ import SwiftStateTree
 @testable import SwiftStateTreeTransport
 import SwiftStateTreeReevaluationMonitor
 @testable import SwiftStateTreeNIO
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 private struct TicketLiveState: StateNodeProtocol, StateFromSnapshotDecodable {
@@ -272,21 +273,44 @@ struct RegisterWithGenericReplayTicketTests {
         let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
         // Spelled as the containment check spells the records directory (the default is relative).
         let pathToken = base64URL(URL(fileURLWithPath: recordsDir, isDirectory: true).standardizedFileURL.path + "/match.json")
-        func join(_ instanceId: String, _ session: String) async throws {
+        /// Joins through a recording connection and returns what the join got back: its reply, or
+        /// its error code (#428: a failure then names whether the join was refused).
+        func join(_ instanceId: String, _ session: String) async throws -> String {
             let sessionID = SessionID(session)
-            await router.onConnect(sessionID: sessionID, clientID: ClientID("c-\(session)"), authInfo: nil)
+            let connection = RecordingConnection()
+            _ = await transport.handleConnection(sessionID: sessionID, connection: connection, authInfo: nil)
             let message = TransportMessage.join(
                 requestID: "j-\(session)", landType: replayLandType, landInstanceId: instanceId,
                 playerID: "p-\(session)", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
             )
             await router.onMessage(try JSONEncoder().encode(message), from: sessionID)
+            // The answer goes out through the session's queue; handshake frames are JSON.
+            let answered = await connection.waitUntilFrames { messages in
+                messages.contains { $0.kind == .joinResponse || $0.kind == .error }
+            }
+            guard answered else { return "no answer" }
+            for message in await connection.messages {
+                switch message.payload {
+                case .joinResponse(let reply):
+                    return reply.success ? "joined" : "join refused: \(reply.reason ?? "no reason")"
+                case .error(let payload):
+                    return "error \(payload.code): \(payload.message)"
+                default:
+                    continue
+                }
+            }
+            return "no answer"
         }
         func replayLands() async -> Int {
             await host.realm.listAllLands().filter { $0.landType == replayLandType }.count
         }
-        try await join("\(UUID().uuidString.lowercased()).\(pathToken)", "forged")
+        let forged = try await join("\(UUID().uuidString.lowercased()).\(pathToken)", "forged")
+        #expect(forged != "joined", "a forged ID joined")
         #expect(await replayLands() == 0)
-        try await join(ReplayTicketSigner.process.issue(replayLandType: replayLandType, pathToken: pathToken), "valid")
-        #expect(await replayLands() == 1)
+        let valid = try await join(ReplayTicketSigner.process.issue(replayLandType: replayLandType, pathToken: pathToken), "valid")
+        // Asked first, so a missing land names the join's own answer (#428).
+        #expect(valid == "joined", "the valid ticket's join: \(valid)")
+        let lands = await replayLands()
+        #expect(lands == 1, "replay lands after the valid join: \(lands), its join: \(valid)")
     }
 }
