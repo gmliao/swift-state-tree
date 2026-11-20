@@ -410,6 +410,9 @@ final class DiffRun: @unchecked Sendable {
             try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
             try await applyInputs()
 
+        case .awaitDisconnectForwards:
+            try await bounded("the disconnect forwards") { [router] in await router.waitForDisconnectForwardsForTesting() }
+
         case .startStop:
             guard stopTask == nil, !stopped else { throw DiffRunFailure("the land was stopped twice") }
             stopped = true
@@ -491,6 +494,7 @@ final class DiffRun: @unchecked Sendable {
         case .disconnect(let name): return "disconnect \(name)"
         case .startDisconnect(let name): return "start disconnect \(name)"
         case .settleDisconnects: return "settle disconnects"
+        case .awaitDisconnectForwards: return "await disconnect forwards"
         case .startStop: return "start stop"
         case .awaitStop: return "await stop"
         case .spawn(let label, _): return "spawn \(label)"

@@ -154,6 +154,13 @@ enum DiffStep: Sendable {
     case startDisconnect(String)
     /// Waits for every disconnect forward, then applies the leaves (as `disconnect` does).
     case settleDisconnects
+    /// Waits until no counted disconnect forward is in flight, and applies nothing. It returns
+    /// at once when none was started, and it covers forwards counted while it waits. A forward
+    /// returns once the adapter's queued leave has returned from the keeper, and on a tickless
+    /// land that leave awaits its own input turn. So a later step's sync cycle can't hold the
+    /// sync flag while that turn runs, which would move the turn's sync phase into a sync-only
+    /// turn (#676).
+    case awaitDisconnectForwards
     /// Starts the land's stop in a task of its own; `awaitStop` waits for it.
     case startStop
     /// Waits for the started stop; a stop that times out fails the run.
