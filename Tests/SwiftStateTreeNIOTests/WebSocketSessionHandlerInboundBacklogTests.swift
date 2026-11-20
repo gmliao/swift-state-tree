@@ -158,6 +158,22 @@ private func waitForDrained(_ f: Fixture) async -> Bool {
     }
 }
 
+/// The batches that reported `.delivered` so far.
+private func deliveredCount(_ f: Fixture) -> Int {
+    f.delegate.signals.events.filter { $0 == "backlog:delivered" }.count
+}
+
+/// Waits until `count` batches have reported `.delivered` and the backlog holds `remaining`: the
+/// resume hop the last of them queued, if any, is then on the loop, so a loop task submitted
+/// after this runs after it. The count alone changes before the hop is queued.
+private func waitForDelivered(_ f: Fixture, count: Int, remaining: Int) async -> Bool {
+    let handler = f.handler
+    return await f.delegate.signals.waitFor { events in
+        handler.inboundQueuedMessagesForTesting == remaining
+            && events.filter { $0 == "backlog:delivered" }.count >= count
+    }
+}
+
 private func onLoop<T: Sendable>(_ fixture: Fixture, _ body: @escaping @Sendable () -> T) async throws -> T {
     try await fixture.loop.submit(body).get()
 }
@@ -235,8 +251,10 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         // Release one message at a time: 9 queued, the bound's half is 4.
         for remaining in stride(from: 8, through: 5, by: -1) {
             #expect(await waitFor(f.delegate) { f.delegate.isMessageWaiting })
+            let delivered = deliveredCount(f)
             f.delegate.releaseNext()
-            #expect(await waitFor(f.delegate) { f.handler.inboundQueuedMessagesForTesting == remaining })
+            // A resume this release wrongly queued is on the loop before the drain below.
+            #expect(await waitForDelivered(f, count: delivered + 1, remaining: remaining))
             try await drain(f.loop)
             #expect(f.handler.isInboundReadPausedForTesting, "still above half at \(remaining)")
             #expect(f.reads.count == readsBefore, "no read forwarded at \(remaining)")

@@ -51,7 +51,14 @@ struct LandManagerFailedInitializationTests {
         )
         // Held before publication until the instance's failed initialization started its drain.
         await manager.installHolds(HoldRegistry.at(.publish) {
-            while await manager.lastBuiltKeeperForTesting?.isDraining != true { await Task.yield() }
+            guard let keeper = await manager.lastBuiltKeeperForTesting else {
+                Issue.record("no keeper built before the publication")
+                return
+            }
+            // The failure path sets the drain flag and installs the drain task in one segment.
+            if await !withinHangBound({ await keeper.waitUntilDrainStartedForTesting() }) {
+                Issue.record("the failed initialization's drain never started")
+            }
         })
         defer { FailedInitStuckResolver.gate.open() }
         let landID = LandID(landType: "failed-init", instanceId: "room-1")

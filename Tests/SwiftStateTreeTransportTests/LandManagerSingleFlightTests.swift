@@ -25,20 +25,18 @@ private func plainLand(_ landID: LandID) -> LandDefinition<SingleFlightTestState
 }
 
 /// Lifecycle events from the instances under test, in the order they happened.
-private final class LifecycleLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String] = []
+private final class LifecycleLog: Sendable {
+    private let log = EventLog()
 
     func record(_ event: String) {
-        lock.lock()
-        entries.append(event)
-        lock.unlock()
+        log.append(event)
     }
 
-    var events: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return entries
+    var events: [String] { log.events }
+
+    /// Waits until `event` was recorded (bounded by `testHangBound`).
+    func waitFor(_ event: String) async -> Bool {
+        await log.waitFor(event)
     }
 
     func isOrdered(_ first: String, before second: String) -> Bool {
@@ -109,13 +107,18 @@ private func concurrentCreations(
     }
 }
 
+/// A log the manager appends to each time a call joins a creation already in flight. Install it
+/// before the calls start.
+private func creationJoinLog(_ manager: LandManager<SingleFlightTestState>) async -> EventLog {
+    let log = EventLog()
+    await manager.onCreationJoinedForTesting { log.append("joined") }
+    return log
+}
+
 /// Waits until `count` calls joined the creation in flight, so every call is known to share it
 /// before the test releases it.
-private func waitForCreationJoins(
-    _ count: Int,
-    manager: LandManager<SingleFlightTestState>
-) async -> Bool {
-    await pollUntil { await manager.creationJoinCount() >= count }
+private func waitForCreationJoins(_ count: Int, log: EventLog) async -> Bool {
+    await log.waitFor { $0.count >= count }
 }
 
 /// Whether `error` is `JoinError.landShuttingDown`.
@@ -162,7 +165,10 @@ private final class FailingResolver: @unchecked Sendable {
     }
 }
 
-@Suite("LandManager single-flight creation and epoch removal")
+// Two minutes, above `testHangBound` (60 s): a wait that runs out reports its own message first.
+// A report only: the limit doesn't end a wait that never resumes, so every wait here is bounded
+// on its own (Notes/solutions/2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md).
+@Suite("LandManager single-flight creation and epoch removal", .timeLimit(.minutes(2)))
 struct LandManagerSingleFlightTests {
     @Test("Concurrent getOrCreateLand calls for a new ID create one keeper and share its container")
     func concurrentFirstJoinsShareOneCreation() async throws {
@@ -171,10 +177,11 @@ struct LandManagerSingleFlightTests {
         await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "room-0-0")
 
+        let joins = await creationJoinLog(manager)
         let calls = concurrentCreations(8, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
         // The other seven calls joined the held creation.
-        #expect(await waitForCreationJoins(7, manager: manager))
+        #expect(await waitForCreationJoins(7, log: joins))
         let creationsStarted = gate.arrivalCount
         gate.open()
         var containers: [LandContainer<SingleFlightTestState>] = []
@@ -197,10 +204,11 @@ struct LandManagerSingleFlightTests {
         await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "fails-once")
 
+        let joins = await creationJoinLog(manager)
         let calls = concurrentCreations(3, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
         // All three callers wait on the held creation before it fails.
-        #expect(await waitForCreationJoins(2, manager: manager))
+        #expect(await waitForCreationJoins(2, log: joins))
         gate.open()
         for call in calls {
             await #expect(throws: ReevaluationReplayError.self) { _ = try await call.value }
@@ -221,9 +229,10 @@ struct LandManagerSingleFlightTests {
         await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "impatient")
 
+        let joins = await creationJoinLog(manager)
         let calls = concurrentCreations(2, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
-        #expect(await waitForCreationJoins(1, manager: manager))
+        #expect(await waitForCreationJoins(1, log: joins))
         calls[0].cancel()
         await #expect(throws: CancellationError.self) { _ = try await calls[0].value }
 
@@ -273,8 +282,8 @@ struct LandManagerSingleFlightTests {
         drainGate.open()
         await destruction.value
         let fresh = try await recreate.value
-        // Live keepers initialize eagerly after creation.
-        #expect(await pollUntil { log.events.contains("new-initialize") })
+        // Live keepers initialize eagerly after creation: nothing here starts it.
+        #expect(await log.waitFor("new-initialize"))
 
         #expect(ObjectIdentifier(fresh.keeper) != ObjectIdentifier(old.keeper))
         #expect(fresh.epoch != old.epoch)
@@ -335,8 +344,9 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "alone")
         let container = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
         await container.keeper.forceShutdown()
-        let removed = await pollUntil { await manager.getLand(landID: landID) == nil }
-        #expect(removed)
+        // The drain ends with the manager's onLandDestroyed, which awaits the removal.
+        await container.keeper.waitUntilDrained()
+        #expect(await manager.getLand(landID: landID) == nil)
     }
 
     @Test("Removal by an older epoch leaves the newer instance stored")
@@ -409,7 +419,7 @@ struct LandManagerSingleFlightTests {
         drainGate.open()
         await destruction.value
         let fresh = try await recreate.value
-        #expect(await pollUntil { log.events.contains("new-initialize") })
+        #expect(await log.waitFor("new-initialize"))
         #expect(log.isOrdered("old-finalize", before: "new-initialize"), "events: \(log.events)")
         let stored = try #require(await manager.getLand(landID: landID))
         #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
@@ -445,24 +455,54 @@ struct LandManagerSingleFlightTests {
     func shutdownRejectsNewCreations() async throws {
         let manager = makeManager()
         let gate = TestGate()
-        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
+        // `.shutdownListed` passes right after `isShuttingDown` is set: a signal, not a hold.
+        let shutdownSteps = EventLog()
+        await manager.installHolds(
+            HoldRegistry()
+                .on(.creation) {
+                    shutdownSteps.append("creation")
+                    await gate.arrive()
+                }
+                .on(.shutdownListed) { shutdownSteps.append("listed") }
+                .hook
+        )
         let held = LandID(landType: "sf-game", instanceId: "held")
         let late = LandID(landType: "sf-game", instanceId: "late")
 
         let heldCall = concurrentCreations(1, manager: manager, landID: held)[0]
         #expect(await gate.waitForArrivals(1))
         let shutdown = Task { await manager.shutdownAllLands() }
-        #expect(await pollUntil { await manager.isShutdownStarted() })
-        // The shutdown is awaiting the held creation: a new creation is rejected.
-        do {
-            _ = try await concurrentCreations(1, manager: manager, landID: late)[0].value
-            Issue.record("a creation started during the shutdown")
-        } catch {
-            #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+        #expect(await shutdownSteps.waitFor("listed"))
+        #expect(await manager.isShutdownStarted())
+        // The shutdown is awaiting the held creation: a new creation is rejected. Awaited
+        // through the log, not directly: a creation wrongly started parks at the held gate, and
+        // the wait then ends on its arrival instead of never.
+        let lateCall = concurrentCreations(1, manager: manager, landID: late)[0]
+        Task {
+            _ = await lateCall.result
+            shutdownSteps.append("late-ended")
         }
-        #expect(gate.arrivalCount == 1, "a creation started during the shutdown")
+        let settled = await shutdownSteps.waitFor { events in
+            events.contains("late-ended") || events.filter { $0 == "creation" }.count >= 2
+        }
+        // Read from the log, which the hold appends to before it arrives at the gate: the gate's
+        // own count can lag a second creation.
+        let creations = shutdownSteps.events.filter { $0 == "creation" }.count
+        #expect(settled, "the late creation neither ended nor reached the creation hold")
+        #expect(creations == 1, "a creation started during the shutdown")
 
         gate.open()
+        if settled {
+            do {
+                _ = try await lateCall.value
+                Issue.record("a creation started during the shutdown")
+            } catch {
+                #expect(isLandShuttingDown(error), "unexpected error: \(error)")
+            }
+        } else {
+            // Released, not awaited: a call that never settled may not end.
+            lateCall.cancel()
+        }
         let heldResult = await heldCall.result
         await shutdown.value
         #expect(await manager.creationsInFlight() == 0)
@@ -559,7 +599,7 @@ struct LandManagerSingleFlightTests {
         await manager.shutdownAllLands()
 
         let sessionID = SessionID("router-shutdown")
-        let connection = JoinReplyConnection()
+        let connection = RecordingConnection()
         await transport.handleConnection(sessionID: sessionID, connection: connection)
         let join = TransportMessage.join(
             requestID: "req-shutdown",
@@ -571,8 +611,9 @@ struct LandManagerSingleFlightTests {
         )
         await transport.handleIncomingMessage(sessionID: sessionID, data: try JSONEncoder().encode(join))
 
-        #expect(await pollUntil { await !connection.messages.isEmpty })
-        let reply = try JSONDecoder().decode(TransportMessage.self, from: try #require(await connection.messages.first))
+        // Resumed by the reply's send.
+        #expect(await connection.waitUntilRawFrames { !$0.isEmpty })
+        let reply = try JSONDecoder().decode(TransportMessage.self, from: try #require(await connection.frames.first))
         guard case .error(let payload) = reply.payload else {
             Issue.record("expected an error reply, got \(reply)")
             return
@@ -580,15 +621,4 @@ struct LandManagerSingleFlightTests {
         #expect(payload.code == ErrorCode.joinDenied.rawValue, "code: \(payload.code), message: \(payload.message)")
         #expect(await router.getBoundLandID(for: sessionID) == nil)
     }
-}
-
-/// Records what the transport sends to one session.
-private actor JoinReplyConnection: WebSocketConnection {
-    private(set) var messages: [Data] = []
-
-    func send(_ data: Data) async throws {
-        messages.append(data)
-    }
-
-    func close() async throws {}
 }

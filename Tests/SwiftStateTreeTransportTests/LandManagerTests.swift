@@ -6,6 +6,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 // MARK: - Test State
 
@@ -243,7 +244,7 @@ struct IncrementTestResponse: ResponsePayload {
     }
 }
 
-@Test("LandManager automatically removes land when destroyed")
+@Test("LandManager automatically removes land when destroyed", .timeLimit(.minutes(1)))
 func testLandManagerAutoRemovesDestroyedLand() async throws {
     // Arrange
     let landFactory: @Sendable (LandID) -> LandDefinition<CounterTestState> = { landID in
@@ -288,20 +289,12 @@ func testLandManagerAutoRemovesDestroyedLand() async throws {
     // Leave player to trigger destroy
     try await container.keeper.leave(playerID: playerID1, clientID: clientID1)
 
-    // Wait for destroy to complete with retry logic (CI environments may be slower)
-    // DestroyWhenEmpty delay: 50ms + handler execution + onLandDestroyed callback
-    // Use retry loop to handle timing variations in CI environments
-    var landAfterDestroy: LandContainer<CounterTestState>?
-    var attempts = 0
-    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
-    while attempts < maxAttempts {
-        try await Task.sleep(for: .milliseconds(25))
-        landAfterDestroy = await manager.getLand(landID: landID)
-        if landAfterDestroy == nil {
-            break
-        }
-        attempts += 1
-    }
+    // The empty-room timer starts the destruction; it ends after the manager's onLandDestroyed
+    // removed the land.
+    let drainingKeeper = container.keeper
+    #expect(await withinHangBound { await drainingKeeper.waitUntilDrainStartedForTesting() }, "the destruction never started")
+    await container.keeper.waitUntilDrained()
+    let landAfterDestroy = await manager.getLand(landID: landID)
 
     // Assert - Land should be automatically removed from LandManager
     let landsAfterDestroy = await manager.listLands()
@@ -309,7 +302,7 @@ func testLandManagerAutoRemovesDestroyedLand() async throws {
     #expect(!landsAfterDestroy.contains(landID), "Land should not be in list after destroy")
 }
 
-@Test("LandManager recreates land with fresh state when destroyed land is removed")
+@Test("LandManager recreates land with fresh state when destroyed land is removed", .timeLimit(.minutes(1)))
 func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     // Arrange
     let landFactory: @Sendable (LandID) -> LandDefinition<CounterTestState> = { landID in
@@ -365,20 +358,12 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     // Leave player to trigger destroy
     try await container1.keeper.leave(playerID: playerID1, clientID: clientID1)
 
-    // Wait for destroy to complete and auto-removal with retry logic (CI environments may be slower)
-    // DestroyWhenEmpty delay: 50ms + handler execution + onLandDestroyed callback
-    // Use retry loop to handle timing variations in CI environments
-    var landAfterDestroy: LandContainer<CounterTestState>?
-    var attempts = 0
-    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
-    while attempts < maxAttempts {
-        try await Task.sleep(for: .milliseconds(25))
-        landAfterDestroy = await manager.getLand(landID: landID)
-        if landAfterDestroy == nil {
-            break
-        }
-        attempts += 1
-    }
+    // The empty-room timer starts the destruction; it ends after the manager's onLandDestroyed
+    // removed the land.
+    let drainingKeeper = container1.keeper
+    #expect(await withinHangBound { await drainingKeeper.waitUntilDrainStartedForTesting() }, "the destruction never started")
+    await container1.keeper.waitUntilDrained()
+    let landAfterDestroy = await manager.getLand(landID: landID)
 
     // Verify land has been automatically removed
     #expect(landAfterDestroy == nil, "Land should be automatically removed after destroy")
@@ -397,15 +382,19 @@ func testLandManagerRecreatesDestroyedLandWithFreshState() async throws {
     #expect(playerCountAfterRecreate == 0, "New land should start with no players")
 }
 
-@Test("LandManager starts each land's loops with the instance ID's phase offset, not the type's")
+@Test("LandManager starts each land's loops with the instance ID's phase offset, not the type's", .timeLimit(.minutes(2)))
 func testLandManagerLoopPhaseOffsetUsesInstanceID() async throws {
     let interval = Duration.milliseconds(100)
-    let landFactory: @Sendable (LandID) -> LandDefinition<ManagerTestState> = { _ in
+    // Each land's first tick: the manager started its loops (the eager initialization), no
+    // caller of this test did.
+    let ticks = EventLog()
+    let landFactory: @Sendable (LandID) -> LandDefinition<ManagerTestState> = { landID in
         Land("phase-type", using: ManagerTestState.self) {
             Rules {}
             Lifetime {
                 Tick(every: interval) { (state: inout ManagerTestState, _: LandContext) in
                     state.ticks += 1
+                    ticks.append("tick:\(landID.stringValue)")
                 }
                 StateSync(every: interval) { (_: ManagerTestState, _: LandContext) in }
             }
@@ -426,12 +415,11 @@ func testLandManagerLoopPhaseOffsetUsesInstanceID() async throws {
             metadata: [:]
         )
         let keeper = container.keeper
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            let tick = await keeper.appliedTickPhaseOffset
-            let sync = await keeper.appliedSyncPhaseOffset
-            if tick != nil, sync != nil { break }
-            try await safeTaskSleep(for: .milliseconds(5))
+        // Both loops are configured in one segment of the keeper's initialization (no suspension
+        // between them), and a tick runs on the keeper: after its first tick, both offsets are set.
+        guard await ticks.waitFor("tick:\(landID.stringValue)") else {
+            Issue.record("\(landID) never ticked: its loops never started")
+            return
         }
         let expected = LandLoopPhase.offset(landID: landID.stringValue, interval: interval)
         #expect(await keeper.appliedTickPhaseOffset == expected, "tick offset of \(landID)")

@@ -97,8 +97,9 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// What `inboundBacklogEventForTesting` reports.
     enum InboundBacklogTestEvent: Sendable {
         /// A batch left the backlog (delivered or dropped), and the resume hop it needs, if any,
-        /// is queued: a loop task submitted after this runs after that hop. On the chain, any
-        /// thread.
+        /// is queued: a loop task submitted after this runs after that hop. A stopped
+        /// `StopFence` drops the hop instead (a server stopping), so it never runs. On the chain,
+        /// any thread.
         case delivered
         /// The resume hop a drain queued has run, whether or not it resumed. On the event loop.
         case resumeHopRan
