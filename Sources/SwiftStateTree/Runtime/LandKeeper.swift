@@ -378,7 +378,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var serverInputMaxInFlight = ServerInputLimits.maxInFlightPerLand()
     /// Server inputs refused because the in-flight cap was reached.
     public private(set) var serverInputCapRejections = 0
-    private var mode: LandMode
+    private let mode: LandMode
+
+    /// Whether this keeper is live. A `TransportAdapter` binds only a live keeper: a
+    /// reevaluation keeper runs headless, with no adapter (#612).
+    package nonisolated var isLive: Bool { mode == .live }
 
     private struct EmittedEvent: Sendable {
         let sequence: Int64

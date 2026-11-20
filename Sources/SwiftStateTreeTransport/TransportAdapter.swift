@@ -964,6 +964,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         joinsThroughRouter: Bool,
         eventEncodeCountsForTesting: EventEncodeCountsForTesting? = nil
     ) {
+        // A replay runs in a headless reevaluation keeper; no adapter serves one (#612).
+        precondition(keeper.isLive, "TransportAdapter binds only a live LandKeeper")
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()

@@ -619,13 +619,10 @@ struct MonitorTicketGateTests {
         #expect(await f.landCount == 0)
     }
 
-    @Test("A host resolver that answers for the monitor land type doesn't let a forged or expired ticket through", arguments: [
-        "live", "reevaluation",
-    ])
-    func previousResolverAnswersFirst(mode: String) async throws {
+    @Test("A host resolver that answers for the monitor land type doesn't let a forged or expired ticket through")
+    func previousResolverAnswersFirst() async throws {
         let f = try MonitorFixture(previous: { landID, _ in
-            guard landID.landType == monitorType else { return nil }
-            return mode == "live" ? .live : .reevaluation(recordFilePath: "/anything.json")
+            landID.landType == monitorType ? .live : nil
         })
         #expect(try await !f.join(UUID().uuidString, session: "s1"))
         let expired = f.ticket()

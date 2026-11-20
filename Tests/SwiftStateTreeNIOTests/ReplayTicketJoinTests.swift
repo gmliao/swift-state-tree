@@ -14,7 +14,7 @@ import SwiftStateTreeReevaluationMonitor
 @testable import SwiftStateTreeNIO
 
 @StateNodeBuilder
-private struct TicketLiveState: StateNodeProtocol {
+private struct TicketLiveState: StateNodeProtocol, StateFromSnapshotDecodable {
     @Sync(.broadcast)
     var value: Int = 0
     init() {}
@@ -205,13 +205,10 @@ struct ReplayTicketJoinTests {
         #expect(f.runners.started == 1)
     }
 
-    @Test("A host resolver that answers for the replay land type doesn't let a forged or expired ticket through", arguments: [
-        "live", "reevaluation",
-    ])
-    func previousResolverAnswersFirst(mode: String) async throws {
+    @Test("A host resolver that answers for the replay land type doesn't let a forged or expired ticket through")
+    func previousResolverAnswersFirst() async throws {
         let f = try Fixture(previous: { landID, _ in
-            guard landID.landType == replayLandType else { return nil }
-            return mode == "live" ? .live : .reevaluation(recordFilePath: "/anything.json")
+            landID.landType == replayLandType ? .live : nil
         })
         let forged = "\(UUID().uuidString.lowercased()).\(f.pathToken)"
         #expect(try await !f.join(forged, session: "s1"))
@@ -231,36 +228,6 @@ struct ReplayTicketJoinTests {
         #expect(signer.verify(instanceId: longMAC, replayLandType: replayLandType) == .invalid)
         let longToken = signer.issue(replayLandType: replayLandType, pathToken: String(repeating: "A", count: ReplayTicketSigner.maxInstanceIDLength))
         #expect(signer.verify(instanceId: longToken, replayLandType: replayLandType) == .invalid)
-    }
-
-    @Test("registerWithReevaluation's resolver: only a valid, unexpired ticket gives a reevaluation keeper")
-    func reevaluationResolver() throws {
-        let clock = Clock()
-        let signer = ReplayTicketSigner(key: SymmetricKey(size: .bits256), lifetime: .seconds(60), now: { clock.now })
-        let recordsDir = FileManager.default.temporaryDirectory.appendingPathComponent("ticket-records").path
-        let recordPath = URL(fileURLWithPath: recordsDir).appendingPathComponent("match.json").path
-        let token = base64URL(recordPath)
-        let resolver = try #require(NIOLandServerConfiguration()
-            .injectingReevaluationKeeperModeResolver(replayLandType: replayLandType, recordsDir: recordsDir, ticketSigner: signer)
-            .keeperModeResolver)
-        func mode(_ instanceId: String) -> LandKeeperModeConfig? {
-            resolver(LandID(landType: replayLandType, instanceId: instanceId), [:])
-        }
-        let issued = signer.issue(replayLandType: replayLandType, pathToken: token)
-        guard case .reevaluation(let path)? = mode(issued) else {
-            Issue.record("a valid ticket: \(String(describing: mode(issued)))")
-            return
-        }
-        #expect(path == recordPath)
-        guard case .invalidReplaySession? = mode("\(UUID().uuidString.lowercased()).\(token)") else {
-            Issue.record("no ticket must be refused")
-            return
-        }
-        clock.advance(61)
-        guard case .invalidReplaySession? = mode(issued) else {
-            Issue.record("an expired ticket must be refused")
-            return
-        }
     }
 
     @Test("A ticket has one spelling: a changed field doesn't verify")
@@ -284,25 +251,16 @@ struct ReplayTicketJoinTests {
     }
 }
 
-@StateNodeBuilder
-private struct TicketReplayState: StateNodeProtocol {
-    @Sync(.broadcast)
-    var value: Int = 0
-    init() {}
-}
-
-@Suite("registerWithReevaluation gates its replay land on a replay ticket")
-struct RegisterWithReevaluationTicketTests {
+@Suite("registerWithGenericReplay gates its replay land on a replay ticket")
+struct RegisterWithGenericReplayTicketTests {
     @Test("Through the public registration: a forged ID creates no replay land, a ticket from the admin start's signer does")
     func gate() async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "k"))
-        try await host.registerWithReevaluation(
+        try await host.registerWithGenericReplay(
             landType: liveLandType,
             liveLand: Land(liveLandType, using: TicketLiveState.self) { Rules {} },
             liveInitialState: TicketLiveState(),
             liveWebSocketPath: "/game/\(liveLandType)",
-            replayLand: Land(replayLandType, using: TicketReplayState.self) { Rules {} },
-            replayInitialState: TicketReplayState(),
             configuration: NIOLandServerConfiguration(allowAutoCreateOnJoin: true),
             reevaluation: ReevaluationFeatureConfiguration(
                 enabled: true,

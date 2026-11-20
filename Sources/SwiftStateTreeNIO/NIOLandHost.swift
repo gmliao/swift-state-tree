@@ -215,8 +215,8 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public var replayLandSuffix: String
 
-    /// Resolver for dynamic keeper mode (live vs reevaluation) per land instance.
-    /// When non-nil and returns `.reevaluation(recordFilePath)`, LandManager creates a reevaluation LandKeeper.
+    /// The replay ticket gate, asked per land instance before it is created: `.invalidReplaySession`
+    /// refuses the creation, and `.live` or nil creates it. Every land's keeper is live (#612).
     public var keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
 
     /// The bound on one land stop (`NIOLandServer.stopLand`, #102). `NIOLandHost.register` sets
@@ -308,7 +308,7 @@ public actor NIOLandHost {
     /// Registered land encodings for logging.
     private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
 
-    /// Suffix used for replay land types. Updated by registerWithReevaluationSameLand.
+    /// Suffix used for replay land types. Updated by registerWithGenericReplay.
     var replayLandSuffix: String = "-replay"
 
     /// Background tasks from middlewares (cancelled on shutdown).

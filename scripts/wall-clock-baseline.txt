@@ -46,7 +46,7 @@ Tests/SwiftStateTreeTransportTests/LandManagerFailedInitializationTests.swift yi
 Tests/SwiftStateTreeTransportTests/LandManagerSingleFlightTests.swift poll-helper 6
 Tests/SwiftStateTreeTransportTests/LandManagerTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/LandManagerTests.swift sleep-poll 3
-Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift helper-poll 10
+Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift helper-poll 9
 Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift yield-poll 3
 Tests/SwiftStateTreeTransportTests/LandRouterJoinAttemptTests.swift clock-poll 1

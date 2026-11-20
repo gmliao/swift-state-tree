@@ -184,7 +184,6 @@ Replay refuses a record before its first step when the fingerprint is missing or
 
 - `ReevaluationEngine.run` throws `ReevaluationRecordFingerprintError`.
 - The monitor's runner reports `ReevaluationReplayCompatibilityError` code 2004 (`RECORD_SCHEMA_FINGERPRINT_MISMATCH`) or 2005 (`RECORD_SCHEMA_FINGERPRINT_MISSING`).
-- A replay land's `.reevaluation` keeper mode (`LandKeeperModeConfig.reevaluation`) throws `ReevaluationRecordFingerprintError` when the land is created, or `SchemaFingerprintError` when its definition has a type the fingerprint can't list. It checks against the fingerprint the record holds: a replay definition whose id is the recorded definition's (`landDefinitionID`) plus the replay suffix (`LandManager`'s `replayLandSuffix`, `-replay` by default) is fingerprinted under the recorded id. Any other definition, such as the live one reused, is fingerprinted under its own id.
 - The admin replay start answers 409 with the same code strings and the values (recorded and current fingerprints, or the recorded and minimum versions). It also refuses any record, with 409 `RECORD_SCHEMA_FINGERPRINT_UNAVAILABLE` (details `landType` and `reason`), when the land type has no fingerprint to compare with: its land server reports none (the protocol's default) or isn't registered, or its definition has a type the fingerprint can't list.
 - `ReevaluationRunner --verify` exits 10 for a record without a fingerprint and 13 for one of another schema.
 

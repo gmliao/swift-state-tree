@@ -184,7 +184,6 @@ fingerprint 缺少或與目前定義的不同時，replay 在第一步之前就�
 
 - `ReevaluationEngine.run` 拋出 `ReevaluationRecordFingerprintError`。
 - monitor 的 runner 回報 `ReevaluationReplayCompatibilityError` 代碼 2004（`RECORD_SCHEMA_FINGERPRINT_MISMATCH`）或 2005（`RECORD_SCHEMA_FINGERPRINT_MISSING`）。
-- replay land 的 `.reevaluation` keeper 模式（`LandKeeperModeConfig.reevaluation`）在建立 land 時拋出 `ReevaluationRecordFingerprintError`；定義含 fingerprint 無法列出的型別時拋出 `SchemaFingerprintError`。它比對的是錄製裡記的 fingerprint：id 為錄製時定義的 id（`landDefinitionID`）加上 replay 後綴（`LandManager` 的 `replayLandSuffix`，預設 `-replay`）的 replay 定義，以錄製時的 id 計算 fingerprint；其他定義（例如重用的 live 定義）則以自己的 id 計算。
 - admin replay start 以 409 回傳相同的代碼字串並附上相關值（錄製與目前的 fingerprint，或錄製版本與最低版本）。land type 沒有可比對的 fingerprint 時，它也一律拒絕，回 409 `RECORD_SCHEMA_FINGERPRINT_UNAVAILABLE`（details 為 `landType` 與 `reason`）：其 land server 不回報（protocol 的預設）或未註冊，或其定義含 fingerprint 無法列出的型別。
 - `ReevaluationRunner --verify` 對沒有 fingerprint 的錄製以 10 結束，對不同 schema 的錄製以 13 結束。
 

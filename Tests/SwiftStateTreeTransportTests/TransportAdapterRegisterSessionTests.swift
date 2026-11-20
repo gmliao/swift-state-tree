@@ -55,7 +55,7 @@ private struct RegisterSessionFixture {
     let adapter: TransportAdapter<RegisterSessionTestState>
     let transport: RegisterSessionTransport
 
-    init(inTurn: Bool = false, mode: LandMode = .live) async {
+    init(inTurn: Bool = false) async {
         let definition = Land("register-session", using: RegisterSessionTestState.self) {
             Rules {
                 OnJoin { (state: inout RegisterSessionTestState, _: LandContext) in
@@ -72,7 +72,7 @@ private struct RegisterSessionFixture {
             }
         }
         transport = RegisterSessionTransport()
-        keeper = LandKeeper(definition: definition, initialState: RegisterSessionTestState(), mode: mode, autoStartLoops: false)
+        keeper = LandKeeper(definition: definition, initialState: RegisterSessionTestState(), autoStartLoops: false)
         adapter = TransportAdapter<RegisterSessionTestState>(
             keeper: keeper, transport: transport, landID: "register-session", inTurnSync: inTurn
         )
@@ -179,19 +179,6 @@ struct TransportAdapterRegisterSessionTests {
         #expect(await f.closes(1) == [s2])
         let state = await f.keeper.currentState()
         #expect(state.joins == 1 && state.leaves == 0)
-    }
-
-    @Test("In reevaluation mode the same two-join path runs OnJoin and OnLeave zero times")
-    func reevaluationModeRunsNoLifecycleHandlers() async throws {
-        let f = await RegisterSessionFixture(mode: .reevaluation)
-        try await f.keeperJoin(s1, c1, as: player)
-        await f.register(s1, c1, as: player)
-        try await f.keeperJoin(s2, c2, as: player)
-        await f.register(s2, c2, as: player)
-
-        #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
-        let state = await f.keeper.currentState()
-        #expect(state.joins == 0 && state.leaves == 0)
     }
 
     @Test("A host registration that lost to a library join is refused: the adapter and the keeper both keep the newer session", arguments: [true, false])
