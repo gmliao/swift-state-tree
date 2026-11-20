@@ -1,6 +1,6 @@
 # Turn core: coalesced follow-ups and a quiescence wait (#702)
 
-**Status:** open, rev 5. Plan for review before any code: Code-1 checks the use-case mapping (§5), then Review reviews the plan.
+**Status:** GO at rev 5 (Review, issue comment 7033566389), with its two shoulds folded in below; implementation in the PR. Plan for review before any code: Code-1 checks the use-case mapping (§5), then Review reviews the plan.
 
 **Rev 5** (Review's NOT GO on rev 4, issue comment 7033351175: 2 must-fix, 5 should, 2 nit):
 - §3.3: due follow-ups at the release cap. They are exempt from the budget, and a capped segment still steps them before it ends. The `.afterBatch` snapshot finishes in its own job (MF 1).
@@ -105,6 +105,7 @@ Rules:
   - it still steps the due follow-ups it holds, each re-checked, and their products drain after each step, before it ends (core rule 10's order: drain, abandoned, queued, then releases or follow-ups);
   - so the rest of an `.afterBatch` snapshot keeps its eligibility and finishes in its own job, under that job's clock read, and never waits for `continueDrain`.
   - `continueDrain` releases parked inputs only. It never steps a follow-up. An arm made after the snapshot (by a due step, by a released input, or in `continueDrain`'s batch) goes to `dueFollowUps` and runs in the next `continueFollowUps` job, under that job's clock read.
+  - **No order between the two jobs.** `continueDrain` and `continueFollowUps` are each an unstructured `Task { self.… }` on the actor, and nothing orders one before the other: when a capped segment schedules both, either may run first. The core promises what each job contains, not their order.
   - A gate's return is its own entry with its own clock read. Its arm steps in that segment, also when the result's step leaves the segment capped.
 
 **The gate's lifecycle (`.afterWork`).** Each rule names the arm by its id, so two gates for one slot (after consume-and-arm, or case 15's re-arm) never act on each other's follow-up.
@@ -201,7 +202,7 @@ Then:
     - an `.afterBatch` job whose first due step releases more parked inputs than `maxReleasesPerBatch`, with a second due follow-up behind it and a successor armed after the snapshot;
     - a gate's result step that does the same.
 
-    Checked: the due follow-ups step in their own segment (the second one too); the parked inputs past the cap step in `continueDrain`'s batch, in order, and no batch releases more than the cap (core rule 7); the successor steps in the next `continueFollowUps` job; and each step's products drain before the next step (core rule 10).
+    Checked: the due follow-ups step in their own segment (the second one too); the parked inputs past the cap step in `continueDrain`'s batch, in order, and no batch releases more than the cap (core rule 7); the successor steps in the next `continueFollowUps` job; and each step's products drain before the next step (core rule 10). Each job's contents are checked on their own; no order is asserted between `continueDrain`'s batch and the next follow-ups job (§3.3).
 28. A gate's return cancels its deadline (the test clock reports the cancellation) and keeps a live request's deadline, which still fires.
 29. A's obsolete deadline leaves B pending in the same slot. A is consumed and B is armed with its own deadline; A's deadline wakes: B stays pending and steps when its gate returns.
 30. The registration tie and the races, with the waiter count as the registration event:
@@ -211,7 +212,7 @@ Then:
 31. A `query` whose answer step consumes the last follow-up wakes a registered waiter. It is the step that makes nothing else dirty; rev 4 listed it in §10 only.
 32. A gate's deadline shares the arming batch's clock read: a step that reads `now` and arms with a deadline reads the clock once.
 33. A gate filtered at launch still counts against its originating input in the debug effect counts.
-34. A foreign gate return and a foreign deadline are rejected after the core is replaced (`.foreignCompletion`), as for requests.
+34. A foreign gate return and a foreign deadline are rejected after the core is replaced (`.foreignCompletion`), as for requests. The harness is the existing `ReplaceableCoreActor` (`Tests/SwiftStateTurnsTests/Support/DemoActor.swift:242`), with `DemoMachine` given a `FollowUpSlot` and an input that arms a gated follow-up. It needs no new lint marker: `ALLOW_MARKERS` keeps DemoActor.swift's count of 5, and the list may only shrink. The `FollowUpSlot == Never` default stays covered by the machines that declare none (`Room`, `OrderModel`, `MembershipModel`, `BenchMachine`), so §10's cost cells still measure a machine without follow-ups.
 35. A follow-up id given to `cancel` does nothing, and to `reply(after:)` publishes at once (§3.1).
 36. (Exit test, optional) A negative `atMost` stops the process, in a child process as `RuntimeStopTests` does.
 
