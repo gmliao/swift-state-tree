@@ -2,7 +2,7 @@
 
 **Status:** rev 7, plan only, for review. No code until this plan is GO. L1 (#677) is merged (7a462bd1).
 - **Decided (the maintainer, 2026-11-20):**
-  - §8's Q1 (a), Q2 (a) and Q3 (a);
+  - §8's Q1 (a), Q2 (a) and Q3 (a); Q4, the settle as a sync-only turn in L2d (decided after #712's review);
   - a requested sync turn is a keeper input that carries its reason and a ticket, validated in the turn (§3.2, §8).
 - **Rev 7** answers rev 6's review (#680: 2 must-fix, 5 should, 1 nit). What changed is in §11; the earlier revisions' changes follow it.
 - **Order changed in rev 5:** L2c now deletes the off adapter, and L2d moves every live keeper onto turns. So there is no transitional routing rule and no `portless` parameter (§3.5).
@@ -406,7 +406,8 @@ The keeper's routing doesn't change in L2c. Its callers of `beginSync`/`endSync`
 - `runTicklessJobPass`, its hold `.ticklessJobPass` and the `legacyPass*` fields (LK:3884–3890), unreachable once LK:2202 routes by mode. `TicklessActionJobTests.swift:425` holds `.ticklessJobPass` on its off arm, so that arm is deleted with them;
 - `runSync`'s fallback call `transport?.syncNowFromTransport()` (LK:5564) is restricted to `.reevaluation` keepers. A live fake that doesn't opt in no longer receives it;
 - the keeper's hold points `.syncOnlyAfterLegacyCycle`, `.legacyDelivery` and `.legacyShutdownPass`;
-- `LandKeeperSyncLockTests` and the direct `beginSync`/`endSync` calls (§2).
+- `LandKeeperSyncLockTests` and the direct `beginSync`/`endSync` calls (§2);
+- **the settle's keeper job** (§8, Q4). The in-turn freeze settle becomes a requested sync-only turn, `SyncTurnReason.settle`, through `runSyncPhaseInTurn`. Its fence (the deadline, the same frozen generation, and no failure or drain) is checked in the turn, and the frozen land's skip exempts that reason. `LandKeeper.debugSettleTurn`, `DebugSettleTurnOutcome` and the adapter's two isolated callbacks (`debugSettleAdmitIsolated`, `debugSettleCommitIsolated`) go. `scripts/lint-turns.sh` lowers `TransportAdapter.swift`'s allowance from 5 back to 3. The settle's output is then recorded as a sync-only turn, not `.legacyCycle`. That changes one record and golden: `freeze-resume-messagepack`, plus any harness cell that freezes. They are regenerated in the pinned image, with the change classified (`classify-golden-changes.py`).
 
 Each off arm or legacy case is deleted, or converted when the in-turn path has the same claim to check. Each PR lists each test with its fate. No new off arm is added. If L2d's diff is too large to review in one piece, it splits into routing with the fakes, then the deletions, each green.
 
@@ -475,7 +476,7 @@ Each PR leaves `main` green, with the harness byte-identical except where §5 sa
 - the census script and its migration list;
 - the GameDemo build, for the migrated callers;
 - a `HashCostBenchmark` smoke run (`HashCostBenchmark.swift:50`);
-- the harness, with §5.1's check script over the in-turn goldens as a guard: no change is expected.
+- the harness, with §5.1's check script over the in-turn goldens as a guard: no change is expected, except for the settle's record (§3.6, Q4), which is the only change classified.
 
 **Docs, en and zh-TW, by PR:**
 - **L2a:** `docs/core/runtime.md`'s sync deduplication and `syncNow` text (:94–104); `docs/transport/README.md:264`.
@@ -573,7 +574,8 @@ CI runs the full `swift test` and the E2E.
 - **L2d:**
   - the recording comparison (§3.5);
   - a `HashCostBenchmark` smoke run;
-  - the GameDemo build.
+  - the GameDemo build;
+  - the settle's record change (Q4): `freeze-resume-messagepack` changes from `.legacyCycle` to a sync-only turn, with the same frames.
 
   Some measured windows include ticks, which move onto turns in L2d: the worker-pool cells with `ticksPerSync > 0` (`BenchmarkExecution.swift:585–610`, :785–807), and the serial runs' `timeMs` (:193–198, :1008–1024). L2d gets a scoped A/B on those cells.
 
@@ -613,6 +615,10 @@ The entry point goes in L2a. The plan goes in L2c, with the off adapter that sti
 - (b) In #612 S2, with L2d after S2. L2 would wait on S2, which waits on S1, #521's remaining PRs and #606.
 
 **The requested turn's shape (§3.2).** *Decided: a keeper input that carries its reason and a ticket, validated in the turn,* the shape B2 gives the adapter's other callbacks. Not chosen: a keeper entry point with a pending flag.
+
+**Q4. The in-turn freeze settle's shape.** *Decided (2026-11-20, after #712's review): a requested sync-only turn, in L2d.*
+- Chosen: a sync-only turn with its own fence (`SyncTurnReason.settle`) through `runSyncPhaseInTurn`, exempt from the frozen skip. It takes the one sync entry point every other phase uses, and drops `DebugSettleTurnOutcome`, the two isolated callbacks and L2b's lint raise. Its cost is one record and golden change: the settle is recorded as a sync-only turn instead of `.legacyCycle`.
+- L2b (#712) keeps the keeper job (§3.4) as reviewed. L2d converts it (§3.6).
 
 Main settles the rest: the A/B cells (§6), and where L2a–L2d sit among the other open work.
 
