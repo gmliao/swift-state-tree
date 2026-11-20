@@ -17,11 +17,10 @@ enum MeasuredSync {
         }
     }
 
-    /// Sync cycles skipped so far: rejected while another cycle was in flight, or deferred by
-    /// back-pressure.
+    /// Sync cycles skipped so far: deferred by back-pressure.
     static func skipCount<State: StateNodeProtocol>(_ adapter: TransportAdapter<State>) async -> Int {
         let counts = await adapter.syncSkipCounts()
-        return counts.busy + counts.outboundBacklog
+        return counts.outboundBacklog
     }
 
     /// Exits unless no measured cycle was skipped: a skipped cycle's bytes land in a later one.

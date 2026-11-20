@@ -23,7 +23,6 @@ public final class TransportProfilerCounters: Sendable {
     private let syncDroppedUpdates = ManagedAtomic<Int>(0)
     private let syncCycles = ManagedAtomic<Int>(0)
     private let syncSkipsBacklog = ManagedAtomic<Int>(0)
-    private let syncSkipsBusy = ManagedAtomic<Int>(0)
     private let syncDeferredTurns = ManagedAtomic<Int>(0)
     private let syncJoinTicks = ManagedAtomic<Int>(0)
     /// Folded tick turns, packed so a window never splits one: folds in bits 0–20, overdue
@@ -329,11 +328,6 @@ public final class TransportProfilerCounters: Sendable {
         syncSkipsBacklog.wrappingIncrement(ordering: .relaxed)
     }
 
-    /// A sync cycle was skipped: another cycle was in flight (legacy path).
-    func incrementSyncSkipsBusy() {
-        syncSkipsBusy.wrappingIncrement(ordering: .relaxed)
-    }
-
     /// An in-turn sync phase was deferred by writer back-pressure. Each one is also a backlog skip:
     /// deferred turns are a subset of `syncSkipsBacklog` ("of which"), not a separate cause.
     func incrementSyncDeferredTurns() {
@@ -368,7 +362,6 @@ public final class TransportProfilerCounters: Sendable {
     struct SyncWindow {
         var cycles: Int
         var skipsBacklog: Int
-        var skipsBusy: Int
         /// Of `skipsBacklog`: the in-turn deferrals.
         var deferredTurns: Int
         /// Sync cycles folded into a tick turn.
@@ -389,7 +382,6 @@ public final class TransportProfilerCounters: Sendable {
         return SyncWindow(
             cycles: syncCycles.exchange(0, ordering: .relaxed),
             skipsBacklog: syncSkipsBacklog.exchange(0, ordering: .relaxed),
-            skipsBusy: syncSkipsBusy.exchange(0, ordering: .relaxed),
             deferredTurns: syncDeferredTurns.exchange(0, ordering: .relaxed),
             folds: folds & Self.foldFieldMask,
             overdueFolds: (folds >> Self.foldFieldBits) & Self.foldFieldMask,
@@ -592,7 +584,9 @@ public actor TransportProfilingActor {
                 "joinedSessions": stats.joined,
                 "syncCycles": sync.cycles,
                 "syncSkipsBacklog": sync.skipsBacklog,
-                "syncSkipsBusy": sync.skipsBusy,
+                // Always 0 since #546 L2c (no sync cycle is in flight to reject a request); kept
+                // so the profile format doesn't change.
+                "syncSkipsBusy": 0,
                 "syncDeferredTurns": sync.deferredTurns,
                 "syncFolds": sync.folds,
                 "syncOverdueFolds": sync.overdueFolds,

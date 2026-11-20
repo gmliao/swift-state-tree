@@ -219,11 +219,6 @@ public struct NIOLandServerConfiguration: Sendable {
     /// it to the host's `shutdownTimeout`.
     package var landStopTimeout: Duration = .seconds(8)
 
-    /// Run each live land's sync phase inside its keeper's turns. Always on outside the package:
-    /// the differential harness's legacy cells set it to `false` to reach the adapter's off mode
-    /// until that mode is removed (#546 L2).
-    package var inTurnSync = true
-
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,

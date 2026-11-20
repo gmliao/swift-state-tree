@@ -136,13 +136,11 @@ struct DebugFreezeState<State: StateNodeProtocol>: Sendable {
     var settled: Settled?
     /// Syncs requested while frozen, run on resume.
     var deferredSyncNow = false
-    var deferredBroadcastOnly = false
     /// Auto-resume timer; its own generation ignores timers replaced by a later freeze call.
     var autoResumeTask: Task<Void, Never>?
     var autoResumeGeneration: UInt64 = 0
     var autoResumeTimeout: Duration = DebugFreezeDefaults.autoResumeTimeout()
-    /// Deadline for the drain, the writer wait and the wait for the settle (in-turn: checked when
-    /// its keeper job starts, so it bounds the wait for the job, not the job; off: the wait for
-    /// `beginSync`).
+    /// Deadline for the drain, the writer wait and the wait for the settle (checked when its
+    /// keeper job starts, so it bounds the wait for the job, not the job).
     var settleDeadline: Duration = .seconds(10)
 }

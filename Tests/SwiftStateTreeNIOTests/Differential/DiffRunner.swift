@@ -181,8 +181,10 @@ final class DiffRun: @unchecked Sendable {
         )
         // Past any correct run: a stop that reaches it fails the run.
         configuration.landStopTimeout = diffWaitBound
-        // The legacy cells reach the adapter's package-only off mode (#546 L2 removes it).
-        configuration.inTurnSync = cell.sync.inTurnSync
+        // The adapter's off mode is gone (#546 L2c): a legacy cell can't be built any more.
+        guard cell.sync == .inTurn else {
+            throw DiffRunFailure("legacy cell \(cell): the adapter's off mode was removed (#546 L2c)")
+        }
         let transport = WebSocketTransport()
         let server = try NIOLandServer<DiffState>(
             landType: diffLandType,
