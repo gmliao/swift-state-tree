@@ -128,7 +128,7 @@ struct TransportAdapterSyncBackPressureTests {
         await f.adapter.sendEvent(AnyServerEvent(BackPressureEvent(message: "bp-kept-targeted")), to: .player(f.player))
         let skippedBefore = await f.adapter.syncSkipCounts().outboundBacklog
         await f.adapter.syncNow()
-        await f.adapter._syncBroadcastOnlyImpl()
+        await f.adapter.syncNow()
         #expect(await f.adapter.syncSkipCounts().outboundBacklog == skippedBefore + 2, "syncNow and broadcast-only are skipped")
         #expect(await f.adapter.outboundBacklog().syncCycleElements == 1, "a skipped cycle enqueues nothing")
         let pending = await f.adapter.pendingEventCounts()
@@ -239,7 +239,7 @@ struct TransportAdapterSyncBackPressureTests {
 
         // Later requests (full and broadcast-only) return and schedule nothing.
         await f.adapter.syncNow()
-        await f.adapter._syncBroadcastOnlyImpl()
+        await f.adapter.syncNow()
         try await Task.sleep(for: .milliseconds(50))
         #expect(await f.adapter.backlogRetryRuns == 1)
         #expect(await f.adapter.backlogRetryScheduled == false)

@@ -540,16 +540,16 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("late-a", in: bFrames) == 0 && count("late-b", in: aFrames) == 0, "no cross delivery")
     }
 
-    // Since #60 the broadcast-only cycle does not suspend at its send; the gate holds the writer's
+    // Since #60 the cycle does not suspend at its send; the gate holds the writer's
     // delivery. The test still checks that events queued after the cycle arrive once each.
-    @Test("3: a broadcast-only cycle keeps broadcast events queued during its send for the next cycle")
+    @Test("3: a cycle keeps broadcast events queued during its send for the next cycle")
     func broadcastOnlyCycleKeepsLateEvents() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)
 
         try await f.set("tick", 1)
         f.gate.close()
         let adapter = f.adapter
-        let cycle = Task { await adapter._syncBroadcastOnlyImpl() }
+        let cycle = Task { await adapter.syncNow() }
         // Held at the broadcast frame's send: broadcast events were read, targeted not yet.
         try await waitUntil("the broadcast frame send to be held") { f.gate.heldCount > 0 }
         await f.broadcastEvent("bc-late")
@@ -616,7 +616,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.set("tick", 1)
         await f.broadcastEvent("bc-drop-2")
         await f.targetedEvent("tg-drop-2", to: f.a)
-        await f.adapter._syncBroadcastOnlyImpl()
+        await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.settle()
         counts = await f.adapter.pendingEventCounts()

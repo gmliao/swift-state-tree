@@ -253,11 +253,6 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
         await adapter.syncNow()
         await adapter.waitForOutboundIdleForTesting()
     }
-
-    func syncBroadcastOnly() async {
-        await adapter._syncBroadcastOnlyImpl()
-        await adapter.waitForOutboundIdleForTesting()
-    }
 }
 
 /// Runs `script` in the three configurations and compares each recipient's frames with neither
@@ -351,11 +346,11 @@ struct PerPlayerSyncTablesScenarioTests {
             try await run.step("p2", mark: 3)
             await run.sync()
 
-            // Broadcast-only syncs: per-player changes wait for the next full sync.
+            // Two changes, each synced on its own, then a sync with nothing new.
             try await run.step("p1", hand: "f", board: 4)
-            await run.syncBroadcastOnly()
+            await run.sync()
             try await run.step("p2", board: 5)
-            await run.syncBroadcastOnly()
+            await run.sync()
             await run.sync()
 
             // A per-player conversion that throws ends the land (#535): `perPlayerThrowEndsTheLand`.

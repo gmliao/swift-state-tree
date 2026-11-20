@@ -787,7 +787,7 @@ struct TransportAdapterSyncPhaseTests {
         try? await f.set("a", 2)
         await f.queueEvent("after-failure", to: .all)
         await f.adapter.syncNow()
-        await f.adapter._syncBroadcastOnlyImpl()
+        await f.adapter.syncNow()
         await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.frameCount() == before, "no frame after the failure")
     }
@@ -889,23 +889,6 @@ struct TransportAdapterSyncPhaseTests {
             #expect(f.keeper.failure == nil, "no events: the state-only frame says the same")
             #expect(await f.frameCount() > before)
         }
-    }
-
-    @Test("a broadcast-only cycle with a value that does not encode (NaN, json) ends the land (#535 row 12)")
-    func unencodableBroadcastOnlyPatchEndsTheLand() async throws {
-        let f = try await SyncPhaseFixture.make(encoding: .json)
-        await f.keeper.setTransport(f.adapter)
-        try await f.joinSecond()
-        await f.sync()
-        let before = await f.frameCount()
-
-        try await f.set("nanratio:k", 0)
-        try await f.set("a", 1)
-        await f.adapter._syncBroadcastOnlyImpl()
-        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
-        #expect(f.keeper.failure?.kind == .syncEncode)
-        #expect(await f.adapter.waitForOutboundDrain())
-        #expect(await f.frameCount() == before, "no frame of the failing cycle")
     }
 
     @Test("a joiner's standalone firstSync plan that throws ends the land, with no follow-up (#535 row 16)", arguments: SyncPhaseEncoding.allCases)

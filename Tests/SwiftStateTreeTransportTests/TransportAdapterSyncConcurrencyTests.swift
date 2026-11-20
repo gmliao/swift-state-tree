@@ -90,7 +90,7 @@ struct TransportAdapterSyncConcurrencyTests {
         #expect(finalState.counter == 0, "State should remain consistent, counter should be 0")
     }
 
-    @Test("syncBroadcastOnly skips when syncNow is in progress")
+    @Test("a second sync request while syncNow is in progress leaves the state consistent")
     func testSyncBroadcastOnlySkipsWhenSyncNowInProgress() async throws {
         // Arrange
         let definition = Land(
@@ -139,8 +139,7 @@ struct TransportAdapterSyncConcurrencyTests {
 
         try await Task.sleep(for: .milliseconds(50))
 
-        // Act: Start syncNow, then immediately start syncBroadcastOnly
-        // syncBroadcastOnly should be skipped if syncNow is in progress
+        // Act: start syncNow, then a second sync request while it may still run
         let syncNowTask = Task {
             await adapter.syncNow()
         }
@@ -150,7 +149,7 @@ struct TransportAdapterSyncConcurrencyTests {
         try await Task.sleep(for: .milliseconds(50))
 
         let syncBroadcastOnlyTask = Task {
-            await adapter._syncBroadcastOnlyImpl()
+            await adapter.syncNow()
         }
 
         // Wait for both to complete
@@ -166,7 +165,7 @@ struct TransportAdapterSyncConcurrencyTests {
         #expect(finalState.players.count >= 0, "State should remain consistent")
     }
 
-    @Test("Multiple concurrent syncBroadcastOnly operations are serialized")
+    @Test("Concurrent sync requests are serialized")
     func testMultipleSyncBroadcastOnlySerialized() async throws {
         // Arrange
         let definition = Land(
@@ -214,10 +213,9 @@ struct TransportAdapterSyncConcurrencyTests {
 
         try await Task.sleep(for: .milliseconds(50))
 
-        // Act: Start two syncBroadcastOnly operations concurrently
-        // Only one should execute, the other should be skipped
+        // Act: start two sync requests concurrently
         let sync1Task = Task {
-            await adapter._syncBroadcastOnlyImpl()
+            await adapter.syncNow()
         }
 
         // Small delay to ensure first sync starts and acquires lock
@@ -225,7 +223,7 @@ struct TransportAdapterSyncConcurrencyTests {
         try await Task.sleep(for: .milliseconds(50))
 
         let sync2Task = Task {
-            await adapter._syncBroadcastOnlyImpl()
+            await adapter.syncNow()
         }
 
         // Wait for both to complete

@@ -622,30 +622,6 @@ struct TransportAdapterSyncLagTests {
         #expect(closes.pendingMarks == (await f.adapter.syncLagPendingMarks))
     }
 
-    @Test("A resync due when a broadcast-only cycle runs: that cycle runs full and resyncs; an ack after it leaves the client correct")
-    func resyncDueInBroadcastOnlyCycle() async throws {
-        // Legacy sync: an OnLeave's broadcast-only cycle is its own cycle there.
-        let f = try await makeFixture(inTurnSync: false)
-        let firstSync = try #require(try await f.stateFrames().first)
-        await f.ack(firstSync.seq)
-        try await f.bump()
-        _ = try await f.stateFrames()
-        // The diff unacked past 3 s while acks stay fresh: a resync is due.
-        f.clock.advance(3.3)
-        await f.ack(firstSync.seq)
-        try await f.change()
-        await f.adapter._syncBroadcastOnlyImpl()
-        #expect(await f.adapter.waitForOutboundDrain())
-        let frames = try await f.stateFrames()
-        #expect(frames.map(\.op) == [3], "the broadcast-only cycle ran full and resynced")
-        #expect(await f.adapter.syncLagResyncs == 1)
-        // An ack brings the lag under 3 s; the next full plan has nothing owed and sends a diff.
-        await f.ack(try #require(frames.first).seq)
-        try await f.bump()
-        #expect(try await f.stateFrames().map(\.op) == [2])
-        #expect(await f.adapter.syncLagResyncs == 1)
-    }
-
     @Test("After a lag close decision, the session's actions don't reach the keeper while the close is held")
     func inboundClosedAtDecision() async throws {
         let f = try await makeFixture()

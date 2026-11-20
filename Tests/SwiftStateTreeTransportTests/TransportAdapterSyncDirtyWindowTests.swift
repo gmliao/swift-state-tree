@@ -290,30 +290,6 @@ struct TransportAdapterSyncDirtyWindowTests {
         #expect(client == server, "client \(client) must equal server \(server)")
     }
 
-    @Test("a broadcast-only sync does not drop pending per-player changes")
-    func broadcastOnlySyncKeepsPerPlayerDirtyFlags() async throws {
-        // Production defaults: delta, dirty tracking on and snapshot extraction on, fixed. The
-        // tables and typed leaves follow the environment on purpose, so the off job runs this on
-        // the fallback.
-        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
-        await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-
-        try await f.set("score", 5)
-        await f.adapter._syncBroadcastOnlyImpl()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-
-        // A broadcast field is dirty in the next cycle, so it is not an `.all` cycle.
-        try await f.set("a", 1)
-        await f.adapter.syncNow()
-        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
-
-        let client = await f.clientView(from: f.initialView)
-        let server = await f.serverView()
-        #expect(client.score == 5, "per-player change must reach the client; client \(client)")
-        #expect(client == server, "client \(client) must equal server \(server)")
-    }
-
     @Test("dirty tracking switched off->on during a cycle loses no in-cycle mutation")
     func switchOnDuringCycleDoesNotClearInCycleMutations() async throws {
         // Dirty tracking starts off and is switched on while the cycle is held at its send.
