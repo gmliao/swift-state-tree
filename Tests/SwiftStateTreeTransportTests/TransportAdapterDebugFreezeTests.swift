@@ -319,7 +319,7 @@ struct TransportAdapterDebugFreezeTests {
         _ = await f.adapter.debugResume(freezeToken: token)
     }
 
-    @Test("While frozen, syncNow, syncBroadcastOnly and a leave's sync send nothing; they run on resume")
+    @Test("While frozen, syncNow and a leave's sync send nothing; they run on resume")
     func syncsDeferredWhileFrozen() async throws {
         let f = try await Fixture()
         let token = try await f.adapter.debugFreeze().freezeToken
@@ -330,7 +330,7 @@ struct TransportAdapterDebugFreezeTests {
         await f.adapter.onDisconnect(sessionID: f.bob.session, clientID: f.bob.client)
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await drainSends()
         #expect(patchCount(await f.aliceFrames()) == 0, "a sync ran while frozen")

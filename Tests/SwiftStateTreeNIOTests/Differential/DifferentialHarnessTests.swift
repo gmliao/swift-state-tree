@@ -25,6 +25,87 @@ func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> Diff
     }
 }
 
+/// One pass over every scenario's cells: run, read the golden, compare, and judge against the
+/// expected differences. The run and the golden read are passed in, so a self-check can drive
+/// the pass. A cell that throws is recorded and the pass goes on: every later cell is still
+/// compared and reported, and the summary says how many threw.
+enum DiffSweep {
+    struct Report {
+        /// Cells run (not replaced), whether or not they threw.
+        var ran = 0
+        /// Cells whose run returned and whose golden was read and compared.
+        var compared = 0
+        var replaced = 0
+        /// `<scenario> <cell>: <error>`, for each cell whose run threw.
+        var threw: [String] = []
+        /// Every failure, in order, as the test records it.
+        var issues: [String] = []
+        var bytesCompared = true
+    }
+
+    static func run(
+        scenarios: [DiffScenario],
+        retired: [DiffRetiredRow],
+        expected: [DiffExpectedDifference],
+        toolchain: String,
+        execute: (DiffScenario, DiffCell) async throws -> DiffRunResult,
+        readGolden: (String) throws -> DiffGoldenFile
+    ) async -> Report {
+        var report = Report()
+        var replacements: [String: DiffRetiredRow] = [:]
+        for row in retired {
+            for cell in row.cells { replacements["\(row.scenario).\(cell)"] = row }
+        }
+        for scenario in scenarios {
+            for cell in scenario.cells.cells {
+                if let row = replacements["\(scenario.name).\(cell)"] {
+                    report.replaced += 1
+                    do {
+                        try await row.replacement()
+                    } catch {
+                        report.issues.append("\(scenario.name) \(cell), retired (\(row.reason)): its replacement failed: \(error)")
+                    }
+                    continue
+                }
+                report.ran += 1
+                let name = DiffGolden.fileName(scenario, cell)
+                let actual: DiffRunResult
+                do {
+                    actual = try await execute(scenario, cell)
+                } catch {
+                    report.threw.append("\(scenario.name) \(cell): \(error)")
+                    report.issues.append("\(scenario.name) \(cell) threw; the sweep goes on: \(error)")
+                    continue
+                }
+                let golden: DiffGoldenFile
+                do {
+                    golden = try readGolden(name)
+                } catch {
+                    report.issues.append("\(name): \(error)")
+                    continue
+                }
+                if let corruption = DiffGolden.corruption(of: golden.result) {
+                    report.issues.append("\(name) is corrupt: \(corruption)")
+                    continue
+                }
+                let checkBytes = golden.recordedWith.toolchain == toolchain
+                report.bytesCompared = report.bytesCompared && checkBytes
+                report.compared += 1
+                let differences = DiffCompare.differences(golden.result, actual, checkBytes: checkBytes)
+                let entries = expected.filter { $0.scenario == scenario.name && $0.cell == cell }
+                let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries, checkBytes: checkBytes)
+                if !unexpected.isEmpty {
+                    report.issues.append("\(name):\n\(unexpected.map(\.description).joined(separator: "\n"))")
+                }
+                if !stale.isEmpty {
+                    report.issues.append("\(name): stale expected difference(s): \(stale.map { "\($0.checkpoint) \($0.channel.rawValue) \($0.place) (\($0.reason))" })")
+                }
+            }
+        }
+        return report
+    }
+}
+
 /// The parent of the harness's two suites. Both share the process-wide resolver gates
 /// (`DiffGates`), and a suite's `.serialized` orders only its own tests: as siblings under one
 /// serialized parent, no test of one suite runs beside a test of the other.
@@ -50,53 +131,21 @@ extension DifferentialHarness {
             )
             #expect(listProblems.isEmpty, "the branch lists: \(listProblems.joined(separator: "; "))")
             guard listProblems.isEmpty else { return }
-            var replacements: [String: DiffRetiredRow] = [:]
-            for row in diffRetiredRows {
-                for cell in row.cells { replacements["\(row.scenario).\(cell)"] = row }
-            }
-            var bytesCompared = true
-            var ran = 0
-            var replaced = 0
-            for scenario in diffScenarios {
-                for cell in scenario.cells.cells {
-                    if let row = replacements["\(scenario.name).\(cell)"] {
-                        replaced += 1
-                        do {
-                            try await row.replacement()
-                        } catch {
-                            Issue.record("\(scenario.name) \(cell), retired (\(row.reason)): its replacement failed: \(error)")
-                        }
-                        continue
-                    }
-                    ran += 1
-                    let name = DiffGolden.fileName(scenario, cell)
-                    let actual = try await runChecked(scenario, cell)
-                    let golden: DiffGoldenFile
-                    do {
-                        golden = try DiffGolden.read(named: name)
-                    } catch {
-                        Issue.record("\(name): \(error)")
-                        continue
-                    }
-                    if let corruption = DiffGolden.corruption(of: golden.result) {
-                        Issue.record("\(name) is corrupt: \(corruption)")
-                        continue
-                    }
-                    let checkBytes = golden.recordedWith.toolchain == DiffGolden.toolchain
-                    bytesCompared = bytesCompared && checkBytes
-                    let differences = DiffCompare.differences(golden.result, actual, checkBytes: checkBytes)
-                    let entries = diffExpectedDifferences.filter { $0.scenario == scenario.name && $0.cell == cell }
-                    let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries, checkBytes: checkBytes)
-                    #expect(unexpected.isEmpty, "\(name):\n\(unexpected.map(\.description).joined(separator: "\n"))")
-                    #expect(stale.isEmpty, "\(name): stale expected difference(s): \(stale.map { "\($0.checkpoint) \($0.channel.rawValue) \($0.place) (\($0.reason))" })")
-                }
-            }
+            let report = await DiffSweep.run(
+                scenarios: diffScenarios,
+                retired: diffRetiredRows,
+                expected: diffExpectedDifferences,
+                toolchain: DiffGolden.toolchain,
+                execute: { try await runChecked($0, $1) },
+                readGolden: { try DiffGolden.read(named: $0) }
+            )
+            for issue in report.issues { Issue.record(Comment(rawValue: issue)) }
             // Fail closed: every cell the index lists ran or was replaced.
             let listed = index.files.count
-            print("Differential harness: \(ran) cell(s) compared, \(replaced) replaced, \(listed) listed")
-            #expect(ran > 0, "no cell ran")
-            #expect(ran > 0 && ran + replaced == listed, "\(ran) ran and \(replaced) replaced; the index lists \(listed)")
-            if !bytesCompared {
+            print("Differential harness: \(report.ran) cell(s) run, \(report.compared) compared, \(report.threw.count) threw, \(report.replaced) replaced, \(listed) listed")
+            #expect(report.ran > 0, "no cell ran")
+            #expect(report.ran > 0 && report.ran + report.replaced == listed, "\(report.ran) ran and \(report.replaced) replaced; the index lists \(listed)")
+            if !report.bytesCompared {
                 print("Differential harness: decoded views only, on \(DiffGolden.toolchain); the goldens were recorded on another toolchain. The pinned-image CI jobs compare bytes and are the gate.")
             }
         }
