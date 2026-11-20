@@ -3,8 +3,8 @@
  * pointer components (`~1`, `~0`), in every encoding (#121). The view must unescape them, so
  * the key the server wrote is the key the client sees. The server's own escaping is checked
  * against the golden recordings in `view-golden-apply.test.ts`; the opcode encoders send the
- * same escaped component as the dynamic key (`"a~1b"`, `"x~0y"`). They don't carry the empty
- * key today (#205), so it is tested with JSON patches only.
+ * same escaped component as the dynamic key (`"a~1b"`, `"x~0y"`), and the empty key as `""`
+ * (#294).
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'fs'
@@ -51,16 +51,15 @@ function applied(patches: StatePatch[]): Record<string, unknown> {
   return view.getState().board as Record<string, unknown>
 }
 
-/** One opcode diff frame setting each non-empty key to its index, keyed by path hash and dynamic key. */
+/** One opcode diff frame setting each key to its index, keyed by path hash and dynamic key. */
 function opcodeFrame(): unknown[] {
   return [
     StateUpdateOpcode.diff,
-    ...keys.filter(([key]) => key !== '').map(([, escaped], i) => [boardEntryHash, escaped, StatePatchOpcode.replace, i])
+    ...keys.map(([, escaped], i) => [boardEntryHash, escaped, StatePatchOpcode.replace, i])
   ]
 }
 
 const expectedBoard = { keep: 1, 'a/b': 0, 'x~y': 1, 't~1': 2, 'x[1]': 3, '': 4 }
-const { '': _empty, ...expectedOpcodeBoard } = expectedBoard
 
 describe('escaped map keys (#121)', () => {
   beforeEach(() => {
@@ -79,12 +78,12 @@ describe('escaped map keys (#121)', () => {
   it('opcodeJsonArray: dynamic keys are unescaped', () => {
     const update = decodeMessage(JSON.stringify(opcodeFrame())) as StateUpdate
     expect(update.type).toBe('diff')
-    expect(applied((update as { patches: StatePatch[] }).patches)).toEqual(expectedOpcodeBoard)
+    expect(applied((update as { patches: StatePatch[] }).patches)).toEqual(expectedBoard)
   })
 
   it('messagepack: dynamic keys are unescaped', () => {
     const update = decodeMessage(msgpackEncode(opcodeFrame())) as StateUpdate
     expect(update.type).toBe('diff')
-    expect(applied((update as { patches: StatePatch[] }).patches)).toEqual(expectedOpcodeBoard)
+    expect(applied((update as { patches: StatePatch[] }).patches)).toEqual(expectedBoard)
   })
 })
