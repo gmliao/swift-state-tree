@@ -167,9 +167,9 @@ private final class FailingResolver: @unchecked Sendable {
     }
 }
 
-// Two minutes, above `testHangBound` (60 s): a wait that runs out reports its own message first,
-// and a creation a regression leaves parked at a held gate fails the test instead of hanging the
-// run.
+// Two minutes, above `testHangBound` (60 s): a wait that runs out reports its own message first.
+// A report only: the limit doesn't end a wait that never resumes, so every wait here is bounded
+// on its own (Notes/solutions/2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md).
 @Suite("LandManager single-flight creation and epoch removal", .timeLimit(.minutes(2)))
 struct LandManagerSingleFlightTests {
     @Test("Concurrent getOrCreateLand calls for a new ID create one keeper and share its container")
