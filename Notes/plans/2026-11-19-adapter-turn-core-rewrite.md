@@ -1,6 +1,6 @@
 # TransportAdapter on the turn core: the rewrite (#546)
 
-**Status:** rev 11, plan only, for review.
+**Status:** rev 12, plan only, for review.
 - **Detail:** B0–B2 in full; B3–B6 as outlines. Each of B3–B6 gets its own plan PR before its code, reviewed against the B0–B2 code that exists by then. Each outline's "open" list carries what the reviews of rev 1–3 raised for that step.
 - **Decided:** D4 = (a), by the maintainer (§2.2), with its rule documented as a B0 deliverable.
 - **Decisions in this rev:** the order S0 → L1 → L2 (the maintainer and Main, 2026-11-20): #612's S0 removes the reevaluation-mode adapter first, so L1 is written against `main` after S0, L2 deletes the adapter's off mode completely, and B2 starts with one sync path; rev 9's replay-only cycle (b) and rev 10's provisional off arms are dropped. L2 (2a–2e) is a placeholder until its own layout; the standalone initial sync stays outside L2. Decision 5 with the commit's own outputs. B0's two cells settled by Main (§5.1).
@@ -43,7 +43,7 @@ A machine is `PlainData` (`TurnCore.init`, `TurnCore.swift:168`), so it can't st
 **The route: `CommitTools`, passed in, never stored.**
 - `CommitTools` is a struct of the tools' references.
 - The actor builds it once, as a `let`.
-- It travels in the value that runs the commit: the `.syncPhase` query (the core's `Query` has no constraints, `Machine.swift:18`), and the legacy commit query (§3.2).
+- It travels in the value that runs the commit: the `.syncPhase` query (the core's `Query` has no constraints, `Machine.swift:18`), and the `.initialSyncCommit` query (§3.2). (The legacy commit query of earlier revs is superseded by S0 and L2.)
 - The machine's `planAndCommit(_:tools:)` uses it for the duration of that call and keeps nothing.
 - **What the compiler checks, and what it doesn't.** `perform` is `@concurrent nonisolated`, so the compiler keeps it away from an actor-owned non-`Sendable` tool. Only two tools are isolated that way: the two table tools, `perPlayerTables` and the broadcast table (`SyncTables.swift:1593`), as §3.4 says. The others are reachable from `perform`: `OutboundWriter` (`@unchecked Sendable`), `outputGate` (a `nonisolated let`) and `EncodingPipeline` (`Sendable`). For those the guard and the review rule below are the check.
 
@@ -89,14 +89,14 @@ So under every option the machine stores `SyncEngine`'s value part, not the engi
 There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncRead, membership: MembershipView, tools: CommitTools) -> Commit`. It is synchronous.
 
 - **The in-turn commit** runs inside the `.syncPhase` answer. The keeper's sync turn calls it synchronously (`TransportAdapter+LandKeeperTransport.swift:93`), then applies `.committed` and clears dirty flags at once (`LandKeeper.swift:4618`, :4638). So the commit can't be a later input.
-- **The legacy commit** runs inside a query too, in B2 (§3.2).
+- **The standalone initial sync's commit** runs inside a query too, in B2 (§3.2). (The legacy commit is superseded by S0 and L2.)
 
 **Synchronous calls the routine makes, allowed and kept there.** None of them calls the adapter back. Each stays in the routine, so its order relative to the commit is today's:
 - `keeper.assumeIsolated { $0.recordsSyncStream }` (TA:3844);
-- `submitSyncStream(drafts)` (:3882) and the single-draft `submitSyncStream` (:4009). The draft split stays as it is: in-turn, the drafts go back to the keeper in the phase's output; legacy, they are submitted;
+- `submitSyncStream(drafts)` (:3882) and the single-draft `submitSyncStream` (:4009). The draft split stays as it is: in a phase, the drafts go back to the keeper in the phase's output; the standalone initial sync submits its single draft;
 - the writer's synchronous enqueue.
 
-**Rule 1 (a query from inside a step traps)** is not at risk, because none of these calls the adapter back. The witness is a mutant that makes the recorder's submission call an adapter query. It must trap in `SyncStreamProducerTests` (`Tests/SwiftStateTreeTransportTests`), which drives the adapter's commit with the sync stream recorded. It runs with in-turn sync on, for both paths that submit: the in-turn draft path and the legacy settle path. The suite's off-mode fixture records nothing on purpose (`SyncStreamProducerTests.swift:284–292`), so it isn't the witness.
+**Rule 1 (a query from inside a step traps)** is not at risk, because none of these calls the adapter back. The witness is a mutant that makes the recorder's submission call an adapter query. It must trap in `SyncStreamProducerTests` (`Tests/SwiftStateTreeTransportTests`), which drives the adapter's commit with the sync stream recorded. It runs with in-turn sync on, for both paths that submit after L2: the phase's draft path and the standalone initial sync's single-draft submission. The suite's off-mode fixture records nothing on purpose (`SyncStreamProducerTests.swift:284–292`), so it isn't the witness.
 
 ## 3. B0–B2 in full
 
@@ -160,8 +160,8 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 - **L2, the adapter's own cycle:** `withSyncState` over `keeper.beginSync`/`endSync`. It still runs with in-turn sync on (below), so removing L1 doesn't remove it.
 
 **S0 first (#612's first step, Code-2; the maintainer and Main, 2026-11-20).** The order is S0 → L1 → L2. S0 removes `LandKeeperModeConfig.reevaluation`, `LandManager`'s `.reevaluation`-with-adapter branch and its `!isReevaluationKeeper` term (`LandManager.swift:614–669`, :722 at 533d6f44), the resolver path `injectingReevaluationKeeperModeResolver` (`ReevaluationFeature.swift:623–637`), and converts the tests that use them: `ReplayTicketJoinTests.swift:244` and the reevaluation arms of `TransportAdapterJoiningAdmissionTests.swift:227`, `TransportAdapterNewestWinsTests.swift:381` and `TransportAdapterRegisterSessionTests.swift:186`. #612 lays it out. The viewer registrations (`registerWithReevaluationSameLand`, `registerWithReevaluation`) build live keepers (`ReevaluationFeature.swift:534–569`), so they already run in-turn. Consequences for this plan:
-- after S0 no production path and no reevaluation keeper runs the adapter's off executor; L1 and L2 are written against `main` after S0;
-- L2 deletes the off executor completely, with `beginSync`/`endSync`, the keeper's off path for live keepers (2d, 2e), and the harness's legacy cells and legacy-only rows (`disconnect-sending-join-response`, `disconnect-sending-initial-sync`, `join-during-sync-cycle`, each retired with its replacement);
+- after S0 no reevaluation keeper runs the adapter's off executor, and from L1 on no production path does (until L1, `IN_TURN_SYNC=false` and the public configuration still select it); L1 and L2 are written against `main` after S0;
+- L2 deletes the off executor completely, with `beginSync`/`endSync`, the keeper's off path for live keepers (2d, 2e), and the harness's legacy cells and the rows that need the legacy cycle (the three `.legacyOnly` rows `disconnect-sending-join-response`, `disconnect-sending-initial-sync`, `join-during-sync-cycle`, and the `.inTurnOnly` row `join-during-sync-cycle-inturn`, `DiffScenarios.swift:372`, which arms `.adapter(.cycleBeforeEndSync)`, runs `syncNow()` as a cycle and waits on `.keeper(.syncOnlyAfterLegacyCycle)`, :66–78), each retired with its replacement;
 - **B2 starts with one sync path and no legacy cycle.** Rev 9's replay-only cycle and its shape (b) are dropped, and decisions 1 and 4 are superseded (kept below for the record).
 
 **L1: the switch (its own PR to `main`, mechanical, after S0).** L1's branch isn't named `rewrite/546-*`, so #654's protected-path check doesn't apply to it. Line pointers in L1 are to `main` at 533d6f44; L1 rebases over S0, which moves `LandManager`'s lines.
@@ -169,7 +169,7 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 - **Sources:**
   - `EnvKeys.Runtime.inTurnSync` and `InTurnSync.isEnabled(environment:)` (`InTurnSync.swift:39–45`) are deleted. `TransportAdapter`'s effective setting becomes its `inTurnSync` argument alone (TA:969). `public enum InTurnSync` goes with its last member; the file keeps only what still has users, or goes;
   - `NIOLandServerConfiguration.inTurnSync` (`NIOLandHost.swift:144`, :213, :244, :254) leaves the public init and becomes `package var inTurnSync = true`, as `landStopTimeout` is (:224). `NIOLandServer.swift:89` still passes it to `LandManager`'s package init. The harness sets it after the init, beside `landStopTimeout` (`DiffRunner.swift:184`);
-  - `LandManager`: the public init and the `@_spi(Diagnostics) public` init (`LandManager.swift:291–312`) drop their `inTurnSync:` parameter. The `package` init (:324), which `NIOLandServer` uses, keeps it. Tests that need it call the package init and pass `syncLagPolicy: nil`; neither init gets a new default, because a call naming neither extra parameter would then be ambiguous;
+  - `LandManager`: the public init (`LandManager.swift:251–278`) and the `@_spi(Diagnostics) public` init (:291–321) drop their `inTurnSync:` parameter. The `package` init (:324), which `NIOLandServer` uses, keeps it. Tests that need it call the package init and pass `syncLagPolicy: nil`; neither init gets a new default, because a call naming neither extra parameter would then be ambiguous;
   - `IN_TURN_SYNC` joins `TransportRemovedEnvKeys.all` (`TransportEnvConfig.swift:170–183`), so the first adapter in a process logs a warning when it is set, instead of running in-turn silently. The warning's text (TA:1174–1180, "the auto dirty switch and the change-object metric no longer exist") and the type's comment become generic: each set key is named as removed and ignored;
   - the keeper doesn't change: it follows the transport (`usesInTurnSync`, `LandKeeper.swift:667`).
 - **The harness and its gate** (they read the switch today, and must stop):
@@ -182,19 +182,19 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
   - **traits:** `.enabled(if: InTurnSync.isEnabled())` loses the condition (GracefulShutdown, WebSocketSessionHandlerInboundBacklog, EventFramePackBytes, JoinPendingInbound and the rest of the grep);
   - **off-only traits:** `LandRouterJoinAttemptTests.swift:443` and :557 are `.enabled(if: !InTurnSync.isEnabled())`. Their assertions are the off path's (no router JoinResponse, the older mapped attempt refused), so they are pinned to it with an explicit `inTurnSync: false` in their harness. `:436`'s `ownSends = isEnabled ? 0 : 1` becomes the in-turn value;
   - **guards:** about 60 `guard InTurnSync.isEnabled() else { return }` (SyncOutputVerifier, SyncStreamProducer, TicklessPassOrdinal, SyncOutputGolden) lose the guard; SyncOutputGolden keeps its regeneration guards;
-  - **branches:** `if !InTurnSync.isEnabled()` arms are deleted (CollidingKeys, ExistentialGap); the positive branches (`RecordLogLiveRunTests:39,47`, `TicklessPassOrdinalTests:338`, `HybridEventFrameGoldenTests:214`) keep only their on arm;
+  - **branches:** `if !InTurnSync.isEnabled()` arms are deleted (CollidingKeys, ExistentialGap, `PathIndexTests.swift:218`, `UntypedEventPayloadTests.swift:128`); the positive branches (`RecordLogLiveRunTests:39,47`, `TicklessPassOrdinalTests:338`, `HybridEventFrameGoldenTests:214`) keep only their on arm;
   - **conjunctions:** `inTurn && InTurnSync.isEnabled()` becomes `inTurn` (`ActionJobReplayOrderTests:177`, `RecordTurnBoundaryLiveTests:102`, `SyncStreamInitializeRecordTests:177`), and `SyncOutputGoldenTests:344`'s `#require` goes;
   - **the switch's own test,** `TransportAdapterInTurnSyncTests.swift:998–1003`, is deleted;
   - **fixtures:** `HybridEventFrameGoldenTests.swift:197` writes a literal `true` instead of `InTurnSync.isEnabled()`, and :81–84's file name is pinned to `"in-turn"`, so its in-turn fixture stays byte-identical; its legacy fixture, read only by the off leg, is deleted with that arm;
   - **explicit callers:** `LandReleaseTests.swift:229–237`/:411 and `SyncStreamInitializeRecordTests.swift:166–177` pass `inTurnSync:` to the public init today, and move to the package init (with `syncLagPolicy: nil`). Tests that pass `inTurnSync: false` to the adapter keep doing so;
   - **comments:** the core tests' doubles that say "whatever `IN_TURN_SYNC` says" are reworded.
 - **CI** (against `main` 533d6f44, after #668 merged as ce9a145d):
-  - `build-and-test.yml`: one build with `in_turn_on` and `in_turn_off` test steps and their summary rows (:109, :122, :215–216); the off step and its row go. The lints already run once;
+  - `build-and-test.yml`: one build with `in_turn_on` and `in_turn_off` test steps and their summary rows (:109, :122, :215–216); the off step and its row go, and the surviving step's `IN_TURN_SYNC: "true"` (:112–113) goes too, or every run would log the removed-key warning. The lints already run once;
   - `scripts/check-variant-test-selection.sh`: its rules are now `VARIABLES` and E1–E5; `IN_TURN_SYNC` leaves `VARIABLES`, with the self-tests that name it;
-  - `e2e-tests.yml`: the axis and its exclude; the `$IN_TURN_SYNC` / `--expect-off` branch (:321, :333–337); and the "tables-off fallback (in-turn sync off)" step (:355–371), which takes `test-e2e-game.sh:383–400`'s `E2E_TABLES_OFF_ONLY` plumbing with it. The on-path tables-off run stays, under `ROW_ADDRESSING=false`;
+  - `e2e-tests.yml`: the axis and its exclude, and the job name's matrix expression (:258); the `$IN_TURN_SYNC` / `--expect-off` branch (:321, :333–337); and the "tables-off fallback (in-turn sync off)" step (:355–371), which takes `test-e2e-game.sh:383–400`'s `E2E_TABLES_OFF_ONLY` plumbing with it. The on-path tables-off run stays, under `ROW_ADDRESSING=false`;
   - `scripts/test-nightly-scripts.sh:101,107`: the job-name fixtures.
 - **Tools and scripts:**
-  - `Tools/CLI/src/sync-output-verdict.ts`'s off branch and its test; `Tools/CLI/src/reevaluation-e2e.ts:132` and `reevaluation-e2e-game.ts:106`, which print the expected-off verdict; `IN_TURN_SYNC=true` in `Tools/regenerate-sync-output-goldens.sh`;
+  - `Tools/CLI/src/sync-output-verdict.ts`'s reader, default argument and off branch (:59–73) and its test; `Tools/CLI/src/reevaluation-e2e.ts:132` and `reevaluation-e2e-game.ts:106`, which print the expected-off verdict; `IN_TURN_SYNC=true` in `Tools/regenerate-sync-output-goldens.sh`;
   - EncodingBenchmark: `RouterJoin.swift:188` passes `inTurnSync: true` to the SPI init, and drops the argument;
   - the measurement scripts (`scripts/pre-push-checks.sh` runs these tests on any `Sources/` change):
     - `deep-research/test_serverenv.py:161` asserts that `IN_TURN_SYNC` is among the keys scanned from `Sources/`. The scan's sentinel moves to another live key, and `:64–81`, which expects 8 removed keys, expects 9;
@@ -202,11 +202,11 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
     - `gameserver_wire.py:81–88` (and `test_gameserver_wire.py:65`) honours the variable only for servers before L1, judged by commit ancestry as `ROW_DEFAULT_COMMIT` is: today `intended()` predicts row addressing off when `IN_TURN_SYNC=false`, which is wrong for a server at or after L1;
     - the server A/B's arm L (`deep-research/multiroom-load-2026-11-server-ab/README.md:210`) can't be rerun past L1: its README says it is pinned to a server SHA before L1.
 - **Prose that prescribes an `IN_TURN_SYNC=false` run** (it would silently do nothing after L1):
-  - docs, each with its zh-TW companion: `docs/core/runtime.md` (:43, :446, and the kill-switch paragraph), `docs/core/land-dsl.md:107`, `docs/transport/README.md` (:43, :165 and the env table);
+  - docs, each with its zh-TW companion: `docs/core/runtime.md` (:43, :446, and the kill-switch paragraph), `docs/core/land-dsl.md:107`, `docs/transport/README.md` (:43, :165, the env table and the runtime-key list);
   - `AGENTS.md:89`, :153 and :214; `Sources/SwiftStateTree/Resolver/README.md:127`;
   - `Notes/solutions/2026-11-11-a-test-reads-state-an-unawaited-start-task-sets.md` and `2026-11-17-a-land-failure-test-passes-in-turn-and-hangs-on-legacy.md`: "pass `inTurnSync: false` explicitly";
-  - source comments: `LandDSL.swift:1079` (public doc), TA:84, :1185 and :2290, `LandManager.swift:247–249`, `WallClockCadenceSmokeTests.swift:13`.
-- **The off executor after L1.** After S0 its only callers are the explicit `inTurnSync: false` ones: the harness's legacy cells and the pinned `LandRouterJoinAttemptTests`. Today's off leg runs every default-configured suite on it; that coverage isn't kept, because no production path reaches the off executor after S0 and L2 deletes it. No explicit off arms are added.
+  - source comments: `LandDSL.swift:1079` (public doc), TA:89–92 (`inTurnSyncEnabled`'s doc), :1190–1191 and :2290, `NIOLandHost.swift:210–212` (the configuration comment), `LandManager.swift:247–249`, `WallClockCadenceSmokeTests.swift:13`.
+- **The off executor after L1.** After S0 and L1 its callers are the explicit `inTurnSync: false` ones: the harness's legacy cells, the pinned `LandRouterJoinAttemptTests`, and the tests that already pass `false` (`LandReleaseTests`, `InitialSyncBehindCommitTests`, `TransportAdapterSyncLagTests`, `TransportAdapterPendingEventsAcrossCyclesTests`, `RowAddressingAdapterTests`, `AtomicPatternIndexAdapterTests`, and `TransportAdapterRegisterSessionTests.swift:58`, whose fixture defaults to `false`). These keep their off arms until L2, which deletes them with the executor; L1 only moves them to the package init where they used the public one. Today's off leg runs every default-configured suite on it; that coverage isn't kept, because no production path reaches the off executor from L1 on. No new off arms are added.
 - **Merge route:** a normal pull request to `main`. `differential-paths.yml` also runs on `merge_group` (:16, :24) whatever the branch, so if L1 went through a merge queue its harness and gate edits would trip it; L1 doesn't use one.
 - **Public API removed** (for L1's PR): `EnvKeys.Runtime.inTurnSync`, the `InTurnSync` type with `InTurnSync.isEnabled(environment:)`, `NIOLandServerConfiguration.inTurnSync` and its init parameter, and `inTurnSync:` on `LandManager`'s public and SPI inits.
 - **Gate:** §3's gate in its one-mode form, plus the goldens unchanged. No host A/B: the switch is read once, at adapter init, never on a measured path, and no committed measurement tool sets `IN_TURN_SYNC=false`.
@@ -216,13 +216,20 @@ There is one plan-and-commit routine, the machine's `planAndCommit(_ read: SyncR
 - **2b. The public `syncNow()` and `syncBroadcastOnly()` on live lands:** about 147 test call sites, EncodingBenchmark's measured path (30 calls, `RouterJoin.swift:271` included), the two Examples `SyncTablesFrameIdentityTests` (Demo :112, GameDemo :131) and `SwiftStateTreeBenchmarks`. They become "request a sync turn and await it". The benchmark's measured path changes, so this group gets a host A/B. `TransportAdapterBenchmarkHandle` (E) forwards `syncNow`, and also pins two other public entry points this removal touches: `syncStateForNewPlayer` and the join path with `completedInTurn == false` (which `Rejoin.swift` uses). L2's plan, or the legacy-join removal, says what the handle does with each; the handle is the single place they show.
 - **2c. The freeze:** the settle (TA:6503) and both resumes' replay (:6574).
 - **2d. The fake transports:** every keeper whose transport isn't the attached adapter runs the keeper's off path (`usesInTurnSync` is false): the fake `LandKeeperTransport`s in 19 files across both test modules, `MockLandKeeperTransport` included. They move onto the in-turn path.
-- **2e. Keepers with no transport.** `usesInTurnSync` is `mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)` (`LandKeeper.swift:667`), so a live keeper with `transport == nil` runs the off path:
+- **2e. Keepers with no transport** (owned here; #612 lists it as a dependency, Main 2026-11-20). `usesInTurnSync` is `mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)` (`LandKeeper.swift:667`), so a live keeper with `transport == nil` runs the off path:
   - about 19 `SwiftStateTreeTests` files (for example `LandKeeperTickSyncTests.swift:89`, `LandKeeperActionQueueTests.swift:55`, `LandKeeperClientEventQueueTests.swift:43`);
   - `Examples/GameDemo/Sources/EncodingBenchmark/HashCostBenchmark.swift:50`;
   - `Examples/GameDemo/Sources/ReevaluationRunner/main.swift:452`, a *live* keeper that records a game. Recording differs by path (`LandKeeper.swift:4865`), and this keeper is not replay.
 
   They need an in-turn path without a transport (or a null transport). `LandKeeperSyncLockTests.swift:74`/:115 call `beginSync`/`endSync` directly; they go with the deletion below.
-- **Outside L2: the standalone initial sync.** `_syncStateForNewPlayer` (TA:5520–5612) reads through `keeper.currentStateLocated()`, builds a `.legacyCycle` read and commits with `runSyncPhase(isSyncCycle: false)`, outside `withSyncState`; on an epoch mismatch it schedules `startDelayedFollowUpSync`. It is reached from `syncStateForNewPlayer` (TA:5694), the adapter's own join (`completeJoinSuccess`, TA:6228–6242), the router's non-flip branch (`LandRouter.swift:1118–1150`, a live land with row addressing off), `SwiftStateTreeBenchmarks` (`TransportAdapterSyncBenchmarkRunner.swift:275`, `TransportAdapterConcurrentStabilityBenchmarkRunner.swift:171`), EncodingBenchmark's rejoin (`Rejoin.swift:81–95`, through the handle) and about 40 test sites. It uses no `beginSync`/`endSync`, so it stays outside L2: in B2 it is `.initialSyncCommit` (§3.2), and B3 takes it with membership. "B2 starts with one live sync path" means the sync cycle; the initial sync is that separate commit.
+- **Outside L2: the standalone initial sync** (owned here, B2 then B3; #612 lists it as a dependency, Main 2026-11-20). `_syncStateForNewPlayer` (TA:5520–5612) reads through `keeper.currentStateLocated()`, builds a `.legacyCycle` read and commits with `runSyncPhase(isSyncCycle: false)`, outside `withSyncState`; on an epoch mismatch it schedules `startDelayedFollowUpSync`. It is reached from `syncStateForNewPlayer` (TA:5694), the adapter's own join (`completeJoinSuccess`, TA:6228–6242), the router's non-flip branch (`LandRouter.swift:1124–1158`, taken when `completedInTurn == false`; with in-turn sync on and row addressing off the router still takes the flip branch, :1112, so after L1 only direct joins without a response builder reach it), `SwiftStateTreeBenchmarks` (`TransportAdapterSyncBenchmarkRunner.swift:275`, `TransportAdapterConcurrentStabilityBenchmarkRunner.swift:171`), EncodingBenchmark's rejoin (`Rejoin.swift:81–95`, through the handle) and about 40 test sites. It uses no `beginSync`/`endSync`, so it stays outside L2: in B2 it is `.initialSyncCommit` (§3.2), and B3 takes it with membership. "B2 starts with one live sync path" means the sync cycle; the initial sync is that separate commit.
+
+**Inputs to L2's own plan** (from rev 11's review; L2's layout settles each):
+- **The in-turn goldens change in 2b.** Every harness sync goes through `DiffRunner.sync()` → `adapter.syncNow()`, and the in-turn goldens record those syncs as `turnKind: legacyCycle` (for example `join-act-leave.inturn.messagepack.tickless.json:301`, :319). When `syncNow` becomes a keeper sync-only turn, those records change: L2 accounts for each in-turn cell's record and frame changes, not only a wrapper that compiles;
+- **each retired row** (the four above) needs its replacement invariant and a mutant; the remaining legacy cells, `DiffSelfCheckTests.swift`'s embedded legacy cells and the protected-path route (on `main`, or through the branch lists) need a disposition;
+- **the keeper side:** `syncNowFromTransport` and `syncBroadcastOnlyFromTransport`, `beginSync`/`endSync`'s located and deprecated overloads, and the latch read by `runTurnOutputs`/`runSyncOnlyTurn`;
+- **broadcast-only semantics:** it keeps the dirty flags and can upgrade to a full plan;
+- **the freeze settle:** it commits while the ordinary phase defers when frozen.
 
 **B1: the empty machine.**
 - `TurnCore` in the adapter, which conforms to `TurnActor` directly, and the production `TurnClock` over `safeTaskSleep` (core plan §3.4). The dependency itself arrived in B0.
@@ -264,18 +271,19 @@ The legacy flag:
 - the output-gate check (`initialSyncsDroppedLandFailed`), inside the answer, **before** the epoch check;
 - the epoch check against the machine's commit epoch (`initialSyncsDroppedBehindCommit`). On a mismatch without periodic sync, the answer emits `.initialSyncFollowUp`, a named bridge, and `flush` calls `startDelayedFollowUpSync` as today;
 - a plan or encode failure closes the gate and submits the land failure, as today;
-- the DEBUG marker: `noteJoinCommitForTesting(session, flipped: false)` records the standalone firstSync in `initialSyncsCommitted`, and so does the full view a cycle sends an unsynced recipient whose firstSync was dropped behind a commit (#564). Both are actor writes, so both are outputs (`.initialSyncCommitted(session)`), like the flip's.
+- the DEBUG marker: `noteJoinCommitForTesting(session, flipped: false)` records the standalone firstSync in `initialSyncsCommitted`, and so does the full view a cycle sends an unsynced recipient whose firstSync was dropped behind a commit (#564). Both are actor writes, so both are outputs (`.initialSyncCommitted(session)`), like the flip's. Its slot: today the marker comes before the digest recording and the staged cache apply, even when a later gate or ceiling decision prevents the enqueue (TA:5657–5674), so the answer emits it at that point, before any output of the enqueue. The recovery marker (#564) keeps today's predicate: it is emitted only for a recipient with a staged state-update frame.
 
 Its holds (`initialSync`, `initialSyncAfterRead`) stay on the actor's path, at today's points. The epoch is captured after the first hold with `core.read`, as today.
 
 **Bridges: what the commit decides that the actor still owns. They are outputs.** A value returned by the query would be applied too late: called outside a batch, `TurnActor.query` runs the segment before it returns (`TurnActor.swift:77–83`), so steps queued behind the commit (`.lagTick`, the retry, `.closeSession`'s request) would run before the actor saw it. So the answer emits each decision as an output (`Turn.emit`). The segment loop flushes outputs at the top of every iteration, before it admits a queued input or releases a parked one (`drainProducts` in `runSegment`, `TurnActor.swift:246`, :287–296). So the actor's `flush` applies them, in emission order, before any other step runs. The outputs:
 - **`.flipped(session, attempt)` and `.drainsStarted(sessions)`:** the flip's record removal, logs, counters and waiter; then, after the element's enqueue and its ceiling drop, the inbound drains (decision 5, commit steps 3 and 6). The drain keeps its output-gate check and the writer-ceiling cleanup (`TransportAdapter+Outbound.swift:28–62`). The record's removal also removes its held store, so no separate "delivered" output is needed;
+- **`.initialSyncCommitted(session)` and `.initialSyncFollowUp`** (the standalone initial sync, above);
 - **the emit and commit effects** (decision 5): `.eventHeld`, `.joiningEventsDropped`, `.joinFailed(session, .eventOverflow)`, `.ceilingDropped` and `.syncDeferredByFreeze`;
 - **`.lagClose(session, generation, code)`:** `flush` fences the session and then starts the transport close, in that order, as `endAndCloseSession` does today: inbound closed, outbound ended, then the close with the captured generation. In B2 the machine files no close request, so no effect can launch before the fence; the `syncLagClose`/`syncLagClosed` holds stay on the actor's close path, where they are today. Inside the answer the commit's own frame filtering already skips the session: the machine set its lag phase to `.closing` before it filtered frames (TA:4249, :4298 order);
 
 The lag decisions are made inside `planAndCommit` against the `MembershipView` plus this commit's flips, so a session flipped by this commit is seen as a member.
 
-**Which keys, in B2.** The machine owns no `.session` keys in B2: membership is the actor's. Every output is emitted for `.land`, which the machine starts at B1 and which stays live until B5's `endAll`. The machine's own keys in B2 are `.land`, `.syncCycle`, `.lagTimer` and `.followUp(n)`, each started and ended by the machine (`.freeze` arrives with B5). Session keys arrive with B3.
+**Which keys, in B2.** The machine owns no `.session` keys in B2: membership is the actor's. Every output is emitted for `.land`, which the machine starts at B1 and which stays live until B5's `endAll`. The machine's own keys in B2 are `.land`, `.lagTimer` and `.followUp(n)` (`.syncCycle` is superseded by S0 and L2), each started and ended by the machine (`.freeze` arrives with B5). Session keys arrive with B3.
 
 **Which actor fields a step reads.** No machine step reads an actor field: the steps see only machine state, the view a query carries, and their inputs. That is what makes `flush` the only place the actor's fields change in response to a commit.
 
@@ -305,7 +313,7 @@ Each query's writes are machine state; its answer returns what the actor needs b
 - `waitForBackgroundSyncsForTesting` counts background work from the moment it is scheduled: a retry scheduled but not yet queued, a follow-up timer armed, a `.followUpSync` or `.lagSync` request open, and the sync each spawns, until that sync has completed and the writer has taken its handoff. It returns when the count is zero, and then rechecks once (a completion can schedule more).
 
 **The holds B2 touches.** Each stays at its semantic point:
-- `cycleBeforeEndSync` stays before the legacy driver's `endSync` and before the settle's;
+- `cycleBeforeEndSync` stays before the settle's `endSync` (the legacy driver's is superseded by S0 and L2; L2's plan disposes of the hold with the rows that use it);
 - `failedPlanFollowUp` and `syncLagTimerSync` move into `perform`, as above;
 - `syncLagClose` and `syncLagClosed` stay on the actor's close task, where they are today (B2 files no close request);
 - `initialSync` and `initialSyncAfterRead` stay on the actor's path.
@@ -405,7 +413,7 @@ The options:
 |---|---|---|
 | A targeted frame held for a joining session | the frame is appended to the session's scratch frames; count and bytes grow | `.eventHeld(session, frame)`: appended to the actor's held store, **only for a session this phase doesn't flip** (a flipped session's frames left in its flip element) |
 | A targeted event a joining session doesn't get (it holds none, or it has failed) | none | `.joiningEventsDropped(count)`: `eventsDroppedForJoiningSessions` and its rate-limited log, whose clock is read at flush time |
-| A held frame that takes the session over the bound | the session's scratch frames are cleared, and it is marked failed: later emits drop for it instead of holding, and the flip selection skips it | the drop's `.joiningEventsDropped`, then, after the emit (today's `defer`, TA:2727), `.joinFailed(session, .eventOverflow)`: the held store and bytes cleared, the deferred inbound discarded and counted, the record marked failed, the waiter resolved, `inTurnJoinFailures` counted, the log |
+| A held frame that takes the session over the bound | at the clear (today's `holdEvents`, TA:4148–4161): the session's scratch frames are cleared and counted, and the session goes on the emit's overflow list. **It is marked failed at the end of the emit** (today's `defer`, TA:2767–2770), not at the clear: a later visit to the same session inside the same emit (a `.players` list naming a player twice, two players on one session) still sees it holding events and holds again, as today. From the next emit on, it drops instead of holding, and the flip selection skips it | the clear's `.joiningEventsDropped(view's + this phase's frames)`, then, at the end of the emit, `.joinFailed(session, .eventOverflow, dropped: n)`, once per session even if the list names it twice. `n` is the frames held since the clear (today `discardHeldEvents` counts `heldEvents.count` at the failure, which is only those). `flush` clears the actor's held store, which still holds the view's frames and this phase's `.eventHeld` frames, **without counting them again** (the clear's output counted them), adds `n`, and then does the rest of `failInTurnJoin`: the deferred inbound discarded and counted, the record marked failed, the waiter resolved, `inTurnJoinFailures` counted, the log. So `flush` can't call today's `failInTurnJoin` → `discardHeldEvents` as it stands, which would count the cleared frames twice |
 | A writer element dropped over the ceiling | the addressed sessions join the scratch's `endedSessions`: later emits, lag classification (`classifySyncLag` and `applySyncLag` skip ended sessions) and the commit's frame filter skip them | `.ceilingDropped(sessions)`: `endedSessions`, `outboundCeilingDisconnects`, the log, the warn-once, and each session's close |
 | Lag filtering of an immediate send | `syncLag` and `syncLagDroppedEvents` are machine state in B2: written in the answer | none |
 | The digest and the `.noRecipient` / `.sentAlone` / `.lost` accounting | the sync-stream sets are machine state in B2: written in the answer, events-only and backpressured phases included (the accounting runs in the emit loop, before those checks) | none |
@@ -415,13 +423,13 @@ The options:
 **The tools used in place inside the answer,** with no output: the profiler counters (TA:2850–2863, and `syncLagProfilerCounters.addSyncLag`, TA:2909), the info, trace and encode-failure logs, and the writer's enqueue.
 
 **The commit's own actor writes.** In the default production encoding (MessagePack, opcode 107) emits only queue, so every held-event write and every overflow failure of the phase happens in the commit (TA:4236–4316 at the base; `main` 533d6f44 :4305–4370). Today's order inside the commit, and the output for each:
-1. the plan's holds for joining sessions, with overflow drops counted (`holdEvents`, TA:4241): appended to the scratch frames (the flip reads them in step 3); `.eventHeld` and `.joiningEventsDropped` for sessions not flipped in step 3; an overflow marks the session failed in scratch and is remembered for step 7;
-2. the queued events not delivered to joining sessions (TA:4244): `.joiningEventsDropped(count)`. Its predicate reads the hold state **as of before step 1's failure marks**: today `holdEvents` clears an overflowing session's frames, but the session still counts as holding events through step 2, and only step 7's `failInTurnJoin` changes that. So step 1 records its failures in a separate list for step 7, not in the scratch's failed flag that step 2 reads, and a session's queued events are never counted as dropped twice;
+1. the plan's holds for joining sessions, with overflow drops counted (`holdEvents`, TA:4241): appended to the scratch frames (the flip reads them in step 3); `.eventHeld` and `.joiningEventsDropped` for sessions not flipped in step 3; an overflow clears and counts as in an emit, and puts the session on the commit's overflow list for step 7; it does **not** set the scratch's failed flag (step 2 reads it). Step 3 doesn't need the flag: `planSyncPhase` already leaves overflowing joiners out of the flips (TA:4422–4424);
+2. the queued events not delivered to joining sessions (TA:4244): `.joiningEventsDropped(count)`. Its predicate reads the hold state **as of before step 1's failure marks**: today `holdEvents` clears an overflowing session's frames, but the session still counts as holding events through step 2, and only step 7's `failInTurnJoin` changes that. So a session's queued events are never counted as dropped twice;
 3. the flips: `.flipped(session, attempt)`. Its `flush` removes the record, writes the lifecycle log (`noteSessionJoined`), counts `eventsHeldForJoiningSessions` (from the count the answer carries in the output) and `inTurnJoinFlips`, records the DEBUG `noteJoinCommitForTesting`, records the session's deferred inbound for a drain (`inboundAfterFlip`), and resolves the waiter. `startSyncLagTracking` is machine state, written in the answer;
 4. `applySyncLag`: the full-plan flag first (`syncLagFullPlanRequested`, machine state, written in the answer, so no output), then the closes, `.lagClose(session, generation, code)`. Today each close ends the session at once (`closeLaggingSession` → `endAndCloseSession`), before step 5's `enqueueFrames` filters ended sessions (`TransportAdapter+Outbound.swift:28–31`). So the answer adds each closed session to the scratch's `endedSessions` here, before step 5; the output only applies the fence and starts the close;
 5. the enqueue of the element (flip elements included), with that element's own ceiling drop: `.ceilingDropped(sessions)`;
-6. the drain starts: `.drainsStarted(sessions)`, a separate output after step 5's, so a drain starts after the element is in the writer and after the element's ceiling drop is fenced, with its output-gate check and the writer-ceiling cleanup (`TransportAdapter+Outbound.swift:28–62`), as today. `.flipped` doesn't start the drain;
-7. the overflow failures of step 1: `.joinFailed(session, .eventOverflow)`, after the element is enqueued (TA:4314–4316).
+6. the drain starts: `.drainsStarted(sessions)`, a separate output after step 5's and after step 4's `.lagClose`s. Whether a drain starts depends on the output gate, as today, not on step 5's enqueue result; the ceiling cleanup belongs to `writeElement` (`TransportAdapter+Outbound.swift:38–62`), not to the drain. `.flipped` doesn't start the drain;
+7. the overflow failures of step 1: `.joinFailed(session, .eventOverflow, dropped: n)`, after the element is enqueued (TA:4376–4379).
 
 Steps 6 and 7 don't depend on step 5's result: today the commit starts its drains even when its own element was dropped over the ceiling, and runs the overflow failures with the gate closed. Their outputs are emitted unconditionally, as today.
 
@@ -431,6 +439,8 @@ Steps 6 and 7 don't depend on step 5's result: today the commit starts its drain
 
 **Why applying them after the answer keeps today's behaviour.** The answer reads only `PhaseScratch` and machine state, so it sees each effect at the point it sees it today. Called outside a batch, `TurnActor.query` runs the segment before it returns, and the segment flushes outputs before it admits any input (§3.2's bridges). So the actor's fields are as today's before the keeper sees the phase's result, `.landFailed` included, and before any other actor code runs. The freeze is actor-owned and the keeper's turn is synchronous, so the freeze flag can't change between the view and the flush. A waiter resolved in `flush` instead of inside the emit or the commit resumes its caller after the turn in both cases. Moving the emit ceiling-close tasks after the commit's element doesn't change the result, because the commit filters those sessions through scratch.
 
+**Ordering with the writer.** Both kinds of close move to `flush` while the writer's enqueue stays in the answer: the ceiling close (`writeElement`, `TransportAdapter+Outbound.swift:38–62`) and the lag close (`endAndCloseSession`, TA:3793–3813: `endedSessions`, `inboundClosedSessions`, the drain removal and its count, the close `Task`). This isn't observable: today's closes are `Task`s with no order against the writer's consumer, the scratch's `endedSessions` filters the later frames, and nothing else runs on the actor before `flush`. The one ordering that matters is `.lagClose` before `.drainsStarted`, so a lag-closed session's drain is removed before step 6. `.lagClose` applies the close counters, the profiler counters, the lifecycle log line and the inbound discard, as `endAndCloseSession` does.
+
 **The out-of-phase immediate send.** `sendEvent` in immediate mode outside a phase (TA:2703 → `withoutPendingSyncLag`, TA:2899–2913) reads `syncLag` and writes `syncLagDroppedEvents`, both machine state in B2. So the immediate send gets a query: `.immediateEvent(sessions)`. Its boundary: the actor keeps today's order before it, the gate check and the target resolution with its join holds and drops (TA:2940–2952, :2996–3004), and passes the sessions already resolved for one send; the query runs the lag filter on them and returns the sessions to send to. A `.players` target makes one call per player, as it enqueues once per player today. Decision 3's `.mergedEvent` covers merged sends only. After L2 and S0, `sendEvent`'s callers are the tests and `LandKeeperTransport`'s out-of-turn sends.
 
 **Witnesses, as B2 tests (with the existing row where there is one):**
@@ -438,16 +448,19 @@ Steps 6 and 7 don't depend on step 5's result: today the commit starts its drain
 - cumulative holds that overflow only at emit `i+1`;
 - a hold, then a same-phase flip (immediate encoding, a `.session` or `.player` emit to a ready joiner): the frame follows its firstSync in the flip element, exact bytes and order, and the actor's store is empty after the phase;
 - a ceiling drop at emit `i`: no frame for those sessions from later emits or from the commit; its counter and close; lag skips those sessions;
-- `.lost` at emit `k`, after a hold at emit `j < k`: the held frame is in the actor's store when the keeper sees `.landFailed`; and the gate is observed closed from inside the answer, by an emit `k+1` that a test hook records as skipped, which tells a close before the return from one after it;
+- `.lost` at emit `k`, after a hold at emit `j < k`: the held frame is in the actor's store when the keeper sees `.landFailed`; and a test hook at the answer's `.landFailed` return records whether the gate is closed there, which tells a close before the return from one after it (emit `k+1` is never visited, TA:2871–2880, so it can't). `.lost` returns before the digest switch, so the phase's `lost` set doesn't get that emit, as today;
 - the `eventsDroppedForJoiningSessions` total; `.joinFailed`'s inbound discard count, `inTurnJoinFailures` and the waiter's result;
 - the lag filter and the digest accounting in events-only and backpressured phases;
 - the commit's own steps: a joiner past the budget under MessagePack keeps its frames in the actor's store after the phase; a commit overflow fails the join after the flip element is enqueued; a drain starts after the element's ceiling drop; a session closed by lag in a phase whose plan addresses it gets no frame from that element; one plan that overflows in step 1, with step 2's dropped count exact; a dropped element still starts its drains and runs its overflow failures;
+- overflow counts: a cross-phase cumulative overflow (frames held in earlier phases, then an overflow), and a repeated target inside one emit (held, cleared, held again, then one failure), each with `eventsDroppedForJoiningSessions` exact and one `.joinFailed`;
+- the lag fence: a phase whose plan deliberately stages a frame addressing a session that step 4 closes (ordinary classification would remove it before staging, so the witness passes only with the fence);
+- `.flipped` before another session's `.joinFailed`: a synchronous order observation (a test hook in `flush` that records the order), not the two waiters' final results;
 - a frozen land: the in-turn phase defers, and the resume replays it.
 
 **Mutants.**
 - For an effect held in scratch (held frames, failure, `endedSessions`): the later step reads that field from the view instead of `PhaseScratch`, which must fail its witness. For the flip: it builds its element from the view's frames.
 - For an effect that exists only as an output (`.eventHeld`, `.joiningEventsDropped`, `.ceilingDropped`, `.syncDeferredByFreeze`, `.flipped`, `.drainsStarted`, `.joinFailed`): `flush` omits it, or applies a counted one twice (`.joiningEventsDropped`, `.flipped`'s counters); each must fail a witness. Order mutants only for the pairs whose order is observable: `.ceilingDropped` before `.drainsStarted` (the drain's ceiling cleanup), `.flipped` before `.joinFailed` of another session (the budget slot's waiter results), `.eventHeld` before `.joinFailed` of the same session (the failure clears the store), and `.lagClose` before `.drainsStarted` (the fence). Independent neighbours and idempotent writes get no order or duplicate mutant, since no witness can kill one.
-- For `.lost`: the answer drops the outputs already emitted, or closes the gate after the return; each must fail the `.lost` witness (the second through its gate observation).
+- For `.lost`: the answer drops the outputs already emitted, or closes the gate after the return; each must fail the `.lost` witness (the second through the hook at the return).
 
 ### 3.4 Details for the code (B2)
 
@@ -462,7 +475,7 @@ These are settled against B2's code and its tests; each keeps today's behaviour:
 - **The guard:**
   - the broadcast table (`SyncTables.swift:1593`) is non-`Sendable`, so the compiler check covers it with `perPlayerTables`;
   - the actor-side event, action and gate writers are listed beside the keeper's `closeOutputs`.
-- **The recorder witness.** In-turn, the keeper submits the drafts after the adapter's query has returned (`LandKeeper.swift:4618–4625`), so a mutant on that submission can't witness the borrow trap. The mutant goes on the legacy submission (`submitSyncStream`, inside the legacy commit query) and inside the adapter's draft production.
+- **The recorder witness.** In-turn, the keeper submits the drafts after the adapter's query has returned (`LandKeeper.swift:4618–4625`), so a mutant on that submission can't witness the borrow trap. The mutant goes on the standalone initial sync's single-draft submission (`submitSyncStream`, inside the `.initialSyncCommit` query), a path that survives L2, and inside the adapter's draft production.
 - **The engine's per-player cache, once the machine holds it:** `lastPerPlayerSnapshots`' `get`/`set` (`SyncEngine.swift:69–78`) copies the dictionary on each subscript write or `removeValue`. The cost predates B0 and matters only on the tables-off and replay paths, where the per-player cache isn't retired. When the machine takes `caches`, a `_modify` accessor (or direct `caches.perPlayerCacheStorage` access) avoids it.
 - **B0's leftovers, for B2's code PR:** `syncLagDroppedEvents` in the state inventory test, and `@inlinable` on `TurnInstant.init(_:)` (#666's review).
 - **The first sync:** the initial sync's delayed follow-up (`failedPlanFollowUp`) applies to tickless lands only; `isSyncCycle: false`, the initial sync's failure submission, the epoch captured before the keeper's read (TA:5536–5610), and `beginInitialSync(for:)` (TA:1957) as the separate reservation writer of `initialSyncingPlayers`.
@@ -563,7 +576,7 @@ B0 changes value representations on the sync path (the engine's value part, `Tur
 | Cell | Arguments | What it covers |
 |---|---|---|
 | `rows-mp-100` | `--game-type hero-defense --rooms 1 --players-per-room 100 --monster-cap 100 --ticks-per-sync 2 --parallel false --output json --format messagepack-pathhash --join-through-router on --row-addressing on` | the default production path at 100 recipients: the engine's value part and the tables per recipient |
-| `rows-mp` | as `rows-mp-100`, with `--players-per-room 5` | more commits per recipient, so the lag entry's `TurnInstant` (`classifySyncLag`, `applySyncLag`) weighs more |
+| `rows-mp` | as `rows-mp-100`, with `--players-per-room 5` | with fewer recipients the lag bookkeeping (`classifySyncLag`, `applySyncLag`, the lag entry's `TurnInstant`) is a larger share of each iteration; the tick and sync cadence is the same |
 
 - **The window:** `ENCODING_BENCHMARK_PERF_WINDOW=iteration`: the whole timed iteration (ticks and sync), with the settle acks outside it. `<n>` iterations per cell are calibrated as the earlier sync-path sets were, for about 25 s a timed run.
 - **Ack processing is not timed; not needed for B0's risk (Main, 2026-11-20).** EncodingBenchmark's router settle acks fall outside its timed spans (`RouterJoin.swift:285–295`). B0 is a plain-data marking change, so the A/B is sized to that: no ack-heavy cell, no new tool mode, the default lag policy.
@@ -571,7 +584,7 @@ B0 changes value representations on the sync path (the engine's value part, `Tur
 ## 6. Appendix A: hold points
 
 The table from rev 3 §3.1 stands for the holds B2 doesn't touch. Those are reviewed again with each later step's plan. The holds B2 touches are listed in §3.2. Users are counted with helpers included, per Review:
-- `cycleBeforeEndSync`: about 20 (InTurnSync 2, and `TransportTestHelpers`' helper in 18 tests);
+- `cycleBeforeEndSync`: about 20 (InTurnSync 2, and `TransportTestHelpers`' helper in 18 tests); L2's plan disposes of the legacy-cycle uses;
 - `failedPlanFollowUp`: 7 PerPlayerSyncTablesScenario tests through one install, InitialSyncBehindCommit 1, SyncOutputVerifier 1;
 - `syncLagTimerSync`: SyncLag 1;
 - `syncLagClose`: 6;
@@ -591,11 +604,21 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 
 ## 8. Risks
 
-- **The per-message `core.read`.** If it costs more than the budget on 6.2.4 (#621), the sync path regresses. The guards are `check-turns-inlinable.sh` and the A/Bs at B1 and B2, which add the `core.read`s; B0 adds none.
+- **The per-message `core.read`.** If it costs more than the budget on 6.2.4 (#621), the sync path regresses. The guards are `check-turns-inlinable.sh` and the A/Bs at B2 and the merge; the `core.read`s arrive in B2 and B3, and B0 and B1 add none.
 - **The tools outside the machine.** `CommitTools` is passed in and not stored. Its writers are guarded by the borrow assertion. The compiler keeps `perform` away from the two table tools only; the writer, the gate and the encoding pipeline are reachable from `perform`, and a review rule keeps them out of it (§2.1).
 - **The B2 bridges.** Each bridge is applied in the commit's own segment. If a bridge is missing for a write the actor still makes, a test of that write fails at B2's SHA.
 
-## 9. Rev 11: what changed
+## 9. Rev 12: what changed
+
+| Change | Where |
+|---|---|
+| Decision 5's overflow: the failed mark at the end of the emit (today's `defer`), not at the clear; step 1 no longer sets the scratch's failed flag; `.joinFailed` carries the count since the clear, and `flush` clears the held store without counting it again; witnesses for cumulative and repeated-target overflows | §3.3 |
+| The `.lost` witness observes the gate at the `.landFailed` return; lag-fence and flip-order witnesses that discriminate; ordering with the writer stated; step 6's gate dependency; `.initialSyncCommitted`'s slot and the recovery predicate | §3.2, §3.3 |
+| The off executor's callers after L1 listed in full, with their arms kept until L2; `IN_TURN_SYNC=false` still selects it until L1; the fourth harness row (`join-during-sync-cycle-inturn`); inputs to L2's own plan; ownership of 2e and the standalone initial sync (here; #612 depends on them) | §3.2 |
+| L1's inventory: the surviving step's `IN_TURN_SYNC`, the E2E job name, the CLI verdict's reader, two more branch arms, the transport README's key list, the configuration comment; line pointers corrected | §3.2 |
+| Superseded legacy-cycle text marked in §2.1, §2.3, the keys and the holds; the recorder witness moved to the standalone initial sync's submission; §8's A/B guards; `rows-mp`'s rationale; the router's non-flip branch condition | §2, §3, §5.1, §8 |
+
+## 10. Rev 11: what changed
 
 | Change | Where |
 |---|---|
@@ -606,7 +629,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | L1: the removed-key warning's text, the fixture file name, the CI list against `main` after #668, the `InTurnSync` type, the merge route; E's Public API | §3.2 |
 | Stale summaries: §3's intro, §8's `core.read` guards, B2's superseded cycle bullets | §3, §3.2, §8 |
 
-## 10. Rev 10: what changed
+## 11. Rev 10: what changed
 
 | Change | Where |
 |---|---|
@@ -616,7 +639,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | E's text: the container direction; no host A/B for E; the handle's calls | §3.2 |
 | B0's two A/B cells defined (Main: no ack-heavy cell, default lag policy); the off executor's coverage accepted provisionally (Main), its arms deletable on their own | §3.1, §3.2, §5.1, §8 |
 
-## 11. Rev 9: what changed
+## 12. Rev 9: what changed
 
 | Change | Where |
 |---|---|
@@ -627,7 +650,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | E's rationale: `TurnActor` is `public`, so a `package` adapter keeps the conformance's witnesses package-scoped; the facade's members (the container, the wiring, the SPI forwards) and GameDemo in E | §3.2 |
 | §2.1 and the risks: only the two table tools are compiler-isolated; #548 cites 20e15dae and ce9db968, the exact entries from B3's run; B0's A/B in two cells; the decisions' heading | §2.1, §3.1, §3.3, §4, §8 |
 
-## 12. Rev 8: what changed
+## 13. Rev 8: what changed
 
 | Change | Where |
 |---|---|
@@ -638,7 +661,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | A release clears the freeze count, a fresh freeze advances the generation; `.stale` dropped from the legacy outcomes | §3.2, §3.3 |
 | B0: the docs section updated rather than added; the Turns edges with the 6.2 floor, landing on `main` first; `MembershipCoordinator` moved to B3 | B0, B3 |
 
-## 13. Rev 7: what changed
+## 14. Rev 7: what changed
 
 | Change | Where |
 |---|---|
@@ -648,7 +671,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | Decision 3: the phase's events in `.syncPhase`'s value | §3.2, §3.3 |
 | Rev 6's shoulds as details for B2's code; the close holds on the actor's close task; `beginInitialSync(for:)` | §3.4, §6 |
 
-## 14. Rev 6: what changed
+## 15. Rev 6: what changed
 
 | Change | Where |
 |---|---|
@@ -658,7 +681,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | B0: the value part listed in full, `SyncEngine(for:)` kept, `TurnInstant` and the core clock for lag, the guard scoped to the actor, the broadcast tables as a tool | §2.1, §2.2, B0 |
 | Quiescence from scheduling to the writer's handoff; the lag milestone after its fences; the recorder witness with in-turn sync on; stop triggers, the barrier's coverage and the builder's lifetime in the outlines; `onSyncAck` pointer | §2.3, §3.2, §4 |
 
-## 15. Rev 5: what changed
+## 16. Rev 5: what changed
 
 | Change | Where |
 |---|---|
@@ -670,7 +693,7 @@ The neighbours' holds (the router's 14, the manager's 6, the keeper's 15) don't 
 | The seven missing rev-3 points and the overflow answer in the open lists; B6's stop conditions | §4 |
 | #654's merge as the prerequisite; #548 entries per exact difference; the compiler claim scoped; `Data: PlainData` in Turns | header, §2.1, §2.2, §4 |
 
-## 16. Rev 4: what changed
+## 17. Rev 4: what changed
 
 | Change | Where |
 |---|---|
