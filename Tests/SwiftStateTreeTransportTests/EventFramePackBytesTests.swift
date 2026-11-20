@@ -138,9 +138,6 @@ struct EventFramePackBytesTests {
         let fixture = await makePinFixture()
         let s0 = SessionID("s0")
         try await joinPin(fixture, session: s0, player: "p0")
-        // The join's frames reach the transport on the outbound writer's task: count from after
-        // they did, so none of them lands in the slice below.
-        await fixture.adapter.waitForOutboundIdleForTesting()
         let before = await fixture.sent.mergedFrames(for: s0).count
         // A second join changes `joins`, a broadcast field, for p0, in its turn's sync; the
         // broadcast event goes in the sync after it.

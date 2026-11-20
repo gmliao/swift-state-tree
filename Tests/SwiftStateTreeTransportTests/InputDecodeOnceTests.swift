@@ -329,8 +329,10 @@ struct InputDecodeOnceTests {
         }
     }
 
+    // The resolver waits at a gate: under the default 5 s deadline a slow runner would end the
+    // job with a deadline error before the gate opens.
     @Test("A join frame delivered after the count was read doesn't stand for the job's answer: the wait finds the answer by its requestID",
-          arguments: DecodeOnceCodec.all)
+          .resolverDeadlinesOff, arguments: DecodeOnceCodec.all)
     func lateJoinFrameIsNotTheAnswer(choice: DecodeOnceCodec) async throws {
         // The join's frames are held at the transport, and the job's resolver at its gate.
         let delivery = TestGate()
