@@ -146,6 +146,18 @@ private func waitFor(_ delegate: BacklogDelegate, _ condition: @escaping @Sendab
     await delegate.signals.waitFor { _ in condition() }
 }
 
+/// Waits until the backlog is empty and the batch that emptied it has reported `.delivered`: the
+/// resume hop that batch queued, if any, is then on the loop, so a loop task submitted after this
+/// runs after it. The count alone reaches 0 before the hop is queued. The chain delivers one batch
+/// at a time, so the newest event is that batch's `.delivered` only once it has fired. For a test
+/// that holds the loop: a hop that already ran (`.resumeHopRan`, after it) would hide the event.
+private func waitForDrained(_ f: Fixture) async -> Bool {
+    let handler = f.handler
+    return await f.delegate.signals.waitFor { events in
+        handler.inboundQueuedMessagesForTesting == 0 && events.last == "backlog:delivered"
+    }
+}
+
 private func onLoop<T: Sendable>(_ fixture: Fixture, _ body: @escaping @Sendable () -> T) async throws -> T {
     try await fixture.loop.submit(body).get()
 }
@@ -363,7 +375,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         let removed = f.loop.makePromise(of: Void.self)
         f.channel.pipeline.removeHandler(f.handler, promise: removed)
         f.delegate.releaseAll()
-        #expect(await waitFor(f.delegate) { f.handler.inboundQueuedMessagesForTesting == 0 })
+        #expect(await waitForDrained(f))
         gate.signal()
         try await removed.futureResult.get()
         try await drain(f.loop)
@@ -393,7 +405,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         }
         f.delegate.releaseAll()
         // Drained under the lock while paused: the resume hop is queued behind the refill.
-        #expect(await waitFor(f.delegate) { f.handler.inboundQueuedMessagesForTesting == 0 })
+        #expect(await waitForDrained(f))
         // The refill's messages stay queued: the delegate holds them.
         f.delegate.hold()
         blocker.signal()
