@@ -7,6 +7,7 @@ symptoms:
   - "test reads a connection's frames right after the call that sends them and finds none"
   - "errorCodes is empty on Linux CI, passes locally"
   - "Expectation failed: await connection.errorCodes == [...]"
+  - "a job's state is still empty after waitForFrames(before + 1) (InputDecodeOnceTests, #708)"
 root_cause: send_enqueues_and_a_drain_task_delivers_later
 resolution_type: established_pattern
 severity: low
@@ -20,6 +21,7 @@ related:
   - "#372"
   - "2026-11-05-hold-points-not-timing-in-race-tests.md"
   - "#418"
+  - "#708"
 ---
 
 # A returned send is not a delivered frame
@@ -40,7 +42,16 @@ Three sibling tests in `JoinPendingInboundTests` had the same gap, and got the s
 - One read the frames after a keeper-state poll. It now waits for the frames it checks and asserts their count before an `allSatisfy`.
 - Two took a frame-count baseline right after a disconnect, or after `waitForSyncQuiescenceForTesting`. A frame already inside `send` could land after the baseline. They now await the session's drain task after the disconnect, then take the count.
 
+## A second site: a count wait met by an earlier frame (#708)
+
+`InputDecodeOnceTests.jobWalkedOnce` read the transport's frame count right after its join fixture, then waited for one more frame (`waitForFrames(before + 1)`) and took that frame as the job's answer. The join's frames reach the transport on the adapter's outbound writer task, so a join frame that landed after the count was read met the wait while the job's resolver was still running. It failed once on main's CI (ba646a75, "Tests, per-player sync tables off", argument `json`).
+
+The fix waits for outbound idle before reading the count. It then waits for the job's answer by its requestID: it reads each frame as it arrives and skips any other. A proof test holds the join's delivery at the transport and the job's resolver at a gate (a task local the job's tasks inherit). It reads the count without the idle wait and releases the join's frames. It then asserts that the old wait's condition is met with nothing applied. A count-based mutant of the new wait fails it on every codec. `EventFramePackBytesTests.mergedBytes` read its baseline the same way, after `awaitJoined`, which waits for the join flip, not for delivery. It got the same idle wait before it ever failed.
+
 ## Prevention
+
+- Wait for the frame you mean, found by its content (a requestID, a type), not by a count. A count wait is met by any frame, including one sent earlier and delivered late.
+- A baseline count taken right after a join, a connect or any call that sends is not stable until the outbound writer is idle (`waitForOutboundIdleForTesting`). `awaitJoined` waits for the join flip, not for delivery.
 
 - A test that checks what a connection received waits for the connection to receive it: a waiter in the connection's `send`, or the session's send-queue drain task (`sendQueueDrainTaskForTesting`), captured before a disconnect and awaited after it. Returning from a router, adapter or transport call doesn't mean the frame was delivered.
 - The adapter's test waits stop at the transport, not the connection. `waitForOutboundDrain` and `waitForSyncQuiescenceForTesting` return once the outbound writer has handed its frames to the transport. The session's drain task may still be inside `connection.send`. So a frame count taken right after them is not a stable baseline; add one of the delivery waits above.
