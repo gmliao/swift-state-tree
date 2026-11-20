@@ -14,6 +14,7 @@ import Testing
 @testable import SwiftStateTree
 @testable import SwiftStateTreeMessagePack
 @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct DecodeOnceState: StateNodeProtocol {
@@ -51,7 +52,13 @@ struct DecodeOnceJobOutput: ResolverOutput {}
 
 struct DecodeOnceJobResolver: ContextResolver {
     typealias Output = DecodeOnceJobOutput
-    static func resolve(ctx: ResolverContext) async throws -> DecodeOnceJobOutput { DecodeOnceJobOutput() }
+    /// When set, the resolver arrives at the gate and waits for it to open (the job's tasks
+    /// inherit the binding).
+    @TaskLocal static var hold: TestGate?
+    static func resolve(ctx: ResolverContext) async throws -> DecodeOnceJobOutput {
+        await hold?.arrive()
+        return DecodeOnceJobOutput()
+    }
 }
 
 /// Another module's MessagePack codec: the protocol's default `decodeClientFrame`.
@@ -77,12 +84,17 @@ private actor DecodeOnceFrames: Transport {
     var delegate: TransportDelegate?
     private(set) var frames: [Data] = []
     private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    /// When set, the adapter's outbound writer (`sendSessionFrames`, which forwards here) waits
+    /// for it to open before its frames are recorded: frames the adapter sent arrive later.
+    private var deliveryHold: TestGate?
 
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
+    func setDeliveryHold(_ gate: TestGate?) { deliveryHold = gate }
     func start() async throws {}
     func stop() async throws {}
     func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) { append(message) }
     func sendBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) async {
+        if let deliveryHold { await deliveryHold.arrive() }
         for (data, _) in updates { append(data) }
     }
 
@@ -97,6 +109,12 @@ private actor DecodeOnceFrames: Transport {
     func waitForFrames(_ count: Int) async {
         if frames.count >= count { return }
         await withCheckedContinuation { waiters.append((count, $0)) }
+    }
+
+    /// The frame at `index`, once it was sent.
+    func frame(at index: Int) async -> Data {
+        await waitForFrames(index + 1)
+        return frames[index]
     }
 }
 
@@ -155,6 +173,28 @@ private struct DecodeOnceFixture {
         return try frame(TransportMessage.action(requestID: "a-\(tag)", action: envelope))
     }
 
+    /// Waits for the answer to the action with `requestID` among the frames from index `start`
+    /// on, and returns its index. It reads each frame as it arrives and skips any other frame, so
+    /// a frame sent before the action (a join's frame delivered late) doesn't stand for the answer.
+    func answerIndex(to requestID: String, from start: Int) async -> Int {
+        var index = start
+        while true {
+            if Self.answeredRequestID(await sent.frame(at: index), choice: choice) == requestID { return index }
+            index += 1
+        }
+    }
+
+    /// The requestID of an action response frame, decoded with every server encoding (the
+    /// adapter's encoder may differ from the decoding codec, as in `errors()`); nil for any other frame.
+    static func answeredRequestID(_ data: Data, choice: DecodeOnceCodec) -> String? {
+        let message = (try? choice.codec.decode(TransportMessage.self, from: data))
+            ?? (try? OpcodeTransportMessageDecoder().decode(from: data))
+            ?? (try? MessagePackTransportCodec().decode(TransportMessage.self, from: data))
+            ?? (try? JSONDecoder().decode(TransportMessage.self, from: data))
+        guard let message, case .actionResponse(let payload) = message.payload else { return nil }
+        return payload.requestID
+    }
+
     func eventFrame(_ payload: [String: Any]) throws -> Data {
         let event = AnyClientEvent(type: payloadEventName(for: DecodeOnceEvent.self), payload: AnyCodable(payload))
         return try frame(TransportMessage.event(event: .fromClient(event: event)))
@@ -202,7 +242,10 @@ private func decodeOnceRules() -> RulesNode {
 ///
 /// `tick`: a land with a tick (every hour, stepped by hand with `stepTickOnce()`), whose inputs
 /// wait for the tick. `recording`: the keeper records its inputs (`ReevaluationRecorder`).
-private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, tick: Bool = false, recording: Bool = false) async throws -> DecodeOnceFixture {
+///
+/// `deliveryHold`: armed on the transport before the join, so the join's frames are queued but
+/// not recorded until the gate opens.
+private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, tick: Bool = false, recording: Bool = false, deliveryHold: TestGate? = nil) async throws -> DecodeOnceFixture {
     let definition = tick
         ? Land("decode-once", using: DecodeOnceState.self) {
             ClientEvents { Register(DecodeOnceEvent.self) }
@@ -216,6 +259,7 @@ private func makeFixture(_ choice: DecodeOnceCodec, legacyJoin: Bool = false, ti
             decodeOnceRules()
         }
     let sent = DecodeOnceFrames()
+    await sent.setDeliveryHold(deliveryHold)
     let keeper = LandKeeper(
         definition: definition,
         initialState: DecodeOnceState(),
@@ -271,15 +315,49 @@ struct InputDecodeOnceTests {
     func jobWalkedOnce(choice: DecodeOnceCodec) async throws {
         try await countingWalks { walks in
             let fixture = try await makeFixture(choice)
+            // The join's frames reach the transport on the outbound writer's task: count from
+            // after they did.
+            await fixture.adapter.waitForOutboundIdleForTesting()
             let before = await fixture.sent.frames.count
             await fixture.adapter.onMessage(try fixture.actionFrame("j", deep: [[1]], job: true), from: fixture.session)
-            // The job's answer is the frame after the ones sent so far: the action was applied.
-            await fixture.sent.waitForFrames(before + 1)
+            // The job's answer, found by its requestID: the action was applied.
+            _ = await fixture.answerIndex(to: "a-j", from: before)
             #expect(await fixture.keeper.currentState().hits == ["job:j"])
             // Counted in the job's tasks too (they inherit the binding): the intake's walk, and no
             // other. A job applied in a task that didn't inherit it would count 0 (#616 review).
             #expect(walks.count == 1)
         }
+    }
+
+    @Test("A join frame delivered after the count was read doesn't stand for the job's answer: the wait finds the answer by its requestID",
+          arguments: DecodeOnceCodec.all)
+    func lateJoinFrameIsNotTheAnswer(choice: DecodeOnceCodec) async throws {
+        // The join's frames are held at the transport, and the job's resolver at its gate.
+        let delivery = TestGate()
+        let resolver = TestGate()
+        let fixture = try await makeFixture(choice, deliveryHold: delivery)
+        // Read without waiting for the outbound writer: the schedule this test forces.
+        let before = await fixture.sent.frames.count
+        try await DecodeOnceJobResolver.$hold.withValue(resolver) {
+            await fixture.adapter.onMessage(try fixture.actionFrame("j", job: true), from: fixture.session)
+        }
+        #expect(await resolver.waitForArrivals(1), "the job's resolver started")
+        delivery.open()
+        // A count wait is met now, by a join frame, while the job hasn't applied: the old wait
+        // (`waitForFrames(before + 1)`) returned here.
+        await fixture.sent.waitForFrames(before + 1)
+        #expect(Self.isAnswer(await fixture.sent.frames[before], to: "a-j", choice) == false, "the first frame after the count is the join's")
+        #expect(await fixture.keeper.currentState().hits == [])
+        let answer = Task { await fixture.answerIndex(to: "a-j", from: before) }
+        resolver.open()
+        let index = await answer.value
+        #expect(index > before)
+        #expect(Self.isAnswer(await fixture.sent.frames[index], to: "a-j", choice))
+        #expect(await fixture.keeper.currentState().hits == ["job:j"])
+    }
+
+    private static func isAnswer(_ data: Data, to requestID: String, _ choice: DecodeOnceCodec) -> Bool {
+        DecodeOnceFixture.answeredRequestID(data, choice: choice) == requestID
     }
 
     @Test("A payload handed to the keeper's public API is walked once")
