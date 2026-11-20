@@ -412,12 +412,17 @@ jobs:
     # Every tracked deep-research Python test (standard library, git and node only), each from its
     # own directory. Every file runs; a file fails on a non-zero exit or when its output does not
     # report at least one test run (so a file that runs nothing can't pass). Each failing file is
-    # named, and any failure fails the job.
+    # named, and any failure fails the job. Each file has its own bound (#484): a file that hangs
+    # is stopped with SIGABRT, which `-X faulthandler` answers with every thread's stack, then
+    # named as timed out, and the loop goes on, so the step's own timeout never cancels it blind.
     - name: deep-research Python tests
       shell: bash
       run: |
         python3 --version
         log="$(mktemp)"
+        # Per file, about 3x the slowest file on the runner (network-impairment-2026-11/test_topic.py,
+        # 96 s on main at 1075c23c); one hang plus the rest still ends inside the step's 10 minutes.
+        file_timeout=300
         count=0
         failed=()
         summary=()
@@ -426,10 +431,14 @@ jobs:
           echo "::group::$f"
           # Actions runs this with `bash -eo pipefail`: capture the status instead of exiting on it.
           rc=0
-          (cd "$(dirname "$f")" && python3 "$(basename "$f")") > "$log" 2>&1 || rc=$?
+          (cd "$(dirname "$f")" && timeout -s ABRT -k 10 "$file_timeout" python3 -X faulthandler "$(basename "$f")") > "$log" 2>&1 || rc=$?
           cat "$log"
           echo "::endgroup::"
-          if [ $rc -ne 0 ]; then
+          if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
+            # 124: stopped at the bound (its stack is in the log above); 137: killed after ignoring it.
+            echo "::error file=$f::$f timed out after ${file_timeout} s (exit $rc); the stack is in its log group"
+            failed+=("$f")
+          elif [ $rc -ne 0 ]; then
             echo "::error file=$f::$f failed (exit $rc)"
             failed+=("$f")
           elif ! grep -qE '^Ran [1-9][0-9]* tests? in ' "$log"; then
