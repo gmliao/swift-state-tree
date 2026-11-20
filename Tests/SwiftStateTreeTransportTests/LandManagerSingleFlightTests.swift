@@ -463,7 +463,10 @@ struct LandManagerSingleFlightTests {
         let shutdownSteps = EventLog()
         await manager.installHolds(
             HoldRegistry()
-                .on(.creation) { await gate.arrive() }
+                .on(.creation) {
+                    shutdownSteps.append("creation")
+                    await gate.arrive()
+                }
                 .on(.shutdownListed) { shutdownSteps.append("listed") }
                 .hook
         )
@@ -475,16 +478,26 @@ struct LandManagerSingleFlightTests {
         let shutdown = Task { await manager.shutdownAllLands() }
         #expect(await shutdownSteps.waitFor("listed"))
         #expect(await manager.isShutdownStarted())
-        // The shutdown is awaiting the held creation: a new creation is rejected.
+        // The shutdown is awaiting the held creation: a new creation is rejected. Awaited
+        // through the log, not directly: a creation wrongly started parks at the held gate, and
+        // the wait then ends on its arrival instead of never.
+        let lateCall = concurrentCreations(1, manager: manager, landID: late)[0]
+        Task {
+            _ = await lateCall.result
+            shutdownSteps.append("late-ended")
+        }
+        #expect(await shutdownSteps.waitFor { events in
+            events.contains("late-ended") || events.filter { $0 == "creation" }.count >= 2
+        })
+        #expect(gate.arrivalCount == 1, "a creation started during the shutdown")
+
+        gate.open()
         do {
-            _ = try await concurrentCreations(1, manager: manager, landID: late)[0].value
+            _ = try await lateCall.value
             Issue.record("a creation started during the shutdown")
         } catch {
             #expect(isLandShuttingDown(error), "unexpected error: \(error)")
         }
-        #expect(gate.arrivalCount == 1, "a creation started during the shutdown")
-
-        gate.open()
         let heldResult = await heldCall.result
         await shutdown.value
         #expect(await manager.creationsInFlight() == 0)
