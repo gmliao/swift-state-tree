@@ -4,6 +4,7 @@
 
 import Foundation
 import LoadTestPacing
+import SwiftStateTree
 import SwiftStateTreeTransport
 
 // MARK: - Counting Transport
@@ -19,6 +20,9 @@ actor CountingTransport: Transport {
     /// Counted only when `countsErrors`, so other runs send exactly as before.
     private var errorFrames: Int = 0
     private let countsErrors: Bool
+    /// `--join-through-router on`: each session's first sync sequence since the last
+    /// `resetCounts()` (`sendToSession`). Empty on the default path.
+    private var firstSyncSeqs: [SessionID: UInt64] = [:]
 
     init(capturing: Bool = false, countsErrors: Bool = InputRun.fromWire) {
         captured = capturing ? [] : nil
@@ -35,6 +39,20 @@ actor CountingTransport: Transport {
         captured?.append(CapturedFrame(target: ViewCapture.target(target), data: message))
     }
 
+    /// A frame for one session from its router-path connection, with the frame's sync sequence
+    /// (nil for a frame without one): counted as `send(_:to:)` counts it.
+    func sendToSession(_ message: Data, session: SessionID, syncSeq: UInt64?) {
+        if let syncSeq, firstSyncSeqs[session] == nil { firstSyncSeqs[session] = syncSeq }
+        send(message, to: .session(session))
+    }
+
+    /// The lowest and highest of the sessions' first sync sequences since the last
+    /// `resetCounts()`; nil when no session got one.
+    func firstSyncSeqRange() -> (min: UInt64, max: UInt64)? {
+        guard let low = firstSyncSeqs.values.min(), let high = firstSyncSeqs.values.max() else { return nil }
+        return (low, high)
+    }
+
     /// The frames captured since the last call.
     func takeCaptured() -> [CapturedFrame] {
         defer { if captured != nil { captured = [] } }
@@ -49,6 +67,7 @@ actor CountingTransport: Transport {
         sentBytes = 0
         sentMessages = 0
         errorFrames = 0
+        firstSyncSeqs.removeAll(keepingCapacity: true)
     }
 
     /// Error frames sent since the last `resetCounts()` (0 unless `countsErrors`).
