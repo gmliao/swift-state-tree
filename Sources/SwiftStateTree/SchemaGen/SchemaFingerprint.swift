@@ -280,8 +280,8 @@ extension ReevaluationSchemaFingerprint {
     /// Refuses a record whose schema fingerprint is missing, or differs from `definition`'s.
     /// Every replay entry point calls it before the first step.
     ///
-    /// - Throws: `ReevaluationRecordFingerprintError`, or `SchemaFingerprintError` or
-    ///   `SchemaTypeNameCollisionError` (#602) when the current definition has no fingerprint.
+    /// - Throws: `ReevaluationRecordFingerprintError`, or, when the current definition has no
+    ///   fingerprint, what `compute(for:)` throws.
     public static func checkRecord<State: StateNodeProtocol>(
         _ metadata: ReevaluationRecordMetadata,
         against definition: LandDefinition<State>
