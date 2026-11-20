@@ -30,9 +30,6 @@ extension DifferentialHarness {
 
         @Test("A legacy cycle held over the leave's turn defers its sync to a sync-only turn; the pinned row keeps it in the turn")
         func heldCycleMovesTheLeaveSync() async throws {
-            // The in-turn cell is masked with IN_TURN_SYNC=false.
-            guard InTurnSync.isEnabled() else { return }
-
             // The flake was `syncOutputs[3]`: sequence 3, after pass 3, `tick` then `syncOnly`.
             let pinned = try #require(diffScenarios.first { $0.name == "disconnect-during-keeper-join" })
             let pinnedOutputs = try syncOutputs(try await runChecked(pinned, cell))

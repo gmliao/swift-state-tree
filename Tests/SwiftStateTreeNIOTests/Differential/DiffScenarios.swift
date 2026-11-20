@@ -224,8 +224,8 @@ let diffScenarios: [DiffScenario] = [
             .arm(.keeper(.leave)),
             .release(.keeper(.join)),
             // The leave runs once the join returns. The join's sync-only turn queued B's update:
-            // the writer hands it off first, or the leave's in-turn sync would find it and defer
-            // for back-pressure into a sync-only turn (#676).
+            // the writer hands it off first, or the leave's sync (tickless in-turn) would find it
+            // and defer for back-pressure into a sync-only turn (#676).
             .reach(.keeper(.leave)),
             .flushOutbound,
             .release(.keeper(.leave)),
