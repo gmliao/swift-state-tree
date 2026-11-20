@@ -97,9 +97,11 @@ public extension NIOLandHost {
             replayConfig.replayLandSuffix = reevaluation.replayLandSuffix
             // Built once, from the live definition alone, and checked before the live land
             // registers with the context its own registration uses: a refusal then publishes no
-            // route (#521 PR 1b-2b). The alias isn't a subset of the base for every row: it drops
-            // the server inputs, so its fingerprint walk can find a wire-key collision that a
-            // same-named server input hides in the base's walk.
+            // route (#521 PR 1b-2b). The alias drops the server inputs. Its fingerprint walk used to
+            // find a wire-key collision that a same-named server input hid in the base's walk;
+            // since #602 the base refuses the two types under one name itself, and no row is known
+            // to fail for the alias where the base passes. The check stays as the alias's own
+            // registration, run before any route is published.
             let replayLand = GenericReplayLand<State>.makeLand(basedOn: liveLand)
             try replayLand.validateForRegistration(context: replayConfig.registrationContext)
             replay = (replayLandType, reevaluation.replayWebSocketPathResolver(replayLandType), replayConfig, replayLand)

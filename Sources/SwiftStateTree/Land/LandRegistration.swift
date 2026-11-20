@@ -71,9 +71,12 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// name and type. Checked only when the context has `eventHashes`. Empty when there are none.
     public let serverEventsWithoutHash: [String]
     /// Distinct types that the record schema fingerprint's walk would define under one name
-    /// (#602), such as a server input named like a server event or a state type. Checked with
-    /// the fingerprint, under `LandRegistrationContext.recordsForReplay`. Empty when there are
-    /// none. Such types in the state alone are `sync`'s `.typeNameCollision`.
+    /// (#602). That walk covers the whole land: its state, payloads and server inputs, and set
+    /// elements, which the registration row's walk doesn't convert. So this holds, for example,
+    /// a server input named like a server event or a state type, or a set element named like a
+    /// state type. Checked with the fingerprint, under `LandRegistrationContext.recordsForReplay`.
+    /// Empty when there are none. Such types the state's own walk finds are `sync`'s
+    /// `.typeNameCollision`.
     public let typeNameCollisions: [SchemaTypeNameCollision]
 
     init(
