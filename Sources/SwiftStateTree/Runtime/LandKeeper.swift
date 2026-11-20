@@ -551,6 +551,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Callers of `waitUntilDrainStartedForTesting`, resumed when `drainTask` is installed.
+    private var drainStartedWaitersForTesting: [CheckedContinuation<Void, Never>] = []
+
+    /// Test hook: returns once this keeper's destruction has started, `drainTask` installed, so a
+    /// `waitUntilDrained()` after it waits for the whole destruction. Keyed on `drainTask`, not
+    /// `isDraining`: `forceShutdown` sets the flag before the task exists, and in that window
+    /// `waitUntilDrained()` returns at once. Never resumed when no destruction starts; callers bound it.
+    package func waitUntilDrainStartedForTesting() async {
+        guard drainTask == nil else { return }
+        await withCheckedContinuation { drainStartedWaitersForTesting.append($0) }
+    }
+
+    /// Resumes `waitUntilDrainStartedForTesting` callers; call right after installing `drainTask`.
+    private func resumeDrainStartedWaitersForTesting() {
+        guard !drainStartedWaitersForTesting.isEmpty else { return }
+        let waiters = drainStartedWaitersForTesting
+        drainStartedWaitersForTesting.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
     /// Forced-interleaving hold points (tests only; a no-op unless installed).
     private var holds = HoldPoints<LandKeeperHoldPoint>()
 
@@ -5291,6 +5311,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if let transport { await transport.landDidFail(failure) }
             await self.drainAfterIdleCheck()
         }
+        resumeDrainStartedWaitersForTesting()
         let waiters = failureWaitersForTesting.values
         failureWaitersForTesting.removeAll()
         waiters.forEach { $0.resume(returning: true) }
@@ -5620,6 +5641,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         cancelAllActionJobs()
         let task = Task { await self.drainAfterIdleCheck() }
         drainTask = task
+        resumeDrainStartedWaitersForTesting()
         await task.value
     }
 
