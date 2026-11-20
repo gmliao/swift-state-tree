@@ -7,22 +7,34 @@
 # Usage: scripts/test-ci-apt-install.sh
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-tmp="$(mktemp -d)"
+tmp=""
 # A stub the helper failed to stop (a regression, or a `stubborn` one without KILL) outlives the
 # deadline, and so can its child (`sleep`), whose command line names no stub. `timeout` starts its
-# command in a process group of its own, so each stub records its group and the trap ends every
-# group recorded, children included. Never this script's own group.
-cleanup() {
-  local own group
+# command in a process group of its own, so each stub records its group in its case's `groups`
+# file. Each case ends its own groups as soon as the helper returns, children included, and drops
+# the file, so no group is signalled after its case (a group id can be reused). Never this script's
+# own group.
+end_groups() {
+  local file=$1 own group
+  [ -f "$file" ] || return 0
   own=$(ps -o pgid= $$ | tr -d ' ')
-  if [ -f "$tmp/groups" ]; then
-    for group in $(sort -u "$tmp/groups"); do
-      [ "$group" != "$own" ] && kill -KILL -- "-$group" 2>/dev/null
-    done
-  fi
+  while read -r group; do
+    [ "$group" != "$own" ] && kill -KILL -- "-$group" 2>/dev/null
+  done < <(sort -u "$file")
+  rm -f "$file"
+}
+# shellcheck disable=SC2329 # called by the EXIT trap
+cleanup() {
+  local file
+  [ -n "$tmp" ] || return 0
+  for file in "$tmp"/*/groups; do end_groups "$file"; done
   rm -rf "$tmp"
 }
+# The EXIT trap also runs when the script is interrupted or terminated (a CI cancel).
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+tmp="$(mktemp -d)"
 fail=0
 deadline=60
 
@@ -30,6 +42,9 @@ mkdir -p "$tmp/bin"
 for tool in apt-get dpkg; do
   cat > "$tmp/bin/$tool" <<'STUB'
 #!/usr/bin/env bash
+# TERM is ignored from the first line, so a `stubborn` stub ignores a TERM that arrives while it
+# reads its plan; the other words restore it before they wait or exit.
+trap '' TERM
 tool=$(basename "$0")
 ps -o pgid= $$ | tr -d ' ' >> "$APT_STUB_GROUPS"
 n=$(( $(cat "$APT_STUB_DIR/$tool.calls") + 1 ))
@@ -37,8 +52,8 @@ echo "$n" > "$APT_STUB_DIR/$tool.calls"
 echo "$tool $*" >> "$APT_STUB_DIR/log"
 case "$(sed -n "${n}p" "$APT_STUB_DIR/$tool.plan")" in
   ok) exit 0 ;;
-  hang) exec sleep 600 ;;
-  stubborn) trap '' TERM; while :; do sleep 1; done ;;
+  hang) trap - TERM; exec sleep 600 ;;
+  stubborn) while :; do sleep 1; done ;;
   *) exit 100 ;;
 esac
 STUB
@@ -49,7 +64,8 @@ done
 # first (from the second attempt), then update, then install only if the update succeeded; it
 # stops after the first install that succeeds, or after 5 attempts.
 expected_calls() {
-  local -a plan=($1)
+  local -a plan
+  read -ra plan <<<"$1"
   local attempt next=0 word
   for attempt in 1 2 3 4 5; do
     [ "$attempt" -gt 1 ] && echo "dpkg --configure -a"
@@ -70,10 +86,11 @@ case_() {
   tr ' ' '\n' <<<"$apt" > "$dir/apt-get.plan"
   tr ' ' '\n' <<<"$dpkg" > "$dir/dpkg.plan"
   start=$SECONDS
-  APT_STUB_DIR="$dir" APT_STUB_GROUPS="$tmp/groups" PATH="$tmp/bin:$PATH" CI_APT_UPDATE_TIMEOUT=1 CI_APT_INSTALL_TIMEOUT=1 \
+  APT_STUB_DIR="$dir" APT_STUB_GROUPS="$dir/groups" PATH="$tmp/bin:$PATH" CI_APT_UPDATE_TIMEOUT=1 CI_APT_INSTALL_TIMEOUT=1 \
     CI_APT_DPKG_TIMEOUT=1 CI_APT_KILL_AFTER=1 CI_APT_RETRY_DELAY=0 \
     timeout --kill-after=5 "$deadline" bash "$root/scripts/ci-apt-install.sh" curl > "$dir/out" 2>&1 || rc=$?
   elapsed=$((SECONDS - start))
+  end_groups "$dir/groups"
   runs=$(grep -c '^dpkg --configure -a$' "$dir/log")
   calls=ok; expected_calls "$apt" | diff -u - "$dir/log" > "$dir/calls.diff" || calls=wrong
   if [ "$rc" = "$want" ] && [ "$runs" = "$dpkgs" ] && [ "$calls" = ok ] && [ "$elapsed" -le "$limit" ] &&
@@ -101,7 +118,7 @@ case_ every-attempt-hangs 1 "hang hang hang hang hang" "ok ok ok ok" 4 30 'apt f
 
 # No package: the usage text, and no apt-get call.
 dir="$tmp/no-package-args"; mkdir -p "$dir" && : > "$dir/log" && echo 0 > "$dir/apt-get.calls"
-rc=0; APT_STUB_DIR="$dir" APT_STUB_GROUPS="$tmp/groups" PATH="$tmp/bin:$PATH"   timeout --kill-after=5 "$deadline" bash "$root/scripts/ci-apt-install.sh" > "$dir/out" 2>&1 || rc=$?
+rc=0; APT_STUB_DIR="$dir" APT_STUB_GROUPS="$dir/groups" PATH="$tmp/bin:$PATH" timeout --kill-after=5 "$deadline" bash "$root/scripts/ci-apt-install.sh" > "$dir/out" 2>&1 || rc=$?
 if [ "$rc" = 2 ] && [ "$(cat "$dir/apt-get.calls")" = 0 ] && grep -q '^usage: .*ci-apt-install.sh <package>\.\.\.$' "$dir/out"; then
   echo "ok   usage without a package (exit 2, the usage text, no apt-get)"
 else
