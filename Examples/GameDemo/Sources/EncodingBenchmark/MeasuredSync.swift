@@ -22,12 +22,12 @@ enum MeasuredSync {
         }
     }
 
-    /// Sync cycles the adapters skipped so far (back-pressure or a cycle in flight).
+    /// Sync cycles the adapters skipped so far (back-pressure).
     static func skipCount<State: StateNodeProtocol>(_ adapters: [TransportAdapterBenchmarkHandle<State>]) async -> Int {
         var total = 0
         for adapter in adapters {
             let skips = await adapter.syncSkipCounts()
-            total += skips.busy + skips.outboundBacklog
+            total += skips.outboundBacklog
         }
         return total
     }

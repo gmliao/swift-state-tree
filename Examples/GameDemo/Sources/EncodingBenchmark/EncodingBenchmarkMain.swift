@@ -155,8 +155,8 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
                 rngSeed: await keeper.getRngSeed(),
                 version: ReevaluationRecordVersion.current,
                 hardwareInfo: HardwareInfoCollector.collect(),
-                recordsSyncStream: adapter.inTurnSyncEnabled,
-                syncConfig: adapter.inTurnSyncEnabled ? adapter.syncConfigForRecord : nil
+                recordsSyncStream: true,
+                syncConfig: adapter.syncConfigForRecord
             ))
         }
         
