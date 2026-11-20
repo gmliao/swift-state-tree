@@ -113,7 +113,7 @@ private func makeDeliveryDefinition(tick: Bool) -> LandDefinition<DeliveryTestSt
 private let deliveryLandID = "delivery-test:local"
 
 /// Reports in-turn sync for every keeper and commits each requested sync phase, so a keeper
-/// attached to it takes the in-turn path (`usesInTurnSync`) whatever `IN_TURN_SYNC` says. Not an
+/// attached to it takes the in-turn path (`usesInTurnSync`) whatever the adapter's mode. Not an
 /// actor: its synchronous calls need no isolation.
 private final class InTurnTransport: LandKeeperTransport, @unchecked Sendable {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}

@@ -5,8 +5,8 @@
 // (`keeper.setTransport(adapter)`, `adapter.keeper`), and a land's own transport another one
 // (its delegate is the adapter); each instance breaks its links at the end of its own teardown.
 // Every destroy path is created through the hosting path (`getOrCreateLand`), destroyed through
-// the manager's own teardown, and checked with weak references, with in-turn sync on and off
-// (the `IN_TURN_SYNC` CI legs).
+// the manager's own teardown, and checked with weak references, in-turn; a test that needs the
+// off mode passes `inTurnSync: false` (until #546 L2).
 
 import Foundation
 import Testing
@@ -233,7 +233,8 @@ struct LandReleaseTests {
             initialStateFactory: { _ in LandReleaseTestState() },
             transport: transport,
             keeperModeResolver: keeperModeResolver,
-            inTurnSync: inTurnSync
+            inTurnSync: inTurnSync,
+            syncLagPolicy: nil
         )
     }
 
@@ -443,38 +444,6 @@ struct LandReleaseTests {
         _ = consume container
         let released = await waitUntilReleased(land)
         #expect(released, "the land with a late delivery after shutdownAllLands: \(land.description)")
-    }
-
-    @Test("A replay land (re-evaluation keeper): released after shutdownAllLands")
-    func replayLand() async throws {
-        let recordFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("land-release-replay-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: recordFile) }
-        try ReevaluationRecordFile.jsonViewData(
-            metadata: ReevaluationRecordMetadata(
-                landID: "land-release:local",
-                landType: "land-release",
-                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-                metadata: [:],
-                landDefinitionID: "land-release",
-                version: ReevaluationRecordVersion.current,
-                // The live land's, as a live recording holds it; the keeper checks it before its
-                // first step, under the live type though the replay definition has the alias id (#521 D15).
-                schemaFingerprint: try ReevaluationSchemaFingerprint.compute(
-                    for: releaseTestLand(LandID(landType: "land-release", instanceId: "live"))
-                )
-            ),
-            frames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
-        ).write(to: recordFile)
-        let manager = makeManager(keeperModeResolver: { landID, _ in
-            landID.landType.hasSuffix("-replay") ? .reevaluation(recordFilePath: recordFile.path) : nil
-        })
-        let landID = LandID(landType: "land-release-replay", instanceId: "replay-1")
-        let land = try await create(manager, landID)
-        #expect(await land.keeper?.getMode() == .reevaluation)
-        await manager.shutdownAllLands()
-        let released = await waitUntilReleased(land)
-        #expect(released, "replay land after shutdownAllLands: \(land.description)")
     }
 
     @Test("A shared transport: one land destroyed is released, the other keeps working, the transport and its delegate stay")

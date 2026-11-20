@@ -125,7 +125,6 @@ struct UntypedPayloadLand {
     /// the keeper applies in its next turn.
     func tick() async {
         await keeper.stepTickOnce()
-        if !InTurnSync.isEnabled() { await keeper.stepTickOnce() }
     }
 }
 

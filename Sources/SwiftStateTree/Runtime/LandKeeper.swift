@@ -38,7 +38,8 @@ public enum LandMode: Sendable {
 public enum ReevaluationOutputMode: Sendable {
     /// Only forward to reevaluation sink (default, backward compatible).
     case sinkOnly
-    /// Forward to both transport and sink (for same-land replay streaming).
+    /// Forward to both the keeper's transport and the sink. No adapter serves a reevaluation
+    /// keeper (#612), so the transport is one the caller set directly.
     case transportAndSink
 }
 
@@ -378,7 +379,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var serverInputMaxInFlight = ServerInputLimits.maxInFlightPerLand()
     /// Server inputs refused because the in-flight cap was reached.
     public private(set) var serverInputCapRejections = 0
-    private var mode: LandMode
+    private let mode: LandMode
+
+    /// Whether this keeper is live. A `TransportAdapter` binds only a live keeper: a
+    /// reevaluation keeper runs headless, with no adapter (#612).
+    package nonisolated var isLive: Bool { mode == .live }
 
     private struct EmittedEvent: Sendable {
         let sequence: Int64
@@ -657,7 +662,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Metrics: Track sync frequency and performance
     private var isSyncing = false
 
-    // MARK: In-turn sync state (see `InTurnSync`)
+    // MARK: In-turn sync state (see `docs/core/runtime.md`, In-Turn Sync)
 
     /// Whether this keeper's turns run the sync phase inside the turn: live mode, and the
     /// transport runs it for this keeper (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`, which
@@ -3333,7 +3338,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// This bypasses the internal tick loop guard and allows stepping a land deterministically
     /// without relying on wall-clock time.
     ///
-    /// With in-turn sync (`InTurnSync`) this is one tick turn: ready inputs, the tick handler,
+    /// With in-turn sync this is one tick turn: ready inputs, the tick handler,
     /// the emitted events and, only when a sync is due (coincident-sync rule) or a handler
     /// requested one, the sync phase. The phase can be deferred by writer back-pressure, and
     /// returning does not mean the writer has sent the frames. On a tickless land it runs the

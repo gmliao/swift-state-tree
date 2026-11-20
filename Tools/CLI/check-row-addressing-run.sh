@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Checks the output of `./test-e2e-game.sh` with row addressing on (the default, CI's main step
-# on the in-turn leg), per encoding; with `--expect-off`, a run where it can't take effect or is
-# turned off (the in-turn-off leg, and `ROW_ADDRESSING=false`). Each "▶ Running … (…)" section
+# Checks the output of `./test-e2e-game.sh` with row addressing on (the default, CI's main step),
+# per encoding; with `--expect-off`, a run where it is turned off (`ROW_ADDRESSING=false`). Each "▶ Running … (…)" section
 # of the output belongs to the one encoding named as a word anywhere in its parentheses
 # ("(drop one /score patch, json)" is json's). A section that names none, or more than one,
 # fails once it holds a join or a count, rather than going unchecked.
@@ -22,7 +21,7 @@
 #     summary line can't pass as 0 patches.
 # With --expect-off, every encoding is checked as json is above (no join negotiated it, no row
 # patch was applied), the 4013 check and the section checks stay, and the "requested but not in
-# effect" log is allowed: with in-turn sync off the default request can't take effect.
+# effect" log is allowed.
 # Usage: check-row-addressing-run.sh [--expect-off] <run output> <server log dir> <encoding>...
 set -euo pipefail
 expect_off=false

@@ -167,8 +167,9 @@ public struct TransportEnvConfig: Sendable {
     }
 }
 
-/// The environment keys of the removed auto dirty switch and its change-object metric. A set
-/// one is ignored; the first adapter in a process logs a warning naming every one that is set
+/// The environment keys of removed switches: the auto dirty switch and its change-object
+/// metric, and the in-turn sync switch (`IN_TURN_SYNC`; in-turn sync is always on). A set one
+/// is ignored; the first adapter in a process logs a warning naming every one that is set
 /// (`shared`), so a deployment that still sets one isn't changed silently.
 package final class TransportRemovedEnvKeys: @unchecked Sendable {
     package static let all = [
@@ -180,6 +181,7 @@ package final class TransportRemovedEnvKeys: @unchecked Sendable {
         "AUTO_DIRTY_ON_THRESHOLD",
         "AUTO_DIRTY_REQUIRED_SAMPLES",
         "AUTO_DIRTY_SAMPLE_EVERY",
+        "IN_TURN_SYNC",
     ]
 
     /// This process's check, which the adapters share.

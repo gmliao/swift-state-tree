@@ -212,8 +212,7 @@ private func joinMember(_ fixture: Fixture) async throws {
 }
 
 @Suite(
-    "Join holds targeted events until its firstSync (#69)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: held events are on the in-turn path only")
+    "Join holds targeted events until its firstSync (#69)"
 )
 struct TransportAdapterJoinHeldEventsTests {
     @Test("OnJoin's .session and .player events reach the joiner after its firstSync, in order", arguments: HeldEncoding.allCases)

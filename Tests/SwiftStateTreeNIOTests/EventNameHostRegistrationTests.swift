@@ -21,11 +21,6 @@ struct EHLiveEvent: ServerEventPayload {
     let n: Int
 }
 
-@Payload
-struct EHReplayOnlyEvent: ServerEventPayload {
-    let n: Int
-}
-
 /// Renamed from `EHOldBell`; the hand-written wire name keeps the old one.
 struct EHBellEvent: ServerEventPayload {
     static var _payloadWireName: String { "EHOldBell" }
@@ -127,35 +122,6 @@ struct EventNameHostRegistrationTests {
         #expect(await host.realm.isRegistered(landType: "eh-ok"))
     }
 
-    @Test("A separate replay definition with a replay-only event missing from the live table is refused before anything registers")
-    func customReplayRefusedUpFront() async throws {
-        let host = makeHost()
-        let replay = Land("eh-custom-replay", using: EventNameHostState.self) {
-            ServerEvents {
-                Register(EHLiveEvent.self)
-                Register(EHReplayOnlyEvent.self)
-            }
-            Rules {}
-        }
-        let error = try await #require(throws: LandRegistrationError.self) {
-            try await host.registerWithReevaluation(
-                landType: "eh-custom",
-                liveLand: liveLand("eh-custom"),
-                liveInitialState: EventNameHostState(),
-                liveWebSocketPath: "/game/eh-custom",
-                replayLand: replay,
-                replayInitialState: EventNameHostState(),
-                configuration: configuration(eventHashes: try liveTable("eh-custom")),
-                reevaluation: feature()
-            )
-        }
-        #expect(error.landType == "eh-custom-replay")
-        #expect(error.serverEventsWithoutHash.map { $0.hasPrefix("EHReplayOnly (") } == [true], "\(error)")
-        #expect(await host.realm.isRegistered(landType: "eh-custom") == false, "the live land type isn't registered")
-        #expect(await host.realm.isRegistered(landType: "eh-custom-replay") == false)
-        #expect(await host.transportForTesting(webSocketPath: "/game/eh-custom") == nil, "the live path isn't mapped")
-    }
-
     @Test("A valid generic replay alias registers with a non-empty table")
     func genericAliasRegisters() async throws {
         let host = makeHost()
@@ -171,13 +137,10 @@ struct EventNameHostRegistrationTests {
         #expect(await host.realm.isRegistered(landType: "eh-generic-replay"))
     }
 
-    @Test(
-        "The helpers' live check reports EV2 and EV3 in one throw, and maps nothing",
-        arguments: ["same land", "separate replay land", "generic replay"]
-    )
-    func liveCheckReportsEveryRow(overload: String) async throws {
+    @Test("The helper's live check reports EV2 and EV3 in one throw, and maps nothing")
+    func liveCheckReportsEveryRow() async throws {
         let host = makeHost()
-        let landType = "eh-both-" + overload.replacingOccurrences(of: " ", with: "-")
+        let landType = "eh-both-generic-replay"
         let land = Land(landType, using: EventNameHostState.self) {
             ServerEvents {
                 Register(EHBellEvent.self)
@@ -188,31 +151,12 @@ struct EventNameHostRegistrationTests {
         var configuration = NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
         configuration.eventHashes = ["EHBell": 1]
         let error = try await #require(throws: LandRegistrationError.self) {
-            switch overload {
-            case "same land":
-                try await host.registerWithReevaluationSameLand(
-                    landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
-                    liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
-                )
-            case "separate replay land":
-                // The replay definition passes every row, so the throw is the live definition's.
-                try await host.registerWithReevaluation(
-                    landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
-                    liveWebSocketPath: "/game/\(landType)",
-                    replayLand: Land("\(landType)-replay", using: EventNameHostState.self) { Rules {} },
-                    replayInitialState: EventNameHostState(),
-                    configuration: configuration, reevaluation: feature()
-                )
-            default:
-                try await host.registerWithGenericReplay(
-                    landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
-                    liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
-                )
-            }
+            try await host.registerWithGenericReplay(
+                landType: landType, liveLand: land, liveInitialState: EventNameHostState(),
+                liveWebSocketPath: "/game/\(landType)", configuration: configuration, reevaluation: feature()
+            )
         }
-        // The throw names the live land type. With a separate replay definition (which passes every
-        // row) that is the live check's throw; the generic alias keeps the live ID, so there it
-        // doesn't tell the two checks apart.
+        // The throw names the live land type: the generic alias keeps the live ID.
         #expect(error.landType == landType, "the error names the live land type")
         #expect(error.wireNameMismatches.count == 1, "\(error)")
         #expect(error.serverEventsWithoutHash.map { $0.hasPrefix("EHLive (") } == [true], "\(error)")

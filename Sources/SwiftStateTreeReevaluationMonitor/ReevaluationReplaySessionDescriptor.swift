@@ -1,7 +1,7 @@
 // Sources/SwiftStateTreeReevaluationMonitor/ReevaluationReplaySessionDescriptor.swift
 //
-// Replay session descriptor for same-land reevaluation: encode from admin replay start
-// response, decode from land instanceId for runtime reevaluationSource resolution.
+// Replay session descriptor: encoded into the replay land's instanceId by the admin replay
+// start, decoded from it when a client joins, to find the record to replay.
 
 import Foundation
 import SwiftStateTree
@@ -9,7 +9,7 @@ import SwiftStateTree
 /// Descriptor for a replay session that can be encoded from admin replay start response
 /// and decoded from land instanceId when a client connects.
 ///
-/// Used by the runtime to resolve `reevaluationSource` for same-land replay sessions.
+/// The replay ticket gate and the runner bootstrap read the record path from it.
 public struct ReevaluationReplaySessionDescriptor: Sendable {
     public let recordFilePath: String
     public let landType: String

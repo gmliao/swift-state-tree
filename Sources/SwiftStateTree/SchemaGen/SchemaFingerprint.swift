@@ -58,15 +58,10 @@ public enum ReevaluationSchemaFingerprint {
     /// - Throws: `SchemaFingerprintError` for a type whose fields it can't list or tell apart,
     ///   and what `SchemaExtractor.extract(from:)` throws for a land that can't be registered.
     public static func compute<State: StateNodeProtocol>(for definition: LandDefinition<State>) throws -> String {
-        try compute(for: definition, keyedAs: nil)
+        try fingerprint(of: definition)
     }
 
-    /// `compute(for:)` with the land's schema keyed by `landType` instead of `definition.id`: a
-    /// replay definition named by the replay alias, checked against a live recording.
-    static func compute<State: StateNodeProtocol>(
-        for definition: LandDefinition<State>,
-        keyedAs landType: String?
-    ) throws -> String {
+    private static func fingerprint<State: StateNodeProtocol>(of definition: LandDefinition<State>) throws -> String {
         let probe = SchemaExtractionProbe()
         let (lands, defs, serverInputs) = try SchemaExtractionProbe.$current.withValue(probe) {
             let schema = try SchemaExtractor.extract(from: definition, version: formatTag)
@@ -105,7 +100,7 @@ public enum ReevaluationSchemaFingerprint {
         let input = FingerprintInput(
             format: formatTag,
             lands: try Dictionary(
-                lands.map { (landType != nil && $0.key == definition.id ? landType! : $0.key, try canonical($0.value)) },
+                lands.map { ($0.key, try canonical($0.value)) },
                 uniquingKeysWith: { first, _ in first }
             ),
             defs: canonicalDefs,
@@ -284,26 +279,8 @@ extension ReevaluationSchemaFingerprint {
         _ metadata: ReevaluationRecordMetadata,
         against definition: LandDefinition<State>
     ) throws {
-        try checkRecord(metadata, against: definition, replayLandSuffix: nil)
-    }
-
-    /// `checkRecord(_:against:)` for a replay land (`LandManager`'s `.reevaluation` mode): a
-    /// definition whose id is the recorded definition's (`landDefinitionID`) plus
-    /// `replayLandSuffix` is checked under the recorded id, which a live recording's fingerprint
-    /// holds. Any other definition, the live one reused among them, is checked under its own.
-    package static func checkRecord<State: StateNodeProtocol>(
-        _ metadata: ReevaluationRecordMetadata,
-        against definition: LandDefinition<State>,
-        replayLandSuffix: String?
-    ) throws {
         let recorded = try recordedFingerprint(of: metadata)
-        let current: String
-        if let suffix = replayLandSuffix, !suffix.isEmpty, let recordedID = metadata.landDefinitionID,
-           definition.id == recordedID + suffix {
-            current = try compute(for: definition, keyedAs: recordedID)
-        } else {
-            current = try cached(for: definition)
-        }
+        let current = try cached(for: definition)
         guard recorded == current else {
             throw ReevaluationRecordFingerprintError.mismatch(recorded: recorded, current: current)
         }

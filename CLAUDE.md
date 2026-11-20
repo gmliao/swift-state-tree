@@ -52,7 +52,7 @@ The dependency chain flows: `SwiftStateTurns` → `SwiftStateTree` → `SwiftSta
 `NIOLandHost.register(landType:land:...)` → creates `NIOLandServer<State>` (owns `LandManager` + `LandTypeRegistry` + `LandRouter`) → registers with `LandRealm` → maps WebSocket path to transport
 
 **Reevaluation/Replay:**
-`NIOLandHost.registerWithReevaluationSameLand(...)` registers both a live land and a replay land (using the same `LandDefinition`). The replay land type is `"\(landType)\(replayLandSuffix)"` (default `"-replay"`). `NIOAdminRoutes` `/admin/reevaluation/replay/start` checks for the registered replay land type using the same suffix. `LandTypeRegistry` validates that `definition.id` matches `landType` or is the replay alias.
+`NIOLandHost.registerWithGenericReplay(...)` registers a live land, a replay land (`GenericReplayLand`, a live land that shows the replay runner's results) and the reevaluation monitor land. Every keeper a `LandManager` creates is live; a replay runs in a headless reevaluation keeper, never behind a transport adapter. The replay land type is `"\(landType)\(replayLandSuffix)"` (default `"-replay"`). `NIOAdminRoutes` `/admin/reevaluation/replay/start` checks for the registered replay land type using the same suffix. `LandTypeRegistry` validates that `definition.id` matches `landType` or is the replay alias.
 
 **Transport encoding:** Three modes configurable via `TRANSPORT_ENCODING` env var or `NIOLandServerConfiguration.transportEncoding`: `json`, `opcodeJsonArray`, `messagepack` (default recommended for production).
 
@@ -97,7 +97,7 @@ The dependency chain flows: `SwiftStateTurns` → `SwiftStateTree` → `SwiftSta
 
 ## Key File Locations
 
-- `Sources/SwiftStateTreeNIO/ReevaluationFeature.swift` — `registerWithReevaluationSameLand` extension on `NIOLandHost`
+- `Sources/SwiftStateTreeNIO/ReevaluationFeature.swift` — `registerWithGenericReplay` extension on `NIOLandHost`
 - `Sources/SwiftStateTreeNIO/HTTP/NIOAdminRoutes.swift` — admin HTTP routes including replay start
 - `Sources/SwiftStateTree/Support/SafeTaskSleep.swift` — safe sleep wrapper
 - `Sources/SwiftStateTree/Support/EnvHelpers.swift` — env config helpers

@@ -4,8 +4,8 @@
 // event body can be merged into it, so every event goes as its own frame. D10 moves that
 // decision to init; the frames and the record must not change.
 //
-// One file per sync path (`IN_TURN_SYNC`), since the two paths send differently. The legacy
-// path records no `eventsNotMerged` (every output's list is empty): its file covers the frames.
+// The in-turn path's file (`hybrid-event-frames-in-turn.json`): the switch that selected the
+// legacy path's file is removed (#546 L1).
 // The other environment knobs (sync tables, per-player tables, typed leaf values) are given, not
 // read.
 //
@@ -81,7 +81,7 @@ struct HybridEventFrameGoldenTests {
     static var fixturePath: String {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/HybridEventFrames/hybrid-event-frames-\(InTurnSync.isEnabled() ? "in-turn" : "legacy").json").path
+            .appendingPathComponent("Fixtures/HybridEventFrames/hybrid-event-frames-in-turn.json").path
     }
 
     static let schema: (pathHashes: [String: UInt32], eventHashes: [String: Int]) = {
@@ -194,7 +194,7 @@ struct HybridEventFrameGoldenTests {
         var cells: [AnyCodable] = []
         for cell in HybridGoldenCell.all { cells.append(try await record(cell)) }
         let document: [String: AnyCodable] = [
-            "inTurnSync": AnyCodable(InTurnSync.isEnabled()),
+            "inTurnSync": AnyCodable(true),
             "cells": AnyCodable(cells),
         ]
         let encoder = JSONEncoder()
@@ -211,9 +211,7 @@ struct HybridEventFrameGoldenTests {
                 withIntermediateDirectories: true
             )
             try data.write(to: URL(fileURLWithPath: Self.fixturePath))
-            if InTurnSync.isEnabled() {
-                _ = try await Self.record(HybridGoldenCell(message: .json, eventHashes: false), saveRecordTo: Self.recordPath)
-            }
+            _ = try await Self.record(HybridGoldenCell(message: .json, eventHashes: false), saveRecordTo: Self.recordPath)
             return
         }
         let committed = try Data(contentsOf: URL(fileURLWithPath: Self.fixturePath))

@@ -6,8 +6,7 @@
 # earlier run is in `<log>.previous`).
 #
 # CI prints it after each e2e-game step, so two legs' configs can be compared line for line on
-# one commit (audit plan V2: the in-turn-off legs with ROW_ADDRESSING on and off run the same
-# config). It checks nothing and always exits 0 once its arguments are right: it runs after a
+# one commit. It checks nothing and always exits 0 once its arguments are right: it runs after a
 # failed step too, and a log it can't read is reported, not a failure.
 # Usage: summarize-effective-config.sh <server log dir>
 set -euo pipefail

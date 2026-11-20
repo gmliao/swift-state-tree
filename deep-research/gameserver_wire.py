@@ -18,7 +18,9 @@ The rules, from the sources:
   (trimmed, case-folded "0", "false", "no", "n" or "off"); any other value keeps the default, on.
 - Row addressing (`TransportAdapter`'s rule) takes effect only with opcode state updates, path
   hashes and the path index (`effective(pathHashes:)`; the hosted server has the sync sequence
-  and router joins), in-turn sync (`IN_TURN_SYNC` not false) and the delta strategy
+  and router joins), in-turn sync (`IN_TURN_SYNC` not false, for a server before the switch's
+  removal, `IN_TURN_SYNC_REMOVED_COMMIT`; from it the key is ignored, judged by the server commit's
+  ancestry) and the delta strategy
   (`SYNC_STRATEGY` unset or "delta"). Requested: `ROW_ADDRESSING` true ("1", "true", "yes", "y",
   "on") or false as the server reads it; unset, its default, off until the commit that made it
   default on (`ROW_DEFAULT_COMMIT`), on from it, judged by the server commit's ancestry.
@@ -45,6 +47,9 @@ TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 # The merge commit that made ROW_ADDRESSING default on (#392, PR #533): a server commit that
 # doesn't contain it ran with row addressing off when the variable wasn't set.
 ROW_DEFAULT_COMMIT: str | None = "9dd7dbce39217c271d0c33e399a2286227503300"
+# The merge commit that removed the IN_TURN_SYNC switch (#546 L1, PR #677): a server commit that
+# contains it ignores the variable and always runs in-turn.
+IN_TURN_SYNC_REMOVED_COMMIT: str | None = "7a462bd112108740cdf38bd7c22bfffc0c776f66"
 
 
 def env_off(value) -> bool:
@@ -76,15 +81,32 @@ def rows_requested(environ: dict, commit: str | None) -> bool:
     return has
 
 
+def in_turn_off(environ: dict, commit: str | None) -> bool:
+    """Whether the server runs with in-turn sync off: `IN_TURN_SYNC` read as false, by a server
+    before `IN_TURN_SYNC_REMOVED_COMMIT`. A server from it ignores the variable."""
+    if not env_off(environ.get("IN_TURN_SYNC")):
+        return False
+    if IN_TURN_SYNC_REMOVED_COMMIT is None:
+        return True
+    if not commit:
+        raise wireform.MissingWireForm("IN_TURN_SYNC set false and the server commit not recorded: the switch was "
+                                       f"removed in {IN_TURN_SYNC_REMOVED_COMMIT}")
+    has = wireform.contains(wireform.squashed_merge(commit) or commit, IN_TURN_SYNC_REMOVED_COMMIT)
+    if has is None:
+        raise wireform.MissingWireForm(f"IN_TURN_SYNC set false and commit {commit} is unknown to the repository")
+    return not has
+
+
 def intended(environ: dict, path_hashes: bool = True, commit: str | None = None) -> wireform.WireForm:
     """The form a GameServer with this environment sends. `environ` holds TRANSPORT_ENCODING,
     PATH_INDEX, FIELD_MERGE, ROW_ADDRESSING, IN_TURN_SYNC and SYNC_STRATEGY (missing or None: the
-    server's default). `commit`: the server's commit, for ROW_ADDRESSING's default."""
+    server's default). `commit`: the server's commit, for ROW_ADDRESSING's default and for whether
+    IN_TURN_SYNC still exists."""
     raw = (environ.get("TRANSPORT_ENCODING") or DEFAULT_ENCODING).lower()
     encoding, opcode = PRESETS.get(raw, ("json", False))  # GameServer's fallback is json
     features = opcode and path_hashes
     path_index = features and not env_off(environ.get("PATH_INDEX"))
     delta = (environ.get("SYNC_STRATEGY") or "delta").strip().lower() == "delta"
-    rows = (path_index and delta and not env_off(environ.get("IN_TURN_SYNC"))
+    rows = (path_index and delta and not in_turn_off(environ, commit)
             and rows_requested(environ, commit))
     return wireform.WireForm(encoding, path_index, features and not env_off(environ.get("FIELD_MERGE")), rows)

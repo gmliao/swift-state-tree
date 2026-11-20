@@ -194,7 +194,6 @@ struct SyncStreamLeaveReplayTests {
         arguments: [true, false], LeaveReplayCase.allCases
     )
     func leaveRecordReplays(tick: Bool, leaveCase: LeaveReplayCase) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("leave-replay-\(UUID().uuidString).sstr").path
         defer { try? FileManager.default.removeItem(atPath: path) }
         let record = try await recordLeaveCase(leaveCase, tick: tick, path: path)

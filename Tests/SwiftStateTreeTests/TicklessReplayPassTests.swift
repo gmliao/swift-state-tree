@@ -184,7 +184,7 @@ private actor PassDeliveryLogTransport: LandKeeperTransport {
 }
 
 /// Reports in-turn sync for every keeper, so a keeper attached to it takes the input-drain
-/// path (`usesInTurnSync`) whatever `IN_TURN_SYNC` says.
+/// path (`usesInTurnSync`) whatever the adapter's mode.
 private final class PassInTurnTransport: LandKeeperTransport, @unchecked Sendable {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}

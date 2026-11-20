@@ -31,8 +31,7 @@ private actor OverflowConnection: WebSocketConnection {
 }
 
 @Suite(
-    "LandRouter: a join over the held-event bound (#69)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: held events are on the in-turn path only")
+    "LandRouter: a join over the held-event bound (#69)"
 )
 struct LandRouterJoinEventOverflowTests {
     @Test("JOIN_EVENT_OVERFLOW is sent, the session is unbound and closed, and the keeper's player is removed")

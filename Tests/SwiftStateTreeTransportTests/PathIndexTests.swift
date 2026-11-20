@@ -215,11 +215,6 @@ struct PathIndexTests {
         let f = await VerifierFixture.make(encoding: .opcodeJsonArray, pathIndex: true, pathHashes: verifierPathHashes)
         try await f.join(1)
         await f.keeper.stepTickOnce()
-        if !InTurnSync.isEnabled() {
-            // Legacy sync runs outside the turn and submits the failure, which the keeper applies
-            // in its next turn: on this tick land, the next tick.
-            await f.keeper.stepTickOnce()
-        }
         try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
         let failure = f.keeper.failure
         #expect(failure?.kind == .syncEncode)
@@ -229,7 +224,6 @@ struct PathIndexTests {
 
     @Test("A merged broadcast frame with a patch outside the schema ends the land (#535 row 9, D6)")
     func adapterUnmappedBroadcastPatchEndsTheLand() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack, pathIndex: true, pathHashes: verifierPathHashes)
         try await f.join(1)
         await f.tick()
@@ -360,7 +354,7 @@ struct PathIndexTests {
         }
     }
 
-    @Test("Row addressing: the land refuses a join that doesn't declare it, after the lookup; a declaring join gets it echoed", .enabled(if: InTurnSync.isEnabled()), arguments: [false, true])
+    @Test("Row addressing: the land refuses a join that doesn't declare it, after the lookup; a declaring join gets it echoed", arguments: [false, true])
     func rowAddressingHandshake(bareDefault: Bool) async throws {
         // `bareDefault`: the plain preset with only the sync sequence a hosted land adds, so rows
         // come from the default, not from an explicit knob.

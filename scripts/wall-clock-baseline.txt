@@ -6,12 +6,12 @@ Examples/GameDemo/Tests/ProcessUsageTests.swift clock-poll 1
 Examples/GameDemo/Tests/ResolverTestLandTests.swift yield-poll 1
 Examples/GameDemo/Tests/SyncTablesFrameIdentityTests.swift helper-poll 2
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift clock-poll 1
-Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift helper-poll 5
+Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift helper-poll 4
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/NIOLandHostTests.swift sleep-poll 1
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift clock-poll 3
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift helper-poll 15
-Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift sleep-poll 3
+Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift clock-poll 2
+Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift helper-poll 1
+Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift sleep-poll 2
 Tests/SwiftStateTreeTests/ActionEventSyncTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/ActionJobTests.swift yield-poll 1
 Tests/SwiftStateTreeTests/AtomicPatternIndexAdapterTests.swift helper-poll 2
@@ -46,7 +46,7 @@ Tests/SwiftStateTreeTransportTests/LandManagerFailedInitializationTests.swift yi
 Tests/SwiftStateTreeTransportTests/LandManagerSingleFlightTests.swift poll-helper 6
 Tests/SwiftStateTreeTransportTests/LandManagerTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/LandManagerTests.swift sleep-poll 3
-Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift helper-poll 10
+Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift helper-poll 9
 Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift yield-poll 3
 Tests/SwiftStateTreeTransportTests/LandRouterJoinAttemptTests.swift clock-poll 1

@@ -12,6 +12,7 @@ import NIOCore
 import NIOEmbedded
 import NIOWebSocket
 import SwiftStateTree
+import SwiftStateTreeTestSupport
 import Testing
 @testable import SwiftStateTreeNIO
 @testable import SwiftStateTreeTransport
@@ -19,6 +20,9 @@ import Testing
 /// Records delegate calls. While holding, each message waits in `onMessage` until `releaseNext`
 /// (the chain delivers one at a time, so at most one waits).
 private final class BacklogDelegate: TransportDelegate, @unchecked Sendable {
+    /// Appended to after each delegate call is recorded, when a message starts waiting, and by
+    /// the handler's backlog events: a test waits on these, re-checking its condition on each.
+    let signals = EventLog()
     private let lock = NSLock()
     private var log: [String] = []
     private var holding = true
@@ -47,12 +51,17 @@ private final class BacklogDelegate: TransportDelegate, @unchecked Sendable {
         releaseNext()
     }
 
+    private func record(_ event: String) {
+        lock.withLock { log.append(event) }
+        signals.append(event)
+    }
+
     func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {
-        lock.withLock { log.append("connect") }
+        record("connect")
     }
 
     func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
-        lock.withLock { log.append("disconnect") }
+        record("disconnect")
     }
 
     func onMessage(_ message: Data, from sessionID: SessionID) async {
@@ -62,12 +71,18 @@ private final class BacklogDelegate: TransportDelegate, @unchecked Sendable {
             if holding {
                 waiter = continuation
                 lock.unlock()
+                signals.append("waiting:\(text)")
             } else {
                 lock.unlock()
                 continuation.resume()
             }
         }
-        lock.withLock { log.append(text) }
+        record(text)
+    }
+
+    /// The handler's hook: its backlog events, into `signals`.
+    var backlogEvents: @Sendable (WebSocketSessionHandler.InboundBacklogTestEvent) -> Void {
+        { [signals] event in signals.append("backlog:\(event)") }
     }
 }
 
@@ -110,6 +125,7 @@ private func makeFixture(
         transport: transport,
         eventLoop: channel.eventLoop,
         inboundBacklogBound: bound,
+        inboundBacklogEventForTesting: delegate.backlogEvents,
         logger: Logger(label: "test")
     )
     try await channel.pipeline.addHandler(reads).get()
@@ -124,12 +140,22 @@ private func drain(_ loop: EventLoop) async throws {
     try await loop.submit {}.get()
 }
 
-private func waitUntil(_ condition: () -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !condition(), ContinuousClock.now < deadline {
-        try? await safeTaskSleep(for: .milliseconds(2))
+/// Waits until `condition` holds: re-checked on each of `delegate`'s signals (a delegate call, a
+/// message waiting, a backlog event), not polled. `false` after the test hang bound.
+private func waitFor(_ delegate: BacklogDelegate, _ condition: @escaping @Sendable () -> Bool) async -> Bool {
+    await delegate.signals.waitFor { _ in condition() }
+}
+
+/// Waits until the backlog is empty and the batch that emptied it has reported `.delivered`: the
+/// resume hop that batch queued, if any, is then on the loop, so a loop task submitted after this
+/// runs after it. The count alone reaches 0 before the hop is queued. The chain delivers one batch
+/// at a time, so the newest event is that batch's `.delivered` only once it has fired. For a test
+/// that holds the loop: a hop that already ran (`.resumeHopRan`, after it) would hide the event.
+private func waitForDrained(_ f: Fixture) async -> Bool {
+    let handler = f.handler
+    return await f.delegate.signals.waitFor { events in
+        handler.inboundQueuedMessagesForTesting == 0 && events.last == "backlog:delivered"
     }
-    return condition()
 }
 
 private func onLoop<T: Sendable>(_ fixture: Fixture, _ body: @escaping @Sendable () -> T) async throws -> T {
@@ -165,7 +191,9 @@ private func messages(_ count: Int, size: Int = 1) -> [String] {
     }
 }
 
-@Suite("WebSocketSessionHandler: inbound backlog bound (#113)", .timeLimit(.minutes(1)))
+// Two minutes, above `testHangBound` (60 s): a wait that runs out reports its own message
+// ("reads never resumed, ...") before the time limit ends the test.
+@Suite("WebSocketSessionHandler: inbound backlog bound (#113)", .timeLimit(.minutes(2)))
 struct WebSocketSessionHandlerInboundBacklogTests {
     @Test("A held message and a flood: reads stop at the message bound, after one message over it")
     func messageBoundStopsReads() async throws {
@@ -206,17 +234,17 @@ struct WebSocketSessionHandlerInboundBacklogTests {
 
         // Release one message at a time: 9 queued, the bound's half is 4.
         for remaining in stride(from: 8, through: 5, by: -1) {
-            #expect(await waitUntil { f.delegate.isMessageWaiting })
+            #expect(await waitFor(f.delegate) { f.delegate.isMessageWaiting })
             f.delegate.releaseNext()
-            #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == remaining })
+            #expect(await waitFor(f.delegate) { f.handler.inboundQueuedMessagesForTesting == remaining })
             try await drain(f.loop)
             #expect(f.handler.isInboundReadPausedForTesting, "still above half at \(remaining)")
             #expect(f.reads.count == readsBefore, "no read forwarded at \(remaining)")
         }
-        #expect(await waitUntil { f.delegate.isMessageWaiting })
+        #expect(await waitFor(f.delegate) { f.delegate.isMessageWaiting })
         f.delegate.releaseNext()
-        #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == 4 })
-        #expect(await waitUntil { !f.handler.isInboundReadPausedForTesting })
+        #expect(await waitFor(f.delegate) { f.handler.inboundQueuedMessagesForTesting == 4 })
+        #expect(await waitFor(f.delegate) { !f.handler.isInboundReadPausedForTesting })
         try await drain(f.loop)
         #expect(f.reads.count == readsBefore + 1, "the withheld read is forwarded once")
         let stats = try await onLoop(f) { f.handler.inboundBacklog }
@@ -234,14 +262,14 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         f.delegate.releaseAll()
         while delivered.count < texts.count {
             // Reads must come back; a pause that never ends fails here instead of spinning.
-            guard await waitUntil({ !f.handler.isInboundReadPausedForTesting }) else {
+            guard await waitFor(f.delegate, { !f.handler.isInboundReadPausedForTesting }) else {
                 Issue.record("reads never resumed, at \(delivered.count) of \(texts.count)")
                 break
             }
             delivered += try await pump(f, Array(texts[delivered.count...]))
         }
         try await f.channel.close()
-        #expect(await waitUntil { f.delegate.events.last == "disconnect" })
+        #expect(await waitFor(f.delegate) { f.delegate.events.last == "disconnect" })
         #expect(f.delegate.events == ["connect"] + texts + ["disconnect"])
         let stats = try await onLoop(f) { f.handler.inboundBacklog }
         #expect(stats.readPauses >= 1)
@@ -256,7 +284,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         try await f.channel.close()
         #expect(!f.handler.isInboundReadPausedForTesting)
         f.delegate.releaseAll()
-        #expect(await waitUntil { f.delegate.events.last == "disconnect" })
+        #expect(await waitFor(f.delegate) { f.delegate.events.last == "disconnect" })
         #expect(f.delegate.events == ["connect"] + delivered + ["disconnect"])
     }
 
@@ -268,7 +296,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         await transport.setDelegate(delegate)
         // The first connection holds the SessionID, so the second is rejected.
         let holder = try await makeFixture(bound: .default, transport: transport, sessionID: "dup", delegate: delegate)
-        #expect(await waitUntil { delegate.events == ["connect"] })
+        #expect(await waitFor(delegate) { delegate.events == ["connect"] })
 
         // The second handler is added and read in one loop task: its frames are counted before
         // the transport's rejection (on the chain, after this task) can close the channel.
@@ -279,6 +307,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
             transport: transport,
             eventLoop: channel.eventLoop,
             inboundBacklogBound: InboundBacklogBound(maxMessages: 2, maxBytes: 0),
+            inboundBacklogEventForTesting: delegate.backlogEvents,
             logger: Logger(label: "test")
         )
         let (counted, paused) = try await channel.eventLoop.submit {
@@ -291,7 +320,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         }.get()
         #expect(counted == 5, "counted before the rejection")
         #expect(paused, "and over the bound")
-        #expect(await waitUntil { handler.inboundQueuedMessagesForTesting == 0 }, "dropped batches subtracted")
+        #expect(await waitFor(delegate) { handler.inboundQueuedMessagesForTesting == 0 }, "dropped batches subtracted")
         #expect(delegate.events == ["connect"], "the rejected connection's frames are dropped")
         _ = holder
     }
@@ -311,6 +340,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
             eventLoop: channel.eventLoop,
             profilerCounters: counters,
             inboundBacklogBound: InboundBacklogBound(maxMessages: 2, maxBytes: 0),
+            inboundBacklogEventForTesting: delegate.backlogEvents,
             logger: Logger(label: "test")
         )
         try await channel.pipeline.addHandler(reads).get()
@@ -327,7 +357,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         let window = counters.takeAndResetInboundBacklog()
         #expect(window.pausedSessions == 0, "the removal ends the pause")
         delegate.releaseAll()
-        #expect(await waitUntil { delegate.events.last == "disconnect" })
+        #expect(await waitFor(delegate) { delegate.events.last == "disconnect" })
     }
 
     @Test("A resume queued behind the handler's removal forwards no read")
@@ -345,7 +375,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         let removed = f.loop.makePromise(of: Void.self)
         f.channel.pipeline.removeHandler(f.handler, promise: removed)
         f.delegate.releaseAll()
-        #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == 0 })
+        #expect(await waitForDrained(f))
         gate.signal()
         try await removed.futureResult.get()
         try await drain(f.loop)
@@ -375,7 +405,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         }
         f.delegate.releaseAll()
         // Drained under the lock while paused: the resume hop is queued behind the refill.
-        #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == 0 })
+        #expect(await waitForDrained(f))
         // The refill's messages stay queued: the delegate holds them.
         f.delegate.hold()
         blocker.signal()
@@ -389,7 +419,7 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         #expect(f.reads.count == readsBefore, "no read forwarded")
         // The refill drains in turn: then the read goes through.
         f.delegate.releaseAll()
-        #expect(await waitUntil { !f.handler.isInboundReadPausedForTesting })
+        #expect(await waitFor(f.delegate) { !f.handler.isInboundReadPausedForTesting })
         try await drain(f.loop)
         #expect(f.reads.count == readsBefore + 1)
     }
@@ -466,7 +496,6 @@ struct InboundBacklogLandState: StateNodeProtocol {
 
 @Suite(
     "Inbound backlog bound and the pending-join bound (#113, 4c)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: joins don't wait for a flip"),
     .timeLimit(.minutes(1))
 )
 struct InboundBacklogPendingJoinTests {

@@ -10,8 +10,8 @@ import Testing
 ///
 ///     WALL_CLOCK_TESTS=1 swift test --no-parallel --filter WallClockCadenceSmokeTests
 ///
-/// CI runs that as its own step in each `IN_TURN_SYNC` leg. The test sets the sync path on the
-/// adapter itself (`inTurn`), so it checks both paths in either leg.
+/// CI runs that as its own step. The test sets the sync path on the adapter itself (`inTurn`), so
+/// it checks both paths.
 @Suite(
     "Wall-clock cadence smoke",
     .serialized,

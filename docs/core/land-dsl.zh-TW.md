@@ -104,7 +104,7 @@ HandleAction(BuyAction.self,
 - 沒有東西要傳時，`validate` 回傳 `Void`，`apply` 接受 `(inout State, Action, LandContext)`。
 - `HandleEvent(_:validate:apply:)` 與 `HandleServerInput(_:validate:apply:)` 有相同的兩種形式；它們的 `apply` 回傳 `Void`。`HandleAction` 的兩種形式都可加 `resolvers:`，`validate` 從自己的 context 讀取其輸出。
 - `validate` 借用狀態：不會複製。它在同一個 turn 內緊接在 `apply` 之前執行，因此它檢查過的條件在 `apply` 寫入時仍然成立。
-- `validate` 拋出錯誤時只有該 input 失敗，什麼都不寫入、什麼都不發出。Action 的呼叫者收到錯誤（`ACTION_HANDLER_ERROR`；在 tick land 上呼叫者在收件時已收到 ACK），event 的錯誤以 error payload 送給 client（限於 in-turn sync 的 tickless land，event 會在那裡等待自己的 input turn；在 tick land 上 event 於下一個 tick 套用，在 `IN_TURN_SYNC=false` 的 tickless land 上則在 detached task 中套用，因此這兩種情況下拒絕只記錄在 log），server input 的錯誤記錄在 log（[Runtime：Input 與 Turn](runtime.zh-TW.md#input-與-turn)）。
+- `validate` 拋出錯誤時只有該 input 失敗，什麼都不寫入、什麼都不發出。Action 的呼叫者收到錯誤（`ACTION_HANDLER_ERROR`；在 tick land 上呼叫者在收件時已收到 ACK），event 的錯誤以 error payload 送給 client（限於 tickless land，event 會在那裡等待自己的 input turn；在 tick land 上 event 於下一個 tick 套用，因此在那裡拒絕只記錄在 log），server input 的錯誤記錄在 log（[Runtime：Input 與 Turn](runtime.zh-TW.md#input-與-turn)）。
 - Action body 與 `apply` 回傳 action 宣告的 `Response`（#561）。回傳其他型別無法編譯。
 
 #### ValidateContext

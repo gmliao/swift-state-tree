@@ -190,8 +190,7 @@ private func eventually(_ what: String, _ condition: @Sendable () async -> Bool)
 }
 
 @Suite(
-    "Join completes in a turn (#69)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    "Join completes in a turn (#69)"
 )
 struct TransportAdapterJoinFlipTests {
     @Test("Tickless land: the join returns after its flip; JoinResponse, then a firstSync with OnJoin applied")

@@ -207,21 +207,22 @@ public struct NIOLandServerConfiguration: Sendable {
     /// on unless `LAND_LOOP_PHASE_OFFSET` is false.
     public var enableLoopPhaseOffset: Bool
 
-    /// Run each live land's sync phase inside its keeper's turns (`InTurnSync`). `false` keeps the
-    /// legacy sync path (the transport adapter on its own executor). The `IN_TURN_SYNC` environment
-    /// variable can also turn it off; an explicit off in either place wins. Default: on.
-    public var inTurnSync: Bool
 
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public var replayLandSuffix: String
 
-    /// Resolver for dynamic keeper mode (live vs reevaluation) per land instance.
-    /// When non-nil and returns `.reevaluation(recordFilePath)`, LandManager creates a reevaluation LandKeeper.
+    /// The replay ticket gate, asked per land instance before it is created: `.invalidReplaySession`
+    /// refuses the creation, and `.live` or nil creates it. Every land's keeper is live (#612).
     public var keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
 
     /// The bound on one land stop (`NIOLandServer.stopLand`, #102). `NIOLandHost.register` sets
     /// it to the host's `shutdownTimeout`.
     package var landStopTimeout: Duration = .seconds(8)
+
+    /// Run each live land's sync phase inside its keeper's turns. Always on outside the package:
+    /// the differential harness's legacy cells set it to `false` to reach the adapter's off mode
+    /// until that mode is removed (#546 L2).
+    package var inTurnSync = true
 
     public init(
         logger: Logger? = nil,
@@ -241,7 +242,6 @@ public struct NIOLandServerConfiguration: Sendable {
         },
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
-        inTurnSync: Bool = true,
         syncLag: SyncLagPolicy = .fromEnvironment(),
         maxHandshakeFrameBytes: Int? = HandshakeFrameLimit.fromEnvironment(),
         maxRefusedHandshakeFrames: Int? = HandshakeFrameLimit.refusedFrameBudgetFromEnvironment()
@@ -251,7 +251,6 @@ public struct NIOLandServerConfiguration: Sendable {
         self.maxRefusedHandshakeFrames = maxRefusedHandshakeFrames
         self.syncLag = syncLag
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
-        self.inTurnSync = inTurnSync
         self.jwtConfig = jwtConfig
         self.jwtValidator = jwtValidator
         self.allowGuestMode = allowGuestMode
@@ -308,7 +307,7 @@ public actor NIOLandHost {
     /// Registered land encodings for logging.
     private var registeredLandEncodings: [String: TransportEncodingConfig] = [:]
 
-    /// Suffix used for replay land types. Updated by registerWithReevaluationSameLand.
+    /// Suffix used for replay land types. Updated by registerWithGenericReplay.
     var replayLandSuffix: String = "-replay"
 
     /// Background tasks from middlewares (cancelled on shutdown).

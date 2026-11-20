@@ -7,7 +7,7 @@ public struct AnyLandDefinition: Sendable {
     public let id: String
 
     /// Optional alias: when set, the schema will include an additional land entry
-    /// with this name, sharing the same LandSchema (e.g. "hero-defense-replay" for same-land replay).
+    /// with this name, sharing the same LandSchema (e.g. "hero-defense-replay" for the replay land).
     public let alias: String?
 
     /// The state type name

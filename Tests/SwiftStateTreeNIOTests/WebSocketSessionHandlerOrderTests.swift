@@ -133,9 +133,7 @@ struct WebSocketSessionHandlerOrderTests {
         let other = try makeSession("s2", transport: transport)
         try sendText("join", on: other)
         try #require(await delegate.log.waitFor("message:s2:join"))
-        #expect(delegate.events.contains("connect:s2"))
-        #expect(delegate.events.contains("message:s2:join"))
-        #expect(!delegate.events.contains("connect:s1"))
+        #expect(delegate.events == ["connect-start:s1", "connect-start:s2", "connect:s2", "message:s2:join"])
 
         delegate.release("s1")
         _ = try? held.finish()
@@ -172,6 +170,8 @@ struct WebSocketSessionHandlerOrderTests {
         await transport.setDelegate(delegate)
 
         let channel = try makeSession("s1", transport: transport)
+        // Taken now: the close removes it from the pipeline.
+        let handler = try channel.pipeline.syncOperations.handler(type: WebSocketSessionHandler.self)
         try #require(await delegate.log.waitFor("connect:s1"))
         // Both frames in one read: the pipeline delivers them back to back.
         channel.pipeline.fireChannelRead(NIOAny(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer())))
@@ -180,7 +180,8 @@ struct WebSocketSessionHandlerOrderTests {
 
         let disconnected = await delegate.log.waitFor("disconnect:s1")
         #expect(disconnected)
-        try await Task.sleep(for: .milliseconds(50))
+        // A late frame wrongly let through would be on the inbound chain by now: wait it out.
+        await handler.waitForInboundIdle()
         #expect(delegate.events == ["connect-start:s1", "connect:s1", "disconnect:s1"])
     }
 

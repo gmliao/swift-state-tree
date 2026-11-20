@@ -36,15 +36,11 @@ func liveRunMatchesLegacyFrames(golden: SyncOutputGolden) async throws {
     for (current, old) in zip(frames, legacy) {
         #expect(current.serverEvents.map(\.sequence).suffix(old.serverEvents.count) == ArraySlice(old.serverEvents.map(\.sequence)), "tick \(current.tickId)")
     }
-    if InTurnSync.isEnabled() {
-        #expect(try encoder.encode(frames) == encoder.encode(legacy), "in-turn: identical frames")
-    }
+    #expect(try encoder.encode(frames) == encoder.encode(legacy), "in-turn: identical frames")
 
     let result = try await VerifierFixture.replay(recordAt: path)
     #expect(result.recordCompleteness == .complete)
     #expect(result.tickHashes.filter { result.recordedStateHashes[$0.key] != nil } == result.recordedStateHashes)
     #expect(result.serverEventVerification == .passed, "\(result.serverEventMismatches.map(\.tickId))")
-    if InTurnSync.isEnabled() {
-        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
-    }
+    #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
 }

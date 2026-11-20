@@ -1099,8 +1099,7 @@ struct TransportAdapterSyncPhaseTests {
 
     @Test("path index on (the schema's path table): a member and a second joiner decode every frame, in either sync mode")
     func pathIndexMemberAndJoinerDecodeInEitherMode() async throws {
-        // This suite runs with IN_TURN_SYNC on and off; the flipped-joiner case is in the
-        // join-flip suite, which runs only with it on.
+        // The flipped-joiner case is in the join-flip suite.
         let fixture = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true, pathIndex: true)
         try await fixture.set("item:x", 1)
         try await fixture.set("fragileval", 4)
@@ -1230,8 +1229,7 @@ extension SyncPhaseFixture {
 }
 
 @Suite(
-    "A late joiner flipped in a turn decodes every frame (#69, #90)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the in-turn join path is off")
+    "A late joiner flipped in a turn decodes every frame (#69, #90)"
 )
 struct TransportAdapterSyncPhaseJoinFlipTests {
     @Test(

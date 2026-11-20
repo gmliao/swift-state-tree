@@ -380,8 +380,7 @@ private func unitsWith(_ rows: [String: RowAddressingUnit]) -> RowAddressingStat
 }
 
 @Suite(
-    "Row addressing in the adapter",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: row addressing needs in-turn sync")
+    "Row addressing in the adapter"
 )
 struct RowAddressingAdapterTests {
     @Test("The config: rowAddressing needs path hashes, pathIndex, syncSequence and an opcode encoding")

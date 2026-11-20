@@ -344,8 +344,7 @@ struct LandLifecycleLogTests {
     }
 
     @Test(
-        "A join that completes in a turn writes sessionJoined at its flip",
-        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: no in-turn joins")
+        "A join that completes in a turn writes sessionJoined at its flip"
     )
     func sessionJoinedInTurn() async throws {
         let sink = LineSink()

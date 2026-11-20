@@ -637,7 +637,6 @@ struct SyncOutputVerifierTests {
         arguments: InTurnEncoding.allCases, [true, false]
     )
     func deterministicRunPasses(encoding: InTurnEncoding, initializeFirst: Bool) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: encoding, initializeFirst: initializeFirst)
         try await playScript(f)
         let result = try await f.replay()
@@ -656,7 +655,6 @@ struct SyncOutputVerifierTests {
 
     @Test("An in-place resync replays: its rejoin seed's view verifies, every output passes (#332)", arguments: InTurnEncoding.allCases)
     func resyncReplays(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: encoding, syncSequence: true)
         let clock = SyncLagManualClock()
         await f.adapter.setSyncLagClockForTesting { clock.now }
@@ -692,7 +690,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A broadcast patch the live diff dropped is detected", arguments: InTurnEncoding.allCases)
     func droppedBroadcastPatch(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let fault = DigestFault { digest in
             guard var patches = digest.broadcastPatches, !patches.isEmpty else { return false }
             patches.removeLast()
@@ -709,7 +706,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A changed per-player value is detected", arguments: InTurnEncoding.allCases)
     func changedPerPlayerValue(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let fault = DigestFault { digest in
             guard let (player, patches) = digest.perPlayerPatches.first(where: { digest.seeds[$0.key] == nil && !$0.value.isEmpty }) else {
                 return false
@@ -728,7 +724,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Recorded per-player hashes and patches name the player and the first differing patch")
     func recordingDetailLocatesTheMismatch() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let perPlayer = DigestFault { digest in
             guard let (player, patches) = digest.perPlayerPatches.first(where: { digest.seeds[$0.key] == nil && !$0.value.isEmpty }) else {
                 return false
@@ -772,7 +767,6 @@ struct SyncOutputVerifierTests {
     /// reason it would carry is checked directly (`NFCKeyTests`).
     @Test("A sync-output mismatch in a current record holding non-NFC text fails; a record older than 3.3 is refused")
     func olderRecordWithNonNFCTextIsRefused() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let fault = DigestFault { digest in
             guard var patches = digest.broadcastPatches, !patches.isEmpty else { return false }
             patches = CanonicalPatchList(patches).patches
@@ -804,7 +798,6 @@ struct SyncOutputVerifierTests {
     #if DEBUG  // The diff fault hook exists in debug builds only.
     @Test("A diff-engine bug both sides share passes every hash and fails the apply check", arguments: InTurnEncoding.allCases)
     func diffEngineFaultIsCaughtByTheApplyCheck(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         // A wrong value for `ticks` in every diff against a previous value, live and replay alike.
         let fault: @Sendable (StateSnapshot, [StatePatch]) -> [StatePatch] = { old, patches in
             guard old.values["ticks"] != nil else { return patches }
@@ -830,7 +823,6 @@ struct SyncOutputVerifierTests {
     /// with `PER_PLAYER_SYNC_TABLES=false`, today's snapshot diff.
     @Test("A diff-engine bug in the per-player diff both sides share fails the apply check", arguments: InTurnEncoding.allCases)
     func perPlayerDiffEngineFaultIsCaughtByTheApplyCheck(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         // A wrong value for `scores` in every per-player diff. The slice has no value for a
         // player before its first score, so the patch is a diff from an absent field.
         let fault: @Sendable (StateSnapshot, [StatePatch]) -> [StatePatch] = { _, patches in
@@ -862,7 +854,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A NaN in the state verifies: an unchanged NaN is not resent, and the view equals itself")
     func nanPassesTheApplyCheck() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick()
@@ -875,7 +866,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Recorded patch lists with non-finite values still save, and still match")
     func nonFinitePatchesSave() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         await f.adapter.setSyncStreamDetail([.perPlayerHashes, .patches])
         try await f.join(1)
@@ -897,7 +887,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Without a fault, the apply check runs on every seed and diffed scope", arguments: InTurnEncoding.allCases)
     func applyCheckRuns(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: encoding)
         try await playScript(f)
         let sync = try await f.replay().syncOutput
@@ -910,7 +899,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: a dropped event and two swapped events are detected", arguments: ["drop", "swap"])
     func droppedOrSwappedEvent(kind: String) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let fault = DigestFault { digest in
             guard var events = digest.events, events.count >= 2 else { return false }
             if kind == "drop" {
@@ -932,7 +920,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Patches on unrelated paths in another order are not a mismatch", arguments: InTurnEncoding.allCases)
     func unrelatedPathReorderPasses(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: encoding)
         let fault = DigestFault { digest in
             guard let patches = digest.broadcastPatches, patches.count >= 2 else { return false }
@@ -948,7 +935,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A dirty-tracking miss is detected: the replay extracts every field", arguments: InTurnEncoding.allCases)
     func dirtyTrackingMiss(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: encoding)
         try await f.join(1)
         await f.tick()
@@ -966,7 +952,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A legacy cycle's output (a debug freeze's settle) is verified")
     func legacyCycleIsVerified() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick(2)
@@ -982,7 +967,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A tick recorded with an unavailable state hash is unverifiable, never a match (#180)")
     func unavailableHashIsUnverifiable() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await playScript(f)
         let result = try await f.replay { frames in
@@ -1003,7 +987,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A 2.1 record (before syncConfig) is rejected as unsupported, never guessed (#154)")
     func missingSyncConfigIsSkipped() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await playScript(f)
         await #expect(throws: ReevaluationRecordVersionError.unsupported(recorded: "2.1", minimum: "2.5")) {
@@ -1015,7 +998,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A tampered initialize record fails the initialize check")
     func tamperedInitialize() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick()
@@ -1035,7 +1017,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A record without an initialize record replays OnInitialize in tick 0, as before")
     func noInitializeRecordKeepsTickZero() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick(2)
@@ -1049,7 +1030,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: a per-player dirty-tracking miss in an output with no other per-player change is detected")
     func perPlayerDirtyTrackingMiss() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         try await f.set(1, "box")
@@ -1073,7 +1053,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Combined mode: a player's update that doesn't encode at all ends the land; no later tick is recorded (#535 row 10)")
     func combinedUnencodableEndsTheLand() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let fails = VerifierSwitch()
         let f = await VerifierFixture.make(encoding: .json, encoder: VerifierFailingEncoder(fails: fails))
         let followUps = await f.holdFailedPlanFollowUps()
@@ -1091,7 +1070,6 @@ struct SyncOutputVerifierTests {
 
     @Test("A gap in the stream indices is malformed")
     func streamGapIsMalformed() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await playScript(f)
         let result = try await f.replay { frames in
@@ -1120,7 +1098,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: events after the last output are reported; events nobody receives are not expected")
     func eventsAfterLastOutputAreReported() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick(2)
@@ -1141,7 +1118,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: in a live copy, events after the last recorded output are a tail, reported without failing (#306)")
     func liveCopyTailEventsPass() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick(2)
@@ -1159,7 +1135,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: the same tail in a complete record keeps the verdict partial (#306)")
     func completeRecordTailStaysPartial() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick(2)
@@ -1190,7 +1165,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: in a live copy, an event the last recorded output should have carried keeps the verdict partial (#306)")
     func liveCopyEventMissingFromTheLastOutputStaysPartial() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick(2)
@@ -1230,7 +1204,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107 with JSON messages (hybrid): an event sent alone, outside the merged frame, makes that output's events unverifiable")
     func unmergedEventIsUnverifiable() async throws {
-        guard InTurnSync.isEnabled() else { return }
         // JSON messages with opcodeMessagePack state updates; events on the second tick only.
         let f = await VerifierFixture.make(
             encoding: .json, encoder: OpcodeMessagePackStateUpdateEncoder(), definition: makeGatedVerifierLand()
@@ -1259,7 +1232,6 @@ struct SyncOutputVerifierTests {
         arguments: InTurnEncoding.allCases
     )
     func lostEventEndsTheLand(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: encoding)
         let fails = VerifierSwitch()
         await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? .all : nil }
@@ -1276,7 +1248,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: an unsent per-player update is a benign skip once a later comparison sees the resend")
     func resendSeenIsBenign() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick(3)
@@ -1287,7 +1258,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: an unsent per-player update in the last output is not benign: nothing saw the resend")
     func resendNotSeenAtTheEnd() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         await f.tick(3)
@@ -1299,7 +1269,6 @@ struct SyncOutputVerifierTests {
 
     @Test("Opcode 107: an unsent per-player update is not benign when the player leaves before the resend")
     func resendNotSeenAfterLeave() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .messagepack)
         try await f.join(1)
         try await f.join(2)
@@ -1422,7 +1391,6 @@ struct SyncOutputVerifierOldDropTests {
 
     @Test("An extraction drop is replayed with the cached value: the recorded hash without the dropped field compares")
     func extractionDropIsSubstituted() async throws {
-        guard InTurnSync.isEnabled() else { return }
         // The hash the live engine would have recorded with `scores` dropped: a run where it
         // doesn't change.
         let unchanged = await VerifierFixture.make(encoding: .json)
@@ -1456,7 +1424,6 @@ struct SyncOutputVerifierOldDropTests {
 
     @Test("A degraded seed leaves the broadcast and the other players compared; a later seed with a view hash restores the player")
     func degradedSeed() async throws {
-        guard InTurnSync.isEnabled() else { return }
         // Live left an unverified player out of `perPlayerHash`: the hash of player 1 alone, from
         // a run without player 2.
         let alone = await VerifierFixture.make(encoding: .json)
@@ -1492,7 +1459,6 @@ struct SyncOutputVerifierOldDropTests {
 
     @Test("A per-player encode drop makes a seeded player unverifiable until a seed with a view hash")
     func encodeDropDiverges() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         try await f.join(2)
@@ -1510,7 +1476,6 @@ struct SyncOutputVerifierOldDropTests {
 
     @Test("A joiner whose whole view never encoded is viewNotSent; a later compared seed makes it the benign viewSentLater", arguments: [false, true])
     func unsentView(seedsLater: Bool) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick(2)
@@ -1539,7 +1504,6 @@ struct SyncOutputVerifierOldDropTests {
 struct DebugFreezeSettleFailureTests {
     @Test("A settle cycle whose plan throws ends the land: the gate closes, the failure reaches the keeper, the freeze fails")
     func settleFailureEndsTheLand() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick()

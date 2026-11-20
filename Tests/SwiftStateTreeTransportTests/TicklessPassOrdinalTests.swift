@@ -222,7 +222,6 @@ struct TicklessPassOrdinalTests {
         #expect(!passes.isEmpty)
         #expect(passes.map(\.ordinal) == (1 ... Int64(passes.count)).map { Optional($0) })
         // Without in-turn sync the stream isn't recorded (the legacy sync path).
-        guard InTurnSync.isEnabled() else { return }
         let stream = ReevaluationSyncStreamEntry.stream(of: frames)
         var readsAfter: [Int64] = []
         for entry in stream {
@@ -252,7 +251,6 @@ struct TicklessPassOrdinalTests {
 
     @Test("A 3.4 tickless record's sync outputs and seeds verify against the pass they read after")
     func ticklessRecordVerifies() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await OrdinalFixture.make()
         try await playTies(f)
         let result = try await f.replay()
@@ -263,7 +261,6 @@ struct TicklessPassOrdinalTests {
 
     @Test("A tickless land's freeze settle and resume commit outside a turn, and verify at their pass")
     func legacyCycleCommitsVerify() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await OrdinalFixture.make()
         try await f.join(1)
         try await f.add(1, 2)
@@ -335,9 +332,7 @@ struct TicklessPassOrdinalTests {
         #expect(failure.position.tickId == nil)
         let result = try await f.replay()
         #expect(result.liveFailure?.kind == .syncEncode)
-        if InTurnSync.isEnabled() {
-            #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
-        }
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
     }
 
     @Test("A tick land's failure is recorded in its tick's frame; replay stops at that tick and reports it")
@@ -372,7 +367,6 @@ struct TicklessPassOrdinalTests {
 
     @Test("The sync stream ends at the land failure: a firstSync read before it records nothing, a later clear neither, and what came before is kept (#535)")
     func syncStreamEndsAtTheFailure() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await OrdinalFixture.make()
         try await f.join(1)
         try await f.add(1, 5)
@@ -439,7 +433,6 @@ struct TicklessPassOrdinalTests {
 
     @Test("A tickless pass's events reach the shadow before the outputs read after it", arguments: [InTurnEncoding.json, .messagepack])
     func ticklessPassEventsReachTheShadow(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await OrdinalFixture.make(encoding: encoding)
         try await f.join(1)
         try await f.emit(1, 3)
@@ -475,7 +468,6 @@ struct TicklessPassOrdinalTests {
 
     @Test("A failure applied as an input in a tickless pass ends that pass: its events are dropped, live and in replay")
     func ticklessFailureInsideAPass() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await OrdinalFixture.make(encoding: .messagepack)
         try await f.join(1)
         try await f.emit(1, 2)

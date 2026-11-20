@@ -56,16 +56,9 @@ extension DifferentialHarness {
             }
             var bytesCompared = true
             var ran = 0
-            var masked = 0
             var replaced = 0
             for scenario in diffScenarios {
                 for cell in scenario.cells.cells {
-                    // The adapter's in-turn sync is the config's and `IN_TURN_SYNC`'s: with the env
-                    // off, an in-turn cell would run legacy, so it is masked, and counted.
-                    if cell.sync == .inTurn && !InTurnSync.isEnabled() {
-                        masked += 1
-                        continue
-                    }
                     if let row = replacements["\(scenario.name).\(cell)"] {
                         replaced += 1
                         do {
@@ -98,11 +91,11 @@ extension DifferentialHarness {
                     #expect(stale.isEmpty, "\(name): stale expected difference(s): \(stale.map { "\($0.checkpoint) \($0.channel.rawValue) \($0.place) (\($0.reason))" })")
                 }
             }
-            // Fail closed: every cell the index lists ran, was replaced, or was masked.
+            // Fail closed: every cell the index lists ran or was replaced.
             let listed = index.files.count
-            print("Differential harness: \(ran) cell(s) compared, \(masked) masked (IN_TURN_SYNC), \(replaced) replaced, \(listed) listed")
+            print("Differential harness: \(ran) cell(s) compared, \(replaced) replaced, \(listed) listed")
             #expect(ran > 0, "no cell ran")
-            #expect(ran + masked + replaced == listed, "\(ran) ran, \(replaced) replaced and \(masked) masked; the index lists \(listed)")
+            #expect(ran > 0 && ran + replaced == listed, "\(ran) ran and \(replaced) replaced; the index lists \(listed)")
             if !bytesCompared {
                 print("Differential harness: decoded views only, on \(DiffGolden.toolchain); the goldens were recorded on another toolchain. The pinned-image CI jobs compare bytes and are the gate.")
             }
@@ -122,9 +115,6 @@ extension DifferentialHarness {
         /// One candidate set: every scenario and cell, oracle-checked, each file's decoded views
         /// checked against its bytes, then the index.
         private func record() async throws {
-            guard InTurnSync.isEnabled() else {
-                throw DiffRunFailure("recording needs the full matrix: IN_TURN_SYNC=false would mask the in-turn cells")
-            }
             let folder = try DiffGolden.outputFolder()
             let recordedWith = DiffRecordedWith(
                 commit: DiffGolden.environment[DiffGoldenKeys.commit] ?? "unknown", toolchain: DiffGolden.toolchain
