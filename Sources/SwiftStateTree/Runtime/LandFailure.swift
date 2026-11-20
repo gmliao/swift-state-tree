@@ -16,7 +16,8 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
         case syncPlan
         /// A server event didn't encode.
         case eventEncode
-        /// An action's response didn't encode, so its client would get no answer (#544).
+        /// An action's response, or its error reply, didn't encode, so its client would get no
+        /// answer (#544, #691).
         case responseEncode
         /// A handler threw after mutable access to synced state (#87).
         case handlerWrite
