@@ -257,7 +257,9 @@ public struct SchemaExtractor {
     private static func createDiffSchema(definitions: inout [String: JSONSchema]) -> JSONSchema {
         let diffTypeName = StateDiffPlaceholder.name
         // A user type named `StateDiff` would be replaced by this definition (#602).
-        SchemaTypeNameRecorder.current?.note(StateDiffPlaceholder.self, as: diffTypeName)
+        SchemaTypeNameRecorder.current?.note(
+            StateDiffPlaceholder.self, as: diffTypeName, displayName: SchemaTypeNameCollision.reservedDiffOwner
+        )
         
         // Create a basic diff schema (JSON Patch format)
         let diffSchema = JSONSchema(
@@ -289,5 +291,5 @@ public struct SchemaExtractor {
 /// Stands for the schema's diff placeholder definition (`StateDiff`) in the type name record
 /// (#602), so a user type of that name is refused rather than replaced.
 private enum StateDiffPlaceholder {
-    static let name = "StateDiff"
+    static let name = SchemaTypeNameCollision.reservedDiffName
 }

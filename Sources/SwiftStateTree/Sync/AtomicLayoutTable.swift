@@ -69,8 +69,12 @@ public struct AtomicLayoutTable: Sendable {
         var definitions: [String: JSONSchema] = [:]
         var visited: Set<String> = []
         let recorder = SchemaTypeNameRecorder()
-        let rootSchema = SchemaTypeNameRecorder.$current.withValue(recorder) {
-            TypeToSchemaConverter.convert(stateType, definitions: &definitions, visitedTypes: &visited)
+        // Without the fingerprint's probe, as the registration row walks: the table is cached
+        // per type, whichever entry point builds it first.
+        let rootSchema = SchemaExtractionProbe.$current.withValue(nil) {
+            SchemaTypeNameRecorder.$current.withValue(recorder) {
+                TypeToSchemaConverter.convert(stateType, definitions: &definitions, visitedTypes: &visited)
+            }
         }
         try recorder.check()
         var builder = Builder(definitions: definitions)
@@ -107,6 +111,10 @@ public struct AtomicLayoutTable: Sendable {
 
     /// The table of `State`, built on first use and cached per type. A declaration that doesn't
     /// match its schema is a programming error and traps here, before anything is sent.
+    ///
+    /// Precondition: no two distinct types in `State` share a name (#602), or this traps too.
+    /// Registration checks it first (`SyncRegistrationError.Problem.typeNameCollision`); a
+    /// keeper, engine or adapter built directly, without registration, doesn't.
     public static func forState<State: StateNodeProtocol>(_ stateType: State.Type) -> AtomicLayoutTable {
         let key = ObjectIdentifier(stateType)
         if let cached = cache.value(for: key) {

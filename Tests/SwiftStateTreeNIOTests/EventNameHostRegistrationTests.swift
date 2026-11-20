@@ -39,9 +39,10 @@ struct EHCollidingKeys: ServerEventPayload {
 }
 
 enum EHInputs {
-    /// A server input with the colliding event's short type name. In the base's fingerprint walk
-    /// its schema replaces the event's, so the collision is hidden there; the generic alias drops
-    /// the server inputs and finds it.
+    /// A server input with the colliding event's short type name. Its schema used to replace the
+    /// event's in the base's fingerprint walk, hiding the event's wire-key collision there, while
+    /// the generic alias, which drops the server inputs, found it. Since #602 the walk refuses
+    /// the two types under one name.
     @Payload
     struct EHCollidingKeys: ServerInputPayload {}
 }
@@ -163,7 +164,7 @@ struct EventNameHostRegistrationTests {
         #expect(await host.transportForTesting(webSocketPath: "/game/\(landType)") == nil)
     }
 
-    @Test("The generic alias's fingerprint can fail where the base's passes; the up-front check keeps the live route unpublished")
+    @Test("A server input named like a server event is refused with the base's fingerprint (#602); the live route stays unpublished")
     func genericAliasFingerprintRefusedUpFront() async throws {
         let host = makeHost()
         let land = Land("eh-hidden", using: EventNameHostState.self) {
@@ -172,9 +173,20 @@ struct EventNameHostRegistrationTests {
                 HandleServerInput(EHInputs.EHCollidingKeys.self) { (_: inout EventNameHostState, _: EHInputs.EHCollidingKeys, _: LandContext) in }
             }
         }
-        // The base passes with recording on: the input hides the collision in its walk.
-        try land.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
-        // The live land records, so the alias's own registration computes its fingerprint.
+        // The input no longer hides the event's wire-key collision: the base's own fingerprint
+        // walk refuses the two types under one name, before either is hashed.
+        func names(_ found: [SchemaTypeNameCollision]) -> [String] {
+            found.map { "\($0.name): \($0.types.joined(separator: ", "))" }
+        }
+        let collisions = [
+            "EHCollidingKeys: SwiftStateTreeNIOTests.EHCollidingKeys, SwiftStateTreeNIOTests.EHInputs.EHCollidingKeys"
+        ]
+        let baseError = try #require(throws: LandRegistrationError.self) {
+            try land.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
+        #expect(names(baseError.typeNameCollisions) == collisions, "\(baseError)")
+        #expect(baseError.schemaFingerprint == nil, "\(baseError)")
+        // The live land records, so its registration computes the fingerprint.
         var configuration = NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
         configuration.enableLiveStateHashRecording = true
         let error = try await #require(throws: LandRegistrationError.self) {
@@ -183,7 +195,7 @@ struct EventNameHostRegistrationTests {
                 liveWebSocketPath: "/game/eh-hidden", configuration: configuration, reevaluation: feature()
             )
         }
-        #expect(error.schemaFingerprint == .wireKeyCollision(type: "EHCollidingKeys", key: "b"), "\(error)")
+        #expect(names(error.typeNameCollisions) == collisions, "\(error)")
         #expect(await host.realm.isRegistered(landType: "eh-hidden") == false)
         #expect(await host.transportForTesting(webSocketPath: "/game/eh-hidden") == nil, "the live path isn't mapped")
     }

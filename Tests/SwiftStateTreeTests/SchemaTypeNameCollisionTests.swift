@@ -36,6 +36,13 @@ enum SchemaNameA {
     struct StateDiff: Codable, Equatable, Sendable {
         var changed: Int = 0
     }
+
+    /// A collection by `ArrayProtocol`, so the schema converts it inline; as an optional it is
+    /// defined under its own name (`innerType`).
+    struct Bag: ArrayProtocol, Codable, Equatable, Sendable {
+        typealias Element = Int
+        var values: [Int] = []
+    }
 }
 
 enum SchemaNameB {
@@ -45,7 +52,7 @@ enum SchemaNameB {
         let critical: Bool
     }
 
-    struct Item: Codable, Equatable, Sendable {
+    struct Item: Codable, Hashable, Sendable {
         var name: String = ""
         var level: Int = 0
     }
@@ -53,6 +60,34 @@ enum SchemaNameB {
     /// Not atomic, with other fields than `SchemaNameA.Spot`.
     struct Spot: Codable, Equatable, Sendable {
         var label: String = ""
+    }
+
+    /// A named object, unlike `SchemaNameA.Bag`.
+    struct Bag: Codable, Equatable, Sendable {
+        var label: String = ""
+    }
+}
+
+/// A server input named like the state's `SchemaNameA.Item`.
+enum SchemaNameD {
+    @Payload
+    struct Item: ServerInputPayload {
+        let note: String
+    }
+}
+
+/// Payloads named like the state types above.
+enum SchemaNameC {
+    /// A server event named like the state's `SchemaNameA.Item`, holding one.
+    @Payload
+    struct Item: ServerEventPayload {
+        let inner: SchemaNameA.Item
+    }
+
+    /// A server input holding a `SchemaNameB.Item`, a type named like the state's.
+    @Payload
+    struct Holder: ServerInputPayload {
+        let item: SchemaNameB.Item
     }
 }
 
@@ -118,6 +153,36 @@ struct SchemaNameStateDiffState: StateNodeProtocol {
     var diff: SchemaNameA.StateDiff = SchemaNameA.StateDiff()
 }
 
+/// A plain `SchemaNameB.Bag` and an optional `SchemaNameA.Bag`, an inline collection.
+@StateNodeBuilder
+struct SchemaNameBagsState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var plain: SchemaNameB.Bag = SchemaNameB.Bag()
+
+    @Sync(.broadcast)
+    var maybe: SchemaNameA.Bag? = nil
+}
+
+/// `SchemaNameA.Item`, and a set of `SchemaNameB.Item`s: only the fingerprint's walk converts a
+/// set's element. Two types, one per order of the entry points (the verdict is cached per type).
+@StateNodeBuilder
+struct SchemaNameSetFirstState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var item: SchemaNameA.Item = SchemaNameA.Item()
+
+    @Sync(.broadcast)
+    var others: Set<SchemaNameB.Item> = []
+}
+
+@StateNodeBuilder
+struct SchemaNameSetSecondState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var item: SchemaNameA.Item = SchemaNameA.Item()
+
+    @Sync(.broadcast)
+    var others: Set<SchemaNameB.Item> = []
+}
+
 @StateNodeBuilder
 struct SchemaNameEventsState: StateNodeProtocol {
     @Sync(.broadcast)
@@ -125,6 +190,7 @@ struct SchemaNameEventsState: StateNodeProtocol {
 }
 
 private let itemTypes = ["SwiftStateTreeTests.SchemaNameA.Item", "SwiftStateTreeTests.SchemaNameB.Item"]
+private let itemCollision = SchemaTypeNameCollision(name: "Item", types: itemTypes)
 
 private func collisions(_ body: () throws -> Void) -> [SchemaTypeNameCollision]? {
     do {
@@ -180,9 +246,9 @@ struct SchemaTypeNameCollisionTests {
     @Test("Two state types with one name: registration refuses the land, and so does the schema")
     func stateTypesShareAName() {
         let definition = land("schema-name-items", SchemaNameItemsState.self)
-        let expected = SchemaTypeNameCollision(name: "Item", types: itemTypes)
-        #expect(syncProblems(definition) == [.typeNameCollision(expected)])
-        #expect(throws: LandRegistrationError.self) { _ = try SchemaExtractor.extract(from: definition) }
+        #expect(syncProblems(definition) == [.typeNameCollision(itemCollision)])
+        let error = #expect(throws: LandRegistrationError.self) { _ = try SchemaExtractor.extract(from: definition) }
+        #expect(error?.sync?.problems == [.typeNameCollision(itemCollision)])
     }
 
     @Test("An atomic and a plain type with one name: the atomic layout isn't built from either")
@@ -192,7 +258,76 @@ struct SchemaTypeNameCollisionTests {
             name: "Spot",
             types: ["SwiftStateTreeTests.SchemaNameA.Spot", "SwiftStateTreeTests.SchemaNameB.Spot"]
         )])
-        #expect(syncProblems(land("schema-name-spots", SchemaNameSpotsState.self))?.count == 1)
+        #expect(syncProblems(land("schema-name-spots", SchemaNameSpotsState.self)) == [.typeNameCollision(
+            SchemaTypeNameCollision(
+                name: "Spot",
+                types: ["SwiftStateTreeTests.SchemaNameA.Spot", "SwiftStateTreeTests.SchemaNameB.Spot"]
+            )
+        )])
+    }
+
+    @Test("An optional inline collection and an object with one name: refused, not looked up as each other")
+    func optionalCollectionSharesAName() {
+        #expect(syncProblems(land("schema-name-bags", SchemaNameBagsState.self)) == [.typeNameCollision(
+            SchemaTypeNameCollision(
+                name: "Bag",
+                types: ["SwiftStateTreeTests.SchemaNameA.Bag", "SwiftStateTreeTests.SchemaNameB.Bag"]
+            )
+        )])
+    }
+
+    @Test("A server event that replaces the state's definition of its name: the collision, not a false cycle, in one land and under SchemaGenCLI")
+    func serverEventReplacesAStateDefinition() throws {
+        let definition = Land("schema-name-event-item", using: SchemaNameFirstLandState.self) {
+            ServerEvents { Register(SchemaNameC.Item.self) }
+            Rules {}
+        }
+        try definition.validateForRegistration(context: .encodingIndependent)
+        let expected = [SchemaTypeNameCollision(
+            name: "Item", types: ["SwiftStateTreeTests.SchemaNameA.Item", "SwiftStateTreeTests.SchemaNameC.Item"]
+        )]
+        #expect(collisions { _ = try SchemaExtractor.extract(from: definition) } == expected)
+        // Under SchemaGenCLI the land's own record is checked before its paths are flattened.
+        #expect(collisions { _ = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(definition)]) } == expected)
+    }
+
+    @Test("A server input named like a state type, or holding one: the replay fingerprint is refused, not hashed")
+    func serverInputsShareANameInTheFingerprint() {
+        let named = Land("schema-name-input-item", using: SchemaNameFirstLandState.self) {
+            Rules {
+                HandleServerInput(SchemaNameD.Item.self) { (_: inout SchemaNameFirstLandState, _: SchemaNameD.Item, _: LandContext) in }
+            }
+        }
+        let holder = Land("schema-name-input-holder", using: SchemaNameFirstLandState.self) {
+            Rules {
+                HandleServerInput(SchemaNameC.Holder.self) { (_: inout SchemaNameFirstLandState, _: SchemaNameC.Holder, _: LandContext) in }
+            }
+        }
+        #expect(collisions { _ = try ReevaluationSchemaFingerprint.compute(for: named) } == [SchemaTypeNameCollision(
+            name: "Item", types: ["SwiftStateTreeTests.SchemaNameA.Item", "SwiftStateTreeTests.SchemaNameD.Item"]
+        )])
+        #expect(collisions { _ = try ReevaluationSchemaFingerprint.compute(for: holder) } == [itemCollision])
+        // Registration for replay reports it as a registration problem, not a bare error.
+        let error = #expect(throws: LandRegistrationError.self) {
+            try holder.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
+        #expect(error?.typeNameCollisions == [itemCollision])
+        #expect(error?.schemaFingerprint == nil)
+    }
+
+    @Test("A set's element is checked by the fingerprint, and registration's cached verdict doesn't depend on which ran first",
+          arguments: [false, true])
+    func setElementVerdictIsOrderIndependent(fingerprintFirst: Bool) throws {
+        let setFirst = land("schema-name-set-first", SchemaNameSetFirstState.self)
+        let setSecond = land("schema-name-set-second", SchemaNameSetSecondState.self)
+        if fingerprintFirst {
+            #expect(collisions { _ = try ReevaluationSchemaFingerprint.compute(for: setSecond) } == [itemCollision])
+            try setSecond.validateForRegistration(context: .encodingIndependent)
+        } else {
+            try setFirst.validateForRegistration(context: .encodingIndependent)
+            #expect(collisions { _ = try ReevaluationSchemaFingerprint.compute(for: setFirst) } == [itemCollision])
+            try setFirst.validateForRegistration(context: .encodingIndependent)
+        }
     }
 
     @Test("Two lands that each define a name with a different type: the merged schema is refused")
@@ -212,8 +347,12 @@ struct SchemaTypeNameCollisionTests {
         let definition = land("schema-name-state-diff", SchemaNameStateDiffState.self)
         try definition.validateForRegistration(context: .encodingIndependent)
         let found = collisions { _ = try SchemaExtractor.extract(from: definition) }
-        #expect(found?.map(\.name) == ["StateDiff"])
-        #expect(found?.first?.types.contains("SwiftStateTreeTests.SchemaNameA.StateDiff") == true)
+        #expect(found == [SchemaTypeNameCollision(
+            name: "StateDiff",
+            types: ["SwiftStateTreeTests.SchemaNameA.StateDiff", "the schema's diff placeholder"]
+        )])
+        #expect(found?.first?.description
+            == "StateDiff is reserved for the schema's diff placeholder; give SwiftStateTreeTests.SchemaNameA.StateDiff another name")
     }
 
     @Test("One type reached several ways, in one land or in two, is not a collision")

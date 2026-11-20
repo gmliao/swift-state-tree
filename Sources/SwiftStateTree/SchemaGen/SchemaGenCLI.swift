@@ -30,8 +30,9 @@ public struct SchemaGenCLI {
         var allDefinitions: [String: JSONSchema] = [:]
         var allLands: [String: LandSchema] = [:]
         
-        // One type name record for every land (#602): definitions from all lands are merged by
-        // name below, so two lands that define a name with different types are refused.
+        // Each land's extraction checks its own type names (#602); this record also holds the
+        // union, because definitions from all lands are merged by name below, so two lands
+        // that define a name with different types are refused.
         let schemas = try SchemaTypeNameRecorder.recording {
             try landDefinitions.map { try $0.extractSchema() }
         }

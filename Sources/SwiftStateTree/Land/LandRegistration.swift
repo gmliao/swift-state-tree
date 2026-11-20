@@ -70,6 +70,11 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Registered server events with no entry in the host's `eventHashes` (#521 EV3), by event
     /// name and type. Checked only when the context has `eventHashes`. Empty when there are none.
     public let serverEventsWithoutHash: [String]
+    /// Distinct types that the record schema fingerprint's walk would define under one name
+    /// (#602), such as a server input named like a server event or a state type. Checked with
+    /// the fingerprint, under `LandRegistrationContext.recordsForReplay`. Empty when there are
+    /// none. Such types in the state alone are `sync`'s `.typeNameCollision`.
+    public let typeNameCollisions: [SchemaTypeNameCollision]
 
     init(
         landType: String,
@@ -79,7 +84,8 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         schemaFingerprint: SchemaFingerprintError? = nil,
         serverEventsWithoutDecoder: [String] = [],
         wireNameMismatches: [String] = [],
-        serverEventsWithoutHash: [String] = []
+        serverEventsWithoutHash: [String] = [],
+        typeNameCollisions: [SchemaTypeNameCollision] = []
     ) {
         self.landType = landType
         self.payload = payload
@@ -89,6 +95,7 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         self.serverEventsWithoutDecoder = serverEventsWithoutDecoder
         self.wireNameMismatches = wireNameMismatches
         self.serverEventsWithoutHash = serverEventsWithoutHash
+        self.typeNameCollisions = typeNameCollisions
     }
 
     public var description: String {
@@ -102,9 +109,11 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         let unhashed = serverEventsWithoutHash.isEmpty ? nil
             : "eventHashes has no entry for these server events; pass the schema's table: "
                 + serverEventsWithoutHash.joined(separator: ", ")
+        let collided = typeNameCollisions.isEmpty ? nil
+            : SchemaTypeNameCollisionError(collisions: typeNameCollisions).description
         return "land type '\(landType)' can't be registered: "
             + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description)
-                + [mismatched, unhashed, schemaFingerprint?.description, undecodable].compactMap { $0 })
+                + [mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
 }
@@ -128,24 +137,29 @@ extension LandDefinition {
         // when every other row holds: an error from the schema walk would replace those rows (the
         // walk re-runs this check, so EV2 would throw from inside it).
         var fingerprint: SchemaFingerprintError?
+        var typeNameCollisions: [SchemaTypeNameCollision] = []
         if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty,
            mismatched.isEmpty, unhashed.isEmpty {
             do {
                 _ = try ReevaluationSchemaFingerprint.cached(for: self)
             } catch let error as SchemaFingerprintError {
                 fingerprint = error
+            } catch let error as SchemaTypeNameCollisionError {
+                // The fingerprint's walk, which adds the server inputs, found them (#602).
+                typeNameCollisions = error.collisions
             }
         }
         // EV8 (#521 PR 1b): a replay decodes every recorded server event through its
         // descriptor, so a descriptor without a decoder can't replay.
         let undecodable = context.recordsForReplay == true ? serverEventsWithoutDecoder() : []
         if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil || !undecodable.isEmpty
-            || !mismatched.isEmpty || !unhashed.isEmpty {
+            || !mismatched.isEmpty || !unhashed.isEmpty || !typeNameCollisions.isEmpty {
             throw LandRegistrationError(
                 landType: id, payload: payload, sync: sync,
                 duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint,
                 serverEventsWithoutDecoder: undecodable,
-                wireNameMismatches: mismatched, serverEventsWithoutHash: unhashed
+                wireNameMismatches: mismatched, serverEventsWithoutHash: unhashed,
+                typeNameCollisions: typeNameCollisions
             )
         }
     }

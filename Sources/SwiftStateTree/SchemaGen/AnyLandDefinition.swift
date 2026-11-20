@@ -38,7 +38,8 @@ public struct AnyLandDefinition: Sendable {
     /// Extract the protocol schema from this LandDefinition.
     ///
     /// - Throws: `LandRegistrationError` when the state fails a synced-state row (its `sync`: #464,
-    ///   #179, #535); `RecursiveStateTypeError` when a state type holds itself (#286).
+    ///   #179, #535, #602); `SchemaTypeNameCollisionError` when distinct types the schema defines
+    ///   share a name (#602); `RecursiveStateTypeError` when a state type holds itself (#286).
     public func extractSchema() throws -> ProtocolSchema {
         try _extractSchema()
     }

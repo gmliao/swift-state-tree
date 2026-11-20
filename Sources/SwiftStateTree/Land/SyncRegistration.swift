@@ -46,7 +46,7 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
                 return "\(path): \(typeName) holds a value of any type, which can't be checked; use a concrete "
                     + "type, or an enum with a case for each kind of value"
             case .typeNameCollision(let collision):
-                return "the state's types are keyed by name, and \(collision); rename all but one"
+                return "the state's types are keyed by name, and \(collision)"
             }
         }
     }
@@ -104,14 +104,20 @@ package enum SyncRegistration {
     }
 
     /// The state's distinct types that share a name (#602), found by the schema walk that
-    /// `AtomicLayoutTable` and the schema run, so a land is refused before its first sync builds
-    /// a layout from them.
+    /// `AtomicLayoutTable` runs, so a land is refused before its first sync builds a layout from
+    /// them.
+    ///
+    /// The walk runs without the fingerprint's extraction probe, whichever entry point got here
+    /// first: under it the walk also converts a set's element, and the verdict is cached per
+    /// state type. The fingerprint's own walk checks set elements (`SchemaTypeNameRecorder`).
     private static func typeNameCollisions(_ rootType: any StateNodeProtocol.Type) -> [SchemaTypeNameCollision] {
         let recorder = SchemaTypeNameRecorder()
         var definitions: [String: JSONSchema] = [:]
         var visited: Set<String> = []
-        SchemaTypeNameRecorder.$current.withValue(recorder) {
-            _ = TypeToSchemaConverter.convert(rootType, definitions: &definitions, visitedTypes: &visited)
+        SchemaExtractionProbe.$current.withValue(nil) {
+            SchemaTypeNameRecorder.$current.withValue(recorder) {
+                _ = TypeToSchemaConverter.convert(rootType, definitions: &definitions, visitedTypes: &visited)
+            }
         }
         return recorder.collisions
     }
