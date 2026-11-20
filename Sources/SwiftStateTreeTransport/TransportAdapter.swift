@@ -3195,13 +3195,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Tests: returns once the oldest background sync task still running has returned (a lag
-    /// callback released while a newer one stays held).
-    package func waitForOldestBackgroundSyncForTesting() async {
-        guard let oldest = backgroundSyncTasks.min(by: { $0.key < $1.key })?.value else { return }
-        await oldest.value
-    }
-
     /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
     /// that started another) and the keeper has no requested sync work pending (a writer-drain
     /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
@@ -3682,8 +3675,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func runSyncLagTimerSync(epoch: UInt64) async {
+        syncLagTimerSyncsInFlight[epoch, default: 0] += 1
         defer {
             if syncLagTimerSyncRequestedEpoch == epoch { syncLagTimerSyncRequestedEpoch = nil }
+            endSyncLagTimerSync(epoch: epoch)
         }
         // A stale callback (the timer restarted since it was armed) takes no ticket, so it can't
         // bind a requester on a keeper never attached.
@@ -3698,6 +3693,48 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             await syncNow()
         }
+    }
+
+    /// Lag timer callbacks running, by the epoch that armed them (an entry is removed at 0).
+    private var syncLagTimerSyncsInFlight: [UInt64: Int] = [:]
+    /// Test waiters, by id, for the callbacks of one epoch to return.
+    private var syncLagTimerSyncWaitersForTesting: [Int: (epoch: UInt64, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextSyncLagTimerSyncWaiterForTesting = 0
+
+    private func endSyncLagTimerSync(epoch: UInt64) {
+        let left = (syncLagTimerSyncsInFlight[epoch] ?? 1) - 1
+        syncLagTimerSyncsInFlight[epoch] = left > 0 ? left : nil
+        guard left <= 0, !syncLagTimerSyncWaitersForTesting.isEmpty else { return }
+        for (id, waiter) in syncLagTimerSyncWaitersForTesting where waiter.epoch == epoch {
+            syncLagTimerSyncWaitersForTesting.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
+    }
+
+    /// Tests: the lag timer's current epoch (a callback armed now carries it).
+    package var syncLagTimerEpochForTesting: UInt64 { syncLagTimerEpoch }
+
+    /// Tests: returns once no lag timer callback of `epoch` is running (at once if none is), or
+    /// when its task is cancelled (a test bounds it with `withinHangBound`).
+    package func waitForSyncLagTimerSyncsForTesting(epoch: UInt64) async {
+        guard syncLagTimerSyncsInFlight[epoch] != nil else { return }
+        let id = nextSyncLagTimerSyncWaiterForTesting
+        nextSyncLagTimerSyncWaiterForTesting += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || syncLagTimerSyncsInFlight[epoch] == nil {
+                    continuation.resume()
+                    return
+                }
+                syncLagTimerSyncWaitersForTesting[id] = (epoch, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelSyncLagTimerSyncWaiterForTesting(id) }
+        }
+    }
+
+    private func cancelSyncLagTimerSyncWaiterForTesting(_ id: Int) {
+        syncLagTimerSyncWaitersForTesting.removeValue(forKey: id)?.continuation.resume()
     }
 
     /// Sessions with lag state (tests).

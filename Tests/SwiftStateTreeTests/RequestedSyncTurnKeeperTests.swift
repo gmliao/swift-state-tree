@@ -80,7 +80,7 @@ struct RequestedSyncTurnKeeperTests {
         #expect(await keeper.hasPeriodicSync == periodic)
 
         #expect(await keeper.syncTurnNow(via: transport, reason: .syncNow) == .committed(clearDirtyFlags: true))
-        await keeper.waitForRequestedSyncTurnsForTesting()
+        #expect(await keeperWaitWithinBound { await keeper.waitForRequestedSyncTurnsForTesting() }, "the requested turns never retired")
         let kept = await keeper.requestedSyncTurnsForTesting[.keptEvents, default: 0]
         if periodic {
             // The next periodic phase delivers them: no request.
@@ -108,5 +108,24 @@ struct RequestedSyncTurnKeeperTests {
         #expect(other.phaseCount == 0)
         #expect(await keeper.syncTurnNow(via: bound, reason: .syncNow) == .committed(clearDirtyFlags: true))
         #expect(bound.phaseCount == 1)
+    }
+}
+
+/// `withinHangBound` for this target, which doesn't depend on the test support module: true
+/// when `wait` returned on its own, false when the bound passed first (it cancels `wait`, which
+/// returns on cancellation).
+private func keeperWaitWithinBound(_ wait: @escaping @Sendable () async -> Void) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await wait()
+            return true
+        }
+        group.addTask {
+            try? await safeTaskSleep(for: .seconds(60))
+            return false
+        }
+        let first = await group.next() ?? false
+        group.cancelAll()
+        return first
     }
 }

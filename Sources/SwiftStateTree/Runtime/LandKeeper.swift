@@ -742,10 +742,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
 
-    /// Interim (#700): the follow-up slots below (this retry, the latch, the join-sync turn, the
-    /// after-turn request) each keep the binding ticket they were armed under, and each job checks
-    /// and retires only its own. That is TurnCore's request-per-key shape, kept by hand until the
-    /// keeper's turns run on TurnCore.
+    /// Interim (#700, #702): the follow-up slots below (this retry, the latch, the join-sync turn,
+    /// the after-turn request) each keep the binding ticket they were armed under, and each job
+    /// checks and retires only its own. That is TurnCore's request-per-key shape (#700), with the
+    /// per-slot coalescing of a pending request per key (#702), kept by hand until the keeper's
+    /// turns run on TurnCore.
     ///
     /// A land without periodic sync: a sync-only turn waits for the writer to drain, at most one
     /// per binding. The binding generation it was armed under: a retry armed under an older binding
@@ -5353,9 +5354,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Follow-ups armed and not yet run or retired: the writer-drain retry, the join-sync turn,
     /// the latch's rerun and a pending requested turn.
     private var requestedSyncWork = 0
-    private var requestedSyncWorkWaitersForTesting: [CheckedContinuation<Void, Never>] = []
-    /// Waiters for "at most n pending", with their n.
-    private var requestedSyncWorkBoundWaitersForTesting: [(atMost: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    /// Test waiters, by id: each returns once at most its `atMost` follow-ups are pending, or when
+    /// its task is cancelled (a test bounds the wait with `withinHangBound`).
+    private var requestedSyncWorkWaitersForTesting: [Int: (atMost: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextRequestedSyncWorkWaiterForTesting = 0
 
     private func beginRequestedSyncWork() {
         requestedSyncWork += 1
@@ -5364,31 +5366,43 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func endRequestedSyncWork() {
         requestedSyncWork -= 1
         assert(requestedSyncWork >= 0, "requested sync work ended twice")
-        if !requestedSyncWorkBoundWaitersForTesting.isEmpty {
-            let reached = requestedSyncWorkBoundWaitersForTesting.filter { requestedSyncWork <= $0.atMost }
-            requestedSyncWorkBoundWaitersForTesting.removeAll { requestedSyncWork <= $0.atMost }
-            reached.forEach { $0.continuation.resume() }
+        guard !requestedSyncWorkWaitersForTesting.isEmpty else { return }
+        let reached = requestedSyncWorkWaitersForTesting.filter { requestedSyncWork <= $0.value.atMost }
+        for (id, waiter) in reached {
+            requestedSyncWorkWaitersForTesting.removeValue(forKey: id)
+            waiter.continuation.resume()
         }
-        guard requestedSyncWork == 0 else { return }
-        let waiters = requestedSyncWorkWaitersForTesting
-        requestedSyncWorkWaitersForTesting = []
-        waiters.forEach { $0.resume() }
     }
 
     /// Tests: returns once no requested sync work is pending: no writer-drain retry, join-sync
     /// turn, latch rerun or requested turn armed and not yet run (its frames then are with the
-    /// writer) or retired.
+    /// writer) or retired. Also returns when its task is cancelled.
     package func waitForRequestedSyncTurnsForTesting() async {
-        guard requestedSyncWork > 0 else { return }
-        await withCheckedContinuation { requestedSyncWorkWaitersForTesting.append($0) }
+        await waitForRequestedSyncTurnsForTesting(atMost: 0)
     }
 
     /// Tests only. Returns once at most `count` requested follow-ups are pending (one still held,
-    /// for example, while another retires). Interim: the core's quiescence wait (#702) replaces
-    /// this and the waiter above.
+    /// for example, while another retires), or when its task is cancelled. Interim: the core's
+    /// quiescence wait (#702) replaces this.
     package func waitForRequestedSyncTurnsForTesting(atMost count: Int) async {
         guard requestedSyncWork > count else { return }
-        await withCheckedContinuation { requestedSyncWorkBoundWaitersForTesting.append((count, $0)) }
+        let id = nextRequestedSyncWorkWaiterForTesting
+        nextRequestedSyncWorkWaiterForTesting += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || requestedSyncWork <= count {
+                    continuation.resume()
+                    return
+                }
+                requestedSyncWorkWaitersForTesting[id] = (count, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelRequestedSyncWorkWaiterForTesting(id) }
+        }
+    }
+
+    private func cancelRequestedSyncWorkWaiterForTesting(_ id: Int) {
+        requestedSyncWorkWaitersForTesting.removeValue(forKey: id)?.continuation.resume()
     }
 
     /// Tests: whether requested sync work is pending, without waiting.

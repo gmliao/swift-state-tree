@@ -10,6 +10,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct RequestedSyncTurnState: StateNodeProtocol {
@@ -159,19 +160,28 @@ struct TransportAdapterRequestedSyncTurnTests {
         #expect(bindingB != bindingA)
         #expect(await f.keeper.inTurnDrainRetryBindingForTesting == bindingB, "B's retry is armed")
 
-        // B's writer drains: B's retry delivers stamp 2 while A's writer is still held.
+        // B's writer drains first: B's retry delivers stamp 2 while A's writer is still held, so
+        // A's older retry neither blocked B's from arming nor delays it.
         await b.setWriterBackPressureOverrideForTesting(nil)
         // B's retry retires (A's stays pending), then its frames reach B's transport.
-        await f.keeper.waitForRequestedSyncTurnsForTesting(atMost: 1)
+        let keeper = f.keeper
+        let bRetired = await withinHangBound { await keeper.waitForRequestedSyncTurnsForTesting(atMost: 1) }
+        #expect(bRetired, "B's retry never retired")
+        guard bRetired else {
+            await f.adapter.setWriterBackPressureOverrideForTesting(nil)
+            return
+        }
         await b.waitForOutboundIdleForTesting()
         #expect(
             transportB.frames(for: sessionB).contains { String(decoding: $0, as: UTF8.self).contains(#"stamp","value":2"#) },
             "B's deferred sync was delivered by B's retry"
         )
 
-        // A's stale retry retires without a turn and without clearing B's mark.
+        // Then A's writer drains: A's stale retry retires without a turn (B's mark is already
+        // cleared by B's own retry, which ran first).
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
-        await f.adapter.waitForKeeperRequestedSyncWorkForTesting()
+        let adapterA = f.adapter
+        #expect(await withinHangBound { await adapterA.waitForKeeperRequestedSyncWorkForTesting() }, "A's stale retry never retired")
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
         #expect(await f.keeper.inTurnDrainRetryBindingForTesting == nil)
     }
@@ -207,18 +217,22 @@ struct TransportAdapterRequestedSyncTurnTests {
     @Test("a land that fails with a writer-drain retry armed ends the retry's wait and retires it")
     func teardownEndsAnArmedRetry() async throws {
         let f = try await RequestedSyncTurnFixture.make(attached: true)
-        await f.adapter.setWriterBackPressureOverrideForTesting { true }
+        // A real held sync element: the transport's send blocks, so the writer can't drain it.
+        f.transport.block()
+        defer { f.transport.release() }
         try await f.set(1)
+        #expect(await f.adapter.syncNowReportingOutcome() == .committed(clearDirtyFlags: true), "its frame is the held element")
+        try await f.set(2)
         #expect(await f.adapter.syncNowReportingOutcome() == .deferredBackPressure)
         #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "the retry is armed")
         await f.keeper.submitLandFailure(LandFailure(
             kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
         ))
         #expect(await f.keeper.waitForFailureForTesting())
-        // The teardown ends the writer's consumer, so the retry's wait returns and the retry
-        // retires without a turn.
-        await f.adapter.setWriterBackPressureOverrideForTesting(nil)
-        await f.adapter.waitForKeeperRequestedSyncWorkForTesting()
+        // The send is still held: only the teardown, which gives up on the writer's consumer and
+        // releases its drain waiters, can end the retry's wait. It then retires without a turn.
+        let adapter = f.adapter
+        #expect(await withinHangBound { await adapter.waitForKeeperRequestedSyncWorkForTesting() }, "the teardown didn't end the retry's wait")
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
         #expect(await f.keeper.inTurnDrainRetryBindingForTesting == nil)
     }

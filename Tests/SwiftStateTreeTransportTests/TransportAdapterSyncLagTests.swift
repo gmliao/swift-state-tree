@@ -492,6 +492,7 @@ struct TransportAdapterSyncLagTests {
         await f.ack(firstSync.seq)
         let before = await f.adapter.syncLagTimerSyncRequests
         let lagTurnsBefore = await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0]
+        let oldEpoch = await f.adapter.syncLagTimerEpochForTesting
         // The old epoch's request, held before its sync.
         #expect(await f.adapter.syncLagTimerPassForTesting())
         #expect(await oldGate.waitForArrivals(1))
@@ -506,7 +507,13 @@ struct TransportAdapterSyncLagTests {
         // The old callback retires first. It must not clear the new epoch's mark: a pass now
         // still finds the new request pending.
         oldGate.open()
-        await f.adapter.waitForOldestBackgroundSyncForTesting()
+        let adapter = f.adapter
+        let oldRetired = await withinHangBound { await adapter.waitForSyncLagTimerSyncsForTesting(epoch: oldEpoch) }
+        #expect(oldRetired, "the old epoch's callback never returned")
+        guard oldRetired else {
+            newGate.open()
+            return
+        }
         #expect(await f.adapter.syncLagTimerPassForTesting())
         #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the old callback left the new mark standing")
         newGate.open()
