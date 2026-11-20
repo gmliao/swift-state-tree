@@ -452,4 +452,23 @@ struct FollowUpTests {
         await f.wait("stale follow-up #1")
         #expect(await a.snapshot().log == ["armed A", "consumed A", "armed B", "ran B"])
     }
+
+    @Test("34: a foreign gate return and a foreign gate deadline are rejected after the core is replaced")
+    func foreignGateReturnAndDeadline() async {
+        let f = Fixture()
+        let a = ReplaceableCoreActor(fixture: f)
+        await a.send(.gatedFollowUp(job: 1, gate: "g", deadline: .seconds(5)))
+        await a.replaceCore()
+        // The old core's deadline wakes first, then its gate returns (with a non-nil result).
+        f.open("deadline 5")
+        await f.wait("foreign")
+        f.open("g")
+        while f.count(of: "foreign") < 2 {
+            await Task.yield()
+        }
+        let state = await a.state()
+        #expect(state.log.isEmpty)
+        #expect(state.steps == 0)
+        #expect(state.foreign == 2)
+    }
 }
