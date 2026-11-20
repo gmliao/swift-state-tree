@@ -149,7 +149,7 @@ struct TransportAdapterRequestedSyncTurnTests {
         try await simulateRouterJoin(
             adapter: b, keeper: f.keeper, sessionID: sessionB, clientID: ClientID("rst-client-b"), playerID: PlayerID("rst-player-b")
         )
-        #expect(await b.waitForOutboundDrain())
+        await b.waitForOutboundIdleForTesting()
 
         // B defers too, while A's retry is still waiting: B arms its own retry.
         await b.setWriterBackPressureOverrideForTesting { true }
@@ -161,10 +161,13 @@ struct TransportAdapterRequestedSyncTurnTests {
 
         // B's writer drains: B's retry delivers stamp 2 while A's writer is still held.
         await b.setWriterBackPressureOverrideForTesting(nil)
-        let delivered = await boundedWait {
-            transportB.frames(for: sessionB).contains { String(decoding: $0, as: UTF8.self).contains(#"stamp","value":2"#) }
-        }
-        #expect(delivered, "B's deferred sync was delivered by B's retry")
+        // B's retry retires (A's stays pending), then its frames reach B's transport.
+        await f.keeper.waitForRequestedSyncTurnsForTesting(atMost: 1)
+        await b.waitForOutboundIdleForTesting()
+        #expect(
+            transportB.frames(for: sessionB).contains { String(decoding: $0, as: UTF8.self).contains(#"stamp","value":2"#) },
+            "B's deferred sync was delivered by B's retry"
+        )
 
         // A's stale retry retires without a turn and without clearing B's mark.
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
@@ -234,13 +237,4 @@ struct TransportAdapterRequestedSyncTurnTests {
         await f.adapter.waitForBackgroundSyncsForTesting()
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
     }
-}
-
-/// Wait (bounded, about 2 s) until `condition` holds; a missing delivery fails instead of hanging.
-private func boundedWait(_ condition: @Sendable () async -> Bool) async -> Bool {
-    for _ in 0..<1000 {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(2))
-    }
-    return await condition()
 }

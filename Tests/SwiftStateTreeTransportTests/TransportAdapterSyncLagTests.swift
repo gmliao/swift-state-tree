@@ -506,12 +506,7 @@ struct TransportAdapterSyncLagTests {
         // The old callback retires first. It must not clear the new epoch's mark: a pass now
         // still finds the new request pending.
         oldGate.open()
-        var retired = false
-        for _ in 0..<1000 where !retired {
-            retired = await f.adapter.backgroundSyncTaskCountForTesting == 1
-            if !retired { try? await Task.sleep(for: .milliseconds(2)) }
-        }
-        #expect(retired, "the old callback returned while the new one is held")
+        await f.adapter.waitForOldestBackgroundSyncForTesting()
         #expect(await f.adapter.syncLagTimerPassForTesting())
         #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the old callback left the new mark standing")
         newGate.open()

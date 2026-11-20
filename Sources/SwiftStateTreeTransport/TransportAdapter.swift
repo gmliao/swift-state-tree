@@ -3185,8 +3185,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Tests: background sync tasks still running (a held lag callback counts until it returns).
-    package var backgroundSyncTaskCountForTesting: Int { backgroundSyncTasks.count }
+    /// Tests: returns once the oldest background sync task still running has returned (a lag
+    /// callback released while a newer one stays held).
+    package func waitForOldestBackgroundSyncForTesting() async {
+        guard let oldest = backgroundSyncTasks.min(by: { $0.key < $1.key })?.value else { return }
+        await oldest.value
+    }
 
     /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
     /// that started another) and the keeper has no requested sync work pending (a writer-drain

@@ -5316,6 +5316,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the latch's rerun and a pending requested turn.
     private var requestedSyncWork = 0
     private var requestedSyncWorkWaitersForTesting: [CheckedContinuation<Void, Never>] = []
+    /// Waiters for "at most n pending", with their n.
+    private var requestedSyncWorkBoundWaitersForTesting: [(atMost: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     private func beginRequestedSyncWork() {
         requestedSyncWork += 1
@@ -5324,6 +5326,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func endRequestedSyncWork() {
         requestedSyncWork -= 1
         assert(requestedSyncWork >= 0, "requested sync work ended twice")
+        if !requestedSyncWorkBoundWaitersForTesting.isEmpty {
+            let reached = requestedSyncWorkBoundWaitersForTesting.filter { requestedSyncWork <= $0.atMost }
+            requestedSyncWorkBoundWaitersForTesting.removeAll { requestedSyncWork <= $0.atMost }
+            reached.forEach { $0.continuation.resume() }
+        }
         guard requestedSyncWork == 0 else { return }
         let waiters = requestedSyncWorkWaitersForTesting
         requestedSyncWorkWaitersForTesting = []
@@ -5336,6 +5343,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func waitForRequestedSyncTurnsForTesting() async {
         guard requestedSyncWork > 0 else { return }
         await withCheckedContinuation { requestedSyncWorkWaitersForTesting.append($0) }
+    }
+
+    /// Tests only. Returns once at most `count` requested follow-ups are pending (one still held,
+    /// for example, while another retires). Interim: the core's quiescence wait (#702) replaces
+    /// this and the waiter above.
+    package func waitForRequestedSyncTurnsForTesting(atMost count: Int) async {
+        guard requestedSyncWork > count else { return }
+        await withCheckedContinuation { requestedSyncWorkBoundWaitersForTesting.append((count, $0)) }
     }
 
     /// Tests: whether requested sync work is pending, without waiting.
