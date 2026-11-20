@@ -787,7 +787,7 @@ struct TransportAdapterSyncPhaseTests {
         try? await f.set("a", 2)
         await f.queueEvent("after-failure", to: .all)
         await f.adapter.syncNow()
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.frameCount() == before, "no frame after the failure")
     }
@@ -901,7 +901,7 @@ struct TransportAdapterSyncPhaseTests {
 
         try await f.set("nanratio:k", 0)
         try await f.set("a", 1)
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
         #expect(f.keeper.failure?.kind == .syncEncode)
         #expect(await f.adapter.waitForOutboundDrain())

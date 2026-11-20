@@ -330,7 +330,7 @@ struct TransportAdapterDebugFreezeTests {
         await f.adapter.onDisconnect(sessionID: f.bob.session, clientID: f.bob.client)
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await drainSends()
         #expect(patchCount(await f.aliceFrames()) == 0, "a sync ran while frozen")

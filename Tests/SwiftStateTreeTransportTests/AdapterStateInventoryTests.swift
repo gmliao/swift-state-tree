@@ -36,7 +36,7 @@ private struct AdapterSyncStateInventory {
     // The lag state.
     var syncLag: [SessionID: SyncLagSession]
     var syncLagFullPlanRequested: Bool
-    var syncLagTimerSyncRequested: Bool
+    var syncLagTimerSyncRequestedEpoch: UInt64?
     // What the lag and the event queues hold, named so a change of their storage can't hide one.
     var lagEntry: SyncLagSession.Entry
     var lagPhase: SyncLagSession.Phase

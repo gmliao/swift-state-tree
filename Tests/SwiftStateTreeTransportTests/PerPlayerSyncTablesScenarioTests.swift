@@ -255,7 +255,7 @@ private struct PPScenarioRun<State: StateNodeProtocol> {
     }
 
     func syncBroadcastOnly() async {
-        await adapter.syncBroadcastOnly()
+        await adapter._syncBroadcastOnlyImpl()
         await adapter.waitForOutboundIdleForTesting()
     }
 }

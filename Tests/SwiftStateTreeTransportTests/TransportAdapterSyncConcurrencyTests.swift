@@ -150,7 +150,7 @@ struct TransportAdapterSyncConcurrencyTests {
         try await Task.sleep(for: .milliseconds(50))
 
         let syncBroadcastOnlyTask = Task {
-            await adapter.syncBroadcastOnly()
+            await adapter._syncBroadcastOnlyImpl()
         }
 
         // Wait for both to complete
@@ -217,7 +217,7 @@ struct TransportAdapterSyncConcurrencyTests {
         // Act: Start two syncBroadcastOnly operations concurrently
         // Only one should execute, the other should be skipped
         let sync1Task = Task {
-            await adapter.syncBroadcastOnly()
+            await adapter._syncBroadcastOnlyImpl()
         }
 
         // Small delay to ensure first sync starts and acquires lock
@@ -225,7 +225,7 @@ struct TransportAdapterSyncConcurrencyTests {
         try await Task.sleep(for: .milliseconds(50))
 
         let sync2Task = Task {
-            await adapter.syncBroadcastOnly()
+            await adapter._syncBroadcastOnlyImpl()
         }
 
         // Wait for both to complete

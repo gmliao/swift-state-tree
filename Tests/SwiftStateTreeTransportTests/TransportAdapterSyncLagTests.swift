@@ -475,6 +475,35 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagResyncs == 0)
     }
 
+    @Test("A held timer sync of an old epoch neither blocks a newer epoch's request nor clears its mark (#546 L2a)")
+    func lagTimerMarkIsKeyedByEpoch() async throws {
+        let f = try await makeFixture()
+        let gate = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagTimerSync) { await gate.arrive() })
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(3.5)
+        await f.ack(firstSync.seq)
+        let before = await f.adapter.syncLagTimerSyncRequests
+        let lagTurnsBefore = await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0]
+        // The old epoch's request, held before its sync.
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await gate.waitForArrivals(1))
+        // The timer restarts: a new epoch. Its pass requests although the old one is held.
+        await f.adapter.stopSyncLagTimer()
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the new epoch's pass requested")
+        #expect(await gate.waitForArrivals(2))
+        // A second pass of the new epoch while its request is pending: no third request.
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "one request per epoch")
+        gate.open()
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting())
+        // Only the new epoch's callback ran its turn; the old one was stale.
+        #expect(await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0] == lagTurnsBefore + 1)
+    }
+
     @Test("A land without syncSequence: frames carry no sequence, acks are dropped, no lag state, never a resync")
     func trackingOff() async throws {
         let f = try await makeFixture(syncSequence: false)
@@ -605,7 +634,7 @@ struct TransportAdapterSyncLagTests {
         f.clock.advance(3.3)
         await f.ack(firstSync.seq)
         try await f.change()
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         #expect(await f.adapter.waitForOutboundDrain())
         let frames = try await f.stateFrames()
         #expect(frames.map(\.op) == [3], "the broadcast-only cycle ran full and resynced")

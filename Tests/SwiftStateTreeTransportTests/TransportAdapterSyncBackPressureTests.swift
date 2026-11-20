@@ -75,7 +75,9 @@ private struct BPFixture {
     let client: ClientID
     let player: PlayerID
 
-    static func make(_ id: String, encoding: TransportEncodingConfig, keeperDrivesSync: Bool = false) async throws -> BPFixture {
+    /// `inTurnSync: false`: the adapter's own cycle and its backlog retry (until #546 L2c removes
+    /// them). In-turn, the retry is the keeper's writer-drain retry.
+    static func make(_ id: String, encoding: TransportEncodingConfig, keeperDrivesSync: Bool = false, inTurnSync: Bool = true) async throws -> BPFixture {
         let transport = BlockingTransport()
         let keeper = LandKeeper<BackPressureState>(definition: bpLand(id), initialState: BackPressureState())
         let adapter = TransportAdapter<BackPressureState>(
@@ -83,7 +85,8 @@ private struct BPFixture {
             transport: transport,
             landID: id,
             transportEnvConfig: bpEnvConfig(),
-            encodingConfig: encoding
+            encodingConfig: encoding,
+            inTurnSync: inTurnSync
         )
         if keeperDrivesSync { await keeper.setTransport(adapter) }
         await transport.setDelegate(adapter)
@@ -125,7 +128,7 @@ struct TransportAdapterSyncBackPressureTests {
         await f.adapter.sendEvent(AnyServerEvent(BackPressureEvent(message: "bp-kept-targeted")), to: .player(f.player))
         let skippedBefore = await f.adapter.syncSkipCounts().outboundBacklog
         await f.adapter.syncNow()
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         #expect(await f.adapter.syncSkipCounts().outboundBacklog == skippedBefore + 2, "syncNow and broadcast-only are skipped")
         #expect(await f.adapter.outboundBacklog().syncCycleElements == 1, "a skipped cycle enqueues nothing")
         let pending = await f.adapter.pendingEventCounts()
@@ -155,7 +158,7 @@ struct TransportAdapterSyncBackPressureTests {
 
     @Test("tickless land: a sync rejected because a cycle is in flight runs once more after it")
     func busyRejectedSyncRunsAfterCycleInFlight() async throws {
-        let f = try await BPFixture.make("bp-busy", encoding: .json)
+        let f = try await BPFixture.make("bp-busy", encoding: .json, inTurnSync: false)
         let hold = SyncCycleHold()
         await hold.install(on: f.adapter)
         try await f.set(1)
@@ -215,7 +218,7 @@ struct TransportAdapterSyncBackPressureTests {
 
     @Test("tickless land: teardown with a state element stuck in the writer ends the deferred retry, and later sync requests return")
     func teardownWithPendingElementEndsDeferral() async throws {
-        let f = try await BPFixture.make("bp-teardown", encoding: .json)
+        let f = try await BPFixture.make("bp-teardown", encoding: .json, inTurnSync: false)
         try await f.blockWithCycleInWriter(stamp: 1)  // never released: the transport never returns
         try await f.set(2)
         await f.adapter.syncNow()  // skipped: deferred until the writer drains
@@ -236,7 +239,7 @@ struct TransportAdapterSyncBackPressureTests {
 
         // Later requests (full and broadcast-only) return and schedule nothing.
         await f.adapter.syncNow()
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         try await Task.sleep(for: .milliseconds(50))
         #expect(await f.adapter.backlogRetryRuns == 1)
         #expect(await f.adapter.backlogRetryScheduled == false)

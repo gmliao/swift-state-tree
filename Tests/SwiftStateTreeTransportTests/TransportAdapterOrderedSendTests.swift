@@ -242,7 +242,7 @@ struct TransportAdapterOrderedSendTests {
             try await f.set(stamp: 2 * i, mine: i)
             await f.adapter.syncNow()
             try await f.set(stamp: 2 * i + 1, mine: -1)
-            await f.adapter.syncBroadcastOnly()
+            await f.adapter._syncBroadcastOnlyImpl()
         }
         return 2 * iterations + 1
     }
@@ -302,7 +302,7 @@ struct TransportAdapterOrderedSendTests {
             await f.adapter.syncNow()
             #expect(await f.adapter.waitForOutboundDrain())
             try await f.set(stamp: 2 * i + 1, mine: -1)
-            await f.adapter.syncBroadcastOnly()
+            await f.adapter._syncBroadcastOnlyImpl()
             #expect(await f.adapter.waitForOutboundDrain())
         }
         return 2 * iterations + 1

@@ -885,41 +885,37 @@ struct TransportAdapterInTurnSyncTests {
 
     // MARK: - No lost requests (A.4)
 
-    @Test("a turn's sync during a legacy cycle is not lost: it runs as a sync-only turn after endSync")
-    func syncDuringLegacyCycleRunsAfterEndSync() async throws {
+    @Test("a sync request during the freeze settle's cycle is latched, runs after its endSync, and leaves its sync to the resume")
+    func syncDuringSettleCycleIsLatched() async throws {
         let f = try await InTurnSyncFixture.make(encoding: .json)
         let gate = InTurnGate()
         await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.wait() })
-        // A legacy cycle (the adapter's own syncNow), held before its endSync.
-        let legacy = Task { await f.adapter.syncNow() }
+        // In-turn, only the freeze settle still runs a legacy cycle (until #546 L2b).
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
         for _ in 0..<400 where await gate.waiting == 0 {
             try await safeTaskSleep(for: .milliseconds(5))
         }
         #expect(await gate.waiting == 1)
         await f.adapter.installHolds(nil)
 
-        let before = await f.frameCount()
         #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
-        await f.keeper.stepTickOnce()  // requests a sync while the legacy cycle holds the flag
-        // The named observation `syncDeferredByCycle` (#555), in-turn: the latch went false to true.
+        // A requested turn meets the cycle's sync flag: latched with its port, nothing run.
+        #expect(await f.adapter.syncNowReportingOutcome() == .skipped)
         #expect(await f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
-        let held = await f.transport.messages(for: f.session).dropFirst(before)
-            .flatMap { decodeItems($0, encoding: .json) }
-        #expect(!held.contains(.state("ticks", 1)), "no state while the cycle is in flight: \(held)")
+        #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch counts as requested work")
 
         await gate.release()
-        await legacy.value
-        for _ in 0..<200 {
-            let items = await f.transport.messages(for: f.session).dropFirst(before)
-                .flatMap { decodeItems($0, encoding: .json) }
-            if items.contains(.state("ticks", 1)) { break }
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
-        let items = await f.transport.messages(for: f.session).dropFirst(before)
-            .flatMap { decodeItems($0, encoding: .json) }
-        #expect(items.contains(.state("ticks", 1)), "the request ran after endSync: \(items)")
-        #expect(items.filter { $0 == .event("tick-event-1") }.count == 1, "event once: \(items)")
+        let token = try await freeze.value.freezeToken
+        await f.adapter.waitForBackgroundSyncsForTesting()
         #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "endSync consumed the latch")
+        #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch's turn ran")
+        // The latch's turn ran while frozen: its phase leaves the sync to the resume.
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow)
+
+        _ = await f.adapter.debugResume(freezeToken: token)
+        await f.adapter.waitForBackgroundSyncsForTesting()
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
     }
 
     @Test("In-turn off: a sync request that meets a cycle in flight is deferred and counted (syncDeferredByCycle, #555)")

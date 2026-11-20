@@ -17,7 +17,7 @@ extension TransportAdapter: LandKeeperTransport {
     }
     
     public func syncBroadcastOnlyFromTransport() async {
-        await self.syncBroadcastOnly()
+        await self._syncBroadcastOnlyImpl()
     }
 
     /// `true` only with in-turn sync on and for this adapter's own keeper, whose executor it

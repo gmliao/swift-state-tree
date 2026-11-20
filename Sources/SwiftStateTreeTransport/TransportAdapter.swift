@@ -377,8 +377,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// and requests a sync on a land without periodic sync; the plan does the rest.
     private var syncLagTimer: Task<Void, Never>?
     private var syncLagTimerEpoch: UInt64 = 0
-    /// A sync the timer requested hasn't run yet (one at a time).
-    private var syncLagTimerSyncRequested = false
+    /// The epoch of the timer pass whose requested sync hasn't run yet (one per epoch).
+    private var syncLagTimerSyncRequestedEpoch: UInt64?
     package private(set) var syncLagTimerSyncRequests = 0
     /// The timer's period; tests shorten it.
     package var syncLagTimerInterval: Duration = .milliseconds(250)
@@ -2858,7 +2858,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let result = runSyncPhaseInTurnResult(state: state, events: events, includeSync: includeSync, recording: recording)
         let drafts = inTurnSyncStreamDrafts
         inTurnSyncStreamDrafts = []
-        return InTurnSyncOutput(result, syncStream: drafts)
+        // Events still queued after a commit (kept by it, or queued after it): the keeper asks
+        // for one more sync-only turn on a land without periodic sync.
+        var keepsEvents = false
+        if case .committed = result { keepsEvents = pendingEventManager.hasAnyEvents }
+        return InTurnSyncOutput(result, syncStream: drafts, keepsEvents: keepsEvents)
     }
 
     private func runSyncPhaseInTurnResult<S: StateNodeProtocol>(
@@ -2894,13 +2898,15 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard includeSync else { return .notRequested }
         // After teardown nothing is sent any more.
         guard !outboundWriter.isFinished else { return .skipped }
+        // The freeze first, as the legacy cycle checks it (#546 L2a): a frozen phase always
+        // leaves its sync to the resume, also while the writer still holds the settle's frames.
+        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         if writerHoldsEarlierElementForInTurnSync() {
             syncSkips.outboundBacklog += 1
             profilerCounters?.incrementSyncSkipsBacklog()
             profilerCounters?.incrementSyncDeferredTurns()
             return .deferredBackPressure
         }
-        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
             joined: membershipCoordinator.joinedCount()
@@ -3130,6 +3136,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     func _syncNowImpl() async {
+        // In-turn: one sync-only turn on the keeper, now (#546 L2a).
+        if inTurnSyncEnabled {
+            _ = await keeper.syncTurnNow(via: self, reason: .syncNow)
+            return
+        }
         // While frozen, the settle cycle is the only sync; defer this one to resume.
         if debugDeferSyncIfFrozen(broadcastOnly: false) { return }
         profilerCounters?.setSessionCounts(
@@ -3174,20 +3185,52 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Tests: returns once no background sync task is left: a deferred retry, or a follow-up
-    /// that started another. The differential harness runs with its loops off and awaits this
-    /// after each sync it asks for, so a skipped cycle's retry is part of that step.
+    /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
+    /// that started another) and the keeper has no requested sync work pending (a writer-drain
+    /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
+    /// differential harness runs with its loops off and awaits this after each sync it asks for,
+    /// so a skipped or deferred phase's retry is part of that step.
     package func waitForBackgroundSyncsForTesting() async {
-        while let task = backgroundSyncTasks.values.first {
-            await task.value
+        while true {
+            if let task = backgroundSyncTasks.values.first {
+                await task.value
+                continue
+            }
+            if await keeper.hasRequestedSyncWorkForTesting {
+                await keeper.waitForRequestedSyncTurnsForTesting()
+                continue
+            }
+            return
         }
+    }
+
+    /// One requested sync-only turn on the keeper, through this adapter (in-turn only).
+    func requestSyncTurn(reason: SyncTurnReason) async -> InTurnSyncResult {
+        await keeper.syncTurnNow(via: self, reason: reason)
+    }
+
+    /// Tests: the keeper's requested sync work (`LandKeeper.waitForRequestedSyncTurnsForTesting`).
+    func keeperHasRequestedSyncWorkForTesting() async -> Bool {
+        await keeper.hasRequestedSyncWorkForTesting
+    }
+
+    func waitForKeeperRequestedSyncWorkForTesting() async {
+        await keeper.waitForRequestedSyncTurnsForTesting()
     }
 
     private func startDelayedFollowUpSync() {
         startBackgroundSync { adapter in
+            // In-turn: the ticket is taken before the delay, so a repair armed under an older
+            // binding retires without a turn.
+            let ticket = adapter.inTurnSyncEnabled ? await adapter.keeper.syncTurnTicket(via: adapter) : nil
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
             await adapter.holds.at(.failedPlanFollowUp)
-            await adapter.syncNow()
+            if adapter.inTurnSyncEnabled {
+                guard let ticket else { return }
+                _ = await adapter.keeper.syncTurnNow(via: adapter, reason: .behindCommitRepair, ticket: ticket)
+            } else {
+                await adapter.syncNow()
+            }
         }
     }
 
@@ -3242,7 +3285,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if runSyncNow {
             await syncNow()
         } else if runBroadcastOnly {
-            await syncBroadcastOnly()
+            await _syncBroadcastOnlyImpl()
         }
     }
 
@@ -3602,11 +3645,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 wantsSync = true
             }
         }
-        if wantsSync, !keeper.hasPeriodicSync, !syncLagTimerSyncRequested {
-            syncLagTimerSyncRequested = true
+        // The mark is the epoch of the pass that set it: a pass of a newer epoch requests even
+        // while an older callback is held, and a stale callback clears only its own mark.
+        if wantsSync, !keeper.hasPeriodicSync, syncLagTimerSyncRequestedEpoch != epoch {
+            syncLagTimerSyncRequestedEpoch = epoch
             syncLagTimerSyncRequests += 1
             startBackgroundSync { adapter in
-                await adapter.runSyncLagTimerSync()
+                await adapter.runSyncLagTimerSync(epoch: epoch)
             }
         }
         return true
@@ -3619,10 +3664,20 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLagTimerPass(epoch: syncLagTimerEpoch)
     }
 
-    private func runSyncLagTimerSync() async {
+    private func runSyncLagTimerSync(epoch: UInt64) async {
+        let ticket = inTurnSyncEnabled ? await keeper.syncTurnTicket(via: self) : nil
         await holds.at(.syncLagTimerSync)
-        syncLagTimerSyncRequested = false
-        await syncNow()
+        defer {
+            if syncLagTimerSyncRequestedEpoch == epoch { syncLagTimerSyncRequestedEpoch = nil }
+        }
+        // The timer restarted meanwhile (a new epoch): this callback is stale.
+        guard epoch == syncLagTimerEpoch else { return }
+        if inTurnSyncEnabled {
+            guard let ticket else { return }
+            _ = await keeper.syncTurnNow(via: self, reason: .lagTimer, ticket: ticket)
+        } else {
+            await syncNow()
+        }
     }
 
     /// Sessions with lag state (tests).
@@ -5216,6 +5271,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Sync only broadcast changes to all connected players.
     ///
+    /// Internal since #546 L2a (the public `syncBroadcastOnly()` is gone): the keeper's legacy
+    /// leave path reaches it through `syncBroadcastOnlyFromTransport`, and tests call it. #546
+    /// L2c removes it with the off adapter.
+    ///
     /// Used when state changes only affect broadcast fields (e.g., player leaving).
     /// This is more efficient than `syncNow()` because:
     /// - Uses dirty tracking to only compare changed broadcast fields
@@ -6638,7 +6697,9 @@ extension TransportAdapter {
             return
         }
         // A full cycle also covers broadcast-only changes.
-        if runSyncNow {
+        if inTurnSyncEnabled, runSyncNow || runBroadcastOnly {
+            _ = await keeper.syncTurnNow(via: self, reason: .resume)
+        } else if runSyncNow {
             await _syncNowImpl()
         } else if runBroadcastOnly {
             await _syncBroadcastOnlyImpl()

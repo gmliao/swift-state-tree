@@ -293,7 +293,9 @@ private struct KeptEventsFixture {
     let adapter: TransportAdapter<KeptEventsTestState>
     let transport: KeptEventsTransport
     let members: [KeptEventsMember]
-    /// Holds a sync cycle in flight (frames enqueued, before `endSync`); see `SyncCycleHold`.
+    /// Holds a sync cycle in flight (frames enqueued, before `endSync`); see `SyncCycleHold`. Only
+    /// the off adapter's own cycle reaches it (`inTurnSync: false`, until #546 L2c): in-turn,
+    /// `syncNow()` is a keeper turn.
     let hold = SyncCycleHold()
 
     var a: KeptEventsMember { members[0] }
@@ -481,7 +483,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
 
     @Test("1: a broadcast event queued during the batch send arrives once, in the next cycle's merged frame")
     func broadcastEventQueuedDuringBatchArrivesNextCycle() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync)
+        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
         #expect(f.keeper.hasPeriodicSync == true)
 
         try await f.set("score", 1)
@@ -547,7 +549,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.set("tick", 1)
         f.gate.close()
         let adapter = f.adapter
-        let cycle = Task { await adapter.syncBroadcastOnly() }
+        let cycle = Task { await adapter._syncBroadcastOnlyImpl() }
         // Held at the broadcast frame's send: broadcast events were read, targeted not yet.
         try await waitUntil("the broadcast frame send to be held") { f.gate.heldCount > 0 }
         await f.broadcastEvent("bc-late")
@@ -567,7 +569,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
 
     @Test("4: events read by cycle N are not resent by cycle N+1 (exact frame counts)")
     func noDuplicatesAcrossCycles() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync)
+        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
 
         // Cycle N: a per-player change, a targeted and a broadcast event queued before it,
         // and a broadcast event queued during its batch send (kept for N+1).
@@ -614,7 +616,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.set("tick", 1)
         await f.broadcastEvent("bc-drop-2")
         await f.targetedEvent("tg-drop-2", to: f.a)
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
         await f.settle()
         counts = await f.adapter.pendingEventCounts()
@@ -645,7 +647,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
     // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
     @Test("7: without periodic sync, an event queued after a cycle's cleanup arrives through the post-endSync follow-up")
     func followUpDeliversKeptEventsWithoutPeriodicSync() async throws {
-        let f = try await KeptEventsFixture.make(.tickless)
+        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
         #expect(f.keeper.hasPeriodicSync == false)
 
         try await f.set("score", 1)
@@ -662,7 +664,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
 
     @Test("7b: with periodic sync, a kept event waits for the next periodic cycle (no follow-up)")
     func noFollowUpWithPeriodicSync() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync)
+        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
         #expect(f.keeper.hasPeriodicSync == true)
 
         // Every cycle gets an event during its batch send; only the test-driven (periodic) cycles run.
@@ -686,7 +688,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
     // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
     @Test("7c: without periodic sync, an event queued after every cycle's cleanup gives events + 1 cycles, and syncNow returns after one")
     func followUpsAreBoundedAndDoNotBlockTheCaller() async throws {
-        let f = try await KeptEventsFixture.make(.tickless)
+        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
         let events = 3
 
         // Each cycle's batch is held; the test then queues one broadcast event (kept, since the
@@ -823,25 +825,6 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
     }
 
     @Test(
-        "7e-in-turn: an event queued while a cycle is held before endSync is delivered once by the follow-up"
-    )
-    func inTurnEventQueuedBeforeEndSyncIsDelivered() async throws {
-        let f = try await KeptEventsFixture.make(.tickless)
-        #expect(f.adapter.inTurnSyncEnabled)
-        try await f.set("score", 1)
-        await f.targetedEvent("tg-pre", to: f.a)
-        try await f.syncNowHoldingBatch {
-            await f.broadcastEvent("bc-hop")
-        }
-        // No further sync request from the test: the post-endSync check starts the follow-up.
-        try await f.waitForCount("bc-hop", f.a)
-        #expect(count("bc-hop", in: f.frames(f.a)) == 1)
-        #expect(count("tg-pre", in: f.frames(f.a)) == 1)
-        let counts = await f.adapter.pendingEventCounts()
-        #expect(counts.targeted == 0 && counts.broadcast == 0, "nothing left queued")
-    }
-
-    @Test(
         "8-in-turn: an event queued before a cycle is delivered by that cycle, once"
     )
     func inTurnEventQueuedBeforeCycleIsInThatCycle() async throws {
@@ -862,7 +845,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
     // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
     @Test("7d: a sync loop that does not auto-start is not periodic sync; the post-endSync follow-up delivers an event queued after cleanup")
     func followUpWhenLoopsDoNotAutoStart() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync, autoStartLoops: false)
+        let f = try await KeptEventsFixture.make(.periodicSync, autoStartLoops: false, inTurnSync: false)
         #expect(f.keeper.hasPeriodicSync == false)
 
         try await f.set("score", 1)
@@ -981,7 +964,7 @@ struct TransportAdapterKeptEventsDebugFreezeTests {
     // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
     @Test("A post-endSync follow-up requested while frozen is deferred, then runs on resume")
     func followUpDeferredWhileFrozen() async throws {
-        let f = try await KeptEventsFixture.make(.tickless)
+        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
         #expect(f.keeper.hasPeriodicSync == false)
 
         try await f.set("score", 1)

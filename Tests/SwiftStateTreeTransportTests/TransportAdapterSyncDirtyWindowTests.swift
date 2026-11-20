@@ -168,7 +168,9 @@ private struct DirtyWindowFixture {
     let client = ClientID("dw-client")
     let player = PlayerID("dw-player")
 
-    static func make(envConfig: TransportEnvConfig) async throws -> DirtyWindowFixture {
+    /// `inTurnSync: false`: the adapter's own cycle, which `hold` holds in flight (until #546 L2c
+    /// removes it). In-turn, `syncNow()` is a keeper turn that never reaches that hold.
+    static func make(envConfig: TransportEnvConfig, inTurnSync: Bool = true) async throws -> DirtyWindowFixture {
         let transport = DirtyWindowTransport()
         let keeper = LandKeeper<DirtyWindowTestState>(
             definition: makeDirtyWindowLand(),
@@ -178,7 +180,8 @@ private struct DirtyWindowFixture {
             keeper: keeper,
             transport: transport,
             landID: "dirty-window-test",
-            transportEnvConfig: envConfig
+            transportEnvConfig: envConfig,
+            inTurnSync: inTurnSync
         )
         await transport.setDelegate(adapter)
         let fixture = DirtyWindowFixture(keeper: keeper, adapter: adapter, transport: transport)
@@ -297,7 +300,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         try await f.set("score", 5)
-        await f.adapter.syncBroadcastOnly()
+        await f.adapter._syncBroadcastOnlyImpl()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
         // A broadcast field is dirty in the next cycle, so it is not an `.all` cycle.
@@ -317,7 +320,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(
             useSnapshotForSync: true,
             enableDirtyTracking: false
-        ))
+        ), inTurnSync: false)
         #expect(await f.adapter.isDirtyTrackingEnabled() == false)
 
         try await f.set("b", 1)  // something for the held cycle to send
@@ -339,7 +342,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
     @Test("a sync request rejected while a cycle is in flight loses no mutation")
     func rejectedSyncRequestLosesNoMutation() async throws {
-        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
+        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true), inTurnSync: false)
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
@@ -364,7 +367,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
     @Test("mutations during an in-flight adapter cycle reach the client next cycle", arguments: [true, false])
     func inFlightCycleMutationsReachClient(useSnapshotForSync: Bool) async throws {
-        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
+        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync), inTurnSync: false)
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
@@ -390,7 +393,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
     @Test("a deferred retry in flight at the last request: the client is behind until sync settles (#142)")
     func deferredRetryInFlightAtLastRequest() async throws {
-        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
+        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true), inTurnSync: false)
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
