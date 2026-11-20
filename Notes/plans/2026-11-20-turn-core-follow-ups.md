@@ -1,6 +1,16 @@
 # Turn core: coalesced follow-ups and a quiescence wait (#702)
 
-**Status:** open, rev 4. Plan for review before any code: Code-1 checks the use-case mapping (§5), then Review reviews the plan.
+**Status:** open, rev 5. Plan for review before any code: Code-1 checks the use-case mapping (§5), then Review reviews the plan.
+
+**Rev 5** (Review's NOT GO on rev 4, issue comment 7033351175: 2 must-fix, 5 should, 2 nit):
+- §3.3: due follow-ups at the release cap. They are exempt from the budget, and a capped segment still steps them before it ends. The `.afterBatch` snapshot finishes in its own job (MF 1).
+- §3.3, §8: every path that makes a gate's deadline obsolete sets the sweep's flag: the gate's return, a consume, and a close by a key end, a supersede or `endAll` (MF 2).
+- §3.3: the deadline's anchor and the launch's attribution.
+- §3.5: the registration tie: the count at the call wins.
+- §4: case 17 split into supersede, then teardown. Cases 27–36 added: the cap, the sweep, the tie, the query-answer consume, the clock anchor, attribution, foreign returns, a supersede before launch, and `cancel`/`reply(after:)` on a follow-up id.
+- §5: the first requester stays weak, and the #700 probe's identity.
+- §10: the bench procedure: `perf stat -e instructions:u`, base and head SHAs, runs, threshold, and cells that reach `runSegment`.
+- Nits: the note under case 16 and "a close" in §3.3's race.
 
 **Rev 4** (Review's NOT GO on rev 3, issue comment 7033041365: 3 must-fix, 5 should, 4 nit; Main's two additions). The shape is unchanged; the rules are made exact:
 - §3.3: the gate's lifecycle (launch filter, per-arm checks, the deadline race) and the driver's revalidation between follow-up steps (MF 1, 2).
@@ -90,15 +100,28 @@ Rules:
 - **It steps as a control input** through `handle`, under the generation it was armed in. That generation is current by construction: an end or supersede closes the follow-up eagerly (§3.4). Holds, `close` and the queue limit don't apply, as for a timer's input.
 - **The slot is freed before the step,** so the step may arm a successor in the same slot. For `.afterBatch`, that successor runs in yet another batch. A follow-up that keeps re-arming itself is a chain of jobs, each yielding the actor, and can't loop inside one batch. That is why `.afterBatch` doesn't mean "at the end of this batch".
 - **Order.** Follow-ups that become due together step in the order they were armed (by `RequestID`).
+- **The release cap (core rule 7) doesn't apply to follow-ups.** `maxReleasesPerBatch` bounds the parked inputs a batch releases. A follow-up isn't a parked input: it is a control input, and there is at most one per key and slot, so the number a batch can step is bounded by the arms made before it. The driver's loop handles it like this:
+  - when a releasable key is left at `budget == 0`, the segment schedules `continueDrain`, as today, and stops releasing;
+  - it still steps the due follow-ups it holds, each re-checked, and their products drain after each step, before it ends (core rule 10's order: drain, abandoned, queued, then releases or follow-ups);
+  - so the rest of an `.afterBatch` snapshot keeps its eligibility and finishes in its own job, under that job's clock read, and never waits for `continueDrain`.
+  - `continueDrain` releases parked inputs only. It never steps a follow-up. An arm made after the snapshot (by a due step, by a released input, or in `continueDrain`'s batch) goes to `dueFollowUps` and runs in the next `continueFollowUps` job, under that job's clock read.
+  - A gate's return is its own entry with its own clock read. Its arm steps in that segment, also when the result's step leaves the segment capped.
 
 **The gate's lifecycle (`.afterWork`).** Each rule names the arm by its id, so two gates for one slot (after consume-and-arm, or case 15's re-arm) never act on each other's follow-up.
 - **Launch is filtered.** The step stages the gate; `drainProducts` launches it only if that arm's follow-up is still pending. A follow-up armed and then consumed, ended or superseded in the same step starts no gate. This is the timers' rule (a staged timer is checked against its live record), not the request effects' (a staged effect launches even if its request closed in that step).
 - **A return or a deadline checks its own arm:** the core's incarnation first (as `complete` does), then that the arm's id is still pending with its gate not yet returned. A's gate can neither step nor close B's follow-up in the same slot.
-- **The deadline and a consume (or a close) in one actor turn:** each is a separate actor entry, and whichever is serviced first wins, as for a request (`deadlineFired` checks `rt.open`).
+- **The deadline's anchor.** `.afterWork(effect, deadline: d)` sets the deadline at the arming batch's `now` + `d`. That is the batch's one clock read (the core reads the clock at most once per batch), so a step that reads `now` and arms with a deadline makes one read, not two.
+- **Attribution.** Rule 20's debug accounting counts a gate when its arm stages it, while the arming input's `stepCase` is set, as an effect is counted when it is staged. A gate that launch then filters out still counts against its originating input: the count says what the input asked for, not what ran. No case name has to be carried to the launch.
+- **The deadline and a consume (or a key end, a supersede or `endAll`) in one actor turn:** each is a separate actor entry, and whichever is serviced first wins, as for a request (`deadlineFired` checks `rt.open`).
   - Consume first: the follow-up is gone. The deadline task is cancelled in the same segment's sweep, and if it was already waking it finds nothing pending and reports `.staleDeadline`.
   - Deadline first: the follow-up closes with `.deadline` and `handleAbandoned` steps; the consume returns nil.
   - The gate returning first: the deadline task is cancelled, and a late wake reports `.staleDeadline`.
-- **Shared `deadlineTasks`.** A gate's deadline lives in the requests' table. The cancellation sweep, which today cancels any id missing from `rt.open`, keeps an id whose follow-up is pending with its gate still out, and cancels it once the gate has returned or the follow-up is gone.
+- **Shared `deadlineTasks`.** A gate's deadline lives in the requests' table. The cancellation sweep runs only when `rt.deadlinesToCancel` is set, and today only `closeRequest` sets it. Every path that makes a gate's deadline obsolete sets it too:
+  - the gate's return, while its arm is pending;
+  - a consume;
+  - a close by `end`, a supersede or `endAll`.
+
+  The sweep cancels any id that is neither an open request nor a pending arm with its gate still out. Live request deadlines are kept, and so is a pending arm's deadline whose gate is still out (B's, when A's was obsolete in the same slot).
 - **Debug accounting.** Gate launches count in rule 20's accounting of launched work, as effects do.
 
 **How a trigger enters the driver, and the revalidation between steps.**
@@ -132,6 +155,8 @@ public func waitForQuiescence(_ kinds: TurnWork = .followUps, of key: M.Key? = n
   - waiters are keyed by id, so a cancellation removes its own entry and no other;
   - the registration re-checks `Task.isCancelled` and the count inside the continuation's closure, so a cancellation that lands before the entry exists can't leave it waiting;
   - the entry is resumed once, by whichever is serviced first: a check point that finds the count reached (true), or the cancel hop (false). A cancel that races a satisfying check point loses if the check point runs first, and the task returns true.
+  - **The tie at the call.** The call checks the count first, and returns true if it is reached, also for a task that is already cancelled. Only then does it check cancellation (false). The continuation's closure runs in the same actor segment as that check, with no suspension between them, so the count can't change there. Its re-checks catch only a cancellation that lands during registration.
+  - A registered waiter is observable to tests (a package-visible count of waiters), so a test orders "registered" before the step that satisfies it, or before the cancel.
   Tests bound the wait with `withinHangBound`, as today.
 - **Cost (#621 item 4):** the waiters are a table scanned only when it isn't empty, so a core with no waiter pays one `isEmpty` test per segment. The count is recomputed per check (the follow-up table's size, or `open`/`timers` filtered by key), which is fine for tests.
 
@@ -159,8 +184,11 @@ Then:
 14. Generated orders (`GeneratedOrderTests`): add arm, consume and end operations to the generator. Check invariants 18 to 20 (§6) after each step.
 15. A re-arm from the follow-up's own step: an `.afterWork` follow-up's step finds the writer held again and arms the same slot. The slot was freed before the step, so the arm is `.armed` with a new id, not `.joined` with the one stepping. The wait stays busy across the hand-over. On the keeper this is the drain retry whose phase is deferred again.
 16. Dropped in rev 4 (an exit test; see below the list). The number is kept so the cases match the test names.
-17. A superseded binding's `.afterWork` gate still waiting when `endAll` runs (Main, from #695's review): its follow-up is closed at once and uncounted (`pendingWork` is zero and the wait returns before the gate does), and its late return steps nothing.
-18. Armed and closed (an `end`, a consume) in one step, before launch: no gate starts.
+17. A superseded binding's `.afterWork` gate still waiting when `endAll` runs (Main, from #695's review). The gate returns nil. The supersede and the teardown are told apart:
+    - hold A's launched gate and supersede A: one `.keyEnded` for A, and zero pending, **before** `endAll`;
+    - arm a live B, then `endAll`: one abandonment for B, and the wait returns while A's gate is still held;
+    - release A: `.staleFollowUp`, no step and no second abandonment.
+18. Armed and closed (an `end`, a consume, a supersede) in one step, before launch: no gate starts.
 19. A consume and the gate's deadline, in both orders: whichever is serviced first wins, and the other finds nothing (`.staleDeadline`, or a consume that returns nil).
 20. A's stale gate returning while B is pending in the same slot (after consume and re-arm): it neither steps nor closes B.
 21. A `handleAbandoned` that arms the same key: after a plain `end`, `.refused` (the key isn't live); after a supersede, `.armed` under the new generation, and it runs; after `endAll`, `.refused` and counted.
@@ -169,8 +197,25 @@ Then:
 24. A gate's non-nil result whose step ends the key: the follow-up is closed, not stepped.
 25. A stale gate's non-nil result still steps, and arms work after a wait already returned for the closed follow-up (rule 17).
 26. `endAll` wakes a waiter registered before it.
+27. The release budget exhausted with follow-ups due, on both entry paths:
+    - an `.afterBatch` job whose first due step releases more parked inputs than `maxReleasesPerBatch`, with a second due follow-up behind it and a successor armed after the snapshot;
+    - a gate's result step that does the same.
 
-Case 16, rev 3's exit test for `followUp` outside a step, is dropped: a `Turn` can't be obtained outside a step (`read` lends the machine only), so the restriction is a compile-time one, and the core's tests don't probe crashes.
+    Checked: the due follow-ups step in their own segment (the second one too); the parked inputs past the cap step in `continueDrain`'s batch, in order, and no batch releases more than the cap (core rule 7); the successor steps in the next `continueFollowUps` job; and each step's products drain before the next step (core rule 10).
+28. A gate's return cancels its deadline (the test clock reports the cancellation) and keeps a live request's deadline, which still fires.
+29. A's obsolete deadline leaves B pending in the same slot. A is consumed and B is armed with its own deadline; A's deadline wakes: B stays pending and steps when its gate returns.
+30. The registration tie and the races, with the waiter count as the registration event:
+    - a task cancelled before it calls the wait: it returns true if the count is already reached, otherwise false, and registers nothing;
+    - a registered waiter, then a cancel, then the satisfying step: false;
+    - a registered waiter, then the satisfying step, then a cancel: true.
+31. A `query` whose answer step consumes the last follow-up wakes a registered waiter. It is the step that makes nothing else dirty; rev 4 listed it in §10 only.
+32. A gate's deadline shares the arming batch's clock read: a step that reads `now` and arms with a deadline reads the clock once.
+33. A gate filtered at launch still counts against its originating input in the debug effect counts.
+34. A foreign gate return and a foreign deadline are rejected after the core is replaced (`.foreignCompletion`), as for requests.
+35. A follow-up id given to `cancel` does nothing, and to `reply(after:)` publishes at once (§3.1).
+36. (Exit test, optional) A negative `atMost` stops the process, in a child process as `RuntimeStopTests` does.
+
+Case 16, rev 3's exit test for `followUp` outside a step, is dropped: a `Turn` can't be obtained outside a step (`read` lends the machine only), so the restriction is a compile-time one and there is nothing to run. Exit tests do exist for run-time stops (`RuntimeStopTests`, in child processes); case 36 is one.
 
 ## 5. The LandKeeper follow-ups and the waiters
 
@@ -181,6 +226,8 @@ After #700, the keeper's machine has a key `.syncBinding`, started on every bind
 - the first requester's bind;
 - `setTransport(nil)` (a detach): today it changes eligibility (`transport` is nil, `hasHeldTransport` stays true, so `bindSyncRequester` refuses) without a new ticket. On the core it is an `end(.syncBinding)`, so the detached binding's follow-ups close at once rather than being refused when they run;
 - the teardown: `endAll`.
+
+**The first requester stays weak.** Today the keeper holds its first requester weakly (`boundSyncRequesterObject`), because the adapter holds the keeper. When the actor stores the current binding's port at #700, it keeps a first requester weak the same way. An attached transport is held as today.
 
 **The gate's effect carries its port.** The binding's port isn't plain data, so the effect is `.waitForWriterDrain(port)` with the port the follow-up was armed under (a `Sendable` box held by the actor, not the machine), and `perform` waits on that port. An effect that read the actor's current port when `perform` began would make A's gate wait on B's writer.
 
@@ -230,7 +277,7 @@ L2d deletes `beginSync`/`endSync`, `isSyncing` and the latch `syncOnlyTurnAfterL
 | `waitForRequestedSyncTurnsForTesting(atMost:)` | `waitForQuiescence(.followUps, of: .syncBinding, atMost: n)` |
 | `hasRequestedSyncWorkForTesting` | `pendingWork(.followUps, of: .syncBinding) > 0` |
 | The adapter's `waitForBackgroundSyncsForTesting` and the outbound-idle wait (`TransportAdapter.swift:3206`, :3221, :3225) | Unchanged: they call the keeper's waits, which forward |
-| `inTurnDrainRetryBindingForTesting` (:5346) | `followUpPending` is `Turn`-only, and `core.read` lends the machine only, so the test reads it through an `answer` (a query whose step returns `followUpPending(.drainRetry, of: .syncBinding)`), or through a read-only runtime accessor on the core if one is added for tests |
+| `inTurnDrainRetryBindingForTesting` (:5346) | `followUpPending` is `Turn`-only, and `core.read` lends the machine only, so the test reads it through an `answer`: a query whose step returns `followUpPending(.drainRetry, of: .syncBinding)` with the binding's generation. Today's assertions (`TransportAdapterRequestedSyncTurnTests.swift:139`, :159) compare a binding ticket. At #700 they compare the generation the answer returns with the binding's current one, or are reworded as "a retry is pending, and its id differs from the one armed before the rebind" |
 
 The bug #695's review found, replayed on the core: A's retry is pending, `setTransport(B)` starts `.syncBinding` again, and A's retry is closed in that step. B's deferred phase arms `.drainRetry` and gets `.armed`, not `.joined`. Case 4 of §4 is this sequence on a model machine.
 
@@ -302,14 +349,13 @@ The wait is public, not `package`: adopters outside this package test their mach
 - **Driver:**
   - `drainProducts` launches the staged gates, filtered against their pending arms, and a gate's deadline task.
   - The gate's return and the `.afterBatch` job enter through their own actor entries (`gateReturned`, `continueFollowUps`), each starting with the incarnation check where a task carries one.
-  - `runSegment`'s loop steps the due ids after the drain, the abandoned, the queued and the releasable, re-checking each.
+  - `runSegment`'s loop steps the due ids after the drain, the abandoned, the queued and the releasable, re-checking each. A segment capped at `budget == 0` stops releasing but keeps stepping the due ids it holds (§3.3).
+  - `removeFollowUp` (consume and every close) and the gate's return set `rt.deadlinesToCancel` when the arm has a deadline (§3.3).
   - When `dueFollowUps` isn't empty at the end of `runSegment`, it schedules one `Task { self.continueFollowUps() }`, as `continueDrain` is scheduled.
   - The quiescence check is the last thing in `runSegment` (§3.5).
-- **What a machine without follow-ups pays (`FollowUpSlot == Never`).** It can't arm one, so every table stays empty and nothing marks the runtime dirty on the follow-ups' account. Per segment it pays four empty-collection tests:
-  - the due-ids queue in the loop;
-  - `dueFollowUps` at the end;
-  - the staged gates in `drainProducts`;
-  - the waiter table in the check point.
+- **What a machine without follow-ups pays (`FollowUpSlot == Never`).** It can't arm one, so every table stays empty and nothing marks the runtime dirty on the follow-ups' account. It pays these empty-collection tests:
+  - per iteration of the driver's loop: the due-ids queue, and the staged gates in `drainProducts` (which runs once per iteration);
+  - per segment: `dueFollowUps` at the end, and the waiter table in the check point.
 
   Per `start`, `end` and `endAll`, it pays one more: `closeFollowUps(of:)` on an empty table. A deadline sweep, which runs only when a request with a deadline closed, makes one lookup in the empty `followUpIDs` per remaining deadline task. No allocation and no extra dictionary hashing reach the `call` and `send` paths. §10 measures this.
 - The new step paths are `@inlinable`, and `scripts/check-turns-inlinable.sh` lists their specializations.
@@ -339,7 +385,21 @@ The wait is public, not `package`: adopters outside this package test their mach
   - the due ids not re-checked before each step (cases 23 and 24);
   - the check point only on dirty `submit`, with a consume in a query's answer not marking dirty (a case: a query whose answer step consumes the last follow-up wakes a registered waiter).
 - **`TurnsBench`** gains "arm and run one `.afterBatch` follow-up" and "arm and join".
-- **The cost to machines without follow-ups, measured (Main; #621).** The PR body carries a `TurnsBench` before/after of the existing `call` and `send` paths, in instructions, both sides built in release from the pinned `swift:6.2.4-noble` image (base `main` and the PR head, rebuilt in one container, `swift --version` recorded). The expectation from §8 is a few instructions per segment; a larger change is a finding, not noise, and blocks the PR until explained, so #621's numbers don't regress silently.
+- **The cost to machines without follow-ups, measured (Main; #621).** `TurnsBench` reads instructions through `proc_pid_rusage`, which is macOS-only, so on Linux it prints `-`. The count comes from `perf stat -e instructions:u` instead, per the instruction gate (`2026-11-13-off-path-instruction-gate.md`). The procedure:
+  - **Where:** a throwaway container from the pinned `swift:6.2.4-noble` image with `seccomp=unconfined` (so `perf` can open its counters), while holding the measurement lock. Nothing in `Sources/` adopts `TurnCore` yet, so only `TurnsBench` can move.
+  - **Sides:**
+    - base: the PR's merge base on `main`;
+    - head: the PR head.
+
+    Both SHAs go in the PR body. Both are built `-c release` in that one container, with `swift --version` recorded.
+  - **Cells:** all on the `turn` side, on the bench's existing machine, which declares no follow-ups (`FollowUpSlot == Never`) on both sides:
+    - `emit`: a `send` whose step emits an output, so the segment drains through `runSegment`;
+    - `call`: `sendAndWait`, whose reply goes through `runSegment`;
+    - `idle`: `send(.noop)`, a step that makes nothing dirty, so it skips `runSegment`. It is the control: it should not move at all.
+
+    The new follow-up benches run on a separate follow-up machine and aren't compared against base.
+  - **Runs:** `perf stat -e instructions:u -x, TurnsBench <cell> turn <n>` with `n` at the bench's defaults (1,000,000 for `idle` and `emit`, 100,000 for `call`), 5 runs per cell and side, alternating base and head. The per-op figure is `(instructions − the same run at n = 0) / n`, so start-up cancels out.
+  - **Threshold:** the gate's rule: head's mean above base's by more than max(0.5 %, 3 × base's spread) is a regression. The PR doesn't open, or stays open, until that is fixed or explained. §8's estimate is a few instructions per segment.
 
 ## 11. Steps
 
