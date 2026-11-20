@@ -30,10 +30,14 @@ INDEX = "Notes/plans/README.md"
 TITLE = r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
 # A bare destination may hold one level of balanced parentheses (`a(b).md`).
 DESTINATION = r"(?:<([^>]*)>|((?:[^\s()<>\\]|\\.|\([^\s()<>]*\))+))"
+# A `[` that isn't escaped: an even number of backslashes before it (none included), so `\[P]` is
+# text but `\\[P]` is an escaped backslash, then a link. The run of backslashes must start where no
+# backslash precedes it, so a match can't begin halfway through the run.
+OPEN_BRACKET = r"(?<!\\)(?:\\\\)*\["
 # `[text](destination)`, its `[` not escaped: `](b.md)` alone or `\[P](b.md)` isn't a link.
-INLINE = re.compile(r"(?<!\\)\[(?:\\.|[^\]\\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
+INLINE = re.compile(OPEN_BRACKET + r"(?:\\.|[^\]\\])*\]\(\s*" + DESTINATION + TITLE + r"\s*\)")
 # `[t][ref]`, `[ref][]` and `[ref]` (not followed by `(` or `[`).
-REFERENCE = re.compile(r"(?<!\\)\[((?:\\.|[^\]\\])*)\]\[((?:\\.|[^\]\\])*)\]|(?<!\\)\[((?:\\.|[^\]\\])+)\](?![(\[])")
+REFERENCE = re.compile(OPEN_BRACKET + r"((?:\\.|[^\]\\])*)\]\[((?:\\.|[^\]\\])*)\]|" + OPEN_BRACKET + r"((?:\\.|[^\]\\])+)\](?![(\[])")
 DEFINITION = re.compile(r"^ {0,3}\[((?:\\.|[^\]\\])+)\]:\s*" + DESTINATION + TITLE + r"\s*$")
 CODE_SPAN = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)")
 IMAGE = re.compile(r"!\[(?:\\.|[^\]\\])*\](?:\([^)]*\)|\[(?:\\.|[^\]\\])*\])?")
@@ -175,6 +179,10 @@ def self_test():
         ("a row without the outer pipes counts", head + "2026-11-19 | [P](a.md) | open | x\n" + row("a.md", "done"), dup("a.md", "3, 4")),
         ("a bare ](b.md) isn't a link", head + "| d | ](b.md) | open | x |\n" + row("a.md"), ["t.md:3: a row with no plan link in its Plan column"]),
         ("an escaped \\[P](b.md) isn't a link", head + "| d | \\[P](b.md) | open | x |\n" + row("a.md"), ["t.md:3: a row with no plan link in its Plan column"]),
+        ("an escaped backslash, then a link, is a link", head + "| d | \\\\[P](a.md) | open | x |\n" + row("a.md", "done"), dup("a.md", "3, 4")),
+        ("three backslashes escape the [", head + "| d | \\\\\\[P](b.md) | open | x |\n" + row("a.md"), ["t.md:3: a row with no plan link in its Plan column"]),
+        ("an escaped backslash, then a collapsed reference link, is a link",
+         head + "| d | \\\\[P][] | open | x |\n" + row("a.md", "done") + "\n[P]: a.md\n", dup("a.md", "3, 4")),
         ("parentheses in a destination", head + row("a(b).md") + row("a(b).md", "done"), dup("a(b).md", "3, 4")),
         ("a link in Evidence isn't the plan", head + "| d | [P](a.md) | open | after [Q](b.md) |\n" + row("b.md"), []),
         ("a Plan cell without a link fails", head + "| d | a.md | open | [Q](b.md) |\n" + row("b.md"), ["t.md:3: a row with no plan link in its Plan column"]),
