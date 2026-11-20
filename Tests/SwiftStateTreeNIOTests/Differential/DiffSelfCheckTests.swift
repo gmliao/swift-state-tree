@@ -128,6 +128,44 @@ extension DifferentialHarness {
             #expect(DiffGolden.corruption(of: record) != nil, "an edited record view")
         }
 
+        @Test("A cell that throws is reported, and the sweep still compares and reports every later cell")
+        func sweepGoesOnAfterAThrow() async throws {
+            let base = try await baseRun()
+            let throwing = try #require(diffScenarios.first { $0.name == "join-act-leave" })
+            let differing = try #require(diffScenarios.first { $0.name == "two-players" })
+            // The later scenario's golden misses a frame its run has.
+            var golden = base
+            let connection = try #require(golden.terminal.connections.keys.sorted().first)
+            var frames = try #require(golden.terminal.connections[connection]).frames
+            try #require(!frames.isEmpty)
+            frames.removeLast()
+            golden.terminal.connections[connection]?.frames = frames
+            let report = await DiffSweep.run(
+                scenarios: [throwing, differing],
+                retired: [],
+                expected: [],
+                toolchain: "self-check",
+                execute: { scenario, _ in
+                    if scenario.name == throwing.name { throw DiffRunFailure("forced") }
+                    return base
+                },
+                readGolden: { name in
+                    DiffGoldenFile(
+                        scenario: name, cell: "",
+                        recordedWith: DiffRecordedWith(commit: "self-check", toolchain: "self-check"),
+                        result: golden
+                    )
+                }
+            )
+            let thrown = throwing.cells.cells.count
+            let compared = differing.cells.cells.count
+            #expect(report.ran == thrown + compared, "every cell ran: \(report.ran)")
+            #expect(report.threw.count == thrown)
+            #expect(report.threw.allSatisfy { $0.hasPrefix("\(throwing.name) ") })
+            let reported = report.issues.filter { $0.hasPrefix("\(differing.name).") }
+            #expect(reported.count == compared, "every later cell's difference is reported: \(report.issues)")
+        }
+
         @Test("An update under the verify key is refused")
         func updateUnderVerify() {
             #expect(DiffGolden.updateRefusal(environment: [DiffGoldenKeys.update: "1", DiffGoldenKeys.verify: "1"]) != nil)
