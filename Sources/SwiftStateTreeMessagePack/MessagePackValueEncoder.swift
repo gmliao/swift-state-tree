@@ -66,8 +66,10 @@ public struct MessagePackValueEncoder {
         if let value = value as? URL {
             return .string(value.absoluteString)
         }
-        if let value = value as? Decimal {
-            return .string(value.description)
+        if value is Decimal {
+            // No wire form (#597): fail the encode rather than write a form a reader may not
+            // read back.
+            throw MessagePackDirectEncodingError.decimal
         }
         if let value = value as? AnyCodable {
             return try MessagePackDirectEncoder().encodeAnyCodable(value)

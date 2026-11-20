@@ -506,7 +506,7 @@ public struct TypeToSchemaConverter {
             || type is any SnapshotValueConvertible.Type
             || type == Any.self || type == AnyCodable.self
             || type == Date.self || type == Data.self || type == URL.self
-            || type == UUID.self || type == Decimal.self
+            || type == UUID.self
     }
 
     /// Create a sample instance of a Codable type for Mirror inspection.

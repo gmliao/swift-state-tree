@@ -16,7 +16,7 @@ import Foundation
 /// struct ProductInfo: ResolverOutput {
 ///     let id: ProductID
 ///     let name: String
-///     let price: Decimal
+///     let priceCents: Int
 ///     let stock: Int
 /// }
 /// ```

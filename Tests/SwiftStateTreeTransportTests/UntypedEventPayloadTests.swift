@@ -199,7 +199,12 @@ func expectGateClosedBeforeTheFailureTurn(
     #expect(land.adapter.outputGate.isClosed, "\(label): the gate closed in the failing segment")
     await land.adapter.sendEventToTransport(AnyServerEvent(UntypedPayloadTypedEvent(hp: 1)), to: .all)
     await land.adapter.waitForOutboundIdleForTesting()
-    #expect(await land.transport.sends == sentBefore, "\(label): an event sent in that window doesn't go out")
+    // On messagepack, events merge: the event only queues a body, which this window doesn't
+    // flush, so a send count can't show it there. The isClosed check above pins the close on
+    // every encoding.
+    if land.encoding != .messagepack {
+        #expect(await land.transport.sends == sentBefore, "\(label): an event sent in that window doesn't go out")
+    }
     submit.open()
     try await failing.value
     await land.adapter.installHolds(nil)

@@ -1,8 +1,21 @@
 import Foundation
 import SwiftStateTree
 
-enum MessagePackDirectEncodingError: Error {
+enum MessagePackDirectEncodingError: Error, CustomStringConvertible {
     case unsupportedAnyCodable(String)
+    /// A `Decimal` has no wire form (#597); registration refuses one in a payload or synced
+    /// field, so this is a value registration couldn't see (an `AnyCodable`, or a field a
+    /// hand-written decoder hides).
+    case decimal
+
+    var description: String {
+        switch self {
+        case .unsupportedAnyCodable(let typeName):
+            return "unsupportedAnyCodable(\(typeName))"
+        case .decimal:
+            return "a Decimal has no wire form (#597); store an integer of the smallest unit or a String"
+        }
+    }
 }
 
 private struct AnyEncodable: Encodable {
@@ -303,12 +316,9 @@ struct MessagePackDirectEncoder {
             return .string(value.uuidString)
         case let value as URL:
             return .string(value.absoluteString)
-        case let value as Decimal:
-            let number = NSDecimalNumber(decimal: value)
-            if number == .notANumber {
-                return .string(number.stringValue)
-            }
-            return .double(number.doubleValue)
+        case is Decimal:
+            // Before NSNumber, which a bridged Decimal would match (as a lossy double).
+            throw MessagePackDirectEncodingError.decimal
         case let value as NSNumber:
             return encodeNSNumber(value)
         case let value as PlayerID:

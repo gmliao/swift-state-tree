@@ -5982,9 +5982,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// A response that doesn't encode (a value that isn't a payload type on a compressed
     /// encoding, #544) would leave its client without an answer: the land ends. The output gate
     /// closes here, in this segment, and the caller submits the returned failure to the keeper.
-    /// The response is encoded before the ticket is checked, so a stale request's response that
-    /// doesn't encode ends the land too: the failure is in the type, and the next current
-    /// response of that type would fail the same way.
+    /// A response that reaches this helper is encoded before its ticket is checked, so a stale
+    /// request's response that doesn't encode ends the land too: the failure is in the type,
+    /// and the next current response of that type would fail the same way. A pending response
+    /// whose ticket is already stale in `finishActionResponse` returns before this helper runs.
     private func sendActionResponse(
         requestID: String,
         actionType: String,
@@ -6055,8 +6056,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// An error reply that doesn't encode would leave its client without an answer, as a
     /// response would (`sendActionResponse`): the land ends (#691). The output gate closes here,
     /// in this segment, and the caller submits the returned failure to the keeper. As for a
-    /// response, the reply is encoded before the ticket is checked, so a stale request's reply
-    /// that doesn't encode ends the land too.
+    /// response, a reply that reaches this helper is encoded before its ticket is checked, so a
+    /// stale request's reply that doesn't encode ends the land too.
     private func handleActionError(
         error: Error,
         requestID: String,

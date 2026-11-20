@@ -485,22 +485,12 @@ private struct MessagePackValueBox {
     /// the same way here. Nil when `type` isn't one of them, or, outside a client payload, when
     /// the value is in the type's keyed `Codable` form.
     /// - `Data`: binary, or base64 text.
-    /// - `Decimal`: a number. Outside a client payload, also the string `MessagePackValueEncoder`
-    ///   writes, or the keyed form. A client payload refuses anything else, as `JSONDecoder` does:
-    ///   the keyed form accepted live would be refused by replay's round trip.
     /// - `URL`: a string, as `JSONDecoder` reads it and `MessagePackValueEncoder` writes it. A
     ///   client payload refuses the keyed form, for the same reason.
     /// - `AnyCodable`, in a client payload only: `decodeAnyCodable()`.
     func decodeSpecial<T>(_ type: T.Type, codingPath: [CodingKey], clientPayload: Bool) throws -> T? {
         if type == Data.self {
             return try decodeData(codingPath: codingPath) as? T
-        }
-        if type == Decimal.self {
-            if let decimal = try decodeDecimalNumber(codingPath: codingPath, clientPayload: clientPayload) {
-                return decimal as? T
-            }
-            if clientPayload { throw typeMismatch(Decimal.self, codingPath: codingPath) }
-            return nil
         }
         if type == URL.self {
             if case .string(let text) = value {
@@ -528,36 +518,6 @@ private struct MessagePackValueBox {
     func decodeAnyCodable() throws -> AnyCodable {
         let tree = try MessagePackPayloadSource.anyCodable(from: value)
         return try JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(tree))
-    }
-
-    /// A `Decimal` sent as a number, as a client writes one, read as the JSON round trip read it:
-    /// from the number's shortest decimal text, so `0.1` is `0.1`. Outside a client payload, also
-    /// the string the server's value encoder writes (`MessagePackValueEncoder`); a client payload
-    /// refuses a string, as the round trip's `JSONDecoder` did. Nil for any other value, which
-    /// `Decimal`'s own keyed `Codable` form then decodes.
-    func decodeDecimalNumber(codingPath: [CodingKey], clientPayload: Bool) throws -> Decimal? {
-        let text: String
-        switch value {
-        case .string(let value) where !clientPayload: text = value
-        case .int(let value): return Decimal(value)
-        case .uint(let value): return Decimal(value)
-        case .double(let value) where value.isFinite: text = value.description
-        // The `AnyCodable` tree held a float as a `Double`, and `JSONEncoder` wrote that.
-        case .float(let value) where value.isFinite: text = Double(value).description
-        case .double, .float:
-            throw DecodingError.dataCorrupted(DecodingError.Context(
-                codingPath: codingPath,
-                debugDescription: "\(value) isn't a finite Decimal"
-            ))
-        default: return nil
-        }
-        guard let decimal = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")) else {
-            throw DecodingError.dataCorrupted(DecodingError.Context(
-                codingPath: codingPath,
-                debugDescription: "\(value) doesn't read as a Decimal"
-            ))
-        }
-        return decimal
     }
 
     func decodeInt(codingPath: [CodingKey]) throws -> Int {

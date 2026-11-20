@@ -73,7 +73,6 @@ struct PFFallbacksEvent: ServerEventPayload {
     let anyArray: AnyCodable
     let date: Date
     let data: Data
-    let decimal: Decimal
     let uuid: UUID
     let kind: PFKind
 }
@@ -232,20 +231,13 @@ enum PayloadFrameCases {
                 anyArray: AnyCodable([AnyCodable(1), AnyCodable("a"), AnyCodable(false)]),
                 date: Date(timeIntervalSinceReferenceDate: 1.5),
                 data: Data([0, 1, 254, 255]),
-                decimal: Decimal(string: "12.5")!,
                 uuid: UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F")!,
                 kind: .second
             )),
             serverEvent("fallbacks-empty", PFFallbacksEvent(
                 ints: [], byName: [:], byPlayer: [:], nested: PFNested(a: 0, b: ""),
                 anyObject: AnyCodable([String: AnyCodable]()), anyArray: AnyCodable([AnyCodable]()),
-                date: Date(timeIntervalSinceReferenceDate: 0), data: Data(), decimal: 0,
-                uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!, kind: .first
-            )),
-            serverEvent("fallbacks-decimal-nan", PFFallbacksEvent(
-                ints: [], byName: [:], byPlayer: [:], nested: PFNested(a: 0, b: ""),
-                anyObject: AnyCodable([String: AnyCodable]()), anyArray: AnyCodable([AnyCodable]()),
-                date: Date(timeIntervalSinceReferenceDate: 0), data: Data(), decimal: .nan,
+                date: Date(timeIntervalSinceReferenceDate: 0), data: Data(),
                 uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!, kind: .first
             )),
             serverEvent("empty", PFEmptyEvent()),
@@ -417,7 +409,6 @@ struct PayloadFrameGoldenTests {
         #expect(kinds == ["serverEvent", "actionResponse", "action", "clientEvent"])
         for c in cases {
             let name = c["name"] as? String ?? "?"
-            // A Decimal NaN isn't refused today: every JSON encoding writes a bare `NaN` (#557).
             let refusesJSON = ["leaves-nan", "leaves-infinity"].contains(name)
             for key in ["messagePack", "messagePackPlain"] {
                 #expect(c[key] as? String != "error", "\(name): \(key)")

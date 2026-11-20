@@ -82,7 +82,6 @@ struct FuzzContainersEvent: ClientEventPayload {
     let any: AnyCodable
     let date: Date
     let data: Data
-    let decimal: Decimal
     let uuid: UUID
     let kind: PFKind
     let tree: FuzzTree
@@ -121,7 +120,7 @@ enum T5Seeds {
         ints: [1, -2, 3], byName: ["a": 1, "b": 2], byPlayer: [PlayerID("p1"): 5],
         nested: PFNested(a: 4, b: "x"), optionals: FuzzOptionals(optional: nil, optionalList: ["y"]),
         any: AnyCodable(["k": AnyCodable([AnyCodable(1), AnyCodable("v")])]),
-        date: Date(timeIntervalSinceReferenceDate: 12), data: Data([1, 2, 3]), decimal: 2.5,
+        date: Date(timeIntervalSinceReferenceDate: 12), data: Data([1, 2, 3]),
         uuid: UUID(uuidString: "00000000-0000-0000-0000-000000000528")!, kind: .second,
         tree: .node([.leaf(1), .node([.leaf(2)])])
     )
@@ -131,9 +130,7 @@ enum T5Seeds {
     )
 
     static var messages: [(name: String, kind: String, message: TransportMessage)] {
-        // The payload as a client sends it: the value's JSON form, not the Swift value. Wrapped
-        // as `AnyCodable(value)`, a `Decimal` reaches the MessagePack encoder as a keyed struct,
-        // which the JSON-number decode refuses; a client sends a number.
+        // The payload as a client sends it: the value's JSON form, not the Swift value.
         func clientShaped<T: Encodable>(_ value: T) -> AnyCodable {
             (try? JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(value))) ?? AnyCodable(value)
         }

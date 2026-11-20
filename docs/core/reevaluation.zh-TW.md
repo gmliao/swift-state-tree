@@ -195,7 +195,7 @@ fingerprint 必須能列出每個欄位。會錄製（`enableLiveStateHashRecord
 
 replay land 以有型別的方式顯示每個錄製的 server event（#521、#538）。runner 在每個 tick 排入佇列前先解析：每個錄製的 event，以及 replay 自己送出的 event，都依名稱在 base land 的 registry 查找，payload 用錄製檔自己的 codec（`CanonicalMessagePack`，也就是 recorder 寫入時用的 codec）解碼。`Date` 從 ISO 字串讀回，`Data`、`URL` 與 `Decimal` 從它們自己的 `Codable` 形式讀回。儲存的錄製檔以嚴格模式解碼。JSON 檢視失去了浮點數與整數的區別，所以在那裡整數可以精確轉換時，會解碼成 `Double` 或 `Float`。replay land 會註冊 base land 的 server event，並用 `emitEvent` 送出每個 event。
 
-在錄製檔的值域內，重送的 event 編碼後與 live frame 位元組相同：`Bool`、`String`、`Int.min` 到 `Int.max` 的整數、整秒的 `Date`、有限的 `Float` 與 `Double`、`Data`、`URL`、`Decimal`，以及由這些組成的 optional、array、以字串為 key 的 map，和巢狀的 `@Payload` 型別。值域外：
+在錄製檔的值域內，重送的 event 編碼後與 live frame 位元組相同：`Bool`、`String`、`Int.min` 到 `Int.max` 的整數、整秒的 `Date`、有限的 `Float` 與 `Double`、`Data`、`URL`，以及由這些組成的 optional、array、以字串為 key 的 map，和巢狀的 `@Payload` 型別。值域外：
 
 - 帶小數秒的 `Date`：錄製檔只保留整秒，所以 replay 時往負無限大方向截斷；
 - 大於 `Int.max` 的無號整數：含有這種值的儲存錄製檔無法讀取（#628）；在 JSON 檢視中這個值是 `Double`，解碼會失敗；

@@ -78,6 +78,12 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
     /// Empty when there are none. Such types the state's own walk finds are `sync`'s
     /// `.typeNameCollision`.
     public let typeNameCollisions: [SchemaTypeNameCollision]
+    /// Payload fields that hold a `Decimal` (#597), which has no wire form, one per path: the
+    /// payload's role and the field's path (`server event PriceEvent.amount`,
+    /// `response BuyResponse of action BuyAction.total`). Covers client and server events,
+    /// actions, responses and server inputs, whatever the encoding. Empty when there are none.
+    /// A synced state field is `sync`'s `.decimalField`.
+    public let decimalFields: [String]
 
     init(
         landType: String,
@@ -88,7 +94,8 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         serverEventsWithoutDecoder: [String] = [],
         wireNameMismatches: [String] = [],
         serverEventsWithoutHash: [String] = [],
-        typeNameCollisions: [SchemaTypeNameCollision] = []
+        typeNameCollisions: [SchemaTypeNameCollision] = [],
+        decimalFields: [String] = []
     ) {
         self.landType = landType
         self.payload = payload
@@ -99,6 +106,7 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
         self.wireNameMismatches = wireNameMismatches
         self.serverEventsWithoutHash = serverEventsWithoutHash
         self.typeNameCollisions = typeNameCollisions
+        self.decimalFields = decimalFields
     }
 
     public var description: String {
@@ -114,8 +122,11 @@ public struct LandRegistrationError: Error, CustomStringConvertible, Sendable {
                 + serverEventsWithoutHash.joined(separator: ", ")
         let collided = typeNameCollisions.isEmpty ? nil
             : SchemaTypeNameCollisionError(collisions: typeNameCollisions).description
+        let decimals = decimalFields.isEmpty ? nil
+            : "these payload fields hold a Decimal: " + decimalFields.joined(separator: ", ")
+                + "; " + DecimalFields.advice
         return "land type '\(landType)' can't be registered: "
-            + ([payload?.description, sync?.description].compactMap { $0 } + duplicateHandlers.map(\.description)
+            + ([payload?.description, sync?.description, decimals].compactMap { $0 } + duplicateHandlers.map(\.description)
                 + [mismatched, unhashed, schemaFingerprint?.description, collided, undecodable].compactMap { $0 })
             .joined(separator: "; ")
     }
@@ -139,10 +150,12 @@ extension LandDefinition {
         // per definition and cached; any error other than the fingerprint's own propagates. Only
         // when every other row holds: an error from the schema walk would replace those rows (the
         // walk re-runs this check, so EV2 would throw from inside it).
+        // #597: whatever the encoding, a payload's Decimal has no wire form.
+        let decimals = payloadDecimalFields()
         var fingerprint: SchemaFingerprintError?
         var typeNameCollisions: [SchemaTypeNameCollision] = []
         if context.recordsForReplay == true, payload == nil, sync == nil, duplicateHandlers.isEmpty,
-           mismatched.isEmpty, unhashed.isEmpty {
+           mismatched.isEmpty, unhashed.isEmpty, decimals.isEmpty {
             do {
                 _ = try ReevaluationSchemaFingerprint.cached(for: self)
             } catch let error as SchemaFingerprintError {
@@ -156,15 +169,53 @@ extension LandDefinition {
         // descriptor, so a descriptor without a decoder can't replay.
         let undecodable = context.recordsForReplay == true ? serverEventsWithoutDecoder() : []
         if payload != nil || sync != nil || !duplicateHandlers.isEmpty || fingerprint != nil || !undecodable.isEmpty
-            || !mismatched.isEmpty || !unhashed.isEmpty || !typeNameCollisions.isEmpty {
+            || !mismatched.isEmpty || !unhashed.isEmpty || !typeNameCollisions.isEmpty || !decimals.isEmpty {
             throw LandRegistrationError(
                 landType: id, payload: payload, sync: sync,
                 duplicateHandlers: duplicateHandlers, schemaFingerprint: fingerprint,
                 serverEventsWithoutDecoder: undecodable,
                 wireNameMismatches: mismatched, serverEventsWithoutHash: unhashed,
-                typeNameCollisions: typeNameCollisions
+                typeNameCollisions: typeNameCollisions, decimalFields: decimals
             )
         }
+    }
+
+    /// #597: the payload fields that hold a `Decimal`, by role: client and server events,
+    /// actions and their responses, server inputs (recorded and replayed, so on the record's
+    /// wire). Sorted within each role for a stable message.
+    func payloadDecimalFields() -> [String] {
+        var fields: [String] = []
+        func add(_ role: String, _ type: Any.Type, suffix: String = "") {
+            let root = "\(role) \(type)\(suffix)"
+            fields += DecimalFields.payloadPaths(in: type, root: root)
+        }
+        for descriptor in clientEventRegistry.registered { add("client event", descriptor.type) }
+        for descriptor in serverEventRegistry.registered { add("server event", descriptor.type) }
+        for handler in actionHandlers {
+            let action = handler.getActionType()
+            add("action", action)
+            if let response = handler.getResponseType() {
+                fields += DecimalFields.payloadPaths(in: response, root: "response \(response) of action \(action)")
+            }
+        }
+        for name in serverInputHandlers.keys.sorted() {
+            if let handler = serverInputHandlers[name] { add("server input", handler.inputType) }
+        }
+        // A resolver output is recorded for replay. The saved record (CanonicalMessagePack) keeps
+        // a Decimal in its platform's keyed form, which replay's JSON read of the output refuses,
+        // so a replayed handler would see no output.
+        var seen: Set<ObjectIdentifier> = []
+        let lifetime = lifetimeHandlers
+        let executors = actionHandlers.flatMap(\.resolverExecutors)
+            + lifetime.canJoinResolverExecutors + lifetime.onJoinResolverExecutors
+            + lifetime.onLeaveResolverExecutors + lifetime.onDestroyWhenEmptyResolverExecutors
+            + lifetime.onInitializeResolverExecutors + lifetime.onFinalizeResolverExecutors
+        for executor in executors {
+            guard let output = (executor as? any ResolverOutputTypeNaming)?.resolverOutputType,
+                  seen.insert(ObjectIdentifier(output)).inserted else { continue }
+            add("resolver output", output)
+        }
+        return fields
     }
 
     /// EV2: the registered types whose `_payloadWireName` differs from the schema's ID, the rule
