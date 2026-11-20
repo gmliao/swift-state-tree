@@ -161,6 +161,8 @@ public struct TypeToSchemaConverter {
         visitedTypes: inout Set<String>
     ) -> JSONSchema {
         let typeName = String(describing: type)
+        // Before the visited check, so a second type with this name is recorded too (#602).
+        SchemaTypeNameRecorder.current?.note(type, as: typeName)
         
         // Check if we've already processed this type (prevent infinite recursion)
         if visitedTypes.contains(typeName) {
@@ -293,6 +295,8 @@ public struct TypeToSchemaConverter {
         visitedTypes: inout Set<String>
     ) -> JSONSchema {
         let typeName = String(describing: type)
+        // Before the visited check, so a second type with this name is recorded too (#602).
+        SchemaTypeNameRecorder.current?.note(type, as: typeName)
         
         // Check if we've already processed this type
         if visitedTypes.contains(typeName) {
@@ -439,9 +443,16 @@ public struct TypeToSchemaConverter {
         // A collection `T` (`[Position2]?`, `[String: [Position2]]?`) converts inline, with no
         // definition of its own: define it under the `innerType` name, so its items are as
         // reachable as a non-optional collection's (atomic values in it are positional too).
-        if let innerType, let wrappedSchema, wrappedSchema.ref == nil, definitions[innerType] == nil,
+        if let innerType, let wrappedSchema, wrappedSchema.ref == nil,
            wrappedSchema.items != nil || wrappedSchema.additionalProperties != nil {
-            definitions[innerType] = wrappedSchema
+            // Noted whether or not the name is defined yet: another type defined under it would
+            // stand for this one at every lookup of `innerType` (#602).
+            if let optional = type as? any OptionalTypeProbe.Type {
+                SchemaTypeNameRecorder.current?.note(optional.wrappedType, as: innerType)
+            }
+            if definitions[innerType] == nil {
+                definitions[innerType] = wrappedSchema
+            }
         }
         
         let schema = JSONSchema(

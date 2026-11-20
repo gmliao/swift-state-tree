@@ -11,7 +11,11 @@ public struct SchemaExtractor {
     /// - Throws: `LandRegistrationError` when the state can't be served, so it gets no schema: its
     ///   `sync` names the synced-state problems (a class in a synced field, #464; a per-player
     ///   field under a broadcast one, #179; an unsupported key type or a type that holds any
-    ///   value, #535). The encoding-dependent payload rows aren't checked here.
+    ///   value, #535; two distinct state types with one name, #602). The encoding-dependent
+    ///   payload rows aren't checked here.
+    ///   `SchemaTypeNameCollisionError` when two distinct types the land's schema defines share a
+    ///   name (#602), such as a client event `A.HitEvent` and a server event `B.HitEvent`. Under
+    ///   `SchemaGenCLI.generateSchema` it is thrown there, for all its lands together.
     ///   `RecursiveStateTypeError` when a state type holds itself (#286): its path patterns
     ///   never end.
     public static func extract<State: StateNodeProtocol>(
@@ -19,6 +23,24 @@ public struct SchemaExtractor {
         version: String = "0.1.0"
     ) throws -> ProtocolSchema {
         try landDefinition.validateForRegistration(context: .encodingIndependent)
+        // Two distinct types that share a definition name are refused (#602), after the walk
+        // and before its definitions are flattened into path hashes.
+        let walked = try SchemaTypeNameRecorder.recording {
+            walk(landDefinition)
+        }
+        let (definitions, actions, clientEvents, events, stateTypeName) = walked
+        return try schema(
+            of: landDefinition, version: version, definitions: definitions, actions: actions,
+            clientEvents: clientEvents, events: events, stateTypeName: stateTypeName
+        )
+    }
+
+    private static func walk<State: StateNodeProtocol>(
+        _ landDefinition: LandDefinition<State>
+    ) -> (
+        definitions: [String: JSONSchema], actions: [String: JSONSchema],
+        clientEvents: [String: JSONSchema], events: [String: JSONSchema], stateTypeName: String
+    ) {
         var definitions: [String: JSONSchema] = [:]
         var visitedTypes: Set<String> = []
         
@@ -143,12 +165,23 @@ public struct SchemaExtractor {
             // Always use a reference to the definition
             events[eventID] = JSONSchema(ref: "#/defs/\(typeName)")
         }
-        
+        _ = createDiffSchema(definitions: &definitions)
+        return (definitions, actions, clientEvents, events, stateTypeName)
+    }
+
+    private static func schema<State: StateNodeProtocol>(
+        of landDefinition: LandDefinition<State>,
+        version: String,
+        definitions: [String: JSONSchema],
+        actions: [String: JSONSchema],
+        clientEvents: [String: JSONSchema],
+        events: [String: JSONSchema],
+        stateTypeName: String
+    ) throws -> ProtocolSchema {
         // Create sync schema
         let snapshotSchema = JSONSchema(ref: "#/defs/\(stateTypeName)")
-        // For diff schema, we'll create a placeholder
-        // In a full implementation, you'd define the actual diff format
-        let diffSchema = createDiffSchema(definitions: &definitions)
+        // The diff placeholder, defined by the walk (`createDiffSchema`)
+        let diffSchema = JSONSchema(ref: "#/defs/\(StateDiffPlaceholder.name)")
         
         let syncSchema = SyncSchema(
             snapshot: snapshotSchema,
@@ -222,7 +255,11 @@ public struct SchemaExtractor {
     ///
     /// In a full implementation, you'd define the actual diff format used by your sync engine.
     private static func createDiffSchema(definitions: inout [String: JSONSchema]) -> JSONSchema {
-        let diffTypeName = "StateDiff"
+        let diffTypeName = StateDiffPlaceholder.name
+        // A user type named `StateDiff` would be replaced by this definition (#602).
+        SchemaTypeNameRecorder.current?.note(
+            StateDiffPlaceholder.self, as: diffTypeName, displayName: SchemaTypeNameCollision.reservedDiffOwner
+        )
         
         // Create a basic diff schema (JSON Patch format)
         let diffSchema = JSONSchema(
@@ -249,4 +286,10 @@ public struct SchemaExtractor {
         
         return JSONSchema(ref: "#/defs/\(diffTypeName)")
     }
+}
+
+/// Stands for the schema's diff placeholder definition (`StateDiff`) in the type name record
+/// (#602), so a user type of that name is refused rather than replaced.
+private enum StateDiffPlaceholder {
+    static let name = SchemaTypeNameCollision.reservedDiffName
 }
