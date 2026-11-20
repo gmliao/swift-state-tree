@@ -450,6 +450,19 @@ Each PR leaves `main` green, with the harness byte-identical except where §5 sa
 
 **L2b: the freeze settle on in-turn adapters** (group 2c). §3.4, its tests included. The off settle stays until L2c.
 
+**L2b delta, after L2a (#695).** Pointers are at #695's head 1a826823. Where this delta and §3.4 differ, this delta holds.
+- **The kept-event path without caller 2.** L2a drops §3.2's caller 2 (§10a, with #695), so §3.4's sentence "the event takes §3.2's caller 2 during the freeze" no longer holds.
+  - The event still reaches the resume. After the settle's commit, the adapter sets `deferredSyncNow` when events are queued and the land has no periodic sync (TA ~:6766, "events kept by this cycle need a follow-up"). That rule is the settle's own and doesn't use caller 2.
+  - So `eventKeptBySettleArrivesAfterResume` keeps its claim: an event queued at `.settleBeforePublish` is delivered once, by the resume's `syncTurnNow(.resume)`.
+  - **Step order:** the kept-events check stays in step 4, after the `.settleBeforePublish` hold and after the generation check. A check before the hold would miss the event the test queues there.
+- **The resume's join-sync request** (step 2) keeps `requestJoinSyncTurn()` as it is. It reads the attached `transport`, not the bound requester. On an attached keeper the two are the same (`setTransport` rebinds, and `acceptsSyncTurn` requires the port to be the transport). A keeper bound only by its first request has no `transport`, so step 2 does nothing there, before L2b and after it. When the keeper's turns run on `TurnCore` (#700), the binding's port replaces `transport`. That isn't an L2b change.
+- **The latch after L2b.**
+  - Both of the latch's arm sites are in-turn keeper paths that meet `isSyncing`: a turn's sync with a legacy cycle in flight (LK :4694), and `runSyncOnlyTurn` (LK :5118).
+  - `isSyncing` comes only from `beginSync`. After L2b its adapter callers are the off adapter's `withSyncState` (`_syncNowImpl`, `_syncBroadcastOnlyImpl` and the backlog retry, deleted in L2c) and the off settle. An off adapter's keeper runs no in-turn turns, so neither can latch.
+  - So `syncDuringSettleCycleIsLatched` (`TransportAdapterInTurnSyncTests` :888) is retired in L2b, with no off-adapter arm.
+  - The latch stays reachable only through a direct, deprecated `keeper.beginSync` on an in-turn keeper (tests or public API), until L2d deletes both. No test pins that window, since it lives only until L2d. Review may ask for one.
+- **Carried from L2a's review:** `freezeIsCheckedBeforeBackPressure` (`TransportAdapterRequestedSyncTurnTests` :209) awaits `waitForOutboundIdleForTesting()` after its bounded wait, with no cancel path. L2b's first commit bounds it.
+
 **L2c: the off adapter deleted.** §3.6's L2c list, and the harness's legacy cells (§5.3).
 - Gate: the full `swift test`; the harness, which lists 84 cells and runs every one; the deletion census; and the GameDemo build, since L2c removes API EncodingBenchmark reads.
 - The in-turn goldens are unchanged by this PR. The byte-identical check is the pinned-image job's: the Mac harness falls back to a decoded comparison when its toolchain differs from the recorder's.
