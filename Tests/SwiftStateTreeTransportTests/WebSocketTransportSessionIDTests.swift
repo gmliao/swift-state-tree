@@ -62,6 +62,16 @@ private final class HoldingDelegate: TransportDelegate, @unchecked Sendable {
 }
 
 /// An open gate that counts `connection`'s closes.
+/// Arrives each time a close marker's close has run (`.didRun(.marker)`); never holds it.
+private func markerCloseSignal(on transport: WebSocketTransport) async -> TestGate {
+    let gate = TestGate()
+    gate.open()
+    await transport.setDelayedCloseForTesting { stage in
+        if case .didRun(.marker) = stage { await gate.arrive() }
+    }
+    return gate
+}
+
 private func closeSignal(on connection: OrderedConnection) async -> TestGate {
     let gate = TestGate()
     gate.open()
@@ -180,7 +190,7 @@ struct WebSocketTransportSessionIDTests {
     }
 
     @Test("A client that stopped reading is closed after the timeout; the close happens once")
-    func stalledClientIsClosedAfterTimeout() async {
+    func stalledClientIsClosedAfterTimeout() async throws {
         let transport = WebSocketTransport()
         await transport.setDelegate(HoldingDelegate())
         let id = SessionID("stalled")
@@ -195,18 +205,59 @@ struct WebSocketTransportSessionIDTests {
         let generation = await transport.connectionGeneration(for: id)
         await transport.sendSessionFrames([SessionFrame(data: Data("error".utf8), sessionID: id, connectionGeneration: generation)])
         #expect(await stall.waitForArrivals(1))
+        let markerClose = await markerCloseSignal(on: transport)
+        // Taken before the close removes the queue.
+        let drainEnd = try #require(await transport.drainEndForTesting(id))
         await transport.closeSessionAfterQueuedFrames(id, timeout: .milliseconds(50))
         // The timer closes the session although the frame is still being written: on NIO the
         // guarantee is the handoff order, not delivery to a stalled client.
         #expect(await closed.waitForArrivals(1), "the timer closed the session")
         stall.open()
-        // The stalled send finishes after the close; the marker's own close doesn't run again.
         #expect(await sent.waitForArrivals(1), "the stalled send finished")
-        #expect(await connection.entries.filter { $0 == .close }.count == 1)
+        // The stalled send finishes after the close; the marker's own close doesn't run again.
+        // Counted once the drain has ended and, if it read the marker, once the marker's close
+        // has run (#663).
+        let end = await drainEnd.value
+        #expect(end != .sendFailed)
+        if end == .closeMarker {
+            #expect(await markerClose.waitForArrivals(1), "the marker's close ran")
+        }
+        #expect(await connection.entries.filter { $0 == .close }.count == 1, "\(end)")
     }
 
-    /// `waitsForBound`: the current close's bound runs out while the "after" send is held (#488's
-    /// interleaving); it is held, so the frame still goes first.
+    /// `disconnected`: the client disconnects while the drain is held in a send, before any close
+    /// marker, so the drain ends with its stream. Otherwise the close queues its marker behind the
+    /// frame and the drain reaches it. (A bound that closes the session while the drain is held
+    /// still leaves the marker in the stream: the drain reads it once the send returns.)
+    @Test("drainEndForTesting names how the drain ended: at its close marker, or with its stream (#663)", arguments: [false, true])
+    func drainEndNamesBothEnds(disconnected: Bool) async throws {
+        let transport = WebSocketTransport()
+        await transport.setDelegate(HoldingDelegate())
+        let id = SessionID("drain-end")
+        let connection = OrderedConnection()
+        let stall = TestGate()
+        await connection.setStall(stall)
+        await transport.handleConnection(sessionID: id, connection: connection)
+        let generation = await transport.connectionGeneration(for: id)
+        await transport.sendSessionFrames([SessionFrame(data: Data("error".utf8), sessionID: id, connectionGeneration: generation)])
+        #expect(await stall.waitForArrivals(1))
+        let markerClose = await markerCloseSignal(on: transport)
+        let drainEnd = try #require(await transport.drainEndForTesting(id))
+        if disconnected {
+            await transport.handleDisconnection(sessionID: id)
+        } else {
+            // The bound is past the test: only the marker closes.
+            await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(3600))
+        }
+        stall.open()
+        let end = await drainEnd.value
+        #expect(end == (disconnected ? .streamEnded : .closeMarker), "\(end)")
+        if end == .closeMarker {
+            #expect(await markerClose.waitForArrivals(1), "the marker's close ran")
+        }
+        #expect(await connection.entries.filter { $0 == .close }.count == (disconnected ? 0 : 1), "\(end)")
+    }
+
     @Test("A queued close for an older connection leaves the connection that reuses the ID open (#531)", arguments: [false, true])
     func queuedCloseForOlderConnectionIsDropped(waitsForBound: Bool) async {
         let transport = WebSocketTransport()
