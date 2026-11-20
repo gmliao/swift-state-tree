@@ -1,6 +1,12 @@
 # Turn core: coalesced follow-ups and a quiescence wait (#702)
 
-**Status:** open, rev 2. Plan for review before any code: Code-1 checks the use-case mapping (§5), then Review reviews the plan.
+**Status:** open, rev 3. Plan for review before any code: Code-1 checks the use-case mapping (§5), then Review reviews the plan.
+
+**Rev 3** (Code-1's use-case check of rev 2, against #695's head b6924b42): the three mappings and the dropped triggers stand. §5 changes in wording and tests only, not in the core API:
+- §5.3: outside requests keep the keeper's counter by reason; only the after-turn arm maps to the machine. `syncTurnNow` validates before it consumes.
+- §5.5: a closed follow-up's gate doesn't count. The two #695 tests that rely on a stale retry being counted are rewritten at #700. The wait keeps the waiter table's cancellation rule.
+- §4: case 15, a re-arm from the retry's own step.
+- §5.4: dropping `.held` assumes L2d lands before #700.
 
 **Rev 2** (Main's points on rev 1):
 - `TurnDiagnostic` gets a new case, `.staleFollowUp`, instead of reusing `.staleTimer`. §7 states the switch break.
@@ -91,7 +97,11 @@ public func waitForQuiescence(_ kinds: TurnWork = .followUps, of key: M.Key? = n
 - **What counts:** a follow-up armed and not yet stepped, consumed or closed; an open request; an armed timer. The count can be restricted to one key. The default is follow-ups only: a periodic timer is never quiet.
 - **When it is checked:** at the end of each synchronous segment of the actor: `runSegment`, and the entries that close work (completion, deadline, timer, gate return, the `.afterBatch` job). A step that retires a follow-up and arms its successor is one segment, so a waiter never sees the gap between them, and a chain keeps it waiting until the chain ends (#702's last boundary case).
 - **It never hangs on an ended core.** `endAll` closes every request, follow-up and timer, so the next check wakes every waiter. A request whose worker hasn't returned (`.untilWorkerReturns`) is closed, so it doesn't count. When the actor is released, its core's `deinit` resumes the waiters that are left with false.
-- **Cancellation.** A cancelled waiting task returns false at once, and its entry is removed (as `callerCancelled` removes a caller).
+- **Cancellation.** A cancelled waiting task returns false at once, and its entry is removed (as `callerCancelled` removes a caller). The rule is the one #695's waiter table keeps (b6924b42, from #692):
+  - waiters are keyed by id, so a cancellation removes its own entry and no other;
+  - the registration re-checks `Task.isCancelled` and the count inside the continuation's closure, so a cancellation that lands before the entry exists can't leave it waiting;
+  - the cancel handler resumes the entry it removes, once.
+  Tests bound the wait with `withinHangBound`, as today.
 - **Returns** true once the count of `kinds` is at most `atMost`. It returns at once if the count is already there.
 - **Cost (#621 item 4):** the waiters are an array scanned only when it isn't empty, so a core with no waiter pays one `isEmpty` test per segment. The count is recomputed per check (the follow-up table's size, or `open`/`timers` filtered by key), which is fine for tests.
 
@@ -117,7 +127,8 @@ Then:
 12. Two slots under one key are independent. Two follow-ups due together step in arm order.
 13. The wait: per key, `atMost`, `kinds` (requests and timers), a cancelled waiter, and an actor released with a waiter (it returns false; no leak).
 14. Generated orders (`GeneratedOrderTests`): add arm, consume and end operations to the generator. Check invariants 18 to 20 (§6) after each step.
-15. An exit test: `followUp` called from `read` stops the process, as every `Turn` use outside a step does. This one is free: `Turn` can't be made outside a step.
+15. A re-arm from the follow-up's own step: an `.afterWork` follow-up's step finds the writer held again and arms the same slot. The slot was freed before the step, so the arm is `.armed` with a new id, not `.joined` with the one stepping. The wait stays busy across the hand-over. On the keeper this is the drain retry whose phase is deferred again.
+16. An exit test: `followUp` called from `read` stops the process, as every `Turn` use outside a step does. This one is free: `Turn` can't be made outside a step.
 
 ## 5. The LandKeeper follow-ups and the waiters
 
@@ -148,11 +159,14 @@ After #700, the keeper's machine has a key `.syncBinding`, started on every bind
 | One pending. The same binding joins; a newer binding replaces it | `followUp(.syncOnlyTurn, .afterTurn, of: .syncBinding, .afterBatch)`. A join is `.joined`. A newer binding's `start` closed the old one, so its arm is `.armed` |
 | `syncTurnNow` (an outside request through the same port) consumes it, then runs its phase, which may arm a successor | `syncTurnNow`'s step: `turn.consumeFollowUp(.afterTurn, of: .syncBinding)`, then its phase. A port that isn't the binding's is refused before this (`acceptsSyncTurn`), so "the same port" is "the current generation" |
 | `runPendingSyncTurnAfterTurn`: `guard let followUp = pendingSyncTurnAfterTurn` (consumed meanwhile → retired) | The core doesn't step a consumed follow-up |
-| `requestedSyncTurnsForTesting[reason]` | It stays a machine counter, bumped at arm time |
+| `requestedSyncTurnsForTesting[reason]`: `syncTurnNow` (LK ~:5306 at b6924b42) bumps it for every outside request (`.resume`, `.lagTimer`, `syncNow`, the repair) before `acceptsSyncTurn`, so it counts refused requests too. Only `.keptEvents` is bumped at arm time, by the after-turn request | The outside requests' counts stay a keeper counter by reason, bumped where they are today, refused ones included (the freeze test asserts `[.resume]` + 1). Only the after-turn arm's `.keptEvents` count moves to the machine, bumped in the step that arms it |
+| `syncTurnNow`'s order: `acceptsSyncTurn` (the port and the binding ticket), then the consume, then the phase. A stale-ticket lag or repair request returns `.skipped` | The same order in its step. The generation check comes before `consumeFollowUp`: a request whose ticket names an older binding returns `.skipped` and consumes nothing. Otherwise a stale lag callback would swallow the current binding's kept-events turn. A §4-style keeper test at #700: a stale lag request with an after-turn pending leaves it pending, and it steps |
 
 ### 5.4 The latch's rerun: deleted in L2d, not mapped
 
 L2d deletes `beginSync`/`endSync`, `isSyncing` and the latch `syncOnlyTurnAfterLegacyCycle` with its reads (L2 plan §3.6). L2 is ordered before #700, so the latch never reaches `TurnCore`. Rev 1 mapped it to a `.held` follow-up released by `endSync`'s step. `.held` had no other user and is dropped (§3.3). Until L2d, #695's interim latch stays as it is.
+
+**This assumes L2d lands before #700**, as the L2 plan orders it. If #700 were to come first, the latch would need a trigger again, `.held` or an equivalent, added back as a new case with its cases in §4.
 
 ### 5.5 The waits
 
@@ -166,6 +180,12 @@ L2d deletes `beginSync`/`endSync`, `isSyncing` and the latch `syncOnlyTurnAfterL
 | `inTurnDrainRetryBindingForTesting` | `followUpPending(.drainRetry, of: .syncBinding)` through a `read` |
 
 The bug #695's review found, replayed on the core: A's retry is pending, `setTransport(B)` starts `.syncBinding` again, and A's retry is closed in that step. B's deferred phase arms `.drainRetry` and gets `.armed`, not `.joined`. Case 4 of §4 is this sequence on a model machine.
+
+**What the wait counts for a superseded binding.**
+- (a) A closed follow-up isn't counted, also while its `.afterWork` gate is still in flight. `pendingWork` and `waitForQuiescence` count follow-ups that are armed and neither stepped, consumed nor closed; a gate is the follow-up's trigger, not work of its own. The gate's late return steps nothing for it (it reports `.staleFollowUp`) and moves no count.
+- (b) That differs from today. A's stale drain retry stays counted until its writer wait returns, and two #695 tests rely on that: `olderBindingsRetryDoesNotBlockTheCurrentOne` and `teardownEndsAnArmedRetry` (`TransportAdapterRequestedSyncTurnTests.swift:134`, :218). At #700 they are rewritten on the core's terms:
+  - the first checks that B's retry arms (`.armed`) while A's gate still waits, and that A's late gate return steps nothing, with a step counter on the machine;
+  - the second checks the same under `endAll`: the retry is closed, the wait returns at once, and the gate's return after it steps nothing.
 
 ### 5.6 Later users, not in this plan
 
@@ -241,7 +261,7 @@ The wait is public, not `package`: adopters outside this package test their mach
 - **Mutants**, each expected to fail a named case:
   - join → replace (case 1);
   - `closeFollowUps(of:)` skipped in `start` (case 4);
-  - the slot freed after the step instead of before (case 7);
+  - the slot freed after the step instead of before (cases 7 and 15);
   - the waiter checked mid-step (case 7);
   - `endAll` not waking waiters (case 3/13).
 - **`TurnsBench`** gains "arm and run one `.afterBatch` follow-up" and "arm and join". The existing benches are read before and after in that image, release, to check that the added `isEmpty` branches don't show. Instruction counts on the measurement host only if Review asks: no adopter's hot path changes.
