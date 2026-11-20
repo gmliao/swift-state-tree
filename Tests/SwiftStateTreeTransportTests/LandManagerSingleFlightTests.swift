@@ -167,7 +167,10 @@ private final class FailingResolver: @unchecked Sendable {
     }
 }
 
-@Suite("LandManager single-flight creation and epoch removal")
+// Two minutes, above `testHangBound` (60 s): a wait that runs out reports its own message first,
+// and a creation a regression leaves parked at a held gate fails the test instead of hanging the
+// run.
+@Suite("LandManager single-flight creation and epoch removal", .timeLimit(.minutes(2)))
 struct LandManagerSingleFlightTests {
     @Test("Concurrent getOrCreateLand calls for a new ID create one keeper and share its container")
     func concurrentFirstJoinsShareOneCreation() async throws {
