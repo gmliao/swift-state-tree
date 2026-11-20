@@ -7,6 +7,7 @@ symptoms:
   - "swift test never finishes; the process sleeps at low CPU while lands keep ticking"
   - "a test awaits a keeper effect (a run started, a recorder flushed) that never comes"
   - "an OnJoin effect is missing right after keeper.join returns"
+  - "a test's in-turn join is already flipped (no longer joining) when the test freezes or checks it, in about 1 run in 3"
 root_cause: test_awaits_effect_of_unapplied_lifecycle_input
 resolution_type: established_pattern
 severity: medium
@@ -17,8 +18,12 @@ tags:
   - lifecycle-input
   - hang
   - time-limit
+  - tickless
+  - join-flip
+  - input-drain
 related:
   - "#385"
+  - "#546"
 ---
 
 # A test on a ticking land awaits a join's effect without stepping the turn that applies it
@@ -44,6 +49,18 @@ A wait with no bound turns that mistake into a hang: the test can't fail, and th
 - On a ticking land, a lifecycle input (join, leave) and an action are turn inputs. A test that checks their effect steps the tick first, or drives the land's loops.
 - Every await on a keeper effect in a test is bounded: a suite `.timeLimit` over waits that end on cancellation, or a `TestGate`/`HoldPoints` the test itself releases. A test-only wait helper built on a continuation needs a cancellation handler, or the time limit only records the failure. A test that hangs instead of failing is a defect in the test.
 - When a test run stalls, sample the test helper process: the stacks name the land types still ticking, which narrows the suite.
+
+## The tickless counterpart: the OnJoin turn can flip a registered join
+
+On a land without a `Tick`, the join's `OnJoin` is an input too: the keeper's input drain runs it in an input turn, and that turn's output step runs the sync phase while joins wait (`!hasPeriodicSync && transportHasJoinsAwaitingSync`). The adapter's join registers the session with the transport after the keeper join returns, and that input turn can run before or after the registration. When it runs after, its phase flips the join. That is by design: the turn that consumed a join's input completes the join.
+
+A test that wanted a join that is ready but not flipped (#546 L2b, the resume's cases) held the join only at `.joinSyncRequested`, after the registration. In about one run in three, the OnJoin turn had not run yet. It ran between the hold and the test's freeze, and flipped the join early. A keeper probe (the turn kind and `transportHasJoinsAwaitingSync` before and after each phase) showed the turn.
+
+Fix: hold the join at `.keeperJoinReturned` (admitted, not registered), wait for `keeper.waitForInputDrainIdleForTesting()` under `withinHangBound`, then open the hold and wait at `.joinSyncRequested`. The OnJoin turn has then run while the join couldn't flip, and nothing else flips it until the test acts. `TransportAdapterJoinFlipTests` has the helper (`readyUnflippedJoin`). On a tick land the same order applies with `stepTickOnce()` in place of the drain wait: the tick consumes OnJoin while the join is held before its registration.
+
+Rule: a test that needs a join ready but unflipped lets the join's own input turn finish before the join registers. A hold after the registration alone races that turn.
+
+Two limits of the construction: both join holds are inside the adapter's membership queue, which runs one join at a time, so only one join can wait at them. And `setJoinFlipHeldForTesting(true)` on a tickless land makes every commit schedule another join-sync turn while the joins wait, a busy loop, so it can't stand in for the holds.
 
 ## Candidates
 
