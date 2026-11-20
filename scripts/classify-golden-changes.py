@@ -26,14 +26,14 @@ def files_at(commit):
     if commit is None:
         return {p.name: p.read_text(encoding="utf-8") for p in Path(GOLDEN).glob("*.json") if p.name != "index.json"}
     names = subprocess.run(
-        ["git", "ls-tree", "--name-only", f"{commit}:{GOLDEN}"], check=True, capture_output=True, text=True
+        ["git", "ls-tree", "--name-only", f"{commit}:{GOLDEN}"], check=True, capture_output=True, text=True, encoding="utf-8"
     ).stdout.split()
     out = {}
     for name in names:
         if name == "index.json" or not name.endswith(".json"):
             continue
         out[name] = subprocess.run(
-            ["git", "show", f"{commit}:{GOLDEN}/{name}"], check=True, capture_output=True, text=True
+            ["git", "show", f"{commit}:{GOLDEN}/{name}"], check=True, capture_output=True, text=True, encoding="utf-8"
         ).stdout
     return out
 

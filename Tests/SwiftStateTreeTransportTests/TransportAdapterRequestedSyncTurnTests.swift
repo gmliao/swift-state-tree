@@ -58,7 +58,7 @@ private struct RequestedSyncTurnFixture {
         let f = RequestedSyncTurnFixture(keeper: keeper, adapter: adapter, transport: transport)
         await adapter.onConnect(sessionID: f.session, clientID: f.client)
         try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: f.session, clientID: f.client, playerID: f.player)
-        #expect(await adapter.waitForOutboundDrain())
+        await adapter.waitForOutboundIdleForTesting()
         return f
     }
 
@@ -147,7 +147,7 @@ struct TransportAdapterRequestedSyncTurnTests {
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
         _ = await f.adapter.debugResume(freezeToken: token)
         await f.adapter.waitForBackgroundSyncsForTesting()
-        #expect(await f.adapter.waitForOutboundDrain())
+        await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
     }
 
