@@ -45,7 +45,7 @@ set -euo pipefail
 # the reason each may.
 ISOLATED_BOUNDARIES='
 Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift 5 the keeper calls the adapter inside its turn, on their shared executor
-Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits sync streams into its keeper on their shared executor
+Sources/SwiftStateTreeTransport/TransportAdapter.swift 5 the adapter submits sync streams into its keeper, and the keeper freeze-settle job calls the adapter back to admit and commit, on their shared executor
 '
 
 # Test files that carry allow markers, with their counts.
