@@ -83,6 +83,9 @@ func generateTestState(
 /// A one-field change in a large state (up to 100 players, 10 cards each) produces exactly its own
 /// patches, with dirty tracking and with a full compare. Each case syncs two engines on the same
 /// state, applies one change, and checks both diffs against the patches the change must produce.
+/// Each case also checks the dirty set the change leaves: the same patches come out of a full
+/// compare, so a change marked too widely (everything dirty) or a missed mark (an empty dirty set
+/// falls back to comparing everything, `SyncEngine.generateDiff`) would pass on the patches alone.
 /// SyncEngineDirtyTrackingTests covers the same modes on small states.
 ///
 /// How long either diff takes is measured by `DiffBenchmarkRunner` (SwiftStateTreeBenchmarks), on
@@ -99,6 +102,7 @@ struct SyncEngineLargeStateDiffTests {
         let diffs = try diffBothWays(generateTestState(playerCount: 100, cardsPerPlayer: 10)) { state in
             state.players[changed]?.hpCurrent = 90
         }
+        #expect(diffs.dirtyFields == ["players"])
         let expected = [StatePatch(path: "/players/player_3/hpCurrent", operation: .set(.int(90)))]
         #expect(sortedPatches(diffs.dirtyTracked) == expected, "\(diffs.dirtyTracked)")
         #expect(sortedPatches(diffs.full) == expected, "\(diffs.full)")
@@ -110,6 +114,7 @@ struct SyncEngineLargeStateDiffTests {
             state.round = 2
             state.players[changed]?.hpCurrent = 80
         }
+        #expect(diffs.dirtyFields == ["players", "round"])
         let expected = [
             StatePatch(path: "/players/player_3/hpCurrent", operation: .set(.int(80))),
             StatePatch(path: "/round", operation: .set(.int(2))),
@@ -121,6 +126,7 @@ struct SyncEngineLargeStateDiffTests {
     @Test("No dirty field: both diffs report no change")
     func noDirtyField() throws {
         let diffs = try diffBothWays(generateTestState(playerCount: 100, cardsPerPlayer: 10)) { _ in }
+        #expect(diffs.dirtyFields.isEmpty)
         #expect(diffs.dirtyTracked == .noChange, "\(diffs.dirtyTracked)")
         #expect(diffs.full == .noChange, "\(diffs.full)")
     }
@@ -130,6 +136,7 @@ struct SyncEngineLargeStateDiffTests {
         let diffs = try diffBothWays(generateTestState(playerCount: 50, cardsPerPlayer: 5)) { state in
             state.players[PlayerID("new_player")] = BenchmarkPlayerState(name: "New Player", hpCurrent: 100, hpMax: 100)
         }
+        #expect(diffs.dirtyFields == ["players"])
         let expected = [
             StatePatch(
                 path: "/players/new_player",
@@ -143,11 +150,12 @@ struct SyncEngineLargeStateDiffTests {
     // MARK: - Helpers
 
     /// Syncs two engines on `state`, applies `change` to it, and diffs the result with dirty
-    /// tracking on one engine and a full compare on the other.
+    /// tracking on one engine and a full compare on the other. Also returns the fields the change
+    /// left dirty.
     private func diffBothWays(
         _ state: BenchmarkStateRootNode,
         change: (inout BenchmarkStateRootNode) -> Void
-    ) throws -> (dirtyTracked: StateUpdate, full: StateUpdate) {
+    ) throws -> (dirtyTracked: StateUpdate, full: StateUpdate, dirtyFields: Set<String>) {
         var state = state
         var tracked = SyncEngine(for: BenchmarkStateRootNode.self)
         var full = SyncEngine(for: BenchmarkStateRootNode.self)
@@ -157,7 +165,8 @@ struct SyncEngineLargeStateDiffTests {
         change(&state)
         return (
             try tracked.generateDiff(for: viewer, from: state, useDirtyTracking: true),
-            try full.generateDiff(for: viewer, from: state, useDirtyTracking: false)
+            try full.generateDiff(for: viewer, from: state, useDirtyTracking: false),
+            state.getDirtyFields()
         )
     }
 
