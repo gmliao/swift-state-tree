@@ -1584,6 +1584,54 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         lastCommittedTickId
     }
 
+    /// What `debugSettleTurn` did.
+    package enum DebugSettleTurnOutcome<R: Sendable>: Sendable {
+        /// The copy was taken and `commit` ran, with the last committed tick read in the same job.
+        case ran(R, tickId: Int64)
+        /// The settle's deadline passed.
+        case timedOut
+        /// `generation` is no longer the active freeze, or the land isn't frozen.
+        case released
+        /// The land failed or is draining (shutdown drains).
+        case closed
+        /// The adapter's `admit` refused.
+        case refused
+    }
+
+    /// An in-turn adapter's freeze settle as one synchronous keeper job (#546 L2b): the fence,
+    /// then the copy and its commit, with no `beginSync`, so the keeper's sync flag isn't taken
+    /// and no requested turn can latch behind it. The fence checks the deadline, that
+    /// `generation` is the active, frozen one, and that the land neither failed nor drains; then
+    /// `admit` (the adapter's checks, run in this job) returns whether to clear dirty flags, or
+    /// nil to refuse. The copy is taken, the flags cleared as `beginSync(clearDirtyFlags:)` would,
+    /// and `commit` runs with the copy, where it was read, and whether the sync stream is
+    /// recorded. Both closures run synchronously on this job (the adapter shares the keeper's
+    /// executor in-turn and enters through `assumeIsolated`; the keeper doesn't check that, so
+    /// only an in-turn adapter calls this).
+    ///
+    /// Not a turn: no input is consumed and no turn kind is recorded (the settle's output is
+    /// recorded as `.legacyCycle`). It is one synchronous keeper job, so nothing interleaves
+    /// between the fence and the commit.
+    package func debugSettleTurn<R: Sendable>(
+        generation: UInt64,
+        deadline: ContinuousClock.Instant,
+        admit: @Sendable () -> Bool?,
+        commit: @Sendable (State, SyncReadPosition, Bool) -> R
+    ) -> DebugSettleTurnOutcome<R> {
+        guard ContinuousClock.now < deadline else { return .timedOut }
+        guard debugFrozen, debugActiveGeneration == generation else { return .released }
+        guard failure == nil, !isDraining else { return .closed }
+        guard let clearDirtyFlags = admit() else { return .refused }
+        let position = syncReadPosition()
+        let records = recordsSyncStream
+        let copy = state
+        if clearDirtyFlags {
+            state.clearDirty()
+        }
+        let result = commit(copy, position, records)
+        return .ran(result, tickId: lastCommittedTickId)
+    }
+
     /// Holds tickless intake while frozen. Returns when the freeze is released or the drain
     /// starts (`releaseHeldInputsForDrain`); the intake then re-checks `rejectIfLandClosed`.
     private func debugWaitWhileFrozen() async {
@@ -1997,6 +2045,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return transport.hasJoinsAwaitingSync
     }
 
+    /// Tests: requests that passed `requestJoinSyncTurn`'s own guards (counted before
+    /// `runSyncOnlyTurn`, whose guards may still skip the phase).
+    package private(set) var joinSyncRequestTurnsForTesting = 0
+
     /// A sync-only turn for joins that wait for a committed sync phase (#69). Called by the
     /// transport when a join became ready outside a turn (its session registered with the
     /// transport after its OnJoin was consumed). Does nothing when no join waits, so a burst of
@@ -2008,8 +2060,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // A sync folded into the next tick (`inTurnSyncDue`) must not run ahead of that tick
             // (coincident-sync rule): the tick turn's cadence sync flips the ready joins.
             guard periodicJoinSyncAllowed, !inTurnSyncDue else { return }
+            joinSyncRequestTurnsForTesting += 1
             runSyncOnlyTurn(transport: transport, joinSyncOnly: true)
         } else {
+            joinSyncRequestTurnsForTesting += 1
             runSyncOnlyTurn(transport: transport)
         }
     }
