@@ -89,7 +89,8 @@ public enum DebugFreezeError: Error, Sendable, Equatable {
     /// Drain and settle missed their deadline (in-flight work or another sync kept running);
     /// the freeze was released.
     case settleTimedOut
-    /// The freeze was released (resume or auto-resume) before its settle finished.
+    /// The freeze was released (resume or auto-resume) before its settle finished, or the land
+    /// failed or is closing.
     case released
 }
 
@@ -140,7 +141,8 @@ struct DebugFreezeState<State: StateNodeProtocol>: Sendable {
     var autoResumeTask: Task<Void, Never>?
     var autoResumeGeneration: UInt64 = 0
     var autoResumeTimeout: Duration = DebugFreezeDefaults.autoResumeTimeout()
-    /// Deadline for the drain, the writer wait and the settle (in-turn: its keeper job; off: the
-    /// wait for `beginSync`).
+    /// Deadline for the drain, the writer wait and the wait for the settle (in-turn: checked when
+    /// its keeper job starts, so it bounds the wait for the job, not the job; off: the wait for
+    /// `beginSync`).
     var settleDeadline: Duration = .seconds(10)
 }
