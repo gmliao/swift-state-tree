@@ -55,8 +55,10 @@ public enum ReevaluationSchemaFingerprint {
     /// seen; the cases of a raw-value enum that isn't `CaseIterable`; and a `let` with an initial
     /// value in a `@Payload` type, which a synthesized `Decodable` doesn't decode (#611).
     ///
-    /// - Throws: `SchemaFingerprintError` for a type whose fields it can't list or tell apart,
-    ///   and what `SchemaExtractor.extract(from:)` throws for a land that can't be registered.
+    /// - Throws: `SchemaFingerprintError` for a type whose fields it can't list or tell apart;
+    ///   `SchemaTypeNameCollisionError` for distinct types the walk (the land's schema, its
+    ///   server inputs and set elements) would define under one name (#602); and what
+    ///   `SchemaExtractor.extract(from:)` throws for a land that can't be registered.
     public static func compute<State: StateNodeProtocol>(for definition: LandDefinition<State>) throws -> String {
         try fingerprint(of: definition)
     }
@@ -278,8 +280,8 @@ extension ReevaluationSchemaFingerprint {
     /// Refuses a record whose schema fingerprint is missing, or differs from `definition`'s.
     /// Every replay entry point calls it before the first step.
     ///
-    /// - Throws: `ReevaluationRecordFingerprintError`, or `SchemaFingerprintError` when the
-    ///   current definition has no fingerprint.
+    /// - Throws: `ReevaluationRecordFingerprintError`, or, when the current definition has no
+    ///   fingerprint, what `compute(for:)` throws.
     public static func checkRecord<State: StateNodeProtocol>(
         _ metadata: ReevaluationRecordMetadata,
         against definition: LandDefinition<State>

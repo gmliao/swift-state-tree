@@ -39,10 +39,14 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import os
 import pathlib
 import subprocess
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+# The bound on one git query (#484): a history lookup takes milliseconds, so a git that takes
+# this long is stuck, and the caller gets an error naming the command instead of a hung run.
+GIT_TIMEOUT_SECONDS = 60
 
 # Merge commit that added each knob: a run whose commit doesn't contain it ran with it off.
 # (#308, 49fde351, changed the path index's default; it didn't add a knob, so it isn't here:
@@ -100,11 +104,16 @@ class WireForm:
 def contains(commit: str, knob_commit: str, repo: pathlib.Path = REPO) -> bool | None:
     """Whether ``commit`` has ``knob_commit`` in its history; ``None`` when git can't tell (an
     unknown commit, or no repository)."""
+    command = ["git", "-C", str(repo), "merge-base", "--is-ancestor", knob_commit, commit]
     try:
-        done = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", knob_commit, commit],
-                              capture_output=True, text=True, encoding="utf-8")
+        # No stdin and no terminal prompt: nothing git could wait on but the repository.
+        done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                              stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+                              env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     except OSError:
         return None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{' '.join(command)} took more than {GIT_TIMEOUT_SECONDS} s") from None
     return {0: True, 1: False}.get(done.returncode)
 
 

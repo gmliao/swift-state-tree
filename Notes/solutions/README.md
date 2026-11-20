@@ -151,6 +151,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A small generic wrapper used from another module runs unspecialized unless it's `@inlinable`](2026-11-19-a-cross-module-generic-wrapper-runs-unspecialized.md) | performance, generics, specialization, inlinable, existential, proof-type |
 | 2026-11-19 | [Inlined class state pays a dynamic exclusivity check on every use](2026-11-19-inlined-class-state-pays-dynamic-exclusivity-checks.md) | performance, exclusivity, inlinable, class-state, release-build |
 | 2026-11-19 | [A test harness under errexit dies without naming the failing case](2026-11-19-a-test-harness-under-errexit-dies-unnamed.md) | shell, errexit, set-e, test-harness, mutation |
+| 2026-11-20 | [A thrown sweep cell hides the cells after it](2026-11-20-a-thrown-sweep-cell-hides-the-cells-after-it.md) | test-harness, differential, golden, fail-closed, reporting |
 | 2026-11-19 | [`Bundle.allBundles` crashes a Linux test process (null dereference in CFBundleGetAllBundles)](2026-11-19-bundle-allbundles-crashes-on-linux.md) | linux, foundation, bundle, test-support, cross-platform |
 | 2026-11-19 | [A typed decoder that replaces a JSON round trip misses the round trip's coercions](2026-11-19-a-typed-decoder-misses-the-round-trips-coercions.md) | testing, differential, decode, messagepack, decimal, float, anycodable |
 | 2026-11-19 | [Decode a record with the codec that wrote it](2026-11-19-decode-a-record-with-the-codec-that-wrote-it.md) | replay, record-format, decode, canonical-messagepack, anycodable, date, json |
@@ -161,4 +162,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A retry loop catches failures, not hangs](2026-11-19-a-retry-loop-catches-failures-not-hangs.md) | ci, apt, retry, timeout, hang, shell |
 | 2026-11-19 | [Array literals of enum cases joined with `+` time out the pinned type checker](2026-11-19-concatenated-enum-literals-time-out-the-pinned-type-checker.md) | toolchain, type-checking, ci |
 | 2026-11-20 | [A helper that returns on state leaves its operation running](2026-11-20-a-helper-that-returns-on-state-leaves-its-operation-running.md) | testing, fixtures, join, polling, land-stop, flaky |
+| 2026-11-20 | [A time limit does not end a wait that never resumes](2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md) | testing, time-limit, hang-bound, test-gate, mutants, hold-points |
 | 2026-11-20 | [A visited set keyed by a lossy name merges distinct types](2026-11-20-a-visited-set-keyed-by-a-lossy-name-merges-distinct-types.md) | schema, type-names, visited-set, codegen, registration |

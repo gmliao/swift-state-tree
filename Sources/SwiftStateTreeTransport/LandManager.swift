@@ -163,6 +163,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var pendingDropWaits: Set<UInt64> = []
     /// Called when a drop wait has registered and parks (tests).
     private var dropWaitParkedHook: (@Sendable () -> Void)?
+    /// Run when a call joined a creation already in flight (tests).
+    private var creationJoinedHook: (@Sendable () -> Void)?
     private var nextDropWaitID: UInt64 = 0
 
     private struct DropKey: Hashable {
@@ -184,8 +186,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var registrationVerdicts: [String: LandRegistrationError?] = [:]
     /// Tests only: how many definitions `checkRegistration(of:)` validated.
     private(set) var registrationValidations = 0
-    /// Calls that joined a creation already in flight (tests: proves the calls shared it).
-    private var creationJoins = 0
     private let landFactory: (LandID) -> LandDefinition<State>
     private let initialStateFactory: (LandID) -> State
     private let servicesFactory: (LandID, [String: String]) -> LandServices
@@ -403,9 +403,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             return existing
         }
         guard !isShuttingDown else { throw JoinError.landShuttingDown }
-        if creations.inFlight(landID) != nil {
-            creationJoins += 1
-        }
+        let joinsFlight = creations.inFlight(landID) != nil
         // Reserve the creation before the first await (CLAUDE.md, "Actor reentrancy").
         let creation = creations.flight(for: landID) { token in
             Task {
@@ -418,6 +416,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 )
             }
         }
+        // After the join is registered, in the same segment: a test told of it knows this call
+        // waits on the flight in progress.
+        if joinsFlight { creationJoinedHook?() }
         return try await SingleFlight<LandID, Container>.value(of: creation)
     }
 
@@ -927,9 +928,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         drainWaitTimeout = timeout
     }
 
-    /// Calls that joined a creation already in flight (tests).
-    func creationJoinCount() -> Int {
-        creationJoins
+    /// Installs (or, with `nil`, removes) a callback run when a call joined a creation already in
+    /// flight, after the join is registered (tests).
+    func onCreationJoinedForTesting(_ hook: (@Sendable () -> Void)?) {
+        creationJoinedHook = hook
     }
 
     /// Whether `shutdownAllLands` started (tests).

@@ -164,8 +164,8 @@ struct EventNameHostRegistrationTests {
         #expect(await host.transportForTesting(webSocketPath: "/game/\(landType)") == nil)
     }
 
-    @Test("A server input named like a server event is refused with the base's fingerprint (#602); the live route stays unpublished")
-    func genericAliasFingerprintRefusedUpFront() async throws {
+    @Test("A server input named like a server event: the base's up-front check refuses the land (#602); the live route stays unpublished")
+    func serverInputNamedLikeAnEventRefusedUpFront() async throws {
         let host = makeHost()
         let land = Land("eh-hidden", using: EventNameHostState.self) {
             ServerEvents { Register(EHCollidingKeys.self) }

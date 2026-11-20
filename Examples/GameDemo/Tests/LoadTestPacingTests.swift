@@ -182,7 +182,6 @@ struct LoadTestPacingWallClockTests {
         let concurrency = Concurrency()
         let stats = StatsLog()
         let origin = ContinuousClock.now + .milliseconds(20)
-        let started = ContinuousClock.now
         await LoadTestPacing.runPeriods(
             origin: origin,
             period: period,
@@ -203,15 +202,16 @@ struct LoadTestPacingWallClockTests {
         // Each period starts on its own deadline, not after the previous period's sends.
         #expect(periods.allSatisfy { $0.startLag < .milliseconds(40) && !$0.late }, "\(periods)")
         // Earlier sends are still in flight at later deadlines, and the cap skips the excess.
+        // That is the property itself, without a wall-clock total (#466): a period that waited for
+        // the previous period's 250 ms sends would find none of them in flight.
         #expect(periods[0].inFlightAtDeadline == 0)
         #expect(periods[1].inFlightAtDeadline == 20)
         #expect(periods[1].skippedByCap == 10)
         #expect(periods[2].skippedByCap > 0)
+        #expect(periods[3].inFlightAtDeadline > 0)
         #expect(periods.allSatisfy { $0.started + $0.skippedByCap == $0.planned })
         // Never more than the cap at once: no catch-up burst beyond it.
         #expect(await concurrency.peak <= 30)
-        // 4 periods plus the last sends' 250 ms, not 4 × 250 ms of serialized periods.
-        #expect(ContinuousClock.now - started < .milliseconds(900))
     }
 
     @Test("A slow period is recorded as late, and its catch-up sends stay within the cap")
