@@ -375,4 +375,81 @@ struct FollowUpTests {
         f.open("gate a")
         await f.wait("stale follow-up #1")
     }
+
+    @Test("27: the release budget exhausted with follow-ups due: they still step in their job; parked inputs past the cap wait for the drain; a successor runs in the next job")
+    func capWithFollowUpsDue() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f, maxReleasesPerBatch: 1)
+        // Key 1's request holds key 99; three inputs park behind it.
+        await a.send(.script([.start(1), .start(2), .start(3), .hold(gate: "h")]))
+        for label in ["P1", "P2", "P3"] { await a.send(.parked(label)) }
+        // A's step ends key 1, which releases the hold: its segment hits the cap after P1.
+        await a.send(.script([.arm("A", .slot(.a), key: 2, .batch, then: [.end(1), .arm("C", key: 2)]), .arm("B", key: 3)]))
+        #expect(await a.waitForQuiescence())
+        f.open("gate h")
+        let log = await a.snapshot().log
+        let parked = log.filter { $0.hasPrefix("parked") }
+        #expect(parked == ["parked P1", "parked P2", "parked P3"])
+        let at = { (line: String) in log.firstIndex(of: line) ?? Int.max }
+        #expect(at("ran A") < at("parked P1"))
+        #expect(at("parked P1") < at("ran B"))
+        #expect(at("ran B") < at("parked P2"))
+        #expect(at("ran B") < at("ran C"))
+        #expect(f.segments.allSatisfy { $0 <= 1 })
+    }
+
+    @Test("27b: a gate's result step that releases past the cap: its follow-up still steps in that segment")
+    func capOnGateReturn() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f, maxReleasesPerBatch: 1)
+        await a.send(.script([.start(1), .start(2), .hold(gate: "h")]))
+        for label in ["P1", "P2"] { await a.send(.parked(label)) }
+        await a.send(.script([.onGateResult([.end(1)]), .arm("A", .slot(.a), key: 2, .work(gate: "a", result: true))]))
+        await f.wait("at gate a")
+        f.open("gate a")
+        #expect(await a.waitForQuiescence())
+        f.open("gate h")
+        let log = await a.snapshot().log
+        let at = { (line: String) in log.firstIndex(of: line) ?? Int.max }
+        #expect(at("gate result a") < at("parked P1"))
+        #expect(at("parked P1") < at("ran A"))
+        #expect(at("ran A") < at("parked P2"))
+        #expect(f.segments.allSatisfy { $0 <= 1 })
+    }
+
+    @Test("28: a gate's return cancels its deadline and keeps a live request's deadline, which still fires")
+    func gateReturnCancelsItsDeadline() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .hold(gate: "h", deadlineSeconds: 7), .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
+        await f.wait("at gate a")
+        f.open("gate a")
+        await f.wait("cancelled deadline 5")
+        #expect(await a.waitForQuiescence())
+        #expect(!f.isOpen("cancelled deadline 7"))
+        a.clock.set(seconds: 7)
+        f.open("deadline 7")
+        await f.wait("woke deadline 7")
+        #expect(await a.waitForQuiescence(.requests))
+        f.open("gate h")
+        #expect(await a.snapshot().log == ["armed A", "ran A"])
+    }
+
+    @Test("29: A's obsolete deadline leaves B pending in the same slot")
+    func obsoleteDeadlineLeavesSuccessor() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
+        await f.wait("at gate a")
+        await a.send(.script([.consume(), .arm("B", .work(gate: "b", deadlineSeconds: 9))]))
+        await f.wait("cancelled deadline 5")
+        await f.wait("stale deadline #1")
+        #expect(await a.pendingWork() == 1)
+        await f.wait("at gate b")
+        f.open("gate b")
+        #expect(await a.waitForQuiescence())
+        f.open("gate a")
+        await f.wait("stale follow-up #1")
+        #expect(await a.snapshot().log == ["armed A", "consumed A", "armed B", "ran B"])
+    }
 }

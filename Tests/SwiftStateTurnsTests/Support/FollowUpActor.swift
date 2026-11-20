@@ -12,14 +12,22 @@ actor FollowUpActor: TurnActor {
     nonisolated let fixture: Fixture
     nonisolated let clock: TestClock
 
-    init(fixture: Fixture = Fixture()) {
+    let maxReleases: Int
+
+    init(fixture: Fixture = Fixture(), maxReleasesPerBatch: Int = 64) {
         let clock = TestClock(fixture: fixture)
-        let core = TurnCore(FollowUpMachine(), queueLimit: 64, maxReleasesPerBatch: 64, clock: clock)
-        core.onDiagnostic = { event in fixture.observe(event) }
         self.fixture = fixture
         self.clock = clock
-        self.core = core
+        self.maxReleases = maxReleasesPerBatch
+        self.core = Self.makeCore(fixture, clock, maxReleasesPerBatch)
     }
+
+    static func makeCore(_ fixture: Fixture, _ clock: TestClock, _ maxReleases: Int) -> TurnCore<FollowUpMachine> {
+        let core = TurnCore(FollowUpMachine(), queueLimit: 64, maxReleasesPerBatch: maxReleases, clock: clock)
+        core.onDiagnostic = { event in fixture.observe(event) }
+        return core
+    }
+
 
     @concurrent nonisolated func perform(_ effect: FollowUpMachine.Effect) async -> FollowUpMachine.Input? {
         switch effect {

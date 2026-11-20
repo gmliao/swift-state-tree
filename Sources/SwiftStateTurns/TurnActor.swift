@@ -343,6 +343,8 @@ extension TurnActor {
         defer { core.inSegment = false }
         var budget = core.maxReleasesPerBatch
         var released = 0
+        // Set once a releasable key is left at the cap: releases stop, due follow-ups still step.
+        var capped = false
         while true {
             drainProducts()
             if !core.rt.abandoned.isEmpty {
@@ -357,7 +359,7 @@ extension TurnActor {
                 }
                 continue
             }
-            if let key = core.rt.nextReleasable() {
+            if !capped, let key = core.rt.nextReleasable() {
                 if budget == 0 {
                     // The rest steps in a later batch, as the actor's own job. Until then the
                     // key counts as blocked: a new input for it queues behind the ones still queued.
@@ -366,7 +368,10 @@ extension TurnActor {
                         core.counters.drainContinuations += 1
                         Task { self.continueDrain() }
                     }
-                    break
+                    // Follow-ups aren't parked inputs: the cap doesn't apply to them, so the ones
+                    // this segment holds still step before it ends.
+                    capped = true
+                    continue
                 }
                 budget -= 1
                 if let parked = core.rt.popParked(key) {

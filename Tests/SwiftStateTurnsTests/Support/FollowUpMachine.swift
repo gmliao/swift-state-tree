@@ -14,7 +14,7 @@ indirect enum Op: Sendable {
     case pending(Slot = .a, key: Int = 1)
     case readNow
     /// A request under `key` that holds key 99 until its gate opens.
-    case hold(gate: String, key: Int = 1)
+    case hold(gate: String, key: Int = 1, deadlineSeconds: Int64 = 3600)
     case timer(key: Int = 1, seconds: Int64)
     /// The next `handleAbandoned` for a follow-up runs this script (once).
     case onAbandoned([Op])
@@ -62,6 +62,8 @@ struct FollowUpMachine: TurnMachine {
         case ran(String, then: [Op])
         /// A gate's own result.
         case gateResult(String)
+        /// A normal input that waits behind key 99 (held by a `.hold` request).
+        case parked(String)
         case released(String)
     }
 
@@ -89,6 +91,7 @@ struct FollowUpMachine: TurnMachine {
         // A follow-up's input asks to wait behind key 99: the core steps it as a control input anyway.
         case .ran: return .normal(waitsFor: 99, belongsTo: nil)
         case .script: return .normal(waitsFor: nil, belongsTo: nil)
+        case .parked: return .normal(waitsFor: 99, belongsTo: nil)
         case .gateResult, .released, .controlScript: return .control
         }
     }
@@ -108,6 +111,8 @@ struct FollowUpMachine: TurnMachine {
             run(then, &turn)
         case .released:
             break
+        case .parked(let label):
+            log.append("parked \(label)")
         }
     }
 
@@ -150,8 +155,8 @@ struct FollowUpMachine: TurnMachine {
             case .readNow:
                 _ = turn.now
                 log.append("now")
-            case .hold(let gate, let key):
-                turn.request(.work(gate), for: key, holding: .untilRequestCloses(99, deadline: .seconds(3600)))
+            case .hold(let gate, let key, let deadline):
+                turn.request(.work(gate), for: key, holding: .untilRequestCloses(99, deadline: .seconds(deadline)))
             case .timer(let key, let seconds):
                 turn.timer(at: .seconds(seconds), for: key, .released("timer"))
             case .onAbandoned(let then):
