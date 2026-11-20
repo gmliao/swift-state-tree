@@ -101,7 +101,7 @@ PlayerSession 欄位優先序：
 
 ### Atomic 值
 
-採用 `AtomicSnapshotValue` 的型別（`IVec2`、`IVec3`、`Position2`、`Velocity2`、`Acceleration2`、`Angle`，以及用 `@SnapshotConvertible(atomic: true)` 宣告的使用者 struct）在 diff 中是單一值，不會逐 leaf 比對。只有宣告會讓型別成為 atomic；只是長得像 `{x, y}` 的 struct 仍逐欄位 diff。
+採用 `AtomicSnapshotValue` 的型別（`IVec2`、`IVec3`、`Position2`、`Velocity2`、`Acceleration2`、`Angle`，以及用 `@SnapshotConvertible(atomic: true)` 宣告的使用者 struct）在 diff 中是單一值，不會逐 leaf 比對。只有宣告會讓型別成為 atomic；只是長得像 `{x, y}` 的 struct 仍逐欄位 diff。array 或 `Set` 則一律不逐元素 diff（見 [Patch 涵蓋的範圍](../core/sync.zh-TW.md#patch-涵蓋的範圍)）。
 
 - **Opcode state update**（`opcodeJsonArray`、`opcodeMessagePack`）把 atomic 值送成其 leaf 的陣列，順序為 schema 的 `leafOrder`：`Position2` 是 `[x, y]`，`Angle` 是 `[degrees]`，皆為定點整數。不論值位在何處都一樣：欄位、陣列元素、map 的值、optional、以上任一處裡的 struct，以及新增物件或 firstSync snapshot 之內。MessagePack 中一個 `Position2` patch 值為 11 B（原本 18 B），`Angle` 為 6 B（原本 14 B）。
 - **`jsonObject` state update 與 server event 維持 keyed**（`{"v": {"x": ..., "y": ...}}`）。

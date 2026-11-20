@@ -135,6 +135,20 @@ SyncEngine 會維護：
 - broadcast 快取：所有玩家共用
 - per-player 快取：每個玩家獨立
 
+### Patch 涵蓋的範圍
+
+一個 patch 會取代某個 path 上的值。diff 往下走多深才寫出 patch，取決於值的形狀：
+
+- **state node、一般 struct 或字典會逐欄位或逐 key diff。** 每個變動的欄位或項目各自有一個 patch，位於自己的 path。新增的項目是該 key 上的 set；移除的項目是 delete。
+- **array 或 `Set` 是單一值。** 它有任何變動（某個元素改變、新增、移除或移動），都會在它的 path 上重送整個集合。`Set` 會以固定順序（依每個元素編碼後的形式排序）的 array 送出。
+- **atomic 值是單一值**（見 [Atomic 值](../transport/README.zh-TW.md#atomic-值)），純量也是：數字、字串或 `Bool`。
+
+無論執行的是哪一種 diff 都是如此：typed sync diff（下一節說明）寫出的 patch 與 snapshot diff 相同。
+
+舉例來說，一個有 100 名玩家的 land，每名玩家有一個帶 `score` 欄位的 `PlayerScore` struct，現在改了一名玩家的分數。如果 `scores` 是 `[PlayerScore]` array，patch 會帶上全部 100 個項目。如果 `scores` 是 `[PlayerID: PlayerScore]` 字典，它只帶變動的那個欄位，位於 `/scores/<player ID>/score`。
+
+**建議。** 經常變動的大型集合，請放在以穩定 ID（`String`、`PlayerID` 或其他支援的 key 型別）為 key 的字典中，不要放在 array 裡。這樣每次變動只花一個項目中變動部分的成本。字典沒有順序。如果順序重要，就把順序存在值裡（`rank` 或 `order` 欄位），或另外保留一個小的 ID array，它只在順序改變時才整個重送。array 適合小型集合，或很少變動、或一次全部改變的集合。
+
 ### 同步值型別的規則
 
 typed sync diff（`USE_SYNC_TABLES`，預設路徑；設為 `false` 可退回 snapshot diff，此 fallback 之後會移除；但 row addressing 實際生效之處會保持 tables 開啟，見 transport README）會把每個 broadcast 欄位上次送出的值以原生 Swift 值保存，並在產生任何 patch 之前先用 `==` 比較目前的值與它。它依賴以下規則。遵守這些規則的型別在現行路徑上行為相同。`TYPED_LEAF_VALUES`（預設開啟）開啟時，內建 leaf 型別的欄位變更會改以型別專屬的轉換取代通用轉換；patch 與位元組相同，使用者自訂的型別仍走通用轉換。

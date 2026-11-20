@@ -135,6 +135,20 @@ SyncEngine maintains:
 - broadcast cache: Shared by all players
 - per-player cache: Independent for each player
 
+### What a Patch Covers
+
+A patch replaces the value at one path. How far the diff descends before it writes a patch depends on the value's shape:
+
+- **A state node, a plain struct or a dictionary is diffed per field or per key.** Each changed field or entry gets its own patch at its own path. An added entry is a set at its key; a removed one is a delete.
+- **An array or a `Set` is one value.** Any change to it (an element changed, appended, removed or moved) sends the whole collection again at its path. A `Set` is sent as an array in a fixed order (sorted by each element's encoded form).
+- **An atomic value is one value** (see [Atomic values](../transport/README.md#atomic-values)), and so is a scalar: a number, a string or a `Bool`.
+
+This holds whichever diff runs: the typed sync diff (described in the next section) writes the same patches as the snapshot diff.
+
+For example, take a land with 100 players, each with a `PlayerScore` struct that has a `score` field, and change one player's score. If `scores` is a `[PlayerScore]` array, the patch carries all 100 entries. If `scores` is a `[PlayerID: PlayerScore]` dictionary, it carries only the changed field, at `/scores/<player ID>/score`.
+
+**Guidance.** Keep a large collection that changes often in a dictionary keyed by a stable ID (a `String`, a `PlayerID` or another supported key type), not in an array. Each change then costs only what changed in one entry. A dictionary has no order. If the order matters, store it in the value (a `rank` or `order` field), or keep a small separate array of IDs, which is sent whole only when the order changes. An array suits a small collection, or one that changes rarely or all at once.
+
 ### Rules for Synced Value Types
 
 The typed sync diff (`USE_SYNC_TABLES`, the default path; `false` opts out to the snapshot diff, a fallback to be removed, except where row addressing is in effect, which keeps the tables on; see the transport README) keeps the last value it sent for each broadcast field as a native Swift value, and compares the live value against it with `==` before it builds any patch. It relies on these rules. Types that follow them work the same on today's path. With `TYPED_LEAF_VALUES` (on by default), a changed field of a built-in leaf type is converted by its typed form instead of the general conversion; the patches and bytes are the same, and a user's own types keep the general conversion.
