@@ -98,13 +98,13 @@ has "exit 2" "$tmp/out" && empty "$tmp/github-output"; check "gate: a usage erro
 # Report: the result from the jobs' results.
 # As gh gives them: completed jobs carry a conclusion; the report job itself is still in
 # progress, with an empty conclusion.
-jobs_failed='{"jobs":[{"name":"gate","status":"completed","conclusion":"success"},{"name":"build / build (in-turn sync true)","status":"completed","conclusion":"failure"},{"name":"e2e / e2e-game (messagepack)","status":"completed","conclusion":"cancelled"},{"name":"e2e / e2e-tests","status":"completed","conclusion":"timed_out"},{"name":"build / shellcheck","status":"completed","conclusion":"success"},{"name":"report","status":"in_progress","conclusion":""},{"name":"build / docs","status":"completed","conclusion":"skipped"}]}'
+jobs_failed='{"jobs":[{"name":"gate","status":"completed","conclusion":"success"},{"name":"build / build (variants)","status":"completed","conclusion":"failure"},{"name":"e2e / e2e-game (messagepack)","status":"completed","conclusion":"cancelled"},{"name":"e2e / e2e-tests","status":"completed","conclusion":"timed_out"},{"name":"build / shellcheck","status":"completed","conclusion":"success"},{"name":"report","status":"in_progress","conclusion":""},{"name":"build / docs","status":"completed","conclusion":"skipped"}]}'
 FAKE_ISSUES='[]' FAKE_RUNS=$(runs "$c1") FAKE_JOBS=$jobs_failed run nightly-report.sh success failure success "$c3" "$url"
 exited0 && line "$issue_query" "$FAKE_LOG" && line "$green_query" "$FAKE_LOG" \
   && has "gh issue create --title Nightly failing on main --label nightly-failure --label bug --label priority: before-rerun --milestone Test and CI reliability --body-file -" "$FAKE_LOG" \
   && has "gh label create nightly-failure" "$FAKE_LOG" \
   && line "  | Nightly failed at $c3: $url" "$FAKE_LOG" \
-  && line "  | - build / build (in-turn sync true) (failure)" "$FAKE_LOG" \
+  && line "  | - build / build (variants) (failure)" "$FAKE_LOG" \
   && line "  | - e2e / e2e-game (messagepack) (cancelled)" "$FAKE_LOG" \
   && line "  | - e2e / e2e-tests (timed_out)" "$FAKE_LOG" \
   && lacks "\(success\)|\(skipped\)|\(\)|report" "$FAKE_LOG" \

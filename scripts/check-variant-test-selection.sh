@@ -756,7 +756,7 @@ def variant_self_test():
         return ("on: push\n" + workflow_env + "jobs:\n  build:\n    name: build (variants)\n" + strategy + job_env +
                 "    steps:\n    - uses: actions/checkout@v4\n    - name: Lint\n" + lint + build_step +
                 "    - name: Snippets\n      run: scripts/snippets.sh\n"
-                "    - name: Tests, in-turn sync on\n      id: on\n" + test_if + on +
+                "    - name: Tests, defaults\n      id: on\n" + test_if + on +
                 "    - name: Tests, sync tables off\n      id: tables\n" + test_if + tables +
                 "    - name: Wall clock\n" + test_if + "      run: WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter W\n" +
                 extra + "    - name: Summary\n      if: ${{ always() }}\n      env:\n        ON: ${{ steps.on.outcome }}\n      run: echo \"$ON\"\n"
@@ -764,7 +764,7 @@ def variant_self_test():
     scripts = {"scripts/lint.sh": "echo lint\n", "scripts/snippets.sh": "swift build --target \"$t\"\nscripts/helper.py\n",
                "scripts/helper.py": "print(1)\n"}
     manifest = "// swift-tools-version:6.0\nimport PackageDescription\nlet package = Package(name: \"P\")\n"
-    tests = ["Tests, in-turn sync on", "Tests, sync tables off", "Wall clock"]
+    tests = ["Tests, defaults", "Tests, sync tables off", "Wall clock"]
     cells = [
         ("today's shape", build(), scripts, manifest, None),
         # E1

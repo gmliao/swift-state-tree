@@ -419,7 +419,7 @@ Land 以三種方式之一同步（前兩種的 `LandKeeper.hasPeriodicSync` 為
 
 ### In-Turn Sync（預設）
 
-開啟 in-turn sync 時，land 的 `TransportAdapter` 在其 keeper 的 serial executor 上執行，keeper 在自己的 turn 內同步執行 sync phase，狀態變更與其產生的 frame 之間沒有任何 suspension point（`InTurnSync`）。Turn 的種類：
+開啟 in-turn sync 時，land 的 `TransportAdapter` 在其 keeper 的 serial executor 上執行，keeper 在自己的 turn 內同步執行 sync phase，狀態變更與其產生的 frame 之間沒有任何 suspension point。Turn 的種類：
 
 - tick turn：就緒的 input、tick handler、送出的 event，以及 handler 請求或 sync loop 併入（fold）時的 sync phase。距下一個 tick 不到 min(5 ms, tick / 4, sync / 4) 的 sync 會在該 tick turn 執行（coincident sync），因此與 tick 重合的 sync 會看到該 tick 的結果；
 - sync-only turn：sync loop 自己的間隔，維持同步節奏；

@@ -419,7 +419,7 @@ A land without periodic sync has no next cycle to fall back on, so the runtime r
 
 ### In-Turn Sync (default)
 
-With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial executor, and the keeper runs the sync phase synchronously inside its own turns, with no suspension point between the state changes and the frames they produce (`InTurnSync`). The turn kinds are:
+With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial executor, and the keeper runs the sync phase synchronously inside its own turns, with no suspension point between the state changes and the frames they produce. The turn kinds are:
 
 - tick turn: the ready inputs, the tick handler, the emitted events, and the sync phase when a handler requested one or the sync loop folded into it. A sync due within min(5 ms, tick / 4, sync / 4) of the next tick runs in that tick turn (coincident sync), so a sync coinciding with a tick sees the tick's result;
 - sync-only turn: the sync loop's own interval, so the sync cadence is kept;
