@@ -34,7 +34,7 @@ struct MessagePackDirectEncoder {
     }
 
     func encode(_ envelope: ActionEnvelope) throws -> Data {
-        let value = encodeActionEnvelope(envelope)
+        let value = try encodeActionEnvelope(envelope)
         return try pack(value)
     }
 
@@ -48,7 +48,7 @@ struct MessagePackDirectEncoder {
     private func encodeMessagePayload(_ payload: MessagePayload) throws -> MessagePackValue {
         switch payload {
         case .action(let payload):
-            return .map([.string("action"): encodeTransportActionPayload(payload)])
+            return .map([.string("action"): try encodeTransportActionPayload(payload)])
         case .actionResponse(let payload):
             return .map([.string("actionResponse"): try encodeTransportActionResponsePayload(payload)])
         case .event(let event):
@@ -63,11 +63,11 @@ struct MessagePackDirectEncoder {
         }
     }
 
-    private func encodeTransportActionPayload(_ payload: TransportActionPayload) -> MessagePackValue {
+    private func encodeTransportActionPayload(_ payload: TransportActionPayload) throws -> MessagePackValue {
         var map: [MessagePackValue: MessagePackValue] = [:]
         map[.string("requestID")] = .string(payload.requestID)
         // landID removed - server identifies land from session mapping
-        map[.string("action")] = encodeActionEnvelope(payload.action)
+        map[.string("action")] = try encodeActionEnvelope(payload.action)
         return .map(map)
     }
 
@@ -245,11 +245,13 @@ struct MessagePackDirectEncoder {
         }
     }
 
-    fileprivate func encodeActionEnvelope(_ envelope: ActionEnvelope) -> MessagePackValue {
+    /// Throws for a payload `encodeAnyCodable` can't write: the payload is type-erased, so its
+    /// caller picks the value, and a refusal fails this encode, not the process (#592).
+    fileprivate func encodeActionEnvelope(_ envelope: ActionEnvelope) throws -> MessagePackValue {
         var map: [MessagePackValue: MessagePackValue] = [:]
         map[.string("typeIdentifier")] = .string(envelope.typeIdentifier)
         // ActionEnvelope.payload is AnyCodable, not Data
-        map[.string("payload")] = try! encodeAnyCodable(envelope.payload)
+        map[.string("payload")] = try encodeAnyCodable(envelope.payload)
         return .map(map)
     }
 
