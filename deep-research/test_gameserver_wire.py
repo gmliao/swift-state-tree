@@ -61,11 +61,13 @@ class RowAddressing(unittest.TestCase):
     def test_set_true_takes_effect_where_its_prerequisites_hold(self):
         self.assertEqual(gw.intended({"ROW_ADDRESSING": "true"}), W("messagepack", True, True, True))
         self.assertEqual(gw.intended({"ROW_ADDRESSING": " ON ", "TRANSPORT_ENCODING": "jsonOpcode"}), W("json", True, True, True))
-        # Not without opcode updates, path hashes, the path index, in-turn sync or the delta strategy.
-        for env in ({"TRANSPORT_ENCODING": "json"}, {"PATH_INDEX": "false"}, {"IN_TURN_SYNC": "false"},
-                    {"SYNC_STRATEGY": "snapshot"}):
+        # Not without opcode updates, path hashes, the path index or the delta strategy.
+        for env in ({"TRANSPORT_ENCODING": "json"}, {"PATH_INDEX": "false"}, {"SYNC_STRATEGY": "snapshot"}):
             with self.subTest(env):
                 self.assertFalse(gw.intended({"ROW_ADDRESSING": "true", **env}).row_addressing)
+        # Nor with in-turn sync off, on a server before the switch's removal.
+        before = f"{gw.IN_TURN_SYNC_REMOVED_COMMIT}^"
+        self.assertFalse(gw.intended({"ROW_ADDRESSING": "true", "IN_TURN_SYNC": "false"}, commit=before).row_addressing)
         self.assertFalse(gw.intended({"ROW_ADDRESSING": "true"}, path_hashes=False).row_addressing)
         # A value the server reads as neither keeps the default.
         gw.ROW_DEFAULT_COMMIT = None
@@ -85,6 +87,23 @@ class RowAddressing(unittest.TestCase):
             gw.intended({}, commit="0123456789abcdef0123456789abcdef01234567")
         # A squashed branch commit resolves through its squash merge, as wireform's knobs do.
         self.assertFalse(gw.intended({}, commit="b8e798b").row_addressing)
+
+
+class InTurnSyncRemoved(unittest.TestCase):
+    """IN_TURN_SYNC=false turns rows off only for a server before the switch's removal (#546 L1)."""
+
+    def test_the_removed_switch_follows_the_commit(self):
+        removed = gw.IN_TURN_SYNC_REMOVED_COMMIT
+        env = {"ROW_ADDRESSING": "true", "IN_TURN_SYNC": "false"}
+        # Its own commit ignores the key; its parent still reads it.
+        self.assertTrue(gw.intended(env, commit=removed).row_addressing)
+        self.assertFalse(gw.intended(env, commit=f"{removed}^").row_addressing)
+        # A key the server reads as not false needs no commit.
+        self.assertTrue(gw.intended({"ROW_ADDRESSING": "true", "IN_TURN_SYNC": "true"}).row_addressing)
+        with self.assertRaisesRegex(gw.wireform.MissingWireForm, "commit not recorded"):
+            gw.intended(env)
+        with self.assertRaisesRegex(gw.wireform.MissingWireForm, "unknown to the repository"):
+            gw.intended(env, commit="0123456789abcdef0123456789abcdef01234567")
 
 
 if __name__ == "__main__":
