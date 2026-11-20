@@ -242,6 +242,8 @@ replay 時，handler 讀取錄製的 resolver output（`ctx.productInfo`）的�
 
 當 `enableLiveStateHashRecording: true` 時，伺服器也會記錄每 tick 的 server events（`ctx.emitEvent()`）。在帶 `--verify` 的 reevaluation 中，runner 會比對錄製與發送的 server events。若 mismatch 表示 event 發送有非決定性（例如順序或 payload 差異）。
 
+錄製的 payload 是錄製檔的形式，發送的 payload 則是 replay 的有型別值，所以 verifier 會先把發送的 payload 轉成錄製檔的形式（`CanonicalMessagePack`，與 recorder 寫入的方式相同），再比對兩者（#633）。`Date`、`Data`、`URL` 或 `Float` 欄位在兩種錄製形式都會相符；帶小數秒的 `Date` 也會相符，因為兩邊都只保留整秒。限制：JSON 檢視已失去 `-0.0` 的正負號（[Replay 中的 server event](#replay-中的-server-event)），所以在 JSON 檢視中，event payload 裡的 `-0.0` 會讓該 tick 被回報；儲存的錄製檔則相符。
+
 Action、client event、lifecycle event 與 server event 共用同一個 `sequence` 計數器。有 tick 的 Land 在 live 模式下，每個 tick 會在 tick frame 記下該計數器的兩個 watermark（`sequenceBeforeInputs`、`sequenceBeforeTickHandler`）；reevaluation 時把計數器往前推到這兩個值，因此重播的 server event 會拿到與錄製相同的 `sequence`。從錄製格式 3.1 起，沒有 tick 的 land 的 frame 若帶有錄到的 passes，也算帶有 watermark（`watermarkedTicks`）：replay 會在每一次處理前還原計數器。比對以 tick 為單位判定：frame 帶有 watermark 的 tick 必須完全一致（包含 `sequence`），且即使錄製的事件清單為空也會比對，因此重播多出的 event 會被回報。沒有 watermark 的舊格式錄製維持原規則：只有錄到事件時才比對，僅 `sequence` 不同時回報為警告而非失敗（`ReevaluationEngine.RunResult.serverEventVerification`）。
 
 ### Sync Output 驗證
