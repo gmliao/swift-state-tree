@@ -22,14 +22,6 @@ struct OverflowRouterTestEvent: ServerEventPayload {
 }
 
 /// Records what the transport sends to one session, and whether it was closed.
-private actor OverflowConnection: WebSocketConnection {
-    private(set) var messages: [Data] = []
-    private(set) var closed = false
-
-    func send(_ data: Data) async throws { messages.append(data) }
-    func close() async throws { closed = true }
-}
-
 @Suite(
     "LandRouter: a join over the held-event bound (#69)"
 )
@@ -74,7 +66,7 @@ struct LandRouterJoinEventOverflowTests {
         await container.transportAdapter.setHeldEventsLimitForTesting(count: 2, bytes: 1 << 20)
 
         let session = SessionID("s-overflow")
-        let connection = OverflowConnection()
+        let connection = RecordingConnection()
         await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
         let join = try JSONEncoder().encode(TransportMessage.join(
             requestID: "join-1",
@@ -84,17 +76,18 @@ struct LandRouterJoinEventOverflowTests {
             deviceID: nil,
             metadata: nil
         ))
+        // The router handles the join inline: once this returns, the admitted join's flip wait
+        // is counted.
         await transport.handleIncomingMessage(sessionID: session, data: join)
-
-        #expect(await pollUntil { await connection.closed }, "the session is closed")
-        let codes = await connection.messages.compactMap { data -> String? in
-            guard let message = try? JSONDecoder().decode(TransportMessage.self, from: data),
-                  case .error(let payload) = message.payload else { return nil }
-            return payload.code
-        }
-        #expect(codes == [ErrorCode.joinEventOverflow.rawValue])
+        #expect(await router.pendingFlipWaitCountForTesting() == 1, "the join was not admitted in turn")
+        // The flip wait ends after the failure's handling: the error frame and the close handed
+        // to the adapter's writer, and the adapter's cleanup, the keeper's leave included.
+        await router.waitForNoPendingFlipForTesting()
+        // The writer hands the close over after the error frame.
+        #expect(await connection.waitUntilClosed(), "the session is closed")
+        #expect(await connection.errorCodes == [ErrorCode.joinEventOverflow.rawValue])
         #expect(await router.getBoundLandID(for: session) == nil)
-        #expect(await pollUntil { await container.keeper.currentState().players.isEmpty }, "the keeper's player is removed")
+        #expect(await container.keeper.currentState().players.isEmpty, "the keeper's player is removed")
         #expect(await container.transportAdapter.isJoining(session) == false, "no joining record left")
         #expect(await container.transportAdapter.inTurnJoinFailures[.eventOverflow] == 1)
     }

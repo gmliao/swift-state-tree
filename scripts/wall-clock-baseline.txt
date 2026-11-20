@@ -47,11 +47,9 @@ Tests/SwiftStateTreeTransportTests/LandReleaseTests.swift yield-poll 3
 Tests/SwiftStateTreeTransportTests/LandRouterJoinAttemptTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/LandRouterJoinAttemptTests.swift helper-poll 19
 Tests/SwiftStateTreeTransportTests/LandRouterJoinAttemptTests.swift sleep-poll 1
-Tests/SwiftStateTreeTransportTests/LandRouterJoinEventOverflowTests.swift poll-helper 2
 Tests/SwiftStateTreeTransportTests/LandRouterJoinTimeoutTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/LandRouterJoinTimeoutTests.swift helper-poll 17
 Tests/SwiftStateTreeTransportTests/LandRouterJoinTimeoutTests.swift sleep-poll 1
-Tests/SwiftStateTreeTransportTests/LandRouterShutdownTests.swift poll-helper 1
 Tests/SwiftStateTreeTransportTests/LandRouterTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/LandRouterTests.swift helper-poll 3
 Tests/SwiftStateTreeTransportTests/LandRouterTests.swift sleep-poll 1

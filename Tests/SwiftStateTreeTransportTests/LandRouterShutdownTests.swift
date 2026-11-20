@@ -125,8 +125,11 @@ private struct RouterShutdownHarness {
     func join(_ player: String) async throws -> RouterShutdownConnection {
         let session = SessionID("s-\(player)")
         let connection = await connect(session)
-        _ = try startJoin(session, player: player)
-        #expect(await pollUntil { await keeper.currentState().players.contains(player) }, "\(player) joined")
+        // The router's join has returned: the player was admitted, and an in-turn join's flip
+        // wait is counted; it ends once the flip has run.
+        try await startJoin(session, player: player).value
+        await router.waitForNoPendingFlipForTesting()
+        #expect(await keeper.currentState().players.contains(player), "\(player) joined")
         return connection
     }
 }

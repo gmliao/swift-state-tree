@@ -23,6 +23,7 @@ package actor RecordingConnection: WebSocketConnection {
     package private(set) var closeReason: String?
     package private(set) var closed = false
     private var frameWaiters: [Int: FrameWaiter] = [:]
+    private var closeWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
     private var nextWaiterID = 0
 
     package init(hangBound: Duration = testHangBound) {
@@ -42,12 +43,40 @@ package actor RecordingConnection: WebSocketConnection {
         closed = true
         closeCode = 1000
         closeReason = ""
+        resumeCloseWaiters()
     }
 
     package func close(with close: SessionClose) async throws {
         closed = true
         closeCode = close.code
         closeReason = close.reason
+        resumeCloseWaiters()
+    }
+
+    private func resumeCloseWaiters() {
+        let waiters = closeWaiters.values
+        closeWaiters.removeAll()
+        waiters.forEach { $0.resume(returning: true) }
+    }
+
+    /// Waits until the connection was closed; resumed by the close, not by polling. A close sent
+    /// behind frames through one writer arrives after them. `false` after the hang bound.
+    package func waitUntilClosed() async -> Bool {
+        if closed { return true }
+        let id = nextWaiterID
+        nextWaiterID += 1
+        let hangGuard = Task { [weak self, hangBound] in
+            try? await safeTaskSleep(for: hangBound)
+            await self?.expireCloseWaiter(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { continuation in
+            closeWaiters[id] = continuation
+        }
+    }
+
+    private func expireCloseWaiter(_ id: Int) {
+        closeWaiters.removeValue(forKey: id)?.resume(returning: false)
     }
 
     /// The frames that decode as JSON transport messages, for tests that read them. A strict
