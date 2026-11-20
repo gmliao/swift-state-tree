@@ -2044,6 +2044,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// transport when a join became ready outside a turn (its session registered with the
     /// transport after its OnJoin was consumed). Does nothing when no join waits, so a burst of
     /// such requests shares the first one's turn: it flips every ready join (up to the budget).
+    /// Tests: sync-only turns `requestJoinSyncTurn` ran (its guards passed).
+    package private(set) var joinSyncRequestTurnsForTesting = 0
+
     package func requestJoinSyncTurn() async {
         // Draining: the drain fails the waiting joins with `landClosed`, none flips now.
         guard !isDraining, transportHasJoinsAwaitingSync, let transport else { return }
@@ -2051,8 +2054,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // A sync folded into the next tick (`inTurnSyncDue`) must not run ahead of that tick
             // (coincident-sync rule): the tick turn's cadence sync flips the ready joins.
             guard periodicJoinSyncAllowed, !inTurnSyncDue else { return }
+            joinSyncRequestTurnsForTesting += 1
             runSyncOnlyTurn(transport: transport, joinSyncOnly: true)
         } else {
+            joinSyncRequestTurnsForTesting += 1
             runSyncOnlyTurn(transport: transport)
         }
     }

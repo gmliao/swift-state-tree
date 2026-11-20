@@ -74,7 +74,7 @@ Tests/SwiftStateTreeTransportTests/TransportAdapterDebugFreezeTests.swift sleep-
 Tests/SwiftStateTreeTransportTests/TransportAdapterDebugFreezeTests.swift yield-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterInTurnSyncTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterInTurnSyncTests.swift helper-poll 9
-Tests/SwiftStateTreeTransportTests/TransportAdapterInTurnSyncTests.swift sleep-poll 4
+Tests/SwiftStateTreeTransportTests/TransportAdapterInTurnSyncTests.swift sleep-poll 3
 Tests/SwiftStateTreeTransportTests/TransportAdapterInitialSyncEncodingTests.swift helper-poll 7
 Tests/SwiftStateTreeTransportTests/TransportAdapterInitialSyncStaleReadTests.swift helper-poll 3
 Tests/SwiftStateTreeTransportTests/TransportAdapterJoinFlipTests.swift helper-poll 35

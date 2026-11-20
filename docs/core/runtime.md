@@ -431,7 +431,7 @@ A join completes in the sync phase of the turn it flips in (#69, #194). The join
 
 Stated limits:
 
-- The debug freeze settle still runs a `beginSync` / `endSync` cycle. A requested sync that meets it waits, and runs as a sync-only turn when the cycle ends.
+- The debug freeze's settle is not a turn. It is one keeper job: it checks that the same freeze is still in effect, that the land hasn't failed and that the settle's deadline hasn't passed, then plans and commits a sync phase from the frozen state, all in that job. The resume then makes two requests. First, the sync deferred while frozen runs as a sync-only turn. Second, joins that are ready but haven't flipped get a sync-only turn of their own. The second request is skipped when the first was deferred by writer back-pressure (the retry, or the next periodic phase, flips them), when the land failed, or when the land was frozen again in between (that freeze's resume makes it).
 - An input whose `validate` throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
@@ -471,7 +471,7 @@ Dirty flags are cleared in `beginSync`, in the same actor turn that takes the sn
 
 ### Sync Deduplication
 
-> The legacy path. With in-turn sync a sync request is a turn, and it is not skipped: one that meets the debug freeze settle's cycle runs after that cycle ends ([In-Turn Sync](#in-turn-sync-default)).
+> The legacy path. With in-turn sync a sync request is a turn, and it is not skipped ([In-Turn Sync](#in-turn-sync-default)).
 
 `isSyncing` flag is used for deduplication, not for blocking:
 

@@ -564,4 +564,159 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
+    // MARK: - The in-turn resume (#546 L2b, plan §3.4)
+
+    @Test("Resume, writer free: the deferred sync's phase flips the ready join; no join-sync turn")
+    func resumeFlipsReadyJoinInItsOwnPhase() async throws {
+        let f = await makeFixture(tick: false)
+        let ready = try await readyUnflippedJoin(f, session: SessionID("s1"), player: PlayerID("p1"))
+        let freeze = try await f.adapter.debugFreeze()
+        await f.adapter.syncNow()
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow, "the frozen sync is left to the resume")
+
+        let before = await f.keeper.joinSyncRequestTurnsForTesting
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
+        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before, "step 1 flipped it: step 2 requested nothing")
+        #expect(await !f.adapter.isJoiningInTurn(ready.session))
+
+        #expect(try await ready.finish(f))
+        let outbound = f.adapter
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
+        #expect(await f.sent.kinds(for: ready.session) == ["joinResponse", "firstSync"])
+    }
+
+    @Test("Resume, no deferred sync: step 2's join-sync turn flips the ready join")
+    func resumeJoinSyncTurnFlipsReadyJoin() async throws {
+        let f = await makeFixture(tick: false)
+        let ready = try await readyUnflippedJoin(f, session: SessionID("s1"), player: PlayerID("p1"))
+        let freeze = try await f.adapter.debugFreeze()
+        #expect(await !f.adapter.debugFreezeState.deferredSyncNow, "no sync was asked while frozen")
+
+        let before = await f.keeper.joinSyncRequestTurnsForTesting
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
+        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before + 1, "step 2 ran its join-sync turn")
+        #expect(await !f.adapter.isJoiningInTurn(ready.session))
+
+        #expect(try await ready.finish(f))
+        let outbound = f.adapter
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
+        #expect(await f.sent.kinds(for: ready.session) == ["joinResponse", "firstSync"])
+    }
+
+    @Test("Resume, writer held, no periodic sync: step 2 is skipped; the writer-drain retry flips the join")
+    func resumeLeavesJoinToTheDrainRetry() async throws {
+        let f = await makeFixture(tick: false)
+        let ready = try await readyUnflippedJoin(f, session: SessionID("s1"), player: PlayerID("p1"))
+        let freeze = try await f.adapter.debugFreeze()
+        await f.adapter.syncNow()
+
+        await f.adapter.setWriterBackPressureOverrideForTesting { true }
+        let before = await f.keeper.joinSyncRequestTurnsForTesting
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
+        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before, "step 1 deferred: no second phase to defer again")
+        #expect(await f.adapter.isJoiningInTurn(ready.session), "nothing flipped it yet")
+        #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "the writer-drain retry is armed")
+
+        await f.adapter.setWriterBackPressureOverrideForTesting(nil)
+        let adapter = f.adapter
+        #expect(await withinHangBound { await adapter.waitForKeeperRequestedSyncWorkForTesting() }, "the retry never ran")
+        #expect(await !f.adapter.isJoiningInTurn(ready.session), "the retry's phase flipped the join")
+
+        #expect(try await ready.finish(f))
+        let outbound = f.adapter
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
+        #expect(await f.sent.kinds(for: ready.session) == ["joinResponse", "firstSync"])
+    }
+
+    @Test("Resume, writer held, periodic land: step 2 is skipped; the next periodic phase flips the join")
+    func resumeLeavesJoinToThePeriodicPhase() async throws {
+        let f = await makeFixture(tick: true)
+        let joinGate = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.joinSyncRequested) { await joinGate.arrive() })
+        let s1 = SessionID("s1")
+        let join = Task { try await joinInTurn(f, session: s1, player: PlayerID("p1")) }
+        // A tick land consumes the join's input in a tick turn.
+        await f.keeper.stepTickOnce()
+        #expect(await joinGate.waitForArrivals(1), "the join didn't register")
+        let freeze = try await f.adapter.debugFreeze()
+        await f.adapter.syncNow()
+
+        await f.adapter.setWriterBackPressureOverrideForTesting { true }
+        let before = await f.keeper.joinSyncRequestTurnsForTesting
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
+        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before, "step 1 deferred: step 2 skipped")
+        #expect(await f.adapter.isJoiningInTurn(s1))
+
+        await f.adapter.setWriterBackPressureOverrideForTesting(nil)
+        await f.keeper.stepTickOnce()
+        #expect(await !f.adapter.isJoiningInTurn(s1), "the periodic phase flipped the join")
+
+        joinGate.open()
+        await f.adapter.installHolds(nil)
+        #expect(try await join.value.completedInTurn)
+    }
+
+    @Test("Resume, frozen again between step 1 and step 2: step 2 waits for the next resume")
+    func resumeSkipsJoinSyncAfterARefreeze() async throws {
+        let f = await makeFixture(tick: false)
+        let resumeGate = TestGate()
+        let ready = try await readyUnflippedJoin(f, session: SessionID("s1"), player: PlayerID("p1")) {
+            $0.on(.resumeAfterSync, arrival: 1) { await resumeGate.arrive() }
+        }
+        let first = try await f.adapter.debugFreeze()
+
+        let before = await f.keeper.joinSyncRequestTurnsForTesting
+        let adapter = f.adapter
+        let resume = Task { await adapter.debugResume(freezeToken: first.freezeToken) }
+        #expect(await resumeGate.waitForArrivals(1), "the resume didn't reach step 2")
+        let second = try await f.adapter.debugFreeze()
+        resumeGate.open()
+        _ = await resume.value
+        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before, "no join-sync turn while frozen again")
+        #expect(await f.adapter.isJoiningInTurn(ready.session))
+
+        _ = await f.adapter.debugResume(freezeToken: second.freezeToken)
+        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before + 1, "the next resume requested it")
+        #expect(await !f.adapter.isJoiningInTurn(ready.session))
+
+        #expect(try await ready.finish(f))
+    }
+}
+
+/// An in-turn join on a land without periodic sync, registered and ready to flip but not
+/// flipped: held at `.keeperJoinReturned` until the keeper's input drain (its OnJoin turn) is
+/// idle, so no input turn's phase flips it after it registers, then held at
+/// `.joinSyncRequested`, before its own join-sync request. `extra` adds holds to the same
+/// registry. `finish` opens the hold, removes the holds and returns whether the join completed
+/// in a turn.
+private struct ReadyJoin {
+    let session: SessionID
+    let gate: TestGate
+    let task: Task<TransportAdapter<JoinFlipTestState>.JoinResult, any Error>
+
+    func finish(_ f: Fixture) async throws -> Bool {
+        gate.open()
+        await f.adapter.installHolds(nil)
+        return try await task.value.completedInTurn
+    }
+}
+
+private func readyUnflippedJoin(
+    _ f: Fixture,
+    session: SessionID,
+    player: PlayerID,
+    extra: (HoldRegistry<TransportAdapterHoldPoint>) -> HoldRegistry<TransportAdapterHoldPoint> = { $0 }
+) async throws -> ReadyJoin {
+    let returned = TestGate(), requested = TestGate()
+    await f.adapter.installHolds(extra(HoldRegistry<TransportAdapterHoldPoint>()
+        .on(.keeperJoinReturned) { await returned.arrive() }
+        .on(.joinSyncRequested) { await requested.arrive() })
+        .hook)
+    let task = Task { try await joinInTurn(f, session: session, player: player) }
+    try #require(await returned.waitForArrivals(1), "the keeper join didn't return")
+    let keeper = f.keeper
+    try #require(await withinHangBound { await keeper.waitForInputDrainIdleForTesting() }, "the OnJoin turn never ran")
+    returned.open()
+    try #require(await requested.waitForArrivals(1), "the join didn't register")
+    return ReadyJoin(session: session, gate: requested, task: task)
 }

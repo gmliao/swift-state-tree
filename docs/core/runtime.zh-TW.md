@@ -431,7 +431,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 
 已知限制：
 
-- Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。遇到它的同步請求會等待，在該 cycle 結束時以 sync-only turn 執行。
+- Debug freeze 的 settle 不是 turn，而是 keeper 上的一個 job：它先確認仍是同一次 freeze、land 沒有失敗、settle 的期限還沒過，再從凍結的 state 規劃並 commit 一次 sync phase，全部在這個 job 內完成。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
 - `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
@@ -471,7 +471,7 @@ Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回
 
 ### 同步去重
 
-> 這是 legacy 路徑。In-turn sync 下，同步請求是一個 turn，不會被跳過：遇到 debug freeze settle 的 cycle 時，會在該 cycle 結束後執行（[In-Turn Sync](#in-turn-sync預設)）。
+> 這是 legacy 路徑。In-turn sync 下，同步請求是一個 turn，不會被跳過（[In-Turn Sync](#in-turn-sync預設)）。
 
 `isSyncing` 標記用於去重，不是用於阻塞：
 

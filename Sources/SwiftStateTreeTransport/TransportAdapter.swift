@@ -40,6 +40,9 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// An in-turn freeze settle after its keeper job committed, before it checks its generation
     /// and publishes: work that arrives here comes after the settle's copy (#546 L2b).
     case settleBeforePublish
+    /// An in-turn resume after its deferred sync's request returned, before it checks for a
+    /// refreeze and decides on the join-sync request (#546 L2b).
+    case resumeAfterSync
     /// Before the initial sync reads the state.
     case initialSync
     /// After the initial sync read the state, before it checks its ticket and commits: the
@@ -6925,16 +6928,49 @@ extension TransportAdapter {
             debugFreezeState.deferredBroadcastOnly = debugFreezeState.deferredBroadcastOnly || runBroadcastOnly
             return
         }
+        if inTurnSyncEnabled {
+            await debugResumeInTurn(runDeferredSync: runSyncNow || runBroadcastOnly)
+            return
+        }
         // A full cycle also covers broadcast-only changes.
-        if inTurnSyncEnabled, runSyncNow || runBroadcastOnly {
-            _ = await keeper.syncTurnNow(via: self, reason: .resume)
-        } else if runSyncNow {
+        if runSyncNow {
             await _syncNowImpl()
         } else if runBroadcastOnly {
             await _syncBroadcastOnlyImpl()
         }
         // That cycle runs without joiners: a tickless land's join that became ready during the
         // freeze (its sync-only turn was skipped) needs its own turn to flip (#69).
+        if hasJoinsAwaitingSyncIsolated() {
+            await keeper.requestJoinSyncTurn()
+        }
+    }
+
+    /// The in-turn resume (#546 L2b, plan §3.4): step 1, the deferred sync as one outside
+    /// request, awaited (a full phase also covers broadcast-only changes); step 2, the join-sync
+    /// request, which branches on step 1's outcome.
+    private func debugResumeInTurn(runDeferredSync: Bool) async {
+        var deferredSync: InTurnSyncResult?
+        if runDeferredSync {
+            deferredSync = await keeper.syncTurnNow(via: self, reason: .resume)
+        }
+        await holds.at(.resumeAfterSync)
+        // Frozen again across step 1: that freeze's resume requests the joins' turn. (A step 1
+        // that met the new freeze was skipped, and its phase deferred its sync again.)
+        guard debugFreezeState.count == 0 else { return }
+        switch deferredSync {
+        case .deferredBackPressure:
+            // The writer still holds an earlier phase: the writer-drain retry (no periodic
+            // sync) or the next periodic phase delivers the deferred work and flips the ready
+            // joins. A second phase now would only defer again.
+            return
+        case .failed, .landFailed:
+            // The land ends; nothing more to flip.
+            return
+        default:
+            break
+        }
+        // Step 1 ran without joiners past the budget, or didn't run: a tickless land's join that
+        // became ready during the freeze (its sync-only turn was skipped) needs its own turn (#69).
         if hasJoinsAwaitingSyncIsolated() {
             await keeper.requestJoinSyncTurn()
         }
