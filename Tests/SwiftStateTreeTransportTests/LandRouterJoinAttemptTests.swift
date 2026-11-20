@@ -106,7 +106,9 @@ private struct AttemptHarness {
     var adapter: TransportAdapter<JoinAttemptState> { container.transportAdapter }
     var keeper: LandKeeper<JoinAttemptState> { container.keeper }
 
-    static func make() async throws -> AttemptHarness {
+    /// `inTurnSync: false` reaches the adapter's package-only off mode, for the off-path tests
+    /// until that mode is removed (#546 L2).
+    static func make(inTurnSync: Bool = true) async throws -> AttemptHarness {
         let definition = Land("join-attempt", using: JoinAttemptState.self) {
             Rules {
                 CanJoin { (_: JoinAttemptState, session: PlayerSession, _: LandContext) in
@@ -133,7 +135,9 @@ private struct AttemptHarness {
         let manager = LandManager<JoinAttemptState>(
             landFactory: { _ in definition },
             initialStateFactory: { _ in JoinAttemptState() },
-            transport: transport
+            transport: transport,
+            inTurnSync: inTurnSync,
+            syncLagPolicy: nil
         )
         let router = LandRouter<JoinAttemptState>(
             landManager: manager,
@@ -432,18 +436,15 @@ struct LandRouterJoinAttemptTests {
         #expect(await attemptPoll { await h.adapter.isJoined(sessionID: new) })
         #expect(await h.players == ["p1"])
         #expect(!(await h.router.hasHandshakePhase(old)))
-        // Off path the new join's own send arrives once; the old attempt adds none.
-        let ownSends = InTurnSync.isEnabled() ? 0 : 1
-        #expect(registry.arrivalCount(at: .sendingJoinResponse) == ownSends, "the old join sends no JoinResponse")
-        #expect(registry.arrivalCount(at: .sendingInitialSync) == ownSends)
+        // In-turn, the router sends neither for the new join; the old attempt adds none.
+        #expect(registry.arrivalCount(at: .sendingJoinResponse) == 0, "the old join sends no JoinResponse")
+        #expect(registry.arrivalCount(at: .sendingInitialSync) == 0)
     }
 
-    @Test(
-        "Off path, a disconnect while the JoinResponse is sent: no `.joined`, no initial sync",
-        .enabled(if: !InTurnSync.isEnabled(), "IN_TURN_SYNC=true: the router sends no JoinResponse")
-    )
+    /// Pinned to the off mode: the in-turn router sends no JoinResponse.
+    @Test("Off mode, a disconnect while the JoinResponse is sent: no `.joined`, no initial sync")
     func disconnectWhileJoinResponseSent() async throws {
-        let h = try await AttemptHarness.make()
+        let h = try await AttemptHarness.make(inTurnSync: false)
         let session = SessionID("s-response")
         _ = await h.connect(session)
         let (gate, registry) = await h.holdCounting(at: .joinResponseSent)
@@ -514,8 +515,7 @@ struct LandRouterJoinAttemptTests {
     }
 
     @Test(
-        "A mapped player: an older attempt for an alias, admitted after the player's newer session, is refused by the resolved player (#234)",
-        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the resolved player is checked on the in-turn path only")
+        "A mapped player: an older attempt for an alias, admitted after the player's newer session, is refused by the resolved player (#234)"
     )
     func mappedOlderAttemptAfterNewerAdmission() async throws {
         let h = try await AttemptHarness.make()
@@ -552,12 +552,10 @@ struct LandRouterJoinAttemptTests {
         #expect(await h.keeper.playerCount() == 1)
     }
 
-    @Test(
-        "IN_TURN_SYNC=false keeps the requested-player check: a mapped older attempt supersedes the newer session (#234's documented limit)",
-        .enabled(if: !InTurnSync.isEnabled(), "the in-turn path refuses it (mappedOlderAttemptAfterNewerAdmission)")
-    )
+    /// Pinned to the off mode: the in-turn path refuses it (`mappedOlderAttemptAfterNewerAdmission`).
+    @Test("Off mode keeps the requested-player check: a mapped older attempt supersedes the newer session (#234's documented limit)")
     func mappedOlderAttemptLegacyLimit() async throws {
-        let h = try await AttemptHarness.make()
+        let h = try await AttemptHarness.make(inTurnSync: false)
         let r = try await h.olderAttemptAfterNewer(firstPlayer: "alias-p1", secondPlayer: "p1", tag: "legacy")
         #expect(await h.adapter.staleJoinAttemptsRefused == 0)
         #expect(await h.adapter.isJoined(sessionID: r.first), "the older attempt is admitted")

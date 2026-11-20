@@ -285,8 +285,7 @@ private struct InputTurnFixture {
 
 @Suite(
     "In-turn sync: tickless input turns",
-    .timeLimit(.minutes(1)),
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    .timeLimit(.minutes(1))
 )
 struct LandKeeperInputTurnTests {
 

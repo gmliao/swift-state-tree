@@ -1,8 +1,9 @@
 # Replay on typed inputs and the keeper's turns (#612, with #550)
 
-**Status:** rev 3, design for review.
+**Status:** rev 4, design for review.
 - **S0 is done:** GO at rev 2, merged as #675 (4fbe76c6). §6 S0 records what it did.
-- **Rev 3** answers rev 2's review of the rest: 8 must-fix, 9 should and 2 nits, in #612 issuecomment-7025788145. What changed is in §13.
+- **Rev 4** answers rev 3's review: 6 must-fix, 12 should and 3 nits, in #612 issuecomment-7026974327. What changed is in §14. Rev 3's changes are in §13.
+- **Every statement about today's code** was checked again at 4fbe76c6 for rev 4. `Sources/` and `Examples/` haven't changed since then on `main`.
 - **No code** for S1–S6 until this plan is GO, the maintainer has answered §9, and each step's prerequisites (§8) have merged.
 
 **Issue:** #612. #550 is folded in (maintainer, 2026-11-20). This plan answers #550's question and #546 L2's group 5 ("reevaluation keepers: in-turn, or a replay-only cycle"). S0 settled group 5: no adapter is bound to a reevaluation keeper.
@@ -37,7 +38,7 @@
 Replay feeds the recorded inputs into the same keeper turn a live land runs, in recorded order and at the recorded boundaries. Each run sends the turn's outputs where it needs them.
 
 - **One machine.** A replaying keeper runs one synchronous turn entry point (§3.3), the one a live keeper runs too. There's no `LandMode`, and no apply-path branch on being a replay.
-- **One input source per keeper,** chosen at construction: live intake (transport, router, server inputs) or a record cursor.
+- **One input source per keeper,** chosen at construction: live intake (transport, router, server inputs), or replay, whose intake is closed and whose batches `ReplayRun` reads from its record cursor.
 - **Outputs:**
   - the sync phase runs through a transport port when one is attached;
   - observers read each turn's outcome: the recorder, the turn comparator and the sync-output check.
@@ -55,10 +56,11 @@ What this plan doesn't change:
 
 - **When it records.** The recorder exists when `mode == .live && enableLiveStateHashRecording` (LK init).
 - **Turn records.** The keeper's tick turn (`runTickTurn`, LK:4705) builds a `ReevaluationTickRecord` (`makeTurnRecord`) on every tick turn, recorder or not. It submits it after the turn (LK:4796). The input drain does the same per batch (`runInputDrain`, LK:5381–5393). The legacy path records from `processPendingActions` and `flushOutputs`.
-- **The state hash** is computed only when `mode == .live && reevaluationRecorder != nil && usesInTurnSync` (LK:4881).
+- **The state hash** of a turn is computed when `enableLiveStateHashRecording && reevaluationRecorder != nil`. The in-turn tick sets it at LK:4741, the legacy tick at :4555 and the single-input turn at :2713. The initialize record (`makeInitializeRecord`, built only with a recorder, LK:1196–1199) hashes under `enableLiveStateHashRecording` (:4844). None of these depends on where the sync runs.
+- **The sync stream** is recorded when `recordsSyncStream` holds: `mode == .live && reevaluationRecorder != nil && usesInTurnSync` (LK:4881).
 - **Sync stream.** The adapter submits it as drafts, and only with in-turn sync.
 - **Metadata.**
-  - The keeper's land ID is set after init (`setLandID`, LM:628).
+  - The land ID enters the keeper's init (LM:623). `setLandID` at LM:628 sets it again.
   - The recorder's metadata is set in `LandManager.buildLand` after the adapter exists (`setMetadata`, LM:703), with `recordsSyncStream` and `syncConfig` from the adapter.
   - Then `holds.at(.wiring)` and `setTransport` run (LM:715–716).
   - A later header replaces an earlier one (RL).
@@ -111,12 +113,12 @@ The monitor land reads the service's status under a lock on a 100 ms tick (`Reev
 ```
              ┌──────────────── input source (exactly one) ─────────────────┐
              │ live intake: transport, router, submitServerInput           │
-             │ record cursor: recorded boundaries, validated, in order     │
+             │ replay: ReplayRun's record cursor, validated, in order      │
              └──────────────────────────┬──────────────────────────────────┘
                                         │ TurnBatch (§3.1)
                                         ▼
        ┌───────────────────── LandKeeper.runTurn(batch) ─────────────────────┐
-       │ synchronous, in this order (§3.3): W1, membership, inputs, W2,      │
+       │ synchronous, in this order (§3.3): W1, deltas, inputs, W2,          │
        │ tick handler, committed tick and hash, sync phase through the port  │
        │ (if attached), outcome. No waiter is resumed here.                  │
        └───────────┬──────────────────────────────────┬──────────────────────┘
@@ -132,35 +134,56 @@ The monitor land reads the service's status under a lock on a 100 ms tick (`Reev
 
 A keeper is built with an `InputSource`:
 - **`.live`:** today's intake: `submitAction`, client events, joins and leaves through the router, and `submitServerInput` (#387).
-- **`.record(RecordCursor)`:** the public intake is closed. Every live entry point refuses with one reason, `.replaying`. That covers `join`/`joinReportingAdmission`, actions, client events, server inputs and leaves. It replaces #387's `.notLive` and the mode checks in the client-event, action and server-input intake. The keeper doesn't start initialization (§3.3).
+- **`.replay`:** the public intake is closed. Every live entry point refuses with one reason, `.replaying`. That covers `join`/`joinReportingAdmission`, actions, client events, server inputs and leaves. It replaces #387's `.notLive` and the mode checks in the client-event, action and server-input intake. The keeper doesn't start initialization (§3.3), and it holds no cursor.
+
+**One owner for the cursor.** `ReplayRun` owns the `RecordCursor`. It reads and validates each boundary and hands the batch to the keeper's `runTurn` (§3.3, §3.4). The keeper never reads the record.
 
 **The cursor yields boundaries, and each boundary is a `TurnBatch`:**
 
 | Kind | Carries | Today's counterpart |
 |---|---|---|
 | `.initialize` (only when the land has OnInitialize) | the recorded resolver outputs for OnInitialize, and its outputs (events, state hash) | the initialize entry. A land with no `onInitialize` writes none (LK `performInitialization`) |
-| `.tick(id)` | its membership items and inputs in applied order, the watermarks W1 (read at turn start) and W2 (read after the inputs), and the recorded outcome (rejected inputs, failure position, events, state hash) | one tick turn record |
-| `.pass(tick, ordinal)` | a tickless land's membership items and inputs for one pass, its watermark and its outcome. One tick may have several. The ordinal is land-wide and continues across ticks | #325's passes |
+| `.tick(id)` | its membership deltas, its inputs in applied order (lifecycle items among them), the watermarks W1 (read at turn start) and W2 (read after the inputs), and the recorded outcome (rejected inputs, failure position, events, state hash) | one tick turn record |
+| `.pass(tick, ordinal)` | a tickless land's membership deltas and inputs for one pass, its watermark and its outcome. A tickless land records every pass under tick 0 (`executingTickIdForPendingItems` moves `nextTickId` to 1 once, LK:3384–3397), so one tick usually holds the whole run. The ordinal is land-wide | #325's passes |
 | `.syncOnly(observedTick, afterPass, readPosition)` | no inputs; the recorded sync outputs it produced. `afterPass` and the read position place it between two passes of one tick | sync-only turns, stream `turnKind .syncOnly` (`ReevaluationSyncStream.swift:16`) |
-| `.shutdown` | the shutdown lifecycle entry | the shutdown turn |
 
-**Membership items.** On live, `players` changes outside the turn, before the resolvers are awaited: the join paths at LK:1581 and :1803, the leave at :2499, and the removals of a join that didn't complete (a drain during its resolvers at :1628 and :1856, a failed OnJoin resolver at :5586). Some of these changes queue no lifecycle item at all: no `onJoin`/`onLeave` handler, or a reconnect that replaces the entry.
-- **Recording.** Every `players` change is recorded as a membership item, not only the handler items. It goes into the next batch the keeper runs after the change, in change order, ahead of that batch's inputs. A turn sees every change made before it starts, so this is the position the turn observed.
-- **What an item carries:** player ID, client ID, session ID, guest flag, device ID and metadata (`ActionRecorder.swift:400–412`), plus whether a handler runs. S1's PR pins the field list against `PlayerSession`.
-- **On replay,** `runTurn` applies each item to `players` at its position, then runs its handler if the item says one ran.
-- **On live,** the change has already happened, so `runTurn` runs only the handler (`membership: .alreadyApplied`). When #588 moves the join into its turn, both sides use `.applyInTurn`.
+**Not boundaries:**
+- **Shutdown** is a lifecycle input in its tick or pass, as today's record has it: on a tick land in its own tick, on a tickless land in its own pass.
+- **`.legacyCycle` sync entries** are adapter cycles committed outside a turn: `syncNow` cycles until #546 L2, the freeze settle, and the standalone initial sync until B3 (`ReevaluationSyncStream.swift:17–19`). The keeper runs nothing for them. The cursor hands each one to the sync check at its read position (`afterPass`, sequence), between the boundaries around it.
 
-**Validation before apply.** The cursor checks each boundary before handing it out. A violation ends the run with `recordInvalid(position, rule)`, before anything of that batch applies. These are the invariants a live record actually has:
-- every input's identity (its kind and sequence) is unique in the record;
+**Membership deltas and lifecycle inputs are two things.**
+- **On live, `players` changes outside the turn,** before the resolvers are awaited:
+  - an insert on join (LK:1581, :1803), or a replace when a reconnect replaces the entry;
+  - a remove on leave (:2499);
+  - a rollback of a join that didn't complete: a drain during its resolvers (:1628, :1856) or a failed OnJoin resolver (:5586).
+- **The OnJoin/OnLeave handler is a lifecycle item:** a sequenced input queued after the change, with its resolver outputs. It runs inside `applyInputs` in `(resolvedAtTick, sequence)` order, among the actions (LK:3950–3966). So a change and its handler can land in different batches, and an action that resolved earlier runs before the handler in the same batch. Some changes queue no lifecycle item: no handler, a replace, a rollback.
+- **Recording a delta.** Every `players` change is a `MembershipDelta`: its operation (insert, replace, remove, rollback) and the entry's fields. It names no handler. A batch carries the deltas made since the previous batch started, in change order. Replay applies them at the batch's start, before its first input, which is the `players` the live turn saw.
+- **Recording a lifecycle item:** unchanged in place. It stays a sequenced input in the batch's ordered stream, with its resolver outputs.
+- **Fields.**
+  - A delta carries the player ID and what `InternalPlayerSession` holds: client ID, last session ID, device ID, guest flag and metadata (LK:5803–5817). `PlayerSession` (`JoinTypes.swift:22–31`) has no client or session ID, so it isn't the schema.
+  - A lifecycle item carries what its handler's `LandContext` reads (player, client, session, device, guest flag, metadata), as today's record does (`ActionRecorder.swift:400–412`).
+  - S1's PR pins both against those types.
+- **Services.** An entry's `LandServices` aren't recorded. On replay every entry gets the services `ReplayRun`'s caller gives for the land, as today's runners take them (`ConcreteReevaluationRunner(services:)`, `GameReevaluationFactory.swift:19–23`). A handler whose services answer differently on replay is the land's bug, as with config (§5.2, Q8).
+- **On live nothing moves.** The change happens outside the turn as today, and `runTurn` applies no deltas (`membership: .alreadyApplied`). Lifecycle items run where they run today. When #588 moves the join into its turn, both sides use `.applyInTurn`.
+
+**Structural validation, before apply.** The cursor checks each boundary before handing it out. A violation ends the run with `recordInvalid(position, rule)`, before anything of that batch applies. These are the invariants a live record actually has:
+- every input's sequence is unique in the record. One counter numbers every kind (LK:1595), and the pending queue, the pass index and the waiter map are keyed by sequence alone (LK:3412–3417, :4080–4086, :5461–5467);
 - within a batch, the inputs' `(resolvedAtTick, sequence)` doesn't decrease. That is execution order (`readyPendingItemsInOrder`, LK:3400–3409). Sequences alone may go down: an input whose resolver finished a tick later runs after one with a higher sequence, and so does a frozen server input applied after a later join;
-- W1 doesn't decrease across batches, and neither does W2;
-- each watermark is checked at its own stage:
-  - W1 is checked before the inputs apply;
-  - W2 is checked after they apply, and before the tick handler, which moves it as it emits;
+- the recorded W1 doesn't decrease across batches, and neither does W2. A batch's W2 isn't below its W1;
 - tick IDs don't decrease;
-- the pass ordinal is consecutive land-wide, including across ticks;
+- the pass ordinal is consecutive land-wide;
 - `.initialize`, if present, comes first;
-- a failure position names an input in its batch, or a stage of the batch: the tick handler, the sync phase, or the end of inputs (`LandFailurePosition.endsInputs`). A sync-stage failure has no failing input.
+- a failure position is well formed (`LandFailurePosition`, `LandFailure.swift:48–82`):
+  - `.input` names an input of its batch;
+  - `.syncPhase` names the batch's sync phase, with no failing input;
+  - `.eventFlush` is the legacy flush after a turn, on a keeper with no port until #546 L2 2e;
+  - `.actionResponse` is reported by the transport, so it reaches the keeper as a `.landFailure` input (LK:3951). It ends its batch, with `endsInputs` set;
+  - `.tickHandler` is reserved and not produced today.
+
+**Divergence, while applying.** The watermarks are compared with what the replay counted, each at its own stage:
+- W1 before the inputs, and W2 after the inputs and before the tick handler (which moves the counter as it emits).
+- At either stage the counter moves forward to the recorded watermark when it's behind, as today's restore does (`restoreSequenceWatermark`, LK:4216–4231). It never moves back.
+- A counter above the recorded watermark is `mismatch(.watermark, stage)`. The batch goes on, so its later fields are still compared, and so does the run. Today this is a logged warning.
 
 Rev 2 also had "the watermark is at or below its batch's first sequence" and "sequences strictly increase". Both were wrong: inputs take their sequence at intake (LK:1591, :1817, :2512, :2654), and W1 is read at turn start, after them. Stronger rules can be added in S1's PR only with a test that runs them against live recordings.
 
@@ -193,30 +216,37 @@ func runTurn(_ batch: TurnBatch, wants: OutcomeRequest) -> TurnOutcome
 - **`routesThroughTurn`:** whether inputs go through `runTurn`. It is true for a `.record` keeper, and for a live keeper wherever `usesInTurnSync` holds today. After #546 L2 group 2e it is true for every live keeper too. Then it is a constant, and S6 deletes it.
 - **`syncsInTurn`:** whether the sync phase runs in the turn: a port is attached and opts in (`runsSyncPhaseInTurn(of:)`). It has no mode term.
 
-S2's PR lists each of these sites with the predicate it takes:
-- initialize: LK:1193;
-- join: :1651 and :1889;
-- actions: :2202 and :2657;
-- leave: :2585;
-- client events: :2909 and :3046;
-- server input: :3153;
-- tick: :4250 and :4300;
-- tickless turns: :5442 and :5539;
-- the helpers: :637, :859, :1903–1924, :4881 and :5062.
+The sites, by what they decide:
+- **Routing only** (`routesThroughTurn`): join :1651 and :1889; actions :2202 and :2657; leave :2585; client events :2909 and :3046; server input :3153; the tick loop :4250.
+- **Port output only** (`syncsInTurn`): :637 (a tick's leftover sync requests), :5442 (an input turn's events and sync), :5062 (`runSyncOnlyTurnIfInTurn`).
+- **Both, split in the plan:**
+  - :1193, initialize: whether OnInitialize is a turn (routing) and whether its events and sync go out through the port and its marker is recorded (port output, LK:1193–1210);
+  - :4300, the tick turn: routing, tied today to a port and a tick handler. It becomes routing for the turn, and port output for its outputs step;
+  - :5539, the scheduled sync path: whether a due sync folds into the next turn (routing) or runs as a sync-only turn through the port (port output);
+  - :1903–1924, transport admission and the join flips: routing decides whether a join waits for a turn, port output whether a sync-only turn flips it.
+- **Neither:** :859 is a test accessor. :4881 is `recordsSyncStream`, which becomes `reevaluationRecorder != nil && syncsInTurn`.
 
 **What `runTurn` does, in order.** This is the order `runTickTurn` has today (LK:4705–4773), kept.
 1. **W1.** It sets W1. On replay it checks the recorded W1 against the outcome counter, as #72's restore does.
-2. **Membership.** It applies the batch's membership items (§3.1): on replay `players` changes and then the handler runs; on live only the handler runs.
-3. **Inputs.** It applies the inputs in the batch's order (`applyInputs`). A failing input fails alone.
-4. **A land failure in the inputs** stops the batch at its position (#535). The outcome is the failed prefix: the applied inputs and the failure position. There is no W2, no state hash, no events and no sync. The turn ends here.
+2. **Membership deltas, on replay only.** It applies the batch's deltas to `players` (§3.1). No handler runs here. On live there are none, since the change already happened outside the turn.
+3. **Inputs.** It applies the inputs in the batch's order (`applyInputs`), lifecycle items among them, where they run today. A failing input fails alone.
+4. **A land failure in the inputs** stops the batch at its position (#535). The outcome is the failed prefix, kept as today (LK:4715–4725, :5422–5456):
+   - a failed tick still commits `lastCommittedTickId`, and takes and drops the collected events and sync requests;
+   - a failed pass keeps its ordinal and its consumed prefix;
+   - there is no W2, no state hash, no events and no sync. The turn goes to step 9.
 5. **W2.** It sets W2, and replay checks it.
 6. **Tick handler.** For `.tick` it runs the tick handler.
-7. **Committed tick and hash.** It commits the tick. It computes the state hash only when `wants.stateHash` is set. A recorder sets it under today's gate (LK:4881: a recorder is attached and the sync runs in the turn), and a comparator sets it on replay.
-8. **Port.** When `syncsInTurn`, it calls the port with the events and the sync request (`runTurnOutputs`). The port can fail the land, and it routes the events: `includeSync == false` sends events without a sync. So nothing is final before this call.
-9. **Outcome.** It builds `TurnOutcome` after the port returns: the applied inputs with a result per input, the rejected inputs, the events, the failure position (including a sync-stage failure from step 8), the watermarks, and the hash.
+7. **Committed tick and hash.** It commits the tick. It computes the state hash only when `wants.stateHash` is set.
+   - On live that is today's gate: `enableLiveStateHashRecording && reevaluationRecorder != nil` (LK:4741, :4555, :2713). It doesn't depend on a port, so a live keeper with no port, such as the recording runner (`ReevaluationRunner/main.swift:452`), keeps hashing after #546 2e moves it onto `runTurn`.
+   - The initialize record keeps its rule: built when a recorder is attached (LK:1196–1199), hashed under `enableLiveStateHashRecording` (:4844).
+   - On replay the comparator sets `wants.stateHash` when the record holds hashes.
+8. **Outputs.**
+   - **With a port** (`syncsInTurn`), it calls the port with the events and the sync request (`runTurnOutputs`). The port can fail the land, and it routes the events: `includeSync == false` sends events without a sync. So nothing is final before this call.
+   - **With no port,** it takes the events and the sync request into the outcome. Nothing is left in the output collector for a later flush. Today's no-port input turn leaves them for `flushOutputs` (LK:5437–5446, :4104–4117). That stays for live keepers with no port until #546 2e.
+9. **Outcome.** It builds `TurnOutcome` after step 8: the applied inputs with a result per input, the rejected inputs, the events, the failure position (including a sync-stage failure from step 8), the watermarks, and the hash. On live it also stores each input's result in `inputTurnResults` in the same segment, as today (LK:5447–5449).
 
 **After `runTurn`, outside it.** The caller that ran the turn does the rest, as today:
-- **live:** it submits the record (`await submitTurnRecord`). Only then does it resume the waiters with each input's result from the outcome (`resumeInputTurnWaiters`, LK:5381–5393). So a caller sees its result only after its record is submitted. The same holds for `ticklessJobTurns` and the late-registering server-input waiter;
+- **live:** it submits the record (`await submitTurnRecord`). Only then does it resume the waiters with each input's result (`resumeInputTurnWaiters`, LK:5381–5393). So a caller sees its result only after its record is submitted. The same holds for `ticklessJobTurns`. The results stay in `inputTurnResults` across the submission's `await`, not only in the outcome, because a server input's waiter registers late. `awaitInputTurn` returns at once when the sequence is neither pending nor in `inputTurnResults` (LK:5355–5366);
 - **replay:** `ReplayRun` gives the outcome to the observers. There are no waiters.
 
 `runTurn` never resumes a waiter itself.
@@ -245,15 +275,26 @@ The run's verdict aggregates its batches' verdicts the same way. Today's `.parti
 
 **`ReplayRun`** replaces `ReevaluationEngine.run` and `ConcreteReevaluationRunner`, with their duplicated setup and their two `CapturingSink`s:
 - It opens the record once (§5.1) and runs the checks before the first step (§5.2).
-- It builds the keeper with `.record(cursor)` and attaches the observers the caller asked for, plus a port for a viewer (§5.5).
-- `step()` reads the next boundary, then runs it with `runTurn` and returns the verdicts. `runToEnd()` loops it.
+- It owns the cursor (§3.1). It builds the keeper with `.replay` and attaches the observers the caller asked for, plus a port for a viewer (§5.5).
+- `step()` reads and validates the next boundary from its cursor, hands the batch to the keeper's `runTurn`, and returns the verdicts. `runToEnd()` loops it.
 - **One step in flight.** It is an actor-isolated flag:
   - `step()` checks the flag and sets it in one segment, before the cursor's async read;
   - a second call while the flag is set returns `.busy` at once;
   - a `defer` clears the flag on every exit: success, a read error, cancellation, and supersession by a newer run.
 
   This isn't `SingleFlight`: `SingleFlight.flight(for:start:)` gives a second caller the task already in flight (`SingleFlight.swift:46–58`), and never returns `.busy`. Reentrancy during the read can't start a second step (#100's step race).
+- **A batch that was read is applied, or the run ends.** No batch is skipped:
+  - the cursor advances only when it returns a batch. A read that throws, cancellation included, ends the run (`ended(.readFailed)` or `ended(.cancelled)`), and its position doesn't matter after that;
+  - after a read returns, the step checks nothing more before the apply. It hops to the keeper, and `runTurn` is synchronous there. So a cancellation that arrives between the read and the apply is seen at the next `step()`, which ends the run before reading;
+  - supersession by a newer run (§5.4) drops this run and its keeper. Its results are dropped by their ticket, and no pending batch survives it.
 - It owns its keeper. The keeper is single-use and dropped at the end of the run.
+
+**Today's runner contract stays until S5.** S2 replaces `ConcreteReevaluationRunner`'s engine, not its type. Its public init, `ReevaluationRunnerProtocol` and `ReevaluationStepResult` (with `replayFrame`) stay as a wrapper over `ReplayRun`. These callers build it or read it:
+- GameDemo's factories (`GameReevaluationFactory.swift:19`, :33, :40) and `GameServer/main.swift`;
+- `HeroDefenseReplayStateParityTests` and `E2EStateSnapshotDiffTests`;
+- `GenericReplayLand`, which reads `replayFrame` (`GenericReplayLand.swift:67–127`).
+
+The wrapper maps each batch's outcome to today's step result: the state, the hashes and `isMatch` from the verdict (`match` only). The generic viewer E2E (`reevaluation-replay-e2e-game.ts`) must pass at S2's merge. S5 deletes the wrapper with `GenericReplayLand`.
 
 ## 4. What goes away
 
@@ -264,11 +305,12 @@ The run's verdict aggregates its batches' verdicts the same way. Today's `.parti
 | The keeper's mode branches | Each becomes intake closed, cursor validation, a `runTurn` step, an observer, or nothing (viewers aren't players, §5.5). S2's PR lists each site with its fate | S2 |
 | `runTick`'s replay pull and `replayInitializeBeforeTickZero` | Replaced by the cursor and `runTurn` | S2 |
 | The keeper's off path: `processPendingActions`, `replayRecordedPasses`, `deliverLegacyPass`, the legacy `runSync` loop, `syncNowFromTransport`, `beginSync`/`endSync` | Unreachable after S2 and #546 L2; deleted after S6's reachability check | S6 |
-| `ReevaluationEngine`, `ConcreteReevaluationRunner`, `CapturingSink` | Replaced by `ReplayRun` and `TurnComparator` | S2 |
+| `ReevaluationEngine`, `CapturingSink`, `ConcreteReevaluationRunner`'s engine | Replaced by `ReplayRun` and `TurnComparator`. `ConcreteReevaluationRunner`'s type and contract stay as a wrapper (§3.4) | S2 |
+| The runner wrapper: `ConcreteReevaluationRunner`, `ReevaluationRunnerProtocol`, `ReevaluationStepResult.replayFrame` | Deleted with its last users | S5 |
 | `SyncOutputReplayDriver` (the shadow's driver) | Replaced by `SyncOutputCheck`'s driver on the shared planner (§5.3) | S3 |
 | `GenericReplayLand`, `ReevaluationReplayProjector` (the hard-coded "hero-defense" projector), `DecodeReplayState`, the replay use of `fromBroadcastSnapshot`, `registerWithGenericReplay`, `replayLandSuffix` (configuration, `NIOLandServer`, `LandTypeRegistry`, `NIOAdminRoutes`), `ReevaluationReplaySessionDescriptor`, `/admin/reevaluation/replay/start` | Replaced by replay sessions (§5.5) | S5 |
 | The 3.x replay readers and their compatibility branches (#211, #607) | Deleted when 4.0 is the written format and the checked-in records are regenerated | S1 |
-| The S1 bridge (`MaterializedRecordSource`, §6 S1) | Deleted when its last user moves: the runners in S2, `GenericReplayLand` in S5 | S5 |
+| The S1 bridge (`MaterializedRecordSource`, §6 S1) | Deleted when the runners move to `ReplayRun` | S2 |
 
 ## 5. The parts in detail
 
@@ -289,9 +331,10 @@ The run's verdict aggregates its batches' verdicts the same way. Today's `.parti
 | Kind | Stored as | Decoded by | On failure |
 |---|---|---|---|
 | Client action, client event | canonical MessagePack written by the `@Payload` typed writer, positional in declaration order (#521 PR 1a), under the static wire name (#521 EV2) | the definition's registry and #606's strict typed decode | the run ends (record/code mismatch) |
-| Membership item (join, leave, replacement; §3.1) | `RecordedMembership`, a `Codable` struct: player ID, client ID, session ID, guest flag, device ID, `metadata: [String: String]`, whether a handler ran. Canonical MessagePack, named keys. There is no `@Payload` join payload: a join carries `PlayerSession` fields and string metadata (`ActionRecorder.swift:400–412`) | synthesized `Codable` | the run ends |
+| Membership delta (§3.1) | `MembershipDelta`, a `Codable` struct: operation (insert, replace, remove, rollback), player ID, and the `InternalPlayerSession` fields (client ID, last session ID, device ID, guest flag, `metadata: [String: String]`). Canonical MessagePack, named keys | synthesized `Codable` | the run ends |
+| Lifecycle item (OnJoin, OnLeave, shutdown) | a sequenced input, as today: its kind and the context fields its handler reads (`ActionRecorder.swift:400–412`), with its resolver outputs. There is no `@Payload` join payload | synthesized `Codable` | the run ends |
 | Server input (`ServerInputPayload: Codable`, #387) | canonical MessagePack of its `Codable` encoding, named keys. It stays `Codable` (#387's plan, outside #521) | `serverInputRegistry` by its type identifier, synthesized `Codable` | the run ends |
-| Resolver output (`Codable & Sendable`, `ResolverOutput.swift:23`) | canonical MessagePack of its `Codable` encoding, named keys, keyed by its scope (the item's kind and sequence, or OnInitialize) and its resolver key. An output that is absent on purpose (a resolver that didn't run, or returned nothing) is recorded as `absent`, not left out | the cursor looks up the declared output type in the definition's resolver table by handler and resolver key | the run ends; an output with no declared type is `recordInvalid` |
+| Resolver output (`Codable & Sendable`, `ResolverOutput.swift:23`) | canonical MessagePack of its `Codable` encoding, named keys, keyed by its scope (the item's sequence, or OnInitialize) and its resolver key. An output that is absent on purpose (a resolver that didn't run, or returned nothing) is recorded as `absent`, not left out | through a definition API S1 adds: a handler-scoped resolver descriptor with its key, its output decoder and the duplicate-key rule, usable without executing. Today's `AnyResolverExecutor` only executes (`Resolver/ResolverExecutor.swift`) | the run ends; an output with no declared type is `recordInvalid` |
 | Server event (an output, compared) | the typed writer's bytes (#521) | decoded to check that it resolves; compared as bytes | `mismatch` |
 
 **Canonical encoding from the typed value, not the client's wire bytes.** Wire bytes depend on the client's encoding (JSON key order, whitespace, number forms), so two recordings of one input could differ. The cost is one encode per recorded input, and it runs only on a recording land (§7).
@@ -305,28 +348,46 @@ The run's verdict aggregates its batches' verdicts the same way. Today's `.parti
   - the sync stream part: `.recorded(syncConfig)` or `.notRecorded`.
 - **The keeper adds what it holds:** land type, the RNG seed (#575), the schema fingerprint (#604), the effective-config fingerprint (§5.2, Q8), and the initial-state hash (the state before OnInitialize).
 - **The race this removes.** Today the keeper starts initialization eagerly in its init (LK:988–991), and `LandManager` sets the metadata (LM:703) and attaches the port (LM:715–716) after awaits. With the header complete at init, OnInitialize's record can't come before the header, and nothing is attached later that changes it.
-- **Where the sync part comes from.** `LandManager` computes it before building the keeper, from the configuration it gives the adapter. That needs a static `TransportAdapter.recordSyncConfig(for:)`, which today's instance property `syncConfigForRecord` becomes.
+- **Where the sync part comes from: one resolved configuration.** Today the adapter's sync configuration comes from the in-turn switch, the environment strategy and the encoder pairing (TA:95–100, :971–1058). `LandManager` resolves it once, before building the keeper, with a static `TransportAdapter.resolveSyncConfiguration(…)`. It passes the same value to the header's sync part and to the adapter's init. Today's instance property `syncConfigForRecord` goes.
 - **"No port, ever" vs. "port not attached yet."** These are told apart by the init parameter, not by timing: `.notRecorded` is "no sync stream". The headless runner and keepers with no port pass it.
-- **A port that disagrees.** When `setTransport` attaches a port whose sync config differs from the header's `.recorded(syncConfig)`, the keeper refuses it with a precondition. That is a wiring bug.
-- **The headless runner's metadata.** `ReevaluationRunner/main.swift:459–471` calls `setLandID` and `setMetadata` after init. That moves to `RecordingSetup` too.
+- **Both directions are checked** when a port is attached, by `setTransport` or, later, at init:
+  - a port whose sync config differs from a `.recorded(syncConfig)` header is refused with a precondition (a wiring bug);
+  - a recording port attached to a `.notRecorded` header is refused the same way;
+  - a `.recorded` header whose port is never attached (the land ends during wiring) is a valid record with an empty sync stream.
+- **OnInitialize before the port.** Today the keeper starts initialization in its init (LK:989), and the port comes later (LM:715–716). Initialize's marker and its phase depend on `usesInTurnSync` (LK:1193–1210). With a `.recorded` header the keeper starts initialization when its port is attached, not in its init, so the marker and the phase always see the port. With `.notRecorded`, it starts in its init as today. This changes live timing only on recording lands, by the wiring time, and S1 tests it with the `.wiring` hold.
+- **Direct metadata setters move to `RecordingSetup`** in S1:
+  - the headless runner's `setLandID` and `setMetadata` (`ReevaluationRunner/main.swift:459–471`);
+  - EncodingBenchmark's setter (`EncodingBenchmarkMain.swift:149–159`).
 - **A second header** is a format violation, and the reader refuses it. Today a later header replaces the earlier one.
 
 **The cursor (streaming): when a batch is final.**
-- **The file has two streams in one handle.** Turn frames (batches) are written in their turn, in order. Sync frames are the sync stream, read in `streamIndex` order.
-- **Lookahead: one tick.** The cursor holds a tick's batches until it has read the next tick's first turn frame, or the footer. Only then does it hand them out. It never hands out a batch it might later withhold.
+- **The file has two streams in one handle.** Turn frames are written in their turn, in order: one frame per boundary (a pass is a frame of its own, not an entry of a tick frame as in 3.x). Sync frames are the sync stream, read in `streamIndex` order.
+- **Lookahead: one boundary.** A boundary is final when the cursor has read the next boundary's first frame, or the footer. Only then does the cursor hand it out, so it never hands out a batch it might later withhold. This is per boundary, not per tick: a tickless land records every pass under tick 0 (LK:3384–3397), and a per-tick rule would hold its whole run until EOF.
 - **Truncation.** A file without its footer, or with `complete == false`:
-  - the held newest tick is withheld, as today;
-  - the batches before it are final;
-  - the verdicts for the withheld tick and everything after are `notVerified(.truncated)`.
-- **Gaps in the sync stream:**
-  - at a complete footer, a missing `streamIndex` is a format violation (`recordInvalid`);
-  - at truncation, the sync stream is cut to its dense prefix, and the outputs after the cut are `notVerified(.truncated)`.
-- **Bounded read-ahead.** Filling a sync-stream gap reads forward, past turn frames that aren't due yet. Those frames wait in a turn-frame buffer.
-  - Both buffers share one bound, `RecordCursor.maxReadAhead` (a frame count and a byte count). Above it the record is refused.
-  - The writer keeps its reorder distance under a smaller constant, `ReevaluationRecorder.maxReorderDistance`. A sync draft written further than that from its turn's frame marks the record incomplete at that point (the footer's `complete = false`, with a reason), instead of writing a file the reader refuses.
-  - S1 tests both bounds with a hold that delays one draft, not with timing.
+  - only the newest boundary is withheld. Today's reader withholds the newest tick, which on a tickless land is the whole run;
+  - the boundaries before it are final;
+  - the verdicts for the withheld boundary and everything after are `notVerified(.truncated)`.
+- **When a sync entry is final.** Each sync entry names its read position (tick, `afterPass`, sequence). It is handed out when both are true:
+  - its `streamIndex` is the next one expected;
+  - the boundary at its read position is final, or the entry is a `.legacyCycle` read between two final boundaries.
+
+  So a handed-out entry never disappears later. Today's reader computes the dense prefix after it drops the newest tick, which can drop an entry it would otherwise have kept (RL:302–345).
+- **Sync stream errors:**
+  - a duplicate `streamIndex` is `recordInvalid`;
+  - at a complete footer, a missing `streamIndex` is `recordInvalid`;
+  - at truncation, the sync stream ends at its dense prefix among final entries, and the outputs after it are `notVerified(.truncated)`.
+- **Bounded read-ahead, with matching bounds on both sides.** Filling a sync-stream gap reads forward, past turn frames that aren't due yet. Those frames, and the sync frames that wait for their boundary, are buffered.
+  - The reader's bound is `RecordCursor.maxReadAhead`: a frame count and a byte count over both buffers together. Above it the record is refused.
+  - The writer measures the same thing. For each sync draft not yet written, it counts the frames and bytes it has written since that draft's boundary frame, which is what the reader buffers for it. It keeps both counts under `ReevaluationRecorder.maxReorder`, which is below the reader's bound by a fixed margin.
+  - **Past its bound, the writer closes the valid prefix.** It writes the footer with `complete = false`, the reason, and the last boundary whose sync drafts are all written. Then it stops recording that land, and logs it. A reader of that file sees a truncated record, not one it refuses.
+  - S1 tests the bounds with a hold that delays one draft, not with timing. A long tickless run, with more passes than `maxReadAhead`, is a control that must pass.
 - **Frame size:** each frame is bounded by a reader limit, and refused above it.
 - **Opening.** The path is resolved once to its real absolute form: symlinks, and a relative `REEVALUATION_RECORDS_DIR`. Containment is checked on the resolved path, and the file is opened once. The run keeps that handle (#366 items 1–3). Reads are async (#275).
+- **A header-only open.** `RecordCursor.readHeader(filePath:)` resolves the path the same way and reads the preamble and the header only. It needs no definition and decodes no payload. Its callers read the metadata before they have a definition:
+  - the admin start's compatibility check (`NIOAdminRoutes.swift:675`);
+  - the GameDemo CLI, which finds the land type from the metadata (`ReevaluationRunner/main.swift:123–132`);
+  - VisibilityTest's factory, which checks the record's settings before it picks a definition (`GameReevaluationFactory.swift:25–43`);
+  - Q2's record listing.
 
 ### 5.2 Checks before the first step
 
@@ -346,37 +407,50 @@ The engine no longer takes an initial state from its caller. It builds the state
 
 **What it compares:** for each recorded output, the broadcast hash, the per-player hashes and the event hashes, in recorded order.
 
-**What it takes as fact.** These recorded facts are conditions for a hash check. The check doesn't confirm that they should exist, or their order: a recorded fact can't verify itself. Each fact keeps today's meaning in `SyncOutputVerifier.output(_:observedTickId:state:)` (SV:344–520), and each yields the following.
+**What it takes as fact.** These recorded facts are conditions for a hash check. The check doesn't confirm that they should exist, or their order: a recorded fact can't verify itself.
 
-| Recorded fact | What it yields |
+**Today's rules, kept.** Each row below is what `SyncOutputVerifier` does today (`seed` and `clear`, SV:307–342; `output(_:observedTickId:state:)`, SV:344–520). S3 moves these rules onto the shared planner. It doesn't change them, and S3's PR checks each row against its tests.
+
+| Recorded fact | What the check does with it |
 |---|---|
-| Seed and clear markers (the ordered membership of the sync set) | who is planned at each output. A player is planned from its seed to its clear. The adapter can emit a clear before a resync output and a seed after it (TA's resync handling), so the order is taken as recorded |
-| `extractionDrops[scope]` | the scope's dropped keys keep their cached values in the replayed snapshot (`substituting`), and the hash is compared |
-| `resetsKeyScopes` | the planner resets that output's key scopes before planning, as live did |
-| `encodeDropScopes` | broadcast or a seeded player: the hash is compared, and delivery is `notVerified(.encodeDropped)`. A joiner whose whole view didn't encode: `notVerified(.viewNotSent)`, and it stays pending |
-| `eventsNotQueued`, `eventsNotMerged` | those sequences are left out of the event comparison. The output's events are `notVerified(.eventsNotMerged)` |
-| `perPlayerUnverified` (a withheld player, e.g. sync lag, #572 option A, or a player not addressed) | the player is neither compared nor staged: its baseline doesn't move. `notVerified(.withheld)` |
-| `perPlayerUncommitted` | the player is planned and apply-checked against the replayed state, and its baseline moves as planned. The record holds only its ID, not a plan hash, so its hash isn't compared: `notVerified(.uncommitted)` |
+| Seed marker | It plans the joiner's late-join view from the replayed state, stages and applies it, and apply-checks it. With a `viewHash`, the hash is compared, and the player leaves the unverifiable and diverged sets. Without one, the player is an unverifiable view: the seed counts unverifiable (SV:307–333) |
+| Clear marker | It drops the player's caches and its seeded, diverged and unverifiable-view state. Resends still pending are counted as not seen (SV:335–342) |
+| Seed and clear order | who is planned at each output: a player from its seed to its clear. The adapter can emit a clear before a resync output and a seed after it, so the order is taken as recorded |
+| `extractionDrops[scope]` | the scope's dropped keys keep their cached values in the replayed snapshot (`substituting`), for broadcast (SV:348–352) and per player (:421–425). The hash is compared |
+| No recorded hash for a scope (`broadcastHash`, `perPlayerHash` and `eventsHash` are optional) | broadcast: `skip(.broadcastNotCommitted)`, and its staged cache is dropped, so its baseline doesn't move (SV:391–394). No per-player hash: nothing per player is planned or staged for that output. No events hash: `skip(.eventsHashMissing)` |
+| `encodeDropScopes` | broadcast: the hash is compared and counted unverifiable, and its baseline moves (SV:385–390). A joiner that isn't seeded: `skip(.viewNotSent)`, and it stays pending until its seed (SV:376–383). A seeded player: it becomes diverged, so its per-player output is unverifiable until a seed with a `viewHash` clears that (SV:460–468, :318–319). The events scope: the events are unverifiable (SV:497) |
+| `perPlayerUnverified` | Two cases. A player not addressed (withheld, or its sessions ended before its clear) is neither compared nor staged: its view doesn't advance (SV:405–418). A player whose seed had no `viewHash` is planned, apply-checked and staged; only its hash is left out, counted unverifiable (SV:456–459) |
+| `perPlayerUncommitted` | The player is planned and apply-checked, then its staged per-player cache is dropped: its baseline doesn't move (SV:443–444). With a merged broadcast frame: `skip(.perPlayerResent)`, and a resend is pending. Without one, the combined update carried broadcast changes the client missed, so the player becomes diverged (SV:445–454). Its hash isn't in the combined per-player hash |
+| `resetsKeyScopes` | counted (`keyScopeResets`) after the combined per-player hash matched (SV:482). Today's check doesn't plan with it |
+| `eventsNotQueued` | those sequences are left out of the expected events. The events hash stays comparable (SV:485–491) |
+| `eventsNotMerged` | those sequences are left out too, the ones sent alone and the lost ones are counted, and the output's events are unverifiable (SV:492–498) |
 
-A skipped or withheld scope yields `notVerified`, never `match`.
+Each "unverifiable" and "skip" above is `notVerified(reason)` in the batch's verdict, never `match`. A diverged or pending player stays `notVerified` for every later output until the record re-seeds it.
 
 **What it can check:** the content of broadcast and per-player diffs, and how each scope's baseline evolves, given the recorded markers and dispositions. It also checks event order. It can't check:
 - whether a marker or a disposition should exist;
 - what lag, ceilings, backpressure or the socket decided.
 
-**The planner: option (b), shared and narrower.** S3 takes the planning half of B2's routine (decision 5's `planAndCommit`) into a deterministic function that the adapter's machine and the check both call:
+**The planner: option (b), shared, and narrower than the phase.** S3 takes the patch-planning half of B2's routine (decision 5's `planAndCommit`) into a deterministic function that the adapter's machine and the check both call. Three things are kept apart:
+- **Logical patch planning, with its staged caches: shared.** Its input:
 
-```swift
-struct SyncPlanInput {
-    let state: LocatedStateRead          // the keeper's state after the batch
-    let planned: [PlayerID]              // the sync set at this output (adapter: its membership view; check: the markers)
-    let dispositions: SyncOutputDispositions  // the table above; empty on live
-    let mode: SyncPlanMode               // full, broadcast-only, resync
-}
-func plan(_ input: SyncPlanInput, caches: inout SyncEngine.Caches) -> SyncPlan
-```
+  ```swift
+  struct SyncPatchPlanInput {
+      let state: LocatedStateRead        // the keeper's state after the batch
+      let planned: [PlayerID]            // the players planned at this output (adapter: its eligible recipients; check: seeds to clears)
+      let extractionDrops: [String: Set<String>]  // per scope; empty when nothing was dropped
+      let layout: SyncFrameLayout        // merged broadcast frame vs combined update
+      let cachePolicy: SyncCachePolicy   // full, broadcast-only, resync with key-scope resets
+      let eventWindow: SyncEventWindow   // the events this output carries (through which sequence)
+  }
+  func plan(_ input: SyncPatchPlanInput, caches: SyncEngine.Caches) -> (SyncPatchPlan, SyncEngine.StagedCaches)
+  ```
 
-The adapter's phase scratch isn't an input. The adapter keeps commit, the writer, lag and ceilings, and gives the planner its membership view. The check has no scratch. It gives the planner the markers and the dispositions. S3's PR fixes the final names against B2's code.
+  These are what today's plan reads (TA:4404–4436). #546 B0/B2 moves the layout tables into `CommitTools`, and S3 takes them from there.
+- **Live delivery decisions: the adapter's machine only** (#546 B2). Sessions, lag, ceilings, backpressure, the writer, and what commits. The check never sees them.
+- **Facts only the check uses:** uncommitted players, encode drops, unverified players and the events dispositions (the table above). They decide what is compared and what is staged after the plan. They never enter it.
+
+S3's PR fixes the final names against B2's code.
 
 **Rejected:** option (a), recording the phase's full inputs (recipients, sessions, lag state, joins, scratch). It grows every recorded turn on the live path to replay something the record already states as outcomes.
 
@@ -392,21 +466,18 @@ The adapter's phase scratch isn't an input. The adapter keeps commit, the writer
 - **Results as server inputs.** The run reports through `submitServerInput` (#387): `RunProgress` and `TurnVerdict`, each carrying the run ticket. The monitor's handlers keep the current ticket in state and drop an input from another run. The monitor's tick no longer reads the service, so CLAUDE.md's monitor exception and #522's item go.
 - **The bound is land-wide.** `serverInputMaxInFlight` is one cap for the land (LK:379, :3113), shared by `RunProgress` and `TurnVerdict`. #387's submit refuses at the cap at once (`.overCap`). The run then waits for capacity through a new keeper call, `awaitServerInputCapacity()`:
   - **check and register in one segment:** if the land-wide count is under the cap, it returns at once. Otherwise it registers its waiter in that same actor segment, so a release between the check and the registration can't be missed;
-  - **any release wakes it:** applying or refusing any server input of any type frees a slot and resumes one waiter;
-  - **termination wakes it:** the land draining, failing or stopping resumes every waiter with `.landEnded`;
+  - **any release wakes it:** applying a server input of any type, or dropping one in a drain, frees a slot and resumes one waiter. An intake refusal never took a slot (LK:3093–3121, :3130), so it frees none;
+  - **termination wakes it:** the land draining, failing or stopping resumes every waiter with `.landEnded`. A land that has already ended returns `.landEnded` at once;
+  - **no cap:** with `serverInputMaxInFlight == 0` (unlimited) it returns at once;
+  - **cancellation removes it:** the waiter is registered with a cancellation handler. The service cancels a superseded or cancelled run's task, and the handler removes the parked waiter in the keeper, so a land that stays full can't strand it;
   - **the run's loop retries the submit only while its run ticket is current.** A superseded run stops.
 
   Nothing else holds results, so `resultsQueue`'s unbounded growth goes (`ReevaluationRunnerService.swift:301`).
-- **`TickProcessedEvent` keeps its fields and their meaning** (`ReevaluationMonitorEvents.swift:61–68`, emitted at `ReevaluationMonitorLand.swift:60–68`):
-  - `expectedHash` is the recorded state hash;
-  - `expectedState` is the recorded state.
-
-  Its match result is the batch's aggregated verdict (§3.4), which combines the comparator and the sync check:
-  - `mismatch` if either says mismatch;
-  - otherwise `notVerified` if either says notVerified;
-  - otherwise `match`.
-
-  Rev 2 pointed at :56–58, which is `TickSummaryEvent`.
+- **`TickProcessedEvent`** (`ReevaluationMonitorEvents.swift:61–68`, emitted at `ReevaluationMonitorLand.swift:59–68`):
+  - `expectedHash` stays the recorded state hash (`"?"` when the record has none).
+  - `expectedState` today is the replayed state: the emitter passes `actualState` to both fields. A recorded snapshot exists only when the live land recorded snapshots (`EnvKeys.Runtime.stateSnapshotRecording`). S4 sets `expectedState` to the recorded snapshot when there is one, and to the replayed state otherwise, as today. It adds `hasRecordedState: Bool` so the monitor can tell the two apart.
+  - `isMatch: Bool` stays, and is true only for `match`. S4 adds `verdict` (`match`, `mismatch`, `notVerified`) with its reasons. The summary's `correctTicks` counts `match` and `mismatchedTicks` counts `mismatch`. A new `notVerifiedTicks` counts the rest. The monitor's WebClient changes with it.
+  - The batch's verdict is the aggregate of §3.4, which combines the comparator and the sync check: `mismatch` if either says mismatch, otherwise `notVerified` if either says notVerified, otherwise `match`.
 
 ### 5.5 Replay viewing
 
@@ -423,7 +494,14 @@ A replay session is a `ReplayRun` with a real `TransportAdapter` as its port, pa
   - **a view of a recorded player** (only if Q3 allows it): the per-player baseline comes from the planner on the replaying keeper's current state, for the player the ticket names. It never comes from recorded hashes, and the observer never becomes that player;
   - **disconnect:** the observer is removed from the adapter's membership only. There is no keeper leave and no OnLeave.
 
-  Today's replay keeper inserts viewers as players and skips OnJoin, which goes. S5's own plan PR details these against B3's code.
+  Today's viewer joins the live `GenericReplayLand` as a player, which goes with that land. S5's own plan PR details these against B3's code.
+- **Inputs S5's own plan must answer:**
+  - **The adapter's precondition.** S0's `precondition(keeper.isLive)` (TA:968) reads `LandMode`, which S2 deletes. In S2 it becomes `keeper.inputSource == .live`. S5 replaces it for an adapter that serves observers of a `.replay` keeper: an observer-only adapter, whose ordinary join stays closed (the keeper refuses it with `.replaying` anyway).
+  - **The observer's first sync** starts from an empty client view, on each supported encoding. B3's inherited standalone planner takes a `PlayerID` and refuses row addressing (TA:5681–5708). An observer needs:
+    - a per-session baseline;
+    - key-scope ownership;
+    - a fence against the next replay batch, so the driver doesn't step while an observer's first sync reads;
+    - a cleanup that leaves other observers of the same recorded player intact.
 - **Pacing.** A driver task steps the run on the viewer's clock (§3.2), with a speed factor (1× by default), pause, and seek-forward. Seek-backward needs snapshots (#526) and isn't in scope.
 - **Same definition.** The session's keeper is built from the registered `LandDefinition` of the recorded land type, so its path hashes, event hashes and fingerprint are the live land's.
 - **Moved in S5 with it:**
@@ -434,7 +512,7 @@ A replay session is a `ReplayRun` with a real `TransportAdapter` as its port, pa
 
 ### 5.6 Recording
 
-- **The recorder is an observer** (`TurnRecordSink`) on a live keeper. The host enables it through a host-level setting, not the state-hash flag. The setting only attaches the recorder. It doesn't widen today's hash gate (LK:4881).
+- **The recorder is an observer** (`TurnRecordSink`) on a live keeper. The host-level setting is today's `enableLiveStateHashRecording` (`NIOLandServerConfiguration`). It attaches the recorder (LK init) and turns on the state hash, as today: `wants.stateHash` on live is that flag with a recorder attached (§3.3 step 7). Nothing widens or narrows that gate.
 - **The sync stream** is recorded through the port as today: drafts come back in the phase's output (#553).
 - **`ReevaluationRecordSaver.saveOnShutdown`** stays the land's call. #526's production stream is out of scope; the sink protocol is where it attaches.
 
@@ -458,7 +536,7 @@ Each step is its own PR to `main` (core paths).
 **S1: format 4.0, writer and reader, with today's runners on a bridge.**
 - **The writer** writes 4.0 (§5.1):
   - typed inputs by codec kind;
-  - membership items for every `players` change;
+  - membership deltas for every `players` change, apart from the lifecycle items;
   - one header, complete at keeper init (`RecordingSetup`);
   - the preamble as the version;
   - the writer's reorder bound.
@@ -468,14 +546,28 @@ Each step is its own PR to `main` (core paths).
   - **an index** by tick serves every getter, and `getSyncStream()` serves the materialized sync stream;
   - **the definition** reaches it through `openSource(filePath:definition:)`, which gains the definition parameter. 4.0's positional client payloads need the definition to decode;
   - **conversion to today's DTOs:** each decoded typed value is converted back to the DTO today's keeper decodes (`ReevaluationRecordedAction` and the others, with `AnyCodable` payloads), through the value's `Encodable` form;
+  - **what it maps beyond payloads:**
+    - passes become today's `getPasses` entries, from the per-boundary frames;
+    - `.initialize` becomes `getInitializeRecord`, and the terminal failure `getLandFailure`;
+    - lifecycle items become today's lifecycle entries;
+    - membership deltas have no 3.x counterpart, so the bridge drops them. Through S1, replay keeps today's membership handling, and S2 is the first reader of deltas;
   - **errors:** a cursor error fails the open, so the run is refused before its first step. The keeper's two error paths can't be reached through the bridge: it treats a failed max-tick read as EOF, and it logs a failed tick read and goes on. S1 adds a test that a corrupt 4.0 file fails at open;
-  - **its users** are `ReevaluationEngine`, `ConcreteReevaluationRunner` and `GenericReplayLand`'s run, until S2 and S5 replace them.
+  - **its users** are `ReevaluationEngine` and `ConcreteReevaluationRunner` (and through it `GenericReplayLand`'s run), until S2 moves them to `ReplayRun`.
+- **The header-only open** (§5.1) replaces `openSource(...).getMetadata()` in the callers that have no definition yet.
 - **The checked-in 3.x records are regenerated with the 4.0 writer in S1's PR,** with the command for each in the PR:
   - `Examples/GameDemo/reevaluation-records/{1,2,3}-hero-defense.sstr`. `verify-replay-record.ts:85` defaults to `3-hero-defense.sstr`, and `test-e2e-game.sh:293` calls it without a record path; `HeroDefenseReplayStateParityTests.swift` reads them;
   - `Tests/SwiftStateTreeTransportTests/Fixtures/SyncOutputGoldens/*.reeval.sstr` (five files);
   - `Tests/SwiftStateTreeTransportTests/Fixtures/HybridEventFrames/hybrid-record.sstr`.
 
   Keeping the 3.x reader until those consumers move is the alternative. It is rejected: it keeps #211's branches alive through S5.
+- **Checking a regenerated record.** S1's PR has two commits for this:
+  - the first adds the 4.0 writer and reader, the regenerated files, and an equivalence test. For each regenerated file, the test compares its decoded content field by field with its 3.x original, through both readers: inputs, outcomes, hashes and sync entries, wherever 4.0 has the field. CI runs it on that commit;
+  - the second deletes the 3.x reader, the originals and the equivalence test.
+
+  So a writer bug can't hide in a regeneration.
+- **The fixtures' tests.**
+  - `SyncOutputGoldenTests.swift:182–205` opens the five 2.6 JSON copies and casts the new side to today's log type. The 2.6 JSON comparisons retire with the 3.x reader. The verdicts they pinned are pinned again on the regenerated files.
+  - `HybridEventFrameGoldenTests.swift:223–249` pins a historical fixture, exact event sequences and a partial verdict. The historical version pin retires. The event sequences and the partial verdict are pinned again on the regenerated file.
 - **The 3.x replay readers** and their branches are deleted (#211, #213, #607).
 - **Live server-input intake** moves to 4.0's framing and limits (§5.1).
 - **The game E2E's separate-process `--verify`** (`reevaluation-e2e-game.ts:96–97`) runs on 4.0 from this step on, through the bridge.
@@ -488,7 +580,9 @@ Each step is its own PR to `main` (core paths).
   - waiters are resumed by the drain after the record's submission;
   - the failed-input prefix is kept.
 - **`InputSource`** comes in, and `LandMode` and `ReevaluationOutputMode` are deleted, with each mode branch's fate listed.
-- **The runners:** the CLI runner and the monitor's runner move to `ReplayRun` and `TurnComparator`. Today's `SyncOutputVerifier` serves as the sync observer until S3.
+- **The runners:** the CLI runner and the monitor's runner move to `ReplayRun` and `TurnComparator`. `ConcreteReevaluationRunner` stays as a wrapper over `ReplayRun`, so GameDemo's factories, the parity tests and `GenericReplayLand` keep working until S5 (§3.4). The generic viewer E2E passes at S2's merge. The S1 bridge is deleted.
+- **The sync observer until S3** is today's `SyncOutputVerifier`, driven as today: its driver loads the whole sync stream and its completeness before the first step (SV:744–817). `ReplayRun` gives it that preload from the cursor's sync stream, read once at open. Its per-output results become each batch's sync verdict, and its run result (`.passed` / `.partial`) becomes `match` / `notVerified` for the run. The E2E's per-scope `passed` assertions stay (`sync-output-verdict.ts:64–94`).
+- **The adapter's precondition** becomes `keeper.inputSource == .live`, since `LandMode` goes (TA:968).
 - **Tests:** the keeper-side tests that used `.reevaluation` with fake transports are converted to `.record` keepers.
 - **Not in S2:** live keepers with no port, and live keepers with fake transports, keep `routesThroughTurn == false`. They are #546 L2 groups 2e and 2d.
 - It covers #324, #342 and #478.
@@ -497,27 +591,20 @@ Each step is its own PR to `main` (core paths).
 
 **S4: the run service and the monitor** (§5.4). It needs S2 and #387 PR 2, or does that migration itself. It covers #100 and #522's monitor item.
 
-**S5: replay viewing** (§5.5). It needs S2, S3, and #546 B3 (observer membership is new membership, and the initial sync is B3's). It gets its own plan PR first.
-- It deletes `GenericReplayLand`, the projector, `registerWithGenericReplay`, every suffix site and the S1 bridge.
+**S5: replay viewing** (§5.5). It needs S2, S3, and #546 B3 (observer membership is new membership, and the initial sync is B3's). It gets its own plan PR first, which answers §5.5's inputs.
+- It deletes `GenericReplayLand`, the projector, `registerWithGenericReplay`, every suffix site and the runner wrapper (§3.4).
 - It moves the clients and docs listed in §5.5.
 - It covers #366 items 4–6.
 
 **S6: the deletion.** It needs S2 and #546 L2, including groups 2d and 2e. It doesn't need S3–S5.
-- **Exit check first, in the same PR.** S6's first commit makes each off-path entry trap:
-  - `processPendingActions`;
-  - `replayRecordedPasses`;
-  - `deliverLegacyPass`;
-  - the legacy `runSync` loop;
-  - `syncNowFromTransport`;
-  - `beginSync`/`endSync`.
+- **Who deletes what.** #546 deletes its own parts first: L1 the `IN_TURN_SYNC` switch and its code (#677), L2 `beginSync`/`endSync`, `syncNowFromTransport` and the adapter's own cycle (#546 rev 13). This plan deletes the keeper's off path:
+  - `processPendingActions`, `replayRecordedPasses` and `deliverLegacyPass`;
+  - the keeper's legacy `runSync` loop, if L2 left it;
+  - `routesThroughTurn`, by then a constant.
 
-  Each becomes `preconditionFailure("off path reached: <name>")`. The full matrix must be green on that commit: `swift test` in every CI variant, the differential harness with every cell (the legacy cells as L2 left them), the live fake transports, E2E in all three encodings, and the benchmarks' smoke runs. A trap that fires names the caller still to move, and S6 stops there.
-- **Then the deletion,** in the second commit:
-  - the keeper's off path;
-  - `beginSync`/`endSync` and `syncNowFromTransport`;
-  - `routesThroughTurn`, now constant;
-  - the remaining `IN_TURN_SYNC` code;
-  - the #546 decisions that guard the legacy cycle (decisions 1 and 4, already superseded by L2).
+  S6's PR lists what L1 and L2 already deleted, from their merged code, and traps and deletes only the rest.
+- **Exit check first, in the same PR.** S6's first commit turns each entry it will delete into `preconditionFailure("off path reached: <name>")`. The full matrix must be green on that commit: `swift test` in every CI variant, the differential harness with every cell, the live fake transports, E2E in all three encodings, and the benchmarks' smoke runs. A trap that fires names the caller still to move, and S6 stops there.
+- **Then the deletion,** in the second commit.
 - This is #550's outcome and #522's "legacy tick path" item.
 
 ## 7. Verification
@@ -525,7 +612,7 @@ Each step is its own PR to `main` (core paths).
 **Determinism, before and after S1/S2.** The scenarios are those under `Tools/CLI/scenarios/game/`, a tickless land with several passes under one tick and a sync-only phase between them, and the Demo counter land. The gate:
 - recording with S1 and verifying with the bridged runner, then with S2's `ReplayRun`, gives the same verdicts turn for turn;
 - verdicts aggregate as §3.4 says. `match` is required where the record has the field and the scope was compared. Today's verifier also reports unavailable hashes and scope-level skips, and these come out as `notVerified(reason)` per scope, with the same reasons on both sides;
-- the E2E keeps its requirement that comparable scopes actually ran (`reevaluation-e2e-game.ts:103–107`): a run with zero compared scopes fails, even with no mismatch;
+- the E2E keeps its requirement that comparable scopes actually ran (`reevaluation-e2e-game.ts:103–107`), and its per-scope `passed` assertions (`sync-output-verdict.ts:64–94`);
 - the live client frames are compared by the differential harness's goldens (#555). The record bytes are compared on their own: their goldens change once in S1 and are deterministic (no wall time), and `RecordTurnBoundaryLiveTests`' byte identity holds;
 - S2's gate also runs live keepers with no port, unchanged (they keep their path until 2e). This pins that S2 didn't move them.
 
@@ -533,20 +620,29 @@ Each step is its own PR to `main` (core paths).
 - a replayed input applied in another order, and a dropped recorded input;
 - a wrong seed, a changed config value, a stale fingerprint, and an initial-state hash that doesn't match;
 - a pass ordinal skipped (land-wide);
-- a W1 or W2 lower than the previous batch's;
-- a duplicate input identity;
+- a W1 or W2 lower than the previous batch's, and a W2 below its own batch's W1;
+- a duplicate sequence, across two kinds;
+- a membership delta moved to a later batch, and a lifecycle item moved ahead of an action that resolved earlier in its batch;
+- a replayed counter above a recorded watermark (`mismatch(.watermark)`, the run goes on);
 - a batch whose `(resolvedAtTick, sequence)` decreases;
 - an `.initialize` that isn't first;
-- a second header, and a preamble that disagrees;
-- a sync-stream gap at a complete footer.
+- a second header, and a malformed or unsupported preamble;
+- a sync-stream gap at a complete footer, and a duplicate `streamIndex`;
+- a truncated tickless record: only the newest pass is withheld.
 
-Two controls must pass: a live record whose sequences go down within a batch (a resolver finished a tick late), and one whose W1 is above every input sequence in its batch. Rev 2's rules would have refused both.
+Controls that must pass:
+- a live record whose sequences go down within a batch (a resolver finished a tick late);
+- one whose W1 is above every input sequence in its batch. Rev 2's rules would have refused both;
+- a long tickless run, with more passes than `maxReadAhead`;
+- a live keeper with no port that records with hashes (the recording runner's shape): the hashes are there.
 
 A recorded client payload with an extra field must fail the run (#606 strict).
 
 **Interleavings by holds, not time:**
 - a second `step()` during the cursor's read returns `.busy`;
-- the step flag is cleared after a read error and after cancellation;
+- the step flag is cleared after a read error and after cancellation, and the run has ended;
+- a cancellation between a read and its apply: the batch is applied, and the next `step()` ends the run;
+- a parked capacity waiter whose run is cancelled is removed;
 - a run superseded during a step;
 - a viewer that connects before readiness;
 - the monitor at the land-wide cap: released by a `TurnVerdict`, released before the wait registers, and woken by a land stop;
@@ -568,12 +664,11 @@ A recorded client payload with an extra field must fail the run (#606 strict).
 | S5 | observer sessions are new membership on the sync-planning hot path | #517's gate and a host A/B |
 | S6 | deletes code the exit check shows unreachable | the differential goldens unchanged |
 
-**The recording gate.** `makeTurnRecord` runs on every tick turn, recorder or not. S1 gates typed encoding and the state hash on a recorder being attached. S2 does the same for these, on `wants`:
+**The recording gate.** `makeTurnRecord` runs on every tick turn, recorder or not. S1 gates typed encoding on a recorder being attached. S2 does the same for these, on `wants`:
 - the `ReevaluationRecorded*` values that `applyPendingItem` (LK:3437) and `applyLifecycleItem` (LK:3640) build with no recorder attached;
-- the state hash;
 - the tickless pass numbering that only the record uses.
 
-Today's hash gate (LK:4881) is kept exactly. §5.6's host-level setting doesn't widen it.
+The state hash keeps today's gate exactly: `enableLiveStateHashRecording && reevaluationRecorder != nil` (LK:4741, :4555, :2713; the initialize record at :4844). It doesn't depend on a port. The sync stream keeps its own gate, `recordsSyncStream` (LK:4881).
 
 **E2E:** `test-e2e-game.sh` and the Demo reevaluation E2E, in all three encodings, from S1 on.
 
@@ -583,18 +678,28 @@ Today's hash gate (LK:4881) is kept exactly. §5.6's host-level setting doesn't 
 |---|---|---|
 | S0 | nothing | done (#675) |
 | S1 | #521's remaining PRs (the typed writer for every payload kind, EV2's static names), #606 (the strict typed decode) | independent of #546 |
-| S2 | S1, #546 L1 (no `IN_TURN_SYNC=false`) | `runTurn` replaces the live turn functions' entry, so it's planned against the keeper code of that time |
+| S2 | S1, #546 L1 (#677: no `IN_TURN_SYNC=false`) | `runTurn` replaces the live turn functions' entry, so it's planned against the keeper code of that time |
 | S3 | S2, #546 B2 (decision 5's routine, to share its planning half) | #554 is already merged |
 | S4 | S2, #387 PR 2 (or it does that migration) | |
 | S5 | S2, S3, #546 B3 (membership moved; the initial sync's commit) | its own plan PR first |
-| S6 | S2, #546 L2 with groups 2d and 2e | the exit check is in S6's PR |
+| S6 | S2, #546 L2 with groups 2d and 2e | the exit check is in S6's PR; it deletes only what L1 and L2 left |
 
 **Dependencies owned by #546, not steps of this plan:**
 - L2 group 2e: live keepers with no port;
 - L2 group 2d: live keepers with fake transports;
 - B2's `.initialSyncCommit` and B3: the standalone initial sync.
 
-The sequence: S0 (done) → #546 L1 → S1 (once #521 and #606 land) → S2 → L2 → S6. In parallel: B2 → S3, B3 → S5, and S4 after S2.
+**The graph.** #546's own order is E → L1 → L2 → B1 → B2 → B3 (#546 rev 13, §3.2: L2 comes after L1 and before B1).
+
+```
+#521, #606 ──► S1 ──┐
+                    ├──► S2 ──┬──► S4 (also #387 PR 2)
+#546 L1 (#677) ─────┘         ├──► S6 ◄── #546 L2 (2d, 2e)
+                              ├──► S3 ◄── #546 B2   (L2 → B1 → B2)
+                              └──► S5 ◄── S3, #546 B3
+```
+
+S1 doesn't wait for #546. S2 waits for S1 and L1. S6 waits for S2 and L2, and S3 and S5 for B2 and B3, which come after L2.
 
 ## 9. Questions for the maintainer
 
@@ -635,14 +740,14 @@ The sequence: S0 (done) → #546 L1 → S1 (once #521 and #606 land) → S2 → 
 | #526 | Out of scope (Q9); the seams stay |
 | #387 PR 2 | S4 uses it, or does the migration itself |
 | #522 (monitor, legacy tick path) | S4 and S6 |
-| #676 (harness flake, `disconnect-during-keeper-join` tickless) | Not this plan's. Noted because S2's and S6's gates run that cell |
+| #676 (harness flake, `disconnect-during-keeper-join` tickless) | Not this plan's (#678). Noted because S2's and S6's gates run that cell |
 
 ## 11. Risks
 
-- **Replay treats live decisions as recorded facts.** Intake, deadlines, router admission and the adapter's lag and ceiling decide things that replay doesn't re-derive. If a live decision isn't recorded, replay can't reproduce it. Mitigation: every decision that changes state or output is a recorded outcome (membership items included, §3.1), and S2's and S3's mutants cover each one.
+- **Replay treats live decisions as recorded facts.** Intake, deadlines, router admission and the adapter's lag and ceiling decide things that replay doesn't re-derive. If a live decision isn't recorded, replay can't reproduce it. Mitigation: every decision that changes state or output is a recorded outcome (membership deltas included, §3.1), and S2's and S3's mutants cover each one.
 - **S2 reroutes the live turn.** `runTurn` becomes the entry for the live tick and input turns. It's planned against the keeper code at S2's time. Its checks are the differential goldens, #517's gate and the small host A/B.
 - **S1 changes what every recording land writes.** DemoServer always records (`Examples/Demo/Sources/DemoServer/main.swift:94`). GameServer records when `ENABLE_REEVALUATION=true`, which the game E2E sets. S1's cost check, the regenerated records and the E2E cover that.
-- **The bridge doubles the reader for S1–S5.** It materializes through the cursor, so it adds no second parser. It is deleted in S5 (§4).
+- **The bridge doubles the reader for S1–S2.** It materializes through the cursor, so it adds no second parser. It is deleted in S2 (§4). The runner wrapper that keeps GameDemo working lives until S5.
 - **Observer sessions are new adapter surface.** S5 comes after B3, so it's built on the rewritten membership, not added to the old adapter.
 
 ## 12. Rev 2: what changed (kept for the record)
@@ -686,3 +791,31 @@ Against rev 2's review of the rest (#612 issuecomment-7025788145).
 | Nit 1: #550 | Linked at GO, closed by S6 with its exit check | §10 |
 | Nit 2: `createdAt`, `hardwareInfo` | Kept in the header, pinned for #327 as today | §5.1 |
 | After S0 | Base moved to 4fbe76c6; S0 recorded as done; #386 closed; #428 stays open with its own fix; #676 noted | header, §6, §10 |
+
+## 14. Rev 4: what changed
+
+Against rev 3's review (#612 issuecomment-7026974327). Every statement about today's code was checked again at 4fbe76c6.
+
+| Review point | Change | Where |
+|---|---|---|
+| MF1: membership and handlers | A membership delta (insert, replace, remove, rollback) is apart from the lifecycle item. Deltas apply at the batch's start, on replay only. Lifecycle items stay sequenced inputs in `applyInputs`' order. The schema is pinned against `InternalPlayerSession` and the handler's context. Services come from `ReplayRun`'s caller | §3.1, §3.3 step 2–3, §5.1 |
+| MF2: tickless lookahead | Lookahead and truncation are per boundary. 4.0 writes one frame per boundary. A long tickless run is a control | §5.1, §7 |
+| MF3: the hash gate | `enableLiveStateHashRecording && reevaluationRecorder != nil` (LK:4741, :4555, :2713; initialize at :4844) in all four places. LK:4881 is `recordsSyncStream`. §5.6's setting is that flag | §2.1, §3.3 step 7, §5.6, §7 |
+| MF4: the disposition table | Every row taken from SV:307–520 as it is: uncommitted drops its staged cache (resend or diverged), encode drops cover events and diverge a seeded player, unverified is two cases, `eventsNotQueued` keeps the hash comparable, plus the seed, clear and missing-hash rows | §5.3 |
+| MF5: GameServer's replay through S5 | `ConcreteReevaluationRunner` stays as a wrapper over `ReplayRun` with today's contract (`replayFrame` included) until S5. The generic viewer E2E gates S2. The bridge goes in S2 | §3.4, §4, §6 S2/S5, §11 |
+| MF6: the cursor's owner, cancellation, no-port outputs | `ReplayRun` owns the cursor; `.replay` only closes intake. A read batch is always applied; a cancelled or failed read ends the run. With no port, `runTurn` takes events and the sync request into the outcome | §3.1, §3.3 step 8, §3.4, §7 |
+| Should 1: validation | Unique sequence, not (kind, sequence). Structural checks apart from divergence. The restore at both stages; an overrun is `mismatch(.watermark)` and the run goes on | §3.1, §7 |
+| Should 2: sites and failures | Sites grouped as routing, port output, or both (with each split). Results stay in `inputTurnResults` across the submission. Failed tick and pass rules written into steps 4 and 9 | §3.3 |
+| Should 3: header-only open, bridge mapping | `RecordCursor.readHeader(filePath:)` for the callers with no definition and Q2. The bridge's mapping of passes, initialize, failure and lifecycle; deltas dropped through S1 | §5.1, §6 S1 |
+| Should 4: the rest of the header | One resolved sync configuration for the header and the adapter. Both directions checked. OnInitialize waits for the port when the header records a sync stream. EncodingBenchmark's setter moves | §5.1 |
+| Should 5: sync entry finality | An entry is handed out when its index is next and its boundary is final, so it never disappears. Duplicate indices refused. The writer closes the valid prefix past its bound. Writer and reader measure the same frames and bytes | §5.1 |
+| Should 6: the planner's input | `SyncPatchPlanInput` (state, planned players, extraction drops, layout, cache policy, event window), apart from live delivery decisions and verifier-only facts | §5.3 |
+| Should 7: S5's plan inputs | The adapter's precondition through S2 and S5; the observer's first sync needs | §5.5, §6 S2 |
+| Should 8: `TickProcessedEvent` | Today's `expectedState` meaning stated. A recorded snapshot when there is one, `hasRecordedState`, `verdict`, and the summary counts | §5.4 |
+| Should 9: the capacity wait | Applying or dropping frees a slot, an intake refusal doesn't. Cancellation removes a parked waiter. The ended and unlimited cases | §5.4, §7 |
+| Should 10: deletion list and order | #546 deletes `IN_TURN_SYNC` (L1) and `beginSync`/`endSync`, `syncNowFromTransport` (L2); S6 deletes only the rest. The graph drawn, S1 independent of #546 | §6 S6, §8 |
+| Should 11: the fixtures' tests | A two-commit check of each regenerated record against its 3.x original. Which historical assertions retire and what replaces them | §6 S1 |
+| Should 12: S2's parity driver, resolver lookup, failure stages | The verifier's preload in S2 and how its results become verdicts; per-scope E2E assertions kept. A resolver descriptor API in S1. `.eventFlush`, `.actionResponse`, `.legacyCycle` reads and shutdown placed | §3.1, §5.1, §6 S2, §7 |
+| Nit 1 | The land ID enters the keeper's init (LM:623) | §2.1 |
+| Nit 2 | "A malformed or unsupported preamble" | §7 |
+| Nit 3 | Today's viewer joins the live `GenericReplayLand` | §5.5 |

@@ -52,4 +52,6 @@ await container.keeper.awaitInitialization()   // returns after the loops are st
 
 - Before asserting on state, find what sets it. If that is a task the call under test started and didn't await, await that task's own completion (an `await…` accessor, a hold point, a `TestGate` arrival), never the returning call.
 - A "nothing happened" assertion needs the same anchor: assert it after the point where the thing would have happened. Check it with a mutant: remove the code that prevents it, and the test must fail. (In #505, a manager that ignores `autoStartLoops: false` fails the test on every configuration once the test awaits initialization.)
-- A test that reads state a task sets must pass on every configuration CI runs (default, `IN_TURN_SYNC=false`, `USE_SYNC_TABLES=true`). Run them all locally before reporting it green.
+- A test that reads state a task sets must pass on every configuration CI runs. Run them all locally before reporting it green. Until #546 L2 removes the off mode, a test that also needs it passes `inTurnSync: false` explicitly.
+
+**Update (#546 L1):** the `IN_TURN_SYNC` switch and its CI leg are removed. The off mode stays reachable only through `package` API until #546 L2 removes it: a test that needs it passes `inTurnSync: false` explicitly.

@@ -63,7 +63,7 @@ class ServerEnvTests(unittest.TestCase):
 
     def test_the_removed_switch_keys_stay_unset_recorded_and_refused(self):
         # The auto dirty switch and its change-object metric were removed with the sync tables
-        # default; the server ignores their keys (TransportRemovedEnvKeys.all, read from the source
+        # default, and the in-turn sync switch (IN_TURN_SYNC) after it; the server ignores their keys (TransportRemovedEnvKeys.all, read from the source
         # so the lists can't drift). The ones that changed the path while the switch existed stay
         # in SERVER_ENV, so older records still parse and a record with one set is still refused.
         # The two that only added the metric's log are classified with the metrics below.
@@ -71,7 +71,7 @@ class ServerEnvTests(unittest.TestCase):
         block = re.search(r"static let all = \[(.*?)\]", source, re.S)
         self.assertIsNotNone(block)
         removed = re.findall(r'"([A-Z_]+)"', block.group(1))
-        self.assertEqual(len(removed), 8, removed)
+        self.assertEqual(len(removed), 9, removed)
         metrics_only = {"ENABLE_CHANGE_OBJECT_METRICS", "CHANGE_OBJECT_METRICS_LOG_EVERY"}
         for name in removed:
             with self.subTest(name=name):
@@ -158,7 +158,7 @@ class ServerEnvTests(unittest.TestCase):
 
     def test_every_server_variable_is_classified(self):
         keys = self.server_keys()
-        self.assertTrue({"USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "PATH_INDEX", "SYNC_STRATEGY", "GENERIC_REPLAY_DEBUG"} <= keys, f"the scan is broken: {sorted(keys)}")
+        self.assertTrue({"USE_SNAPSHOT_FOR_SYNC", "LAND_LOOP_PHASE_OFFSET", "PATH_INDEX", "SYNC_STRATEGY", "GENERIC_REPLAY_DEBUG"} <= keys, f"the scan is broken: {sorted(keys)}")
         unclassified = keys - set(serverenv.SERVER_ENV) - self.NOT_SYNC_OR_WIRE
         self.assertEqual(unclassified, set(), "a new server variable: list it in serverenv.SERVER_ENV if it changes "
                                               "the sync path or the wire, else in NOT_SYNC_OR_WIRE")

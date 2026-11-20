@@ -123,8 +123,8 @@ HandleEvent(ChatEvent.self,
 **Event 錯誤處理流程**：
 1. `validate` 拋出錯誤 → event 被拒絕
 2. `apply` 不會執行（狀態不會被修改，也不會發出 event）
-3. 在 in-turn sync 的 tickless land 上，TransportAdapter 等待該 event 的 input turn，並將 `ErrorPayload` 送到客戶端
-4. 在 tick land 上（event 於下一個 tick 套用）或 `IN_TURN_SYNC=false` 的 tickless land 上（event 在 detached task 中套用），拒絕只記錄在 log
+3. 在 tickless land 上，TransportAdapter 等待該 event 的 input turn，並將 `ErrorPayload` 送到客戶端
+4. 在 tick land 上（event 於下一個 tick 套用），拒絕只記錄在 log
 
 ### 錯誤處理最佳實踐
 

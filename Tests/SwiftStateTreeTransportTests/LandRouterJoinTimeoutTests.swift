@@ -296,7 +296,7 @@ struct LandRouterJoinTimeoutTests {
         await h.expectTimedOut(retry, .admission)
     }
 
-    @Test("A frame for another session ended mid-join doesn't count against the timed-out session (#259)", .enabled(if: InTurnSync.isEnabled(), "the hold is on the in-turn join path"))
+    @Test("A frame for another session ended mid-join doesn't count against the timed-out session (#259)")
     func otherSessionsDropsDontCount() async throws {
         let h = try await TimeoutHarness.make(budget: generous)
         // One entry: the next session to end evicts the timed-out one, as 4096 would.
@@ -472,8 +472,7 @@ struct LandRouterJoinTimeoutTests {
     }
 
     @Test(
-        "An in-turn join admitted after its budget ran out gets no flip wait: JOIN_DENIED naming the flip",
-        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the in-turn join path is off")
+        "An in-turn join admitted after its budget ran out gets no flip wait: JOIN_DENIED naming the flip"
     )
     func flipWaitsForWhatIsLeft() async throws {
         let h = try await TimeoutHarness.make(budget: short)

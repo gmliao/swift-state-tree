@@ -175,13 +175,14 @@ final class DiffRun: @unchecked Sendable {
             transportEncoding: cell.encoding.config,
             enableLiveStateHashRecording: true,
             enableLoopPhaseOffset: false,
-            inTurnSync: cell.sync.inTurnSync,
             syncLag: .off,
             maxHandshakeFrameBytes: HandshakeFrameLimit.defaultMaxBytes,
             maxRefusedHandshakeFrames: HandshakeFrameLimit.defaultMaxRefusedFrames
         )
         // Past any correct run: a stop that reaches it fails the run.
         configuration.landStopTimeout = diffWaitBound
+        // The legacy cells reach the adapter's package-only off mode (#546 L2 removes it).
+        configuration.inTurnSync = cell.sync.inTurnSync
         let transport = WebSocketTransport()
         let server = try NIOLandServer<DiffState>(
             landType: diffLandType,

@@ -19,7 +19,7 @@ extension DifferentialHarness {
         /// One real run, the transforms' base: two players, so frames, events and a close exist.
         private func baseRun() async throws -> DiffRunResult {
             let scenario = try #require(diffScenarios.first { $0.name == "two-players" })
-            // A legacy cell: it runs as itself under IN_TURN_SYNC=false too.
+            // A legacy cell: the adapter's package-only off mode, until #546 L2.
             return try await runChecked(scenario, DiffCell(sync: .legacy, encoding: .json, land: .tickless))
         }
 

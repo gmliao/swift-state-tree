@@ -380,27 +380,9 @@ main() {
     # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
     # E2E_ENCODINGS narrows the list (space-separated), e.g. to the opcode encodings, where row
     # addressing (on by default) takes effect.
-    # E2E_TABLES_OFF_ONLY=true runs only the tables-off section below, which needs
-    # ROW_ADDRESSING=false: CI's in-turn-off leg runs it beside its default run instead of a
-    # leg of its own (audit plan, V2). Without ROW_ADDRESSING=false it fails rather than
-    # skipping the one section it was asked for.
     local encodings
     read -r -a encodings <<< "${E2E_ENCODINGS:-json jsonOpcode messagepack}"
     local failed_encodings=()
-    local tables_off_only=false
-    case "$(echo "${E2E_TABLES_OFF_ONLY:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
-        1|true|yes|y|on)
-            tables_off_only=true
-            encodings=()
-            case "$(echo "${ROW_ADDRESSING:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
-                0|false|no|n|off) ;;
-                *)
-                    print_error "E2E_TABLES_OFF_ONLY=true needs ROW_ADDRESSING=false: the tables-off section runs only then"
-                    exit 1
-                    ;;
-            esac
-            ;;
-    esac
     
     for encoding in "${encodings[@]}"; do
         echo "=========================================="
@@ -438,23 +420,21 @@ main() {
         echo ""
     done
 
-    if [ "$tables_off_only" = false ]; then
-        echo "=========================================="
-        echo "  Graceful shutdown on SIGTERM (#351)"
-        echo "=========================================="
-        if ! run_graceful_shutdown_check; then
-            failed_encodings+=("graceful shutdown")
-        fi
-        echo ""
+    echo "=========================================="
+    echo "  Graceful shutdown on SIGTERM (#351)"
+    echo "=========================================="
+    if ! run_graceful_shutdown_check; then
+        failed_encodings+=("graceful shutdown")
     fi
+    echo ""
 
     # The opt-out leg: messagepack with the typed sync tables and typed leaf values off, the
     # snapshot-diff fallback. Same CLI scenarios (broadcast field, broadcast event,
     # assertConverged); no replay. The server's config log line must show the tables off, so
-    # the leg can't pass on the default path. It also sets a removed key (the auto dirty
-    # switch's), which the server must ignore with exactly one warning naming it.
+    # the leg can't pass on the default path. It also sets two removed keys (the auto dirty
+    # switch's and IN_TURN_SYNC), which the server must ignore with exactly one warning naming both.
     #
-    # Runs only with ROW_ADDRESSING explicitly false (CI's opt-out step, both legs): row
+    # Runs only with ROW_ADDRESSING explicitly false (CI's opt-out step): row
     # addressing, on by default, keeps the tables on whatever USE_SYNC_TABLES says, so there is
     # no opt-out to test otherwise. Unsetting it for this leg alone would leave a messagepack run
     # without row addressing in a run check-row-addressing-run.sh checks for rows.
@@ -466,7 +446,7 @@ main() {
     # Trimmed and lowercased, as the server's getEnvBool reads it.
     case "$(echo "${ROW_ADDRESSING:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
         0|false|no|n|off)
-            export USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false AUTO_DIRTY_TRACKING=false
+            export USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false AUTO_DIRTY_TRACKING=false IN_TURN_SYNC=false
             if start_server "messagepack" && wait_for_server "$SERVER_NAME" "messagepack"; then
                 print_step "Running ${SERVER_NAME} E2E scenarios ($variant)..."
                 if ! (cd "$project_root/Tools/CLI" && run_cli_scenarios "messagepack"); then
@@ -483,12 +463,12 @@ main() {
                     # Every warning line counts, so a second one (once per process is the rule)
                     # fails the leg whatever key it names.
                     removed_warnings=$(grep -c "Removed environment keys are set and ignored" <<< "$stripped_log" || true)
-                    removed_naming=$(grep "Removed environment keys are set and ignored" <<< "$stripped_log" | grep -c "AUTO_DIRTY_TRACKING" || true)
+                    removed_naming=$(grep "Removed environment keys are set and ignored" <<< "$stripped_log" | grep "AUTO_DIRTY_TRACKING" | grep -c "IN_TURN_SYNC" || true)
                     if [ "$tables_off" -eq 0 ] || [ "$tables_on" -ne 0 ]; then
                         print_error "${SERVER_NAME} ($variant): the server's lands did not all log syncTables=off (off=$tables_off, on=$tables_on)"
                         failed_encodings+=("$variant")
                     elif [ "$removed_warnings" -ne 1 ] || [ "$removed_naming" -ne 1 ]; then
-                        print_error "${SERVER_NAME} ($variant): expected one removed-key warning, naming AUTO_DIRTY_TRACKING; got $removed_warnings ($removed_naming naming it)"
+                        print_error "${SERVER_NAME} ($variant): expected one removed-key warning, naming AUTO_DIRTY_TRACKING and IN_TURN_SYNC; got $removed_warnings ($removed_naming naming both)"
                         failed_encodings+=("$variant")
                     else
                         print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
@@ -500,7 +480,7 @@ main() {
                 failed_encodings+=("$variant")
             fi
             stop_server "$SERVER_NAME" "messagepack"
-            unset USE_SYNC_TABLES TYPED_LEAF_VALUES AUTO_DIRTY_TRACKING
+            unset USE_SYNC_TABLES TYPED_LEAF_VALUES AUTO_DIRTY_TRACKING IN_TURN_SYNC
             ;;
         *)
             print_step "Skipping $variant: row addressing (on unless ROW_ADDRESSING=false) keeps the sync tables on, so there is no opt-out to test"

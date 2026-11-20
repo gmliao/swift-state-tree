@@ -10,7 +10,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-SST_REGENERATE_SYNC_OUTPUT_GOLDENS=1 IN_TURN_SYNC=true \
+SST_REGENERATE_SYNC_OUTPUT_GOLDENS=1 \
     swift test --filter SyncOutputGoldenTests
 
 echo "Regenerated:"

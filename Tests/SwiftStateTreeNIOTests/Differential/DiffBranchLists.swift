@@ -6,7 +6,7 @@
 // rules.
 // - An expected difference names one cell and one difference, exactly (checkpoint, channel,
 //   place and detail, and the digests where bytes are compared). Each is used once: one that matches nothing fails as stale, two for the
-//   same difference fail as an overlap. One aimed at a masked cell isn't judged in that run.
+//   same difference fail as an overlap.
 // - A retired row names a scenario, its cells, the reason, a mutation witness and a replacement
 //   the runner calls instead of the row. Its (scenario, cell) keys are unique, the index has each,
 //   and no expected difference aims at one.

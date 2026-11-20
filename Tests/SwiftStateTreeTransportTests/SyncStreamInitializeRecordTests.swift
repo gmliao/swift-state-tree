@@ -129,7 +129,6 @@ struct SyncStreamInitializeRecordTests {
 
     @Test("With in-turn sync on, OnInitialize as a turn records an initialize marker at stream position 0")
     func markerInTurn() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = try await InitRecordFixture.make(landPrefix: "init-marker-on", inTurn: true, transportBeforeInitialize: true)
         let frame = try await f.frame0()
         let record = try #require(frame.initialize)
@@ -167,14 +166,15 @@ struct SyncStreamRecordHeaderTests {
             landFactory: { _ in makeInitRecordLand() },
             initialStateFactory: { _ in InitRecordTestState() },
             enableLiveStateHashRecording: true,
-            inTurnSync: inTurn
+            inTurnSync: inTurn,
+            syncLagPolicy: nil
         )
         let landID = LandID(landType: "init-record-test", instanceId: "header-\(inTurn)")
         let container = try await manager.getOrCreateLand(landID: landID, definition: makeInitRecordLand(), initialState: InitRecordTestState(), metadata: [:])
         let recorder = try #require(await container.keeper.getReevaluationRecorder())
         let metadata = try #require(await recorder.getMetadata())
         #expect(metadata.version == ReevaluationRecordVersion.current)
-        #expect(metadata.recordsSyncStream == (inTurn && InTurnSync.isEnabled()))
+        #expect(metadata.recordsSyncStream == inTurn)
         #expect(metadata.recordsSyncStream == container.transportAdapter.inTurnSyncEnabled)
     }
 }

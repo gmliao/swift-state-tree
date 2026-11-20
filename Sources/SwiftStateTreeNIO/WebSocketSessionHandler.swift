@@ -94,6 +94,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// Messages read and not yet delivered (tests).
     var inboundQueuedMessagesForTesting: Int { inboundBacklogCount.queuedMessages }
 
+    /// What `inboundBacklogEventForTesting` reports.
+    enum InboundBacklogTestEvent: Sendable {
+        /// A batch left the backlog (delivered or dropped), and the resume hop it needs, if any,
+        /// is queued: a loop task submitted after this runs after that hop. On the chain, any
+        /// thread.
+        case delivered
+        /// The resume hop a drain queued has run, whether or not it resumed. On the event loop.
+        case resumeHopRan
+    }
+
+    /// Called after each change to the backlog that has nothing observable to follow it, so a
+    /// test waits on it instead of polling the counts (#458). `nil` outside tests: then it costs
+    /// one nil check.
+    private let inboundBacklogEventForTesting: (@Sendable (InboundBacklogTestEvent) -> Void)?
+
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
 
@@ -230,8 +245,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         inboundBacklogBound: InboundBacklogBound = .default,
         lifecycleLog: LandLifecycleLog? = LandLifecycleLog.shared,
         stopFence: StopFence? = nil,
+        inboundBacklogEventForTesting: (@Sendable (InboundBacklogTestEvent) -> Void)? = nil,
         logger: Logger
     ) {
+        self.inboundBacklogEventForTesting = inboundBacklogEventForTesting
         self.stopFence = stopFence
         self.lifecycleLog = lifecycleLog
         self.inboundBacklogBound = inboundBacklogBound
@@ -511,8 +528,15 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// A batch was delivered to the transport (or dropped): off the backlog. Runs on the chain,
     /// any thread; hops to the event loop only when the backlog drained while paused.
     private func noteInboundDelivered(messages: Int, bytes: Int) {
-        guard inboundBacklogCount.subtract(messages: messages, bytes: bytes) else { return }
-        hop { self.resumeReadsIfDrained() }
+        if inboundBacklogCount.subtract(messages: messages, bytes: bytes) {
+            hop {
+                self.resumeReadsIfDrained()
+                self.inboundBacklogEventForTesting?(.resumeHopRan)
+            }
+        }
+        // After the hop is queued (`hop` queues synchronously): a loop task a test submits once
+        // this fires runs after that hop.
+        inboundBacklogEventForTesting?(.delivered)
     }
 
     /// Resumes reading at the low watermark, forwarding the read withheld meanwhile. Runs on

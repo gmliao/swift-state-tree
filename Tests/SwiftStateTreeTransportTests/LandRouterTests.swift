@@ -963,8 +963,7 @@ private func routerTestPollUntil(_ condition: () async -> Bool) async -> Bool {
 // MARK: - In-turn join failures (#69)
 
 @Suite(
-    "LandRouter: an in-turn join that fails before its flip is cleaned up",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the in-turn join path is off")
+    "LandRouter: an in-turn join that fails before its flip is cleaned up"
 )
 struct LandRouterJoinFlipFailureTests {
     /// Joins `player-1` (creating the land), returns its container.

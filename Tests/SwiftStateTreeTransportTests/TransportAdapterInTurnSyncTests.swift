@@ -438,8 +438,7 @@ private func recordedFramesJSON(
 
 @Suite(
     "In-turn sync: the sync phase inside the keeper turn",
-    .timeLimit(.minutes(1)),
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    .timeLimit(.minutes(1))
 )
 struct TransportAdapterInTurnSyncTests {
 
@@ -993,12 +992,5 @@ struct InTurnSyncSwitchTests {
         let items = await f.tick().flatMap { $0 }
         #expect(items.contains(.state("ticks", 1)), "items: \(items)")
         #expect(items.contains(.state("total", 5)), "items: \(items)")
-    }
-
-    @Test("the switch: IN_TURN_SYNC defaults on; an explicit off wins")
-    func switchEnvironment() {
-        #expect(InTurnSync.isEnabled(environment: [:]))
-        #expect(InTurnSync.isEnabled(environment: [EnvKeys.Runtime.inTurnSync: "true"]))
-        #expect(InTurnSync.isEnabled(environment: [EnvKeys.Runtime.inTurnSync: "false"]) == false)
     }
 }

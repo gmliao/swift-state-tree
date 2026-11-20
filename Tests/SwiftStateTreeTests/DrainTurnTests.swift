@@ -175,7 +175,7 @@ private actor BroadcastHoldTransport: LandKeeperTransport {
 }
 
 /// Reports in-turn sync for every keeper and commits each requested sync phase, so a keeper
-/// attached to it takes the in-turn path whatever `IN_TURN_SYNC` says. Not an actor: its
+/// attached to it takes the in-turn path whatever the adapter's mode. Not an actor: its
 /// synchronous calls need no isolation.
 private final class DrainInTurnTransport: LandKeeperTransport, @unchecked Sendable {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}

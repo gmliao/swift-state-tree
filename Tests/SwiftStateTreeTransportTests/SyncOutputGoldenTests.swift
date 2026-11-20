@@ -167,7 +167,7 @@ struct SyncOutputGoldenTests {
     @Test("Re-recording a golden scenario gives the committed bytes", arguments: SyncOutputGolden.allCases)
     func rerecordMatchesCommitted(golden: SyncOutputGolden) async throws {
         // Goldens are recorded with in-turn sync on; with it off there is no sync stream.
-        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        guard !Self.regenerating else { return }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-output-goldens-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -210,7 +210,7 @@ struct SyncOutputGoldenTests {
     /// gives the committed summary.
     @Test("With the path index on, a golden scenario records the committed bytes and replays to the committed summary", arguments: SyncOutputGolden.allCases)
     func pathIndexKeepsTheRecord(golden: SyncOutputGolden) async throws {
-        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        guard !Self.regenerating else { return }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-output-goldens-path-index-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -240,7 +240,7 @@ struct SyncOutputGoldenTests {
     /// committed summary.
     @Test("With field merge on, a golden scenario records the committed bytes and replays to the committed summary", arguments: SyncOutputGolden.allCases, [false, true])
     func fieldMergeKeepsTheRecord(golden: SyncOutputGolden, pathIndex: Bool) async throws {
-        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        guard !Self.regenerating else { return }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-output-goldens-field-merge-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -273,7 +273,7 @@ struct SyncOutputGoldenTests {
     /// and its replay.
     @Test("With row addressing in effect (no row entries: no root node map), a golden scenario through the router records what it records with it off", arguments: SyncOutputGolden.allCases)
     func rowAddressingKeepsTheRecord(golden: SyncOutputGolden) async throws {
-        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        guard !Self.regenerating else { return }
         let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
         var frames: [Data] = [], streams: [[ReevaluationSyncStreamEntry]] = [], summaries: [String] = []
         for on in [false, true] {
@@ -304,7 +304,7 @@ struct SyncOutputGoldenTests {
     /// land: its per-player slices (an `Int`, a `Double`, a node) take the typed slots.
     @Test("With the per-player tables on, a golden scenario through the router verifies against the shadow and records what it records with them off", arguments: SyncOutputGolden.allCases)
     func perPlayerTablesKeepTheRecord(golden: SyncOutputGolden) async throws {
-        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        guard !Self.regenerating else { return }
         let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
         var frames: [Data] = [], streams: [[ReevaluationSyncStreamEntry]] = [], summaries: [String] = []
         for on in [true, false] {
@@ -341,7 +341,6 @@ struct SyncOutputGoldenTests {
     /// Records the scenario live and writes the record and the summary its replay gives. The
     /// replay must pass: a regenerated golden is a baseline, not a known failure.
     private func regenerate(_ golden: SyncOutputGolden) async throws {
-        try #require(InTurnSync.isEnabled(), "goldens are recorded with in-turn sync on")
         try FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
         try await Self.record(golden, to: Self.recordPath(golden))
         let recorder = SyncOutputApplyCaseRecorder()

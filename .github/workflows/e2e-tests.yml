@@ -255,7 +255,7 @@ jobs:
         done
 
   e2e-game-tests:
-    name: e2e-game-tests (in-turn sync ${{ matrix.in_turn_sync }}, row addressing ${{ matrix.row_addressing }})
+    name: e2e-game-tests (row addressing ${{ matrix.row_addressing }})
     # A hung step fails the job instead of running until the 6 h limit.
     timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
@@ -264,18 +264,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The kill switch: "false" runs GameServer on the legacy sync path.
-        in_turn_sync: ["true", "false"]
         # The default ("on") and the opt-out ("off") run as legs of their own, side by side: the
         # opt-out run no longer waits for the default one, and runs when the default one fails.
         row_addressing: ["on", "off"]
-        # (in-turn sync false, row addressing off) only with full_matrix (the nightly): with
-        # in-turn sync off, rows can't take effect whatever ROW_ADDRESSING says, so its runs repeat
-        # the (false, on) leg's. The one section it adds, the tables-off fallback, runs in the
-        # (false, on) leg instead (audit plan, V2).
-        exclude: ${{ fromJSON(inputs.full_matrix && '[]' || '[{"in_turn_sync":"false","row_addressing":"off"}]') }}
-    env:
-      IN_TURN_SYNC: ${{ matrix.in_turn_sync }}
 
     steps:
     - uses: actions/checkout@v4
@@ -313,12 +304,11 @@ jobs:
           ${{ runner.os }}-node-
 
     # The default path: row addressing is on by default, so in the opcode encodings it is in
-    # effect on the in-turn leg. The check (check-row-addressing-run.sh), per encoding: in the
+    # effect. The check (check-row-addressing-run.sh), per encoding: in the
     # opcode encodings every join negotiated rowAddressing and the live scenarios applied
     # row-derived patches; in json (row entries need an opcode encoding) no join negotiated it and
     # no row patch was applied. In every encoding the SDK's strict close (4013) never fired and no
-    # land fell back to today's entries. On the in-turn-off leg rows can't take effect: the check
-    # runs with --expect-off (no join negotiated it, no row patch, no 4013).
+    # land fell back to today's entries.
     - name: Run GameServer E2E tests (includes shape invariants)
       if: matrix.row_addressing == 'on'
       shell: bash
@@ -330,20 +320,15 @@ jobs:
         set -o pipefail
         cd Tools/CLI
         ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-main.out
-        if [ "$IN_TURN_SYNC" = "true" ]; then
-          ./check-row-addressing-run.sh /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
-        else
-          ./check-row-addressing-run.sh --expect-off /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
-        fi
+        ./check-row-addressing-run.sh /tmp/e2e-main.out /tmp/e2e-main $E2E_ENCODINGS
 
-    # The opt-out (ROW_ADDRESSING=false) on both in-turn sync legs, in the opcode encodings:
+    # The opt-out (ROW_ADDRESSING=false), in the opcode encodings:
     # today's entries keep an E2E run while the old forms stay. This step also runs the
     # tables-off variant (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false), the snapshot-diff
-    # fallback, which is an opt-out only with row addressing off; on the in-turn-off leg that is
-    # the legacy sync with the fallback. No join negotiates rowAddressing (--expect-off).
+    # fallback, which is an opt-out only with row addressing off. No join negotiates rowAddressing (--expect-off).
     # json only with full_matrix (the nightly): json has no opcode state updates, so row
     # addressing is never in effect for it (`TransportEncodingConfig.effective`) and its run here
-    # is the row-on leg's json run with the same in-turn mode (audit plan, V1).
+    # is the row-on leg's json run (audit plan, V1).
     - name: Run GameServer E2E tests with row addressing off (opt-out)
       if: matrix.row_addressing == 'off'
       shell: bash
@@ -357,32 +342,13 @@ jobs:
         ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-rows-off.out
         ./check-row-addressing-run.sh --expect-off /tmp/e2e-rows-off.out /tmp/e2e-rows-off $E2E_ENCODINGS
 
-    # The (false, off) leg's one section of its own, run in the (false, on) leg when that leg is
-    # left out: the tables-off fallback (messagepack, USE_SYNC_TABLES=false
-    # TYPED_LEAF_VALUES=false) on the legacy sync. It runs only with ROW_ADDRESSING=false, set
-    # for this step alone; E2E_TABLES_OFF_ONLY skips the encoding runs the leg already made.
-    # `!cancelled()`: it runs when the default step failed, as the left-out leg ran whatever the
-    # (false, on) leg did; its own E2E_TMP_DIR leaves it nothing of that step's to trip on.
-    - name: Run the GameServer tables-off fallback (in-turn sync off)
-      if: ${{ !cancelled() && matrix.in_turn_sync == 'false' && matrix.row_addressing == 'on' && !inputs.full_matrix }}
-      shell: bash
-      env:
-        ROW_ADDRESSING: "false"
-        E2E_TABLES_OFF_ONLY: "true"
-        E2E_TMP_DIR: /tmp/e2e-tables-off
-      run: |
-        set -o pipefail
-        cd Tools/CLI
-        ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-tables-off.out
-        ./check-row-addressing-run.sh --expect-off /tmp/e2e-tables-off.out /tmp/e2e-tables-off messagepack
-
     # Each server run's effective config, from the adapter's per-land log line, so two legs can be
-    # compared on one commit (the nightly runs all four). It checks nothing.
+    # compared on one commit. It checks nothing.
     - name: Effective transport config per run
       if: always()
       shell: bash
       run: |
-        for dir in /tmp/e2e-main /tmp/e2e-rows-off /tmp/e2e-tables-off; do
+        for dir in /tmp/e2e-main /tmp/e2e-rows-off; do
           if [ -d "$dir" ]; then
             echo "== $dir"
             Tools/CLI/summarize-effective-config.sh "$dir"

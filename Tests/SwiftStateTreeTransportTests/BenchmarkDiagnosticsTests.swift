@@ -236,7 +236,7 @@ struct EffectiveStateUpdateFeaturesTests {
         #expect(!effective.contains(StateUpdateFeature.rowAddressing))
     }
 
-    @Test("With rowAddressing in effect, it is the joinResponse's echo and has rowAddressing", .enabled(if: InTurnSync.isEnabled()))
+    @Test("With rowAddressing in effect, it is the joinResponse's echo and has rowAddressing")
     func withRowAddressing() async throws {
         let (echo, effective) = try await joined(
             PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(true)

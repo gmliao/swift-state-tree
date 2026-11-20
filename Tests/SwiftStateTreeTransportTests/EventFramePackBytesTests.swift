@@ -117,8 +117,7 @@ private func joinPin(_ fixture: PinFixture, session: SessionID, player: String) 
 }
 
 @Suite(
-    "Event frame bytes for targeted events, opcode MessagePack (#554)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the joiner's held events are on the in-turn path only")
+    "Event frame bytes for targeted events, opcode MessagePack (#554)"
 )
 struct EventFramePackBytesTests {
     /// The held event OnJoin sent the joiner, packed at its flip.

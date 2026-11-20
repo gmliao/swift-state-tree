@@ -1075,8 +1075,8 @@ public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
 }
 
 /// Registers an event handler in two stages (#586). A `validate` throw fails the event alone with
-/// nothing written. On a tickless land with in-turn sync the error goes back to the client as an
-/// error payload; on a tick land, or tickless with `IN_TURN_SYNC=false`, it is only logged.
+/// nothing written. On a tickless land the error goes back to the client as an error payload; on
+/// a tick land it is only logged.
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload, Plan>(
     _ type: E.Type,
     fileID: String = #fileID,
