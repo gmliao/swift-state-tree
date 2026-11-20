@@ -22,7 +22,8 @@ cd "$root"
 
 # The driver functions that must be specialized on TurnsBench's types.
 REQUIRED='SwiftStateTurns.TurnCore.step(
-(extension in SwiftStateTurns):SwiftStateTurns.TurnActor.runSegment('
+(extension in SwiftStateTurns):SwiftStateTurns.TurnActor.runSegment(
+(extension in SwiftStateTurns):SwiftStateTurns.TurnActor.continueFollowUps('
 
 # Builds TurnsBench in release in package $1 with scratch path $2; prints its path. Fails when the
 # build fails, so a stale binary from an earlier build is never read.

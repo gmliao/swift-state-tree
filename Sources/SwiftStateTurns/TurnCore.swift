@@ -249,8 +249,10 @@ public final class TurnCore<M: TurnMachine> {
         return stats
     }
 
-    /// Debug builds: how many effects (`request` and `run`) each input case started, by the
-    /// case's name, so an adopter's tests can assert zero for its hot inputs. Empty in release.
+    /// Debug builds: how many effects (`request`, `run`, and a follow-up's `.afterWork` gate) each
+    /// input case started, by the case's name, so an adopter's tests can assert zero for its hot
+    /// inputs. A gate counts when its arm stages it, also if launch then filters it out. Empty in
+    /// release.
     public var effectsByInput: [String: Int] {
         effectCounts
     }

@@ -64,6 +64,12 @@ The tests are also examples. Each one below shows a way to check a turn-based ac
 - ``TurnClock``
 - ``TurnInstant``
 
+### Follow-ups
+
+- ``FollowUpTrigger``
+- ``FollowUpArming``
+- ``TurnWork``
+
 ### Plain data
 
 - ``PlainData``

@@ -165,6 +165,97 @@ struct ConceptsTests {
         }
         #expect(await room.query(.seatCount) == 0)
     }
+
+    @Test("A scoreboard: one coalesced publish per round, consumed by a publish-now")
+    func scoreboard() async throws {
+        let board = ScoreboardActor(clock: TestClock(fixture: Fixture()))
+        await board.send(.open)
+        // docs:scoreboard-use
+        await board.send(.round(points: [3, 1, 4]))
+        await board.waitForQuiescence()
+        // docs:end
+        #expect(await board.published == [[3, 1, 4]])
+
+        // A publish-now in the same step as a round: the round's follow-up is consumed, so the
+        // scores go out once.
+        await board.send(.roundAndPublish(points: [1, 1, 1]))
+        await board.waitForQuiescence()
+        #expect(await board.published == [[3, 1, 4], [4, 2, 5]])
+    }
+}
+
+/// The "Follow-ups" section of CoreConcepts.md: a scoreboard that publishes once per round.
+@PlainData
+struct Scoreboard: TurnMachine {
+    enum Input: Sendable {
+        case open
+        case round(points: [Int])
+        case roundAndPublish(points: [Int])
+        case publish
+    }
+
+    enum Key: Hashable, Sendable {
+        case board
+    }
+
+    // docs:scoreboard-slot
+    enum FollowUpSlot: Hashable, Sendable {
+        case publish
+    }
+    // docs:end
+
+    typealias Effect = Never
+    typealias Output = [Int]
+    typealias Reply = Int
+
+    var scores: [Int]
+
+    mutating func handle(_ input: Input, _ turn: inout Turn<Scoreboard>) {
+        switch input {
+        case .open:
+            turn.start(.board)
+        // docs:scoreboard-round
+        case .round(let points):
+            for (player, gained) in points.enumerated() {
+                add(gained, to: player)
+                // One publish per round, however many scores changed: later arms join the first.
+                turn.followUp(.publish, .publish, of: .board, .afterBatch)
+            }
+        case .publish:
+            turn.emit(scores, for: .board)
+        // docs:end
+        // docs:scoreboard-now
+        case .roundAndPublish(let points):
+            for (player, gained) in points.enumerated() {
+                add(gained, to: player)
+                turn.followUp(.publish, .publish, of: .board, .afterBatch)
+            }
+            // Publishing now does the pending follow-up's work: retire it, so it doesn't run too.
+            turn.consumeFollowUp(.publish, of: .board)
+            turn.emit(scores, for: .board)
+        // docs:end
+        }
+    }
+
+    mutating func add(_ points: Int, to player: Int) {
+        while scores.count <= player { scores.append(0) }
+        scores[player] += points
+    }
+}
+
+actor ScoreboardActor: TurnActor {
+    let core: TurnCore<Scoreboard>
+    private(set) var published: [[Int]] = []
+
+    init(clock: some TurnClock) {
+        core = TurnCore(Scoreboard(scores: []), queueLimit: 16, maxReleasesPerBatch: 16, clock: clock)
+    }
+
+    @concurrent nonisolated func perform(_ effect: Never) async -> Scoreboard.Input? {}
+
+    func flush(_ outputs: consuming [[Int]]) {
+        published.append(contentsOf: outputs)
+    }
 }
 
 // docs/turns/README.md § Plain data and tools: the before/after example, in both languages, each

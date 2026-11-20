@@ -166,3 +166,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-20 | [A visited set keyed by a lossy name merges distinct types](2026-11-20-a-visited-set-keyed-by-a-lossy-name-merges-distinct-types.md) | schema, type-names, visited-set, codegen, registration |
 | 2026-11-20 | [A concurrent delete stops a recursive removal and leaves the directory](2026-11-20-a-concurrent-delete-stops-a-recursive-removal.md) | testing, cleanup, filesystem, recorder, isolation |
 | 2026-11-20 | [A macro-only change doesn't rebuild the clients that expand it](2026-11-20-a-macro-only-change-does-not-rebuild-its-clients.md) | macros, mutants, incremental-build, toolchain, testing |
+| 2026-11-20 | [A budget break strands the work kinds after it](2026-11-20-a-budget-break-strands-the-work-kinds-after-it.md) | turns, driver, budget, drain-loop, follow-ups |

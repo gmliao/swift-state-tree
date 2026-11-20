@@ -224,23 +224,32 @@ struct FollowUpTests {
         #expect(s.log == ["armed A", "ran A", "armed B", "ran B"])
     }
 
-    @Test("17: a superseded binding's gate still waiting at endAll: closed at once, uncounted, and its late return steps nothing")
+    @Test("17: a superseded binding's gate still waiting at endAll: the supersede closes A at once and uncounted; endAll closes B; A's late nil return steps nothing")
     func supersededGateAtEndAll() async {
         let f = Fixture()
         let a = FollowUpActor(fixture: f)
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
         await f.wait("at gate a")
-        await a.send(.script([.start(1), .arm("B", .work(gate: "b"))]))
+        // The supersede alone: A is closed and uncounted before any endAll.
+        await a.send(.script([.start(1)]))
+        #expect(await a.snapshot().log == ["armed A", "abandoned A keyEnded"])
+        #expect(await a.pendingWork() == 0)
+        // A live B, then the teardown: one abandonment for B, and the wait returns while A's
+        // gate is still held.
+        await a.send(.script([.arm("B", .work(gate: "b"))]))
         await f.wait("at gate b")
         await a.send(.script([.endAll]))
-        #expect(await a.pendingWork() == 0)
         #expect(await a.waitForQuiescence())
+        #expect(!f.isOpen("stale follow-up #1"))
+        // A returns (nil): stale, no step and no second abandonment.
         f.open("gate a")
+        await f.wait("stale follow-up #1")
         f.open("gate b")
         await f.wait("stale follow-up #2")
         let s = await a.snapshot()
-        #expect(s.log == ["armed A", "armed B", "abandoned A keyEnded", "abandoned B keyEnded"])
+        #expect(s.log == ["armed A", "abandoned A keyEnded", "armed B", "abandoned B keyEnded"])
         #expect(s.ran == 0)
+        #expect(s.abandoned == 2)
     }
 
     @Test("18: armed and closed in one step, before launch: its gate never starts")
@@ -249,14 +258,16 @@ struct FollowUpTests {
         let a = FollowUpActor(fixture: f)
         await a.send(.script([.start(1), .arm("A", .work(gate: "a")), .end(1)]))
         await a.send(.script([.start(2), .arm("B", key: 2, .work(gate: "b")), .consume(key: 2)]))
+        await a.send(.script([.start(3), .arm("D", key: 3, .work(gate: "d")), .start(3)]))
         // A later gate starts: the earlier ones would have started before it.
         await a.send(.script([.arm("C", key: 2, .work(gate: "c"))]))
         await f.wait("at gate c")
         #expect(!f.isOpen("at gate a"))
         #expect(!f.isOpen("at gate b"))
+        #expect(!f.isOpen("at gate d"))
         f.open("gate c")
         #expect(await a.waitForQuiescence())
-        #expect(await a.snapshot().log == ["armed A", "abandoned A keyEnded", "armed B", "consumed B", "armed C", "ran C"])
+        #expect(await a.snapshot().log == ["armed A", "abandoned A keyEnded", "armed B", "consumed B", "armed D", "abandoned D keyEnded", "armed C", "ran C"])
     }
 
     @Test("19: consume and the gate deadline, both orders: whichever lands first wins, the other finds nothing")
@@ -393,6 +404,8 @@ struct FollowUpTests {
         let at = { (line: String) in log.firstIndex(of: line) ?? Int.max }
         #expect(at("ran A") < at("parked P1"))
         #expect(at("parked P1") < at("ran B"))
+        // B steps in A's job, before the job ends; P2 and P3 step in later batches, and C in a
+        // later follow-ups job. No order is asserted between those later jobs (plan §3.3).
         #expect(at("ran B") < at("parked P2"))
         #expect(at("ran B") < at("ran C"))
         #expect(f.segments.allSatisfy { $0 <= 1 })
@@ -470,5 +483,96 @@ struct FollowUpTests {
         #expect(state.log.isEmpty)
         #expect(state.steps == 0)
         #expect(state.foreign == 2)
+    }
+    @Test("30: the registration tie: the count at the call wins over a cancellation; a registered waiter goes to whichever is serviced first")
+    func registrationTie() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        // A task already cancelled when it calls: true with nothing pending, false otherwise.
+        let quiet = Task { () -> Bool in
+            while !Task.isCancelled { await Task.yield() }
+            return await a.waitForQuiescence()
+        }
+        quiet.cancel()
+        #expect(await quiet.value == true)
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
+        await f.wait("at gate a")
+        let busy = Task { () -> Bool in
+            while !Task.isCancelled { await Task.yield() }
+            return await a.waitForQuiescence()
+        }
+        busy.cancel()
+        #expect(await busy.value == false)
+        #expect(await a.waiterCount() == 0)
+
+        // Registered, then cancelled, then satisfied: false.
+        let cancelledFirst = Task { await a.waitForQuiescence() }
+        await a.waitForWaiters(1)
+        cancelledFirst.cancel()
+        #expect(await cancelledFirst.value == false)
+        #expect(await a.waiterCount() == 0)
+
+        // Registered, then satisfied, then cancelled: true.
+        let satisfiedFirst = Task { await a.waitForQuiescence() }
+        await a.waitForWaiters(1)
+        f.open("gate a")
+        #expect(await satisfiedFirst.value == true)
+        satisfiedFirst.cancel()
+    }
+
+    @Test("31: a query whose answer step consumes the last follow-up wakes a registered waiter")
+    func queryConsumeWakesWaiter() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
+        await f.wait("at gate a")
+        let waiter = Task { await a.waitForQuiescence() }
+        await a.waitForWaiters(1)
+        #expect(await a.query(.consume(.a, key: 1)))
+        #expect(await waiter.value)
+        f.open("gate a")
+        await f.wait("stale follow-up #1")
+        #expect(await a.snapshot().log == ["armed A", "consumed A"])
+    }
+
+    @Test("32: a gate's deadline shares the arming batch's clock read: one read, and the deadline is that now plus the duration")
+    func deadlineSharesClockRead() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        a.clock.set(seconds: 3)
+        await a.send(.script([.start(1), .readNow, .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
+        #expect(a.clock.reads == 1)
+        a.clock.set(seconds: 8)
+        f.open("deadline 8")
+        #expect(await a.waitForQuiescence())
+        #expect(await a.snapshot().log == ["now", "armed A", "abandoned A deadline"])
+        f.open("gate a")
+        await f.wait("stale follow-up #1")
+    }
+
+    #if DEBUG
+    @Test("33: a gate filtered at launch still counts against its originating input in the debug effect counts")
+    func filteredGateCounts() async {
+        let a = FollowUpActor()
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a")), .end(1)]))
+        #expect(await a.effectsByInput()["script"] == 1)
+    }
+    #endif
+
+    @Test("35: a follow-up id is a notification id: cancel does nothing, and reply(after:) publishes at once")
+    func followUpIDIsNotARequest() async throws {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
+        await f.wait("at gate a")
+        await a.send(.script([.cancelPending()]))
+        #expect(await a.pendingWork() == 1)
+        // Answered while A is still pending: the reply didn't wait for it.
+        let reply = try await a.sendAndWait(.script([.replyAfterPending()]), cancellation: .ignoresCancel)
+        #expect(reply == 1)
+        #expect(await a.pendingWork() == 1)
+        f.open("gate a")
+        #expect(await a.waitForQuiescence())
+        #expect(await a.snapshot().log == ["armed A", "cancel sent", "ran A"])
     }
 }

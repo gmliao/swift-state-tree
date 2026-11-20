@@ -111,6 +111,8 @@ actor OrderActor: TurnActor {
         var lateFlushes: [String]
         var queued: Set<Int>
         var droppedQueued: Set<Int>
+        var pendingFollowUps: Int
+        var pendingWork: Int
         var stats: TurnStats
     }
 
@@ -118,6 +120,7 @@ actor OrderActor: TurnActor {
         let stats = core.stats
         let delivered = delivered
         let lateFlushes = lateFlushes
+        let pendingWork = pendingWork()
         return core.read { machine in
             View(
                 violations: machine.violations,
@@ -132,6 +135,8 @@ actor OrderActor: TurnActor {
                 lateFlushes: lateFlushes,
                 queued: machine.queued,
                 droppedQueued: machine.droppedQueued,
+                pendingFollowUps: machine.followUps.count,
+                pendingWork: pendingWork,
                 stats: stats
             )
         }
@@ -171,6 +176,10 @@ func settle(_ actor: OrderActor, rounds: Int = 10_000, until done: (OrderActor.V
 /// Runs one seed and returns its failures (empty: it passed).
 func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> [String] {
     var random = SeededGenerator(seed: seed)
+    // Follow-up operations draw from their own stream, so the main stream (and the seeds pinned
+    // to a mutant) keep their operations.
+    var followUpRandom = SeededGenerator(seed: seed ^ 0x702)
+    var nextLabel = 1
     let fixture = Fixture()
     let notes = Notes()
     let actor = OrderActor(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch)
@@ -325,6 +334,30 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             failures.append("seed \(seed), budget \(maxReleasesPerBatch), operation \(step); the last operations: \(log.suffix(12))")
             break
         }
+
+        // A follow-up operation about a quarter of the time: arm (in a slot that may hold one
+        // already, so some arms join) or consume. Armed ones step in later jobs, interleaved
+        // with the operations that follow.
+        if Int.random(in: 0 ..< 4, using: &followUpRandom) == 0 {
+            let fuOwner = Int.random(in: 0 ... 1, using: &followUpRandom)
+            let slot = Int.random(in: 0 ... 1, using: &followUpRandom)
+            var fuOp: String
+            if Int.random(in: 0 ..< 5, using: &followUpRandom) < 3 {
+                let label = nextLabel
+                nextLabel += 1
+                fuOp = "arm follow-up \(label) on \(fuOwner)/\(slot)"
+                await actor.send(.armFollowUp(owner: fuOwner, slot: slot, label: label))
+            } else {
+                fuOp = "consume follow-up \(fuOwner)/\(slot)"
+                await actor.send(.consumeFollowUp(owner: fuOwner, slot: slot))
+            }
+            log.append(fuOp)
+            failures += check(await actor.view(), op: fuOp, parkedBound: 6 + nextWork)
+            if !failures.isEmpty {
+                failures.append("seed \(seed), budget \(maxReleasesPerBatch), operation \(step); the last operations: \(log.suffix(12))")
+                break
+            }
+        }
     }
 
     if failures.isEmpty {
@@ -335,9 +368,12 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             await notes.wait("done \(seq)")
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
+        // Invariant 20: the wait returns once every follow-up stepped or closed.
+        if !(await actor.waitForQuiescence()) { failures.append("the follow-up wait returned false") }
         let final = await actor.view()
         failures += check(final, op: "the last completions", parkedBound: 6 + nextWork)
         if !drained { failures.append("parked inputs left after every hold was released: \(final.stats.queued)") }
+        if final.pendingFollowUps != 0 { failures.append("\(final.pendingFollowUps) follow-ups pending after the wait returned") }
         // Invariant 14: a queued input steps, unless endAll dropped it.
         for id in final.queued.sorted() where !final.stepped.contains(id) && !final.droppedQueued.contains(id) {
             failures.append("queued work \(id) neither stepped nor dropped by endAll")
@@ -375,6 +411,11 @@ func check(_ view: OrderActor.View, op: String, parkedBound: Int) -> [String] {
         failures.append("after `\(op)`: the core holds \(view.stats.heldKeys) keys, the machine expects \(view.expectedHeld)")
     }
     if view.stats.queued > parkedBound { failures.append("after `\(op)`: \(view.stats.queued) parked") }
+    // Invariant 19, and the wait's count (invariant 20): the core's pending follow-ups are the
+    // machine's, one per key and slot.
+    if view.stats.pendingFollowUps != view.pendingFollowUps || view.pendingWork != view.pendingFollowUps {
+        failures.append("after `\(op)`: the core has \(view.stats.pendingFollowUps) pending follow-ups (pendingWork \(view.pendingWork)), the machine \(view.pendingFollowUps)")
+    }
     if view.ended, view.stats.liveKeys != 0 { failures.append("after `\(op)`: \(view.stats.liveKeys) live keys after endAll") }
     // Invariants 11 and 12: outputs leave before the next step, and only under a live key.
     if !view.lateFlushes.isEmpty { failures.append("after `\(op)`: \(view.lateFlushes)") }

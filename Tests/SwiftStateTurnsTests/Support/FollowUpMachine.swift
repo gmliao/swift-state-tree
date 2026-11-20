@@ -20,6 +20,10 @@ indirect enum Op: Sendable {
     case onAbandoned([Op])
     /// The next gate result runs this script (once).
     case onGateResult([Op])
+    /// `cancel` with the pending follow-up's id (a notification id: nothing happens).
+    case cancelPending(Slot = .a, key: Int = 1)
+    /// Replies to the step's caller `after:` the pending follow-up's id (published at once).
+    case replyAfterPending(Slot = .a, key: Int = 1)
 
     /// Shorthands for `arm` with a trigger or a key and the default slot.
     static func arm(_ label: String, _ trigger: Trigger, then: [Op] = []) -> Op {
@@ -76,6 +80,13 @@ struct FollowUpMachine: TurnMachine {
     typealias Output = Never
     typealias Reply = Int
     typealias FollowUpSlot = Slot
+
+    /// A query whose answer step consumes a follow-up (case 31).
+    enum Query: Sendable {
+        case consume(Slot, key: Int)
+    }
+
+    typealias Answer = Bool
 
     var log: [String] = []
     var labels: [RequestID: String] = [:]
@@ -163,7 +174,23 @@ struct FollowUpMachine: TurnMachine {
                 abandonScript = then
             case .onGateResult(let then):
                 gateResultScript = then
+            case .cancelPending(let slot, let key):
+                if let id = turn.followUpPending(slot, of: key) { turn.cancel(id) }
+                log.append("cancel sent")
+            case .replyAfterPending(let slot, let key):
+                if let caller = turn.input, let id = turn.followUpPending(slot, of: key) {
+                    turn.reply(to: caller, .success(1), after: id)
+                }
             }
+        }
+    }
+
+    mutating func answer(_ query: Query, _ turn: inout Turn<FollowUpMachine>) -> Bool {
+        switch query {
+        case .consume(let slot, let key):
+            guard case .ran(let label, _)? = turn.consumeFollowUp(slot, of: key) else { return false }
+            log.append("consumed \(label)")
+            return true
         }
     }
 

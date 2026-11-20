@@ -48,6 +48,11 @@ actor FollowUpActor: TurnActor {
         return FollowUpSnapshot(log: log, ran: ran, abandoned: abandoned, stats: core.stats)
     }
 
+    /// Debug builds: the core's effect counts by input case.
+    func effectsByInput() -> [String: Int] {
+        core.effectsByInput
+    }
+
     /// The quiescence waiters registered now.
     func waiterCount() -> Int {
         core.quiescenceWaitersForTesting
