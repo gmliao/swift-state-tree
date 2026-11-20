@@ -1491,7 +1491,6 @@ private final class ProbeLog: @unchecked Sendable {
 
 @Suite(
     "A hosted land that fails (#535), without the host's stop hook",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the legacy plan throw keeps its follow-up until #535 PR 1 part B"),
     .timeLimit(.minutes(1))
 )
 struct HostedLandFailureTests {

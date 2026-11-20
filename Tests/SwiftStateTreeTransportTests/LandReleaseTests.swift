@@ -5,8 +5,8 @@
 // (`keeper.setTransport(adapter)`, `adapter.keeper`), and a land's own transport another one
 // (its delegate is the adapter); each instance breaks its links at the end of its own teardown.
 // Every destroy path is created through the hosting path (`getOrCreateLand`), destroyed through
-// the manager's own teardown, and checked with weak references, with in-turn sync on and off
-// (the `IN_TURN_SYNC` CI legs).
+// the manager's own teardown, and checked with weak references, in-turn; a test that needs the
+// off mode passes `inTurnSync: false` (until #546 L2).
 
 import Foundation
 import Testing
@@ -233,7 +233,8 @@ struct LandReleaseTests {
             initialStateFactory: { _ in LandReleaseTestState() },
             transport: transport,
             keeperModeResolver: keeperModeResolver,
-            inTurnSync: inTurnSync
+            inTurnSync: inTurnSync,
+            syncLagPolicy: nil
         )
     }
 

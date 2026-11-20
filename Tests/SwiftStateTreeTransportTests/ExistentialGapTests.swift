@@ -67,10 +67,6 @@ private func expectGapEndsTheLand<State: StateNodeProtocol>(
     #expect(keeper.failure == nil, "the default value converts", sourceLocation: sourceLocation)
     await adapter.waitForOutboundIdleForTesting()
     await keeper.stepTickOnce()  // the value becomes one the sync can't convert
-    if !InTurnSync.isEnabled() {
-        // Legacy sync submits the failure; the keeper applies it at its next turn, the next tick.
-        await keeper.stepTickOnce()
-    }
     try #require(await keeper.waitForFailureForTesting(), "the land failed", sourceLocation: sourceLocation)
     await keeper.waitUntilDrained()
     #expect(keeper.failure?.kind == .syncConversion, sourceLocation: sourceLocation)

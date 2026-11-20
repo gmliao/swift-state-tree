@@ -207,7 +207,7 @@ Does one of B's run-time switches account for its higher CPU at 1000 rooms? Ever
 
 - **D:** the default.
 - **T12:** `EVENT_LOOP_THREADS=12`, A's event-loop thread count. It tests the thread-count side, #153. Its startup line logs `eventLoopThreadsEnv=12, threads=12` (`data/provenance/diag/startup-line-T12.txt`).
-- **L:** `IN_TURN_SYNC=false`, the legacy sync path. It tests whether the in-turn sync and the ordered writer carry the per-frame cost: `ba76ca21` #86, `1eb1e161` #91, `8ca24f76` #114.
+- **L:** `IN_TURN_SYNC=false`, the legacy sync path. It tests whether the in-turn sync and the ordered writer carry the per-frame cost: `ba76ca21` #86, `1eb1e161` #91, `8ca24f76` #114. The switch was removed in #546 L1, so a rerun of this arm needs a server built from a commit before that change; a later server ignores the variable and runs in-turn.
 - **P:** `LAND_LOOP_PHASE_OFFSET=false`. Each land's tick and sync loops start without the per-land phase offset of `baa98f8d` (#89), so lands with the same interval wake together.
 
 **Runs** (`data/provenance/diag/chain/<run>.run-header.txt` has each command and its environment):

@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import SwiftStateTreeTransport
 
-/// The auto dirty switch and its change-object metric are removed: their keys are ignored, and
-/// a set one is reported once per process.
+/// The auto dirty switch, its change-object metric and the in-turn sync switch are removed: their
+/// keys are ignored, and a set one is reported once per process.
 @Suite("Removed environment keys")
 struct TransportRemovedEnvKeysTests {
     @Test("The set removed keys are reported once, in order, and other keys are ignored")
@@ -11,10 +11,11 @@ struct TransportRemovedEnvKeysTests {
         let check = TransportRemovedEnvKeys(environment: [
             "AUTO_DIRTY_SAMPLE_EVERY": "4",
             "AUTO_DIRTY_TRACKING": "false",
+            "IN_TURN_SYNC": "false",
             "ENABLE_DIRTY_TRACKING": "true",
             "USE_SYNC_TABLES": "false",
         ])
-        #expect(check.takeFirst() == ["AUTO_DIRTY_TRACKING", "AUTO_DIRTY_SAMPLE_EVERY"])
+        #expect(check.takeFirst() == ["AUTO_DIRTY_TRACKING", "AUTO_DIRTY_SAMPLE_EVERY", "IN_TURN_SYNC"])
         #expect(check.takeFirst().isEmpty)
     }
 

@@ -95,7 +95,7 @@ public protocol LandKeeperTransport: Sendable {
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
     /// `true` only when in-turn sync is on for this transport and it is attached to that keeper
-    /// (identity) and runs on its serial executor (`InTurnSync`). A keeper asks this once per
+    /// (identity) and runs on its serial executor. A keeper asks this once per
     /// turn; a transport attached to another keeper, or with in-turn sync off, answers `false`, so
     /// no keeper ever reaches an `assumeIsolated` that would trap.
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool

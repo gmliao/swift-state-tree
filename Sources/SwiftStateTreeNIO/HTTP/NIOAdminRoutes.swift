@@ -718,8 +718,7 @@ extension NIOAdminRoutes {
 
     /// Refuses a record without a schema fingerprint, one whose fingerprint differs from the land
     /// type's, and any record when the land type has no fingerprint to compare with (#521 D15).
-    /// The replay land's runner, or its `.reevaluation` keeper, checks again before its first
-    /// step, against the bytes it reads.
+    /// The replay land's runner checks again before its first step, against the bytes it reads.
     private func validateSchemaFingerprint(metadata: ReevaluationRecordMetadata, landType: String) async throws {
         let recorded: String
         do {

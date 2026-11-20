@@ -367,7 +367,7 @@ struct DifferentialHarnessHooksTests {
     @Test("admittedNotRegistered and the join commits through a real router attempt: keyed by the router's attempt number")
     func observationsThroughTheRouter() async throws {
         let h = try await HooksHarness.make(autoStartLoops: false)
-        // The in-turn join's observations; the IN_TURN_SYNC=false leg covers the other path.
+        // The in-turn join's observations.
         guard await h.keeper.isUsingInTurnSync() else { return }
         await h.adapter.captureJoinCommitsForTesting()
         let gate = TestGate()

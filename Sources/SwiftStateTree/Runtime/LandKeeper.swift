@@ -662,7 +662,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Metrics: Track sync frequency and performance
     private var isSyncing = false
 
-    // MARK: In-turn sync state (see `InTurnSync`)
+    // MARK: In-turn sync state (see `docs/core/runtime.md`, In-Turn Sync)
 
     /// Whether this keeper's turns run the sync phase inside the turn: live mode, and the
     /// transport runs it for this keeper (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`, which
@@ -3338,7 +3338,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// This bypasses the internal tick loop guard and allows stepping a land deterministically
     /// without relying on wall-clock time.
     ///
-    /// With in-turn sync (`InTurnSync`) this is one tick turn: ready inputs, the tick handler,
+    /// With in-turn sync this is one tick turn: ready inputs, the tick handler,
     /// the emitted events and, only when a sync is due (coincident-sync rule) or a handler
     /// requested one, the sync phase. The phase can be deferred by writer back-pressure, and
     /// returning does not mean the writer has sent the frames. On a tickless land it runs the

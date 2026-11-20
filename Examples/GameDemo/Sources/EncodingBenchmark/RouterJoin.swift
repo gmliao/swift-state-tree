@@ -185,7 +185,6 @@ struct RouterRooms: Sendable {
             transportEncoding: encoding,
             pathHashes: pathHashes,
             enableLoopPhaseOffset: false,
-            inTurnSync: true,
             autoStartLoops: false,
             syncLag: syncLag,
             logger: logger

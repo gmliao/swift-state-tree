@@ -150,7 +150,7 @@ private func makeTwoPhaseDefinition(tick: Bool) -> LandDefinition<TwoPhaseState>
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
 /// Where an input is applied: a tickless land's legacy pass, its in-turn input turn (a transport
-/// that runs the sync phase in the turn, whatever `IN_TURN_SYNC` says), or a tick.
+/// that runs the sync phase in the turn, whatever the adapter's mode), or a tick.
 enum TwoPhaseMode: String, CaseIterable, Sendable {
     case tickless, ticklessInTurn, tick
     var tick: Bool { self == .tick }
@@ -196,7 +196,7 @@ private func makeTwoPhaseKeeper(
         autoStartLoops: false,
         transport: inTurn ? TwoPhaseInTurnTransport() : nil
     )
-    // The transport decides: in-turn whatever `IN_TURN_SYNC` says.
+    // The transport decides: in-turn whatever the adapter's mode.
     #expect(await keeper.isUsingInTurnSync() == inTurn)
     // One land ID per keeper: parallel tests must not share a recorder spool.
     let landID = "\(definition.id):\(UUID().uuidString)"

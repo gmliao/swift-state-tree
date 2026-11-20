@@ -18,7 +18,8 @@ The rules, from the sources:
   (trimmed, case-folded "0", "false", "no", "n" or "off"); any other value keeps the default, on.
 - Row addressing (`TransportAdapter`'s rule) takes effect only with opcode state updates, path
   hashes and the path index (`effective(pathHashes:)`; the hosted server has the sync sequence
-  and router joins), in-turn sync (`IN_TURN_SYNC` not false) and the delta strategy
+  and router joins), in-turn sync (`IN_TURN_SYNC` not false, for a server before the switch's
+  removal, #546 L1; from it the key is ignored and runners leave it unset) and the delta strategy
   (`SYNC_STRATEGY` unset or "delta"). Requested: `ROW_ADDRESSING` true ("1", "true", "yes", "y",
   "on") or false as the server reads it; unset, its default, off until the commit that made it
   default on (`ROW_DEFAULT_COMMIT`), on from it, judged by the server commit's ancestry.

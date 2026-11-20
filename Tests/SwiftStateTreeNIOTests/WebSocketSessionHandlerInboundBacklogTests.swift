@@ -496,7 +496,6 @@ struct InboundBacklogLandState: StateNodeProtocol {
 
 @Suite(
     "Inbound backlog bound and the pending-join bound (#113, 4c)",
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: joins don't wait for a flip"),
     .timeLimit(.minutes(1))
 )
 struct InboundBacklogPendingJoinTests {

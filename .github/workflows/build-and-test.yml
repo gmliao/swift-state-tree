@@ -104,30 +104,15 @@ jobs:
     - name: Must-not-compile snippets
       run: scripts/check-must-not-compile.sh
 
-    # The whole suite with in-turn sync on, its default.
-    - name: Tests, in-turn sync on
-      id: in_turn_on
+    # The whole suite.
+    - name: Tests
+      id: tests
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       shell: bash
-      env:
-        IN_TURN_SYNC: "true"
       run: |
         set -o pipefail
-        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-on.log" \
-          || { echo "::error title=Tests, in-turn sync on::the tests failed"; exit 1; }
-      timeout-minutes: 30
-
-    # The kill switch: the whole suite on the legacy sync path.
-    - name: Tests, in-turn sync off
-      id: in_turn_off
-      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-      shell: bash
-      env:
-        IN_TURN_SYNC: "false"
-      run: |
-        set -o pipefail
-        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/in-turn-off.log" \
-          || { echo "::error title=Tests, in-turn sync off::the tests failed"; exit 1; }
+        swift test --skip-build 2>&1 | tee "$RUNNER_TEMP/tests.log" \
+          || { echo "::error title=Tests::the tests failed"; exit 1; }
       timeout-minutes: 30
 
     # The broadcast diff on the typed sync tables and typed leaf values are on by default. This
@@ -188,7 +173,7 @@ jobs:
       timeout-minutes: 40
 
     # The wall-clock cadence smoke, in a process of its own: beside the parallel suite, CPU-heavy
-    # neighbours can starve it. Once, with in-turn sync at its default: the smoke runs both sync
+    # neighbours can starve it. Once: the smoke runs both sync
     # paths itself (`inTurn: [true, false]`). It fails the job when it didn't run (a renamed suite
     # or test would otherwise match nothing and pass).
     - name: Run wall-clock tests
@@ -212,8 +197,7 @@ jobs:
       shell: bash
       env:
         BUILD_OUTCOME: ${{ steps.build.outcome }}
-        IN_TURN_ON_OUTCOME: ${{ steps.in_turn_on.outcome }}
-        IN_TURN_OFF_OUTCOME: ${{ steps.in_turn_off.outcome }}
+        TESTS_OUTCOME: ${{ steps.tests.outcome }}
         TABLES_OFF_OUTCOME: ${{ steps.sync_tables_off.outcome }}
         PER_PLAYER_OFF_OUTCOME: ${{ steps.per_player_off.outcome }}
         WALL_CLOCK_OUTCOME: ${{ steps.wall_clock.outcome }}
@@ -227,8 +211,7 @@ jobs:
           echo "| step | outcome | closing line |"
           echo "|---|---|---|"
           echo "| Build | $BUILD_OUTCOME | |"
-          row "Tests, in-turn sync on" "$IN_TURN_ON_OUTCOME" in-turn-on
-          row "Tests, in-turn sync off" "$IN_TURN_OFF_OUTCOME" in-turn-off
+          row "Tests" "$TESTS_OUTCOME" tests
           row "Tests, sync tables off" "$TABLES_OFF_OUTCOME" sync-tables-off
           row "Tests, per-player sync tables off" "$PER_PLAYER_OFF_OUTCOME" per-player-sync-tables-off
           row "Run wall-clock tests" "$WALL_CLOCK_OUTCOME" wall-clock

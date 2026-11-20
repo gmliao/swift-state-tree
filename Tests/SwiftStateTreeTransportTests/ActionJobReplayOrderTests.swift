@@ -174,7 +174,7 @@ struct ActionJobReplayOrderTests {
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
-        #expect(await keeper.isUsingInTurnSync() == (inTurn && InTurnSync.isEnabled()))
+        #expect(await keeper.isUsingInTurnSync() == inTurn)
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
             landID: landID,

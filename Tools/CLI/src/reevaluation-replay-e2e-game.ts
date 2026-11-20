@@ -183,7 +183,7 @@ async function main() {
     }
   }
 
-  // Same-land replay: no HeroDefenseReplayTickEvent; completion based on state + shooting events + idle timeout
+  // Generic replay: no HeroDefenseReplayTickEvent; completion based on state + shooting events + idle timeout
 
   const projectRoot = resolve(process.cwd(), "..", "..");
   const recordsDir = join(projectRoot, "Examples", "GameDemo", "reevaluation-records");

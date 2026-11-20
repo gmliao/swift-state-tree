@@ -175,8 +175,7 @@ private struct PPRowsRun {
 
 @Suite(
     "The per-player tables with row addressing in effect (#514)",
-    .timeLimit(.minutes(1)),
-    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: row addressing takes effect only with in-turn sync")
+    .timeLimit(.minutes(1))
 )
 struct PerPlayerSyncTablesRowsTests {
     @Test("Per-player frames are the same with the per-player tables on and off, and every client reaches its view", arguments: RowAddressingEncoding.allCases)

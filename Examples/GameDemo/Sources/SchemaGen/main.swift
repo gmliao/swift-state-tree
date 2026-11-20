@@ -11,7 +11,7 @@ struct SchemaGen {
         // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
         ProcessSignals.ignoreSIGPIPE()
         // Collect all LandDefinitions to generate schema for
-        // Same-land replay: hero-defense-replay is convention-based alias (replayLandTypes)
+        // Generic replay: hero-defense-replay is the convention-based alias (replayLandTypes)
         let landDefinitions = [
             AnyLandDefinition(HeroDefense.makeLand()),
             AnyLandDefinition(ReevaluationMonitor.makeLand()),

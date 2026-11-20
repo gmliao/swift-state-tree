@@ -99,7 +99,7 @@ private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, p
     await transport.setDelegate(adapter)
     await keeper.awaitInitialization()
     await keeper.setTransport(adapter)
-    #expect(await keeper.isUsingInTurnSync() == (inTurn && InTurnSync.isEnabled()))
+    #expect(await keeper.isUsingInTurnSync() == inTurn)
     // The header first, as `LandManager` sets it: the records stream into the file from here.
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: turnBoundaryLandID,
