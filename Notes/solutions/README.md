@@ -160,3 +160,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A Swift block in the Turns docs must appear in a tested file](2026-11-19-a-turns-doc-block-must-appear-in-a-tested-file.md) | documentation, turns, docc, testing, pre-push |
 | 2026-11-19 | [A retry loop catches failures, not hangs](2026-11-19-a-retry-loop-catches-failures-not-hangs.md) | ci, apt, retry, timeout, hang, shell |
 | 2026-11-19 | [Array literals of enum cases joined with `+` time out the pinned type checker](2026-11-19-concatenated-enum-literals-time-out-the-pinned-type-checker.md) | toolchain, type-checking, ci |
+| 2026-11-20 | [A helper that returns on state leaves its operation running](2026-11-20-a-helper-that-returns-on-state-leaves-its-operation-running.md) | testing, fixtures, join, polling, land-stop, flaky |
