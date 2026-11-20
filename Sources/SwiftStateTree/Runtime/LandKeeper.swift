@@ -38,7 +38,8 @@ public enum LandMode: Sendable {
 public enum ReevaluationOutputMode: Sendable {
     /// Only forward to reevaluation sink (default, backward compatible).
     case sinkOnly
-    /// Forward to both transport and sink (for same-land replay streaming).
+    /// Forward to both the keeper's transport and the sink. No adapter serves a reevaluation
+    /// keeper (#612), so the transport is one the caller set directly.
     case transportAndSink
 }
 

@@ -21,11 +21,6 @@ struct EHLiveEvent: ServerEventPayload {
     let n: Int
 }
 
-@Payload
-struct EHReplayOnlyEvent: ServerEventPayload {
-    let n: Int
-}
-
 /// Renamed from `EHOldBell`; the hand-written wire name keeps the old one.
 struct EHBellEvent: ServerEventPayload {
     static var _payloadWireName: String { "EHOldBell" }

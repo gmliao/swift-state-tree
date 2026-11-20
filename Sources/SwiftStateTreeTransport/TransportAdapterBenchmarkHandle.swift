@@ -15,6 +15,10 @@ import SwiftStateTree
 public struct TransportAdapterBenchmarkHandle<State: StateNodeProtocol>: Sendable {
     let adapter: TransportAdapter<State>
 
+    /// An adapter on `keeper`, with no router.
+    ///
+    /// - Precondition: `keeper` is live. A reevaluation keeper runs headless; the adapter traps
+    ///   on one (#612).
     public init(
         keeper: LandKeeper<State>,
         transport: any Transport,
