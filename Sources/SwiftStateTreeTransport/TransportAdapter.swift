@@ -5380,7 +5380,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     func _syncBroadcastOnlyImpl() async {
         // In-turn: one sync-only turn on the keeper, now, as `_syncNowImpl` (#546 L2b). Before
         // the freeze check: a frozen land's turn leaves its sync to the resume, so the request
-        // defers once, through the keeper. A full phase covers broadcast-only changes.
+        // defers once, through the keeper. A full phase covers broadcast-only changes. Like any
+        // requested turn, it can still run between an output gate's close and its failure submit
+        // and flip a waiting join there (pre-existing, #704).
         if inTurnSyncEnabled {
             _ = await keeper.syncTurnNow(via: self, reason: .broadcastOnly)
             return
@@ -6733,8 +6735,9 @@ extension TransportAdapter {
         debugFreezeState.generation == generation && debugFreezeState.count > 0
     }
 
-    /// Pause and drain the keeper, then run one full sync cycle that `beginSync` accepted.
-    /// One deadline covers the drain and the wait for `beginSync`.
+    /// Pause and drain the keeper, then settle: in-turn, one keeper job (`debugSettleInTurn`);
+    /// off, one full sync cycle that `beginSync` accepted (until #546 L2c). One deadline covers
+    /// the drain, the writer wait and the settle (off: the wait for `beginSync`).
     private func debugSettle(generation: UInt64) async throws -> DebugFreezeState<State>.Settled {
         let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
         let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
@@ -6966,7 +6969,7 @@ extension TransportAdapter {
         case .failed, .landFailed:
             // The land ends; nothing more to flip.
             return
-        default:
+        case nil, .committed, .skipped, .notRequested, .unsupported:
             break
         }
         // Step 1 ran without joiners past the budget, or didn't run: a tickless land's join that

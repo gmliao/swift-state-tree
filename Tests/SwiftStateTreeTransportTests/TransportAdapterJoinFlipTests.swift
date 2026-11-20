@@ -631,13 +631,22 @@ struct TransportAdapterJoinFlipTests {
     @Test("Resume, writer held, periodic land: step 2 is skipped; the next periodic phase flips the join")
     func resumeLeavesJoinToThePeriodicPhase() async throws {
         let f = await makeFixture(tick: true)
-        let joinGate = TestGate()
-        await f.adapter.installHolds(HoldRegistry.at(.joinSyncRequested) { await joinGate.arrive() })
+        // No flip wait: the join is held across the freeze and the resume.
+        await f.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
+        let returned = TestGate(), joinGate = TestGate()
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.keeperJoinReturned) { await returned.arrive() }
+            .on(.joinSyncRequested) { await joinGate.arrive() }
+            .hook)
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(f, session: s1, player: PlayerID("p1")) }
-        // A tick land consumes the join's input in a tick turn.
+        // A tick land consumes the join's input in a tick turn: run it while the join is
+        // admitted and not registered, so that tick's phase can't flip it.
+        try #require(await returned.waitForArrivals(1), "the keeper join didn't return")
         await f.keeper.stepTickOnce()
-        #expect(await joinGate.waitForArrivals(1), "the join didn't register")
+        returned.open()
+        try #require(await joinGate.waitForArrivals(1), "the join didn't register")
+        try #require(await f.adapter.hasJoinsAwaitingSyncForTesting(), "a ready, unflipped join")
         let freeze = try await f.adapter.debugFreeze()
         await f.adapter.syncNow()
 
@@ -707,6 +716,8 @@ private func readyUnflippedJoin(
     player: PlayerID,
     extra: (HoldRegistry<TransportAdapterHoldPoint>) -> HoldRegistry<TransportAdapterHoldPoint> = { $0 }
 ) async throws -> ReadyJoin {
+    // No flip wait: the join is held across freezes and resumes.
+    await f.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
     let returned = TestGate(), requested = TestGate()
     await f.adapter.installHolds(extra(HoldRegistry<TransportAdapterHoldPoint>()
         .on(.keeperJoinReturned) { await returned.arrive() }

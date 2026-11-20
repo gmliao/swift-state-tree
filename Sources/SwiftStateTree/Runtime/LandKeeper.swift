@@ -1606,7 +1606,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// nil to refuse. The copy is taken, the flags cleared as `beginSync(clearDirtyFlags:)` would,
     /// and `commit` runs with the copy, where it was read, and whether the sync stream is
     /// recorded. Both closures run synchronously on this job (the adapter shares the keeper's
-    /// executor in-turn and enters through `assumeIsolated`).
+    /// executor in-turn and enters through `assumeIsolated`; the keeper doesn't check that, so
+    /// only an in-turn adapter calls this).
+    ///
+    /// Not a turn: no input is consumed and no turn kind is recorded (the settle's output is
+    /// recorded as `.legacyCycle`). It is one synchronous keeper job, so nothing interleaves
+    /// between the fence and the commit.
     package func debugSettleTurn<R: Sendable>(
         generation: UInt64,
         deadline: ContinuousClock.Instant,
@@ -2040,13 +2045,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return transport.hasJoinsAwaitingSync
     }
 
+    /// Tests: requests that passed `requestJoinSyncTurn`'s own guards (counted before
+    /// `runSyncOnlyTurn`, whose guards may still skip the phase).
+    package private(set) var joinSyncRequestTurnsForTesting = 0
+
     /// A sync-only turn for joins that wait for a committed sync phase (#69). Called by the
     /// transport when a join became ready outside a turn (its session registered with the
     /// transport after its OnJoin was consumed). Does nothing when no join waits, so a burst of
     /// such requests shares the first one's turn: it flips every ready join (up to the budget).
-    /// Tests: sync-only turns `requestJoinSyncTurn` ran (its guards passed).
-    package private(set) var joinSyncRequestTurnsForTesting = 0
-
     package func requestJoinSyncTurn() async {
         // Draining: the drain fails the waiting joins with `landClosed`, none flips now.
         guard !isDraining, transportHasJoinsAwaitingSync, let transport else { return }

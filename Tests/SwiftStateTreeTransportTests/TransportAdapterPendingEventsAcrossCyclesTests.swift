@@ -293,9 +293,9 @@ private struct KeptEventsFixture {
     let adapter: TransportAdapter<KeptEventsTestState>
     let transport: KeptEventsTransport
     let members: [KeptEventsMember]
-    /// Holds a sync cycle in flight (frames enqueued, before `endSync`); see `SyncCycleHold`. Only
-    /// the off adapter's own cycle reaches it (`inTurnSync: false`, until #546 L2c): in-turn,
-    /// `syncNow()` is a keeper turn.
+    /// Holds a sync cycle in flight; see `SyncCycleHold`. At `.cycleBeforeEndSync` only the off
+    /// adapter's own cycle reaches it (`inTurnSync: false`, until #546 L2c): in-turn, `syncNow()`
+    /// is a keeper turn. The in-turn settle tests install it at `.settleBeforePublish`.
     let hold = SyncCycleHold()
 
     var a: KeptEventsMember { members[0] }

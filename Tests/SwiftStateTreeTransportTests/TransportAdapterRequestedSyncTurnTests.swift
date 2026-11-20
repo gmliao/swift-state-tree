@@ -104,7 +104,8 @@ struct TransportAdapterRequestedSyncTurnTests {
         await f.adapter.syncBroadcastOnlyFromTransport()
         #expect(await f.keeper.requestedSyncTurnsForTesting[.broadcastOnly, default: 0] == before + 1)
         #expect(await f.adapter.beginSyncRequests == cyclesBefore, "no legacy cycle, so nothing can latch")
-        await f.adapter.waitForOutboundIdleForTesting()
+        let outbound = f.adapter
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
         #expect(
             f.transport.frames(for: f.session).contains { String(decoding: $0, as: UTF8.self).contains(#"stamp","value":1"#) },
             "the requested turn's full phase delivered the change"

@@ -140,6 +140,7 @@ struct DebugFreezeState<State: StateNodeProtocol>: Sendable {
     var autoResumeTask: Task<Void, Never>?
     var autoResumeGeneration: UInt64 = 0
     var autoResumeTimeout: Duration = DebugFreezeDefaults.autoResumeTimeout()
-    /// Deadline for the drain plus the wait for `beginSync`.
+    /// Deadline for the drain, the writer wait and the settle (in-turn: its keeper job; off: the
+    /// wait for `beginSync`).
     var settleDeadline: Duration = .seconds(10)
 }

@@ -72,8 +72,10 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     }
 }
 
-/// Holds one sync cycle in flight at `TransportAdapter.debugCycleHoldBeforeEndSync`: after the
-/// cycle enqueued its frames, before its `endSync` hop (the cycle still owns the sync flag).
+/// Holds one sync cycle in flight at an adapter hold point: the off cycle's `.cycleBeforeEndSync`
+/// (after the cycle enqueued its frames, before its `endSync` hop, while it still owns the sync
+/// flag), or an in-turn settle's `.settleBeforePublish` (after its keeper job, before it
+/// publishes).
 ///
 /// Replaces holding the transport's `sendBatch`: with the outbound writer (#60) the cycle no
 /// longer awaits the transport, so a blocked transport does not keep a cycle in flight.

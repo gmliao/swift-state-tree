@@ -554,7 +554,7 @@ extension NIOAdminRoutes {
             case .settleTimedOut:
                 return try errorResponse(.internalError, "Drain or settle sync missed the deadline; the freeze was released", status: .serviceUnavailable, landID: landID)
             case .released:
-                return try errorResponse(.invalidRequest, "The freeze was released before its settle finished", status: .conflict, landID: landID)
+                return try errorResponse(.invalidRequest, "The freeze was released before its settle finished, or the land failed or is closing", status: .conflict, landID: landID)
             case nil:
                 return try errorResponse(.internalError, "Debug state operation failed: \(error)", status: .internalServerError, landID: landID)
             }
