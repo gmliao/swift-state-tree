@@ -746,7 +746,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the after-turn request) each keep the binding ticket they were armed under, and each job
     /// checks and retires only its own. That is TurnCore's request-per-key shape (#700), with the
     /// per-slot coalescing of a pending request per key (#702), kept by hand until the keeper's
-    /// turns run on TurnCore.
+    /// turns run on TurnCore. Known gap until then (#702 closes a superseded binding's follow-up
+    /// at once): after a rebind, an older binding's retry still waiting on its writer outlives a
+    /// teardown that reaches only the new binding's writer, and stays counted.
     ///
     /// A land without periodic sync: a sync-only turn waits for the writer to drain, at most one
     /// per binding. The binding generation it was armed under: a retry armed under an older binding

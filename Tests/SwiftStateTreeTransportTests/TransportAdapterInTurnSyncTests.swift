@@ -916,14 +916,14 @@ struct TransportAdapterInTurnSyncTests {
         #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "endSync consumed the latch")
         #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "counted until the rerun's turn")
         rerunGate.open()
-        await f.adapter.waitForBackgroundSyncsForTesting()
+        #expect(await withinHangBound { await adapter.waitForBackgroundSyncsForTesting() }, "the latch's rerun never finished")
         await f.keeper.installHolds(nil)
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch's turn ran")
         // The latch's turn ran while frozen: its phase leaves the sync to the resume.
         #expect(await f.adapter.debugFreezeState.deferredSyncNow)
 
         _ = await f.adapter.debugResume(freezeToken: token)
-        await f.adapter.waitForBackgroundSyncsForTesting()
+        #expect(await withinHangBound { await adapter.waitForBackgroundSyncsForTesting() }, "the resume's sync never finished")
         #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
     }
 

@@ -3199,11 +3199,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// that started another) and the keeper has no requested sync work pending (a writer-drain
     /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
     /// differential harness runs with its loops off and awaits this after each sync it asks for,
-    /// so a skipped or deferred phase's retry is part of that step.
+    /// so a skipped or deferred phase's retry is part of that step. Also returns when its task is
+    /// cancelled (a test bounds it with `withinHangBound`).
     package func waitForBackgroundSyncsForTesting() async {
-        while true {
+        while !Task.isCancelled {
             if let task = backgroundSyncTasks.values.first {
-                await task.value
+                await waitCancellablyForTesting(task)
                 continue
             }
             if await keeper.hasRequestedSyncWorkForTesting {
@@ -3211,6 +3212,23 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 continue
             }
             return
+        }
+    }
+
+    /// Tests: awaits `task`, or returns early when the caller's task is cancelled (awaiting an
+    /// unstructured task's value alone doesn't end on cancellation).
+    private func waitCancellablyForTesting(_ task: Task<Void, Never>) async {
+        let once = TestingResumeOnce()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                once.install(continuation)
+                Task {
+                    await task.value
+                    once.resume()
+                }
+            }
+        } onCancel: {
+            once.resume()
         }
     }
 
@@ -6836,3 +6854,31 @@ extension TransportAdapter {
 /// The executor of a `TransportAdapter` with in-turn sync off: an empty actor whose default
 /// serial executor the adapter uses as its own.
 private actor AdapterExecutorHost {}
+
+/// Tests: resumes a continuation once, from whichever comes first. A `resume()` before
+/// `install` resumes the continuation as soon as it is installed.
+private final class TestingResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var resumed = false
+
+    func install(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if resumed {
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func resume() {
+        lock.lock()
+        resumed = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}

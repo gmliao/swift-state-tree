@@ -204,7 +204,8 @@ struct TransportAdapterRequestedSyncTurnTests {
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
         let resumesBefore = await f.keeper.requestedSyncTurnsForTesting[.resume, default: 0]
         _ = await f.adapter.debugResume(freezeToken: token)
-        await f.adapter.waitForBackgroundSyncsForTesting()
+        let resumeAdapter = f.adapter
+        #expect(await withinHangBound { await resumeAdapter.waitForBackgroundSyncsForTesting() }, "the resume's sync never finished")
         await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
         // The resume requested its turn: the flag alone is cleared before it requests. (The
@@ -248,7 +249,8 @@ struct TransportAdapterRequestedSyncTurnTests {
         #expect(await f.keeper.waitForFailureForTesting())
         #expect(f.adapter.outputGate.isClosed, "the failure closed the bound adapter's output")
         #expect(await f.adapter.syncNowReportingOutcome() == .skipped)
-        await f.adapter.waitForBackgroundSyncsForTesting()
+        let failedAdapter = f.adapter
+        #expect(await withinHangBound { await failedAdapter.waitForBackgroundSyncsForTesting() }, "a background sync never finished")
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
     }
 }
