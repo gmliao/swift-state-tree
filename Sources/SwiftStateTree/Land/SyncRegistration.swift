@@ -28,6 +28,10 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
         /// `any P`, which is seen only as its default value's type. The land ends at the first
         /// conversion that throws.
         case existentialField(path: String, typeName: String)
+        /// Two distinct types in the state share a name (#602), such as `A.Item` and `B.Item`.
+        /// The schema and the atomic layout key each type by its name, so one would stand for
+        /// both: in the path hashes, the generated client and the positional encoding.
+        case typeNameCollision(SchemaTypeNameCollision)
 
         public var description: String {
             switch self {
@@ -41,6 +45,8 @@ public struct SyncRegistrationError: Error, CustomStringConvertible, Sendable, E
             case .existentialField(let path, let typeName):
                 return "\(path): \(typeName) holds a value of any type, which can't be checked; use a concrete "
                     + "type, or an enum with a case for each kind of value"
+            case .typeNameCollision(let collision):
+                return "the state's types are keyed by name, and \(collision); rename all but one"
             }
         }
     }
@@ -89,7 +95,25 @@ package enum SyncRegistration {
         var types = TypeWalker()
         types.visitNode(rootType, sample: rootType.init(), path: String(describing: rootType))
         problems += types.problems
+        // The schema walk only runs on a state the rows above accept, as it does after
+        // registration.
+        if problems.isEmpty {
+            problems += typeNameCollisions(rootType).map(SyncRegistrationError.Problem.typeNameCollision)
+        }
         return problems
+    }
+
+    /// The state's distinct types that share a name (#602), found by the schema walk that
+    /// `AtomicLayoutTable` and the schema run, so a land is refused before its first sync builds
+    /// a layout from them.
+    private static func typeNameCollisions(_ rootType: any StateNodeProtocol.Type) -> [SchemaTypeNameCollision] {
+        let recorder = SchemaTypeNameRecorder()
+        var definitions: [String: JSONSchema] = [:]
+        var visited: Set<String> = []
+        SchemaTypeNameRecorder.$current.withValue(recorder) {
+            _ = TypeToSchemaConverter.convert(rootType, definitions: &definitions, visitedTypes: &visited)
+        }
+        return recorder.collisions
     }
 
     /// `problems(_:)`, cached process-wide per state type, failures included.

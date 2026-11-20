@@ -161,6 +161,8 @@ public struct TypeToSchemaConverter {
         visitedTypes: inout Set<String>
     ) -> JSONSchema {
         let typeName = String(describing: type)
+        // Before the visited check, so a second type with this name is recorded too (#602).
+        SchemaTypeNameRecorder.current?.note(type, as: typeName)
         
         // Check if we've already processed this type (prevent infinite recursion)
         if visitedTypes.contains(typeName) {
@@ -293,6 +295,8 @@ public struct TypeToSchemaConverter {
         visitedTypes: inout Set<String>
     ) -> JSONSchema {
         let typeName = String(describing: type)
+        // Before the visited check, so a second type with this name is recorded too (#602).
+        SchemaTypeNameRecorder.current?.note(type, as: typeName)
         
         // Check if we've already processed this type
         if visitedTypes.contains(typeName) {

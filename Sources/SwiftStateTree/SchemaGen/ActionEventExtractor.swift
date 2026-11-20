@@ -18,6 +18,8 @@ public struct ActionEventExtractor {
         
         // Check if type conforms to SchemaMetadataProvider
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
+            // The payload is defined under its name below, whatever is defined there (#602).
+            SchemaTypeNameRecorder.current?.note(type, as: typeName)
             let fieldMetadata = metadataProvider.getFieldMetadata()
             SchemaExtractionProbe.current?.noteFields(of: type, listed: fieldMetadata.count)
             
@@ -73,6 +75,8 @@ public struct ActionEventExtractor {
         
         // Check if type conforms to SchemaMetadataProvider (recommended path for codegen)
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
+            // The payload is defined under its name below, whatever is defined there (#602).
+            SchemaTypeNameRecorder.current?.note(type, as: typeName)
             let fieldMetadata = metadataProvider.getFieldMetadata()
             SchemaExtractionProbe.current?.noteFields(of: type, listed: fieldMetadata.count)
             

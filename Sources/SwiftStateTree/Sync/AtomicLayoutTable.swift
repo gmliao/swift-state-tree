@@ -61,12 +61,18 @@ public struct AtomicLayoutTable: Sendable {
     // MARK: - Building
 
     /// Builds the table of `State` from its schema, checking every declared leaf list.
+    ///
+    /// Throws `SchemaTypeNameCollisionError` when two distinct types in the state share a name
+    /// (#602): its definitions are keyed by name, so one type's layout would stand for both. The
+    /// registration check refuses such a state first (`SyncRegistrationError`).
     public static func build<State: StateNodeProtocol>(for stateType: State.Type) throws -> AtomicLayoutTable {
         var definitions: [String: JSONSchema] = [:]
         var visited: Set<String> = []
-        let rootSchema = TypeToSchemaConverter.convert(
-            stateType, definitions: &definitions, visitedTypes: &visited
-        )
+        let recorder = SchemaTypeNameRecorder()
+        let rootSchema = SchemaTypeNameRecorder.$current.withValue(recorder) {
+            TypeToSchemaConverter.convert(stateType, definitions: &definitions, visitedTypes: &visited)
+        }
+        try recorder.check()
         var builder = Builder(definitions: definitions)
         let root = try builder.node(for: rootSchema)
         var patterns: [String: [[String]]] = [:]
