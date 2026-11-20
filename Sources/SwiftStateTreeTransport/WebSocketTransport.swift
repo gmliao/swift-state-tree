@@ -81,6 +81,31 @@ private final class SessionFlushWaiters: @unchecked Sendable {
     }
 }
 
+/// How a session's send drain ended (tests, #663).
+package enum SendDrainEnd: Sendable, Equatable {
+    /// It reached the close marker and handed the marker's close off (a Task of its own).
+    case closeMarker
+    /// A send failed.
+    case sendFailed
+    /// The stream finished or the drain was cancelled (a disconnect, a close, a stop) before
+    /// it reached a close marker: no marker close runs.
+    case streamEnded
+}
+
+/// Where the drain records how it ended (tests, #663). Set once, by the drain.
+private final class SendDrainEndRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var end: SendDrainEnd?
+
+    func set(_ value: SendDrainEnd) {
+        lock.withLock { if end == nil { end = value } }
+    }
+
+    var value: SendDrainEnd? {
+        lock.withLock { end }
+    }
+}
+
 /// Per-session send queue: enqueue returns immediately; a drain Task sends to the connection.
 private struct SessionSendQueue: Sendable {
     let connection: WebSocketConnection
@@ -89,6 +114,8 @@ private struct SessionSendQueue: Sendable {
     let continuation: AsyncStream<SessionSendElement>.Continuation
     let drainTask: Task<Void, Never>
     fileprivate let flushWaiters: SessionFlushWaiters
+    /// How the drain ended, once it has (tests).
+    fileprivate let drainEnd: SendDrainEndRecord
     /// A close marker was yielded: later frames are dropped and counted
     /// (`framesDroppedAfterCloseMarker`), never sent after the marker.
     var closeMarkerYielded = false
@@ -107,9 +134,14 @@ private struct SessionSendQueue: Sendable {
         var continuation: AsyncStream<SessionSendElement>.Continuation!
         let stream = AsyncStream(SessionSendElement.self) { continuation = $0 }
         let flushWaiters = SessionFlushWaiters()
+        let drainEnd = SendDrainEndRecord()
         let drainTask = Task {
             // However the drain ends, no flush marker behind it is read: release their waiters.
-            defer { flushWaiters.endAll() }
+            // An end not recorded below is the stream's: finished or cancelled.
+            defer {
+                drainEnd.set(.streamEnded)
+                flushWaiters.endAll()
+            }
             for await element in stream {
                 let data: Data
                 switch element {
@@ -117,6 +149,7 @@ private struct SessionSendQueue: Sendable {
                     data = frame
                 case .close:
                     await onCloseMarker()
+                    drainEnd.set(.closeMarker)
                     return
                 case .flush(let id):
                     flushWaiters.resume(id)
@@ -133,11 +166,12 @@ private struct SessionSendQueue: Sendable {
                     }
                     // Ending the loop ends the task, which releases the stream: later yields
                     // return `.terminated` and are counted as dropped (#61).
+                    drainEnd.set(.sendFailed)
                     break
                 }
             }
         }
-        return Self(connection: connection, continuation: continuation, drainTask: drainTask, flushWaiters: flushWaiters)
+        return Self(connection: connection, continuation: continuation, drainTask: drainTask, flushWaiters: flushWaiters, drainEnd: drainEnd)
     }
 
     /// Yields a flush marker behind every frame queued so far and returns its ID, for
@@ -329,6 +363,20 @@ public actor WebSocketTransport: Transport {
     /// The drain task of the session's current queue (tests).
     func sendQueueDrainTaskForTesting(_ sessionID: SessionID) -> Task<Void, Never>? {
         sessionQueues[sessionID]?.drainTask
+    }
+
+    /// Tests (#663): how the drain of the session's current queue ends. Take it while the queue
+    /// exists (a close removes it); its value comes once the drain has ended. On `.closeMarker`
+    /// the marker's close is a Task of its own that may still run (`setDelayedCloseForTesting`
+    /// sees its `.didRun(.marker)`); on the other ends no marker close runs.
+    package func drainEndForTesting(_ sessionID: SessionID) -> Task<SendDrainEnd, Never>? {
+        guard let queue = sessionQueues[sessionID] else { return nil }
+        let drainTask = queue.drainTask
+        let drainEnd = queue.drainEnd
+        return Task {
+            await drainTask.value
+            return drainEnd.value ?? .streamEnded
+        }
     }
 
     /// Enqueue message and return. Drain Tasks send to connections asynchronously.
