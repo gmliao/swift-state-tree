@@ -184,10 +184,16 @@ extension TransportAdapter {
                 guard await Self.completes(by: deadline, { await task.value }) else { return false }
                 continue
             }
+            // The keeper's requested sync work (#546 L2a): a writer-drain retry, a join-sync turn,
+            // the latch's rerun, a requested turn after a turn.
+            if await keeperHasRequestedSyncWorkForTesting() {
+                guard await Self.completes(by: deadline, { await self.waitForKeeperRequestedSyncWorkForTesting() }) else { return false }
+                continue
+            }
             let writer = outboundWriter
             guard await Self.completes(by: deadline, { await writer.waitForSyncCycleDrain() }) else { return false }
             guard await waitForOutboundDrain(timeout: max(.zero, deadline - ContinuousClock.now)) else { return false }
-            if backgroundSyncTasks.isEmpty && !backlogRetryScheduled { return true }
+            if backgroundSyncTasks.isEmpty && !backlogRetryScheduled, !(await keeperHasRequestedSyncWorkForTesting()) { return true }
         }
     }
 

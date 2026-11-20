@@ -475,6 +475,53 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagResyncs == 0)
     }
 
+    @Test("A held timer sync of an old epoch neither blocks a newer epoch's request nor clears its mark (#546 L2a)")
+    func lagTimerMarkIsKeyedByEpoch() async throws {
+        let f = try await makeFixture()
+        // One gate per callback, by arrival: the old epoch's first, the new epoch's second.
+        let oldGate = TestGate()
+        let newGate = TestGate()
+        let arrivals = LagArrivalCounter()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagTimerSync) {
+            if arrivals.next() == 0 { await oldGate.arrive() } else { await newGate.arrive() }
+        })
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(3.5)
+        await f.ack(firstSync.seq)
+        let before = await f.adapter.syncLagTimerSyncRequests
+        let lagTurnsBefore = await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0]
+        let oldEpoch = await f.adapter.syncLagTimerEpochForTesting
+        // The old epoch's request, held before its sync.
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await oldGate.waitForArrivals(1))
+        // The timer restarts: a new epoch. Its pass requests although the old one is held.
+        await f.adapter.stopSyncLagTimer()
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the new epoch's pass requested")
+        #expect(await newGate.waitForArrivals(1))
+        // A second pass of the new epoch while its request is pending: no third request.
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "one request per epoch")
+        // The old callback retires first. It must not clear the new epoch's mark: a pass now
+        // still finds the new request pending.
+        oldGate.open()
+        let adapter = f.adapter
+        let oldRetired = await withinHangBound { await adapter.waitForSyncLagTimerSyncsForTesting(epoch: oldEpoch) }
+        #expect(oldRetired, "the old epoch's callback never returned")
+        guard oldRetired else {
+            newGate.open()
+            return
+        }
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the old callback left the new mark standing")
+        newGate.open()
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting())
+        // Only the new epoch's callback ran its turn; the old one was stale.
+        #expect(await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0] == lagTurnsBefore + 1)
+    }
+
     @Test("A land without syncSequence: frames carry no sequence, acks are dropped, no lag state, never a resync")
     func trackingOff() async throws {
         let f = try await makeFixture(syncSequence: false)
@@ -591,30 +638,6 @@ struct TransportAdapterSyncLagTests {
         #expect(closes.slowConsumerCloses == (await f.adapter.syncLagSlowConsumerCloses))
         #expect(closes.droppedAcks == 1)
         #expect(closes.pendingMarks == (await f.adapter.syncLagPendingMarks))
-    }
-
-    @Test("A resync due when a broadcast-only cycle runs: that cycle runs full and resyncs; an ack after it leaves the client correct")
-    func resyncDueInBroadcastOnlyCycle() async throws {
-        // Legacy sync: an OnLeave's broadcast-only cycle is its own cycle there.
-        let f = try await makeFixture(inTurnSync: false)
-        let firstSync = try #require(try await f.stateFrames().first)
-        await f.ack(firstSync.seq)
-        try await f.bump()
-        _ = try await f.stateFrames()
-        // The diff unacked past 3 s while acks stay fresh: a resync is due.
-        f.clock.advance(3.3)
-        await f.ack(firstSync.seq)
-        try await f.change()
-        await f.adapter.syncBroadcastOnly()
-        #expect(await f.adapter.waitForOutboundDrain())
-        let frames = try await f.stateFrames()
-        #expect(frames.map(\.op) == [3], "the broadcast-only cycle ran full and resynced")
-        #expect(await f.adapter.syncLagResyncs == 1)
-        // An ack brings the lag under 3 s; the next full plan has nothing owed and sends a diff.
-        await f.ack(try #require(frames.first).seq)
-        try await f.bump()
-        #expect(try await f.stateFrames().map(\.op) == [2])
-        #expect(await f.adapter.syncLagResyncs == 1)
     }
 
     @Test("After a lag close decision, the session's actions don't reach the keeper while the close is held")
@@ -818,5 +841,18 @@ struct TransportAdapterSyncLagTests {
         // Its acks are ignored from now on.
         await f.ack(99)
         #expect(await f.adapter.syncLagDroppedAcks == 1)
+    }
+}
+
+/// Numbers the arrivals at a hold, so each callback can take its own gate.
+private final class LagArrivalCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count - 1
     }
 }

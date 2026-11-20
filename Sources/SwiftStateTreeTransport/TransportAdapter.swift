@@ -385,8 +385,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// and requests a sync on a land without periodic sync; the plan does the rest.
     private var syncLagTimer: Task<Void, Never>?
     private var syncLagTimerEpoch: UInt64 = 0
-    /// A sync the timer requested hasn't run yet (one at a time).
-    private var syncLagTimerSyncRequested = false
+    /// The epoch of the timer pass whose requested sync hasn't run yet (one per epoch).
+    private var syncLagTimerSyncRequestedEpoch: UInt64?
     package private(set) var syncLagTimerSyncRequests = 0
     /// The timer's period; tests shorten it.
     package var syncLagTimerInterval: Duration = .milliseconds(250)
@@ -1328,7 +1328,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             membershipCoordinator.invalidateMembership(sessionID: sessionID, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: sessionID)
 
-            // Now call keeper.leave() which will trigger syncBroadcastOnly()
+            // Now call keeper.leave(), which triggers the leave's sync
             do {
                 try await keeper.leave(playerID: playerID, clientID: clientID, sessionID: sessionID)
                 if logger.logLevel <= .debug {
@@ -1669,7 +1669,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Execute a block while marking player as initial syncing.
     /// Automatically removes the player from initialSyncingPlayers when done (even on error).
-    /// This ensures syncNow() and syncBroadcastOnly() skip this player during initial sync.
+    /// This ensures syncNow() and the broadcast-only sync skip this player during initial sync.
     ///
     /// `sessionID`'s `.joining` mark (`joiningSessions`) is handed over to the initial-sync
     /// mark here, in one synchronous segment, so the session is excluded throughout. The
@@ -2868,7 +2868,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let result = runSyncPhaseInTurnResult(state: state, events: events, includeSync: includeSync, recording: recording)
         let drafts = inTurnSyncStreamDrafts
         inTurnSyncStreamDrafts = []
-        return InTurnSyncOutput(result, syncStream: drafts)
+        // Events still queued after a commit (kept by it, or queued after it): the keeper asks
+        // for one more sync-only turn on a land without periodic sync.
+        var keepsEvents = false
+        if case .committed = result { keepsEvents = pendingEventManager.hasAnyEvents }
+        return InTurnSyncOutput(result, syncStream: drafts, keepsEvents: keepsEvents)
     }
 
     private func runSyncPhaseInTurnResult<S: StateNodeProtocol>(
@@ -2904,13 +2908,15 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard includeSync else { return .notRequested }
         // After teardown nothing is sent any more.
         guard !outboundWriter.isFinished else { return .skipped }
+        // The freeze first, as the legacy cycle checks it (#546 L2a): a frozen phase always
+        // leaves its sync to the resume, also while the writer still holds the settle's frames.
+        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         if writerHoldsEarlierElementForInTurnSync() {
             syncSkips.outboundBacklog += 1
             profilerCounters?.incrementSyncSkipsBacklog()
             profilerCounters?.incrementSyncDeferredTurns()
             return .deferredBackPressure
         }
-        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
             joined: membershipCoordinator.joinedCount()
@@ -3140,6 +3146,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     func _syncNowImpl() async {
+        // In-turn: one sync-only turn on the keeper, now (#546 L2a).
+        if inTurnSyncEnabled {
+            _ = await keeper.syncTurnNow(via: self, reason: .syncNow)
+            return
+        }
         // While frozen, the settle cycle is the only sync; defer this one to resume.
         if debugDeferSyncIfFrozen(broadcastOnly: false) { return }
         profilerCounters?.setSessionCounts(
@@ -3184,20 +3195,70 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Tests: returns once no background sync task is left: a deferred retry, or a follow-up
-    /// that started another. The differential harness runs with its loops off and awaits this
-    /// after each sync it asks for, so a skipped cycle's retry is part of that step.
+    /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
+    /// that started another) and the keeper has no requested sync work pending (a writer-drain
+    /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
+    /// differential harness runs with its loops off and awaits this after each sync it asks for,
+    /// so a skipped or deferred phase's retry is part of that step. Also returns when its task is
+    /// cancelled (a test bounds it with `withinHangBound`).
     package func waitForBackgroundSyncsForTesting() async {
-        while let task = backgroundSyncTasks.values.first {
-            await task.value
+        while !Task.isCancelled {
+            if let task = backgroundSyncTasks.values.first {
+                await waitCancellablyForTesting(task)
+                continue
+            }
+            if await keeper.hasRequestedSyncWorkForTesting {
+                await keeper.waitForRequestedSyncTurnsForTesting()
+                continue
+            }
+            return
         }
+    }
+
+    /// Tests: awaits `task`, or returns early when the caller's task is cancelled (awaiting an
+    /// unstructured task's value alone doesn't end on cancellation).
+    private func waitCancellablyForTesting(_ task: Task<Void, Never>) async {
+        let once = TestingResumeOnce()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                once.install(continuation)
+                Task {
+                    await task.value
+                    once.resume()
+                }
+            }
+        } onCancel: {
+            once.resume()
+        }
+    }
+
+    /// One requested sync-only turn on the keeper, through this adapter (in-turn only).
+    func requestSyncTurn(reason: SyncTurnReason) async -> InTurnSyncResult {
+        await keeper.syncTurnNow(via: self, reason: reason)
+    }
+
+    /// Tests: the keeper's requested sync work (`LandKeeper.waitForRequestedSyncTurnsForTesting`).
+    func keeperHasRequestedSyncWorkForTesting() async -> Bool {
+        await keeper.hasRequestedSyncWorkForTesting
+    }
+
+    func waitForKeeperRequestedSyncWorkForTesting() async {
+        await keeper.waitForRequestedSyncTurnsForTesting()
     }
 
     private func startDelayedFollowUpSync() {
         startBackgroundSync { adapter in
+            // In-turn: the ticket is taken before the delay, so a repair armed under an older
+            // binding retires without a turn.
+            let ticket = adapter.inTurnSyncEnabled ? await adapter.keeper.syncTurnTicket(via: adapter) : nil
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
             await adapter.holds.at(.failedPlanFollowUp)
-            await adapter.syncNow()
+            if adapter.inTurnSyncEnabled {
+                guard let ticket else { return }
+                _ = await adapter.keeper.syncTurnNow(via: adapter, reason: .behindCommitRepair, ticket: ticket)
+            } else {
+                await adapter.syncNow()
+            }
         }
     }
 
@@ -3252,7 +3313,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if runSyncNow {
             await syncNow()
         } else if runBroadcastOnly {
-            await syncBroadcastOnly()
+            await _syncBroadcastOnlyImpl()
         }
     }
 
@@ -3612,11 +3673,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 wantsSync = true
             }
         }
-        if wantsSync, !keeper.hasPeriodicSync, !syncLagTimerSyncRequested {
-            syncLagTimerSyncRequested = true
+        // The mark is the epoch of the pass that set it: a pass of a newer epoch requests even
+        // while an older callback is held, and a stale callback clears only its own mark.
+        if wantsSync, !keeper.hasPeriodicSync, syncLagTimerSyncRequestedEpoch != epoch {
+            syncLagTimerSyncRequestedEpoch = epoch
             syncLagTimerSyncRequests += 1
             startBackgroundSync { adapter in
-                await adapter.runSyncLagTimerSync()
+                await adapter.runSyncLagTimerSync(epoch: epoch)
             }
         }
         return true
@@ -3629,10 +3692,67 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLagTimerPass(epoch: syncLagTimerEpoch)
     }
 
-    private func runSyncLagTimerSync() async {
+    private func runSyncLagTimerSync(epoch: UInt64) async {
+        syncLagTimerSyncsInFlight[epoch, default: 0] += 1
+        defer {
+            if syncLagTimerSyncRequestedEpoch == epoch { syncLagTimerSyncRequestedEpoch = nil }
+            endSyncLagTimerSync(epoch: epoch)
+        }
+        // A stale callback (the timer restarted since it was armed) takes no ticket, so it can't
+        // bind a requester on a keeper never attached.
+        guard epoch == syncLagTimerEpoch else { return }
+        let ticket = inTurnSyncEnabled ? await keeper.syncTurnTicket(via: self) : nil
         await holds.at(.syncLagTimerSync)
-        syncLagTimerSyncRequested = false
-        await syncNow()
+        // The timer restarted meanwhile (a new epoch): this callback is stale.
+        guard epoch == syncLagTimerEpoch else { return }
+        if inTurnSyncEnabled {
+            guard let ticket else { return }
+            _ = await keeper.syncTurnNow(via: self, reason: .lagTimer, ticket: ticket)
+        } else {
+            await syncNow()
+        }
+    }
+
+    /// Lag timer callbacks running, by the epoch that armed them (an entry is removed at 0).
+    private var syncLagTimerSyncsInFlight: [UInt64: Int] = [:]
+    /// Test waiters, by id, for the callbacks of one epoch to return.
+    private var syncLagTimerSyncWaitersForTesting: [Int: (epoch: UInt64, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextSyncLagTimerSyncWaiterForTesting = 0
+
+    private func endSyncLagTimerSync(epoch: UInt64) {
+        let left = (syncLagTimerSyncsInFlight[epoch] ?? 1) - 1
+        syncLagTimerSyncsInFlight[epoch] = left > 0 ? left : nil
+        guard left <= 0, !syncLagTimerSyncWaitersForTesting.isEmpty else { return }
+        for (id, waiter) in syncLagTimerSyncWaitersForTesting where waiter.epoch == epoch {
+            syncLagTimerSyncWaitersForTesting.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
+    }
+
+    /// Tests: the lag timer's current epoch (a callback armed now carries it).
+    package var syncLagTimerEpochForTesting: UInt64 { syncLagTimerEpoch }
+
+    /// Tests: returns once no lag timer callback of `epoch` is running (at once if none is), or
+    /// when its task is cancelled (a test bounds it with `withinHangBound`).
+    package func waitForSyncLagTimerSyncsForTesting(epoch: UInt64) async {
+        guard syncLagTimerSyncsInFlight[epoch] != nil else { return }
+        let id = nextSyncLagTimerSyncWaiterForTesting
+        nextSyncLagTimerSyncWaiterForTesting += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || syncLagTimerSyncsInFlight[epoch] == nil {
+                    continuation.resume()
+                    return
+                }
+                syncLagTimerSyncWaitersForTesting[id] = (epoch, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelSyncLagTimerSyncWaiterForTesting(id) }
+        }
+    }
+
+    private func cancelSyncLagTimerSyncWaiterForTesting(_ id: Int) {
+        syncLagTimerSyncWaitersForTesting.removeValue(forKey: id)?.continuation.resume()
     }
 
     /// Sessions with lag state (tests).
@@ -5226,6 +5346,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Sync only broadcast changes to all connected players.
     ///
+    /// Internal since #546 L2a (the public `syncBroadcastOnly()` is gone): the keeper's legacy
+    /// leave path reaches it through `syncBroadcastOnlyFromTransport`, and tests call it. #546
+    /// L2c removes it with the off adapter.
+    ///
     /// Used when state changes only affect broadcast fields (e.g., player leaving).
     /// This is more efficient than `syncNow()` because:
     /// - Uses dirty tracking to only compare changed broadcast fields
@@ -6684,7 +6808,9 @@ extension TransportAdapter {
             return
         }
         // A full cycle also covers broadcast-only changes.
-        if runSyncNow {
+        if inTurnSyncEnabled, runSyncNow || runBroadcastOnly {
+            _ = await keeper.syncTurnNow(via: self, reason: .resume)
+        } else if runSyncNow {
             await _syncNowImpl()
         } else if runBroadcastOnly {
             await _syncBroadcastOnlyImpl()
@@ -6729,3 +6855,31 @@ extension TransportAdapter {
 /// The executor of a `TransportAdapter` with in-turn sync off: an empty actor whose default
 /// serial executor the adapter uses as its own.
 private actor AdapterExecutorHost {}
+
+/// Tests: resumes a continuation once, from whichever comes first. A `resume()` before
+/// `install` resumes the continuation as soon as it is installed.
+private final class TestingResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var resumed = false
+
+    func install(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if resumed {
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func resume() {
+        lock.lock()
+        resumed = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}

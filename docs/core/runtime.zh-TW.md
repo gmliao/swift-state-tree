@@ -422,7 +422,7 @@ Land 以三種方式之一同步（前兩種的 `LandKeeper.hasPeriodicSync` 為
 開啟 in-turn sync 時，land 的 `TransportAdapter` 在其 keeper 的 serial executor 上執行，keeper 在自己的 turn 內同步執行 sync phase，狀態變更與其產生的 frame 之間沒有任何 suspension point。Turn 的種類：
 
 - tick turn：就緒的 input、tick handler、送出的 event，以及 handler 請求或 sync loop 併入（fold）時的 sync phase。距下一個 tick 不到 min(5 ms, tick / 4, sync / 4) 的 sync 會在該 tick turn 執行（coincident sync），因此與 tick 重合的 sync 會看到該 tick 的結果；
-- sync-only turn：sync loop 自己的間隔，維持同步節奏；
+- sync-only turn：sync loop 自己的間隔，維持同步節奏；或一次被請求的同步。被請求的同步包括 adapter 的 `syncNow()`、lag timer 要求的同步、joiner 的 firstSync 讀到已被 commit 超前的 state 後的補發，以及 freeze 的 resume。它在請求返回前以一個 sync-only turn 執行。沒有週期同步的 land 上，一次 commit 後若仍有事件留在佇列，緊接著會再跑一個 sync-only turn；
 - input turn（沒有 tick 的 land）：最多 64 個就緒的 input、它們的 event，以及有請求時的 sync phase。Turn 進行中到達的 input 會留到之後的 turn。
 
 Sync phase 以 turn 中該時點的狀態規劃（plan）本次 cycle 的所有 frame，然後 commit：把 frame 放進 adapter 的 outbound writer，並清除 dirty flag。Plan 與 commit 之間沒有任何其他工作執行，因此不會有尚未送出的變更被清除。Plan 失敗時什麼都不 commit，dirty flag 保留到下一個 cycle。
@@ -431,7 +431,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 
 已知限制：
 
-- Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。
+- Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。遇到它的同步請求會等待，在該 cycle 結束時以 sync-only turn 執行。
 - `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
@@ -470,6 +470,8 @@ public func endSync() {
 Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`TransportAdapter` 在 broadcast-only 週期（不比對 per-player 欄位）以及停用 dirty tracking 時傳入 `clearDirtyFlags: false`。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
 
 ### 同步去重
+
+> 這是 legacy 路徑。In-turn sync 下，同步請求是一個 turn，不會被跳過：遇到 debug freeze settle 的 cycle 時，會在該 cycle 結束後執行（[In-Turn Sync](#in-turn-sync預設)）。
 
 `isSyncing` 標記用於去重，不是用於阻塞：
 

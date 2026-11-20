@@ -83,7 +83,9 @@ private struct TargetedOnceFixture {
     let client = ClientID("to-client")
     let player = PlayerID("to-player")
 
-    static func make(encoding: TransportEncodingConfig) async throws -> TargetedOnceFixture {
+    /// `inTurnSync: false`: the adapter's own cycle, for the tests that hold one in flight (until
+    /// #546 L2c removes it).
+    static func make(encoding: TransportEncodingConfig, inTurnSync: Bool = true) async throws -> TargetedOnceFixture {
         let definition = Land("targeted-once-test", using: TargetedOnceTestState.self) {
             ServerEvents {
                 Register(TargetedOnceEvent.self)
@@ -113,7 +115,8 @@ private struct TargetedOnceFixture {
                 syncStrategy: .delta,
                 profilingConfig: nil
             ),
-            encodingConfig: encoding
+            encodingConfig: encoding,
+            inTurnSync: inTurnSync
         )
         await transport.setDelegate(adapter)
         let fixture = TargetedOnceFixture(keeper: keeper, adapter: adapter, transport: transport)
@@ -271,7 +274,7 @@ struct TransportAdapterTargetedEventOnceTests {
     // `endSync`, after it read the queue: it is kept and the follow-up cycle sends it, once.
     @Test("opcode 107: a targeted event queued while a cycle is in flight, after it read the queue, is still sent, once")
     func targetedEventQueuedDuringBatchIsSentOnce() async throws {
-        let f = try await TargetedOnceFixture.make(encoding: .messagepack)
+        let f = try await TargetedOnceFixture.make(encoding: .messagepack, inTurnSync: false)
         let lateMarker = "targeted-once-late-marker-c41d"
 
         try await f.setScore(5)
@@ -291,7 +294,7 @@ struct TransportAdapterTargetedEventOnceTests {
     // and the follow-up cycle sends them; the per-session and ordering claims are unchanged.
     @Test("opcode 107: two sessions with interleaved pre-batch and in-flight events each get their own events once")
     func twoSessionsInterleavedEventsArriveOnceAtTheirOwnSession() async throws {
-        let f = try await TargetedOnceFixture.make(encoding: .messagepack)
+        let f = try await TargetedOnceFixture.make(encoding: .messagepack, inTurnSync: false)
         let sessionB = SessionID("to-session-b")
         let clientB = ClientID("to-client-b")
         let playerB = PlayerID("to-player-b")

@@ -422,7 +422,7 @@ A land without periodic sync has no next cycle to fall back on, so the runtime r
 With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial executor, and the keeper runs the sync phase synchronously inside its own turns, with no suspension point between the state changes and the frames they produce. The turn kinds are:
 
 - tick turn: the ready inputs, the tick handler, the emitted events, and the sync phase when a handler requested one or the sync loop folded into it. A sync due within min(5 ms, tick / 4, sync / 4) of the next tick runs in that tick turn (coincident sync), so a sync coinciding with a tick sees the tick's result;
-- sync-only turn: the sync loop's own interval, so the sync cadence is kept;
+- sync-only turn: the sync loop's own interval, so the sync cadence is kept; or a requested sync. A requested sync is the adapter's `syncNow()`, the sync the lag timer asks for, the repair after a joiner's firstSync that read a state a commit had already passed, or the freeze's resume. It runs as one sync-only turn before the request returns. On a land without periodic sync, a commit that leaves events queued gets one more sync-only turn right after its own;
 - input turn (lands without a tick): at most 64 ready inputs, their events, and the sync phase when requested. Inputs that arrive during a turn go to a later one.
 
 The sync phase plans every frame of the cycle from the state at that point of the turn, then commits: it enqueues the frames to the adapter's outbound writer and clears the dirty flags. Nothing runs between the plan and the commit, so no change is cleared unsent. A plan that fails commits nothing, and its dirty flags stay for the next cycle.
@@ -431,7 +431,7 @@ A join completes in the sync phase of the turn it flips in (#69, #194). The join
 
 Stated limits:
 
-- The debug freeze settle still runs a `beginSync` / `endSync` cycle.
+- The debug freeze settle still runs a `beginSync` / `endSync` cycle. A requested sync that meets it waits, and runs as a sync-only turn when the cycle ends.
 - An input whose `validate` throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
@@ -470,6 +470,8 @@ public func endSync() {
 Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `TransportAdapter` passes `clearDirtyFlags: false` for broadcast-only cycles (they do not diff per-player fields) and when dirty tracking is disabled. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
 
 ### Sync Deduplication
+
+> The legacy path. With in-turn sync a sync request is a turn, and it is not skipped: one that meets the debug freeze settle's cycle runs after that cycle ends ([In-Turn Sync](#in-turn-sync-default)).
 
 `isSyncing` flag is used for deduplication, not for blocking:
 
