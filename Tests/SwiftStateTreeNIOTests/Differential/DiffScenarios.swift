@@ -222,6 +222,9 @@ let diffScenarios: [DiffScenario] = [
                 guard !players.contains("pa") else { throw DiffRunFailure("A is in the state while its join holds: \(players)") }
             },
             .release(.keeper(.join)),
+            // The leave runs once the join returns. Its turn goes before the next step's sync
+            // cycle (#676); on a tick land the leave is only queued, for the next tick.
+            .awaitDisconnectForwards,
             .awaitJoin("A"),
             .settleDisconnects,
             .liveCheckpoint,
@@ -268,6 +271,8 @@ let diffScenarios: [DiffScenario] = [
                 try expect(await run.keeper.currentState().players.contains("pa"), "OnLeave ran before the pre-leave checkpoint")
             },
             .release(.keeper(.leave)),
+            // The rest of the leave goes before the next step's sync cycle (#676).
+            .awaitDisconnectForwards,
             .awaitJoin("A"),
             .settleDisconnects,
             .liveCheckpoint,
