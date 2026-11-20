@@ -221,9 +221,16 @@ let diffScenarios: [DiffScenario] = [
                 let players = await run.keeper.currentState().players
                 guard !players.contains("pa") else { throw DiffRunFailure("A is in the state while its join holds: \(players)") }
             },
+            .arm(.keeper(.leave)),
             .release(.keeper(.join)),
-            // The leave runs once the join returns. Its turn goes before the next step's sync
-            // cycle (#676); on a tick land the leave is only queued, for the next tick.
+            // The leave runs once the join returns. The join's sync-only turn queued B's update:
+            // the writer hands it off first, or the leave's in-turn sync would find it and defer
+            // for back-pressure into a sync-only turn (#676).
+            .reach(.keeper(.leave)),
+            .flushOutbound,
+            .release(.keeper(.leave)),
+            // The leave's turn goes before the next step's sync cycle (#676); on a tick land the
+            // leave is only queued, for the next tick.
             .awaitDisconnectForwards,
             .awaitJoin("A"),
             .settleDisconnects,
@@ -270,6 +277,8 @@ let diffScenarios: [DiffScenario] = [
                 try expect(await run.adapter.joinFlippedForTesting(attemptA1), "A1 didn't flip before its leave")
                 try expect(await run.keeper.currentState().players.contains("pa"), "OnLeave ran before the pre-leave checkpoint")
             },
+            // The writer hands off what A's flip queued before the leave's in-turn sync (#676).
+            .flushOutbound,
             .release(.keeper(.leave)),
             // The rest of the leave goes before the next step's sync cycle (#676).
             .awaitDisconnectForwards,
