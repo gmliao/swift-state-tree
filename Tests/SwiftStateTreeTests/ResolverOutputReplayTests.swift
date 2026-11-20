@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 
@@ -51,6 +52,12 @@ struct ResolverReplayState: StateNodeProtocol {
     var seenAtJoin: [String] = []
     @Sync(.broadcast)
     var seenAtInit: [String] = []
+    /// What the action's handler read through the internal `getResolverOutput`.
+    @Sync(.broadcast)
+    var seenViaGetter: [String] = []
+    /// Whether the action's handler, asking for `ResolverReplayMismatch`, got a value.
+    @Sync(.broadcast)
+    var mismatchRead: String = ""
 }
 
 @Payload
@@ -62,6 +69,36 @@ struct ResolverReplayAction: ActionPayload {
 @Payload
 struct ResolverReplayResponse: ResponsePayload {
     let ok: Bool
+}
+
+/// Another output type the handler asks for under the same name: the recorded tree doesn't decode
+/// into it (no `missing` field).
+struct ResolverReplayMismatch: ResolverOutput {
+    let missing: String
+}
+
+/// Records each log call's level, message and metadata.
+final class ResolverReplayLogRecords: @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [(level: Logger.Level, message: String, metadata: Logger.Metadata)] = []
+    func append(_ level: Logger.Level, _ message: String, _ metadata: Logger.Metadata) {
+        lock.withLock { records.append((level, message, metadata)) }
+    }
+    var all: [(level: Logger.Level, message: String, metadata: Logger.Metadata)] { lock.withLock { records } }
+}
+
+struct ResolverReplayLogHandler: LogHandler {
+    let records: ResolverReplayLogRecords
+    var logLevel: Logger.Level = .trace
+    var metadata: Logger.Metadata = [:]
+    subscript(metadataKey key: String) -> Logger.Metadata.Value? {
+        get { metadata[key] }
+        set { metadata[key] = newValue }
+    }
+    func log(level: Logger.Level, message: Logger.Message, metadata: Logger.Metadata?,
+             source: String, file: String, function: String, line: UInt) {
+        records.append(level, message.description, self.metadata.merging(metadata ?? [:]) { $1 })
+    }
 }
 
 /// What a handler sees of the output, as strings the state can hold and a test can compare.
@@ -81,6 +118,8 @@ func makeResolverReplayLand() -> LandDefinition<ResolverReplayState> {
             HandleAction(ResolverReplayAction.self, resolvers: ResolverReplayStampResolver.self) {
                 (state: inout ResolverReplayState, _: ResolverReplayAction, ctx: LandContext) in
                 state.seen = resolverReplaySeen(ctx.resolverReplayStamp as ResolverReplayStamp?)
+                state.seenViaGetter = resolverReplaySeen(ctx.getResolverOutput(ResolverReplayStamp.self, forPropertyName: "resolverReplayStamp"))
+                state.mismatchRead = (ctx.resolverReplayStamp as ResolverReplayMismatch?) == nil ? "nil" : "value"
                 return ResolverReplayResponse(ok: true)
             }
             OnJoin(resolvers: ResolverReplayStampResolver.self) { (state: inout ResolverReplayState, ctx: LandContext) in
@@ -148,14 +187,15 @@ private func recordAction(form: ResolverReplayForm) async throws -> (path: Strin
 
 /// Replays the record at `path` in a reevaluation keeper until the action has applied, and
 /// returns the replayed state.
-private func replayState(path: String) async throws -> ResolverReplayState {
+private func replayState(path: String, logs: ResolverReplayLogRecords? = nil) async throws -> ResolverReplayState {
     let source = try ReevaluationRecordFile.openSource(filePath: path)
     let keeper = LandKeeper<ResolverReplayState>(
         definition: makeResolverReplayLand(),
         initialState: ResolverReplayState(),
         mode: .reevaluation,
         reevaluationSource: source,
-        autoStartLoops: false
+        autoStartLoops: false,
+        logger: logs.map { records in Logger(label: "resolver-replay") { _ in ResolverReplayLogHandler(records: records) } }
     )
     await keeper.stepTickOnce()
     return await keeper.currentState()
@@ -180,9 +220,26 @@ struct ResolverOutputReplayTests {
         let (path, live) = try await recordAction(form: form)
         let replayed = try await replayState(path: path)
         #expect(replayed.seen == live.seen, "\(form): the action")
+        #expect(replayed.seenViaGetter == live.seen, "\(form): the action, through getResolverOutput")
         #expect(replayed.seenAtJoin == live.seenAtJoin, "\(form): the join")
         #expect(replayed.seenAtInit == live.seenAtInit, "\(form): OnInitialize")
         #expect(![replayed.seen, replayed.seenAtJoin, replayed.seenAtInit].contains { $0.contains("nil") }, "\(form)")
+    }
+
+    @Test("An output that doesn't decode into the type the handler asks for reads nil in replay, with a warning naming it",
+          arguments: ResolverReplayForm.allCases)
+    func undecodableOutputWarns(form: ResolverReplayForm) async throws {
+        let (path, live) = try await recordAction(form: form)
+        #expect(live.mismatchRead == "nil", "live, the cast fails")
+        let logs = ResolverReplayLogRecords()
+        let replayed = try await replayState(path: path, logs: logs)
+        #expect(replayed.mismatchRead == "nil", "\(form)")
+        let warnings = logs.all.filter { $0.level == .warning && $0.message.contains("doesn't decode in replay") }
+        #expect(warnings.count == 1, "\(form): \(logs.all.map(\.message))")
+        #expect(warnings.first?.metadata["output"] == "resolverReplayStamp", "\(form)")
+        #expect(warnings.first?.metadata["requestedType"].map { "\($0)".hasSuffix("ResolverReplayMismatch") } == true, "\(form)")
+        // The outputs that do decode log nothing.
+        #expect(replayed.seen == live.seen, "\(form)")
     }
 
     @Test("A Decimal NaN in a resolver output is recorded in Decimal's keyed form and replays as NaN from each record form",

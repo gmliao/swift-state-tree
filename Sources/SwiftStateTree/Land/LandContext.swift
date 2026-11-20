@@ -269,7 +269,8 @@ public struct LandContext: Sendable {
         _ type: Output.Type,
         forPropertyName propertyName: String
     ) -> Output? {
-        return resolverOutputs[propertyName] as? Output
+        // The subscript's read, so a recorded output in replay decodes here too.
+        self[dynamicMember: propertyName]
     }
     
     /// Get all resolver outputs (internal use for recording)
@@ -294,7 +295,9 @@ public struct LandContext: Sendable {
     /// **Replay:** a recorded output is held as `AnyCodableResolverOutput`, and this subscript decodes
     /// it into the requested type with the record's own codec (`RecordPayloadSource`, #707), as a
     /// replayed server event is: a `Date`, `Data`, `URL` or `Decimal` field reads back in the form the
-    /// recorder wrote. An output that doesn't decode into the requested type reads as `nil`.
+    /// recorder wrote. An output that doesn't decode into the requested type reads as `nil`, with a
+    /// warning naming the output and the error: in replay a `nil` the live handler didn't see is a
+    /// divergence, and a silent one is how #707 went unnoticed.
     public subscript<T: ResolverOutput>(dynamicMember member: String) -> T? {
         guard let output = resolverOutputs[member] else {
             return nil
@@ -308,7 +311,17 @@ public struct LandContext: Sendable {
         // A recorded output, in replay: decoded with the codec that wrote the record. A JSON round
         // trip can't read a `Date`, `Data` or `URL` field back (#707).
         if let wrapped = output as? AnyCodableResolverOutput {
-            return try? RecordPayloadSource(wrapped.value, integralFloats: wrapped.integralFloats).decode(T.self)
+            do {
+                return try RecordPayloadSource(wrapped.value, integralFloats: wrapped.integralFloats).decode(T.self)
+            } catch {
+                logger.warning("A recorded resolver output doesn't decode in replay; the handler reads nil", metadata: [
+                    "output": .string(member),
+                    "recordedType": .string(wrapped.typeIdentifier),
+                    "requestedType": .string(String(reflecting: T.self)),
+                    "error": .string("\(error)"),
+                ])
+                return nil
+            }
         }
         
         return nil
