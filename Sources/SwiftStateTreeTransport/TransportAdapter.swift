@@ -25,6 +25,9 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case debugFreezeAutoResumeStale
     /// A pending action's answer (`finishActionResponse`), before it checks its ticket.
     case actionResponse
+    /// An action's answer (its response or its error reply) that didn't encode, after the
+    /// output gate closed and before the failure is submitted to the keeper.
+    case answerFailureSubmit
     /// A sync cycle after its frames were enqueued and before its `endSync` hop, while the cycle
     /// still owns the keeper's sync flag: holds a cycle in flight.
     case cycleBeforeEndSync
@@ -5823,7 +5826,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await keeper.submitLandFailure(failure)
+                await submitAnswerFailure(failure)
             }
         } catch {
             if let failure = handleActionError(
@@ -5834,7 +5837,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await keeper.submitLandFailure(failure)
+                await submitAnswerFailure(failure)
             }
         }
     }
@@ -5910,7 +5913,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await keeper.submitLandFailure(failure)
+                await submitAnswerFailure(failure)
             }
         case .failure(let error):
             if let failure = handleActionError(
@@ -5921,7 +5924,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await keeper.submitLandFailure(failure)
+                await submitAnswerFailure(failure)
             }
         }
     }
@@ -5979,6 +5982,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// A response that doesn't encode (a value that isn't a payload type on a compressed
     /// encoding, #544) would leave its client without an answer: the land ends. The output gate
     /// closes here, in this segment, and the caller submits the returned failure to the keeper.
+    /// The response is encoded before the ticket is checked, so a stale request's response that
+    /// doesn't encode ends the land too: the failure is in the type, and the next current
+    /// response of that type would fail the same way.
     private func sendActionResponse(
         requestID: String,
         actionType: String,
@@ -6035,12 +6041,22 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// Submits the failure of an action's answer that didn't encode. The answer's own segment
+    /// closed the output gate, so nothing more goes out before the keeper applies the failure
+    /// in a later turn.
+    private func submitAnswerFailure(_ failure: LandFailure) async {
+        await holds.at(.answerFailureSubmit)
+        await keeper.submitLandFailure(failure)
+    }
+
     /// Handle action processing error and send error response, if `ticket` is still current
     /// (checked in the same segment as the enqueue).
     ///
     /// An error reply that doesn't encode would leave its client without an answer, as a
     /// response would (`sendActionResponse`): the land ends (#691). The output gate closes here,
-    /// in this segment, and the caller submits the returned failure to the keeper.
+    /// in this segment, and the caller submits the returned failure to the keeper. As for a
+    /// response, the reply is encoded before the ticket is checked, so a stale request's reply
+    /// that doesn't encode ends the land too.
     private func handleActionError(
         error: Error,
         requestID: String,

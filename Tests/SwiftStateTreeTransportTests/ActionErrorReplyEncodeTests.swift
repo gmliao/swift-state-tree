@@ -14,6 +14,7 @@ private struct ErrorReplyTestError: Error {}
 /// answers with an error reply.
 private func makeThrowingActionLand() -> LandDefinition<UntypedPayloadState> {
     Land("error-reply", using: UntypedPayloadState.self) {
+        ServerEvents { Register(UntypedPayloadTypedEvent.self) }
         Rules {
             HandleAction(
                 UntypedResponseAction.self,
@@ -64,5 +65,16 @@ struct ActionErrorReplyEncodeTests {
         #expect(land.adapter.outputGate.isClosed, "\(encoding)")
         #expect(await land.transport.sends == sentBefore, "\(encoding): no answer and no frame after the failure")
         #expect(await land.transport.closes == [SessionClose.Code.landFailed], "\(encoding)")
+    }
+
+    @Test("an error reply that doesn't encode closes the output gate before the keeper's failure turn",
+          arguments: UntypedPayloadEncoding.allCases)
+    func errorReplyFailureClosesTheGateFirst(encoding: UntypedPayloadEncoding) async throws {
+        let land = try await UntypedPayloadLand.make(makeThrowingActionLand(), encoding: encoding)
+        await land.adapter.waitForOutboundIdleForTesting()
+        await land.adapter.setErrorReplyEncodingFaultForTesting(true)
+        try await expectGateClosedBeforeTheFailureTurn(land, "\(encoding)") {
+            try await land.sendAction(requestID: "r1")
+        }
     }
 }

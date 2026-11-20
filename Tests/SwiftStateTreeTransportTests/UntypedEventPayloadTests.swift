@@ -10,6 +10,7 @@
 
 import Foundation
 import Testing
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
@@ -175,8 +176,36 @@ func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
         resolverExecutors: []
     )
     return Land("untyped-response", using: UntypedPayloadState.self) {
+        ServerEvents { Register(UntypedPayloadTypedEvent.self) }
         Rules { untyped }
     }
+}
+
+/// Runs `fail`, which makes an action's answer fail to encode, with the failure held between
+/// the adapter and the keeper (`.answerFailureSubmit`). In that window the land hasn't failed
+/// yet, but the adapter has closed its output gate in the failing segment, so an event sent then
+/// doesn't go out. Then the keeper applies the failure.
+func expectGateClosedBeforeTheFailureTurn(
+    _ land: UntypedPayloadLand,
+    _ label: String,
+    fail: @escaping @Sendable () async throws -> Void
+) async throws {
+    let submit = TestGate()
+    await land.adapter.installHolds(HoldRegistry.at(.answerFailureSubmit) { await submit.arrive() })
+    let sentBefore = await land.transport.sends
+    let failing = Task { try await fail() }
+    #expect(await submit.waitForArrivals(1), "\(label): the failure is held before the keeper")
+    #expect(land.keeper.failure == nil, "\(label): the keeper hasn't applied the failure yet")
+    #expect(land.adapter.outputGate.isClosed, "\(label): the gate closed in the failing segment")
+    await land.adapter.sendEventToTransport(AnyServerEvent(UntypedPayloadTypedEvent(hp: 1)), to: .all)
+    await land.adapter.waitForOutboundIdleForTesting()
+    #expect(await land.transport.sends == sentBefore, "\(label): an event sent in that window doesn't go out")
+    submit.open()
+    try await failing.value
+    await land.adapter.installHolds(nil)
+    try #require(await land.keeper.waitForFailureForTesting(), "\(label): the land failed")
+    await land.keeper.waitUntilDrained()
+    #expect(land.keeper.failure?.kind == .responseEncode, "\(label)")
 }
 
 // MARK: - Tests
@@ -308,5 +337,15 @@ struct UntypedEventPayloadTests {
         #expect(land.adapter.outputGate.isClosed, "\(encoding)")
         #expect(await land.transport.sends == sentBefore, "\(encoding): no answer and no frame after the failure")
         #expect(await land.transport.closes == [SessionClose.Code.landFailed], "\(encoding)")
+    }
+
+    @Test("an action response that doesn't encode closes the output gate before the keeper's failure turn",
+          arguments: UntypedPayloadEncoding.compressed)
+    func untypedResponseClosesTheGateFirst(encoding: UntypedPayloadEncoding) async throws {
+        let land = try await UntypedPayloadLand.make(makeUntypedResponseLand(), encoding: encoding)
+        await land.adapter.waitForOutboundIdleForTesting()
+        try await expectGateClosedBeforeTheFailureTurn(land, "\(encoding)") {
+            try await land.sendAction(requestID: "r1")
+        }
     }
 }
