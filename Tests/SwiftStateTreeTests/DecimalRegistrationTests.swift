@@ -1,13 +1,19 @@
 // Tests/SwiftStateTreeTests/DecimalRegistrationTests.swift
 //
-// #597: `Decimal` has no wire form, so registration refuses it wherever it would reach the wire:
-// a synced state field, and a payload field. A server-only or `@Internal` field may hold one.
+// #597: `Decimal` has no wire form. The macros refuse a `Decimal` the declared syntax shows
+// (RefusedFieldTypeDiagnosticTests); registration refuses what the syntax doesn't show, such as
+// a typealias, wherever it would reach the wire: a synced state field and a payload field. A
+// server-only or `@Internal` field may hold one. Resolver outputs don't reach the wire; their
+// replay record is #707.
 
 import Foundation
 import Testing
 @testable import SwiftStateTree
 
 // MARK: - Fixtures
+
+/// The macros see only the spelling, so a typealias passes them: registration refuses it.
+typealias DecimalAlias = Decimal
 
 /// A plain struct, reached through a synced field or a payload field.
 struct DecimalHolder: Codable, Equatable, Sendable, Hashable {
@@ -17,19 +23,19 @@ struct DecimalHolder: Codable, Equatable, Sendable, Hashable {
 @StateNodeBuilder
 struct DecimalSyncedRoot: StateNodeProtocol {
     @Sync(.broadcast)
-    var price: Decimal = 0
+    var price: DecimalAlias = 0
 
     @Sync(.broadcast)
-    var maybe: Decimal? = nil
+    var maybe: DecimalAlias? = nil
 
     @Sync(.broadcast)
-    var list: [Decimal] = []
+    var list: [DecimalAlias] = []
 
     @Sync(.broadcast)
-    var unique: Set<Decimal> = []
+    var unique: Set<DecimalAlias> = []
 
     @Sync(.broadcast)
-    var byName: [String: Decimal] = [:]
+    var byName: [String: DecimalAlias] = [:]
 
     @Sync(.broadcast)
     var holder: DecimalHolder = DecimalHolder()
@@ -55,24 +61,24 @@ struct DecimalHiddenRoot: StateNodeProtocol {
 
 @Payload
 struct DecimalPriceEvent: ServerEventPayload {
-    let amount: Decimal
-    let tags: [String: Decimal]
+    let amount: DecimalAlias
+    let tags: [String: DecimalAlias]
 }
 
 @Payload
 struct DecimalBidEvent: ClientEventPayload {
-    let offers: [Decimal]
+    let offers: [DecimalAlias]
 }
 
 @Payload
 struct DecimalBuyResponse: ResponsePayload {
-    let totals: [Decimal]
+    let totals: [DecimalAlias]
 }
 
 /// A nested type that lists its stored fields, so the walk sees them.
 @SnapshotConvertible
 struct DecimalLine: Codable, Sendable {
-    let amount: Decimal
+    let amount: DecimalAlias
 }
 
 @Payload
@@ -81,78 +87,16 @@ struct DecimalBuyAction: ActionPayload {
     let line: DecimalLine
 }
 
-// Boundary cases of the field probe (after CodableReflection's): a nested plain `Codable`
-// type is decoded once through a recording decoder.
-
-/// No defaults: a synthesized `Decodable` needs every key.
-struct ProbePlain: Codable, Sendable {
-    let amount: Decimal
-}
-
-struct ProbeOptional: Codable, Sendable {
-    let maybe: Decimal?
-}
-
-struct ProbeContainers: Codable, Sendable {
-    let byName: [String: [Decimal]]
-    let unique: Set<Decimal>
-    let grid: [[Decimal]]
-}
-
-enum ProbeKind: String, Codable, CaseIterable, Sendable {
-    case first, second
-}
-
-/// A raw-value enum before the Decimal: its placeholder is its first case.
-struct ProbeAfterEnum: Codable, Sendable {
-    let kind: ProbeKind
-    let amount: Decimal
-}
-
-enum ProbeOpenKind: String, Codable, Sendable {
-    case only
-}
-
-/// An enum with no `CaseIterable`: "" isn't a raw value, so the probe stops at `kind`.
-struct ProbeAfterOpenEnum: Codable, Sendable {
-    let kind: ProbeOpenKind
-    let amount: Decimal
-}
-
-/// A type that holds itself, in an array and in an optional dictionary.
-struct ProbeNode: Codable, Sendable {
-    let value: Decimal
-    let children: [ProbeNode]
-    let byName: [String: ProbeNode]?
-}
-
-/// A hand-written `init(from:)` that validates after `amount`: the fields after the throw aren't
-/// asked for.
-struct ProbeValidated: Codable, Sendable {
-    struct Invalid: Error {}
-    let amount: Decimal
-    let fee: Decimal
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        amount = try container.decode(Decimal.self, forKey: .amount)
-        guard amount > 0 else { throw Invalid() }
-        fee = try container.decode(Decimal.self, forKey: .fee)
-    }
-}
-
+/// A nested plain `Codable` type lists no fields, so registration doesn't look into it: its
+/// `Decimal` fails at the first send (`DecimalSendTests`).
 @Payload
-struct DecimalProbeEvent: ServerEventPayload {
-    let plain: ProbePlain
-    let optional: ProbeOptional
-    let containers: ProbeContainers
-    let afterEnum: ProbeAfterEnum
-    let node: ProbeNode
+struct DecimalGapEvent: ServerEventPayload {
+    let holder: DecimalHolder
 }
 
 @Payload
 struct DecimalRefund: ServerInputPayload {
-    let amount: Decimal
+    let amount: DecimalAlias
 }
 
 @Payload
@@ -187,7 +131,7 @@ private func registrationError<State: StateNodeProtocol>(_ definition: LandDefin
 
 @Suite("Decimal has no wire form: registration refuses it where it would reach the wire (#597)")
 struct DecimalRegistrationTests {
-    @Test("A synced Decimal is refused at each shape; a server-only or @Internal one is not")
+    @Test("A synced Decimal behind a typealias is refused at each shape; a server-only or @Internal one is not")
     func syncedDecimalFields() {
         #expect(SyncRegistration.problems(DecimalSyncedRoot.self) == [
             .decimalField(path: "DecimalSyncedRoot.price"),
@@ -202,7 +146,7 @@ struct DecimalRegistrationTests {
         #expect(message.contains("Root.price") && message.contains("integer of the smallest unit"), "\(message)")
     }
 
-    @Test("A Decimal in an event, an action, a response or a server input is refused, naming each path")
+    @Test("A Decimal behind a typealias in an event, an action, a response or a server input is refused, naming each path")
     func payloadDecimalFields() throws {
         let definition = Land("decimal-payloads", using: DecimalHiddenRoot.self) {
             ClientEvents { Register(DecimalBidEvent.self) }
@@ -230,29 +174,9 @@ struct DecimalRegistrationTests {
         #expect(error.description.contains("integer of the smallest unit"), "\(error)")
     }
 
-    @Test("A nested plain Codable type is probed: no defaults, optionals, nested containers, a raw-value enum, recursion")
-    func nestedPlainTypesAreProbed() {
-        // In the payload's field order (its metadata's). The node's own Decimal is reported once:
-        // its children and byName hold the node again, which the walk doesn't re-enter.
-        #expect(DecimalFields.payloadPaths(in: DecimalProbeEvent.self, root: "e") == [
-            "e.afterEnum.amount",
-            "e.containers.byName[*][*]",
-            "e.containers.unique[*]",
-            "e.containers.grid[*][*]",
-            "e.node.value",
-            "e.optional.maybe",
-            "e.plain.amount",
-        ])
-        // The struct a synced field holds is probed the same way in a payload.
-        #expect(DecimalFields.payloadPaths(in: DecimalHolder.self, root: "h") == ["h.amount"])
-    }
-
-    @Test("The probe's limits: fields after a hand-written init's throw, or after an enum without CaseIterable, aren't seen")
-    func probeLimits() {
-        #expect(DecimalFields.payloadPaths(in: ProbeValidated.self, root: "v") == ["v.amount"],
-                "the init throws after amount, so fee isn't asked for")
-        #expect(DecimalFields.payloadPaths(in: ProbeAfterOpenEnum.self, root: "o").isEmpty,
-                "the enum's placeholder fails, so amount isn't asked for")
+    @Test("A nested plain Codable type isn't looked into: its Decimal is left to the send-time refusal")
+    func nestedPlainTypeIsNotWalked() {
+        #expect(DecimalFields.payloadPaths(in: DecimalGapEvent.self, root: "e").isEmpty)
     }
 
     @Test("A land with no Decimal on the wire registers")
@@ -262,55 +186,5 @@ struct DecimalRegistrationTests {
             Rules {}
         }
         try definition.validateForRegistration(context: .encodingIndependent)
-    }
-}
-
-// MARK: - Resolver outputs
-
-/// A resolver output with a Decimal: the server only reads it, but replay records it.
-struct DecimalPriceOutput: ResolverOutput, Equatable {
-    let price: Decimal
-    let small: Decimal
-}
-
-struct DecimalPriceResolver: ContextResolver {
-    static func resolve(ctx: ResolverContext) async throws -> DecimalPriceOutput {
-        DecimalPriceOutput(price: 1, small: 0)
-    }
-}
-
-@Suite("A resolver output's Decimal doesn't survive the replay record, so registration refuses it (#597)")
-struct DecimalResolverOutputRecordTests {
-    static let output = DecimalPriceOutput(price: Decimal(string: "12.345")!, small: Decimal(string: "0.1")!)
-    static let recorded = ReevaluationRecordedResolverOutput(
-        typeIdentifier: "DecimalPriceOutput", value: AnyCodable(output)
-    )
-
-    /// What replay hands the handler: the recorded value through `AnyCodableResolverOutput`
-    /// (`LandContext`'s dynamic member lookup re-decodes it through JSON).
-    static func replayed(_ entry: ReevaluationRecordedResolverOutput) throws -> DecimalPriceOutput {
-        try JSONDecoder().decode(DecimalPriceOutput.self, from: JSONEncoder().encode(entry.value))
-    }
-
-    @Test("The saved record keeps the bytes, but in the platform's keyed form, which replay's read refuses")
-    func savedRecord() throws {
-        let bytes = try CanonicalMessagePack.encode(Self.recorded)
-        let decoded = try CanonicalMessagePack.decode(ReevaluationRecordedResolverOutput.self, from: bytes)
-        #expect(try CanonicalMessagePack.encode(decoded) == bytes)
-        #expect(throws: DecodingError.self) { _ = try Self.replayed(decoded) }
-    }
-
-    @Test("A resolver output with a Decimal is refused at registration")
-    func resolverOutputIsRefused() {
-        let land = Land("decimal-resolver", using: DecimalHiddenRoot.self) {
-            Rules {
-                HandleAction(DecimalCleanAction.self, resolvers: DecimalPriceResolver.self) { (_: inout DecimalHiddenRoot, _: DecimalCleanAction, _: LandContext) -> DecimalCleanResponse in
-                    DecimalCleanResponse(cents: 0)
-                }
-            }
-        }
-        #expect(land.payloadDecimalFields() == [
-            "resolver output DecimalPriceOutput.price", "resolver output DecimalPriceOutput.small",
-        ])
     }
 }

@@ -109,7 +109,13 @@ class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會
 
 **型別名稱。** schema 用型別的名稱來稱呼它描述的每個型別，不含外層的型別：`A.Item` 與 `B.Item` 都叫 `Item`。兩個不同的型別同名時會共用一份定義，產生的 client、path hash 與 atomic 值的位置編碼都會拿其中一個型別的欄位套用到兩者。在 state 中，註冊時就拒絕（`.typeNameCollision`）。在 schema 的其他地方，產生 schema 時拒絕：`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 拋出 `SchemaTypeNameCollisionError`，列出每個共用的名稱與其型別的完整名稱（#602）。會被 replay 的 land 計算紀錄的 schema fingerprint 時也會拒絕，它還會走訪 land 的 server input：與 state 型別同名的 server input 在那裡被拒絕，註冊時以 `LandRegistrationError.typeNameCollisions` 回報。例如 client event `A.HitEvent` 與 server event `B.HitEvent`、同一份 schema 的兩個 land 各用不同的 `Item`，以及名為 `StateDiff` 的型別（schema 的 diff 佔位定義用的名稱）。同名的型別只保留一個名稱，其餘改名；`StateDiff` 是保留名稱，用到它的型別都要改名。
 
-**Decimal。** `Decimal` 沒有 wire 形式（#597）。它的 `Codable` 形式是平台內部的欄位，同步無法轉換它，JavaScript client 也會把 JSON 數字讀成 double 而失去位數。金額請存成最小單位（分）的整數，或 `String`。在 state 中，註冊時拒絕同步的 `Decimal`（`.decimalField`）。payload 中的 `Decimal` 也會拒絕：client 或 server event、action、其 response、server input 或 resolver output，在任何深度含有 `Decimal`，都在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount` 或 `action BuyAction.lines[*].price`。resolver output 也拒絕，因為 replay 紀錄以平台內部的形式保存它，replay 讀不回來。註冊時，巢狀的一般 `Codable` 型別的欄位，是用一個會記錄每個被要求欄位的 decoder 解碼一次找出來的。限制：手寫的 `init(from:)` 拋錯之後，或沒有 `CaseIterable` 的 enum（無法為它造出佔位值）之後才要求的欄位，看不到。這類欄位由 MessagePack encoder 拒絕；JSON 編碼則把它寫成數字。
+**Decimal。** `Decimal` 沒有 wire 形式（#597）。它的 `Codable` 形式是平台內部的欄位，同步無法轉換它。JavaScript client 會把 JSON 數字讀成 double 而失去位數。JSON 編碼會把 Decimal NaN 寫成裸 `NaN`，那不是合法的 JSON。金額請存成最小單位（分）的整數，或 `String`。`Decimal` 在三個地方被拒絕，依序如下：
+
+- **編譯期，** 宣告的型別寫出它時：`Decimal` 或 `Foundation.Decimal`，不論位於哪一層，例如 `[String: Decimal]`。`@StateNodeBuilder` 檢查 `.serverOnly` 以外的每個 `@Sync` 欄位，`@SnapshotConvertible` 檢查每個 stored property，`@Payload` 檢查每個欄位。
+- **註冊時，** typealias 讓語法看不到、但欄位清單看得到時。同步欄位回報為 `.decimalField`。event、action、其 response 或 server input 的欄位在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount`。
+- **第一次送出時，** 前兩者都看不到的：未註冊就送出的 event、執行時放進 `Decimal` 的 `AnyCodable`，以及一般 `Codable` 型別（不列出欄位）裡的 `Decimal`。JSON 編碼與 MessagePack encoder 都拒絕它，land 結束（`.eventEncode` 或 `.responseEncode`）。
+
+`.serverOnly` 或 `@Internal` 欄位可以放 `Decimal`。resolver output 也可以，它不會上 wire；它的 replay 紀錄由 #707 處理。
 
 **編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
 

@@ -277,6 +277,11 @@ struct MessagePackDirectEncoder {
     }
 
     func encodeAnyCodable(_ value: AnyCodable) throws -> MessagePackValue {
+        // First: on Darwin an NSDecimalNumber would match a numeric case below through bridging,
+        // on Linux it wouldn't. Refused the same way as a `Decimal` on both (#597).
+        if type(of: value.base) is NSDecimalNumber.Type {
+            throw MessagePackDirectEncodingError.decimal
+        }
         switch value.base {
         case is Void:
             return .nil

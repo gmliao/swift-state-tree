@@ -201,20 +201,6 @@ extension LandDefinition {
         for name in serverInputHandlers.keys.sorted() {
             if let handler = serverInputHandlers[name] { add("server input", handler.inputType) }
         }
-        // A resolver output is recorded for replay. The saved record (CanonicalMessagePack) keeps
-        // a Decimal in its platform's keyed form, which replay's JSON read of the output refuses,
-        // so a replayed handler would see no output.
-        var seen: Set<ObjectIdentifier> = []
-        let lifetime = lifetimeHandlers
-        let executors = actionHandlers.flatMap(\.resolverExecutors)
-            + lifetime.canJoinResolverExecutors + lifetime.onJoinResolverExecutors
-            + lifetime.onLeaveResolverExecutors + lifetime.onDestroyWhenEmptyResolverExecutors
-            + lifetime.onInitializeResolverExecutors + lifetime.onFinalizeResolverExecutors
-        for executor in executors {
-            guard let output = (executor as? any ResolverOutputTypeNaming)?.resolverOutputType,
-                  seen.insert(ObjectIdentifier(output)).inserted else { continue }
-            add("resolver output", output)
-        }
         return fields
     }
 

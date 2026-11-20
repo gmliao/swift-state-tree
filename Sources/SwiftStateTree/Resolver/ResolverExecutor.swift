@@ -7,15 +7,8 @@ public protocol AnyResolverExecutor: Sendable {
     func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput)
 }
 
-/// An executor that names its resolver's output type, for the registration checks (#597).
-package protocol ResolverOutputTypeNaming {
-    var resolverOutputType: Any.Type { get }
-}
-
 /// Type-erased wrapper for a specific resolver type
-public struct ResolverExecutorWrapper<R: ContextResolver>: AnyResolverExecutor, ResolverOutputTypeNaming {
-    package var resolverOutputType: Any.Type { R.Output.self }
-
+public struct ResolverExecutorWrapper<R: ContextResolver>: AnyResolverExecutor {
     public func execute(ctx: ResolverContext) async throws -> (String, any ResolverOutput) {
         let output = try await R.resolve(ctx: ctx)
         let propertyName = ResolverExecutor.convertResolverTypeToPropertyName(String(describing: R.self))

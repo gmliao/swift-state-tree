@@ -79,7 +79,8 @@ public struct JSONTransportMessageEncoder: TransportMessageEncoder {
     }
     
     public func encode(_ message: TransportMessage) throws -> Data {
-        try encoder.encode(message)
+        try DecimalScan.check(message)
+        return try encoder.encode(message)
     }
 }
 
@@ -126,6 +127,7 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
     
     public func encode(_ message: TransportMessage) throws -> Data {
         let array = try encodeToArray(message)
+        try DecimalScan.check(array)
         return try encoder.encode(array)
     }
     
