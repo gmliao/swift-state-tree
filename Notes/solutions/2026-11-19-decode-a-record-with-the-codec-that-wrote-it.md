@@ -29,6 +29,8 @@ related:
   - "#707"
   - "#709"
   - "#710"
+  - "#633"
+  - "#713"
 ---
 
 # Decode a record with the codec that wrote it
@@ -56,4 +58,5 @@ A recorded payload is a tree whose shape is set by the encoder that wrote it, no
 - Test on what the writer produced (a saved record, then its JSON view), never on a tree built by hand or by a different encoder: the hand-built tree is in the shape you expect, not the shape on disk.
 - A comparison of stored against live values has the same trap: normalize both sides through the stored codec first (#633, the offline verifier).
 - Every reader of a record needs this rule, not only the one that was fixed. A recorded resolver output was still read back through `JSONEncoder` and `JSONDecoder` (`LandContext`'s dynamic member lookup over `AnyCodableResolverOutput`). An output with a `Date`, `Data` or `URL` field failed that read, so the replayed handler saw `nil` instead of the value (#707). A probe through a saved record showed it. #710 fixed it: the subscript decodes with `RecordPayloadSource`, with the JSON view's allowance, and a decode that still fails logs a warning, because a silent `nil` is how it stayed hidden. A recorded action's own payload still goes through the JSON round trip; a probe shows replay drops an action with a `Date`, `Data` or `URL` field (#709). When the record codec is fixed for one reader, list the others (events, server inputs, actions, client events, resolver outputs, the verifier) and check each one.
+- A comparison is a reader too. The offline verifier compared a recorded server event with the replayed one by the JSON of both payloads, a tree in the record's form against a typed value, so a `Date`, `Data`, `URL` or `Float` field reported a mismatch on a correct replay (#633). #713 puts the emitted payload in the record's form (a `CanonicalMessagePack` round trip) before comparing. Put both sides of a comparison in one form, the record's, rather than converting each with a different codec. A value the record itself has lost (the sign of `-0.0` on the JSON view) still differs, and that is the record's stated limit, not the comparison's.
 - A byte-identical re-encode doesn't show that a value reads back: a `Decimal` resolver output re-encoded to the same bytes, in Darwin's keyed form, which no JSON read accepts (#597). Test the reader's decode into the type.
