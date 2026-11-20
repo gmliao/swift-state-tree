@@ -5366,6 +5366,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Debounce rapid broadcast changes to reduce sync frequency
     /// - Consider allowing concurrent broadcast-only syncs (read-only operation)
     func _syncBroadcastOnlyImpl() async {
+        // In-turn: one sync-only turn on the keeper, now, as `_syncNowImpl` (#546 L2b). Before
+        // the freeze check: a frozen land's turn leaves its sync to the resume, so the request
+        // defers once, through the keeper. A full phase covers broadcast-only changes.
+        if inTurnSyncEnabled {
+            _ = await keeper.syncTurnNow(via: self, reason: .broadcastOnly)
+            return
+        }
         // While frozen, the settle cycle is the only sync; defer this one to resume.
         if debugDeferSyncIfFrozen(broadcastOnly: true) { return }
 

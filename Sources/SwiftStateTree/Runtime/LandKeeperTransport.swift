@@ -265,6 +265,9 @@ package enum SyncTurnReason: Hashable, Sendable {
     case behindCommitRepair
     /// The freeze's resume, for the syncs it deferred.
     case resume
+    /// The keeper's broadcast-only bridge (`syncBroadcastOnlyFromTransport`) on an in-turn
+    /// adapter: a full sync-only phase covers broadcast-only changes (#546 L2b).
+    case broadcastOnly
 }
 
 /// What `LandKeeperTransport.runSyncPhaseInTurn` did.

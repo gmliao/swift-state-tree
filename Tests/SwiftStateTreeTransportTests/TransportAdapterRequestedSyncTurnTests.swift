@@ -95,6 +95,22 @@ private struct RequestedSyncTurnFixture {
 struct TransportAdapterRequestedSyncTurnTests {
     // MARK: The binding
 
+    @Test("the keeper's broadcast-only bridge on an in-turn adapter is one requested turn, not a legacy cycle")
+    func broadcastOnlyBridgeIsARequestedTurn() async throws {
+        let f = try await RequestedSyncTurnFixture.make(attached: true)
+        try await f.set(1)
+        let before = await f.keeper.requestedSyncTurnsForTesting[.broadcastOnly, default: 0]
+        let cyclesBefore = await f.adapter.beginSyncRequests
+        await f.adapter.syncBroadcastOnlyFromTransport()
+        #expect(await f.keeper.requestedSyncTurnsForTesting[.broadcastOnly, default: 0] == before + 1)
+        #expect(await f.adapter.beginSyncRequests == cyclesBefore, "no legacy cycle, so nothing can latch")
+        await f.adapter.waitForOutboundIdleForTesting()
+        #expect(
+            f.transport.frames(for: f.session).contains { String(decoding: $0, as: UTF8.self).contains(#"stamp","value":1"#) },
+            "the requested turn's full phase delivered the change"
+        )
+    }
+
     @Test("a keeper never attached syncs through its first requester only")
     func firstRequesterBindsAnUnattachedKeeper() async throws {
         let f = try await RequestedSyncTurnFixture.make(attached: false)
@@ -206,7 +222,6 @@ struct TransportAdapterRequestedSyncTurnTests {
         _ = await f.adapter.debugResume(freezeToken: token)
         let resumeAdapter = f.adapter
         #expect(await withinHangBound { await resumeAdapter.waitForBackgroundSyncsForTesting() }, "the resume's sync never finished")
-        await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
         // The resume requested its turn: the flag alone is cleared before it requests. (The
         // settle already sent stamp 1, and inputs wait while frozen, so no frame tells them apart.)
