@@ -63,20 +63,25 @@ public enum ReevaluationSchemaFingerprint {
 
     private static func fingerprint<State: StateNodeProtocol>(of definition: LandDefinition<State>) throws -> String {
         let probe = SchemaExtractionProbe()
-        let (lands, defs, serverInputs) = try SchemaExtractionProbe.$current.withValue(probe) {
-            let schema = try SchemaExtractor.extract(from: definition, version: formatTag)
-            var definitions = schema.defs
-            var visited = Set(definitions.keys)
-            var inputs: [String: JSONSchema] = [:]
-            // In key order: a def met twice keeps one form, and which depends on the order.
-            for (name, handler) in definition.serverInputHandlers.sorted(by: { $0.key < $1.key }) {
-                inputs[name] = ActionEventExtractor.extractEvent(
-                    handler.inputType,
-                    definitions: &definitions,
-                    visitedTypes: &visited
-                )
+        // One type name record for the land's extraction and its server inputs' walk, which
+        // adds to the land's definitions: a server input named like a state type would
+        // replace its definition, or reuse it for a field (#602). Checked before hashing.
+        let (lands, defs, serverInputs) = try SchemaTypeNameRecorder.recording {
+            try SchemaExtractionProbe.$current.withValue(probe) {
+                let schema = try SchemaExtractor.extract(from: definition, version: formatTag)
+                var definitions = schema.defs
+                var visited = Set(definitions.keys)
+                var inputs: [String: JSONSchema] = [:]
+                // In key order: a def met twice keeps one form, and which depends on the order.
+                for (name, handler) in definition.serverInputHandlers.sorted(by: { $0.key < $1.key }) {
+                    inputs[name] = ActionEventExtractor.extractEvent(
+                        handler.inputType,
+                        definitions: &definitions,
+                        visitedTypes: &visited
+                    )
+                }
+                return (schema.lands, definitions, inputs)
             }
-            return (schema.lands, definitions, inputs)
         }
         if let unbuildable = probe.unbuildableTypes.sorted().first {
             throw SchemaFingerprintError.unbuildableType(unbuildable)

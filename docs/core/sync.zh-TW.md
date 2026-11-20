@@ -94,7 +94,7 @@ struct GameState: StateNodeProtocol {
 
 ### 註冊時拒絕的型別
 
-所有只由 state 型別就能決定的註冊檢查，都在同一個錯誤中回報（#535）。`LandDefinition.validateForRegistration(context:)` 執行這些檢查，`NIOLandHost.register`、`LandTypeRegistry.init`、`SchemaExtractor.extract`、`SchemaGenCLI` 與 `ReevaluationEngine.run` 都會呼叫它。它們拋出 `LandRegistrationError`，其 `sync` 是 `SyncRegistrationError`，每一列對應一種問題：
+所有只由 state 型別就能決定的註冊檢查，都在同一個錯誤中回報（#535），只有型別名稱那一列例外：它只在其他各列都通過時才執行。`LandDefinition.validateForRegistration(context:)` 執行這些檢查，`NIOLandHost.register`、`LandTypeRegistry.init`、`SchemaExtractor.extract`、`SchemaGenCLI` 與 `ReevaluationEngine.run` 都會呼叫它。它們拋出 `LandRegistrationError`，其 `sync` 是 `SyncRegistrationError`，每一列對應一種問題：
 
 | 問題 | 意義 |
 |---|---|
@@ -102,8 +102,11 @@ struct GameState: StateNodeProtocol {
 | `.policyNesting(SyncPolicyNestingError)` | broadcast 欄位下有依玩家而變的欄位（見上文） |
 | `.unsupportedKey(path:keyType:)` | 同步無法轉成字串的 dictionary key 型別：不是 `String`、`PlayerID` 或 `CustomStringConvertible` |
 | `.existentialField(path:typeName:)` | 能容納任何型別值的同步型別：`Any`、`AnyObject`、`AnyHashable` 或 `AnyCodable`，出現在集合的元素、key 或 value，或 optional 包住的型別 |
+| `.typeNameCollision(SchemaTypeNameCollision)` | state 中兩個不同的型別同名，例如 `A.Item` 與 `B.Item`（#602）；只在上面各列都通過時才檢查；見下文 |
 
 class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會送出的欄位；`@SnapshotConvertible` 型別透過其宣告的 stored property 檢查（由 macro 列出，因此有標註型別的 property 即使位於空集合中也會檢查；沒有標註型別的 property 只能透過預設實例的值檢查），其他一般 struct 則同樣透過預設實例檢查其內容。手寫 `toSnapshotValue()` 的型別自行轉換其儲存內容，不會被檢查；只遵循 `FullSnapshotValueConvertible` 不算，因為同步會忽略它。結果依 state 型別快取，因此 **state 型別的預設 `init()` 必須是確定性的**：每次呼叫都產生相同的值，不讀時鐘、亂數來源或全域狀態。
+
+**型別名稱。** schema 用型別的名稱來稱呼它描述的每個型別，不含外層的型別：`A.Item` 與 `B.Item` 都叫 `Item`。兩個不同的型別同名時會共用一份定義，產生的 client、path hash 與 atomic 值的位置編碼都會拿其中一個型別的欄位套用到兩者。在 state 中，註冊時就拒絕（`.typeNameCollision`）。在 schema 的其他地方，產生 schema 時拒絕：`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 拋出 `SchemaTypeNameCollisionError`，列出每個共用的名稱與其型別的完整名稱（#602）。會被 replay 的 land 計算紀錄的 schema fingerprint 時也會拒絕，它還會走訪 land 的 server input：與 state 型別同名的 server input 在那裡被拒絕，註冊時以 `LandRegistrationError.typeNameCollisions` 回報。例如 client event `A.HitEvent` 與 server event `B.HitEvent`、同一份 schema 的兩個 land 各用不同的 `Item`，以及名為 `StateDiff` 的型別（schema 的 diff 佔位定義用的名稱）。同名的型別只保留一個名稱，其餘改名。
 
 **編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
 

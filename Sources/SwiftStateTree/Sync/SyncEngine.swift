@@ -167,6 +167,9 @@ public struct SyncEngine: Sendable {
     }
 
     /// An engine for `State`, diffing with its `AtomicLayoutTable`.
+    ///
+    /// Precondition: `State` passes registration's type name row (#602); see
+    /// `AtomicLayoutTable.forState(_:)`, which traps otherwise.
     public init<State: StateNodeProtocol>(for stateType: State.Type) {
         self.atomicLayout = AtomicLayoutTable.forState(stateType)
     }

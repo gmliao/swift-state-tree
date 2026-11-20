@@ -14,8 +14,9 @@ public struct SchemaGenCLI {
     ///     when reevaluation is enabled (convention-based, no need to pass alias per land)
     /// - Returns: Aggregated ProtocolSchema containing all lands and definitions
     /// - Throws: `LandRegistrationError` when a land's state fails a synced-state row (its `sync`:
-    ///   #464, #179, #535); `RecursiveStateTypeError` when a land's state type holds itself
-    ///   (#286)
+    ///   #464, #179, #535, #602); `SchemaTypeNameCollisionError` when distinct types share a
+    ///   definition name, in one land or across lands (#602); `RecursiveStateTypeError` when a
+    ///   land's state type holds itself (#286)
     public static func generateSchema(
         landDefinitions: [AnyLandDefinition],
         version: String = "0.1.0",
@@ -29,11 +30,15 @@ public struct SchemaGenCLI {
         var allDefinitions: [String: JSONSchema] = [:]
         var allLands: [String: LandSchema] = [:]
         
-        for anyDef in landDefinitions {
-            let schema = try anyDef.extractSchema()
-
-            // Merge definitions (avoid duplicates)
-            // If key already exists, keep the first one (they should be identical)
+        // Each land's extraction checks its own type names (#602); this record also holds the
+        // union, because definitions from all lands are merged by name below, so two lands
+        // that define a name with different types are refused.
+        let schemas = try SchemaTypeNameRecorder.recording {
+            try landDefinitions.map { try $0.extractSchema() }
+        }
+        for (anyDef, schema) in zip(landDefinitions, schemas) {
+            // Merge definitions. A key two lands both define is the same type (the record above
+            // refuses distinct ones), so the first land's definition is kept.
             for (key, value) in schema.defs {
                 if allDefinitions[key] == nil {
                     allDefinitions[key] = value
@@ -76,7 +81,8 @@ public struct SchemaGenCLI {
     ///   - outputPath: Optional file path to write schema to. If nil, writes to stdout
     ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
     /// - Throws: `LandRegistrationError` when a land's state fails a synced-state row (its `sync`:
-    ///   #464, #179, #535), `RecursiveStateTypeError` when a land's state type holds itself
+    ///   #464, #179, #535, #602), `SchemaTypeNameCollisionError` when distinct types share a
+    ///   definition name (#602), `RecursiveStateTypeError` when a land's state type holds itself
     ///   (#286), or encoding errors if JSON encoding fails
     public static func generate(
         landDefinitions: [AnyLandDefinition],
