@@ -223,6 +223,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
 
+    /// Makes every action's error reply fail to encode while set (tests only, #691).
+    func setErrorReplyEncodingFaultForTesting(_ fault: Bool) {
+        errorReplyEncodingFaultForTesting = fault
+    }
+
     /// Installs `eventEncodingFaultForTesting` (tests only).
     func setEventEncodingFaultForTesting(_ fault: (@Sendable (String) -> EventEncodingFault?)?) {
         eventEncodingFaultForTesting = fault
@@ -809,6 +814,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncStreamDetail = SyncStreamRecordingDetail.fromEnvironment()
     /// Tests only: makes an event's encoding fail, by event type.
     private var eventEncodingFaultForTesting: (@Sendable (String) -> EventEncodingFault?)?
+    /// Tests only: makes an action's error reply fail to encode (#691).
+    private var errorReplyEncodingFaultForTesting = false
 
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
     /// See Notes/plans/2026-02-01-membership-queue-reconnect.md.
@@ -5819,14 +5826,16 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 await keeper.submitLandFailure(failure)
             }
         } catch {
-            handleActionError(
+            if let failure = handleActionError(
                 error: error,
                 requestID: requestID,
                 envelope: envelope,
                 playerID: playerID,
                 sessionID: sessionID,
                 ticket: ticket
-            )
+            ) {
+                await keeper.submitLandFailure(failure)
+            }
         }
     }
     
@@ -5904,14 +5913,16 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 await keeper.submitLandFailure(failure)
             }
         case .failure(let error):
-            handleActionError(
+            if let failure = handleActionError(
                 error: error,
                 requestID: requestID,
                 envelope: envelope,
                 playerID: playerID,
                 sessionID: sessionID,
                 ticket: ticket
-            )
+            ) {
+                await keeper.submitLandFailure(failure)
+            }
         }
     }
 
@@ -6026,6 +6037,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Handle action processing error and send error response, if `ticket` is still current
     /// (checked in the same segment as the enqueue).
+    ///
+    /// An error reply that doesn't encode would leave its client without an answer, as a
+    /// response would (`sendActionResponse`): the land ends (#691). The output gate closes here,
+    /// in this segment, and the caller submits the returned failure to the keeper.
     private func handleActionError(
         error: Error,
         requestID: String,
@@ -6033,7 +6048,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerID: PlayerID,
         sessionID: SessionID,
         ticket: Ticket<SessionID>
-    ) {
+    ) -> LandFailure? {
         profilerCounters?.incrementErrors()
         logger.error("❌ Failed to handle action", metadata: [
             "requestID": .string(requestID),
@@ -6053,16 +6068,30 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ]
             )
             let errorResponse = TransportMessage.error(errorPayload)
+            if errorReplyEncodingFaultForTesting {
+                throw EncodingError.invalidValue(
+                    errorResponse, .init(codingPath: [], debugDescription: "encoding fault (tests)")
+                )
+            }
             let errorData = try messageEncoder.encode(errorResponse)
             let sent: Void? = actionResponseTickets.ifCurrent(ticket) { _ in
                 enqueueOutbound(errorData, to: sessionID)
             }
             if sent == nil { droppedStaleActionAnswer(requestID: requestID, sessionID: sessionID) }
+            return nil
         } catch {
-            logger.error("❌ Failed to send error response", metadata: [
+            logger.error("❌ Action error reply did not encode; the land ends", metadata: [
                 "requestID": .string(requestID),
+                "actionType": .string(envelope.typeIdentifier),
                 "error": .string("\(error)")
             ])
+            let failure = LandFailure(
+                kind: .responseEncode,
+                detail: "the error reply to action \(envelope.typeIdentifier) did not encode: \(error)",
+                position: LandFailurePosition(stage: .actionResponse)
+            )
+            outputGate.close(failure)
+            return failure
         }
     }
     
