@@ -157,7 +157,7 @@ private struct NewestWinsFixture {
     }
 }
 
-private func makeFixture(inTurn: Bool, legacyJoin: Bool = false, mode: LandMode = .live) async -> NewestWinsFixture {
+private func makeFixture(inTurn: Bool, legacyJoin: Bool = false) async -> NewestWinsFixture {
     let definition = Land("newest-wins", using: NewestWinsTestState.self) {
         Rules {
             OnJoin(resolvers: NewestWinsJoinResolver.self) { (state: inout NewestWinsTestState, _: LandContext) in
@@ -181,7 +181,6 @@ private func makeFixture(inTurn: Bool, legacyJoin: Bool = false, mode: LandMode 
     let keeper = LandKeeper(
         definition: definition,
         initialState: NewestWinsTestState(),
-        mode: mode,
         autoStartLoops: false
     )
     let adapter = TransportAdapter<NewestWinsTestState>(
@@ -343,7 +342,7 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.keeper.playerCount() == 1)
     }
 
-    @Test("Direct-caller intake is unchanged: a join then sends, an absent player, the system player, a replay keeper")
+    @Test("Direct-caller intake is unchanged: a join then sends, an absent player, the system player")
     func directCallerIntakeUnchanged() async throws {
         let f = await makeFixture(inTurn: false)
         let envelope = ActionEnvelope(
@@ -376,15 +375,6 @@ struct TransportAdapterNewestWinsTests {
             _ = try await f.keeper.handleActionEnvelope(envelope, playerID: player, clientID: c1, sessionID: s2)
         }
         #expect(await f.keeper.supersededSenderRejections == 2)
-
-        // A replay keeper takes no transport inputs at all, and rejects nothing.
-        let replay = await makeFixture(inTurn: false, mode: .reevaluation)
-        _ = try await replay.keeper.join(
-            session: PlayerSession(playerID: player.rawValue, deviceID: "dev", metadata: [:]),
-            clientID: c1, sessionID: s1, services: LandServices()
-        )
-        _ = try await replay.keeper.handleActionEnvelope(envelope, playerID: player, clientID: c2, sessionID: s2)
-        #expect(await replay.keeper.supersededSenderRejections == 0)
     }
 
     @Test("leave with a session leaves only that session's entry")

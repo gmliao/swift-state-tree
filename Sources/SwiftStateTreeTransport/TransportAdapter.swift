@@ -964,6 +964,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         joinsThroughRouter: Bool,
         eventEncodeCountsForTesting: EventEncodeCountsForTesting? = nil
     ) {
+        // A replay runs in a headless reevaluation keeper; no adapter serves one (#612).
+        precondition(keeper.isLive, "TransportAdapter binds only a live LandKeeper")
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
@@ -992,7 +994,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncStrategyDefault: syncStrategy
         )
         // `rowAddressing` takes effect only where every join completes in a turn: in-turn sync
-        // (the land manager turns it off for a replay keeper) and joins through the router. Its
+        // and joins through the router. Its
         // rows are the sync tables' slots, so it turns the tables on (their frames are today's,
         // byte for byte), which needs the delta strategy.
         let rowAddressingRequested = encodingConfig?.effective(pathHashes: pathHashes).rowAddressing ?? false
@@ -1188,7 +1190,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
         // Info, not a warning: the request is the default, so a land that can't have rows by
-        // design (a replay keeper, an `IN_TURN_SYNC=false` server, `fullSnapshot`) logs this too.
+        // design (an `IN_TURN_SYNC=false` server, `fullSnapshot`) logs this too.
         if rowAddressingRequested && !rowAddressing {
             self.logger.info("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
                 "landID": .string(landID),

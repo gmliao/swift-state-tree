@@ -6,7 +6,7 @@ import SwiftStateTreeReevaluationMonitor
 @testable import SwiftStateTreeNIO
 
 @StateNodeBuilder
-private struct FeatureLiveState: StateNodeProtocol {
+private struct FeatureLiveState: StateNodeProtocol, StateFromSnapshotDecodable {
     @Sync(.broadcast)
     var value: Int = 0
     init() {}
@@ -25,12 +25,6 @@ private enum FeatureLiveLand {
     }
 }
 
-private enum FeatureReplayLand {
-    static func makeLand() -> LandDefinition<FeatureReplayState> {
-        Land("feature-live-replay", using: FeatureReplayState.self) { Rules {} }
-    }
-}
-
 @Suite("NIO Reevaluation Feature Registration Tests")
 struct ReevaluationFeatureRegistrationTests {
     @Test("ReevaluationFeatureConfiguration defaults to projectedOnly replay policy")
@@ -45,8 +39,8 @@ struct ReevaluationFeatureRegistrationTests {
         #expect(feature.replayEventPolicy == .projectedOnly)
     }
 
-    @Test("registerWithReevaluation registers live, replay, and monitor lands when enabled")
-    func registerWithReevaluationEnabled() async throws {
+    @Test("registerWithGenericReplay registers live, replay, and monitor lands when enabled")
+    func registerWithGenericReplayEnabled() async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
             port: 8080,
@@ -61,40 +55,7 @@ struct ReevaluationFeatureRegistrationTests {
             }
         )
 
-        try await host.registerWithReevaluation(
-            landType: "feature-live",
-            liveLand: FeatureLiveLand.makeLand(),
-            liveInitialState: FeatureLiveState(),
-            liveWebSocketPath: "/game/feature-live",
-            replayLand: FeatureReplayLand.makeLand(),
-            replayInitialState: FeatureReplayState(),
-            configuration: NIOLandServerConfiguration(transportEncoding: .json),
-            reevaluation: feature
-        )
-
-        let realm = await host.realm
-        #expect(await realm.isRegistered(landType: "feature-live"))
-        #expect(await realm.isRegistered(landType: "feature-live-replay"))
-        #expect(await realm.isRegistered(landType: "reevaluation-monitor"))
-    }
-
-    @Test("replay landType can be registered without dedicated replay gameplay land (same-land mode)")
-    func replayRegisteredWithoutDedicatedReplayLand() async throws {
-        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
-            host: "localhost",
-            port: 8080,
-            adminAPIKey: "test-admin-key"
-        ))
-
-        let feature = ReevaluationFeatureConfiguration(
-            enabled: true,
-            replayEventPolicy: .projectedOnly,
-            runnerServiceFactory: {
-                ReevaluationRunnerService(factory: MockReevaluationTargetFactory())
-            }
-        )
-
-        try await host.registerWithReevaluationSameLand(
+        try await host.registerWithGenericReplay(
             landType: "feature-live",
             liveLand: FeatureLiveLand.makeLand(),
             liveInitialState: FeatureLiveState(),
@@ -109,8 +70,8 @@ struct ReevaluationFeatureRegistrationTests {
         #expect(await realm.isRegistered(landType: "reevaluation-monitor"))
     }
 
-    @Test("registerWithReevaluation registers only live land when disabled")
-    func registerWithReevaluationDisabled() async throws {
+    @Test("registerWithGenericReplay registers only live land when disabled")
+    func registerWithGenericReplayDisabled() async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
             port: 8080,
@@ -124,13 +85,11 @@ struct ReevaluationFeatureRegistrationTests {
             }
         )
 
-        try await host.registerWithReevaluation(
+        try await host.registerWithGenericReplay(
             landType: "feature-live",
             liveLand: FeatureLiveLand.makeLand(),
             liveInitialState: FeatureLiveState(),
             liveWebSocketPath: "/game/feature-live",
-            replayLand: FeatureReplayLand.makeLand(),
-            replayInitialState: FeatureReplayState(),
             configuration: NIOLandServerConfiguration(transportEncoding: .json),
             reevaluation: feature
         )
@@ -163,7 +122,8 @@ struct ReevaluationFeatureRegistrationTests {
                 ) else {
                     return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
                 }
-                return .reevaluation(recordFilePath: descriptor.recordFilePath)
+                _ = descriptor
+                return .live
             }
         )
 

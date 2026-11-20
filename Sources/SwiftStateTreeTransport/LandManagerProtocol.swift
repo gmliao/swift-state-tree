@@ -18,7 +18,8 @@ public protocol LandManagerProtocol: Actor {
     ///   - definition: The Land definition to use if creating a new land.
     ///   - initialState: The initial state for the land if creating a new one.
     /// - Returns: The LandContainer for the land (internal implementation detail).
-    /// - Throws: When reevaluation record file cannot be loaded (if resolver returns reevaluation mode).
+    /// - Throws: `ReevaluationReplayError.invalidSessionDescriptor` when the keeper mode resolver
+    ///   refuses the land (`.invalidReplaySession`).
     func getOrCreateLand(
         landID: LandID,
         definition: LandDefinition<State>,

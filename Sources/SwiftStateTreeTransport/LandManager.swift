@@ -2,10 +2,11 @@ import Foundation
 import SwiftStateTree
 import Logging
 
-/// Resolved keeper mode for a land instance.
+/// What a `LandManager`'s keeper mode resolver decided for a land it is about to create: the
+/// replay ticket gate. Every land's keeper is live; a replay runs in a headless runner, never
+/// in a land this manager creates (#612).
 public enum LandKeeperModeConfig: Sendable {
     case live
-    case reevaluation(recordFilePath: String)
     /// Reject replay join (e.g. invalid instanceId). LandManager will throw when resolving.
     case invalidReplaySession(message: String)
 }
@@ -223,14 +224,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Tests: the record identity every land built afterwards writes into its record's metadata
     /// instead of the wall clock and this machine (#555).
     private var recordIdentityForTesting: RecordIdentity?
-    /// Whether live lands' keepers start their tick and sync loops (the default). Off only
-    /// through the `Diagnostics` init, for a benchmark that steps its lands itself. A
-    /// re-evaluation keeper always starts them.
+    /// Whether the lands' keepers start their tick and sync loops (the default). Off only
+    /// through the `Diagnostics` init, for a benchmark that steps its lands itself.
     private let autoStartLoops: Bool
-    /// A replay land type is a live one plus this suffix: a replay definition named so (the
-    /// recorded definition's id plus the suffix) is checked against the recorded definition's
-    /// fingerprint (`NIOLandServerConfiguration.replayLandSuffix`).
-    private let replayLandSuffix: String
     
     /// Initialize a LandManager.
     ///
@@ -279,9 +275,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// `init(landFactory:…)` whose live lands' keepers don't start their tick and sync loops
     /// when `autoStartLoops` is false: a benchmark steps them itself (`LandKeeper.stepTickOnce`,
-    /// `TransportAdapter.syncNow`), with no loop running beside it. A re-evaluation keeper
-    /// still starts its loops. `autoStartLoops` has no default, so a call can't match this
-    /// overload and the public one alike.
+    /// `TransportAdapter.syncNow`), with no loop running beside it. `autoStartLoops` has no
+    /// default, so a call can't match this overload and the public one alike.
     ///
     /// With `syncLag`, its lands run as a hosted land runs (`NIOLandHost`): every state frame
     /// carries the sync sequence, a join must declare `syncSequence`, and each adapter tracks
@@ -341,7 +336,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         inTurnSync: Bool = true,
         syncLagPolicy: SyncLagPolicy?,
         autoStartLoops: Bool = true,
-        replayLandSuffix: String = "-replay",
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -357,7 +351,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.inTurnSync = inTurnSync
         self.syncLagPolicy = syncLagPolicy
         self.autoStartLoops = autoStartLoops
-        self.replayLandSuffix = replayLandSuffix
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -400,8 +393,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// create a land throws `JoinError.landShuttingDown`, for the rest of the manager's life.
     ///
     /// - Returns: The LandContainer for the land (internal implementation detail, users should use LandManager methods instead).
-    /// - Throws: When keeperModeResolver returns .reevaluation but the record file cannot be loaded.
-    ///   A caller that is cancelled stops waiting with `CancellationError`; the creation goes on
+    /// - Throws: `ReevaluationReplayError.invalidSessionDescriptor` when the keeper mode
+    ///   resolver refuses the land (`.invalidReplaySession`). A caller that is cancelled stops waiting with `CancellationError`; the creation goes on
     ///   for the other callers.
     public func getOrCreateLand(
         landID: LandID,
@@ -608,7 +601,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let landDefinition = definition
         let initial = initialState
 
-        // The keeper mode first: a land it refuses builds no services, so a refused creation
+        // The ticket gate first: a land it refuses builds no services, so a refused creation
         // starts nothing a services factory would (a replay runner, a connection). The
         // resolver sees only the land ID and metadata, never the services.
         let keeperMode = keeperModeResolver?(landID, metadata)
@@ -620,80 +613,18 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
 
-        let keeper: LandKeeper<State>
-        // A re-evaluation keeper always syncs on the legacy path; its adapter keeps its own
-        // executor, so replay encoding does not run on the keeper's executor.
-        var isReevaluationKeeper = false
-        if let config = keeperMode {
-            if case let .reevaluation(recordFilePath) = config {
-                let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
-                isReevaluationKeeper = true
-
-                // Pre-register the RNG seed from the *recorded* game's landID.
-                // This is critical for determinism: reevaluation must use the same RNG seed
-                // as the original live game. Without this, setLandID() would derive the seed
-                // from the replay landID (e.g. "hero-defense-replay:xyz") instead of the
-                // original game's landID (e.g. "hero-defense:abc123"), causing divergence
-                // in any RNG-based logic (e.g. initial player position in OnJoin).
-                var reevalServices = metadataServices
-                let recordedMetadata = try await source.getMetadata()
-                // The engine's check: anything this build reads (2.5+, 3.x).
-                guard ReevaluationRecordVersion.isReadable(recorded: recordedMetadata.version) else {
-                    throw ReevaluationRecordVersionError.incompatible(
-                        recorded: recordedMetadata.version,
-                        required: ReevaluationRecordVersion.current
-                    )
-                }
-                // Before the first step, like every replay entry point (#521 D15): a record
-                // without a fingerprint, or of another schema, isn't replayed. Checked under the
-                // live land type: a replay definition may be named by the replay alias.
-                try ReevaluationSchemaFingerprint.checkRecord(
-                    recordedMetadata, against: landDefinition, replayLandSuffix: replayLandSuffix
-                )
-                reevalServices.register(
-                    DeterministicRngService(seed: recordedMetadata.replayRngSeed),
-                    as: DeterministicRngService.self
-                )
-
-                keeper = LandKeeper<State>(
-                    definition: landDefinition,
-                    initialState: initial,
-                    mode: .reevaluation,
-                    reevaluationSource: source,
-                    reevaluationSink: nil,
-                    reevaluationOutputMode: .transportAndSink,
-                    services: reevalServices,
-                    autoStartLoops: true,
-                    transport: nil,
-                    logger: logger
-                )
-            } else {
-                keeper = LandKeeper<State>(
-                    definition: landDefinition,
-                    initialState: initial,
-                    services: metadataServices,
-                    enableLiveStateHashRecording: enableLiveStateHashRecording,
-                    autoStartLoops: autoStartLoops,
-                    enableLoopPhaseOffset: enableLoopPhaseOffset,
-                    landID: landID.stringValue,
-                    logger: logger
-                )
-            }
-        } else {
-            keeper = LandKeeper<State>(
-                definition: landDefinition,
-                initialState: initial,
-                services: metadataServices,
-                enableLiveStateHashRecording: enableLiveStateHashRecording,
-                autoStartLoops: autoStartLoops,
-                enableLoopPhaseOffset: enableLoopPhaseOffset,
-                landID: landID.stringValue,
-                logger: logger
-            )
-        }
+        let keeper = LandKeeper<State>(
+            definition: landDefinition,
+            initialState: initial,
+            services: metadataServices,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
+            autoStartLoops: autoStartLoops,
+            enableLoopPhaseOffset: enableLoopPhaseOffset,
+            landID: landID.stringValue,
+            logger: logger
+        )
         
-        // Live keepers already got the instance ID in init (before their eager initialization).
-        // This also covers the re-evaluation keeper, whose RNG seed comes from the record.
+        // The keeper already got the instance ID in init (before its eager initialization).
         await keeper.setLandID(landID.stringValue)
 
         // Debug: Check if pathHashes is available
@@ -719,7 +650,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             pathHashes: pathHashes,
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
-            inTurnSync: inTurnSync && !isReevaluationKeeper,
+            inTurnSync: inTurnSync,
             logger: logger,
             // With a shared transport the router owns its delegate and every join.
             joinsThroughRouter: sharedTransport != nil

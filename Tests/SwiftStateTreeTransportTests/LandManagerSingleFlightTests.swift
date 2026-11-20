@@ -132,37 +132,6 @@ private func signal() -> TestGate {
     return gate
 }
 
-/// The record file layout `JSONReevaluationSource` reads.
-private struct SingleFlightRecordFile: Codable {
-    let recordMetadata: ReevaluationRecordMetadata
-    let tickFrames: [ReevaluationTickFrame]
-}
-
-private func writeReplayRecord() throws -> URL {
-    let recordFile = FileManager.default.temporaryDirectory
-        .appendingPathComponent("single-flight-replay-\(UUID().uuidString).json")
-    let encoder = JSONEncoder()
-    encoder.dateEncodingStrategy = .iso8601
-    let data = try encoder.encode(SingleFlightRecordFile(
-        recordMetadata: ReevaluationRecordMetadata(
-            landID: "sf-game:recorded",
-            landType: "sf-game",
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            metadata: [:],
-            landDefinitionID: "sf-game",
-            version: ReevaluationRecordVersion.current,
-            // The live land's, as a live recording holds it; the keeper checks it before its
-            // first step, under the live type though the replay definition has the alias id (#521 D15).
-            schemaFingerprint: try ReevaluationSchemaFingerprint.compute(
-                for: plainLand(LandID(landType: "sf-game", instanceId: "recorded"))
-            )
-        ),
-        tickFrames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
-    ))
-    try data.write(to: recordFile)
-    return recordFile
-}
-
 /// The distinct keepers among `containers`.
 private func keeperIdentities(_ containers: [LandContainer<SingleFlightTestState>]) -> Set<ObjectIdentifier> {
     Set(containers.map { ObjectIdentifier($0.keeper) })
@@ -218,30 +187,6 @@ struct LandManagerSingleFlightTests {
         #expect(await manager.listLands() == [landID])
         let stored = try #require(await manager.getLand(landID: landID))
         #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(containers[0].keeper))
-    }
-
-    @Test("Opening one replay ID twice at once creates one replay keeper")
-    func concurrentReplayOpensShareOneCreation() async throws {
-        let recordFile = try writeReplayRecord()
-        defer { try? FileManager.default.removeItem(at: recordFile) }
-        let manager = makeManager(keeperModeResolver: { landID, _ in
-            landID.landType.hasSuffix("-replay") ? .reevaluation(recordFilePath: recordFile.path) : nil
-        })
-        let gate = TestGate()
-        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
-        let landID = LandID(landType: "sf-game-replay", instanceId: "viewer-room")
-
-        let calls = concurrentCreations(2, manager: manager, landID: landID)
-        #expect(await gate.waitForArrivals(1))
-        #expect(await waitForCreationJoins(1, manager: manager))
-        let creationsStarted = gate.arrivalCount
-        gate.open()
-        let first = try await calls[0].value
-        let second = try await calls[1].value
-
-        #expect(creationsStarted == 1, "\(creationsStarted) creations started for one replay ID")
-        #expect(ObjectIdentifier(first.keeper) == ObjectIdentifier(second.keeper))
-        #expect(await first.keeper.getMode() == .reevaluation)
     }
 
     @Test("A failed creation reaches every waiter and is not cached")

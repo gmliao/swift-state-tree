@@ -75,7 +75,6 @@ private struct Fixture {
 private func makeFixture(
     inTurn: Bool,
     tick: Bool = false,
-    mode: LandMode = .live,
     attachTransport: Bool = true,
     encoding: InTurnEncoding = .json
 ) async -> Fixture {
@@ -104,7 +103,6 @@ private func makeFixture(
     let keeper = LandKeeper(
         definition: definition,
         initialState: JoiningAdmissionTestState(),
-        mode: mode,
         autoStartLoops: false
     )
     let adapter = TransportAdapter<JoiningAdmissionTestState>(
@@ -220,17 +218,6 @@ struct TransportAdapterJoiningAdmissionTests {
         await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1)
         #expect(await adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1).first == "firstSync")
-    }
-
-    @Test("A replay viewer's join on a reevaluation keeper doesn't trap and is admitted by the adapter", arguments: [true, false])
-    func reevaluationKeeperJoin(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true, mode: .reevaluation)
-        let s1 = SessionID("viewer")
-        _ = try await join(fixture, session: s1, client: ClientID("cv"), player: PlayerID("viewer"))
-        #expect(await fixture.adapter.inTurnAdmissionCountForTesting == 0)
-        #expect(await fixture.adapter.isJoining(s1))
-        await fixture.adapter.syncStateForNewPlayer(playerID: PlayerID("viewer"), sessionID: s1)
-        #expect(await fixture.adapter.isJoining(s1) == false)
     }
 
     @Test("A join before the keeper has its transport is admitted by the adapter")

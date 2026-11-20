@@ -89,7 +89,6 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             inTurnSync: configuration.inTurnSync,
             syncLagPolicy: configuration.syncLag,
             autoStartLoops: autoStartLoops,
-            replayLandSuffix: configuration.replayLandSuffix,
             logger: configuration.logger
         )
         
