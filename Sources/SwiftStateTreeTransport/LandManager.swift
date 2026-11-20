@@ -240,9 +240,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - transportEncoding: Encoding configuration for transport messages and state updates.
     ///   - enableLoopPhaseOffset: Per-land phase offset of live lands' tick and sync loops
     ///     (`LandLoopPhase`). Defaults to on unless `LAND_LOOP_PHASE_OFFSET` is false.
-    ///   - inTurnSync: Run live lands' sync phases inside their keepers' turns (`InTurnSync`).
-    ///     Passed to each land's transport adapter, which also honours `IN_TURN_SYNC`; an
-    ///     explicit off in either place wins.
     ///   - logger: Optional logger instance.
     public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
@@ -260,7 +257,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         clientEventHashes: [String: Int]? = nil,
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
-        inTurnSync: Bool = true,
         logger: Logger? = nil
     ) {
         self.init(
@@ -269,7 +265,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             transportEncoding: transportEncoding, enableLiveStateHashRecording: enableLiveStateHashRecording,
             pathHashes: pathHashes, eventHashes: eventHashes, clientEventHashes: clientEventHashes,
             keeperModeResolver: keeperModeResolver, enableLoopPhaseOffset: enableLoopPhaseOffset,
-            inTurnSync: inTurnSync, syncLagPolicy: nil, logger: logger
+            syncLagPolicy: nil, logger: logger
         )
     }
 
@@ -299,7 +295,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         clientEventHashes: [String: Int]? = nil,
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
-        inTurnSync: Bool = true,
         autoStartLoops: Bool,
         syncLag: SyncLagPolicy?,
         logger: Logger? = nil
@@ -311,12 +306,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             enableLiveStateHashRecording: enableLiveStateHashRecording,
             pathHashes: pathHashes, eventHashes: eventHashes, clientEventHashes: clientEventHashes,
             keeperModeResolver: keeperModeResolver, enableLoopPhaseOffset: enableLoopPhaseOffset,
-            inTurnSync: inTurnSync, syncLagPolicy: syncLag, autoStartLoops: autoStartLoops, logger: logger
+            syncLagPolicy: syncLag, autoStartLoops: autoStartLoops, logger: logger
         )
     }
 
     /// The init with sync-lag thresholds (#332), for hosted lands (`NIOLandServer`): tracking runs
     /// only with an encoding that carries the sync sequence, which only package code builds.
+    /// `inTurnSync: false` reaches the adapter's package-only off mode (the differential harness's
+    /// legacy cells and tests) until that mode is removed (#546 L2).
     package init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,

@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot Sync Mode
 
-> This section and [Sync Flow](#sync-flow) describe the legacy path (`IN_TURN_SYNC=false`). By default the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default).
+> This section and [Sync Flow](#sync-flow) describe the legacy path, the `beginSync` / `endSync` cycle. On a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default).
 
 `LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
 
@@ -427,7 +427,7 @@ With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial execu
 
 The sync phase plans every frame of the cycle from the state at that point of the turn, then commits: it enqueues the frames to the adapter's outbound writer and clears the dirty flags. Nothing runs between the plan and the commit, so no change is cleared unsent. A plan that fails commits nothing, and its dirty flags stay for the next cycle.
 
-A join completes in the sync phase of the turn it flips in (#69, #194). The joiner's whole view is planned from that turn's end state, in the same plan as the other recipients' diffs, and its frames follow theirs: its JoinResponse, its firstSync, then the targeted events its `OnJoin` addressed to it, held until then. With in-turn sync off, a join doesn't complete in a turn: the firstSync is sent on its own after the JoinResponse, from a separate state read, and targeted events addressed to the session while it is joining aren't delivered to it.
+A join completes in the sync phase of the turn it flips in (#69, #194). The joiner's whole view is planned from that turn's end state, in the same plan as the other recipients' diffs, and its frames follow theirs: its JoinResponse, its firstSync, then the targeted events its `OnJoin` addressed to it, held until then.
 
 Stated limits:
 
@@ -435,7 +435,7 @@ Stated limits:
 - An input whose `validate` throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
-`IN_TURN_SYNC=false` is the kill switch: the adapter keeps its own executor and syncs through `beginSync` / `endSync` ([Sync Flow](#sync-flow)). The adapter decides once, at init, and the keeper follows it.
+In-turn sync can't be turned off. The `IN_TURN_SYNC` environment variable was its switch and has been removed: a server that still sets it ignores it, and the first adapter in the process logs a warning naming it.
 
 ### Writer Back-Pressure
 
@@ -443,7 +443,7 @@ Each adapter sends through one ordered outbound writer. While the writer still h
 
 ### Sync Flow
 
-> The legacy path (`IN_TURN_SYNC=false`).
+> The legacy path, the `beginSync` / `endSync` cycle.
 
 Synchronization uses snapshot mode, doesn't block state changes:
 

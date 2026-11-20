@@ -144,7 +144,6 @@ private func ticksPatch(_ value: Int) -> UInt64 {
 struct SyncStreamProducerTests {
     @Test("A join records a seed, each tick turn an output with the broadcast diff's hash", arguments: InTurnEncoding.allCases)
     func seedThenTickOutputs(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: encoding)
         try await f.join()
         await f.tick()
@@ -187,7 +186,6 @@ struct SyncStreamProducerTests {
 
     @Test("The events hash is the consumed events' canonical hash, with the keeper sequence")
     func eventsHashUsesKeeperSequence() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .messagepack)
         try await f.join()
         await f.tick()
@@ -206,7 +204,6 @@ struct SyncStreamProducerTests {
 
     @Test("A newer session of the player records a clear; its seed is a rejoin (newest wins, #92)")
     func supersedeRecordsClear() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .json)
         try await f.join()
         await f.tick()
@@ -227,7 +224,6 @@ struct SyncStreamProducerTests {
 
     @Test("A disconnect records a clear; the reconnect's seed is a rejoin")
     func clearAndRejoin() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .json)
         try await f.join()
         await f.tick()
@@ -242,7 +238,6 @@ struct SyncStreamProducerTests {
 
     @Test("An in-place resync records a clear, then a seed marked as a rejoin (#332)", arguments: InTurnEncoding.allCases)
     func resyncSeedIsRejoin(encoding: InTurnEncoding) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: encoding, syncSequence: true)
         let clock = SyncLagManualClock()
         await f.adapter.setSyncLagClockForTesting { clock.now }
@@ -262,7 +257,6 @@ struct SyncStreamProducerTests {
 
     @Test("A firstSync read after a tick ran since the join is located at that tick")
     func firstSyncLocatedAfterTick() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .json)
         // Join without the firstSync, run a tick turn, then send the firstSync: its state read
         // and its position come from one keeper job, so the seed names tick 0, never -1.
@@ -445,7 +439,6 @@ struct SyncStreamProducerDropTests {
 
     @Test("A conversion or encode failure ends the land: the failing plan records no output and no seed (#535)", arguments: DropCase.allCases)
     func failingPlanRecordsNothing(drop: DropCase) async throws {
-        guard InTurnSync.isEnabled() else { return }
         let fails = SyncStreamSwitch()
         let f = await SyncStreamFixture<SyncStreamDropState>.makeDrop(encoder: SyncStreamFailingEncoder(fails: fails))
         if drop != .firstView {
@@ -475,7 +468,6 @@ struct SyncStreamProducerDropTests {
 
     @Test("An opcode 107 plan that consumes an event without a keeper sequence has no events hash")
     func eventWithoutSequence() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .messagepack)
         try await f.join()
         // Queued outside a turn: no keeper sequence.
@@ -491,7 +483,6 @@ struct SyncStreamProducerDropTests {
 
     @Test("A freeze settle records a legacy-cycle output, located at its tick; stream indices increase across kinds")
     func legacyCycleAndStreamOrder() async throws {
-        guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .json)
         try await f.join()                 // seed
         await f.tick()                     // tick output, observed 0

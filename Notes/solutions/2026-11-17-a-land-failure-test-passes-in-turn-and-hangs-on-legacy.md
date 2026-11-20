@@ -46,3 +46,5 @@ The test then checks that the land ends on both paths. A test that can't reach t
 - For a test that ends a land through its sync, or asserts anything a turn applies after the sync, run its suite locally with `IN_TURN_SYNC=false` as well as the default before pushing. A full run with each setting takes about 10 s per target.
 - On a tick land, assert a submitted failure after the keeper's next turn, never right after the tick that failed.
 - The same holds for an in-turn join on a tick land. It flips only in a turn, so `performJoin` waits for a tick that a hand-stepped test never runs. Join through `simulateRouterJoin` and step a tick instead.
+
+**Update (#546 L1):** the `IN_TURN_SYNC` switch and its CI leg are removed. The off mode stays reachable only through `package` API until #546 L2 removes it: a test that needs it passes `inTurnSync: false` explicitly.

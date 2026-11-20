@@ -49,7 +49,8 @@ public struct LandTypeRegistry<State: StateNodeProtocol>: Sendable {
     ///   - landID: The unique identifier for the specific land instance.
     /// - Returns: The LandDefinition for this land type.
     /// - Precondition: The returned LandDefinition.id must match landType, or landType must be
-    ///   "{definition.id}-replay" (the replay land alias).
+    ///   `"{definition.id}{replayLandSuffix}"` (the replay land alias; the suffix defaults to
+    ///   `"-replay"`).
     public func getLandDefinition(landType: String, landID: LandID) -> LandDefinition<State> {
         let definition = landFactory(landType, landID)
         // Ensure consistency: definition.id should match landType, or landType is replay alias

@@ -33,7 +33,7 @@
 # and a comma in a generic argument (`make<A, B>(…)`) ends the extracted expression there. A dump of
 # the package this check can't read fails it rather than scanning nothing.
 #
-# 2. One build for every variant. The variants (IN_TURN_SYNC, USE_SYNC_TABLES, TYPED_LEAF_VALUES,
+# 2. One build for every variant. The variants (USE_SYNC_TABLES, TYPED_LEAF_VALUES,
 # PER_PLAYER_SYNC_TABLES) are test steps of the build job that run `swift test --skip-build` on the
 # products of its one `swift build --build-tests`. That is valid only while nothing reads the
 # variables when the package is built, and the steps every variant shares read none:
@@ -54,8 +54,7 @@
 #      `${{ !cancelled() && steps.build.outcome == 'success' }}`, so no variant runs on missing or
 #      partial products.
 #   E5 the shared steps' scripts (`scripts/*.sh` or `.py`, and every script they name, followed)
-#      don't name a variable or its key (inTurnSync, useSyncTables, typedLeafValues,
-#      perPlayerSyncTables). Textual: a script that builds a name from parts isn't seen.
+#      don't name a variable or its key (useSyncTables, typedLeafValues, perPlayerSyncTables). Textual: a script that builds a name from parts isn't seen.
 #
 # Usage: scripts/check-variant-test-selection.sh [--self-test] [--package-json <file>]
 set -euo pipefail
@@ -336,13 +335,13 @@ def check(root, package, filtered):
 
 
 # Section 2: one build for every variant.
-VARIABLES = ("IN_TURN_SYNC", "USE_SYNC_TABLES", "TYPED_LEAF_VALUES", "PER_PLAYER_SYNC_TABLES")
-# No left boundary: `-DIN_TURN_SYNC` names it too.
+VARIABLES = ("USE_SYNC_TABLES", "TYPED_LEAF_VALUES", "PER_PLAYER_SYNC_TABLES")
+# No left boundary: `-DUSE_SYNC_TABLES` names it too.
 VARIABLE_USE = re.compile(r"(" + "|".join(VARIABLES) + r")\b")
 EXPANSION = re.compile(r"\$\{?(" + "|".join(VARIABLES) + r")\b")
 ENV_ENTRY = re.compile(r"^        (" + "|".join(VARIABLES) + r"):\s*(\"(?:true|false)\"|'(?:true|false)'|true|false)\s*$")
 # What the shared steps' scripts must not name: a variable, its key constant or its reader.
-FLAG_NAMES = re.compile(r"\b(?:" + "|".join(VARIABLES) + r"|inTurnSync|InTurnSync|useSyncTables|typedLeafValues|perPlayerSyncTables)\b")
+FLAG_NAMES = re.compile(r"\b(?:" + "|".join(VARIABLES) + r"|useSyncTables|typedLeafValues|perPlayerSyncTables)\b")
 SCRIPT_REF = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.(?:sh|py))\b")
 # The matrix context in any form (`matrix.x`, `matrix['x']`, `toJSON(matrix)`), not the YAML key.
 MATRIX_USE = re.compile(r"\bmatrix\b(?!\s*:)")
@@ -749,7 +748,7 @@ def variant_self_test():
     IF = TEST_IF + "\n"
     def build(workflow_env="", job_env="", strategy="", lint="      run: |\n        scripts/lint.sh --self-test\n        scripts/lint.sh\n",
               build_step="    - name: Build\n      id: build\n" + BUILD_RUN + "\n",
-              on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test --skip-build 2>&1 | tee on.log\n',
+              on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build 2>&1 | tee on.log\n',
               tables=('      env:\n        USE_SYNC_TABLES: "false"\n        TYPED_LEAF_VALUES: "false"\n'
                       "      run: |\n        swift test --skip-build --filter 'A\\.' 2>&1 | tee t.log\n"
                       "        grep -q 'takes USE_SYNC_TABLES' t.log\n"),
@@ -769,34 +768,34 @@ def variant_self_test():
     cells = [
         ("today's shape", build(), scripts, manifest, None),
         # E1
-        ("a variable in the workflow's env fails", build(workflow_env='env:\n  IN_TURN_SYNC: "false"\n'), scripts, manifest, "E1 IN_TURN_SYNC outside a test step's env"),
+        ("a variable in the workflow's env fails", build(workflow_env='env:\n  USE_SYNC_TABLES: "false"\n'), scripts, manifest, "E1 USE_SYNC_TABLES outside a test step's env"),
         ("a variable in the job's env fails", build(job_env='    env:\n      USE_SYNC_TABLES: "false"\n'), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
         ("a variable on the build step fails",
          build(build_step="    - name: Build\n      id: build\n      env:\n        TYPED_LEAF_VALUES: \"false\"\n" + BUILD_RUN + "\n"), scripts, manifest, "E1 TYPED_LEAF_VALUES outside"),
         ("a variable on a shared script step fails",
          build(lint='      env:\n        PER_PLAYER_SYNC_TABLES: "false"\n      run: scripts/lint.sh\n'), scripts, manifest, "E1 PER_PLAYER_SYNC_TABLES outside"),
         ("a variable in a compiler flag fails",
-         build(build_step="    - name: Build\n      id: build\n      run: swift build --build-tests -Xswiftc -DIN_TURN_SYNC\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
-        ("a variable in another job fails", build(other="    - run: IN_TURN_SYNC=false swift test\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+         build(build_step="    - name: Build\n      id: build\n      run: swift build --build-tests -Xswiftc -DUSE_SYNC_TABLES\n"), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
+        ("a variable in another job fails", build(other="    - run: USE_SYNC_TABLES=false swift test\n"), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
         ("$VAR in a test step's script fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: echo "$IN_TURN_SYNC" && swift test --skip-build\n'), scripts, manifest, "E1 a shell expansion of IN_TURN_SYNC"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: echo "$USE_SYNC_TABLES" && swift test --skip-build\n'), scripts, manifest, "E1 a shell expansion of USE_SYNC_TABLES"),
         ("${VAR} in a test step's script fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: |\n        echo "${IN_TURN_SYNC}"\n        swift test --skip-build\n'), scripts, manifest, "E1 a shell expansion of IN_TURN_SYNC"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: |\n        echo "${USE_SYNC_TABLES}"\n        swift test --skip-build\n'), scripts, manifest, "E1 a shell expansion of USE_SYNC_TABLES"),
         ("env.VAR in a test step's if: fails",
-         build(test_if="      if: ${{ !cancelled() && steps.build.outcome == 'success' && env.IN_TURN_SYNC == 'true' }}\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+         build(test_if="      if: ${{ !cancelled() && steps.build.outcome == 'success' && env.USE_SYNC_TABLES == 'true' }}\n"), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
         ("env['VAR'] in a shared step's if: fails",
          build(lint="      if: ${{ env['USE_SYNC_TABLES'] != 'false' }}\n      run: scripts/lint.sh\n"), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
         ("a variable in an expression in a test step's script fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: echo ${{ env.IN_TURN_SYNC }} && swift test --skip-build\n'), scripts, manifest, "E1 IN_TURN_SYNC in an expression"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: echo ${{ env.USE_SYNC_TABLES }} && swift test --skip-build\n'), scripts, manifest, "E1 USE_SYNC_TABLES in an expression"),
         ("an env value that isn't a literal fails",
-         build(on='      env:\n        IN_TURN_SYNC: ${{ inputs.sync }}\n      run: swift test --skip-build\n'), scripts, manifest, "isn't a literal true or false"),
+         build(on='      env:\n        USE_SYNC_TABLES: ${{ inputs.sync }}\n      run: swift test --skip-build\n'), scripts, manifest, "isn't a literal true or false"),
         ("another env var built from a variable fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n        SYNC: ${{ env.IN_TURN_SYNC }}\n      run: swift test --skip-build\n'), scripts, manifest, "isn't a literal true or false"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n        SYNC: ${{ env.USE_SYNC_TABLES }}\n      run: swift test --skip-build\n'), scripts, manifest, "isn't a literal true or false"),
         ("a variable in a test step's name fails",
-         build(extra="    - name: Tests, IN_TURN_SYNC off\n" + IF + '      env:\n        IN_TURN_SYNC: "false"\n      run: swift test --skip-build\n'), scripts, manifest, "E1 IN_TURN_SYNC outside"),
+         build(extra="    - name: Tests, USE_SYNC_TABLES off\n" + IF + '      env:\n        USE_SYNC_TABLES: "false"\n      run: swift test --skip-build\n'), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
         ("a variable in a run block's # line of a shared step fails",
-         build(lint="      run: |\n        # $IN_TURN_SYNC\n        scripts/lint.sh\n"), scripts, manifest, "E1 IN_TURN_SYNC outside"),
-        ("a YAML comment naming a variable doesn't count", build(extra="    # IN_TURN_SYNC and USE_SYNC_TABLES\n"), scripts, manifest, None),
+         build(lint="      run: |\n        # $USE_SYNC_TABLES\n        scripts/lint.sh\n"), scripts, manifest, "E1 USE_SYNC_TABLES outside"),
+        ("a YAML comment naming a variable doesn't count", build(extra="    # USE_SYNC_TABLES and TYPED_LEAF_VALUES\n"), scripts, manifest, None),
         # E2
         ("a matrix fails", build(strategy="    strategy:\n      matrix:\n        x: [a, b]\n"), scripts, manifest, "E2"),
         ("the matrix context fails", build(extra="    - name: Dump\n      run: echo '${{ toJSON(matrix) }}'\n"), scripts, manifest, "E2 the build job uses the matrix context"),
@@ -816,15 +815,15 @@ def variant_self_test():
          build(build_step="    - name: Build\n      id: build\n      run: swift build\n"), scripts, manifest, "'run: swift build'"),
         ("a build step without its id fails", build(build_step="    - name: Build\n" + BUILD_RUN + "\n"), scripts, manifest, "no `id: build`"),
         ("a test step without --skip-build fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test\n'), scripts, manifest, "without --skip-build"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test\n'), scripts, manifest, "without --skip-build"),
         ("a test step with another flag fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test --skip-build -c release\n'), scripts, manifest, "passes -c"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build -c release\n'), scripts, manifest, "passes -c"),
         ("a test step with -Xswiftc fails",
-         build(on='      env:\n        IN_TURN_SYNC: "true"\n      run: swift test --skip-build -Xswiftc -DX\n'), scripts, manifest, "passes -Xswiftc"),
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build -Xswiftc -DX\n'), scripts, manifest, "passes -Xswiftc"),
         ("a test step without the build's if: fails", build(test_if="      if: ${{ always() }}\n"), scripts, manifest, "could run on missing or partial products"),
         ("a test step with no if: fails", build(test_if=""), scripts, manifest, "could run on missing or partial products"),
         # E5
-        ("a shared script naming IN_TURN_SYNC fails", build(), {**scripts, "scripts/lint.sh": "[ \"$IN_TURN_SYNC\" = true ]\n"}, manifest, "names IN_TURN_SYNC"),
+        ("a shared script naming USE_SYNC_TABLES fails", build(), {**scripts, "scripts/lint.sh": "[ \"$USE_SYNC_TABLES\" = true ]\n"}, manifest, "names USE_SYNC_TABLES"),
         ("a shared script naming useSyncTables fails", build(), {**scripts, "scripts/lint.sh": "grep useSyncTables x\n"}, manifest, "names useSyncTables"),
         ("a script it calls naming the key fails", build(), {**scripts, "scripts/helper.py": "k = 'perPlayerSyncTables'\n"}, manifest, "helper.py:1: names perPlayerSyncTables"),
         ("a shared script that doesn't exist fails", build(), {k: v for k, v in scripts.items() if k != "scripts/lint.sh"}, manifest, "doesn't exist"),

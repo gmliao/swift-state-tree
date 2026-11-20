@@ -176,7 +176,7 @@ private func makeTickDefinitionWithoutServerInputs() -> LandDefinition<ServerInp
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
 /// Reports in-turn sync for every keeper, so a tickless keeper attached to it applies inputs in
-/// input turns (`usesInTurnSync`) whatever `IN_TURN_SYNC` says. Counts the server events each
+/// input turns (`usesInTurnSync`) whatever the adapter's mode. Counts the server events each
 /// path delivered: in a turn's sync phase, or through the legacy send.
 private final class SIInTurnTransport: LandKeeperTransport, @unchecked Sendable {
     private let lock = NSLock()

@@ -86,10 +86,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
 
-    /// Whether in-turn sync is on for this adapter (`InTurnSync`): its `inTurnSync` init argument
-    /// and the `IN_TURN_SYNC` environment, decided once at init; an explicit off wins. This is the
-    /// single source of truth for the switch: the keeper follows it through
-    /// `runsSyncPhaseInTurn(of:)`.
+    /// Whether in-turn sync is on for this adapter: its `inTurnSync` init argument, decided once
+    /// at init. The off mode is reachable only through `package` API (the differential harness's
+    /// legacy cells and tests) until the adapter's own cycle is removed (#546 L2). This is the
+    /// single source of truth: the keeper follows it through `runsSyncPhaseInTurn(of:)`.
     public nonisolated let inTurnSyncEnabled: Bool
 
     /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
@@ -968,7 +968,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         precondition(keeper.isLive, "TransportAdapter binds only a live LandKeeper")
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
-        let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
+        let inTurnSyncEnabled = inTurnSync
         self.inTurnSyncEnabled = inTurnSyncEnabled
         self.ownExecutorHost = inTurnSyncEnabled ? nil : AdapterExecutorHost()
         self.transport = transport
@@ -1177,7 +1177,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // use up the process's one report.
         let removedKeys = self.logger.logLevel <= .warning ? TransportRemovedEnvKeys.shared.takeFirst() : []
         if !removedKeys.isEmpty {
-            self.logger.warning("Removed environment keys are set and ignored: the auto dirty switch and the change-object metric no longer exist; dirty tracking follows ENABLE_DIRTY_TRACKING", metadata: [
+            self.logger.warning("Removed environment keys are set and ignored: each named key no longer exists (dirty tracking follows ENABLE_DIRTY_TRACKING; in-turn sync is always on)", metadata: [
                 "keys": .string(removedKeys.joined(separator: ","))
             ])
         }
@@ -1190,7 +1190,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
         // Info, not a warning: the request is the default, so a land that can't have rows by
-        // design (an `IN_TURN_SYNC=false` server, `fullSnapshot`) logs this too.
+        // design (`fullSnapshot`, or a join that doesn't go through the router) logs this too.
         if rowAddressingRequested && !rowAddressing {
             self.logger.info("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
                 "landID": .string(landID),
@@ -2330,8 +2330,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Checked twice. Before the keeper's join, `playerID` is the requested one. On the in-turn
     /// path the keeper asks again with the player CanJoin resolved (`refusesResolvedJoin`,
-    /// #234), so a land that maps players in `CanJoin` is covered too. Off it (`IN_TURN_SYNC`
-    /// false) only the requested player is checked.
+    /// #234), so a land that maps players in `CanJoin` is covered too. Off it (the adapter's
+    /// package-only off mode) only the requested player is checked.
     private func staleJoinAttempt(_ attempt: UInt64, sessionID: SessionID, playerID: PlayerID) -> Bool {
         if endedSessions.contains(sessionID) { return true }
         return membershipCoordinator.sessionIDs(for: playerID).contains { member in

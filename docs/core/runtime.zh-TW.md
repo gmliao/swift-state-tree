@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot 同步模式
 
-> 本節與[同步流程](#同步流程)描述的是 legacy 路徑（`IN_TURN_SYNC=false`）。預設情況下 sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。
+> 本節與[同步流程](#同步流程)描述的是 legacy 路徑，也就是 `beginSync` / `endSync` cycle。在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。
 
 `LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
 
@@ -427,7 +427,7 @@ Land 以三種方式之一同步（前兩種的 `LandKeeper.hasPeriodicSync` 為
 
 Sync phase 以 turn 中該時點的狀態規劃（plan）本次 cycle 的所有 frame，然後 commit：把 frame 放進 adapter 的 outbound writer，並清除 dirty flag。Plan 與 commit 之間沒有任何其他工作執行，因此不會有尚未送出的變更被清除。Plan 失敗時什麼都不 commit，dirty flag 保留到下一個 cycle。
 
-Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joiner 的完整 view 以該 turn 結束時的狀態規劃，與其他接收者的 diff 在同一個 plan 中，它的 frame 排在其他人之後：先是 JoinResponse，再是 firstSync，然後是它的 `OnJoin` 發給它、一直保留到此時的 targeted event。關閉 in-turn sync 時，join 不在 turn 中完成：firstSync 在 JoinResponse 之後單獨送出，來自另一次狀態讀取；session 仍在 joining 時發給它的 targeted event 不會送達。
+Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joiner 的完整 view 以該 turn 結束時的狀態規劃，與其他接收者的 diff 在同一個 plan 中，它的 frame 排在其他人之後：先是 JoinResponse，再是 firstSync，然後是它的 `OnJoin` 發給它、一直保留到此時的 targeted event。
 
 已知限制：
 
@@ -435,7 +435,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 - `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
-`IN_TURN_SYNC=false` 是 kill switch：adapter 保留自己的 executor，透過 `beginSync` / `endSync` 同步（[同步流程](#同步流程)）。Adapter 在 init 時決定一次，keeper 跟隨它。
+In-turn sync 無法關閉。`IN_TURN_SYNC` 環境變數原本是它的開關，現已移除：仍設定它的 server 會忽略它，process 中第一個 adapter 會記錄一筆 warning 指出它。
 
 ### Writer Back-Pressure
 
@@ -443,7 +443,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 
 ### 同步流程
 
-> Legacy 路徑（`IN_TURN_SYNC=false`）。
+> Legacy 路徑，也就是 `beginSync` / `endSync` cycle。
 
 同步使用 snapshot 模式，不阻塞狀態變更：
 

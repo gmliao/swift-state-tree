@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The differential harness's gate run (#555, plan rev 10 "The gate"), job 2 of 2: in the pinned
 # image, under the verify key, the full matrix compared with the goldens, bytes included. Fails
-# closed: the wrong toolchain, a skipped or filtered-out suite, zero cells, a masked cell, or
+# closed: the wrong toolchain, a skipped or filtered-out suite, zero cells, or
 # fewer cells compared than the index lists each fail. Every test the two suites declare must
 # be in Swift Testing's results (its xunit file), passed: a printed line proves nothing. The
 # lists flag (SST_DIFFERENTIAL_MAIN_LISTS, 1 on main) is the workflow's to state. Prints the
@@ -27,10 +27,6 @@ case "${SST_DIFFERENTIAL_MAIN_LISTS:-}" in
     0|1) ;;
     *) echo "differential-gate: SST_DIFFERENTIAL_MAIN_LISTS must be 0 or 1 (the workflow states whose lists these are)" >&2; exit 1 ;;
 esac
-if [[ "${IN_TURN_SYNC:-true}" == "false" ]]; then
-    echo "differential-gate: IN_TURN_SYNC=false would mask the in-turn cells; the gate runs the full matrix" >&2
-    exit 1
-fi
 [[ -f "$INDEX" ]] || { echo "differential-gate: no golden index" >&2; exit 1; }
 LISTED=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['files']))" "$INDEX")
 
@@ -82,10 +78,9 @@ PY
     || { echo "differential-gate: expected exactly one counts line from the harness" >&2; exit 1; }
 COUNTS=$(grep -E "^Differential harness: [0-9]+ cell\(s\) compared" "$LOG")
 RAN=$(sed -E 's/^Differential harness: ([0-9]+) cell.*/\1/' <<< "$COUNTS")
-MASKED=$(sed -E 's/.* ([0-9]+) masked.*/\1/' <<< "$COUNTS")
 REPLACED=$(sed -E 's/.* ([0-9]+) replaced.*/\1/' <<< "$COUNTS")
-echo "differential-gate: $RAN compared, $REPLACED replaced (retired rows), $MASKED masked, $LISTED listed"
-[[ "$RAN" -gt 0 && "$MASKED" == "0" && $((RAN + REPLACED)) == "$LISTED" ]] \
+echo "differential-gate: $RAN compared, $REPLACED replaced (retired rows), $LISTED listed"
+[[ "$RAN" -gt 0 && $((RAN + REPLACED)) == "$LISTED" ]] \
     || { echo "differential-gate: the counts don't cover the index" >&2; exit 1; }
 if grep -q "decoded views only" "$LOG"; then
     echo "differential-gate: the goldens weren't recorded with this toolchain; bytes weren't compared" >&2
