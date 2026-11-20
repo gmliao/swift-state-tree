@@ -109,13 +109,18 @@ private func concurrentCreations(
     }
 }
 
+/// A log the manager appends to each time a call joins a creation already in flight. Install it
+/// before the calls start.
+private func creationJoinLog(_ manager: LandManager<SingleFlightTestState>) async -> EventLog {
+    let log = EventLog()
+    await manager.onCreationJoinedForTesting { log.append("joined") }
+    return log
+}
+
 /// Waits until `count` calls joined the creation in flight, so every call is known to share it
 /// before the test releases it.
-private func waitForCreationJoins(
-    _ count: Int,
-    manager: LandManager<SingleFlightTestState>
-) async -> Bool {
-    await pollUntil { await manager.creationJoinCount() >= count }
+private func waitForCreationJoins(_ count: Int, log: EventLog) async -> Bool {
+    await log.waitFor { $0.count >= count }
 }
 
 /// Whether `error` is `JoinError.landShuttingDown`.
@@ -171,10 +176,11 @@ struct LandManagerSingleFlightTests {
         await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "room-0-0")
 
+        let joins = await creationJoinLog(manager)
         let calls = concurrentCreations(8, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
         // The other seven calls joined the held creation.
-        #expect(await waitForCreationJoins(7, manager: manager))
+        #expect(await waitForCreationJoins(7, log: joins))
         let creationsStarted = gate.arrivalCount
         gate.open()
         var containers: [LandContainer<SingleFlightTestState>] = []
@@ -197,10 +203,11 @@ struct LandManagerSingleFlightTests {
         await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "fails-once")
 
+        let joins = await creationJoinLog(manager)
         let calls = concurrentCreations(3, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
         // All three callers wait on the held creation before it fails.
-        #expect(await waitForCreationJoins(2, manager: manager))
+        #expect(await waitForCreationJoins(2, log: joins))
         gate.open()
         for call in calls {
             await #expect(throws: ReevaluationReplayError.self) { _ = try await call.value }
@@ -221,9 +228,10 @@ struct LandManagerSingleFlightTests {
         await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
         let landID = LandID(landType: "sf-game", instanceId: "impatient")
 
+        let joins = await creationJoinLog(manager)
         let calls = concurrentCreations(2, manager: manager, landID: landID)
         #expect(await gate.waitForArrivals(1))
-        #expect(await waitForCreationJoins(1, manager: manager))
+        #expect(await waitForCreationJoins(1, log: joins))
         calls[0].cancel()
         await #expect(throws: CancellationError.self) { _ = try await calls[0].value }
 
@@ -273,8 +281,9 @@ struct LandManagerSingleFlightTests {
         drainGate.open()
         await destruction.value
         let fresh = try await recreate.value
-        // Live keepers initialize eagerly after creation.
-        #expect(await pollUntil { log.events.contains("new-initialize") })
+        // Live keepers initialize eagerly after creation; OnInitialize logs it.
+        await fresh.keeper.awaitInitialization()
+        #expect(log.events.contains("new-initialize"))
 
         #expect(ObjectIdentifier(fresh.keeper) != ObjectIdentifier(old.keeper))
         #expect(fresh.epoch != old.epoch)
@@ -335,8 +344,9 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "alone")
         let container = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
         await container.keeper.forceShutdown()
-        let removed = await pollUntil { await manager.getLand(landID: landID) == nil }
-        #expect(removed)
+        // The drain ends with the manager's onLandDestroyed, which awaits the removal.
+        await container.keeper.waitUntilDrained()
+        #expect(await manager.getLand(landID: landID) == nil)
     }
 
     @Test("Removal by an older epoch leaves the newer instance stored")
@@ -409,7 +419,8 @@ struct LandManagerSingleFlightTests {
         drainGate.open()
         await destruction.value
         let fresh = try await recreate.value
-        #expect(await pollUntil { log.events.contains("new-initialize") })
+        await fresh.keeper.awaitInitialization()
+        #expect(log.events.contains("new-initialize"))
         #expect(log.isOrdered("old-finalize", before: "new-initialize"), "events: \(log.events)")
         let stored = try #require(await manager.getLand(landID: landID))
         #expect(ObjectIdentifier(stored.keeper) == ObjectIdentifier(fresh.keeper))
@@ -445,14 +456,22 @@ struct LandManagerSingleFlightTests {
     func shutdownRejectsNewCreations() async throws {
         let manager = makeManager()
         let gate = TestGate()
-        await manager.installHolds(HoldRegistry.at(.creation) { await gate.arrive() })
+        // `.shutdownListed` passes right after `isShuttingDown` is set: a signal, not a hold.
+        let shutdownSteps = EventLog()
+        await manager.installHolds(
+            HoldRegistry()
+                .on(.creation) { await gate.arrive() }
+                .on(.shutdownListed) { shutdownSteps.append("listed") }
+                .hook
+        )
         let held = LandID(landType: "sf-game", instanceId: "held")
         let late = LandID(landType: "sf-game", instanceId: "late")
 
         let heldCall = concurrentCreations(1, manager: manager, landID: held)[0]
         #expect(await gate.waitForArrivals(1))
         let shutdown = Task { await manager.shutdownAllLands() }
-        #expect(await pollUntil { await manager.isShutdownStarted() })
+        #expect(await shutdownSteps.waitFor("listed"))
+        #expect(await manager.isShutdownStarted())
         // The shutdown is awaiting the held creation: a new creation is rejected.
         do {
             _ = try await concurrentCreations(1, manager: manager, landID: late)[0].value
@@ -559,7 +578,7 @@ struct LandManagerSingleFlightTests {
         await manager.shutdownAllLands()
 
         let sessionID = SessionID("router-shutdown")
-        let connection = JoinReplyConnection()
+        let connection = RecordingConnection()
         await transport.handleConnection(sessionID: sessionID, connection: connection)
         let join = TransportMessage.join(
             requestID: "req-shutdown",
@@ -571,8 +590,9 @@ struct LandManagerSingleFlightTests {
         )
         await transport.handleIncomingMessage(sessionID: sessionID, data: try JSONEncoder().encode(join))
 
-        #expect(await pollUntil { await !connection.messages.isEmpty })
-        let reply = try JSONDecoder().decode(TransportMessage.self, from: try #require(await connection.messages.first))
+        // Resumed by the reply's send.
+        #expect(await connection.waitUntilRawFrames { !$0.isEmpty })
+        let reply = try JSONDecoder().decode(TransportMessage.self, from: try #require(await connection.frames.first))
         guard case .error(let payload) = reply.payload else {
             Issue.record("expected an error reply, got \(reply)")
             return
@@ -580,15 +600,4 @@ struct LandManagerSingleFlightTests {
         #expect(payload.code == ErrorCode.joinDenied.rawValue, "code: \(payload.code), message: \(payload.message)")
         #expect(await router.getBoundLandID(for: sessionID) == nil)
     }
-}
-
-/// Records what the transport sends to one session.
-private actor JoinReplyConnection: WebSocketConnection {
-    private(set) var messages: [Data] = []
-
-    func send(_ data: Data) async throws {
-        messages.append(data)
-    }
-
-    func close() async throws {}
 }
