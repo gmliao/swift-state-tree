@@ -256,16 +256,25 @@ private struct Fixture {
         ))
     }
 
-    /// Connects a session and joins `player` to the land, waiting until the land has it.
+    /// Connects a session and joins `player` to the land, and returns once the router's join
+    /// has returned. The land has the player from OnJoin on, but the router's join still checks
+    /// its attempt after the admission (`.afterAdmit`): a stop that removed the session before
+    /// that check makes the join undo itself with an OnLeave (#634).
     @discardableResult
     func join(_ player: String) async throws -> (SessionID, RecordingConnection) {
+        let (session, connection, joined) = try await startJoin(player)
+        #expect(await bounded { await joined.value } != nil, "\(player)'s join returned")
+        #expect(await players().contains(player), "\(player) joined")
+        return (session, connection)
+    }
+
+    /// Connects a session and starts `player`'s join; `joined` ends when the router's join returns.
+    func startJoin(_ player: String) async throws -> (session: SessionID, connection: RecordingConnection, joined: Task<Void, Never>) {
         let session = SessionID("s-\(player)")
         let connection = await connect(session)
         let frame = try joinFrame(player: player)
         let router = server.landRouter
-        Task { await router.onMessage(frame, from: session) }
-        #expect(await poll { await players().contains(player) }, "\(player) joined")
-        return (session, connection)
+        return (session, connection, Task { await router.onMessage(frame, from: session) })
     }
 
     func keeper() async throws -> LandKeeper<ShutdownState> {
@@ -1697,9 +1706,62 @@ struct FailedLandStopTests {
         #expect(result == .stopped(timedOut: false))
         #expect(await connection.closeCode == SessionClose.Code.landFailed, "the close request came after the failure")
         #expect(keeper.destructionCause == .failed)
-        #expect(!events.all.contains { $0.hasPrefix("leave:") })
+        #expect(!events.all.contains { $0.hasPrefix("leave:") }, "no OnLeave on a failed land: \(events.all)")
         #expect(events.count("finalize") == 1)
         #expect(f.server.stopFlightsForTesting.latchCountForTesting == 0)
+        try await f.host.shutdown()
+    }
+
+    @Test("a join whose session a stop removes before its post-admission check undoes itself with an OnLeave, before the land fails (#634)")
+    func joinTailUndoneByAStop() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let admitted = Gate()
+        let snapshot = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.afterAdmit) { await admitted.arrive() }
+            .on(.stopSnapshot) { await snapshot.arrive() }
+            .hook)
+        let (_, connection, joined) = try await f.startJoin("p1")
+        #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
+        // A helper that returned once the land had the player would return here.
+        #expect(await f.players() == ["p1"], "OnJoin ran")
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await snapshot.waitForArrivals(1), "the stop removed the session and took its snapshot")
+        admitted.open()
+        guard await bounded({ await joined.value }) != nil else {
+            Issue.record("the join's tail didn't return"); return
+        }
+        // The join undid itself: OnLeave ran while the stop was held. A failure here would come
+        // after it, as in `failureDuringAdminStopGives4016` when its join hadn't returned.
+        #expect(events.all == ["leave:p1"], "\(events.all)")
+
+        snapshot.open()
+        #expect(await stop.value == .stopped(timedOut: false))
+        #expect(await connection.closeCode == SessionClose.Code.landStopped)
+        try await f.host.shutdown()
+    }
+
+    @Test("the fixture's join returns only after the router's join has returned (#634)")
+    func fixtureJoinWaitsForTheRoutersJoin() async throws {
+        let f = try await Fixture.make(land: makeLand(events: Events()))
+        let admitted = Gate()
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.afterAdmit) { await admitted.arrive() }.hook)
+        let returned = Events()
+        let join = Task { try await f.join("p1"); returned.append("returned") }
+        #expect(await admitted.waitForArrivals(1), "the join is held after its admission")
+        #expect(await f.players() == ["p1"], "OnJoin ran")
+        // The hold keeps the router's join from returning, so this can't fail on a correct
+        // helper, whatever the timing. The pause only gives a helper that returns on the state
+        // alone (it polls every 5 ms) the time to show it.
+        try? await safeTaskSleep(for: .milliseconds(200))
+        #expect(returned.all.isEmpty, "the fixture's join returned while the router's join was held")
+        admitted.open()
+        try await join.value
+        #expect(returned.all == ["returned"])
         try await f.host.shutdown()
     }
 
