@@ -212,7 +212,7 @@ Each step of the stock runner rebuilds the state and decodes every server event 
 
 ### Resolver Outputs in Replay
 
-A replayed handler reads a recorded resolver output (`ctx.productInfo`) the way the replay land reads a recorded server event: with the record's own codec (#707). This holds for an action's resolvers, `OnJoin` and `OnLeave`, and `OnInitialize`. A `Date`, `Data`, `URL` or `Decimal` field reads back as the live handler saw it, a `Decimal` NaN included. A saved record decodes strictly. On the JSON view an integer decodes into `Double` or `Float` when it converts exactly. The domain limits above apply too: a `Date` with a fractional second replays truncated. An output that doesn't decode into the requested type reads as `nil`.
+A replayed handler reads a recorded resolver output (`ctx.productInfo`) the way the replay land reads a recorded server event: with the record's own codec (#707). This holds for an action's resolvers, `OnJoin` and `OnLeave`, and `OnInitialize`. A `Date`, `Data`, `URL` or `Decimal` field reads back as the live handler saw it, a `Decimal` NaN included. A saved record decodes strictly. On the JSON view an integer decodes into `Double` or `Float` when it converts exactly. The domain limits above apply too: a `Date` with a fractional second replays truncated. An output that doesn't decode into the requested type reads as `nil`, and the land's logger records a warning that names the output, the recorded and requested types, and the error.
 
 Limit: a recorded action's own payload is still decoded with a JSON round trip, so replay drops an action whose payload has a `Date`, `Data` or `URL` field (#709).
 
