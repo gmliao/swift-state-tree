@@ -1318,7 +1318,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             membershipCoordinator.invalidateMembership(sessionID: sessionID, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: sessionID)
 
-            // Now call keeper.leave() which will trigger syncBroadcastOnly()
+            // Now call keeper.leave(), which triggers the leave's sync
             do {
                 try await keeper.leave(playerID: playerID, clientID: clientID, sessionID: sessionID)
                 if logger.logLevel <= .debug {
@@ -1659,7 +1659,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Execute a block while marking player as initial syncing.
     /// Automatically removes the player from initialSyncingPlayers when done (even on error).
-    /// This ensures syncNow() and syncBroadcastOnly() skip this player during initial sync.
+    /// This ensures syncNow() and the broadcast-only sync skip this player during initial sync.
     ///
     /// `sessionID`'s `.joining` mark (`joiningSessions`) is handed over to the initial-sync
     /// mark here, in one synchronous segment, so the session is excluded throughout. The
@@ -3185,6 +3185,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Tests: background sync tasks still running (a held lag callback counts until it returns).
+    package var backgroundSyncTaskCountForTesting: Int { backgroundSyncTasks.count }
+
     /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
     /// that started another) and the keeper has no requested sync work pending (a writer-drain
     /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
@@ -3665,11 +3668,14 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func runSyncLagTimerSync(epoch: UInt64) async {
-        let ticket = inTurnSyncEnabled ? await keeper.syncTurnTicket(via: self) : nil
-        await holds.at(.syncLagTimerSync)
         defer {
             if syncLagTimerSyncRequestedEpoch == epoch { syncLagTimerSyncRequestedEpoch = nil }
         }
+        // A stale callback (the timer restarted since it was armed) takes no ticket, so it can't
+        // bind a requester on a keeper never attached.
+        guard epoch == syncLagTimerEpoch else { return }
+        let ticket = inTurnSyncEnabled ? await keeper.syncTurnTicket(via: self) : nil
+        await holds.at(.syncLagTimerSync)
         // The timer restarted meanwhile (a new epoch): this callback is stale.
         guard epoch == syncLagTimerEpoch else { return }
         if inTurnSyncEnabled {

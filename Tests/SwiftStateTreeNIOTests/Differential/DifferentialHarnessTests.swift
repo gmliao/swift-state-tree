@@ -31,7 +31,10 @@ func runChecked(_ scenario: DiffScenario, _ cell: DiffCell) async throws -> Diff
 /// compared and reported, and the summary says how many threw.
 enum DiffSweep {
     struct Report {
+        /// Cells run (not replaced), whether or not they threw.
         var ran = 0
+        /// Cells whose run returned and whose golden was read and compared.
+        var compared = 0
         var replaced = 0
         /// `<scenario> <cell>: <error>`, for each cell whose run threw.
         var threw: [String] = []
@@ -87,6 +90,7 @@ enum DiffSweep {
                 }
                 let checkBytes = golden.recordedWith.toolchain == toolchain
                 report.bytesCompared = report.bytesCompared && checkBytes
+                report.compared += 1
                 let differences = DiffCompare.differences(golden.result, actual, checkBytes: checkBytes)
                 let entries = expected.filter { $0.scenario == scenario.name && $0.cell == cell }
                 let (unexpected, stale) = DiffBranchLists.judge(differences, entries: entries, checkBytes: checkBytes)
@@ -138,7 +142,7 @@ extension DifferentialHarness {
             for issue in report.issues { Issue.record(Comment(rawValue: issue)) }
             // Fail closed: every cell the index lists ran or was replaced.
             let listed = index.files.count
-            print("Differential harness: \(report.ran) cell(s) compared, \(report.threw.count) of them threw, \(report.replaced) replaced, \(listed) listed")
+            print("Differential harness: \(report.ran) cell(s) run, \(report.compared) compared, \(report.threw.count) threw, \(report.replaced) replaced, \(listed) listed")
             #expect(report.ran > 0, "no cell ran")
             #expect(report.ran > 0 && report.ran + report.replaced == listed, "\(report.ran) ran and \(report.replaced) replaced; the index lists \(listed)")
             if !report.bytesCompared {

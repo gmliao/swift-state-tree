@@ -43,6 +43,14 @@ public enum ReevaluationOutputMode: Sendable {
     case transportAndSink
 }
 
+/// The one key of a keeper's sync binding generations (#546 L2a).
+package enum SyncBindingKey: Hashable, Sendable {
+    case binding
+}
+
+/// A requested sync turn's ticket: the binding it was taken under.
+package typealias SyncTurnTicket = Ticket<SyncBindingKey>
+
 /// Where a `LandKeeper` awaits its test hold hook (`installHolds`).
 enum LandKeeperHoldPoint: Hashable, Sendable {
     /// `forceShutdown`, right after its shutdown turn applied and before the destroy (#382).
@@ -696,8 +704,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
 
-    /// A land without periodic sync: a sync-only turn waits for the writer to drain (at most one).
-    private var inTurnDrainRetryPending = false
+    /// Interim (#700): the follow-up slots below (this retry, the latch, the join-sync turn, the
+    /// after-turn request) each keep the binding ticket they were armed under, and each job checks
+    /// and retires only its own. That is TurnCore's request-per-key shape, kept by hand until the
+    /// keeper's turns run on TurnCore.
+    ///
+    /// A land without periodic sync: a sync-only turn waits for the writer to drain, at most one
+    /// per binding. The binding generation it was armed under: a retry armed under an older binding
+    /// neither blocks the current binding's nor clears its mark.
+    private var inTurnDrainRetryBinding: SyncTurnTicket?
 
     /// A turn wanted a sync phase while a legacy cycle (`beginSync` ... `endSync`: the debug
     /// settle, a joiner's path) held the sync flag: `endSync` then runs a sync-only turn through
@@ -5084,19 +5099,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Sets the latch `endSync` reads, with the port of the turn that set it. Counted as requested
     /// work from now until the latch's turn ran, so a test wait can't see idle in between.
+    /// A latch set under an older binding is replaced, keeping its count, so the current binding's
+    /// request isn't coalesced into a follow-up that would be rejected.
     private func latchSyncOnlyTurnAfterLegacyCycle(transport: any LandKeeperTransport) {
-        guard syncOnlyTurnAfterLegacyCycle == nil else { return }
-        syncOnlyTurnAfterLegacyCycle = SyncTurnFollowUp(port: transport, binding: syncBindingGeneration)
-        beginRequestedSyncWork()
+        if let latched = syncOnlyTurnAfterLegacyCycle, latched.binding == syncBinding.current { return }
+        if syncOnlyTurnAfterLegacyCycle == nil { beginRequestedSyncWork() }
+        syncOnlyTurnAfterLegacyCycle = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
     }
 
     /// After a deferred phase on a land without periodic sync: one sync-only turn once the writer
-    /// has drained its sync cycle elements (at most one pending), through the same port.
+    /// has drained its sync cycle elements (at most one pending per binding), through the same port.
     private func retrySyncOnlyTurnAfterWriterDrain(transport: any LandKeeperTransport) {
-        guard !inTurnDrainRetryPending else { return }
-        inTurnDrainRetryPending = true
+        guard inTurnDrainRetryBinding != syncBinding.current else { return }
+        inTurnDrainRetryBinding = syncBinding.current
         beginRequestedSyncWork()
-        let followUp = SyncTurnFollowUp(port: transport, binding: syncBindingGeneration)
+        let followUp = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
         Task { [weak self] in
             // Returns when the writer drained or its consumer ended (a teardown), so an
             // invalidated retry still retires.
@@ -5106,23 +5123,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func runRetriedSyncOnlyTurn(_ followUp: SyncTurnFollowUp) {
-        inTurnDrainRetryPending = false
+        // A newer binding's retry owns the mark; this one only retires its own.
+        if inTurnDrainRetryBinding == followUp.binding { inTurnDrainRetryBinding = nil }
         defer { endRequestedSyncWork() }
         runFollowUpSyncOnlyTurn(followUp)
     }
 
-    /// A sync-only turn for waiting joins is scheduled.
-    private var joinSyncTurnPending = false
+    /// A sync-only turn for waiting joins is scheduled: the binding generation it was scheduled
+    /// under (at most one per binding, as the drain retry).
+    private var joinSyncTurnBinding: SyncTurnTicket?
     /// Sync-only turns run for waiting joins (tests).
     private(set) var joinSyncTurnsForTesting = 0
 
     /// One sync-only turn for joins waiting on a committed sync phase, after `delay` (at most one
-    /// pending). It runs only if joins still wait then.
+    /// pending per binding). It runs only if joins still wait then.
     private func scheduleJoinSyncTurn(after delay: Duration, transport port: any LandKeeperTransport) {
-        guard !joinSyncTurnPending else { return }
-        joinSyncTurnPending = true
+        guard joinSyncTurnBinding != syncBinding.current else { return }
+        joinSyncTurnBinding = syncBinding.current
         beginRequestedSyncWork()
-        let followUp = SyncTurnFollowUp(port: port, binding: syncBindingGeneration)
+        let followUp = SyncTurnFollowUp(port: port, binding: syncBinding.current)
         Task { [weak self] in
             if delay > .zero {
                 try? await safeTaskSleep(for: delay)
@@ -5132,7 +5151,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     private func runJoinSyncTurn(_ followUp: SyncTurnFollowUp) {
-        joinSyncTurnPending = false
+        if joinSyncTurnBinding == followUp.binding { joinSyncTurnBinding = nil }
         defer { endRequestedSyncWork() }
         // `transportHasJoinsAwaitingSync` reads the slot: a keeper with no slot admits no in-turn
         // join (`admitJoiningInTurn`), so it has none waiting.
@@ -5146,9 +5165,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A follow-up a turn armed (the writer-drain retry, the latch's rerun, the join-sync turn, a
     /// requested turn after this one): the port of the turn that armed it, and the binding it was
     /// armed under. It runs only while that binding holds.
+    /// The keeper's sync binding as a generation: each bind or rebind issues a new ticket, and a
+    /// ticket from an earlier binding is never current again (also after A → B → A).
+    private struct SyncBindingState {
+        private var table = GenerationTable<SyncBindingKey>()
+        private(set) var current: SyncTurnTicket
+
+        init() { current = table.issue(.binding) }
+
+        mutating func rebind() { current = table.issue(.binding) }
+
+        func isCurrent(_ ticket: SyncTurnTicket) -> Bool { table.isCurrent(ticket) }
+    }
+
     private struct SyncTurnFollowUp {
         let port: any LandKeeperTransport
-        let binding: UInt64
+        let binding: SyncTurnTicket
     }
 
     /// Whether a transport was ever attached: from the init's `transport:` argument or
@@ -5158,7 +5190,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Bumped when the binding changes (`setTransport` with a transport, or the first requester
     /// bound): a follow-up or a delayed request armed under an older binding is stale, so
     /// A → B → A doesn't make an old request from A current again.
-    private var syncBindingGeneration: UInt64 = 0
+    private var syncBinding = SyncBindingState()
     /// The adapter bound by the first sync request of a keeper never attached. Weak: the adapter
     /// holds this keeper. Cleared at the destruction's end.
     private weak var boundSyncRequesterObject: AnyObject?
@@ -5169,12 +5201,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func noteTransportBound() {
         hasHeldTransport = true
         boundSyncRequesterObject = nil
-        syncBindingGeneration &+= 1
+        syncBinding.rebind()
     }
 
     /// Whether `port` is the port this keeper syncs through for a request: the attached transport,
     /// or, on a keeper never attached, its first requester (bound now when none is). One
-    /// requester per keeper: the follow-ups' pending state is keeper-wide.
+    /// requester per keeper at a time. The follow-ups' pending state is kept per binding
+    /// generation, so a follow-up armed under an older binding never blocks the current one's.
     private func bindSyncRequester(_ port: any LandKeeperTransport) -> Bool {
         let identity = ObjectIdentifier(port as AnyObject)
         if let transport {
@@ -5185,7 +5218,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return ObjectIdentifier(bound) == identity
         }
         boundSyncRequesterObject = port as AnyObject
-        syncBindingGeneration &+= 1
+        syncBinding.rebind()
         return true
     }
 
@@ -5193,10 +5226,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// not failed or draining, the port in-turn for this keeper (identity and the shared executor,
     /// so its `assumeIsolated` is valid) and this keeper's binding, under the same binding
     /// generation.
-    private func acceptsSyncTurn(through port: any LandKeeperTransport, binding: UInt64?) -> Bool {
+    private func acceptsSyncTurn(through port: any LandKeeperTransport, binding: SyncTurnTicket?) -> Bool {
         guard mode == .live, failure == nil, !isDraining else { return false }
         guard port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port) else { return false }
-        if let binding, binding != syncBindingGeneration { return false }
+        if let binding, !syncBinding.isCurrent(binding) { return false }
         return true
     }
 
@@ -5212,14 +5245,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A request's ticket: the binding generation, captured by a delayed request before its delay
     /// (the repair, the lag timer's). `nil` when `port` may not request on this keeper. Failure
     /// and the drain are final, so the job reads them directly.
-    package func syncTurnTicket(via port: any LandKeeperTransport) -> UInt64? {
-        guard mode == .live, port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port) else { return nil }
-        return syncBindingGeneration
+    package func syncTurnTicket(via port: any LandKeeperTransport) -> SyncTurnTicket? {
+        // A failed or draining land binds no late requester (it would get `onLandDestroyed` without
+        // its outputs closed); the job would reject the request anyway.
+        guard mode == .live, failure == nil, !isDraining, port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port) else { return nil }
+        return syncBinding.current
     }
 
     /// One requested sync-only turn through `port`, now, in this job: an outside request
-    /// (`syncNow()`, the adapter's lag timer and behind-commit repair, an event queued outside a
-    /// turn, the resume). Validated, run and retired here; it never returns early because an
+    /// (`syncNow()`, the adapter's lag timer and behind-commit repair, the resume). Validated, run and retired here; it never returns early because an
     /// earlier request is pending: it consumes that one (same port) before its phase runs, so the
     /// phase can arm a successor. `ticket`: a delayed request's binding generation, `nil` for an
     /// immediate one. Returns the phase's outcome, which names who delivers (`.committed`: this
@@ -5228,7 +5262,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func syncTurnNow(
         via port: any LandKeeperTransport,
         reason: SyncTurnReason,
-        ticket: UInt64? = nil
+        ticket: SyncTurnTicket? = nil
     ) -> InTurnSyncResult {
         requestedSyncTurnsForTesting[reason, default: 0] += 1
         guard acceptsSyncTurn(through: port, binding: ticket) else { return .skipped }
@@ -5241,14 +5275,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// An inside request: a turn asks for a sync-only turn right after it (a turn can't run inside
-    /// a turn). One pending; a later inside request joins it, and an outside request through the
-    /// same port consumes it.
+    /// a turn). One pending; a later inside request of the same binding joins it, one of a newer
+    /// binding replaces it (the scheduled task reads the slot when it runs), and an outside request
+    /// through the same port consumes it.
     private var pendingSyncTurnAfterTurn: SyncTurnFollowUp?
 
     private func requestSyncTurnAfterThisTurn(transport: any LandKeeperTransport, reason: SyncTurnReason) {
         requestedSyncTurnsForTesting[reason, default: 0] += 1
-        guard pendingSyncTurnAfterTurn == nil else { return }
-        pendingSyncTurnAfterTurn = SyncTurnFollowUp(port: transport, binding: syncBindingGeneration)
+        if let pending = pendingSyncTurnAfterTurn {
+            if pending.binding != syncBinding.current {
+                pendingSyncTurnAfterTurn = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
+            }
+            return
+        }
+        pendingSyncTurnAfterTurn = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
         beginRequestedSyncWork()
         Task { [weak self] in
             await self?.runPendingSyncTurnAfterTurn()
@@ -5262,6 +5302,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         defer { endRequestedSyncWork() }
         runFollowUpSyncOnlyTurn(followUp)
     }
+
+    /// Tests: the binding a pending writer-drain retry was armed under, and the current binding.
+    package var inTurnDrainRetryBindingForTesting: SyncTurnTicket? { inTurnDrainRetryBinding }
+    package var syncBindingForTesting: SyncTurnTicket { syncBinding.current }
 
     /// Requests by reason, made so far (tests and diagnostics).
     private(set) var requestedSyncTurnsForTesting: [SyncTurnReason: Int] = [:]

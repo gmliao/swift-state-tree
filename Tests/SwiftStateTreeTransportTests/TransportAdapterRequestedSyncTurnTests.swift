@@ -129,6 +129,50 @@ struct TransportAdapterRequestedSyncTurnTests {
         #expect(await f.keeper.syncTurnNow(via: f.adapter, reason: .lagTimer, ticket: fresh) == .committed(clearDirtyFlags: true))
     }
 
+    @Test("a writer-drain retry armed under an older binding doesn't block the current binding's")
+    func olderBindingsRetryDoesNotBlockTheCurrentOne() async throws {
+        let f = try await RequestedSyncTurnFixture.make(attached: true)
+        // A defers with its writer held: its retry waits on A's writer.
+        await f.adapter.setWriterBackPressureOverrideForTesting { true }
+        try await f.set(1)
+        #expect(await f.adapter.syncNowReportingOutcome() == .deferredBackPressure)
+        let bindingA = await f.keeper.syncBindingForTesting
+        #expect(await f.keeper.inTurnDrainRetryBindingForTesting == bindingA)
+
+        // B is bound and joins a player of its own.
+        let transportB = BlockingTransport()
+        let b = RequestedSyncTurnFixture.makeAdapter(keeper: f.keeper, transport: transportB)
+        await transportB.setDelegate(b)
+        await f.keeper.setTransport(b)
+        let sessionB = SessionID("rst-session-b")
+        await b.onConnect(sessionID: sessionB, clientID: ClientID("rst-client-b"))
+        try await simulateRouterJoin(
+            adapter: b, keeper: f.keeper, sessionID: sessionB, clientID: ClientID("rst-client-b"), playerID: PlayerID("rst-player-b")
+        )
+        #expect(await b.waitForOutboundDrain())
+
+        // B defers too, while A's retry is still waiting: B arms its own retry.
+        await b.setWriterBackPressureOverrideForTesting { true }
+        try await f.set(2)
+        #expect(await b.syncNowReportingOutcome() == .deferredBackPressure)
+        let bindingB = await f.keeper.syncBindingForTesting
+        #expect(bindingB != bindingA)
+        #expect(await f.keeper.inTurnDrainRetryBindingForTesting == bindingB, "B's retry is armed")
+
+        // B's writer drains: B's retry delivers stamp 2 while A's writer is still held.
+        await b.setWriterBackPressureOverrideForTesting(nil)
+        let delivered = await boundedWait {
+            transportB.frames(for: sessionB).contains { String(decoding: $0, as: UTF8.self).contains(#"stamp","value":2"#) }
+        }
+        #expect(delivered, "B's deferred sync was delivered by B's retry")
+
+        // A's stale retry retires without a turn and without clearing B's mark.
+        await f.adapter.setWriterBackPressureOverrideForTesting(nil)
+        await f.adapter.waitForKeeperRequestedSyncWorkForTesting()
+        #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
+        #expect(await f.keeper.inTurnDrainRetryBindingForTesting == nil)
+    }
+
     // MARK: The freeze before back-pressure
 
     @Test("frozen with the writer backed up: the phase leaves its sync to the resume, not to the drain retry")
@@ -145,13 +189,36 @@ struct TransportAdapterRequestedSyncTurnTests {
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting(), "no writer-drain retry was armed")
 
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
+        let resumesBefore = await f.keeper.requestedSyncTurnsForTesting[.resume, default: 0]
         _ = await f.adapter.debugResume(freezeToken: token)
         await f.adapter.waitForBackgroundSyncsForTesting()
         await f.adapter.waitForOutboundIdleForTesting()
         #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "the resume ran the deferred sync")
+        // The resume requested its turn: the flag alone is cleared before it requests. (The
+        // settle already sent stamp 1, and inputs wait while frozen, so no frame tells them apart.)
+        #expect(await f.keeper.requestedSyncTurnsForTesting[.resume, default: 0] == resumesBefore + 1)
     }
 
     // MARK: A failed land
+
+    @Test("a land that fails with a writer-drain retry armed ends the retry's wait and retires it")
+    func teardownEndsAnArmedRetry() async throws {
+        let f = try await RequestedSyncTurnFixture.make(attached: true)
+        await f.adapter.setWriterBackPressureOverrideForTesting { true }
+        try await f.set(1)
+        #expect(await f.adapter.syncNowReportingOutcome() == .deferredBackPressure)
+        #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "the retry is armed")
+        await f.keeper.submitLandFailure(LandFailure(
+            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        #expect(await f.keeper.waitForFailureForTesting())
+        // The teardown ends the writer's consumer, so the retry's wait returns and the retry
+        // retires without a turn.
+        await f.adapter.setWriterBackPressureOverrideForTesting(nil)
+        await f.adapter.waitForKeeperRequestedSyncWorkForTesting()
+        #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
+        #expect(await f.keeper.inTurnDrainRetryBindingForTesting == nil)
+    }
 
     @Test("a keeper never attached closes its bound adapter's output when the land fails; later requests retire")
     func failureReachesTheBoundRequester() async throws {
@@ -167,4 +234,13 @@ struct TransportAdapterRequestedSyncTurnTests {
         await f.adapter.waitForBackgroundSyncsForTesting()
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting())
     }
+}
+
+/// Wait (bounded, about 2 s) until `condition` holds; a missing delivery fails instead of hanging.
+private func boundedWait(_ condition: @Sendable () async -> Bool) async -> Bool {
+    for _ in 0..<1000 {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(2))
+    }
+    return await condition()
 }

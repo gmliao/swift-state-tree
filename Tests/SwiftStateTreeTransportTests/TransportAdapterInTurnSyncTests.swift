@@ -905,10 +905,19 @@ struct TransportAdapterInTurnSyncTests {
         #expect(await f.keeper.syncOnlyTurnAfterLegacyCycleForTesting)
         #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch counts as requested work")
 
+        // The latch's rerun is held between endSync and its turn: the work stays counted there.
+        let rerunGate = TestGate()
+        await f.keeper.installHolds { point in
+            if point == .syncOnlyAfterLegacyCycle { await rerunGate.arrive() }
+        }
         await gate.release()
         let token = try await freeze.value.freezeToken
-        await f.adapter.waitForBackgroundSyncsForTesting()
+        #expect(await rerunGate.waitForArrivals(1), "endSync started the rerun")
         #expect(await !f.keeper.syncOnlyTurnAfterLegacyCycleForTesting, "endSync consumed the latch")
+        #expect(await f.adapter.keeperHasRequestedSyncWorkForTesting(), "counted until the rerun's turn")
+        rerunGate.open()
+        await f.adapter.waitForBackgroundSyncsForTesting()
+        await f.keeper.installHolds(nil)
         #expect(await !f.adapter.keeperHasRequestedSyncWorkForTesting(), "the latch's turn ran")
         // The latch's turn ran while frozen: its phase leaves the sync to the resume.
         #expect(await f.adapter.debugFreezeState.deferredSyncNow)

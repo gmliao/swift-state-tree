@@ -162,6 +162,10 @@ extension DifferentialHarness {
             #expect(report.ran == thrown + compared, "every cell ran: \(report.ran)")
             #expect(report.threw.count == thrown)
             #expect(report.threw.allSatisfy { $0.hasPrefix("\(throwing.name) ") })
+            // Each thrown cell is an issue of its own: the suite records issues, so this is what
+            // makes a thrown cell fail the harness.
+            #expect(report.issues.filter { $0.hasPrefix("\(throwing.name) ") }.count == thrown)
+            #expect(report.compared == compared)
             let reported = report.issues.filter { $0.hasPrefix("\(differing.name).") }
             #expect(reported.count == compared, "every later cell's difference is reported: \(report.issues)")
         }

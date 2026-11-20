@@ -478,8 +478,13 @@ struct TransportAdapterSyncLagTests {
     @Test("A held timer sync of an old epoch neither blocks a newer epoch's request nor clears its mark (#546 L2a)")
     func lagTimerMarkIsKeyedByEpoch() async throws {
         let f = try await makeFixture()
-        let gate = TestGate()
-        await f.adapter.installHolds(HoldRegistry.at(.syncLagTimerSync) { await gate.arrive() })
+        // One gate per callback, by arrival: the old epoch's first, the new epoch's second.
+        let oldGate = TestGate()
+        let newGate = TestGate()
+        let arrivals = LagArrivalCounter()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagTimerSync) {
+            if arrivals.next() == 0 { await oldGate.arrive() } else { await newGate.arrive() }
+        })
         let firstSync = try #require(try await f.stateFrames().first)
         await f.ack(firstSync.seq)
         try await f.bump()
@@ -489,16 +494,27 @@ struct TransportAdapterSyncLagTests {
         let lagTurnsBefore = await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0]
         // The old epoch's request, held before its sync.
         #expect(await f.adapter.syncLagTimerPassForTesting())
-        #expect(await gate.waitForArrivals(1))
+        #expect(await oldGate.waitForArrivals(1))
         // The timer restarts: a new epoch. Its pass requests although the old one is held.
         await f.adapter.stopSyncLagTimer()
         #expect(await f.adapter.syncLagTimerPassForTesting())
         #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the new epoch's pass requested")
-        #expect(await gate.waitForArrivals(2))
+        #expect(await newGate.waitForArrivals(1))
         // A second pass of the new epoch while its request is pending: no third request.
         #expect(await f.adapter.syncLagTimerPassForTesting())
         #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "one request per epoch")
-        gate.open()
+        // The old callback retires first. It must not clear the new epoch's mark: a pass now
+        // still finds the new request pending.
+        oldGate.open()
+        var retired = false
+        for _ in 0..<1000 where !retired {
+            retired = await f.adapter.backgroundSyncTaskCountForTesting == 1
+            if !retired { try? await Task.sleep(for: .milliseconds(2)) }
+        }
+        #expect(retired, "the old callback returned while the new one is held")
+        #expect(await f.adapter.syncLagTimerPassForTesting())
+        #expect(await f.adapter.syncLagTimerSyncRequests == before + 2, "the old callback left the new mark standing")
+        newGate.open()
         #expect(await f.adapter.waitForSyncQuiescenceForTesting())
         // Only the new epoch's callback ran its turn; the old one was stale.
         #expect(await f.keeper.requestedSyncTurnsForTesting[.lagTimer, default: 0] == lagTurnsBefore + 1)
@@ -823,5 +839,18 @@ struct TransportAdapterSyncLagTests {
         // Its acks are ignored from now on.
         await f.ack(99)
         #expect(await f.adapter.syncLagDroppedAcks == 1)
+    }
+}
+
+/// Numbers the arrivals at a hold, so each callback can take its own gate.
+private final class LagArrivalCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count - 1
     }
 }

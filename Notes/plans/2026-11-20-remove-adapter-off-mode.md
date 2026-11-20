@@ -95,7 +95,7 @@ What changes for an in-turn caller:
 
 ### 3.2 Pending sync work: one rule, one keeper input
 
-*Rule: whenever sync work is due outside a turn on an in-turn land, something asks the keeper for a sync-only turn. No flag waits for an adapter cycle to read it.* One exception: an event queued outside a turn, on a land without periodic sync, waits for the next sync, as it does today on both adapters (L2a delta, below). On an off adapter the legacy follow-up and retries stay until L2c.
+*Rule: whenever sync work is due outside a turn on an in-turn land, something asks the keeper for a sync-only turn. No flag waits for an adapter cycle to read it.* One exception: an event queued outside a turn, on a land without periodic sync, waits for the next sync (L2a delta, below). On an off adapter the legacy follow-up and retries stay until L2c.
 
 **Decided (the maintainer, 2026-11-20): a requested sync turn is a keeper input that carries its reason and a ticket, validated in the turn.** This is the shape B2 gives the adapter's other callbacks: one place to inspect, and one thing to hold in tests. Not chosen: a keeper entry point with a pending flag.
 
@@ -626,7 +626,7 @@ Main settles the rest: the A/B cells (§6), and where L2a–L2d sit among the ot
 
 ## 10a. L2a delta
 
-- **§3.2's caller 2 is dropped** (agreed in L2a's review). An event queued outside a turn on a land without periodic sync doesn't request a sync-only turn: on both adapters today it waits for the next sync, and requesting one would be new behavior. Four tests pin today's semantics: `TransportAdapterMembershipTests` (:130, :214), `SyncStreamProducerTests:479` and `TransportAdapterOrderedSendTests` test 5. The reason `.outOfTurnEvent` goes with it, and the callers are renumbered 1–4. Auto-delivery, if wanted, is a separate behavior change.
+- **§3.2's caller 2 is dropped** (agreed in L2a's review). An event queued outside a turn on a land without periodic sync doesn't request a sync-only turn: it waits for the next sync, and requesting one would be new behavior. One window narrows. Before L2a, on the in-turn adapter, an event queued while `syncNow()`'s legacy cycle was in flight was delivered by the follow-up after `endSync` (the retired test 7e). The requested turn is synchronous, so that window is gone, not just unreachable: such an event now waits for the next sync, like any event queued outside a turn. This is the intended direction. Four tests pin today's semantics: `TransportAdapterMembershipTests` (:130, :214), `SyncStreamProducerTests:479` and `TransportAdapterOrderedSendTests` test 5. The reason `.outOfTurnEvent` goes with it, and the callers are renumbered 1–4. Auto-delivery, if wanted, is a separate behavior change.
 - **L2b** restates the path of `eventKeptBySettleArrivesAfterResume`'s event (§3.4), which relied on caller 2.
 
 ## 11. Rev 7: what changed
