@@ -87,8 +87,12 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     var lastCeilingLogAt: ContinuousClock.Instant?
     /// Waiters for `syncCycleElements == 0` (see `OutboundWriter.waitForSyncCycleDrain`).
     var syncCycleDrainWaiters: [CheckedContinuation<Void, Never>] = []
-    /// Waiters for `elements == 0` (see `OutboundWriter.waitForIdle`).
-    var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Waiters for `elements == 0` (see `OutboundWriter.waitForIdle`), by waiter ID, so a
+    /// cancelled wait removes its own.
+    var idleWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    var nextIdleWaiterID = 0
+    /// Idle waits cancelled before they registered.
+    var cancelledIdleWaiterIDs: Set<Int> = []
     /// Set when the consumer task ended; later waits return at once.
     var consumerEnded = false
 
@@ -98,8 +102,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         bytes -= sentBytes
         var waiters: [CheckedContinuation<Void, Never>] = []
         if elements == 0 {
-            waiters = idleWaiters
-            idleWaiters = []
+            waiters = Array(idleWaiters.values)
+            idleWaiters = [:]
         }
         // After `releaseWaiters` the count was settled to 0: a send that returns late from a
         // consumer teardown gave up on must not take it below 0.
@@ -120,9 +124,9 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         lock.lock()
         consumerEnded = true
         syncCycleElements = 0
-        let waiters = syncCycleDrainWaiters + idleWaiters
+        let waiters = syncCycleDrainWaiters + Array(idleWaiters.values)
         syncCycleDrainWaiters = []
-        idleWaiters = []
+        idleWaiters = [:]
         lock.unlock()
         for waiter in waiters { waiter.resume() }
     }
@@ -271,18 +275,33 @@ final class OutboundWriter: @unchecked Sendable {
     }
 
     /// Tests only: returns once every queued element was handed to the transport (at once when
-    /// none is queued), or when the consumer has ended. Event-driven: the consumer resumes it
-    /// when the count reaches 0, so a test waits on the send, not on a clock.
+    /// none is queued), when the consumer has ended, or when the waiting task is cancelled (so
+    /// `withinHangBound` can end it). Event-driven: the consumer resumes it when the count
+    /// reaches 0, so a test waits on the send, not on a clock.
     func waitForIdle() async {
-        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
-            counters.lock.lock()
-            if counters.elements == 0 || counters.consumerEnded {
+        let counters = counters
+        let id: Int = counters.lock.withLock {
+            defer { counters.nextIdleWaiterID += 1 }
+            return counters.nextIdleWaiterID
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+                counters.lock.lock()
+                if counters.elements == 0 || counters.consumerEnded
+                    || counters.cancelledIdleWaiterIDs.remove(id) != nil {
+                    counters.lock.unlock()
+                    waiter.resume()
+                    return
+                }
+                counters.idleWaiters[id] = waiter
                 counters.lock.unlock()
-                waiter.resume()
-                return
             }
-            counters.idleWaiters.append(waiter)
+        } onCancel: {
+            counters.lock.lock()
+            let waiter = counters.idleWaiters.removeValue(forKey: id)
+            if waiter == nil { counters.cancelledIdleWaiterIDs.insert(id) }
             counters.lock.unlock()
+            waiter?.resume()
         }
     }
 

@@ -6622,7 +6622,7 @@ extension TransportAdapter {
     ///
     /// - Throws: `DebugFreezeError.settleTimedOut` when drain and settle miss their deadline (the
     ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
-    ///   auto-resume) before its settle finished.
+    ///   auto-resume) before its settle finished, or the land failed or is closing.
     public func debugFreeze() async throws -> DebugFreezeResponse {
         if debugFreezeState.count == 0 {
             debugFreezeState.generation &+= 1

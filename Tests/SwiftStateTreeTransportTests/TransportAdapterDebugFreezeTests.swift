@@ -568,16 +568,18 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
-        let settle = TestGate(), fired = TestGate()
+        // One gate per settle, so each job's outcome is checked on its own.
+        let firstSettle = TestGate(), secondSettle = TestGate(), fired = TestGate()
         await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
-            .on(.settleBeforeCommit) { await settle.arrive() }
+            .on(.settleBeforeCommit, arrival: 1) { await firstSettle.arrive() }
+            .on(.settleBeforeCommit, arrival: 2) { await secondSettle.arrive() }
             .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
             .hook)
         try await f.makeDirty()
 
         let adapter = f.adapter
         let first = Task { try await adapter.debugFreeze() }
-        #expect(await settle.waitForArrivals(1), "the first settle didn't reach its commit")
+        try #require(await firstSettle.waitForArrivals(1), "the first settle didn't reach its commit")
         #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
         let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
         await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
@@ -585,14 +587,19 @@ struct TransportAdapterDebugFreezeTests {
         await timer.value
         #expect(await f.keeper.isDebugFrozen() == false, "the auto-resume released the first freeze")
 
-        // The second freeze, a new generation, reaches the same point; then both go on.
+        // The second freeze, a new generation, reaches the same point and waits there.
         let second = Task { try await adapter.debugFreeze() }
-        #expect(await settle.waitForArrivals(2), "the second settle didn't reach its commit")
-        settle.open()
+        try #require(await secondSettle.waitForArrivals(1), "the second settle didn't reach its commit")
 
+        // The first job alone: its fence refuses the old generation and plans nothing.
+        firstSettle.open()
         await #expect(throws: DebugFreezeError.released) {
             try await first.value
         }
+        #expect(await f.isStillDirty(), "the first settle planned nothing")
+
+        // Then the second job settles the new freeze.
+        secondSettle.open()
         let response = try await second.value
         #expect(response.reused == false)
         #expect(await f.adapter.isDebugFrozen())

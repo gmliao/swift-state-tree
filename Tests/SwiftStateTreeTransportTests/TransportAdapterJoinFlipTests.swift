@@ -577,7 +577,7 @@ struct TransportAdapterJoinFlipTests {
         let before = await f.keeper.joinSyncRequestTurnsForTesting
         _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
         #expect(await f.keeper.joinSyncRequestTurnsForTesting == before, "step 1 flipped it: step 2 requested nothing")
-        #expect(await !f.adapter.isJoiningInTurn(ready.session))
+        try #require(await !f.adapter.isJoiningInTurn(ready.session))
 
         #expect(try await ready.finish(f))
         let outbound = f.adapter
@@ -595,7 +595,7 @@ struct TransportAdapterJoinFlipTests {
         let before = await f.keeper.joinSyncRequestTurnsForTesting
         _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
         #expect(await f.keeper.joinSyncRequestTurnsForTesting == before + 1, "step 2 ran its join-sync turn")
-        #expect(await !f.adapter.isJoiningInTurn(ready.session))
+        try #require(await !f.adapter.isJoiningInTurn(ready.session))
 
         #expect(try await ready.finish(f))
         let outbound = f.adapter
@@ -620,7 +620,7 @@ struct TransportAdapterJoinFlipTests {
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
         let adapter = f.adapter
         #expect(await withinHangBound { await adapter.waitForKeeperRequestedSyncWorkForTesting() }, "the retry never ran")
-        #expect(await !f.adapter.isJoiningInTurn(ready.session), "the retry's phase flipped the join")
+        try #require(await !f.adapter.isJoiningInTurn(ready.session), "the retry's phase flipped the join")
 
         #expect(try await ready.finish(f))
         let outbound = f.adapter
@@ -652,13 +652,17 @@ struct TransportAdapterJoinFlipTests {
 
         await f.adapter.setWriterBackPressureOverrideForTesting { true }
         let before = await f.keeper.joinSyncRequestTurnsForTesting
+        let resumesBefore = await f.keeper.requestedSyncTurnsForTesting[.resume, default: 0]
         _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
-        #expect(await f.keeper.joinSyncRequestTurnsForTesting == before, "step 1 deferred: step 2 skipped")
-        #expect(await f.adapter.isJoiningInTurn(s1))
+        #expect(await f.keeper.requestedSyncTurnsForTesting[.resume, default: 0] == resumesBefore + 1, "step 1 ran")
+        // Required, not expected: the flip timeout is off, so a join left in a wrong state would
+        // hang the test at `join.value` instead of failing here.
+        try #require(await f.keeper.joinSyncRequestTurnsForTesting == before, "step 1 deferred: step 2 skipped")
+        try #require(await f.adapter.isJoiningInTurn(s1))
 
         await f.adapter.setWriterBackPressureOverrideForTesting(nil)
         await f.keeper.stepTickOnce()
-        #expect(await !f.adapter.isJoiningInTurn(s1), "the periodic phase flipped the join")
+        try #require(await !f.adapter.isJoiningInTurn(s1), "the periodic phase flipped the join")
 
         joinGate.open()
         await f.adapter.installHolds(nil)
@@ -686,7 +690,7 @@ struct TransportAdapterJoinFlipTests {
 
         _ = await f.adapter.debugResume(freezeToken: second.freezeToken)
         #expect(await f.keeper.joinSyncRequestTurnsForTesting == before + 1, "the next resume requested it")
-        #expect(await !f.adapter.isJoiningInTurn(ready.session))
+        try #require(await !f.adapter.isJoiningInTurn(ready.session))
 
         #expect(try await ready.finish(f))
     }
