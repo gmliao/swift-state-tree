@@ -59,12 +59,19 @@
 #   E4 one build: one step runs `swift build`, as exactly `swift build --build-tests` with
 #      `id: build`; every `swift test` in the job passes `--skip-build` and no flag but `--filter`
 #      and `--no-parallel` (another flag may need a build of its own), its arguments read as shell
-#      words, so `--skip-build` as `--filter`'s value doesn't count; every test step's `if:` is
+#      words, so `--skip-build` as `--filter`'s value doesn't count, and each line cut at its list
+#      operators outside quotes, so every `swift test` on it is read; every test step's `if:` is
 #      `${{ !cancelled() && steps.build.outcome == 'success' }}`, so no variant runs on missing or
-#      partial products; and the four variant steps (VARIANT_STEPS) are each one test step, so
-#      dropping or renaming a variant fails.
+#      partial products; the four variant steps (VARIANT_STEPS) are each one test step, so
+#      dropping or renaming a variant fails; and each variant step sets its own flags to false
+#      (VARIANT_FLAGS_OFF), so a variant can't keep its name and run the defaults.
 #   E5 the shared steps' scripts (`scripts/*.sh` or `.py`, and every script they name, followed)
 #      don't name a variable or its key (useSyncTables, typedLeafValues, perPlayerSyncTables). Textual: a script that builds a name from parts isn't seen.
+#
+# The rules read text, not commands, and catch the plain ways a change can break the reasoning
+# above. An edit that hides what it does on purpose passes them, for example `: swift test ...`
+# (runs no tests), `printf -v FILTER ...` or `FILTER+=...` in a test step, or a flow mapping
+# (`env: {...}`). Review catches those.
 #
 # Usage: scripts/check-variant-test-selection.sh [--self-test] [--package-json <file>]
 set -euo pipefail
@@ -371,6 +378,11 @@ TEST_IF = "      if: ${{ !cancelled() && steps.build.outcome == 'success' }}"
 TEST_OPTIONS = ("--skip-build", "--no-parallel", "--filter")
 # The variant steps (E4): each runs once, as a test step, so dropping or renaming one fails.
 VARIANT_STEPS = ("Tests", "Tests, sync tables off", "Tests, per-player sync tables off", "Run wall-clock tests")
+# The flags each variant step turns off (E4). Section 1 also checks the tables step's two.
+VARIANT_FLAGS_OFF = {
+    "Tests, sync tables off": ("USE_SYNC_TABLES", "TYPED_LEAF_VALUES"),
+    "Tests, per-player sync tables off": ("PER_PLAYER_SYNC_TABLES",),
+}
 # A shell assignment of a variable (`VAR=x swift test`, `export VAR=x`, `echo "VAR=x"` into a
 # file): it sets the variable where the step's env doesn't show it (E1).
 ASSIGNMENT = re.compile(r"(?<![\w-])(" + "|".join(VARIABLES) + r")=")
@@ -529,17 +541,55 @@ def expressions(code):
     return sorted(found)
 
 
-def test_option_errors(rest):
-    """What's wrong with one `swift test` invocation's arguments (`rest`, up to the first pipe or
-    list operator), read as shell words: `--skip-build` must be an option, not a `--filter` value."""
-    rest = rest.rstrip()
-    if rest.endswith("\\"):
+SHELL_LIST_OPERATORS = {"|", "|&", "||", "&&", ";", "&"}
+
+
+def swift_test_invocations(line):
+    """Each `swift test` on a script line, as its argument words: the line read as shell words,
+    cut at its list operators (`|`, `||`, `&&`, `;`, `&`), so a second invocation after one is
+    read too and an operator inside quotes isn't a cut. Redirections (`2>&1`, `> f`) are dropped.
+    Returns (invocations, error)."""
+    text = line.rstrip()
+    if text.endswith("\\"):
         # A line continued on the next: its options go on there, out of this check's view.
-        rest = rest[:-1]
+        text = text[:-1]
+    lexer = shlex.shlex(text.replace(FILTERED_RUN, "--filter FILTER"), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
     try:
-        words = shlex.split(rest.replace(FILTERED_RUN, "--filter FILTER"), posix=True)
+        tokens = list(lexer)
     except ValueError as error:
-        return [f"has a swift test line this check can't split ({error}): {rest.strip()!r}"]
+        return [], f"has a swift test line this check can't split ({error}): {line.strip()!r}"
+    commands, current = [], []
+    for token in tokens:
+        if token in SHELL_LIST_OPERATORS:
+            commands.append(current)
+            current = []
+        else:
+            current.append(token)
+    commands.append(current)
+    found = []
+    for words in commands:
+        starts = [k for k in range(len(words) - 1) if words[k] == "swift" and words[k + 1] == "test"]
+        if not starts:
+            continue
+        args, rest = [], words[starts[0] + 2:]
+        k = 0
+        while k < len(rest):
+            if rest[k][:1] in "<>":
+                # A redirection and its target; a file descriptor before it was its own word.
+                if args and args[-1].isdigit():
+                    args.pop()
+                k += 2
+                continue
+            args.append(rest[k])
+            k += 1
+        found.append(args)
+    return found, None
+
+
+def test_option_errors(words):
+    """What's wrong with one `swift test` invocation's argument words: `--skip-build` must be an
+    option, not a `--filter` value."""
     problems, options, i = [], [], 0
     while i < len(words):
         word = words[i]
@@ -656,10 +706,21 @@ def variant_errors(workflow, package_swift, read_script):
         if not any(l == TEST_IF for _, l in step):
             errors.append(f"{where}'s test step {name!r} doesn't have `{TEST_IF.strip()}`: it could run on missing or partial products (E4)")
         for line in run_lines([l for _, l in step]):
-            for m in re.finditer(r"\bswift test\b(.*)", line):
-                rest = re.split(r"\s(?:2>&1|\||>|&&|\|\||;)", m.group(1))[0]
-                for problem in test_option_errors(rest):
+            if not re.search(r"\bswift test\b", line):
+                continue
+            invocations, problem = swift_test_invocations(line)
+            if problem:
+                errors.append(f"{where}'s test step {name!r} {problem} (E4)")
+            for words in invocations:
+                for problem in test_option_errors(words):
                     errors.append(f"{where}'s test step {name!r} {problem} (E4)")
+        # Each variant step sets its own flag off: a step that keeps its name and turns its flag
+        # back on would run the defaults again, and its pins read their expectation from the env.
+        wanted = VARIANT_FLAGS_OFF.get(name, ())
+        env = step_env([l for _, l in step])
+        unset = [v for v in wanted if env.get(v) not in ('"false"', "'false'", "false")]
+        if unset:
+            errors.append(f"{where}'s test step {name!r} doesn't set {' and '.join(unset)} to false in its env: the variant would run the defaults (E4)")
     # E5: the shared steps' scripts.
     seen = set()  # a script named twice is read once
     for step in steps:
@@ -1002,6 +1063,15 @@ def variant_self_test():
          build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-builds\n'), scripts, manifest, "without --skip-build"),
         ("a doubled variant step fails",
          build(extra="    - name: Tests\n" + IF + "      run: swift test --skip-build\n"), scripts, manifest, "2 test steps named 'Tests'"),
+        # E4: every swift test on a line, cut at list operators outside quotes (#703 review)
+        ("a second swift test after && without --skip-build fails",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build && swift test\n'), scripts, manifest, "without --skip-build"),
+        ("a second swift test after ; without --skip-build fails",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: true; swift test --skip-build; swift test --filter X\n'), scripts, manifest, "without --skip-build"),
+        ("a quoted | in --filter's value is one word",
+         build(on="      env:\n        USE_SYNC_TABLES: \"true\"\n      run: swift test --skip-build --filter 'A | B' 2>&1 | tee on.log\n"), scripts, manifest, None),
+        ("a redirection's target isn't an option",
+         build(on='      env:\n        USE_SYNC_TABLES: "true"\n      run: swift test --skip-build > on.log 2> err.log\n'), scripts, manifest, None),
     ]
     # One field of today's shape changed at a time, in each variant step: its name (the variant
     # dropped), its if:, and its --skip-build.
@@ -1014,6 +1084,13 @@ def variant_self_test():
             ("renamed", step.replace(f"name: {variant}\n", f"name: {variant} (renamed)\n", 1), f"0 test steps named {variant!r}"),
             ("without its if:", step.replace(IF, "", 1), "could run on missing or partial products"),
             ("without --skip-build", step.replace(" --skip-build", "", 1), "without --skip-build"),
+        ] + [
+            # Its flags turned back on, or dropped (#703 review): the variant would run the defaults.
+            (f"with {flag} on", step.replace(f'{flag}: "false"', f'{flag}: "true"', 1), f"doesn't set {flag} to false")
+            for flag in VARIANT_FLAGS_OFF.get(variant, ())
+        ] + [
+            (f"without {flag}", step.replace(f'        {flag}: "false"\n', "", 1), f"doesn't set {flag} to false")
+            for flag in VARIANT_FLAGS_OFF.get(variant, ())
         ]:
             assert changed != step, (variant, change)
             cells.append((f"today's shape, {variant!r} {change}, fails", today[:start] + changed + today[end:], scripts, manifest, want))

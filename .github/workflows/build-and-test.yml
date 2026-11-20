@@ -444,7 +444,7 @@ jobs:
             echo "::error file=$f::$f timed out after ${file_timeout} s and was killed 10 s later (exit $rc); its log group holds Python's stack only if the SIGABRT reached faulthandler"
             failed+=("$f")
           elif grep -q 'timeout: sending signal ABRT to command' "$log"; then
-            echo "::error file=$f::$f timed out after ${file_timeout} s (exit $rc); Python's stack at the SIGABRT is in its log group"
+            echo "::error file=$f::$f timed out after ${file_timeout} s (exit $rc); its log group holds Python's stack if faulthandler got the SIGABRT"
             failed+=("$f")
           elif [ $rc -ne 0 ]; then
             echo "::error file=$f::$f failed (exit $rc)"
