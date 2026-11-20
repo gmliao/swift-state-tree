@@ -52,6 +52,6 @@ case_ sync-lag-default-change 1 '^FAIL  sync-lag-defaults' 'sed -i.bak "s/resync
 # A union merge of the plan index keeps both versions of a row one side changed.
 case_ plan-index-duplicate-row 1 '^FAIL  plan-index' 'grep -m1 "^| .*\\](2026-" Notes/plans/README.md >> Notes/plans/README.md'
 # A Swift block added to the Turns docs that no tested file contains (f515e11f turned main red so).
-case_ turns-doc-block-untested 1 '^FAIL  turns-doc-blocks' 'printf "\n\x60\x60\x60swift\nlet prePushProbe = 1\n\x60\x60\x60\n" >> docs/turns/README.md'
+case_ turns-doc-block-untested 1 'README.md: a Swift block in no tested file, starting: let prePushProbe = 1' 'printf "\n\x60\x60\x60swift\nlet prePushProbe = 1\n\x60\x60\x60\n" >> docs/turns/README.md'
 case_ gitignore-change-runs-ignore-readers 0 '^ok    multiroom-ignored' 'echo "# probe" >> .gitignore'
 exit $fail
