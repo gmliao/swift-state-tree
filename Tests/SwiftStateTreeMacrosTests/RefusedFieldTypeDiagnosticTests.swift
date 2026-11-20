@@ -114,6 +114,9 @@ struct RefusedFieldTypeDiagnosticTests {
         ("[Decimal]", "Decimal"),
         ("[String: Decimal]", "Decimal"),
         ("Foundation.Decimal", "Foundation.Decimal"),
+        ("Swift.Optional<Decimal>", "Decimal"),
+        ("[Decimal]?", "Decimal"),
+        ("(Int, Decimal)", "Decimal"),
     ]
 
     @Test("A synced Decimal is refused at compile time, at any depth", arguments: decimalSpellings)
@@ -165,5 +168,16 @@ struct RefusedFieldTypeDiagnosticTests {
             }
             """).isEmpty)
         #expect(diagnostics(stateNode("Money.Decimal")).isEmpty)
+    }
+
+    @Test("The serverOnly skip reads the policy, not the text: a policy closure that names serverOnly is still checked")
+    func serverOnlyFromThePolicy() {
+        let messages = diagnostics("""
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(.perPlayer({ value, serverOnly in value })) var value: Decimal = 0
+            }
+            """)
+        #expect(messages.contains { $0.hasPrefix("property 'value' can't have 'Decimal' in its type") }, "\(messages)")
     }
 }

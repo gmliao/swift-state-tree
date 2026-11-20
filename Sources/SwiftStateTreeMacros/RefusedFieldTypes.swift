@@ -101,7 +101,7 @@ func diagnoseRefusedFieldTypes(
                 attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Sync"
             }
             guard let sync else { continue }
-            if sync.arguments?.trimmedDescription.contains("serverOnly") == true { fieldKinds.remove(.decimal) }
+            if StateNodeBuilderMacro.isServerOnlySync(sync) { fieldKinds.remove(.decimal) }
         }
         for binding in variable.bindings {
             guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
@@ -143,7 +143,8 @@ private struct DecimalFieldTypeDiagnostic: DiagnosticMessage {
     var message: String {
         "property '\(propertyName)' can't have '\(spelling)' in its type: Decimal has no wire form (a JSON encoding "
             + "writes a Decimal NaN as a bare NaN, which isn't JSON, and the MessagePack encoders refuse it); store an "
-            + "integer of the smallest unit (cents) or a String (#597)"
+            + "integer of the smallest unit (cents) or a String (#597). A type of your own named Decimal: "
+            + "qualify it with its module"
     }
 
     var diagnosticID: MessageID { MessageID(domain: "SwiftStateTreeMacros", id: "refusedDecimalFieldType") }

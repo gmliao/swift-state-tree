@@ -113,7 +113,7 @@ class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會
 
 - **編譯期，** 宣告的型別寫出它時：`Decimal` 或 `Foundation.Decimal`，不論位於哪一層，例如 `[String: Decimal]`。`@StateNodeBuilder` 檢查 `.serverOnly` 以外的每個 `@Sync` 欄位，`@SnapshotConvertible` 檢查每個 stored property，`@Payload` 檢查每個欄位。
 - **註冊時，** typealias 讓語法看不到、但欄位清單看得到時。同步欄位回報為 `.decimalField`。event、action、其 response 或 server input 的欄位在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount`。
-- **第一次送出時，** 前兩者都看不到的：未註冊就送出的 event、執行時放進 `Decimal` 的 `AnyCodable`，以及一般 `Codable` 型別（不列出欄位）裡的 `Decimal`。JSON 編碼與 MessagePack encoder 都拒絕它，land 結束（`.eventEncode` 或 `.responseEncode`）。
+- **第一次送出時，** 前兩者都看不到的：未註冊就送出的 event、執行時放進 `Decimal` 的 `AnyCodable`，以及一般 `Codable` 型別（不列出欄位）裡的 `Decimal`。JSON 編碼與 MessagePack encoder 都拒絕它，land 結束（`.eventEncode` 或 `.responseEncode`）。限制：在 JSON 編碼中，這個拒絕是編碼前另外走的一遍，所以手寫的 `encode(to:)` 若攔下這個錯誤、改寫成別的形式，就會通過檢查，之後實際編碼寫出的是那個替代形式。
 
 `.serverOnly` 或 `@Internal` 欄位可以放 `Decimal`。resolver output 也可以，它不會上 wire；它的 replay 紀錄由 #707 處理。
 

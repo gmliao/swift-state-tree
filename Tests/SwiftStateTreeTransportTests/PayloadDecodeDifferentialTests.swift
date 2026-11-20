@@ -374,9 +374,12 @@ struct PayloadDecodeDifferentialTests {
                 _ = try MessagePackValueEncoder().encode(Box(d: decimal))
             }
         }
-        // An NSDecimalNumber in an AnyCodable, on every platform.
+        // An NSDecimalNumber in an AnyCodable, on every platform, boxed once or twice.
         #expect(throws: MessagePackDirectEncodingError.self) {
             _ = try MessagePackDirectEncoder().encodeAnyCodable(AnyCodable(NSDecimalNumber(string: "2.5")))
+        }
+        #expect(throws: MessagePackDirectEncodingError.self) {
+            _ = try MessagePackDirectEncoder().encodeAnyCodable(AnyCodable(AnyCodable(NSDecimalNumber(string: "2.5"))))
         }
         for value: MessagePackValue in [.int(2), .double(2.5), .string("2.5")] {
             #expect(throws: DecodingError.self, "\(value)") {

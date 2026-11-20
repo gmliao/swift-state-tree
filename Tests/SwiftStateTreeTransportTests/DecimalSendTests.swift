@@ -38,6 +38,72 @@ struct DecimalSendAction: ActionPayload {
     let tag: String
 }
 
+/// 128-bit integers (SE-0425): their `encode(to:)` calls the containers' concrete overloads.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
+struct DecimalSendWide: Codable, Sendable {
+    let big: Int128
+    let ubig: UInt128
+    let items: [Int128]
+}
+
+/// Calls the single-value and unkeyed containers' 128-bit overloads directly, as a hand-written
+/// `encode(to:)` does; an array's elements go through the generic `encode` instead.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
+struct DecimalSendWideManual: Encodable {
+    let single: DecimalSendWideSingle
+    let pair: DecimalSendWidePair
+}
+
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
+struct DecimalSendWideSingle: Encodable {
+    let value: Int128
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
+struct DecimalSendWidePair: Encodable {
+    let low: Int128
+    let high: UInt128
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(low)
+        try container.encode(high)
+    }
+}
+
+/// Records the coding paths its `encode(to:)` sees, for comparing the scan with `JSONEncoder`.
+final class DecimalSendPathLog: @unchecked Sendable {
+    var paths: [String] = []
+}
+
+struct DecimalSendPathProbe: Encodable {
+    let log: DecimalSendPathLog
+    func encode(to encoder: Encoder) throws {
+        log.paths.append(encoder.codingPath.map(\.stringValue).joined(separator: "/"))
+        try "x".encode(to: encoder)
+    }
+}
+
+/// An element of an array, a keyed `superEncoder()` and an unkeyed one: the path shapes a
+/// path-dependent `encode(to:)` could branch on.
+struct DecimalSendPathHolder: Encodable {
+    let log: DecimalSendPathLog
+    enum Keys: String, CodingKey { case list, base, inner, named }
+    func encode(to encoder: Encoder) throws {
+        var keyed = encoder.container(keyedBy: Keys.self)
+        try keyed.encode([DecimalSendPathProbe(log: log), DecimalSendPathProbe(log: log)], forKey: .list)
+        try DecimalSendPathProbe(log: log).encode(to: keyed.superEncoder())
+        var unkeyed = keyed.nestedUnkeyedContainer(forKey: .base)
+        try DecimalSendPathProbe(log: log).encode(to: unkeyed.superEncoder())
+        var nested = keyed.nestedContainer(keyedBy: Keys.self, forKey: .inner)
+        try DecimalSendPathProbe(log: log).encode(to: nested.superEncoder())
+        try DecimalSendPathProbe(log: log).encode(to: nested.superEncoder(forKey: .named))
+    }
+}
+
 /// A land whose tick emits `event` and syncs.
 private func makeDecimalEmitLand(_ event: @escaping @Sendable () -> any ServerEventPayload) -> LandDefinition<UntypedPayloadState> {
     Land("decimal-emit", using: UntypedPayloadState.self) {
@@ -113,6 +179,37 @@ struct DecimalSendTests {
             #expect(context.codingPath.map(\.stringValue).suffix(2) == ["holder", "amount"], "\(context.codingPath)")
             #expect(context.debugDescription.contains("#597"))
         }
+    }
+
+    @Test("128-bit integers and Data pass the scan on each JSON encoder; a double-boxed NSDecimalNumber is refused")
+    func scanPassesWideIntegersAndData() throws {
+        for (encoderName, encoder) in jsonEncoders {
+            if #available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *) {
+                let wide = DecimalSendWide(big: Int128.max, ubig: UInt128.max, items: [Int128.min, 0])
+                try DecimalScan.check(wide)
+                let manual = DecimalSendWideManual(
+                    single: DecimalSendWideSingle(value: Int128.min), pair: DecimalSendWidePair(low: -1, high: UInt128.max))
+                try DecimalScan.check(manual)
+                #expect(!(try encoder.encode(eventMessage(DecimalSendAnyEvent(value: AnyCodable(manual))))).isEmpty, "\(encoderName)")
+                let data = try encoder.encode(eventMessage(DecimalSendAnyEvent(value: AnyCodable(wide))))
+                #expect(!data.isEmpty, "\(encoderName)")
+            }
+            let bytes = try encoder.encode(eventMessage(DecimalSendAnyEvent(value: AnyCodable(Data(repeating: 7, count: 4096)))))
+            #expect(!bytes.isEmpty, "\(encoderName)")
+            #expect(throws: EncodingError.self, "\(encoderName)") {
+                _ = try encoder.encode(eventMessage(DecimalSendAnyEvent(value: AnyCodable(AnyCodable(NSDecimalNumber(string: "2.5"))))))
+            }
+        }
+    }
+
+    @Test("The scan gives an encode(to:) the coding paths JSONEncoder gives it: array indexes and superEncoder keys")
+    func scanPathsMatchJSONEncoder() throws {
+        let scanned = DecimalSendPathLog()
+        try DecimalScan.check(DecimalSendPathHolder(log: scanned))
+        let encoded = DecimalSendPathLog()
+        _ = try JSONEncoder().encode(DecimalSendPathHolder(log: encoded))
+        #expect(scanned.paths == encoded.paths, "scan \(scanned.paths), JSONEncoder \(encoded.paths)")
+        #expect(scanned.paths.count == 6)
     }
 
     @Test("An unregistered event with a nested Decimal NaN ends the land with .eventEncode, sending nothing in the failing tick",

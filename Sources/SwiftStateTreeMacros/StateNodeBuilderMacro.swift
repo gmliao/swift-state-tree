@@ -253,6 +253,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
         attribute.arguments?.as(LabeledExprListSyntax.self)?.first(where: { $0.label == nil })
     }
 
+    /// Whether a `@Sync` attribute's policy is `.serverOnly`, read from the syntax.
+    static func isServerOnlySync(_ attribute: AttributeSyntax) -> Bool {
+        extractPolicyType(from: attribute) == .serverOnly
+    }
+
     /// Extract policy type from @Sync attribute
     private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
         guard attribute.arguments?.as(LabeledExprListSyntax.self) != nil else {
