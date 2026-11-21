@@ -1,6 +1,6 @@
 # #716 S1a-2: the budget through generated members and the sync tables
 
-Rev 2, for review. Rev 1 (04fff7e8) was NOT GO, with two must-fixes and three shoulds; §8 lists how rev 2 answers each. Parent: [Deep or cyclic values fail fast](2026-11-21-deep-values-fail-fast.md) (§3.1, §3.3, §4 S1a). Base: main at 397acea0 (#735 merged).
+Rev 2, for review (a37151e7, with §3.3's conformance bullets corrected). Rev 1 (04fff7e8) was NOT GO, with two must-fixes and three shoulds; §8 lists how rev 2 answers each. Parent: [Deep or cyclic values fail fast](2026-11-21-deep-values-fail-fast.md) (§3.1, §3.3, §4 S1a). Base: main at 397acea0 (#735 merged).
 
 ## 1. Why: two paths #735 left unbounded
 
@@ -45,11 +45,12 @@ S1a-3 follows, as agreed: the refusal path, §3.4. So does S1a-4: frame shapes, 
 3. **The collection fast paths, by conformance.**
    - **The problem.** `make` matches `[PlayerID: SnapshotValueConvertible]`, `[PlayerID: any StateNodeProtocol]` and `[String: SnapshotValueConvertible]` (`SnapshotValue.swift` :346, :355, :369) with an existential collection cast. That cast converts each element, so an `[Any]` or `[String: Any]` holding an `Optional<Any>` chain is unwrapped by the runtime, with no hop counted. Matching only the exact dynamic type would fix that, but a concrete `[PlayerID: PlayerState]` never has exactly that type. Every such field would then go through the `[PlayerID: Any]` cast on each sync, which boxes each value before `make` dispatches it again. The output is the same, but the fast path is lost.
    - **The design.** It follows Codable's `extension Array: Encodable where Element: Encodable`: conditional conformances, checked once on the type's metadata, never element by element.
-     - Two package protocols, because Swift allows only one conditional conformance of a type to a given protocol:
-       - `_SnapshotConvertibleMap`, on `Dictionary where Key == PlayerID, Value: SnapshotValueConvertible` and `where Key == String, ...`;
-       - `_StateNodeMap`, on `Dictionary where Key == PlayerID, Value: StateNodeProtocol`.
+     - A package `_SnapshotMapKey` gives a key's wire string. `PlayerID` and `String` conform to it.
+     - Two package protocols, one per element kind. Swift allows only one conditional conformance of `Dictionary` to a given protocol, so one protocol can't cover both kinds:
+       - `_SnapshotConvertibleMap`, on `Dictionary where Key: _SnapshotMapKey, Value: SnapshotValueConvertible`;
+       - `_StateNodeMap`, on `Dictionary where Key: _SnapshotMapKey, Value: StateNodeProtocol`.
 
-       A dictionary can't conform twice to one protocol with different key constraints. So each protocol is on `Dictionary where Key: _SnapshotMapKey`, with `PlayerID` and `String` conforming to a package `_SnapshotMapKey` that gives the wire key.
+       Today's node-map fast path takes only `PlayerID` keys (:355). With `String` keys it also catches `[String: N]` of nodes, which today goes through `[String: Any]`; the output is the same, since each value still goes through `make`.
      - Each protocol has one requirement. It converts the collection's elements within a budget, calling `make` on each element, so the `StateNodeProtocol`-first order (#175) holds.
      - `make` tries `value as? any _StateNodeMap` first, and then `value as? any _SnapshotConvertibleMap`. An `[Any]` or `[String: Any]` fails both at once, since `Any` doesn't conform, and falls through to the `[String: Any]` and `[PlayerID: Any]` casts. Those convert each element to `Any`, which never unwraps an `Optional`. A static `[String: any SnapshotValueConvertible]` fails both too, since an existential doesn't conform to its own protocol, and takes the same fallback. `@Sync` refuses `any P`, so that shape comes only from a hand-written conversion.
    - **Concrete element types match the exact dynamic type:** `[SnapshotValue]`, `[String: SnapshotValue]`, `[PlayerID: SnapshotValue]`, `[String]` and `[Int]` (:304 to :338), through `Swift.type(of: value) == [String].self` and the like.
