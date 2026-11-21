@@ -302,6 +302,40 @@ A periodic game tick is a timer that re-arms itself, not a `while` loop. The tic
 
 API: `timer(at:for:_:)`, `now`, `TurnClock`, `TurnInstant`.
 
+### Follow-ups
+
+A *follow-up* is an input a key arms for itself, to step once later: "publish the scores after this round", however many scores the round changed. It is named by its key and a *slot* (the machine's `FollowUpSlot` type), and one is pending per key and slot. An arm while one is pending *joins* it and changes nothing: the first arm's input and trigger stand. The id an arm returns names the follow-up in `handleAbandoned` only. It isn't a request id: `cancel(id)` does nothing for it, and `reply(after: id)` publishes at once.
+
+```swift
+case .round(let points):
+    for (player, gained) in points.enumerated() {
+        add(gained, to: player)
+        // One publish per round, however many scores changed: later arms join the first.
+        turn.followUp(.publish, .publish, of: .board, .afterBatch)
+    }
+case .publish:
+    turn.emit(scores, for: .board)
+```
+
+`.afterBatch` steps it in a new batch, as the actor's own job after the current one. `.afterWork(effect, deadline:)` steps it when `perform(effect)` returns, such as "sync again once the writer has drained"; a deadline that passes first closes it, and `handleAbandoned(id, .deadline)` steps. Either way it steps as a control input, and its slot is freed before it steps, so its step may arm the next one.
+
+A follow-up belongs to its key's generation. Ending or superseding the key closes it unrun, with `handleAbandoned(id, .keyEnded)`, so one armed under an old binding never runs under the new one. A step that does the work itself retires the pending one:
+
+```swift
+// Publishing now does the pending follow-up's work: retire it, so it doesn't run too.
+turn.consumeFollowUp(.publish, of: .board)
+turn.emit(scores, for: .board)
+```
+
+A test waits for every follow-up to step or close, instead of sleeping:
+
+```swift
+await board.send(.round(points: [3, 1, 4]))
+await board.waitForQuiescence()
+```
+
+API: `followUp`, `consumeFollowUp`, `followUpPending`, `FollowUpTrigger`, `FollowUpArming`, `FollowUpSlot`, `waitForQuiescence`, `pendingWork`, `TurnWork`.
+
 ### Batch and `maxReleasesPerBatch`
 
 A *batch* is the steps one entry into the actor causes: a `send`, a `sendAndWait`, or a result coming back. When a load's result releases a hold, the queued joins behind it step in the same batch. There is no run loop between entries. The `maxReleasesPerBatch` caps how many queued inputs a release lets step in one batch; the rest continue in a later one, so a long queue behind one hold can't keep other callers out. Limit: it counts only queued inputs that a hold's release lets step; abandonments and sends that arrive during the batch don't count.
@@ -355,6 +389,7 @@ API: `CallerCancellation`.
 | Input policy | Does this input wait, and whose is it? | `InputPolicy`, `queue` |
 | Withdraw token | Can the sender give up an input before it steps? | `WithdrawToken`, `revoke` |
 | Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
+| Follow-up | How does a key ask for one step later, however often it asks? | `followUp`, `consumeFollowUp`, `waitForQuiescence` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
 | What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |

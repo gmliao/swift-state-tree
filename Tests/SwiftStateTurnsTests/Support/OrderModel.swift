@@ -1,6 +1,7 @@
 // The machine the generated-order harness drives (GeneratedOrderTests). Two owner keys (0, 1),
 // two hold keys (10, 11), scoped and tokened work sent or called, holding requests with
-// deadlines, cancellation, `queue(behind:)`, timers, `close` and `endAll`. It keeps its own view
+// deadlines, cancellation, `queue(behind:)`, timers, `.afterBatch` follow-ups (two slots per
+// owner, armed and consumed), `close` and `endAll`. It keeps its own view
 // of what is open, live, held, armed and queued, and records a violation whenever a step
 // contradicts an invariant (§5) that it can observe. A step that resolves asynchronous work (a
 // completion, an abandonment, a timer) starts a `notify` effect, which is how the harness learns
@@ -34,6 +35,20 @@ struct OrderModel: TurnMachine {
         case fired(owner: Int, seq: Int)
         case close
         case endAll
+        /// Follow-ups: arm one in `slot` of `owner`; consume it; the follow-up's own input.
+        case armFollowUp(owner: Int, slot: Int, label: Int)
+        case consumeFollowUp(owner: Int, slot: Int)
+        case followUpRan(label: Int)
+    }
+
+    /// The machine's mirror of a pending follow-up: its id, owner, slot, and the owner's end count
+    /// when it was armed (its generation).
+    @PlainData
+    struct FollowUpMirror: Sendable {
+        var id: RequestID
+        var owner: Int
+        var slot: Int
+        var ends: Int
     }
 
     enum Effect: Sendable {
@@ -44,6 +59,7 @@ struct OrderModel: TurnMachine {
     typealias Output = OrderOutput
     typealias Key = Int
     typealias Reply = Int
+    typealias FollowUpSlot = Int
 
     var violations: [String] = []
     /// Request seq → id, for the requests this machine believes open.
@@ -75,6 +91,13 @@ struct OrderModel: TurnMachine {
     var droppedQueued: Set<Int> = []
     /// Handlers running now; more than one is a step entered from inside a step (invariants 2, 15).
     var depth: Int = 0
+    /// Pending follow-ups by label, and their labels by id and by `owner * 10 + slot`.
+    var followUps: [Int: FollowUpMirror] = [:]
+    var followUpLabels: [RequestID: Int] = [:]
+    var followUpBySlot: [Int: Int] = [:]
+    /// Follow-ups that stepped, and those closed unrun.
+    var ranFollowUps: Int = 0
+    var closedFollowUps: Int = 0
 
     func inputPolicy(for input: Input) -> InputPolicy<Int> {
         switch input {
@@ -183,6 +206,47 @@ struct OrderModel: TurnMachine {
             timers.removeAll()
             droppedQueued.formUnion(queued.subtracting(steppedWork))
             for seq in open.keys.sorted() { markAbandoned(seq) }
+        case .armFollowUp(let owner, let slot, let label):
+            let refusable = ended || !turn.isLive(owner)
+            let pending = followUpBySlot[owner * 10 + slot]
+            switch turn.followUp(.followUpRan(label: label), slot, of: owner, .afterBatch) {
+            case .armed(let id):
+                if refusable { violate("follow-up \(label) armed under a key that isn't live") }
+                if let pending { violate("follow-up \(label) armed while \(pending) was pending in its slot (invariant 19)") }
+                followUps[label] = FollowUpMirror(id: id, owner: owner, slot: slot, ends: ends[owner] ?? 0)
+                followUpLabels[id] = label
+                followUpBySlot[owner * 10 + slot] = label
+            case .joined(let id):
+                if pending == nil || followUps[pending ?? -1]?.id != id {
+                    violate("follow-up \(label) joined \(id), but the slot's pending one is \(String(describing: pending))")
+                }
+            case .refused:
+                if !refusable { violate("follow-up \(label) refused under a live key") }
+            }
+        case .consumeFollowUp(let owner, let slot):
+            let pending = followUpBySlot.removeValue(forKey: owner * 10 + slot)
+            let consumed = turn.consumeFollowUp(slot, of: owner)
+            switch (pending, consumed) {
+            case (let label?, .followUpRan(let got)?):
+                if got != label { violate("consume of \(owner)/\(slot) returned \(got), the mirror has \(label)") }
+                if let mirror = followUps.removeValue(forKey: label) { followUpLabels.removeValue(forKey: mirror.id) }
+            case (nil, nil):
+                break
+            default:
+                violate("consume of \(owner)/\(slot): the mirror has \(String(describing: pending)), the core returned \(String(describing: consumed))")
+            }
+        case .followUpRan(let label):
+            // Invariant 18: steps once, while pending, under the generation it was armed in.
+            guard let mirror = followUps.removeValue(forKey: label) else {
+                violate("follow-up \(label) stepped after it was consumed or closed, or twice")
+                return
+            }
+            if (ends[mirror.owner] ?? 0) != mirror.ends || ended {
+                violate("follow-up \(label) stepped after its key's generation ended")
+            }
+            followUpLabels.removeValue(forKey: mirror.id)
+            followUpBySlot.removeValue(forKey: mirror.owner * 10 + mirror.slot)
+            ranFollowUps += 1
         }
     }
 
@@ -200,6 +264,17 @@ struct OrderModel: TurnMachine {
     mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<OrderModel>) {
         enter()
         defer { depth -= 1 }
+        if let label = followUpLabels.removeValue(forKey: request) {
+            // A follow-up closed unrun: only by its key's end, a supersede or endAll.
+            guard let mirror = followUps.removeValue(forKey: label) else { return }
+            if why != .keyEnded { violate("follow-up \(label) closed with \(why)") }
+            if !ended, (ends[mirror.owner] ?? 0) == mirror.ends {
+                violate("follow-up \(label) closed while its key's generation was live")
+            }
+            followUpBySlot.removeValue(forKey: mirror.owner * 10 + mirror.slot)
+            closedFollowUps += 1
+            return
+        }
         guard let seq = seqOf[request] else {
             violate("an abandonment for a request this machine never made")
             return

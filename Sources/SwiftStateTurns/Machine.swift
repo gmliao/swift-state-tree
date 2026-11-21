@@ -17,6 +17,9 @@ public protocol TurnMachine: Sendable {
     /// A synchronous collaborator's questions, answered as a step (`TurnActor.query`).
     associatedtype Query = Never
     associatedtype Answer = Never
+    /// Names a key's coalesced follow-ups apart (`Turn.followUp`): one pending per key and slot.
+    /// Default: none.
+    associatedtype FollowUpSlot: Hashable & Sendable = Never
 
     /// How `input` is admitted. Default: normal, with no hold and no scope.
     func inputPolicy(for input: Input) -> InputPolicy<Key>

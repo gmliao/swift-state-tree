@@ -50,6 +50,8 @@ struct DemoMachine: TurnMachine {
         case nowAndDeadline(job: Int, deadline: Duration)
         case runMark(String)
         case issueKey(Int)
+        // Follow-ups.
+        case gatedFollowUp(job: Int, gate: String, deadline: Duration?) // starts the job, arms `.finished` after a work gate
         // Lifecycle and tests.
         case shutdown
         case teardown
@@ -87,6 +89,8 @@ struct DemoMachine: TurnMachine {
     typealias Output = Int
     typealias Reply = Int
     typealias Answer = Int
+    /// One follow-up slot per job key.
+    typealias FollowUpSlot = Int
 
     @PlainData
     struct CountWaiter: Sendable {
@@ -158,6 +162,9 @@ struct DemoMachine: TurnMachine {
             if let request = turn.request(.work(job: job, gate: gate), for: .job(job)) {
                 jobRequests[request] = job
             }
+        case .gatedFollowUp(let job, let gate, let deadline):
+            turn.start(.job(job))
+            turn.followUp(.finished(job: job), 0, of: .job(job), .afterWork(.work(job: job, gate: gate), deadline: deadline))
         case .finished(let job):
             jobRequests = jobRequests.filter { $0.value != job }
             note("finished \(job)")
