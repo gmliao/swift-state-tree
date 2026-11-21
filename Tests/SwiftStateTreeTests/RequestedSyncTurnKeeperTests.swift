@@ -63,6 +63,7 @@ private final class KeptEventsReportingTransport: LandKeeperTransport, @unchecke
         }
         return InTurnSyncOutput(.committed(clearDirtyFlags: true), syncStream: [], keepsEvents: kept)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 @Suite("The keeper's requested sync turns (#546 L2a)", .timeLimit(.minutes(1)))

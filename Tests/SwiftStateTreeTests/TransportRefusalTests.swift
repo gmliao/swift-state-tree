@@ -4,12 +4,19 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
-/// Doesn't opt in: the protocol's default `runsSyncPhaseInTurn` (false).
+/// Doesn't opt in: `runsSyncPhaseInTurn` answers false (it has no default since #546 L2d-3).
 private actor NonOptingPort: LandKeeperTransport {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
+    nonisolated func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+    nonisolated func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S, events: [InTurnServerEvent], includeSync: Bool, recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(.unsupported)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// Opts in for one keeper only, as the adapter does (identity): attached to any other keeper it
@@ -31,6 +38,7 @@ private final class OneKeeperPort: LandKeeperTransport, @unchecked Sendable {
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let refusalMessage = "a live keeper's transport must run its sync phase in turn"

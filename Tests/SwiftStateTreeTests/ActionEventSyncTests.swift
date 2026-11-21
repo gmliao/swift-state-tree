@@ -142,6 +142,7 @@ final class MockLandKeeperTransport: LandKeeperTransport, @unchecked Sendable {
             observed = []
         }
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 // MARK: - Tests

@@ -380,6 +380,7 @@ private final class RecordingTransport: LandKeeperTransport, @unchecked Sendable
         lock.withLock { entries.append(contentsOf: encoded) }
         return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func makeLiveKeeper(

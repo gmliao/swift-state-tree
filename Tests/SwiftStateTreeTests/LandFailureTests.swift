@@ -124,6 +124,7 @@ private final class FailingInTurnTransport: LandKeeperTransport, @unchecked Send
         guard failing else { return .committed(clearDirtyFlags: true) }
         return .landFailed(LandFailure(kind: .syncPlan, detail: "test plan threw", position: LandFailurePosition(stage: .syncPhase)))
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")

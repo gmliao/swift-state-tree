@@ -165,6 +165,7 @@ private final class ShutdownInTurnTransport: LandKeeperTransport, @unchecked Sen
         }
         return includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// Counts arrivals at a hold point, so a test holds only the first.

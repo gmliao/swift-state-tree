@@ -386,6 +386,7 @@ func testCtxEmitEventQueuesAndFlushes() async throws {
             lock.withLock { received.append(contentsOf: events.map(\.event)) }
             return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
         }
+        func waitForWriterDrainForInTurnSync() async {}
     }
     let transport = RecordingTransport()
     

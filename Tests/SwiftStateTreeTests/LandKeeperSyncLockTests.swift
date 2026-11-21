@@ -108,6 +108,7 @@ private final class DirtyFlagsPhaseSpy: LandKeeperTransport, @unchecked Sendable
         lock.withLock { seen.append(state.getDirtyFields()) }
         return InTurnSyncOutput(.committed(clearDirtyFlags: clearDirtyFlags))
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// One sync-only turn through `spy`, which must commit.

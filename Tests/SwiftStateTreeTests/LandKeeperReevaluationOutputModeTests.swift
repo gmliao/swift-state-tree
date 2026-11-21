@@ -54,6 +54,13 @@ private actor MockTransport: LandKeeperTransport {
     func eventCount() -> Int {
         sentEvents.count
     }
+    nonisolated func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+    nonisolated func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S, events: [InTurnServerEvent], includeSync: Bool, recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(.unsupported)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// A land with only a sync loop, hourly, so the test drives each iteration by hand.

@@ -80,6 +80,8 @@ private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Send
             return result
         }
     }
+    /// At once: it defers only the counted phases (`deferNext`), so a retry commits.
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// A tick-loop clock on real time that reports the loop's first `sleepUntil`. The loop

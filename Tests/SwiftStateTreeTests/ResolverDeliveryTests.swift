@@ -137,6 +137,7 @@ private final class InTurnTransport: LandKeeperTransport, @unchecked Sendable {
     ) -> InTurnSyncResult {
         includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func makeDeliveryKeeper(tick: Bool, inTurn: Bool = false) async -> LandKeeper<DeliveryTestState> {

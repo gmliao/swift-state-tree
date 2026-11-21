@@ -145,6 +145,7 @@ private final class DestroyFlag: LandKeeperTransport, @unchecked Sendable {
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// A keeper for mode `mode`; its initialization runs on the first call, in that call's scope.

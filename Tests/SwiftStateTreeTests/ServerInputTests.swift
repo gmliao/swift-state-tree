@@ -207,6 +207,7 @@ private final class SIInTurnTransport: LandKeeperTransport, @unchecked Sendable 
         lock.withLock { inTurn += events.count }
         return includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// Counts the keeper's input drain ends (its in-turn probe), so a test can wait for a drain

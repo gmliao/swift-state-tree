@@ -21,6 +21,7 @@ private final class SettlePortFake: LandKeeperSettlePort, @unchecked Sendable {
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(.notRequested, syncStream: [], settle: .empty(membershipEpoch: 0))
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func isSettled(_ outcome: LandKeeper<RoutingPinState>.SettleTurnOutcome) -> Bool {
