@@ -6,7 +6,8 @@
 // kills the process with a signal, which the caller records from the exit status.
 //
 // Usage: DepthProbe --stage <make|full|json|pack|unpack|pack-unbounded|unpack-unbounded|
-//                           optional-any|optional-any-full|optional-array|release>
+//                           optional-any|optional-any-full|optional-array|
+//                           optional-any-unbounded|optional-array-unbounded|release>
 //                   --depth <n>
 //                   --context <pool|thread> [--stack-kib <n>]
 
@@ -64,6 +65,9 @@ func optionalArrayChain(_ depth: Int) -> Any {
     for _ in 0..<depth { value = [Optional<Any>.some(value) as Any] as [Any] }
     return value
 }
+
+/// A budget no probed value spends: `NestingBudget(containers:hops:)` is `package`.
+let unboundedBudget = NestingBudget(containers: Int.max, hops: Int.max)
 
 /// `depth` one-element MessagePack arrays around a nil, as bytes.
 func nestedBytes(_ depth: Int) -> Data {
@@ -150,6 +154,16 @@ func runStage(_ o: Options) -> String? {
             let value = optionalArrayChain(o.depth)
             keepAlive.keep(value)
             keepAlive.keep(try SnapshotValue.make(from: value))
+        case "optional-any-unbounded":
+            // The limited entry point with a budget no chain reaches: where the unwrap path's
+            // own recursion would overflow, for the hop limit's margin.
+            let value = optionalAnyChain(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.make(from: value, budget: unboundedBudget))
+        case "optional-array-unbounded":
+            let value = optionalArrayChain(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.make(from: value, budget: unboundedBudget))
         case "release":
             // The uniquely owned tree's deinit recurses once per level.
             var value: SnapshotValue? = nestedSnapshot(o.depth)
