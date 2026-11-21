@@ -57,7 +57,7 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 | 轉成相同字串的 dictionary key | conversion 拋出 `SyncError.collidingKeys`，land 依任何拋出錯誤的 conversion 處理而結束。只有函式庫自己的 conversion 會檢查：自訂 `toSnapshotValue()` 自行建立 `.object` 時，key 在函式庫看到之前就已合併，這仍屬該型別自己的約定 | 已符合（#535 D8） |
 | 編碼無法承載的 patch（例如 JSON 中的非有限數） | 不論在哪種 frame，land 都以 `syncEncode` 結束：合併廣播 frame（`encodeMergedBroadcastFrameOrFail`）、per-player 或合併式 frame、row addressing 表格的 row（`planPerPlayerFrames`、`stateFrameEncodeFailure`）。不會去掉它重新編碼，失敗的 cycle 不送出任何東西 | 已符合（#535 第 8、9、10 列） |
 | 路徑在 schema 之外的 patch | 同上一列，並計入 `unmappedPathPatches`（一次失敗計一次） | 已符合（#535 D6）。目前全為 `let` 的 `@SnapshotConvertible` struct 在 schema 中沒有其下的路徑（#566） |
-| 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。加入者獨立的 firstSync 不是 turn：其 plan 拋出錯誤時，會關閉 output gate 並提交失敗，keeper 將它當作 input 套用，結束 land，不排 follow-up（第 16 列） | 已符合 |
+| 拋出錯誤的同步 plan | 第一次拋出錯誤就結束 land，其 session 以 4016 關閉，不重試。keeper 在同一個 turn 結束它（`applyInTurnSyncResult`）。Debug freeze 的 settle 也是 sync-only turn：其 plan 拋出錯誤時在該 turn 結束 land，freeze 則丟出該失敗。加入者獨立的 firstSync 不是 turn：其 plan 拋出錯誤時，會關閉 output gate 並提交失敗，keeper 將它當作 input 套用，結束 land，不排 follow-up（第 16 列） | 已符合 |
 | 單一玩家的狀態 frame 完全無法編碼 | land 結束；失敗的 cycle 不送任何東西，其 session 以 4016 關閉（`planPerPlayerFrames`） | 已符合（#535 第 10、12 列） |
 | resync 或第一次 view 的完整 view 無法編碼 | 第一次失敗就結束 land，不重試；不再送出 4012（`planPerPlayerFrames`、`planFirstSync`） | 已符合（#535 第 11、13 列） |
 | 編碼失敗的 server event | opcode 107：合併 body 失敗的 event 改以獨立 frame 送出；完全沒有進入任何 frame 的 event、event frame 無法 pack，或合併 state 與 event 的 frame 無法 pack，會結束 land（`enqueueEventSynchronously`、`appendEventFrames`、`encodeMergedBroadcastFrame`）。未使用 opcode 107：frame 無法編碼的 event 結束 land；目標目前沒有接收者的 event 不算遺失 | 已符合（#535 第 17 列） |
