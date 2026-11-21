@@ -1,8 +1,18 @@
 # A closed output gate stops every reply, and the keeper sees a pending failure before its next phase (#696, #704)
 
-Rev 2, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main e28f1861 (#724 moved some `TransportAdapter.swift` lines by one or two since rev 1; they are updated here). "TA" is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, "LK" is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, "LR" is `Sources/SwiftStateTreeTransport/LandRouter.swift`.
+Rev 3, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 7170a8e3, the current code; no source file changed since a7ed4d2b. "TA" is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, "LK" is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, "LR" is `Sources/SwiftStateTreeTransport/LandRouter.swift`.
 
-Rev 1 got NOT GO from Review, with 1 must-fix and 5 shoulds. Rev 2 makes these changes:
+Review on rev 2 returned NOT GO, with 2 must-fixes, both in the text. Rev 3 answers them:
+- **The callers of a turn that ends get `landClosed`,** as the maintainer decided. §2.5 states the rule in the same words as #716's plan, and test 11 checks it.
+- **`finishApply()` returns an enum and runs after the pass ordinal is taken,** as in #716 rev 6 (§2.3).
+
+It also takes that verdict's shoulds and nits:
+- the off mode stays uncovered until L2d-3 deletes it (§2.3);
+- test 5 checks that a tick land's handler effects after a note are dropped;
+- the census is a script that CI runs (§2.2);
+- the router's direct sends are worded again (§2.1).
+
+Rev 1 got NOT GO from Review, with 1 must-fix and 5 shoulds. Rev 2 made these changes:
 - **The must-fix: a fourth closer.** The public `sendEvent` also closes the gate and then awaits the submit (TA:2726-2735). Every adapter-side closer now goes through one helper, a census test pins that, and a mutant covers `sendEvent` (§2.2). The debug freeze settle is a fifth closer of the same shape until L2d-1, and it goes through the helper too.
 - **One end-of-apply function, shared with #716** (§2.3).
 - **What the settle does** (§2.4).
@@ -54,7 +64,7 @@ Every closer in §2.2 has this window. The tests in §3 reproduce both bugs. Eac
   - a session closed because its inbound frames went over the bound after its join (TA:2390);
   - the router's join failure (a timeout, an event overflow or an inbound overflow), whose error frame goes out before the close (LR:1420).
 - **The 4016 closes** (`closeSessionsForLandFailure`, TA:3655), which `landDidFail` calls. They are the failure's own close.
-- **The router's direct sends** (LR:1615, :1743). They go to `transport.send` only when the session has no live adapter: it is still in the handshake, or its land is gone. That is router-level output to a session that isn't a member of a failed land, so the land's gate doesn't apply to it.
+- **The router's direct sends** (LR:1615, :1743). They go to `transport.send` only when the router finds no live adapter for the session. That happens while the session is still in the handshake, and also for a session still bound to a land whose instance has ended: `liveAdapter(of:)` returns nil once the land manager no longer has the instance live (LR:89-92). Such a session gets a router frame, for example the error for an undecodable frame. That is still router-level output: it isn't a frame of the failed land's turns, and that land's adapter is gone, so the land's gate doesn't apply to it.
 
 An alternative is to check the gate at the two answer helpers only, which is #696's literal scope. It leaves the join and error replies open, so the chokepoint is recommended (§6 Q1).
 
@@ -82,7 +92,7 @@ The adapter can't change keeper state, and the keeper is another actor. So the f
 
   `submitAnswerFailure` and its hold point `.answerFailureSubmit` (#701) fold into the helper. The hold point becomes `.failureSubmit`, held between the note and the submit. #701's tests move to it.
 - **In-turn closes stay as they are.** The in-turn event loss (TA:2866) returns `.landFailed` to the keeper's turn, which calls `failLand` in that turn. The keeper's own `closeOutputs` (`+LandKeeperTransport.swift:93`) runs in `failLand`.
-- **A census test pins the list.** It reads the adapter's source files and finds `outputGate.close(` only in the helper and at the in-turn site. A new closer that skips the helper fails it. A mutant replaces `sendEvent`'s helper call with today's two lines, and the `sendEvent` window test (§3, test 6) must fail.
+- **A census pins the list.** A script, `scripts/gate-close-census.sh`, in the shape of `scripts/l2c-census.sh`, finds `outputGate.close(` in the adapter's sources only in the helper and at the in-turn site. CI runs it in the PR's workflow, so it doesn't depend on a test reading source files. A new closer that skips the helper fails it. A mutant replaces `sendEvent`'s helper call with today's two lines, and the `sendEvent` window test (§3, test 6) must fail.
 
 **The window the note closes.** The window runs from the close to the turn that applies the queued `.landFailure`. It has two parts:
 - (b) **The cross-actor hop.** `submitLandFailure` awaits the keeper. The keeper may be in another turn, or have one queued ahead of the submit: a tick turn behind the tick task, a requested sync-only turn, or a held tick job. That turn runs before the failure is queued at all.
@@ -92,12 +102,13 @@ The note covers both parts, because every keeper turn reads the box before its o
 
 ### 2.3 Where the keeper reads the note: one end-of-apply function, shared with #716
 
-#716's rev 5 (§3.1a) adds `finishApply() -> Bool`. The keeper calls it once, right after each apply segment returns, and before anything of the turn goes out. It does two things, in this order:
+#716's plan (§3.1a, rev 6) adds `finishApply() -> ApplyEnd`, whose two cases are `.proceed` and `.ended`. Both plans use that signature. The keeper calls it once, right after each apply segment returns, and before anything of the turn goes out. It runs only when the apply hasn't already failed the land: a land that failed at an input takes today's failure branch. It does two things, in this order:
 1. `applyPendingTransportFailure()`: if the box holds a failure, it calls `failLand` with it. The failure keeps its own position stage (`actionResponse`, `syncPhase` or `eventFlush`).
 2. #716's depth preflight.
 
 The first `failLand` wins, so a noted transport failure stays the cause. Whichever plan lands first adds the function. This plan adds it with step 1 only, and #716's S1b adds step 2.
-- **The turns with an apply** call `finishApply()` at the segments in #716 rev 5's table: initialize, the tick turn, the input turn and the replay segments. When it returns true, the turn takes its failure branch: no events and no sync.
+- **The turns with an apply** call `finishApply()` at the in-turn segments of #716's table: initialize, the tick turn and the input turn. When it returns `.ended`, the turn takes its failure branch: no events and no sync. In `runInputTurn` the call goes after `takePassOrdinal` (LK:5790) and before `if failure != nil` (:5795). Called earlier, `failLand` would see no pass in progress and use the last pass (`lastPass`, LK:5596), so the failure's position wouldn't name the pass that ended.
+- **The off mode stays uncovered until L2d-3 deletes it.** This plan adds no call to the legacy `runTick`, `processPendingActions` or `finishTicklessLegacyPass`, which L2d-3 removes. A land in the off mode keeps today's window until then.
 - **The sync-only turn** has no apply. `runSyncOnlyTurn` (LK:5162) calls `applyPendingTransportFailure()` first, and skips its phase when the land ends.
 
 After the note, no join flips and no plan runs, and the answer's failure is the first cause. A rebind doesn't escape either, because the note sits on the keeper, not on either adapter.
@@ -116,11 +127,18 @@ L2d-1 makes the freeze settle a sync-only turn. Its fence checks `failure == nil
 - **Order between the PRs.** Whichever of this PR and L2d-1 lands second adds those two lines. This plan's PR can go first: it touches `runTurnOutputs` and `runSyncOnlyTurn` with one call each, which L2d rebases over. Once L2d-1 has landed, the settle's job no longer closes the gate outside a turn, and its row in §2.2 goes.
 - **L2d-2/3 and #700.** The end-of-apply function is one keeper function, so it survives L2d-2/3 unchanged. #700 calls it as the last act of a step's apply, under #716's rule that no `turn.emit` comes before it.
 
-### 2.5 The callers of a turn that ends after its apply
+### 2.5 The callers of a turn that ends
 
-One rule covers every turn that ends after its apply, whether through a noted transport failure (this plan) or a depth refusal (#716). Inputs admitted to that turn have applied, and their callers keep their handler outcomes, as they do today when an input fails in its turn (LK:5803-5806). Their client frames are dropped by the closed gate (§2.1).
-- Turning those outcomes into `landClosed` would make what a caller saw differ from the record, where those inputs applied.
-- #716's plan states the same rule as its Q5. One answer covers both plans (§6 Q3).
+**The callers of a turn that ends** (maintainer decision, 2026-11-21). A turn ends the land when `finishApply()` returns `.ended` (a noted transport failure or a depth refusal), when its in-turn sync phase fails the land, or when its batch holds a transport-reported failure item (`.landFailure`, #535): `applyInputs` stops at that item and fails the land (LK:4076-4080, :4118). Then every caller whose input is in that turn's consumed batch gets `landClosed`, not its handler's outcome, and that includes a caller whose handler threw. The failure item itself has no caller: `submitLandFailure` (LK:5541) registers no waiter. No output of that turn is sent, replies included.
+- **Where.** On `.ended`, the turn sets every consumed item's result to `landClosed` before `resumeInputTurnWaiters` (LK:5818-5826) resumes the callers. That covers the three places that resume them: the input drain (:5750), the replay passes (:4238), and the turn's own outcome store (:5803-5806). A tickless action job's slot (`ticklessJobTurns`, `fillActionSlot`) is filled from the same result.
+- **Today's in-turn sync failure follows the rule.** A turn whose `runTurnOutputs` (:5802) fails the land keeps its outcomes today (:5806). From this change on, its callers get `landClosed` too, with a test.
+- **Scope limit.**
+  - A tick land acknowledges an action at submit (LK:2339). That reply belongs to the admission, not to the turn that later applies the action, so it stays.
+  - A tick land's waiting join gets `landClosed` through the drain (LK:5701).
+  - A turn whose batch holds a failure item is under the rule too (Main's call, 2026-11-21, for the maintainer to confirm). The inputs before the item have applied: today they keep their outcomes (:5806), and from this change on they get `landClosed`. The inputs behind it aren't consumed, and the drain drops them with `landClosed`, as today. That turn doesn't call `finishApply()`, because its apply has already failed the land; it takes the existing failure branch, which sets the results the same way.
+  - This branch matters more after #704. The adapter's submit queues the failure item behind the note, so when the item is in a turn's batch, `applyInputs` reaches it before `finishApply()` reads the note. A noted failure then often ends its turn through this branch, not through `.ended`.
+- **The record.** It keeps those inputs as applied, with the rejected list. A recorded input has no outcome field (`ReevaluationRecordedAction`, `ActionRecorder.swift:741-750`), so replay has no caller outcome to compare, and no mismatch can arise.
+- **The test.** An input whose handler returned success, in a turn that ends, answers `landClosed`, and no frame of that turn reaches the transport. In a batch [A, a failure item, B], where A's handler returned success, A and B answer `landClosed`, and no frame of that turn reaches the transport. That test runs on a tickless land and on a tick land; on the tick land, A and B are lifecycle or server-input callers, because an action there is acknowledged at submit.
 
 ### 2.6 One PR for both
 
@@ -148,15 +166,15 @@ Hold points:
 
 **#704:**
 
-5. **Join flip.** A holds at `.failureSubmit`, with a join waiting for its flip. A sync turn runs: a tick, or a requested sync-only turn on a tickless land. The join doesn't flip, and its waiter isn't resolved as joined. The land ends with `responseEncode`.
+5. **Join flip.** A holds at `.failureSubmit`, with a join waiting for its flip. A sync turn runs: a tick, or a requested sync-only turn on a tickless land. The join doesn't flip, and its waiter isn't resolved as joined. The land ends with `responseEncode`. On the tick land, the tick handler's effects in that turn are dropped: no event of that tick is sent, and its record has no state hash.
 6. **`sendEvent`.** On a MessagePack land, a `sendEvent` whose event doesn't encode holds at `.failureSubmit`, and a sync turn runs. No commit runs, and the land ends with `eventEncode`.
 7. **First cause.** The same hold as test 5, with the sync plan made to throw (`syncPlanFaultForTesting`). The land's failure is A's `responseEncode`, not `syncPlan`.
 8. **Rebind.** During the hold, `setTransport` moves the keeper to a second adapter, and a sync turn runs. The second adapter's transport gets no state frame, and the land ends with A's failure.
 9. **The first-sync closer** (TA:5268): a joiner's first sync fails (`firstSyncPlanFaultForTesting`), and another sync turn runs before its submit. No commit runs after the close.
 10. **No turn due.** On a tickless land with no requested sync, a closer notes its failure, and no keeper turn runs before the release. After the release, the awaited submit ends the land with the noted failure, which stays the first cause.
-11. **Callers keep their outcomes.** An action applied in the turn that `finishApply()` ends gets its handler's outcome, and its client frame is dropped (§2.5).
+11. **Callers get `landClosed`.** An action whose handler returned success, applied in the turn that `finishApply()` ends, answers `landClosed`, and no frame of that turn reaches the transport (§2.5). A turn whose in-turn sync phase fails the land answers its callers the same way.
 12. **#701's pins stay.** They assert that the land hasn't failed yet during the hold. With the note, that still holds while no keeper turn runs, which the pins don't do. The pins gain an assert that the failure is noted.
-13. **The census** (§2.2): `outputGate.close(` is found only in the helper and at the in-turn site.
+13. **The census** (§2.2): the script finds `outputGate.close(` only in the helper and at the in-turn site, and CI runs it.
 
 **Mutants** (each restored afterwards; each must fail a test):
 - the gate check in `enqueueFrames` removed;
@@ -167,11 +185,11 @@ Hold points:
 
 ## 4. Steps, verification, docs
 
-- **S1, one PR in the core:** the two commits of §2.6, with the tests first.
+- **S1, one PR in the core:** the two commits of §2.6, with the tests first. The second commit also adds `scripts/gate-close-census.sh` and its CI step.
 - **On the Mac:**
   - build;
   - the touched suites: `UntypedEventPayloadTests`, `ActionErrorReplyEncodeTests`, `TransportAdapterJoinFlipTests` and the router join suites;
-  - the census test;
+  - the census script;
   - the mutants.
 - **On CI:** the full `swift test` and E2E.
 - **A/B: none.** The change adds one lock read per enqueue and one per turn. The same lock is read today, in `isClosed`, on every event send.
@@ -190,4 +208,4 @@ Hold points:
 
 - **Q1:** the gate at `enqueueFrames` (every frame, recommended), or at the two answer helpers only (#696's literal scope)?
 - **Q2:** the keeper-side note (covers the rebind, recommended), or the phase reading its adapter's gate (smaller, misses the rebind)?
-- **Q3:** do the callers of a turn that ends after its apply keep their handler outcomes (recommended), or get `landClosed`? This is the same question as #716's Q5, and one answer covers both.
+- **Q3, decided 2026-11-21 by the maintainer:** the callers of a turn that ends get `landClosed`, handler errors included, and no output of that turn is sent, replies included (§2.5). #716's Q5 is the same decision.
