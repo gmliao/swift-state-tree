@@ -57,7 +57,9 @@ func bounded(_ wait: @escaping @Sendable () async -> Bool) async -> Bool {
 
 /// `task`'s result, or nil when the hang bound runs out or the test's task is cancelled first. It
 /// neither cancels `task` nor waits for it to end: a reader task and a timer race to resume one
-/// continuation, and a task that never ends leaves its reader parked, never awaited.
+/// continuation, and a task that never ends leaves its reader parked, never awaited. Once any
+/// wait in the process has run out its bound, later ones get `HangBoundTrip.tripped`'s short
+/// bound (see there).
 func raceHangBound<T: Sendable, E: Error>(_ task: Task<T, E>) async -> Result<T, E>? {
     let race = FirstOf<Result<T, E>?>()
     return await withTaskCancellationHandler {
@@ -65,7 +67,8 @@ func raceHangBound<T: Sendable, E: Error>(_ task: Task<T, E>) async -> Result<T,
             race.start(continuation)
             race.add(Task { race.finish(await task.result) })
             race.add(Task {
-                guard (try? await safeTaskSleep(for: turnTestHangBound)) != nil else { return }
+                guard (try? await safeTaskSleep(for: HangBoundTrip.bound)) != nil else { return }
+                HangBoundTrip.trip()
                 race.finish(nil)
             })
         }
@@ -153,4 +156,39 @@ func boundedResult(
 /// What `boundedResult` answers for a task that never ended within the hang bound.
 struct TurnHangBoundExceeded: Error, CustomStringConvertible {
     var description: String { "hang bound exceeded" }
+}
+
+/// Once one wait has run out the hang bound, the core under test is known to hang, so later
+/// waits in the process get 1 s instead of 60 s: a run whose tests make many waits one after
+/// another (orders in a loop, generated seeds) ends in about one bound, not one per wait. The
+/// first wait that ran out has recorded its issue; the later ones record theirs too.
+enum HangBoundTrip {
+    private static let lock = NSLock()
+    /// Guarded by `lock`.
+    nonisolated(unsafe) private static var wasTripped = false
+    static let tripped: Duration = .seconds(1)
+
+    static var bound: Duration {
+        lock.withLock { wasTripped } ? tripped : turnTestHangBound
+    }
+
+    static func trip() {
+        lock.withLock { wasTripped = true }
+    }
+}
+
+/// Runs a test's whole body in a task of its own under the hang bound: for a test whose waits
+/// can't go through the helpers above (lines inside a `// docs:` block stay as documented). A
+/// body that never ends records an issue, is cancelled and is abandoned, never awaited.
+func withinTestHangBound(
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ body: @escaping @Sendable () async throws -> Void
+) async throws {
+    let task = Task { try await body() }
+    guard let result = await raceHangBound(task) else {
+        task.cancel()
+        Issue.record("the test's body never ended within the hang bound", sourceLocation: sourceLocation)
+        return
+    }
+    try result.get()
 }

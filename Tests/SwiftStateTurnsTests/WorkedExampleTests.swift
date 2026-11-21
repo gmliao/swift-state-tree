@@ -156,17 +156,19 @@ extension LobbyActor {
 struct WorkedExampleTests {
     @Test("The lobby: a call joins and waits for the loaded profile; a second join queues behind the first load")
     func lobby() async throws {
-        // docs:use
-        let lobby = LobbyActor(profiles: ImmediateProfiles())
-        let count = try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel)
-        // count == 1, and the lobby flushed "welcome player 7".
-        // docs:end
-        // Outside the documented block, the test's own wait is bounded.
-        let second = try await boundedResult(Task { try await lobby.sendAndWait(.join(player: 8), cancellation: .ignoresCancel) }).get()
-        #expect(count == 1)
-        #expect(second == 2)
-        #expect(await lobby.sent == ["welcome player 7", "welcome player 8"])
-        #expect(await lobby.heldKeys() == 0)
+        try await withinTestHangBound {
+            // docs:use
+            let lobby = LobbyActor(profiles: ImmediateProfiles())
+            let count = try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel)
+            // count == 1, and the lobby flushed "welcome player 7".
+            // docs:end
+            // Outside the documented block, the test's own wait is bounded.
+            let second = try await boundedResult(Task { try await lobby.sendAndWait(.join(player: 8), cancellation: .ignoresCancel) }).get()
+            #expect(count == 1)
+            #expect(second == 2)
+            #expect(await lobby.sent == ["welcome player 7", "welcome player 8"])
+            #expect(await lobby.heldKeys() == 0)
+        }
     }
 
     /// Every ```swift block of the documentation, in the DocC catalog and in docs/turns/: each
