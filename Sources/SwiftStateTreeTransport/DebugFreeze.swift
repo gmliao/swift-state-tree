@@ -89,9 +89,9 @@ public enum DebugFreezeError: Error, Sendable, Equatable {
     /// Drain and settle missed their deadline (in-flight work or another sync kept running);
     /// the freeze was released.
     case settleTimedOut
-    /// The freeze was released (resume or auto-resume) before its settle finished, or the land
-    /// had already failed or is closing. A settle whose own plan fails throws that
-    /// `LandFailure` instead.
+    /// The freeze was released (resume or auto-resume) before its settle finished. A settle of
+    /// a land that failed throws that `LandFailure` instead (also when its own plan fails), and
+    /// one of a land that is closing throws `LandInputRejection.landClosed`.
     case released
 }
 
@@ -118,6 +118,12 @@ public enum DebugFreezeDefaults: Sendable {
 
 // MARK: - Adapter bookkeeping
 
+/// The key of an adapter's freeze generations (`TransportAdapter.debugFreezeTickets`): one
+/// freeze at a time.
+enum DebugFreezeKey: Hashable, Sendable {
+    case freeze
+}
+
 /// Per-adapter freeze state. Owned by `TransportAdapter`.
 struct DebugFreezeState<State: StateNodeProtocol>: Sendable {
     struct Settled: Sendable {
@@ -142,6 +148,6 @@ struct DebugFreezeState<State: StateNodeProtocol>: Sendable {
     var autoResumeGeneration: UInt64 = 0
     var autoResumeTimeout: Duration = DebugFreezeDefaults.autoResumeTimeout()
     /// Deadline for the drain, the writer wait and the wait for the settle (checked when its
-    /// keeper job starts, so it bounds the wait for the job, not the job).
+    /// keeper turn starts, so it bounds the wait for the turn, not the turn).
     var settleDeadline: Duration = .seconds(10)
 }
