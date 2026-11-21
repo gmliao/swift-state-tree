@@ -169,3 +169,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-20 | [A budget break strands the work kinds after it](2026-11-20-a-budget-break-strands-the-work-kinds-after-it.md) | turns, driver, budget, drain-loop, follow-ups |
 | 2026-11-21 | [A closure that captures only actor state runs off the actor](2026-11-21-a-closure-that-captures-only-actor-state-runs-off-the-actor.md) | turns, concurrency, isolation, continuation, lost-wakeup, quiescence |
 | 2026-11-21 | [A feature path in the driver costs machines that don't use it](2026-11-21-a-feature-path-in-the-driver-costs-machines-that-do-not-use-it.md) | turns, driver, performance, instruction-gate, specialization, measurement |
+| 2026-11-21 | [A gate checked per send site leaks at the next site; a failure found outside a turn needs a mailbox](2026-11-21-a-gate-checked-per-send-site-leaks-at-the-next-site.md) | transport, reentrancy, failure, output-gate, turns |
