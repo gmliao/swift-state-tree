@@ -1,6 +1,6 @@
 # L2d-3: delete the keeper's legacy sync and pass, and require the in-turn phase (#546)
 
-Status: Rev 2, plan only, for review (rev 1 GO on shape; Q1 overturned; §3 requirement table). Part of `2026-11-20-remove-adapter-off-mode.md` §3.8 (the L2d-3 row of §3.8.5).
+Status: implemented on `refactor/546-l2d3-delete-legacy-sync` (rev 2 GO); what the implementation found is in §7. Part of `2026-11-20-remove-adapter-off-mode.md` §3.8 (the L2d-3 row of §3.8.5).
 Base: `refactor/546-l2d2-route-by-mode` @ 90aa89a6 (#739); L2d-3 branches from main after #739 merges.
 Line numbers are at that head (LK = `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, LKT =
 `LandKeeperTransport.swift`, TA = `Sources/SwiftStateTreeTransport/TransportAdapter.swift`).
@@ -253,3 +253,30 @@ Follow-up, not L2d-3 (filed as its own issue after GO):
 - §2 step 6: three removed defaults, the full fake-fix list (2 fakes for the phase pair, 24 for the
   drain wait), and three must-not-compile cases (one per removed default).
 - §6: answers recorded; the join-group refinement protocol noted as a follow-up outside L2d-3.
+
+## 7. Implementation notes
+
+- **Probe: outcome A.** A stderr marker (no trap) at the 8 tickless else branches and the 3 legacy
+  entry functions, then the full `swift test` at 6f568ff6: 0 hits, every test run green. The legacy
+  pass was deleted wholesale; no entry is kept for #612.
+- **The stop covers join and leave only.** Of the 8 branches only join, the session join and leave
+  were reachable by a `.reevaluation` keeper. Its other live entries already refuse it before any
+  branch: `submit` (actions, and so their job completions) and `handleClientEvent` return without
+  applying, `submitServerInput` answers `.refused(.notLive)`, `submitLandFailure` returns, and
+  `forceShutdown`'s queued path needs `mode == .live`. So the `fatalError` is at the start of the
+  three join and leave entries (before any await or append), and the exit tests are per reachable
+  entry: join, session join, leave; a tick re-evaluation land still queues a join and a leave
+  (exit test, `.success`); action, client event and server input get a plain test that they are
+  refused and apply nothing.
+- **`TicklessActionJobTests` keeps both arms.** Since L2d-2 the `inTurn: false` arm is a portless
+  live keeper, which routes through turns too; dropping it would lose the portless coverage the
+  benchmark worker pool relies on. The parameter is renamed `withPort:`, and the two legacy-named
+  tests are renamed for the portless keeper.
+- **`ReleasedLandTransport` relied on the removed defaults** (§2 step 6 said it implemented them).
+  It now answers `runsSyncPhaseInTurn` false, returns `.unsupported` (counted as a dropped call)
+  and returns from the drain wait at once.
+- **Must-not-compile:** a compiling control (a transport with exactly the required calls) plus one
+  refused case per removed default.
+- **Fakes:** 27 test conformers changed, not 24: §2 step 6's list has 25 types (its count was off
+  by one), plus the dirty-flags spy this PR adds to `LandKeeperSyncLockTests` and `SettlePortFake`
+  (#739), which conforms through `LandKeeperSettlePort` and so wasn't in the plan's grep.
