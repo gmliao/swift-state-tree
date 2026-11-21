@@ -1672,8 +1672,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// The fence, in order; a failing check returns without a phase or a state change: the land
     /// is live and neither failed nor drains (`.closed`), the deadline (`.timedOut`), the
-    /// frozen generation (`.released`), `port` is the attached transport, runs in-turn here and
-    /// is a settle port (`.refused(.notCurrent)`), and no direct `beginSync` holds the sync flag
+    /// frozen generation (`.released`), `port` runs in-turn here, is this keeper's sync port (the
+    /// attached transport or, never attached, its bound requester, as `acceptsSyncTurn`) and is a
+    /// settle port (`.refused(.notCurrent)`), and no direct `beginSync` holds the sync flag
     /// (`.refused(.syncInFlight)`; it never latches).
     ///
     /// The settle's own bookkeeping, not a requested turn's: it doesn't consume the pending
@@ -1692,9 +1693,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         guard ContinuousClock.now < fence.deadline else { return .timedOut }
         guard debugFrozen, debugActiveGeneration == fence.generation else { return .released }
-        guard let transport,
-              ObjectIdentifier(transport as AnyObject) == ObjectIdentifier(port as AnyObject),
-              port.runsSyncPhaseInTurn(of: self),
+        // The requested turns' rule (`acceptsSyncTurn`): the attached transport or, on a keeper
+        // never attached, its sync requester, which a settle binds when none is (#546 L2d).
+        guard port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port),
               let settlePort = port as? any LandKeeperSettlePort else {
             return .refused(.notCurrent)
         }
