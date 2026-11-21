@@ -23,9 +23,9 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
-    /// (also ones made earlier in this step), whose timer is dropped, and whose not-yet-stepped
-    /// inputs scoped to `key` are withdrawn, as by `end`: queued ones now, deferred ones (sent
-    /// while a step or batch ran) when they are admitted. An input carries no generation, so
+    /// (also ones made earlier in this step), whose follow-ups close unrun, whose timer is
+    /// dropped, and whose not-yet-stepped inputs scoped to `key` are withdrawn, as by `end`:
+    /// queued ones now, deferred ones (sent while a step or batch ran) when they are admitted. An input carries no generation, so
     /// one sent under the old generation would otherwise step under the new one.
     ///
     /// Limit: an input that arrives while `key` isn't live (before its first `start`, or after
@@ -44,6 +44,7 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         let superseded = core.rt.live[key] != nil
         if superseded {
             core.rt.closeRequests(of: key)
+            core.rt.closeFollowUps(of: key)
             core.rt.dropTimer(of: key)
             if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key && !$0.pinned } }
             core.scopeEnded(key)
@@ -53,11 +54,12 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         return superseded
     }
 
-    /// Ends `key`: its requests close, their `.untilRequestCloses` holds are released, its timer
-    /// is dropped, and not-yet-stepped inputs scoped to it are withdrawn (queued ones now,
+    /// Ends `key`: its requests close, their `.untilRequestCloses` holds are released, its
+    /// follow-ups close unrun (`handleAbandoned(id, .keyEnded)`), its timer is dropped, and not-yet-stepped inputs scoped to it are withdrawn (queued ones now,
     /// deferred ones when they are admitted), whether or not the key is live.
     @inlinable public mutating func end(_ key: M.Key) {
         core.rt.closeRequests(of: key)
+        core.rt.closeFollowUps(of: key)
         core.rt.dropTimer(of: key)
         core.rt.live.removeValue(forKey: key)
         if core.rt.parkedCount != 0 { core.rt.withdraw { $0.scope == key } }
@@ -72,17 +74,19 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     }
 
     /// Ends every key, for good (a teardown), and closes intake from outside.
-    /// - Every open request is abandoned. A worker that keeps a hold until it returns still
-    ///   keeps it, and its completion steps as stale.
+    /// - Every open request is abandoned, then every pending follow-up. A worker that keeps a
+    ///   hold until it returns still keeps it, and its completion steps as stale.
     /// - Queued inputs with a scope are withdrawn, what a step queued (`queue`) is dropped, and
     ///   every other queued call is answered `closed`, as by `close`. A caller the machine itself
     ///   keeps waiting is the machine's to answer, in this same step.
     /// - From here on no key can be started, so no request is made, no timer armed and no keyed
-    ///   output emitted, and `queue` drops its input. `run`, `query`, control inputs and the
-    ///   completions of work in flight still step, and what this step produced still leaves.
+    ///   output emitted, `queue` drops its input and `followUp` refuses. `run`, `query`, control
+    ///   inputs and the completions of work in flight still step, and what this step produced
+    ///   still leaves.
     @inlinable public mutating func endAll() {
         let ids = core.rt.open.keys.sorted { $0.raw < $1.raw }
         for id in ids { core.rt.closeRequest(id, .keyEnded) }
+        core.rt.closeFollowUps(of: nil)
         core.rt.live.removeAll()
         if !core.rt.timers.isEmpty {
             core.rt.timers.removeAll()
@@ -178,6 +182,64 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         core.rt.timers[key] = generation
         core.rt.timersToArm.append(PendingTimer(key: key, generation: generation, instant: instant, input: input))
         core.rt.dirty = true
+    }
+
+    // MARK: Follow-ups
+
+    /// Arms a coalesced follow-up for `key` and `slot`, owned by `key`'s current generation:
+    /// `input` steps as a control input when `trigger` says. One is pending per key and slot: an
+    /// arm while one is pending joins it and changes nothing (the first arm's input and trigger
+    /// stand). Ending or superseding `key` closes it unrun (`handleAbandoned(id, .keyEnded)`),
+    /// also when it was armed earlier in the same step. The slot is freed before the follow-up
+    /// steps, so its step may arm a successor.
+    ///
+    /// The returned id names the follow-up in `handleAbandoned` only. It isn't a request id:
+    /// `cancel(id)` does nothing for it, and `reply(after: id)` publishes at once.
+    ///
+    /// `.refused`: `key` isn't live, or the core has ended (counted in `ignoredAfterEnd`).
+    @inlinable @discardableResult
+    public mutating func followUp(
+        _ input: M.Input,
+        _ slot: M.FollowUpSlot,
+        of key: M.Key,
+        _ trigger: FollowUpTrigger<M.Effect>
+    ) -> FollowUpArming {
+        if core.rt.ended {
+            core.rt.ignoredAfterEnd += 1
+            return .refused
+        }
+        guard core.rt.live[key] != nil else { return .refused }
+        let name = FollowUpKey<M>(key: key, slot: slot)
+        if let pending = core.rt.followUps[name] { return .joined(pending.id) }
+        core.rt.nextRequest &+= 1
+        let id = RequestID(raw: core.rt.nextRequest)
+        switch trigger {
+        case .afterBatch:
+            core.rt.followUps[name] = FollowUpRecord(id: id, input: input, waiting: false, hasDeadline: false)
+            core.rt.dueFollowUps.append(id)
+        case .afterWork(let effect, let deadline):
+            core.rt.followUps[name] = FollowUpRecord(id: id, input: input, waiting: true, hasDeadline: deadline != nil)
+            let instant = deadline.map { core.segmentNow() + $0 }
+            core.rt.followUpGates.append(PendingEffect(effect: effect, request: id, deadline: instant))
+            core.noteEffect()
+        }
+        core.rt.followUpIDs[id] = name
+        core.rt.dirty = true
+        return .armed(id)
+    }
+
+    /// Retires the pending follow-up for `key` and `slot` without stepping it, and returns its
+    /// input; nil when none is pending. No `handleAbandoned` follows. A gate still in flight
+    /// finds it gone when it returns, and steps nothing for it.
+    @inlinable @discardableResult
+    public mutating func consumeFollowUp(_ slot: M.FollowUpSlot, of key: M.Key) -> M.Input? {
+        guard let pending = core.rt.followUps[FollowUpKey<M>(key: key, slot: slot)] else { return nil }
+        return core.rt.removeFollowUp(pending.id)?.input
+    }
+
+    /// The pending follow-up for `key` and `slot`, if any.
+    @inlinable public func followUpPending(_ slot: M.FollowUpSlot, of key: M.Key) -> RequestID? {
+        core.rt.followUps[FollowUpKey<M>(key: key, slot: slot)]?.id
     }
 
     // MARK: Output and answers

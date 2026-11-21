@@ -80,24 +80,37 @@ final class Fixture: @unchecked Sendable {
     // MARK: The core's diagnostics
 
     /// The core's diagnostics hook. A queued input opens "park #n" (n counts every queued input so
-    /// far), a foreign completion opens "foreign", a stale deadline or timer opens "stale
-    /// deadline" or "stale timer"; batch sizes and clock reads are recorded.
+    /// far), and its release "released #n" once its batch ends. A foreign completion opens
+    /// "foreign" and "foreign #n", a stale deadline, timer or follow-up "stale deadline #n",
+    /// "stale timer #n" or "stale follow-up #n"; batch sizes and clock reads are recorded.
     func observe(_ event: TurnDiagnostic) {
         switch event {
         case .queued(let total):
             open("park #\(total)")
         case .batchEnded(let released):
-            lock.withLock { segmentSizes.append(released) }
+            // "released #n" for each queued input released so far, opened after its batch.
+            let total = lock.withLock { () -> Int in
+                segmentSizes.append(released)
+                return segmentSizes.reduce(0, +)
+            }
+            for n in (total - released + 1) ... total { open("released #\(n)") }
         case .foreignCompletion:
-            bump("foreign")
+            open("foreign #\(bump("foreign"))")
             open("foreign")
         case .staleDeadline:
             open("stale deadline #\(bump("stale deadline"))")
         case .staleTimer:
             open("stale timer #\(bump("stale timer"))")
+        case .staleFollowUp:
+            open("stale follow-up #\(bump("stale follow-up"))")
         case .clockRead:
             bump("clock read")
         }
+    }
+
+    /// Counts `name` and opens "`name` #n", n its new count: an event a test reaches by number.
+    func openCounted(_ name: String) {
+        open("\(name) #\(bump(name))")
     }
 
     /// Counts `name` and returns its new count.

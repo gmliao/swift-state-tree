@@ -162,7 +162,10 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-19 | [A retry loop catches failures, not hangs](2026-11-19-a-retry-loop-catches-failures-not-hangs.md) | ci, apt, retry, timeout, hang, shell |
 | 2026-11-19 | [Array literals of enum cases joined with `+` time out the pinned type checker](2026-11-19-concatenated-enum-literals-time-out-the-pinned-type-checker.md) | toolchain, type-checking, ci |
 | 2026-11-20 | [A helper that returns on state leaves its operation running](2026-11-20-a-helper-that-returns-on-state-leaves-its-operation-running.md) | testing, fixtures, join, polling, land-stop, flaky |
-| 2026-11-20 | [A time limit does not end a wait that never resumes](2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md) | testing, time-limit, hang-bound, test-gate, mutants, hold-points |
+| 2026-11-20 | [A time limit does not end a wait that never resumes](2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md) | testing, time-limit, hang-bound, test-gate, mutants, hold-points, mutation-run |
 | 2026-11-20 | [A visited set keyed by a lossy name merges distinct types](2026-11-20-a-visited-set-keyed-by-a-lossy-name-merges-distinct-types.md) | schema, type-names, visited-set, codegen, registration |
 | 2026-11-20 | [A concurrent delete stops a recursive removal and leaves the directory](2026-11-20-a-concurrent-delete-stops-a-recursive-removal.md) | testing, cleanup, filesystem, recorder, isolation |
 | 2026-11-20 | [A macro-only change doesn't rebuild the clients that expand it](2026-11-20-a-macro-only-change-does-not-rebuild-its-clients.md) | macros, mutants, incremental-build, toolchain, testing |
+| 2026-11-20 | [A budget break strands the work kinds after it](2026-11-20-a-budget-break-strands-the-work-kinds-after-it.md) | turns, driver, budget, drain-loop, follow-ups |
+| 2026-11-21 | [A closure that captures only actor state runs off the actor](2026-11-21-a-closure-that-captures-only-actor-state-runs-off-the-actor.md) | turns, concurrency, isolation, continuation, lost-wakeup, quiescence |
+| 2026-11-21 | [A feature path in the driver costs machines that don't use it](2026-11-21-a-feature-path-in-the-driver-costs-machines-that-do-not-use-it.md) | turns, driver, performance, instruction-gate, specialization, measurement |

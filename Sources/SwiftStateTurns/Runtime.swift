@@ -104,6 +104,36 @@ struct PendingTimer<M: TurnMachine> {
     }
 }
 
+/// A follow-up's name: its owner key and its slot.
+@usableFromInline
+struct FollowUpKey<M: TurnMachine>: Hashable {
+    @usableFromInline var key: M.Key
+    @usableFromInline var slot: M.FollowUpSlot
+
+    @inlinable init(key: M.Key, slot: M.FollowUpSlot) {
+        self.key = key
+        self.slot = slot
+    }
+}
+
+/// A pending follow-up: its id and the input it steps.
+@usableFromInline
+struct FollowUpRecord<M: TurnMachine> {
+    @usableFromInline var id: RequestID
+    @usableFromInline var input: M.Input
+    /// Its gate (`.afterWork`) hasn't returned yet; false once it is due to step.
+    @usableFromInline var waiting: Bool
+    /// A deadline task was armed for its gate.
+    @usableFromInline var hasDeadline: Bool
+
+    @inlinable init(id: RequestID, input: M.Input, waiting: Bool, hasDeadline: Bool) {
+        self.id = id
+        self.input = input
+        self.waiting = waiting
+        self.hasDeadline = hasDeadline
+    }
+}
+
 @usableFromInline
 struct Runtime<M: TurnMachine> {
     // Lifetimes.
@@ -147,10 +177,60 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var droppedParkedSends = 0
     /// Set by `endAll`: the core is terminal, and no key can be started again.
     @usableFromInline var ended = false
-    /// `start` and `queue` calls made after the end, and ignored.
+    /// `start`, `queue` and `followUp` calls made after the end, and ignored.
     @usableFromInline var ignoredAfterEnd = 0
+    // Follow-ups: one pending per key and slot, owned by the key's generation.
+    @usableFromInline var followUps: [FollowUpKey<M>: FollowUpRecord<M>] = [:]
+    @usableFromInline var followUpIDs: [RequestID: FollowUpKey<M>] = [:]
+    /// `.afterBatch` follow-ups armed since the last follow-up job, in arm order (a closed or
+    /// consumed one is skipped when it comes up).
+    @usableFromInline var dueFollowUps: [RequestID] = []
+    /// Gates (`.afterWork`) for the driver to launch.
+    @usableFromInline var followUpGates: [PendingEffect<M>] = []
 
     @inlinable init() {}
+
+    /// Removes a pending follow-up without stepping it, and returns it.
+    @inlinable mutating func removeFollowUp(_ id: RequestID) -> FollowUpRecord<M>? {
+        guard let name = followUpIDs.removeValue(forKey: id), let record = followUps.removeValue(forKey: name) else { return nil }
+        if record.hasDeadline { deadlinesToCancel = true }
+        dirty = true
+        return record
+    }
+
+    /// Closes a pending follow-up unrun: `handleAbandoned` steps for it in this batch.
+    @inlinable mutating func closeFollowUp(_ id: RequestID, _ why: Abandonment) {
+        guard removeFollowUp(id) != nil else { return }
+        abandoned.append((id, why))
+    }
+
+    /// Closes every follow-up of `key` (all of them when nil), in arm order.
+    @inlinable mutating func closeFollowUps(of key: M.Key?) {
+        if followUps.isEmpty { return }
+        let ids = followUpIDs.filter { key == nil || $0.value.key == key }.map(\.key).sorted { $0.raw < $1.raw }
+        for id in ids { closeFollowUp(id, .keyEnded) }
+    }
+
+    /// A follow-up whose gate hasn't returned, with a deadline: its deadline task is live.
+    @inlinable func gateDeadlineLive(_ id: RequestID) -> Bool {
+        guard let name = followUpIDs[id], let record = followUps[name] else { return false }
+        return record.waiting && record.hasDeadline
+    }
+
+    /// Pending work of `kinds`, of `key` (all keys when nil).
+    @inlinable func pendingCount(_ kinds: TurnWork, of key: M.Key?) -> Int {
+        var count = 0
+        if kinds.contains(.followUps) {
+            count += key.map { k in followUpIDs.values.filter { $0.key == k }.count } ?? followUps.count
+        }
+        if kinds.contains(.requests) {
+            count += key.map { k in open.values.filter { $0.key == k }.count } ?? open.count
+        }
+        if kinds.contains(.timers) {
+            count += key.map { timers[$0] == nil ? 0 : 1 } ?? timers.count
+        }
+        return count
+    }
 
     @inlinable mutating func releaseHold(_ key: M.Key) {
         guard let owners = held[key] else { return }

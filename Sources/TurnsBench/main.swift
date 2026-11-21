@@ -170,8 +170,8 @@ actor DirectActor {
     func callNoop() -> Int { counter }
 }
 
-let syncBenches = ["idle", "emit", "issue-end", "held-lookup", "read1", "read4", "park", "now"]
-let asyncBenches = ["request", "call"]
+let syncBenches = ["idle", "emit", "issue-end", "held-lookup", "read1", "read4", "park", "now", "follow-up-join"]
+let asyncBenches = ["request", "call", "follow-up"]
 
 func instructions() -> UInt64? {
     #if canImport(Darwin)
@@ -188,7 +188,10 @@ func instructions() -> UInt64? {
 func measure(_ bench: String, _ side: String, _ n: Int) async -> (nanoseconds: Double, instructions: Double?, sink: Int) {
     let turn = BenchActor()
     let direct = DirectActor()
+    let followUps = FollowUpBenchActor()
+    let directFollowUps = DirectFollowUpActor()
     await turn.setUp()
+    await followUps.setUp()
     let startInstructions = instructions()
     let start = ContinuousClock.now
     var sink = 0
@@ -197,6 +200,10 @@ func measure(_ bench: String, _ side: String, _ n: Int) async -> (nanoseconds: D
     case ("turn", "call"): for _ in 0 ..< n { sink &+= (try? await turn.sendAndWait(.callNoop, cancellation: .ignoresCancel)) ?? 0 }
     case ("direct", "request"): for _ in 0 ..< n { sink &+= await direct.request() }
     case ("direct", "call"): for _ in 0 ..< n { sink &+= await direct.callNoop() }
+    case ("turn", "follow-up"): for _ in 0 ..< n { sink &+= await followUps.armAndRun() }
+    case ("direct", "follow-up"): for _ in 0 ..< n { sink &+= await directFollowUps.armAndRun() }
+    case ("turn", "follow-up-join"): sink = await followUps.armMany(n)
+    case ("direct", "follow-up-join"): sink = await directFollowUps.armMany(n)
     case ("turn", _): sink = await turn.run(bench, n)
     case ("direct", _): sink = await direct.run(bench, n)
     default: fatalError("unknown side \(side)")

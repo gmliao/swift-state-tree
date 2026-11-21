@@ -287,6 +287,40 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 
 API：`timer(at:for:_:)`、`now`、`TurnClock`、`TurnInstant`。
 
+### Follow-up
+
+*follow-up* 是 key 替自己排定、之後只 step 一次的 input，例如「這一回合結束後公布分數」，不論這回合改了多少分數。它以 key 和 *slot*（machine 的 `FollowUpSlot` 型別）命名，每個 key 和 slot 最多一個待執行。已有一個待執行時再 arm 會 *join* 它，什麼都不改：第一次 arm 的 input 和 trigger 保留。arm 回傳的 id 只在 `handleAbandoned` 裡指認這個 follow-up。它不是 request id：`cancel(id)` 對它不起作用，`reply(after: id)` 會立刻發布。
+
+```swift
+case .round(let points):
+    for (player, gained) in points.enumerated() {
+        add(gained, to: player)
+        // One publish per round, however many scores changed: later arms join the first.
+        turn.followUp(.publish, .publish, of: .board, .afterBatch)
+    }
+case .publish:
+    turn.emit(scores, for: .board)
+```
+
+`.afterBatch` 在新的 batch 裡 step 它，作為目前這個之後 actor 自己的 job。`.afterWork(effect, deadline:)` 在 `perform(effect)` 回來時 step 它，例如「writer 清空後再 sync 一次」；deadline 先到則關閉它，並 step `handleAbandoned(id, .deadline)`。兩者都以 control input step，且 slot 在 step 之前就釋出，所以它的 step 可以 arm 下一個。
+
+follow-up 屬於它 key 的 generation。結束或取代該 key 會讓它不執行就關閉，並呼叫 `handleAbandoned(id, .keyEnded)`，所以舊 binding 下 arm 的 follow-up 不會在新 binding 下執行。自己就把工作做掉的 step 會把待執行的那個收回：
+
+```swift
+// Publishing now does the pending follow-up's work: retire it, so it doesn't run too.
+turn.consumeFollowUp(.publish, of: .board)
+turn.emit(scores, for: .board)
+```
+
+測試等到每個 follow-up 都 step 或關閉，而不是 sleep：
+
+```swift
+await board.send(.round(points: [3, 1, 4]))
+await board.waitForQuiescence()
+```
+
+API：`followUp`、`consumeFollowUp`、`followUpPending`、`FollowUpTrigger`、`FollowUpArming`、`FollowUpSlot`、`waitForQuiescence`、`pendingWork`、`TurnWork`。
+
 ### Batch 與 `maxReleasesPerBatch`
 
 *batch* 是一次進入 actor 所引起的 step：一次 `send`、一次 `sendAndWait`、或一個回來的結果。載入結果釋放 hold 時，排在後面的加入會在同一個 batch 裡執行。兩次進入之間沒有 run loop。`maxReleasesPerBatch` 限制一次釋放在一個 batch 裡能讓多少個佇列的 input 執行；其餘的在之後的 batch 繼續，所以排在同一個 hold 後面的一長串 input，不會把其他呼叫端擋在外面。限制：它只計算 hold 釋放後讓它執行的佇列中 input；batch 期間的放棄與新到的 send 不計入。
@@ -324,6 +358,7 @@ API：`CallerCancellation`。
 | Input policy | 這個 input 要等嗎？它屬於誰？ | `InputPolicy`、`queue` |
 | Withdraw token | 送出者能在 input 執行前放棄它嗎？ | `WithdrawToken`、`revoke` |
 | Timer 與時鐘 | step 如何在之後行動？測試如何控制時間？ | `timer`、`now`、`TurnClock` |
+| Follow-up | key 如何要求之後 step 一次，不論要求幾次？ | `followUp`、`consumeFollowUp`、`waitForQuiescence` |
 | Batch | 每次進入執行多少？ | `maxReleasesPerBatch` |
 | Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |
 | 呼叫端取消 | 呼叫端的 task 被取消時會怎樣？ | `CallerCancellation` |
