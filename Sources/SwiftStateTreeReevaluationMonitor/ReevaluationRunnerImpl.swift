@@ -164,6 +164,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         requiredRecordVersion: String? = nil,
         maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) async throws {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath, maxReplayTicks: maxReplayTicks)
         recordSource = source
@@ -242,6 +243,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         services: LandServices = LandServices(),
         maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) async throws {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         self.definition = definition
         source = try ReevaluationRecordFile.openSource(filePath: recordFilePath, maxReplayTicks: maxReplayTicks)
         recordSource = source

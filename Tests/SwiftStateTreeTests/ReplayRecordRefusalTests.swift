@@ -44,6 +44,32 @@ private actor FixedTickRunner: ReevaluationRunnerProtocol {
     }
 }
 
+/// A custom runner that reports `maxTickId` but steps `steps` times before it ends, so a runner that
+/// reports less than it steps ends on its own when no bound stops it.
+private actor SteppingRunner: ReevaluationRunnerProtocol {
+    nonisolated let maxTickId: Int64
+    private let steps: Int
+    private(set) var stepCalls = 0
+
+    init(maxTickId: Int64, steps: Int) {
+        self.maxTickId = maxTickId
+        self.steps = steps
+    }
+
+    func prepare() async throws {}
+
+    func step() async throws -> ReevaluationStepResult? {
+        stepCalls += 1
+        guard stepCalls <= steps else { return nil }
+        return ReevaluationStepResult(tickId: Int64(stepCalls - 1), stateHash: "h", recordedHash: "h", isMatch: true)
+    }
+}
+
+private struct SteppingFactory: ReevaluationTargetFactory {
+    let runner: SteppingRunner
+    func createRunner(landType _: String, recordFilePath _: String) async throws -> any ReevaluationRunnerProtocol { runner }
+}
+
 private struct FixedFactory: ReevaluationTargetFactory {
     let runner: FixedTickRunner
     func createRunner(landType _: String, recordFilePath _: String) async throws -> any ReevaluationRunnerProtocol { runner }
@@ -178,5 +204,44 @@ struct ReplayRecordRefusalTests {
         defer { try? FileManager.default.removeItem(atPath: good) }
         service.startVerification(landType: "record-refusal", recordFilePath: good)
         #expect(try await terminalStatus(of: service).phase == .completed)
+    }
+
+    @Test("A runner that steps more often than the limit fails the run when it passes it, whatever maxTickId it reported (#728)")
+    func underReportingRunnerIsBounded() async throws {
+        // It reports 2 ticks and would take 20 steps; the service's limit is 5.
+        let runner = SteppingRunner(maxTickId: 1, steps: 20)
+        let service = ReevaluationRunnerService(factory: SteppingFactory(runner: runner), maxReplayTicks: 5)
+        service.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        let status = try await terminalStatus(of: service)
+        #expect(status.phase == .failed)
+        #expect(
+            status.errorMessage == ReevaluationRecordContentError.replayTooLong(lastTick: 5, limit: 5).description,
+            "\(status.errorMessage)"
+        )
+        #expect(await runner.stepCalls == 6)
+
+        // A runner that takes exactly the limit completes.
+        let exact = SteppingRunner(maxTickId: 1, steps: 5)
+        let okService = ReevaluationRunnerService(factory: SteppingFactory(runner: exact), maxReplayTicks: 5)
+        okService.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        #expect(try await terminalStatus(of: okService).phase == .completed)
+    }
+
+    @Test("A runner that reports a last tick below -1 fails the run before its first step, and -1 (no tick) still runs (#728)")
+    func runnerLastTickBelowMinusOne() async throws {
+        let below = FixedTickRunner(maxTickId: -2)
+        let service = ReevaluationRunnerService(factory: FixedFactory(runner: below))
+        service.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        let status = try await terminalStatus(of: service)
+        #expect(status.phase == .failed)
+        #expect(status.errorMessage.contains("-2"), "\(status.errorMessage)")
+        #expect(await below.stepCalls == 0)
+
+        let none = FixedTickRunner(maxTickId: -1)
+        let okService = ReevaluationRunnerService(factory: FixedFactory(runner: none))
+        okService.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        let ok = try await terminalStatus(of: okService)
+        #expect(ok.phase == .completed)
+        #expect(ok.totalTicks == 0)
     }
 }

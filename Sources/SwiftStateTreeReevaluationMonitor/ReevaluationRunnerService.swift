@@ -24,17 +24,23 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// the land's tick can't meet a frame it can't show (#521 PR 1b, S1).
     private var replayLandState: (id: ObjectIdentifier, name: String)?
 
-    /// The most steps a run may take: its runner's last tick + 1 (#728).
-    private let maxReplayTicks: Int64
+    /// The most steps a run may take (#728): a run fails before its first step when its runner
+    /// reports a last tick + 1 past it, and when the runner steps more often than that. The host
+    /// that registers this service for a replay (`NIOLandHost.registerWithGenericReplay`) uses
+    /// the same number for the admin start's record check.
+    public let maxReplayTicks: Int64
 
-    /// - Parameter maxReplayTicks: a run whose runner's last tick + 1 is past this fails before its
-    ///   first step, whatever runner the factory made. A runner that opens a record file bounds
-    ///   it too, at its own `maxReplayTicks`: raise both to allow longer records.
+    /// - Parameter maxReplayTicks: at least 1. A run whose runner's last tick + 1 is past this
+    ///   fails before its first step, whatever runner the factory made, and a run that takes more
+    ///   steps than this fails when it passes it, whatever its runner reported. A runner that
+    ///   opens a record file bounds it too, at its own `maxReplayTicks`: raise both to allow
+    ///   longer records.
     public init(
         factory: any ReevaluationTargetFactory,
         projectorResolver: @escaping ReevaluationReplayProjectorResolver = ReevaluationReplayProjectorRegistry.defaultResolver,
         maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         self.maxReplayTicks = maxReplayTicks
         self.factory = factory
         self.projectorResolver = projectorResolver
@@ -181,6 +187,9 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
                 try await newRunner.prepare()
 
+                // The steps this run took: a runner that reports less than it steps is still
+                // bounded (#728).
+                var steps: Int64 = 0
                 while !Task.isCancelled {
                     if self.isPaused() {
                         try? await safeTaskSleep(for: .milliseconds(100))
@@ -192,6 +201,17 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
                     guard self.isCurrent(ticket) else { break }
 
                     if let result = try await newRunner.step() {
+                        steps += 1
+                        if steps > self.maxReplayTicks {
+                            let error = ReevaluationRecordContentError.replayTooLong(
+                                lastTick: steps - 1, limit: self.maxReplayTicks
+                            )
+                            self.updateStatus(ticket: ticket) { s in
+                                s.phase = .failed
+                                s.errorMessage = error.description
+                            }
+                            break
+                        }
                         let shouldContinue = self.processResult(result, ticket: ticket)
                         if !shouldContinue {
                             break
@@ -245,6 +265,12 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         guard isCurrentLocked(ticket) else { return false }
         // `ReevaluationRunnerProtocol` is public, so a runner can report any last tick: a count
         // that doesn't fit fails the run instead of trapping the process (#640).
+        // A runner is host code, but a last tick below -1 would give a negative tick count.
+        guard runner.maxTickId >= -1 else {
+            _status.phase = .failed
+            _status.errorMessage = "the runner's last tick is \(runner.maxTickId), below -1"
+            return false
+        }
         let (totalTicks, overflow) = runner.maxTickId.addingReportingOverflow(1)
         guard !overflow else {
             _status.phase = .failed

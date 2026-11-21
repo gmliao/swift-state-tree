@@ -213,7 +213,7 @@ public enum ReevaluationEngine {
     /// have run live. Throws `ReevaluationRecordFingerprintError` before the first step for a
     /// record whose schema fingerprint is missing or differs from the definition's (#521 D15).
     /// Throws `ReevaluationRecordContentError.replayTooLong` when the record's last tick + 1 is
-    /// past `maxReplayTicks` (#728), when the record is opened.
+    /// past `maxReplayTicks` (#728, at least 1), when the record is opened.
     public static func run<State: StateNodeProtocol>(
         definition: LandDefinition<State>,
         initialState: State,
@@ -227,6 +227,7 @@ public enum ReevaluationEngine {
         logger: Logger? = nil,
         maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) async throws -> RunResult {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         try definition.validateForRegistration(context: .encodingIndependent)
         // Opening the source rejects a record older than `minimumSupported`, or one longer than `maxReplayTicks`.
         let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath, maxReplayTicks: maxReplayTicks)

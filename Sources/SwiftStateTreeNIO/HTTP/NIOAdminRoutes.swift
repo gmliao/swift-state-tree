@@ -122,6 +122,11 @@ public struct NIOAdminRoutes: Sendable {
     public let replayWebSocketPathResolver: (@Sendable (String) -> String)?
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public let replayLandSuffix: String
+    /// The run length limit of each land type's replay (`ReevaluationFeatureConfiguration.maxReplayTicks`,
+    /// which a host sets to its runner service's): a start checks the record against it, so a host
+    /// that raised the limit can replay a longer record through the admin routes (#728). A land type not listed uses
+    /// `ReevaluationRecordFile.defaultMaxReplayTicks`.
+    public let maxReplayTicksByLandType: [String: Int64]
     /// The land type `/admin/reevaluation/start` issues monitor tickets for
     /// (`ReevaluationFeatureConfiguration.monitorLandType`'s default).
     static let monitorLandType = "reevaluation-monitor"
@@ -141,8 +146,11 @@ public struct NIOAdminRoutes: Sendable {
         logger: Logger? = nil,
         replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
         replayLandSuffix: String = "-replay",
-        enableDebugStateRoutes: Bool? = nil
+        enableDebugStateRoutes: Bool? = nil,
+        maxReplayTicksByLandType: [String: Int64] = [:]
     ) {
+        precondition(maxReplayTicksByLandType.values.allSatisfy { $0 >= 1 }, "maxReplayTicks must be at least 1")
+        self.maxReplayTicksByLandType = maxReplayTicksByLandType
         self.landRealm = landRealm
         self.adminAuth = adminAuth
         self.logger = logger ?? Logger(label: "com.swiftstatetree.nio.admin.routes")
@@ -676,7 +684,10 @@ extension NIOAdminRoutes {
         }
 
         do {
-            let source = try ReevaluationRecordFile.openSource(filePath: resolvedRecordPath.path)
+            let source = try ReevaluationRecordFile.openSource(
+                filePath: resolvedRecordPath.path,
+                maxReplayTicks: maxReplayTicksByLandType[landType] ?? ReevaluationRecordFile.defaultMaxReplayTicks
+            )
             let metadata = try await source.getMetadata()
             try validateReplayCompatibility(
                 metadata: metadata,
@@ -708,6 +719,10 @@ extension NIOAdminRoutes {
                 )
             )
             return .refused(try NIOHTTPResponse.json(response, status: .conflict).withCORS())
+        } catch let tooLong as ReevaluationRecordContentError where tooLong.isReplayTooLong {
+            // Names the record's last tick and the limit, so the operator sees what to raise.
+            let response = AdminAPIAnyResponse.error(code: .invalidRequest, message: "Record too long to replay: \(tooLong.description)")
+            return .refused(try NIOHTTPResponse.json(response, status: .badRequest).withCORS())
         } catch {
             logger.error("Failed to validate replay record compatibility: \(error)")
             let response = AdminAPIAnyResponse.error(
