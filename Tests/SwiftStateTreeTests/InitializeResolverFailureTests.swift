@@ -126,13 +126,25 @@ private func makeDefinition(_ policy: InitializeResolverFailure?) -> LandDefinit
     }
 }
 
-private actor DestroyFlag: LandKeeperTransport {
-    private(set) var destroyed = false
+private final class DestroyFlag: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var destroyed: Bool { lock.withLock { flag } }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async { destroyed = true }
+    func onLandDestroyed() async { lock.withLock { flag = true } }
+    /// Opts in (#546 L2d): a live keeper's transport runs its sync phase in turn. Sends nothing.
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+    }
 }
 
 /// A keeper for mode `mode`; its initialization runs on the first call, in that call's scope.
@@ -192,7 +204,7 @@ private func expectInitializationFailed(
         failure = error
     }
     _ = try await withinDeadline("the land is torn down", sourceLocation: sourceLocation) { () async -> Void in
-        while !(await transport.destroyed) { await Task.yield() }
+        while !transport.destroyed { await Task.yield() }
     }
     #expect(await keeper.currentState().log == [], "neither OnInitialize nor a destroy handler ran", sourceLocation: sourceLocation)
     return failure
@@ -226,7 +238,7 @@ struct InitializeResolverFailureTests {
             #expect(await keeper.currentState().log == ["init:no-output", "join:p-1"])
         }
         #expect(metrics.snapshot.initFailures == 0)
-        #expect(!(await transport.destroyed))
+        #expect(!transport.destroyed)
     }
 
     @Test("With .continue, OnInitialize gets none of the group's outputs: not the failing resolver's, nor the one that finished first")

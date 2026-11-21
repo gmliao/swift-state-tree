@@ -367,12 +367,25 @@ func testCanJoinDenies() async throws {
 
 @Test("ctx.emitEvent queues and flushes deterministically")
 func testCtxEmitEventQueuesAndFlushes() async throws {
-    actor RecordingTransport: LandKeeperTransport {
-        var events: [AnyServerEvent] = []
-        func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { events.append(event) }
+    /// Records the events each turn hands over (#546 L2d: a live keeper's transport opts in).
+    final class RecordingTransport: LandKeeperTransport, @unchecked Sendable {
+        private let lock = NSLock()
+        private var received: [AnyServerEvent] = []
+        var events: [AnyServerEvent] { lock.withLock { received } }
+        func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
         func syncNowFromTransport() async {}
         func syncBroadcastOnlyFromTransport() async {}
         func onLandDestroyed() async {}
+        func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+        func runSyncPhaseInTurn<S: StateNodeProtocol>(
+            state: S,
+            events: [InTurnServerEvent],
+            includeSync: Bool,
+            recording: InTurnSyncRecording?
+        ) -> InTurnSyncOutput {
+            lock.withLock { received.append(contentsOf: events.map(\.event)) }
+            return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+        }
     }
     let transport = RecordingTransport()
     
@@ -397,13 +410,11 @@ func testCtxEmitEventQueuesAndFlushes() async throws {
     )
     await keeper.setTransport(transport)
 
-    // `RecordingTransport` keeps the default `runsSyncPhaseInTurn` (false), so this runs the
-    // legacy tick path with in-turn sync on or off.
-    // One stepped tick emits one event, flushed to the transport by the end of the tick (#264).
+    // One stepped tick emits one event, handed to the transport in the tick's turn (#264).
     await keeper.stepTickOnce()
-    #expect(await transport.events.count == 1)
+    #expect(transport.events.count == 1)
     await keeper.stepTickOnce()
-    #expect(await transport.events.count == 2)
+    #expect(transport.events.count == 2)
 }
 
 @Test("OnTick is synchronous and does not block")

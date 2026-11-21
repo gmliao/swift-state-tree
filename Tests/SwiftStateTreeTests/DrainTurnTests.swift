@@ -278,13 +278,23 @@ private func makeLifecycleDrainDefinition() -> LandDefinition<DrainTestState> {
 }
 
 /// Holds the end of the drain (`onLandDestroyed`, after the destroy handlers) on `gate`.
-private actor DestroyHoldTransport: LandKeeperTransport {
+private final class DestroyHoldTransport: LandKeeperTransport, @unchecked Sendable {
     let gate = WatermarkGate()
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async { await gate.enterAndWait() }
+    /// Opts in (#546 L2d): a live keeper's transport runs its sync phase in turn. Sends nothing.
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+    }
 }
 
 private func makeLifecycleKeeper(
