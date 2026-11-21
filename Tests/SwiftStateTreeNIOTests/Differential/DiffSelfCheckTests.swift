@@ -19,8 +19,7 @@ extension DifferentialHarness {
         /// One real run, the transforms' base: two players, so frames, events and a close exist.
         private func baseRun() async throws -> DiffRunResult {
             let scenario = try #require(diffScenarios.first { $0.name == "two-players" })
-            // A legacy cell: the adapter's package-only off mode, until #546 L2.
-            return try await runChecked(scenario, DiffCell(sync: .legacy, encoding: .json, land: .tickless))
+            return try await runChecked(scenario, DiffCell(sync: .inTurn, encoding: .json, land: .tickless))
         }
 
         @Test("The comparator reports a dropped frame, a swap, a changed close, a dropped record entry")
@@ -53,7 +52,7 @@ extension DifferentialHarness {
             #expect(swappedFrames.allSatisfy { $0.digests?.hasPrefix("fnv64:") == true })
             if let first = swappedFrames.first {
                 let entry = DiffExpectedDifference(
-                    scenario: "two-players", cell: DiffCell(sync: .legacy, encoding: .json, land: .tickless),
+                    scenario: "two-players", cell: DiffCell(sync: .inTurn, encoding: .json, land: .tickless),
                     checkpoint: first.checkpoint, channel: first.channel, place: first.place,
                     detail: first.detail, digests: first.digests, reason: "self-check"
                 )
@@ -179,7 +178,7 @@ extension DifferentialHarness {
 
         @Test("The branch lists: exact, one use, stale and overlap fail, retired keys exact")
         func branchListRules() {
-            let cell = DiffCell(sync: .legacy, encoding: .json, land: .tickless)
+            let cell = DiffCell(sync: .inTurn, encoding: .json, land: .tickless)
             let index = ["two-players.\(cell).json", "join-act-leave.\(cell).json"]
             let difference = DiffDifference(checkpoint: "terminal", channel: .frames, place: "A", detail: "frame 3 differs")
             func entry(_ detail: String = "frame 3 differs", scenario: String = "two-players") -> DiffExpectedDifference {
