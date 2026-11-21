@@ -6220,9 +6220,9 @@ extension TransportAdapter {
                 // A sync cycle's element entered the writer since the wait: wait again.
                 guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
             case .refused(.syncInFlight):
-                // A direct `beginSync` holds the keeper's sync flag, and nothing reports its
-                // `endSync`: retry shortly, within the deadline (only until the flag goes, #546
-                // L2d-3).
+                // TODO(#546 L2d-3): remove with `isSyncing`. A direct `beginSync` holds the
+                // keeper's sync flag, and nothing reports its `endSync`: retry shortly, within
+                // the deadline.
                 guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
                 try await safeTaskSleep(for: .milliseconds(2))
                 guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
