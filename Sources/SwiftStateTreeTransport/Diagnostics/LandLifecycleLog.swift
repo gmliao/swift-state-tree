@@ -111,7 +111,7 @@ public struct SessionLifecycleRecord: Codable, Sendable, Equatable {
 /// line. (`FileHandle.write(_:)` would terminate the process on a full disk.) Errors, not
 /// warnings, since runs use `LOG_LEVEL=error` and the lost data must show.
 ///
-/// The file is opened with `O_APPEND`, so processes sharing one path never overwrite each
+/// The file is opened in append mode, so processes sharing one path never overwrite each
 /// other's lines; each process numbers its instances from 1, so a reader tells processes
 /// apart by a path per process, or by the order of `created` lines.
 public final class LandLifecycleLog: @unchecked Sendable {
@@ -154,8 +154,11 @@ public final class LandLifecycleLog: @unchecked Sendable {
         ) else {
             return nil
         }
-        let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
-        guard fd >= 0 else {
+        // `fopen(_, "ab")`, not `open(2)` with a mode: both create the file if missing and append,
+        // but `open` is not portable. The Windows CRT rejects the POSIX `0o644` mode and aborts
+        // the process, even for a valid path. The `b` (ignored on POSIX) keeps Windows from
+        // writing "\r\n" for each "\n".
+        guard let file = fopen(path, "ab") else {
             let reason = String(cString: strerror(errno))
             logger.error("Land lifecycle log disabled: \(TransportEnvKeys.landLifecycleLogPath) can't be opened", metadata: [
                 "path": .string(path),
@@ -163,10 +166,16 @@ public final class LandLifecycleLog: @unchecked Sendable {
             ])
             return nil
         }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard let stream = AppendStream(file) else {
+            logger.error("Land lifecycle log disabled: \(TransportEnvKeys.landLifecycleLogPath) can't be opened", metadata: [
+                "path": .string(path),
+                "error": .string("setvbuf failed"),
+            ])
+            return nil
+        }
         return LandLifecycleLog(
-            write: { line in try handle.write(contentsOf: Data((line + "\n").utf8)) },
-            close: { try? handle.close() }
+            write: { line in try stream.writeLine(line) },
+            close: { stream.close() }
         )
     }
 
@@ -252,6 +261,50 @@ public final class LandLifecycleLog: @unchecked Sendable {
 
     private static func uptimeNs() -> UInt64 {
         UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    }
+
+    /// A file opened for appending, flushed after every line, and a failed write throws
+    /// (`FileHandle.write(_:)` would terminate the process). The stream is fully buffered with a
+    /// buffer far larger than a line, so each line reaches the file in one `write` from the
+    /// flush; processes sharing a path then never interleave inside a line. (Unbuffered stdio
+    /// doesn't promise that: some C libraries write in chunks.) A line longer than the buffer
+    /// may be split. Callers serialize access; `LandLifecycleLog.append` holds its lock.
+    private final class AppendStream: @unchecked Sendable {
+        private static let bufferSize = 64 * 1024
+        private var file: UnsafeMutablePointer<FILE>?
+        // Our own buffer: with a `nil` buffer some C libraries ignore the size.
+        private var buffer: UnsafeMutablePointer<CChar>?
+
+        /// `nil` when the buffer can't be set up; the file is closed then.
+        init?(_ file: UnsafeMutablePointer<FILE>) {
+            let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: Self.bufferSize)
+            guard setvbuf(file, buffer, _IOFBF, Self.bufferSize) == 0 else {
+                fclose(file)
+                buffer.deallocate()
+                return nil
+            }
+            self.file = file
+            self.buffer = buffer
+        }
+
+        deinit { close() }
+
+        func writeLine(_ line: String) throws {
+            guard let file else { throw POSIXError(.EBADF) }
+            let bytes = Array((line + "\n").utf8)
+            guard fwrite(bytes, 1, bytes.count, file) == bytes.count, fflush(file) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+
+        func close() {
+            guard let file else { return }
+            self.file = nil
+            fclose(file)
+            // After the close: the stream may flush into the buffer until then.
+            buffer?.deallocate()
+            buffer = nil
+        }
     }
 
     private func append<Record: Encodable>(_ record: Record) {
