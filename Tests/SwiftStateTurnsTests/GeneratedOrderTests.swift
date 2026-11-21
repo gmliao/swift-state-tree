@@ -20,7 +20,8 @@ import Testing
 final class Notes: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
-    private var waiting: [String: [(Int, CheckedContinuation<Void, Never>)]] = [:]
+    private var waiting: [String: [(count: Int, id: UInt64, continuation: CheckedContinuation<Void, Never>)]] = [:]
+    private var nextWaiter: UInt64 = 0
 
     func post(_ name: String) {
         let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
@@ -28,7 +29,7 @@ final class Notes: @unchecked Sendable {
             counts[name] = count
             var ready: [CheckedContinuation<Void, Never>] = []
             waiting[name]?.removeAll { entry in
-                if entry.0 <= count { ready.append(entry.1); return true }
+                if entry.count <= count { ready.append(entry.continuation); return true }
                 return false
             }
             return ready
@@ -40,8 +41,9 @@ final class Notes: @unchecked Sendable {
         lock.withLock { counts[name] ?? 0 }
     }
 
-    /// `wait(name)` under the hang bound: false when `name` isn't posted within it (the wait is
-    /// abandoned, never awaited), so a regression fails the seed instead of parking the run.
+    /// `wait(name)` under the hang bound: false when `name` isn't posted within it, so a
+    /// regression fails the seed instead of parking the run. The bound cancels the wait, which
+    /// then resumes, so nothing stays parked after it.
     func reach(_ name: String) async -> Bool {
         await withinTurnHangBound { () -> Bool in
             await self.wait(name)
@@ -49,15 +51,27 @@ final class Notes: @unchecked Sendable {
         } != nil
     }
 
-    /// Returns once `name` has been posted at least once.
+    /// Returns once `name` has been posted at least once, or once its task is cancelled.
     func wait(_ name: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let posted = lock.withLock { () -> Bool in
-                if (counts[name] ?? 0) >= 1 { return true }
-                waiting[name, default: []].append((1, continuation))
-                return false
+        let id = lock.withLock { () -> UInt64 in
+            nextWaiter += 1
+            return nextWaiter
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock { () -> Bool in
+                    if (counts[name] ?? 0) >= 1 || Task.isCancelled { return true }
+                    waiting[name, default: []].append((count: 1, id: id, continuation: continuation))
+                    return false
+                }
+                if resumeNow { continuation.resume() }
             }
-            if posted { continuation.resume() }
+        } onCancel: {
+            let cancelled = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                guard let index = waiting[name]?.firstIndex(where: { $0.id == id }) else { return nil }
+                return waiting[name]?.remove(at: index).continuation
+            }
+            cancelled?.resume()
         }
     }
 }

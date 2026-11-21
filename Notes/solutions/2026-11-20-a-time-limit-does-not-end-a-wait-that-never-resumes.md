@@ -89,6 +89,12 @@ Converting the other suites' waits by grep wasn't enough. An event-withholding m
 - **Bounds in series.** A test that makes 20 waits in turn costs 20 bounds under a mutant, and 32 generated seeds cost 32. Each test fails, but the run takes many minutes. Once one wait has run out its bound, give the later ones a short one (`HangBoundTrip`).
 - **Lines that must stay verbatim.** A wait inside a `// docs:` block can't be wrapped, so the test's whole body runs under the bound instead (`withinTestHangBound`).
 
+A fourth gap was found in review, not by the mutants. Test 16 waits on `h.wait(…)`, a fixture with another name, which a grep for `f.wait` misses. None of the mutants withheld the park diagnostic it waits for, so they didn't catch it either. Grep for the wait's shape on any receiver, and add a mutant for each kind of event the tests wait on.
+
+The guarantee is for a wait on an event or a reply that never comes. A stall of the actor's executor (a drain that never returns inside `send`) isn't bounded by any of this.
+
+A trip must come from the timer winning the race, not from the timer merely firing. If the timer fired while a result was landing, the flag would shorten every later wait in a passing run.
+
 When the test process is killed at a timeout, its buffered output is lost. Run it under a pty (`script -qfec`) to see which tests never ended.
 
 ## Stopping a mutation run

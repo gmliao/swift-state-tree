@@ -30,8 +30,9 @@ extension Fixture {
     /// `waitUnlessCancelled`: a test may end with one of them parked at a gate on purpose.
     @discardableResult
     func reach(_ name: String, sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
+        let note = HangBoundTrip.issueNote
         let opened = await withinTurnHangBound { await self.waitUnlessCancelled(name) } ?? false
-        if !opened { Issue.record("\"\(name)\" never opened", sourceLocation: sourceLocation) }
+        if !opened { Issue.record(Comment(rawValue: "\"\(name)\" never opened" + note), sourceLocation: sourceLocation) }
         return opened
     }
 }
@@ -41,9 +42,10 @@ extension Fixture {
 /// after that: a wait whose own cancellation path is broken is abandoned parked, and the test
 /// fails instead of parking with it.
 func settled(_ task: Task<Bool, Never>, sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
+    let note = HangBoundTrip.issueNote
     guard let result = await raceHangBound(task) else {
         task.cancel()
-        Issue.record("a task the test awaits never ended", sourceLocation: sourceLocation)
+        Issue.record(Comment(rawValue: "a task the test awaits never ended" + note), sourceLocation: sourceLocation)
         return false
     }
     return result.get()
@@ -68,8 +70,8 @@ func raceHangBound<T: Sendable, E: Error>(_ task: Task<T, E>) async -> Result<T,
             race.add(Task { race.finish(await task.result) })
             race.add(Task {
                 guard (try? await safeTaskSleep(for: HangBoundTrip.bound)) != nil else { return }
-                HangBoundTrip.trip()
-                race.finish(nil)
+                // Trip only when the timer won: a result that landed first leaves the bound as is.
+                if race.finish(nil) { HangBoundTrip.trip() }
             })
         }
     } onCancel: {
@@ -108,16 +110,18 @@ final class FirstOf<T: Sendable>: @unchecked Sendable {
         if cancelNow { racer.cancel() }
     }
 
-    func finish(_ value: T) {
+    /// True when this finish won: it resumed the continuation, or was kept for `start`.
+    @discardableResult
+    func finish(_ value: T) -> Bool {
         lock.lock()
         if done || !early.isEmpty {
             lock.unlock()
-            return
+            return false
         }
         guard let continuation else {
             early = [value]
             lock.unlock()
-            return
+            return true
         }
         done = true
         self.continuation = nil
@@ -126,6 +130,7 @@ final class FirstOf<T: Sendable>: @unchecked Sendable {
         lock.unlock()
         for racer in racers { racer.cancel() }
         continuation.resume(returning: value)
+        return true
     }
 }
 
@@ -138,8 +143,9 @@ func firstOrBound<T: Sendable, E: Error>(
     _ task: Task<T, E>,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async -> Result<T, E>? {
+    let note = HangBoundTrip.issueNote
     let first = await raceHangBound(task)
-    if first == nil { Issue.record("a task the test awaits never ended", sourceLocation: sourceLocation) }
+    if first == nil { Issue.record(Comment(rawValue: "a task the test awaits never ended" + note), sourceLocation: sourceLocation) }
     return first
 }
 
@@ -189,6 +195,12 @@ enum HangBoundTrip {
         lock.withLock { wasTripped } ? tripped : turnTestHangBound
     }
 
+    /// Appended to an issue a wait records. Read before the wait starts, so it names the short
+    /// bound only for a wait that got it.
+    static var issueNote: String {
+        lock.withLock { wasTripped } ? " (within the 1 s bound left after an earlier wait ran out its bound)" : ""
+    }
+
     static func trip() {
         lock.withLock { wasTripped = true }
     }
@@ -201,10 +213,11 @@ func withinTestHangBound(
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: @escaping @Sendable () async throws -> Void
 ) async throws {
+    let note = HangBoundTrip.issueNote
     let task = Task { try await body() }
     guard let result = await raceHangBound(task) else {
         task.cancel()
-        Issue.record("the test's body never ended within the hang bound", sourceLocation: sourceLocation)
+        Issue.record(Comment(rawValue: "the test's body never ended within the hang bound" + note), sourceLocation: sourceLocation)
         return
     }
     try result.get()

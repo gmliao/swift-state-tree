@@ -302,7 +302,7 @@ struct OrderedChecksTests {
     }
 
     @Test("16: queue steps after the inputs already queued, survives close, the queue limit and a key's end; only endAll drops it")
-    func queueKeepsItsPlace() async {
+    func queueKeepsItsPlace() async throws {
         let f = Fixture()
         let a = DemoActor(fixture: f, queueLimit: 2)
         await a.send(.transaction(1, "q1"))
@@ -351,10 +351,12 @@ struct OrderedChecksTests {
         let h = Fixture()
         let c = DemoActor(fixture: h)
         await c.send(.transaction(1, "y1"))
+        // A failed reach below ends the test early; the held transaction's gate still opens.
+        defer { h.open("y1") }
         await c.send(.step(5))
-        await h.wait("park #1")
+        try #require(await h.reach("park #1"))
         await c.send(.step(6))
-        await h.wait("park #2")
+        try #require(await h.reach("park #2"))
         await c.send(.enqueue("e"))
         await c.send(.step(7))
         h.open("y1")

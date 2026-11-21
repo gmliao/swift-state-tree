@@ -8,6 +8,8 @@ A regression in the turn core makes a turn-suite test fail within the hang bound
 
 The rule comes from `Notes/solutions/2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes.md`. A suite's `.timeLimit` cancels only the test's task, and a wait that ignores cancellation, or a task the test awaits, outlives it. #719 applied the rule to `FollowUpTests`; this change applies it to the other turn suites.
 
+**Scope.** The bounds end a test's wait for an event or a reply that never comes. They don't end a stall of the actor's executor, such as a drain that never returns inside `send`. One example: the release-only case's children await `a.send` before their bound starts.
+
 ## Helpers (`Tests/SwiftStateTurnsTests/Support/HangBound.swift`)
 
 #719 adds `raceHangBound`: a reader task and a timer race to resume one continuation, and the loser is never awaited. `reach`, `settled` and `bounded` are built on it. This change adds:
@@ -42,7 +44,7 @@ The counts come from a grep at #719's head, then each site was read.
   - `waitForLog(n)` in `DemoActor` and `MembershipActor`, an `.ignoresCancel` call the test makes through the actor. It now goes through `firstOrBound`.
   - `await register(…).result` and the like in MembershipModelTests: a helper that returns a call task. 11 sites, now `boundedResult`.
   - The generated-orders harness's `notes.wait`, now `Notes.reach` (one failure ends the seed).
-  - Its call tasks, awaited one by one. They now share one bound per seed.
+  - Its call tasks, awaited one by one. They now share one bound, at the seed's end. So a seed's waits are bounded each (every note wait, plus that final join), not the seed as a whole.
 - **Doc blocks:** code inside a `// docs:` block stays verbatim, because the documentation test (`documentationMatchesTheTests`) compares it. The three tests with such waits (ConceptsTests' room and scoreboard, WorkedExampleTests' lobby) run their whole body under `withinTestHangBound`, which records an issue and abandons a body that never ends. The documentation test ignores the indentation this adds.
 - **Waits one after another:** a test that makes many waits in turn (the orders in M8–M10, the generated seeds) costs one bound per wait under a mutant: many minutes, not one. Once any wait in the process has run out its bound, `HangBoundTrip` gives later waits 1 s. A run with a hung core then ends in about one bound.
 
@@ -56,4 +58,5 @@ The counts come from a grep at #719's head, then each site was read.
   - `reply`: successful replies are withheld, while errors (a `.cancelsCall` caller's `CancellationError`) still go. Withholding the error too would leave the documented `.cancelsCall` calls with nothing to end them.
   - `launch`: no effect is launched, so no gate event comes.
 
-  Each full run must end, failing. Before the fixes above, both ran past a 900 s timeout. Results are in the PR.
+  Each full run must end, failing. Before the fixes above, both ran past a 900 s timeout. After them, the observed runs ended in 63–64 s (the seed-79, reply and launch runs at 2e324856). Results are in the PR.
+- `park`: the `.queued` diagnostic is never sent, so no "park #n" opens. Test 16 in OrderedChecksTests waits on it.
