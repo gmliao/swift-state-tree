@@ -151,7 +151,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 ### Actor Reentrancy: keeper state changes only in turns
 - Every `await` inside an actor is a point where other calls run and the actor's state can change. A decision based on actor state (a lookup, `isEmpty`, `isRunning`, "already joined", "session still connected") holds only until the next `await`.
 - **The rule (the target; plan in `Notes/plans/2026-11-05-reentrancy-helpers.md`): keeper state is mutated only inside synchronous turns.** Async work is a request that goes out, and its result comes back as a turn input. The input's handler re-reads the current state and validates a ticket (a generation captured when the request went out); a stale input is rejected, not applied. This is the Elm architecture's `Cmd`/`Msg` split and Erlang/OTP's `gen_server` shape. A suspended keeper function never resumes to mutate keeper state.
-  - Not yet true for the join and leave resolvers, the freeze settle (#129) and the legacy tick path (in-turn sync off); until they move, those paths re-check by hand in the segment after the `await`.
+  - Not yet true for the join and leave resolvers, the freeze drain (#129) and the keeper's legacy (non-turn) path, tick and tickless, which a live keeper without an in-turn transport takes (to be removed for live keepers in #546 L2d-2; `.reevaluation` keepers keep theirs until #612); until they move, those paths re-check by hand in the segment after the `await`.
   - The land-stop drain's post-await bookkeeping is a further exception until #522 moves it into a turn (a ticket captured when the stop starts; the drain's completion comes back as a server-originated turn input, #387).
   - After an action's resolvers no land state is mutated, but the action's frame still does keeper bookkeeping: the freeze accounting in `debugEndWork` and, on a tickless land with in-turn sync, the turn waiter registration (`awaitInputTurn`).
 - **Outside turns** (adapter, transport, router, host, NIO, admin, reevaluation service), use the helpers in `Sources/SwiftStateTree/Support`:
@@ -159,6 +159,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
   - `SingleFlight`: one shared in-flight task per key for create, start or destroy once.
   - `Lifecycle`: start/stop as a state machine set synchronously before the first `await`.
   - Never remove or overwrite keyed state by key alone from a callback that can outlive its instance; compare the ticket.
+- A failure found outside a turn may go into a set-once mailbox on the keeper, written in the segment that finds it and read at the keeper's step boundaries, so the async submit only wakes the keeper; the turn core's post lane (#725, Notes/plans/2026-11-21-turn-core-post-lane.md) is to replace this pattern.
 - Order-sensitive per-session or per-player work goes through one serial queue (the adapter's membership queue), not independent Tasks.
 - Tests for these paths force the interleaving with a hold at the `await` (`HoldPoints` in library code, `TestGate` in tests); they don't rely on timing. TSan does not catch this class (it is a logic race, not a data race).
 

@@ -26,7 +26,23 @@ extension TransportAdapter {
     /// Enqueues pre-built frames as one writer element (a sync phase's commit enqueues all its
     /// frames in one call, tagged `isSyncCycle` for the back-pressure rule unless it is a
     /// joiner's firstSync). Frames for an ended session (see `endedSessions`) are dropped here.
+    ///
+    /// Once the land's output gate has closed, every frame is dropped here and counted
+    /// (`framesDroppedLandFailed`, #696): an answer, an error or join reply, a router frame. The
+    /// check is in the same segment as the enqueue. A session's final frame and the failure's
+    /// 4016 closes don't come through here (`sendFinalFrameAndClose`, `landDidFail`), so they
+    /// still go out.
     func enqueueFrames(_ frames: [SessionFrame], isSyncCycle: Bool = false) {
+        guard !outputGate.isClosed else {
+            framesDroppedLandFailed += frames.count
+            if outboundLogger.logLevel <= .debug {
+                outboundLogger.debug("Frames dropped: the land's output is closed", metadata: [
+                    "landID": .string(landIDForOutbound),
+                    "frames": .stringConvertible(frames.count),
+                ])
+            }
+            return
+        }
         let live = endedSessions.isEmpty ? frames : frames.filter { !endedSessions.contains($0.sessionID) }
         guard !live.isEmpty else { return }
         writeElement(live, isSyncCycle: isSyncCycle)

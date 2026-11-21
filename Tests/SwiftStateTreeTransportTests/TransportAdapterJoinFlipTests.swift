@@ -95,6 +95,7 @@ private struct Fixture {
 }
 
 private struct SyncPlanFault: Error {}
+private struct FirstSyncFault: Error {}
 
 /// `tick`: a land with an hourly tick and its loops started (periodic sync, stepped by hand);
 /// otherwise tickless with no periodic sync.
@@ -755,4 +756,136 @@ private func readyUnflippedJoin(
     returned.open()
     try #require(await requested.waitForArrivals(1), "the join didn't register")
     return ReadyJoin(session: session, gate: requested, task: task)
+}
+
+// MARK: - A failure noted outside a turn (#704)
+
+/// A join on a tick land, held once it registered, and flipped by the tick that consumes its
+/// OnJoin input.
+private func joinOnTickLand(_ f: Fixture, session: SessionID, player: PlayerID) async throws {
+    let registered = TestGate()
+    await f.adapter.installHolds(HoldRegistry.at(.joinSyncRequested) { await registered.arrive() })
+    let join = Task { try await joinInTurn(f, session: session, player: player) }
+    try #require(await registered.waitForArrivals(1), "\(session.rawValue) registered")
+    await f.keeper.stepTickOnce()
+    registered.open()
+    await f.adapter.installHolds(nil)
+    #expect(try await join.value.completedInTurn, "the tick flipped the join")
+    let outbound = f.adapter
+    #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
+}
+
+
+@Suite("A join and a rebind after an adapter noted a failure (#704)", .serialized, .timeLimit(.minutes(1)))
+struct JoinFlipAfterNotedFailureTests {
+    @Test("a join waiting for its flip doesn't flip after an adapter noted a failure (#704, plan test 5)")
+    func waitingJoinDoesNotFlip() async throws {
+        let f = await makeFixture(tick: false)
+        let s1 = SessionID("s1")
+        let submit = TestGate()
+        let ready = try await readyUnflippedJoin(f, session: s1, player: PlayerID("p1")) {
+            $0.on(.failureSubmit) { await submit.arrive() }
+        }
+        let failing = Task { await f.adapter.failOutsideTurn(notedFailure) }
+        try #require(await submit.waitForArrivals(1), "the failure holds before its submit")
+        // The join's own join-sync turn runs now: it ends the land before its phase.
+        let completed = try? await ready.finish(f)
+        #expect(completed != true, "the join didn't flip")
+        #expect(f.keeper.failure?.kind == .responseEncode, "the noted failure: \(String(describing: f.keeper.failure))")
+        #expect(await !f.sent.kinds(for: s1).contains("joinResponse"), "no JoinResponse")
+        submit.open()
+        await failing.value
+        await f.keeper.waitUntilDrained()
+    }
+
+    @Test("on a tick land, a join waiting for its flip doesn't flip after a noted failure, and the tick sends nothing (#704, plan test 5)")
+    func waitingJoinDoesNotFlipOnATick() async throws {
+        try await tickAfterNote(syncPlanThrows: false)
+    }
+
+    @Test("the noted failure stays the first cause when the sync plan would throw (#704, plan test 7)")
+    func notedFailureIsTheFirstCause() async throws {
+        try await tickAfterNote(syncPlanThrows: true)
+    }
+
+    /// A tick land with a join ready to flip; a closer notes its failure and holds before its
+    /// submit; a tick runs. With `syncPlanThrows`, a phase that ran would fail with `syncPlan`.
+    private func tickAfterNote(syncPlanThrows: Bool) async throws {
+        let f = await makeFixture(tick: true)
+        await f.adapter.setJoinFlipLimitsForTesting(timeout: .zero, budget: nil)
+        let returned = TestGate(), joinGate = TestGate(), submit = TestGate()
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.keeperJoinReturned) { await returned.arrive() }
+            .on(.joinSyncRequested) { await joinGate.arrive() }
+            .on(.failureSubmit) { await submit.arrive() }
+            .hook)
+        let s1 = SessionID("s1")
+        let join = Task { try await joinInTurn(f, session: s1, player: PlayerID("p1")) }
+        // The join's input is consumed in a tick turn before it registers, so that tick's phase
+        // can't flip it.
+        try #require(await returned.waitForArrivals(1), "the keeper join didn't return")
+        await f.keeper.stepTickOnce()
+        returned.open()
+        try #require(await joinGate.waitForArrivals(1), "the join didn't register")
+        try #require(await f.adapter.hasJoinsAwaitingSyncForTesting(), "a ready, unflipped join")
+        if syncPlanThrows { await f.adapter.setSyncPlanFaultForTesting { throw SyncPlanFault() } }
+
+        let failing = Task { await f.adapter.failOutsideTurn(notedFailure) }
+        try #require(await submit.waitForArrivals(1), "the failure holds before its submit")
+        let framesBefore = await f.sent.frames.count
+        await f.keeper.stepTickOnce()
+        #expect(f.keeper.failure?.kind == .responseEncode, "A's failure, not the phase's: \(String(describing: f.keeper.failure))")
+        #expect(await f.adapter.isJoiningInTurn(s1), "the join didn't flip")
+        #expect(await f.sent.frames.count == framesBefore, "nothing of that tick went out")
+
+        submit.open()
+        await failing.value
+        joinGate.open()
+        await f.adapter.installHolds(nil)
+        let completed = try? await join.value.completedInTurn
+        #expect(completed != true, "the join's waiter isn't resolved as joined")
+        await f.keeper.waitUntilDrained()
+    }
+
+    @Test("a rebind to another adapter during the hold doesn't escape the noted failure (#704, plan test 8)")
+    func rebindDoesNotEscapeTheNote() async throws {
+        let f = await makeFixture(tick: true)
+        try await joinOnTickLand(f, session: SessionID("s1"), player: PlayerID("p1"))
+        let submit = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.failureSubmit) { await submit.arrive() })
+        let failing = Task { await f.adapter.failOutsideTurn(notedFailure) }
+        try #require(await submit.waitForArrivals(1), "the failure holds before its submit")
+        let second = FlipFrames()
+        let adapter2 = TransportAdapter<JoinFlipTestState>(keeper: f.keeper, transport: second, landID: "join-flip")
+        await second.setDelegate(adapter2)
+        await f.keeper.setTransport(adapter2)
+        await f.keeper.stepTickOnce()
+        #expect(f.keeper.failure?.kind == .responseEncode, "the note sits on the keeper: \(String(describing: f.keeper.failure))")
+        #expect(await second.frames.isEmpty, "the second adapter sent nothing")
+        submit.open()
+        await failing.value
+        await f.adapter.installHolds(nil)
+        await f.keeper.waitUntilDrained()
+    }
+
+    @Test("a joiner's first sync that fails notes its failure: the next sync turn runs no phase (#704, plan test 9)")
+    func failedFirstSyncNotesItsFailure() async throws {
+        let f = await makeFixture(tick: true)
+        let p1 = PlayerID("p1"), s1 = SessionID("s1")
+        try await joinOnTickLand(f, session: s1, player: p1)
+        await f.adapter.setFirstSyncPlanFaultForTesting { throw FirstSyncFault() }
+        // A phase that ran would fail with its own cause.
+        await f.adapter.setSyncPlanFaultForTesting { throw SyncPlanFault() }
+        let submit = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.failureSubmit) { await submit.arrive() })
+        let firstSync = Task { await f.adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
+        try #require(await submit.waitForArrivals(1), "the first sync's failure holds before its submit")
+        await f.keeper.runSyncLoopIterationForTesting()
+        #expect(f.keeper.failure?.detail.contains("FirstSyncFault") == true,
+                "the first sync's failure, not the phase's: \(String(describing: f.keeper.failure))")
+        submit.open()
+        await firstSync.value
+        await f.adapter.installHolds(nil)
+        await f.keeper.waitUntilDrained()
+    }
 }

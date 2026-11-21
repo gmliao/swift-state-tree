@@ -264,8 +264,11 @@ struct FollowUpTests {
         // A later gate starts: the earlier ones would have started before it.
         await a.send(.script([.arm("C", key: 2, .work(gate: "c"))]))
         await f.reach("at gate c")
-        // Only C's gate was launched: the launch filter, counted where it launches.
+        // Only C's gate was launched: the launch filter, counted where it launches (in debug
+        // builds; release builds keep only the gate checks below).
+        #if DEBUG
         #expect(await a.gateLaunches() == 1)
+        #endif
         #expect(!f.isOpen("at gate a"))
         #expect(!f.isOpen("at gate b"))
         #expect(!f.isOpen("at gate d"))
@@ -540,14 +543,15 @@ struct FollowUpTests {
         #expect(await settled(cancelledFirst) == false)
         #expect(await a.waiterCount() == 0)
 
-        // Registered, then satisfied, then cancelled: true. The second wait's return shows the
-        // settling segment ran, so the cancel reaches a waiter already answered.
+        // Registered, then cancelled and satisfied in one segment: true. The cancellation's hop
+        // to the actor waits behind that segment, whose settle answers the waiter first.
         let satisfiedFirst = Task { await a.waitForQuiescence() }
         await f.reach("registered #2")
-        f.open("gate a")
-        #expect(await bounded { await a.waitForQuiescence() })
-        satisfiedFirst.cancel()
+        await a.cancelThenConsume(satisfiedFirst)
         #expect(await settled(satisfiedFirst) == true)
+        #expect(await a.waiterCount() == 0)
+        f.open("gate a")
+        await f.reach("stale follow-up #1")
     }
 
     @Test("31: a query whose answer step consumes the last follow-up wakes a registered waiter")

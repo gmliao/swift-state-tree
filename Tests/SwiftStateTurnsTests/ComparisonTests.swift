@@ -79,10 +79,10 @@ struct ComparisonTests {
         let f = Fixture()
         let lobby = NaiveLobby(profiles: HeldProfiles(fixture: f))
         let join = Task { await lobby.join(7) }
-        await f.wait("loading 7")
+        await f.reach("loading 7")
         await lobby.leave(7)
         f.open("release 7")
-        let count = await join.value
+        let count = await firstOrBound(join)?.get()
         // The bug: the seat is written after the leave. This test documents it; it passes when
         // the bug happens.
         #expect(count == 1)
@@ -94,10 +94,10 @@ struct ComparisonTests {
         let f = Fixture()
         let lobby = TicketedLobby(profiles: HeldProfiles(fixture: f))
         let join = Task { try await lobby.join(7) }
-        await f.wait("loading 7")
+        await f.reach("loading 7")
         await lobby.leave(7)
         f.open("release 7")
-        let result = await join.result
+        let result = await boundedResult(join)
         #expect(throws: LobbyError.self) { try result.get() }
         #expect(await lobby.seats.isEmpty)
     }
@@ -107,10 +107,10 @@ struct ComparisonTests {
         let f = Fixture()
         let lobby = LobbyActor(profiles: HeldProfiles(fixture: f))
         let join = Task { try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel) }
-        await f.wait("loading 7")
+        await f.reach("loading 7")
         await lobby.send(.leave(player: 7))
         // The joiner is answered in the leave's batch, before the load returns.
-        let result = await join.result
+        let result = await boundedResult(join)
         f.open("release 7")
         // The load's result comes back as an input, and steps as stale (a condition, not a delay).
         for _ in 0 ..< 10_000 where await lobby.late() == 0 {

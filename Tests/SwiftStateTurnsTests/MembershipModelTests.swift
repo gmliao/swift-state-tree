@@ -16,9 +16,9 @@ struct MembershipModelTests {
         let registration = Task {
             try await a.sendAndWait(.register(session: 5, player: 50, gate: "", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.disconnect(5))
-        let result = outcome(await registration.result)
+        let result = outcome(await boundedResult(registration))
         f.open("s1")
         await a.waitForLog(3)
         let s = await a.snapshot()
@@ -35,16 +35,16 @@ struct MembershipModelTests {
         let first = Task {
             try await a.sendAndWait(.register(session: 6, player: 60, gate: "k6", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("at k6")
+        await f.reach("at k6")
         let second = Task {
             try await a.sendAndWait(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("park #1")
+        await f.reach("park #1")
         a.keeper.setEntry(player: 60, session: 7)
         f.open("k6")
-        let firstResult = outcome(await first.result)
-        let secondResult = outcome(await second.result)
-        await f.wait("closed 6")
+        let firstResult = outcome(await boundedResult(first))
+        let secondResult = outcome(await boundedResult(second))
+        await f.reach("closed 6")
         let s = await a.snapshot()
         #expect(firstResult == "refused")
         #expect(secondResult == "withdrawn")
@@ -61,12 +61,12 @@ struct MembershipModelTests {
         let registration = Task {
             try await a.sendAndWait(.register(session: 8, player: 80, gate: "k8", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("at k8")
+        await f.reach("at k8")
         let next = Task { try await a.sendAndWait(.txn(9, gate: ""), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.disconnect(8))
-        let result = outcome(await registration.result)
-        let nextResult = outcome(await next.result)
+        let result = outcome(await boundedResult(registration))
+        let nextResult = outcome(await boundedResult(next))
         f.open("k8")
         await a.waitForLog(6)
         let s = await a.snapshot()
@@ -84,24 +84,24 @@ struct MembershipModelTests {
         let a = MembershipActor(fixture: f)
         a.transport.connect(1)
         a.transport.connect(3)
-        let accepted = outcome(await Task {
+        let accepted = outcome(await boundedResult(Task {
             try await a.sendAndWait(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignoresCancel)
-        }.result)
+        }))
         await a.send(.startFirstSync(1, gate: "fs1"))
         a.keeper.setEntry(player: 10, session: 2)
-        let refused = outcome(await Task {
+        let refused = outcome(await boundedResult(Task {
             try await a.sendAndWait(.register(session: 1, player: 10, gate: "", token: nil), cancellation: .ignoresCancel)
-        }.result)
+        }))
         f.open("fs1")
         await a.waitForLog(7)
-        _ = try? await a.sendAndWait(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignoresCancel)
+        _ = try? await boundedResult(Task { try await a.sendAndWait(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignoresCancel) }).get()
         await a.send(.startFirstSync(3, gate: "fs3"))
-        _ = try? await a.sendAndWait(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignoresCancel)
+        _ = try? await boundedResult(Task { try await a.sendAndWait(.register(session: 3, player: 30, gate: "", token: nil), cancellation: .ignoresCancel) }).get()
         let openAfterSameBinding = await a.snapshot().stats.openRequests
-        _ = try? await a.sendAndWait(.register(session: 3, player: 31, gate: "", token: nil), cancellation: .ignoresCancel)
+        _ = try? await boundedResult(Task { try await a.sendAndWait(.register(session: 3, player: 31, gate: "", token: nil), cancellation: .ignoresCancel) }).get()
         f.open("fs3")
         await a.waitForLog(20)
-        await f.wait("closed 1")
+        await f.reach("closed 1")
         let s = await a.snapshot()
         #expect(accepted == "success 1")
         #expect(refused == "refused")
@@ -126,14 +126,14 @@ struct MembershipModelTests {
         let reading = Task {
             try await a.sendAndWait(.register(session: 9, player: 90, gate: "k9", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("at k9")
+        await f.reach("at k9")
         let parked = Task {
             try await a.sendAndWait(.register(session: 11, player: 110, gate: "", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.teardown)
-        let readingResult = outcome(await reading.result)
-        let parkedResult = outcome(await parked.result)
+        let readingResult = outcome(await boundedResult(reading))
+        let parkedResult = outcome(await boundedResult(parked))
         f.open("k9")
         await a.waitForLog(4)
         let s = await a.snapshot()
@@ -157,9 +157,9 @@ struct MembershipModelTests {
         token.withdraw()
         a.transport.disconnect(5)
         await a.send(.disconnect(5))
-        let result = outcome(await Task {
+        let result = outcome(await boundedResult(Task {
             try await a.sendAndWait(.register(session: 5, player: 50, gate: "", token: token), cancellation: .ignoresCancel)
-        }.result)
+        }))
         let s = await a.snapshot()
         #expect(result == "withdrawn")
         #expect(s.log == ["disconnect 5"])
@@ -180,11 +180,11 @@ struct MembershipModelTests {
         let parked = Task {
             try await a.sendAndWait(.register(session: 5, player: 50, gate: "", token: waiting), cancellation: .ignoresCancel)
         }
-        await f.wait("park #1")
+        await f.reach("park #1")
         let ended = await a.query(.endJoinBeforeAdmission(session: 5, token: waiting))
         let frameAtAnswer = await a.snapshot().flushed
-        let parkedResult = outcome(await parked.result)
-        await f.wait("closed 5")
+        let parkedResult = outcome(await boundedResult(parked))
+        await f.reach("closed 5")
         f.open("b1")
         await a.waitForLog(3)
         // Started: the answer says so, and the join goes on to its outcome.
@@ -192,11 +192,11 @@ struct MembershipModelTests {
         let started = Task {
             try await a.sendAndWait(.register(session: 6, player: 60, gate: "k6", token: running), cancellation: .ignoresCancel)
         }
-        await f.wait("at k6")
+        await f.reach("at k6")
         let endedStarted = await a.query(.endJoinBeforeAdmission(session: 6, token: running))
         f.open("k6")
         f.open("tk6")
-        let startedResult = outcome(await started.result)
+        let startedResult = outcome(await boundedResult(started))
         let s = await a.snapshot()
         #expect(parkedResult == "withdrawn")
         #expect(waiting.isWithdrawn)
@@ -231,10 +231,10 @@ struct MembershipModelTests {
         transport.connect(7)
         let lost = register(7, 70, "k7")
         f.open("k7")
-        await f.wait("at tk7")
+        await f.reach("at tk7")
         transport.disconnect(7)
         await a.send(.disconnect(7))
-        let lostResult = outcome(await lost.result)
+        let lostResult = outcome(await boundedResult(lost))
         f.open("tk7")
         await a.waitForLog(6)
         let mapAfterLost = transport.sessions(of: 70)
@@ -244,7 +244,7 @@ struct MembershipModelTests {
         let won = register(8, 80, "k8")
         f.open("k8")
         f.open("tk8")
-        let wonResult = outcome(await won.result)
+        let wonResult = outcome(await boundedResult(won))
         let mapWhileMember = transport.sessions(of: 80)
         transport.disconnect(8)
         await a.send(.disconnect(8))
@@ -257,10 +257,10 @@ struct MembershipModelTests {
         let between = register(9, 90, "k9")
         f.open("k9")
         f.open("tk9")
-        await f.wait("transport answered 9")
+        await f.reach("transport answered 9")
         transport.disconnect(9)
         await a.send(.disconnect(9))
-        let betweenResult = outcome(await between.result)
+        let betweenResult = outcome(await boundedResult(between))
         f.open("post 9")
         await a.waitForLog(17)
 
@@ -270,10 +270,10 @@ struct MembershipModelTests {
         transport.connect(11)
         let refusedThere = register(11, 110, "k11")
         f.open("k11")
-        await f.wait("at tk11")
+        await f.reach("at tk11")
         transport.disconnect(11)
         f.open("tk11")
-        let refusedThereResult = outcome(await refusedThere.result)
+        let refusedThereResult = outcome(await boundedResult(refusedThere))
         let afterRefusal = await a.snapshot()
         let mapAfterRefusal = transport.sessions(of: 110)
         await a.send(.disconnect(11))
@@ -281,7 +281,7 @@ struct MembershipModelTests {
         // (e) A generation passed in: the transport registration still runs, and the passed
         //     one is the one kept.
         transport.connect(12)
-        let suppliedResult = outcome(await register(12, 120, "", generation: 77).result)
+        let suppliedResult = outcome(await boundedResult(register(12, 120, "", generation: 77)))
         let afterSupplied = await a.snapshot()
         let mapAfterSupplied = transport.sessions(of: 120)
         transport.disconnect(12)
@@ -333,9 +333,9 @@ struct MembershipModelTests {
         // (a) The disconnect lands before the keeper's insert: the admission, asked in the
         //     segment of the insert, is refused, and nothing is inserted.
         let first = join(1, 10, "j1", .admitAtInsert)
-        await f.wait("at j1")
+        await f.reach("at j1")
         await a.send(.disconnect(1))
-        let firstResult = outcome(await first.result)
+        let firstResult = outcome(await boundedResult(first))
         f.open("j1")
         await a.waitForLog(5)
         let keeperAfterFirst = keeper.players
@@ -343,10 +343,10 @@ struct MembershipModelTests {
         // (b) The keeper inserted before its resolvers, and the disconnect lands during them:
         //     the admission is refused and the keeper rolls its player back in that segment.
         let second = join(2, 20, "j2", .insertThenAdmit)
-        await f.wait("at j2")
+        await f.reach("at j2")
         let keeperDuringSecond = keeper.players
         await a.send(.disconnect(2))
-        let secondResult = outcome(await second.result)
+        let secondResult = outcome(await boundedResult(second))
         f.open("j2")
         await a.waitForLog(10)
         let keeperAfterSecond = keeper.players
@@ -356,10 +356,10 @@ struct MembershipModelTests {
         //     requested when it has returned.
         f.open("j3")
         let third = join(3, 30, "j3", .admitAtInsert)
-        await f.wait("admitted j3")
+        await f.reach("admitted j3")
         let memberDuringThird = await a.snapshot().players[3]
         await a.send(.disconnect(3))
-        let thirdResult = outcome(await third.result)
+        let thirdResult = outcome(await boundedResult(third))
         let midThird = await a.snapshot()
         let keeperDuringThird = keeper.players
         f.open("after j3")
@@ -369,32 +369,32 @@ struct MembershipModelTests {
         // (d) The keeper doesn't ask (the caller admits when the join returns), and the
         //     disconnect lands during the join: the stale completion undoes the keeper's player.
         let fourth = join(4, 40, "j4", .callerAdmits)
-        await f.wait("at j4")
+        await f.reach("at j4")
         await a.send(.disconnect(4))
-        let fourthResult = outcome(await fourth.result)
+        let fourthResult = outcome(await boundedResult(fourth))
         f.open("j4")
         await a.waitForLog(23)
         let keeperAfterFourth = keeper.players
 
         // (e) A member's disconnect while other membership work is in flight: its leave keeps
         //     its place, behind a registration that was already queued.
-        let fifthResult = outcome(await join(5, 50, "", .callerAdmits).result)
+        let fifthResult = outcome(await boundedResult(join(5, 50, "", .callerAdmits)))
         a.transport.connect(6)
         await a.send(.txn(9, gate: "x9"))
         let registration = Task {
             try await a.sendAndWait(.register(session: 6, player: 60, gate: "", token: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.disconnect(5))
         let midFifth = await a.snapshot()
         let keeperDuringFifth = keeper.players
         f.open("x9")
-        let registrationResult = outcome(await registration.result)
+        let registrationResult = outcome(await boundedResult(registration))
         await a.waitForLog(35)
         let keeperAfterFifth = keeper.players
 
         // (f) A queued leave outlives `close`.
-        let sixthResult = outcome(await join(7, 70, "", .insertThenAdmit).result)
+        let sixthResult = outcome(await boundedResult(join(7, 70, "", .insertThenAdmit)))
         await a.send(.txn(8, gate: "x8"))
         await a.send(.disconnect(7))
         await a.send(.shutdown)
@@ -453,27 +453,27 @@ struct MembershipModelTests {
         }
 
         // (a) No leave is due: answered in the disconnect's own step.
-        let noneResult = outcome(await disconnect(99).result)
+        let noneResult = outcome(await boundedResult(disconnect(99)))
 
         // (b) A member's disconnect arrives behind a transaction in flight: its caller waits,
         //     and is answered after the leave ran against the keeper.
-        let firstResult = outcome(await join(1, 10, "", .callerAdmits).result)
+        let firstResult = outcome(await boundedResult(join(1, 10, "", .callerAdmits)))
         await a.send(.txn(9, gate: "x9"))
         let firstLeft = disconnect(1)
         await a.waitForLog(6)
         let waitingFirst = await a.snapshot()
         let keeperBeforeLeave = keeper.players
         f.open("x9")
-        let firstLeftResult = outcome(await firstLeft.result)
+        let firstLeftResult = outcome(await boundedResult(firstLeft))
         let keeperAfterLeave = keeper.players
         let leavesAfterFirst = keeper.leaveCalls
 
         // (c) A stop: three sessions' disconnects arrive in an order of their own, behind work
         //     in flight. Each is awaited, and each is answered after its leave.
         let joinResults = [
-            outcome(await join(5, 50, "", .callerAdmits).result),
-            outcome(await join(6, 60, "", .insertThenAdmit).result),
-            outcome(await join(7, 70, "", .admitAtInsert).result),
+            outcome(await boundedResult(join(5, 50, "", .callerAdmits))),
+            outcome(await boundedResult(join(6, 60, "", .insertThenAdmit))),
+            outcome(await boundedResult(join(7, 70, "", .admitAtInsert))),
         ]
         await a.send(.txn(8, gate: "x8"))
         let left7 = disconnect(7)
@@ -485,20 +485,20 @@ struct MembershipModelTests {
         let waitingStop = await a.snapshot()
         let leavesBeforeStop = keeper.leaveCalls
         f.open("x8")
-        let stopResults = [outcome(await left5.result), outcome(await left6.result), outcome(await left7.result)]
+        let stopResults = [outcome(await boundedResult(left5)), outcome(await boundedResult(left6)), outcome(await boundedResult(left7))]
         let keeperAfterStop = keeper.players
         let leavesAfterStop = keeper.leaveCalls
 
         // (d) The session's own keeper join is still running: the caller is answered when that
         //     worker has returned and the compensating leave has run.
         let eighth = join(8, 80, "j8", .callerAdmits)
-        await f.wait("at j8")
+        await f.reach("at j8")
         let left8 = disconnect(8)
         await a.waitForLog(32)
-        let eighthResult = outcome(await eighth.result)
+        let eighthResult = outcome(await boundedResult(eighth))
         let waitingEighth = await a.snapshot()
         f.open("j8")
-        let left8Result = outcome(await left8.result)
+        let left8Result = outcome(await boundedResult(left8))
         let leavesAfterEighth = keeper.leaveCalls
 
         // (e) The end. A leave is still queued behind a worker that keeps its hold, with its
@@ -506,17 +506,17 @@ struct MembershipModelTests {
         //     the adapter ends. The caller is answered by the ending step. The worker returns
         //     afterwards and reports that it joined, so its stale completion asks for a
         //     compensating leave, which the ended core can't make.
-        let secondResult = outcome(await join(2, 20, "", .insertThenAdmit).result)
-        let fourthResult = outcome(await join(4, 40, "", .callerAdmits).result)
+        let secondResult = outcome(await boundedResult(join(2, 20, "", .insertThenAdmit)))
+        let fourthResult = outcome(await boundedResult(join(4, 40, "", .callerAdmits)))
         let third = join(3, 30, "j3", .callerAdmits)
-        await f.wait("at j3")
+        await f.reach("at j3")
         let left2 = disconnect(2)
         await a.waitForLog(43)
         let beforeEnd = await a.snapshot()
         keeper.stop()
         await a.send(.teardown)
-        let left2Result = outcome(await left2.result)
-        let thirdResult = outcome(await third.result)
+        let left2Result = outcome(await boundedResult(left2))
+        let thirdResult = outcome(await boundedResult(third))
         let afterEnd = await a.snapshot()
         f.open("j3")
         await a.waitForLog(46)
@@ -524,7 +524,7 @@ struct MembershipModelTests {
 
         // (f) A member's disconnect that arrives after the end queues nothing and is answered
         //     at once.
-        let lateResult = outcome(await disconnect(4).result)
+        let lateResult = outcome(await boundedResult(disconnect(4)))
         let s = await a.snapshot()
 
         let results = [noneResult, firstResult, firstLeftResult] + joinResults + stopResults

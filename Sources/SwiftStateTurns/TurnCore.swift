@@ -157,7 +157,7 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline var deadlineTasks: [RequestID: Task<Void, Never>] = [:]
     /// Tests: how many deadline tasks (requests' and follow-up gates') the core holds.
     package var deadlineTasksForTesting: Int { deadlineTasks.count }
-    /// Tests: how many follow-up gates the core has launched.
+    /// Tests: how many follow-up gates the core has launched; counted in debug builds only.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif

@@ -25,8 +25,9 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
     /// (also ones made earlier in this step), whose follow-ups close unrun, whose timer is
     /// dropped, and whose not-yet-stepped inputs scoped to `key` are withdrawn, as by `end`:
-    /// queued ones now, deferred ones (sent while a step or batch ran) when they are admitted. An input carries no generation, so
-    /// one sent under the old generation would otherwise step under the new one.
+    /// queued ones now, deferred ones (sent while a step or batch ran) when they are admitted.
+    /// An input carries no generation, so one sent under the old generation would otherwise
+    /// step under the new one.
     ///
     /// Limit: an input that arrives while `key` isn't live (before its first `start`, or after
     /// an `end`) isn't withdrawn by this `start`; it steps under the new generation. Use a fresh
@@ -55,8 +56,9 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     }
 
     /// Ends `key`: its requests close, their `.untilRequestCloses` holds are released, its
-    /// follow-ups close unrun (`handleAbandoned(id, .keyEnded)`), its timer is dropped, and not-yet-stepped inputs scoped to it are withdrawn (queued ones now,
-    /// deferred ones when they are admitted), whether or not the key is live.
+    /// follow-ups close unrun (`handleAbandoned(id, .keyEnded)`), its timer is dropped, and
+    /// not-yet-stepped inputs scoped to it are withdrawn (queued ones now, deferred ones when
+    /// they are admitted), whether or not the key is live.
     @inlinable public mutating func end(_ key: M.Key) {
         core.rt.closeRequests(of: key)
         core.rt.closeFollowUps(of: key)

@@ -530,7 +530,9 @@ extension TurnActor {
         let incarnation = core.incarnation
         let effect = pending.effect
         guard let id = pending.request else { return }
+        #if DEBUG
         core.gateLaunchesForTesting &+= 1
+        #endif
         // Held strongly, as an effect's task: a launched gate runs and its return is handled.
         Task {
             let input = await self.perform(effect)

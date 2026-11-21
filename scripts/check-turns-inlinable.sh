@@ -135,8 +135,8 @@ control_missing="$(missing_in "$control_binary" "$BENCH_TYPES" "$REQUIRED")" || 
 control_follow_up_missing="$(missing_in "$control_binary" "$FOLLOW_UP_TYPES" "$FOLLOW_UP_REQUIRED")" || exit 1
 if [ "$control_missing" != "$REQUIRED" ] || [ "$control_follow_up_missing" != "$FOLLOW_UP_REQUIRED" ]; then
   echo "check-turns-inlinable: FAILED: the negative control (no @inlinable) still has specializations for:"
-  grep -v -x -F -f <(printf '%s\n' "$control_missing") <<<"$REQUIRED" | sed 's/^/  BenchMachine: /'
-  grep -v -x -F -f <(printf '%s\n' "$control_follow_up_missing") <<<"$FOLLOW_UP_REQUIRED" | sed 's/^/  FollowUpBenchMachine: /'
+  grep -v -x -F -f <(printf '%s\n' "$control_missing") <<<"$REQUIRED" | sed 's/^/  BenchMachine: /' || true
+  grep -v -x -F -f <(printf '%s\n' "$control_follow_up_missing") <<<"$FOLLOW_UP_REQUIRED" | sed 's/^/  FollowUpBenchMachine: /' || true
   echo "(the check can't tell an inlinable step path from one that isn't)"
   exit 1
 fi

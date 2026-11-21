@@ -85,6 +85,13 @@ jobs:
         scripts/lint-turns.sh --self-test
         scripts/lint-turns.sh
 
+    # Every close of a land's output gate outside a keeper turn notes the failure on the keeper
+    # (#704; Notes/plans/2026-11-21-closed-gate-replies-and-pending-failure.md §2.2).
+    - name: Gate-close census
+      run: |
+        scripts/gate-close-census.sh --self-test
+        scripts/gate-close-census.sh
+
     # `swift package clean` only: on a fresh runner there is no .build yet (the build is the next
     # step), so `rm -rf .build` removed nothing.
     - name: Clean build artifacts
