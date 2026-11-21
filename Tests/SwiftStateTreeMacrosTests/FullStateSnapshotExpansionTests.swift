@@ -36,13 +36,15 @@ struct FullStateSnapshotExpansionTests {
             """, ["StateNodeBuilder": StateNodeBuilderMacro.self])
         #expect(diagnostics == 0)
         let body = squashed(text)
-        #expect(body.contains("public func fullStateSnapshot() throws -> StateSnapshot {"))
+        #expect(body.contains("public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {"))
+        // The form without a budget forwards with a root field's budget (#716).
+        #expect(body.contains("public func fullStateSnapshot() throws -> StateSnapshot { try fullStateSnapshot(budget: NestingBudget()) }"))
         for field in ["shown", "hidden", "masked"] {
-            #expect(body.contains("result[\"\(field)\"] = try SnapshotValue.makeFull(from: self._\(field).wrappedValue as Any)"), "\(field)")
+            #expect(body.contains("result[\"\(field)\"] = try SnapshotValue.makeFull(from: self._\(field).wrappedValue as Any, budget: budget)"), "\(field)")
         }
         #expect(!body.contains("result[\"cache\"] = try SnapshotValue.makeFull"))
         // The full conversion never reads a policy.
-        let full = body.components(separatedBy: "public func fullStateSnapshot()")[1].components(separatedBy: "return StateSnapshot(values: result)")[0]
+        let full = body.components(separatedBy: "public func fullStateSnapshot(budget: NestingBudget)")[1].components(separatedBy: "return StateSnapshot(values: result)")[0]
         #expect(!full.contains("policy"))
     }
 
@@ -83,9 +85,10 @@ struct FullStateSnapshotExpansionTests {
         #expect(diagnostics == 0)
         let body = squashed(text)
         #expect(body.contains("extension Holder: SnapshotValueConvertible, FullSnapshotValueConvertible {"))
-        #expect(body.contains("public func toFullSnapshotValue() throws -> SnapshotValue {"))
-        #expect(body.contains("\"count\": try SnapshotValue.makeFull(from: self.count as Any)"))
-        #expect(body.contains("\"node\": try SnapshotValue.makeFull(from: self.node as Any)"))
+        #expect(body.contains("public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue { let inner = try budget.enteringContainer()"))
+        #expect(body.contains("public func toFullSnapshotValue() throws -> SnapshotValue { try toFullSnapshotValue(budget: NestingBudget()) }"))
+        #expect(body.contains("\"count\": try SnapshotValue.makeFull(from: self.count as Any, budget: inner)"))
+        #expect(body.contains("\"node\": try SnapshotValue.makeFull(from: self.node as Any, budget: inner)"))
         #expect(body.contains("\"count\": SnapshotValue.unsigned(count)"), "UInt64 converts losslessly")
     }
 }

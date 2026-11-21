@@ -172,9 +172,15 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     // MARK: - Budget-aware conversions (#716)
     //
     // Each takes the budget for the node's field values: the node's own object is outside it
-    // (the caller spent it, or it is the synthetic root). The defaults call the requirement
-    // above and check the returned fields against the budget, after the conversion ran; the
-    // count restarts at the root for everything beneath a node that implements only those.
+    // (the caller spent it, or it is the synthetic root). `@StateNodeBuilder` generates them,
+    // passing the budget to every field's conversion, and makes the requirements above forward
+    // with a root field's budget.
+    //
+    // The defaults call the requirement above and check the returned fields against the budget,
+    // after the conversion ran. So a hand-written node, or an override that ignores `budget`, is
+    // bounded only by that check at its caller: the count restarts at the root for everything
+    // beneath it. A hand-written node that nests its own type implements these and passes the
+    // budget on.
 
     /// `snapshot(for:dirtyFields:)`, its fields converted within `budget`.
     func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot
@@ -247,6 +253,7 @@ extension StateNodeProtocol {
     /// Default: `snapshot(for:dirtyFields:)`, then its fields checked against `budget`.
     public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
         let snapshot = try snapshot(for: playerID, dirtyFields: dirtyFields)
+        NestingBudget.note(.resultCheck)
         try budget.check(snapshot)
         return snapshot
     }
@@ -254,6 +261,7 @@ extension StateNodeProtocol {
     /// Default: `broadcastSnapshot(dirtyFields:)`, then its fields checked against `budget`.
     public func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
         let snapshot = try broadcastSnapshot(dirtyFields: dirtyFields)
+        NestingBudget.note(.resultCheck)
         try budget.check(snapshot)
         return snapshot
     }
@@ -261,6 +269,7 @@ extension StateNodeProtocol {
     /// Default: `snapshotForSync(playerIDs:dirtyFields:)`, then every snapshot checked.
     public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
         let result = try snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields)
+        NestingBudget.note(.resultCheck)
         try budget.check(result.broadcast)
         for snapshot in result.perPlayer.values { try budget.check(snapshot) }
         return result
@@ -269,6 +278,7 @@ extension StateNodeProtocol {
     /// Default: `fullStateSnapshot()`, then its fields checked against `budget`.
     public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {
         let snapshot = try fullStateSnapshot()
+        NestingBudget.note(.resultCheck)
         try budget.check(snapshot)
         return snapshot
     }

@@ -28,20 +28,30 @@ final class SnapshotConvertibleMacroTests {
             }
 
             extension PlayerState: SnapshotValueConvertible, FullSnapshotValueConvertible {
-                public func toSnapshotValue() throws -> SnapshotValue {
-                    return .object([
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
                     "name": .string(name),
                     "hpCurrent": .int(hpCurrent),
                     "hpMax": .int(hpMax)
                 ])
                 }
 
-                public func toFullSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "name": try SnapshotValue.makeFull(from: self.name as Any),
-                    "hpCurrent": try SnapshotValue.makeFull(from: self.hpCurrent as Any),
-                    "hpMax": try SnapshotValue.makeFull(from: self.hpMax as Any)
+                public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "name": try SnapshotValue.makeFull(from: self.name as Any, budget: inner),
+                    "hpCurrent": try SnapshotValue.makeFull(from: self.hpCurrent as Any, budget: inner),
+                    "hpMax": try SnapshotValue.makeFull(from: self.hpMax as Any, budget: inner)
                 ])
+                }
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    try toFullSnapshotValue(budget: NestingBudget())
                 }
             }
 
@@ -90,12 +100,22 @@ final class SnapshotConvertibleMacroTests {
             }
 
             extension EmptyState: SnapshotValueConvertible, FullSnapshotValueConvertible {
-                public func toSnapshotValue() throws -> SnapshotValue {
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    _ = try budget.enteringContainer()
                     return .object([:])
                 }
 
+                public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    _ = try budget.enteringContainer()
+                return .object([:])
+                }
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
                 public func toFullSnapshotValue() throws -> SnapshotValue {
-                    return .object([:])
+                    try toFullSnapshotValue(budget: NestingBudget())
                 }
             }
 
@@ -136,18 +156,28 @@ final class SnapshotConvertibleMacroTests {
             }
 
             extension GameState: SnapshotValueConvertible, FullSnapshotValueConvertible {
-                public func toSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "players": try SnapshotValue.make(from: players),
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "players": try SnapshotValue.make(from: players, budget: inner),
                     "round": .int(round)
                 ])
                 }
 
-                public func toFullSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "players": try SnapshotValue.makeFull(from: self.players as Any),
-                    "round": try SnapshotValue.makeFull(from: self.round as Any)
+                public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "players": try SnapshotValue.makeFull(from: self.players as Any, budget: inner),
+                    "round": try SnapshotValue.makeFull(from: self.round as Any, budget: inner)
                 ])
+                }
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    try toFullSnapshotValue(budget: NestingBudget())
                 }
             }
 
@@ -194,16 +224,26 @@ final class SnapshotConvertibleMacroTests {
             }
 
             extension Frozen: SnapshotValueConvertible, FullSnapshotValueConvertible {
-                public func toSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "count": try SnapshotValue.make(from: count)
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "count": try SnapshotValue.make(from: count, budget: inner)
                 ])
                 }
 
-                public func toFullSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "count": try SnapshotValue.makeFull(from: self.count as Any)
+                public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "count": try SnapshotValue.makeFull(from: self.count as Any, budget: inner)
                 ])
+                }
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    try toFullSnapshotValue(budget: NestingBudget())
                 }
             }
 
@@ -244,18 +284,28 @@ final class SnapshotConvertibleMacroTests {
             }
 
             extension OptionalState: SnapshotValueConvertible, FullSnapshotValueConvertible {
-                public func toSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "name": try SnapshotValue.make(from: name),
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "name": try SnapshotValue.make(from: name, budget: inner),
                     "score": .int(score)
                 ])
                 }
 
-                public func toFullSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "name": try SnapshotValue.makeFull(from: self.name as Any),
-                    "score": try SnapshotValue.makeFull(from: self.score as Any)
+                public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "name": try SnapshotValue.makeFull(from: self.name as Any, budget: inner),
+                    "score": try SnapshotValue.makeFull(from: self.score as Any, budget: inner)
                 ])
+                }
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    try toFullSnapshotValue(budget: NestingBudget())
                 }
             }
 
@@ -306,20 +356,30 @@ final class SnapshotConvertibleMacroTests {
             }
 
             extension PlayerState: SnapshotValueConvertible, FullSnapshotValueConvertible {
-                public func toSnapshotValue() throws -> SnapshotValue {
-                    return .object([
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
                     "name": .string(name),
                     "hpCurrent": .int(hpCurrent),
                     "hpMax": .int(hpMax)
                 ])
                 }
 
-                public func toFullSnapshotValue() throws -> SnapshotValue {
-                    return .object([
-                    "name": try SnapshotValue.makeFull(from: self.name as Any),
-                    "hpCurrent": try SnapshotValue.makeFull(from: self.hpCurrent as Any),
-                    "hpMax": try SnapshotValue.makeFull(from: self.hpMax as Any)
+                public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    let inner = try budget.enteringContainer()
+                return .object([
+                    "name": try SnapshotValue.makeFull(from: self.name as Any, budget: inner),
+                    "hpCurrent": try SnapshotValue.makeFull(from: self.hpCurrent as Any, budget: inner),
+                    "hpMax": try SnapshotValue.makeFull(from: self.hpMax as Any, budget: inner)
                 ])
+                }
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    try toFullSnapshotValue(budget: NestingBudget())
                 }
             }
 

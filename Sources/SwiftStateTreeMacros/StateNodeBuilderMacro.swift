@@ -75,6 +75,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(broadcastSnapshotMethod),
             DeclSyntax(fullStateSnapshotMethod),
             DeclSyntax(snapshotForSyncMethod),
+        ] + generateRootBudgetForwarders() + [
             DeclSyntax(isDirtyMethod),
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
@@ -396,7 +397,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // value is Value? from filteredValue (same type as the field), maintaining type safety
             // Pass playerID for recursive filtering support
             // Note: generateConversionCode will handle optional type casting to Any
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID", budget: "budget")
             if needsTry {
                 codeLines.append("        result[\"\(fieldName)\"] = try \(conversionCode)")
             } else {
@@ -413,7 +414,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         return try FunctionDeclSyntax(
             """
-            public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+            public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                 \(raw: body)
             }
             """
@@ -550,13 +551,13 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("result.reserveCapacity(\(syncProperties.count))")
         }
         for (property, _) in syncProperties {
-            codeLines.append("result[\"\(property.name)\"] = try SnapshotValue.makeFull(from: self._\(property.name).wrappedValue as Any)")
+            codeLines.append("result[\"\(property.name)\"] = try SnapshotValue.makeFull(from: self._\(property.name).wrappedValue as Any, budget: budget)")
         }
         codeLines.append("return StateSnapshot(values: result)")
         let body = codeLines.joined(separator: "\n")
         return try FunctionDeclSyntax(
             """
-            public func fullStateSnapshot() throws -> StateSnapshot {
+            public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {
                 \(raw: body)
             }
             """
@@ -596,7 +597,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // For broadcast fields, we directly access wrappedValue without filtering
             // wrappedValue is the actual typed value, not Any?
             // Note: generateConversionCode will handle optional type casting to Any
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false)
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false, budget: "budget")
 
             if needsTry {
                 // Complex types that may throw - use do-catch
@@ -619,7 +620,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         return try FunctionDeclSyntax(
             """
-            public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+            public func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                 \(raw: body)
             }
             """
@@ -673,9 +674,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("            // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("            // Pass nil here to avoid producing empty nested objects like {}.")
                     codeLines.append("            // The view without a player (masked children; refused if player-dependent, #179).")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.broadcastView(of: node)")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.broadcastView(of: node, budget: budget)")
                     codeLines.append("        } else {")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any)")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any, budget: budget)")
                     codeLines.append("        }")
                     codeLines.append("    } else {")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = .null")
@@ -686,13 +687,13 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("        // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("        // Pass nil here to avoid producing empty nested objects like {}.")
                     codeLines.append("        // The view without a player (masked children; refused if player-dependent, #179).")
-                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.broadcastView(of: node)")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.broadcastView(of: node, budget: budget)")
                     codeLines.append("    } else {")
-                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any)")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any, budget: budget)")
                     codeLines.append("    }")
                 }
             } else {
-                let (conversionCode, needsTry) = generateConversionCode(for: typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false, playerID: nil)
+                let (conversionCode, needsTry) = generateConversionCode(for: typeName, valueName: "self.\(storageName).wrappedValue", isAnyType: false, playerID: nil, budget: "budget")
                 if needsTry {
                     codeLines.append("    do {")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = try \(conversionCode)")
@@ -715,7 +716,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
             codeLines.append("for playerID in playerIDs {")
             codeLines.append("    if let value = Self._syncPolicy_\(propertyName).filteredValue(self.\(storageName).wrappedValue, for: playerID) {")
-            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID")
+            let (conversionCode, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false, playerID: "playerID", budget: "budget")
             if needsTry {
                 codeLines.append("        do {")
                 codeLines.append("            perPlayerResult[playerID]![\"\(fieldName)\"] = try \(conversionCode)")
@@ -735,11 +736,38 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         return try FunctionDeclSyntax(
             """
-            public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+            public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
                 \(raw: body)
             }
             """
         )
+    }
+
+    /// The conversion requirements without a budget, each forwarding with a root field's budget
+    /// (#716). The node's own object is outside it, as for the root state.
+    private static func generateRootBudgetForwarders() -> [DeclSyntax] {
+        [
+            """
+            public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                try snapshot(for: playerID, dirtyFields: dirtyFields, budget: NestingBudget())
+            }
+            """,
+            """
+            public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                try broadcastSnapshot(dirtyFields: dirtyFields, budget: NestingBudget())
+            }
+            """,
+            """
+            public func fullStateSnapshot() throws -> StateSnapshot {
+                try fullStateSnapshot(budget: NestingBudget())
+            }
+            """,
+            """
+            public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                try snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields, budget: NestingBudget())
+            }
+            """,
+        ]
     }
 
     /// Returns true if the type is a single (non-container) non-primitive type, i.e. possibly a StateNode for recursive snapshotForSync.
@@ -1227,13 +1255,16 @@ public struct StateNodeBuilderMacro: MemberMacro {
     /// valueName is expected to be the actual typed value for broadcastSnapshot method
     /// playerID is passed for recursive filtering support in nested StateNode structures
     /// Note: The returned code does NOT include 'try' keyword - it should be added by the caller if needsTry is true
-    private static func generateConversionCode(for typeName: String?, valueName: String, isAnyType: Bool = true, playerID: String? = nil) -> (code: String, needsTry: Bool) {
+    /// `budget`, when given, is the expression for the field value's budget (#716), passed to
+    /// every `SnapshotValue.make` call; a primitive takes none.
+    private static func generateConversionCode(for typeName: String?, valueName: String, isAnyType: Bool = true, playerID: String? = nil, budget: String? = nil) -> (code: String, needsTry: Bool) {
+        let budgetArgument = budget.map { ", budget: \($0)" } ?? ""
         guard let typeName = typeName else {
             // Unknown type, use make(from:for:) as fallback
             if let playerID = playerID {
-                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+                return ("SnapshotValue.make(from: \(valueName), for: \(playerID)\(budgetArgument))", true)
             } else {
-                return ("SnapshotValue.make(from: \(valueName))", true)
+                return ("SnapshotValue.make(from: \(valueName)\(budgetArgument))", true)
             }
         }
 
@@ -1245,9 +1276,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // Explicitly cast to Any to silence implicit coercion warning
             // Note: Only one 'as Any' is needed here since we removed the duplicate in generateSnapshotMethod/generateBroadcastSnapshotMethod
             if let playerID = playerID {
-                return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID))", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID)\(budgetArgument))", true)
             } else {
-                return ("SnapshotValue.make(from: \(valueName) as Any)", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any\(budgetArgument))", true)
             }
         }
 
@@ -1256,9 +1287,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // Explicitly cast to Any to silence implicit coercion warning
             // Note: Only one 'as Any' is needed here since we removed the duplicate in generateSnapshotMethod/generateBroadcastSnapshotMethod
             if let playerID = playerID {
-                return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID))", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any, for: \(playerID)\(budgetArgument))", true)
             } else {
-                return ("SnapshotValue.make(from: \(valueName) as Any)", true)
+                return ("SnapshotValue.make(from: \(valueName) as Any\(budgetArgument))", true)
             }
         }
 
@@ -1362,9 +1393,9 @@ public struct StateNodeBuilderMacro: MemberMacro {
             // 2. Check for SnapshotValueConvertible protocol
             // 3. Fall back to Mirror for nested structures
             if let playerID = playerID {
-                return ("SnapshotValue.make(from: \(valueName), for: \(playerID))", true)
+                return ("SnapshotValue.make(from: \(valueName), for: \(playerID)\(budgetArgument))", true)
             } else {
-                return ("SnapshotValue.make(from: \(valueName))", true)
+                return ("SnapshotValue.make(from: \(valueName)\(budgetArgument))", true)
             }
         }
     }

@@ -100,6 +100,14 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                 \(toSnapshotValueMethod)
 
                 \(toFullSnapshotValueMethod)
+
+                public func toSnapshotValue() throws -> SnapshotValue {
+                    try toSnapshotValue(budget: NestingBudget())
+                }
+
+                public func toFullSnapshotValue() throws -> SnapshotValue {
+                    try toFullSnapshotValue(budget: NestingBudget())
+                }
             }
             """
         )
@@ -306,11 +314,12 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
     /// Generate toFullSnapshotValue(): every stored property through `SnapshotValue.makeFull`, so a
     /// state node held by this value contributes its full state to the replay hash.
     private static func generateToFullSnapshotValueMethod(properties: [PropertyInfo]) throws -> FunctionDeclSyntax {
-        let entries = properties.map { "\"\($0.wireName)\": try SnapshotValue.makeFull(from: self.\($0.name) as Any)" }
-        let body = entries.isEmpty ? "return .object([:])" : "return .object([\n    " + entries.joined(separator: ",\n    ") + "\n])"
+        let entries = properties.map { "\"\($0.wireName)\": try SnapshotValue.makeFull(from: self.\($0.name) as Any, budget: inner)" }
+        let enter = entries.isEmpty ? "_ = try budget.enteringContainer()" : "let inner = try budget.enteringContainer()"
+        let body = enter + "\n" + (entries.isEmpty ? "return .object([:])" : "return .object([\n    " + entries.joined(separator: ",\n    ") + "\n])")
         return try FunctionDeclSyntax(
             """
-            public func toFullSnapshotValue() throws -> SnapshotValue {
+            public func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                 \(raw: body)
             }
             """
@@ -323,7 +332,8 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             // Empty struct: return empty object
             return try FunctionDeclSyntax(
                 """
-                public func toSnapshotValue() throws -> SnapshotValue {
+                public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+                    _ = try budget.enteringContainer()
                     return .object([:])
                 }
                 """
@@ -331,12 +341,15 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         }
 
         var codeLines: [String] = []
+        codeLines.append("let inner = try budget.enteringContainer()")
         codeLines.append("return .object([")
 
         // Generate code for each property
         for (index, property) in properties.enumerated() {
             let propertyName = property.name
-            let conversionCode = generatePropertyConversionCode(for: property.typeName, propertyName: propertyName)
+            // Through `self.`: a property named like the generated `budget` or `inner` would
+            // otherwise read the local instead (#716).
+            let conversionCode = generatePropertyConversionCode(for: property.typeName, propertyName: "self.\(propertyName)")
 
             let comma = index < properties.count - 1 ? "," : ""
             codeLines.append("    \"\(property.wireName)\": \(conversionCode)\(comma)")
@@ -348,7 +361,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
 
         return try FunctionDeclSyntax(
             """
-            public func toSnapshotValue() throws -> SnapshotValue {
+            public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                 \(raw: body)
             }
             """
@@ -359,7 +372,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
     private static func generatePropertyConversionCode(for typeName: String?, propertyName: String) -> String {
         guard let typeName = typeName else {
             // Unknown type, use make(from:) as fallback
-            return "try SnapshotValue.make(from: \(propertyName))"
+            return "try SnapshotValue.make(from: \(propertyName), budget: inner)"
         }
 
         let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -367,12 +380,12 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // Check if it's an Optional type
         if normalizedType.hasSuffix("?") {
             // Optional type: use make(from:) to handle nil properly
-            return "try SnapshotValue.make(from: \(propertyName))"
+            return "try SnapshotValue.make(from: \(propertyName), budget: inner)"
         }
 
         if normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">") {
             // Optional<Type> format: use make(from:) to handle nil properly
-            return "try SnapshotValue.make(from: \(propertyName))"
+            return "try SnapshotValue.make(from: \(propertyName), budget: inner)"
         }
 
         // Handle basic types with direct conversion (no Mirror needed)
@@ -412,7 +425,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             // Use make(from:) which will:
             // 1. Check for SnapshotValueConvertible protocol first
             // 2. Fall back to Mirror for nested structures
-            return "try SnapshotValue.make(from: \(propertyName))"
+            return "try SnapshotValue.make(from: \(propertyName), budget: inner)"
         }
     }
 }
