@@ -14,7 +14,6 @@ Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift he
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift sleep-poll 2
 Tests/SwiftStateTreeTests/ActionEventSyncTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/ActionJobTests.swift yield-poll 1
-Tests/SwiftStateTreeTests/AtomicPatternIndexAdapterTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/DebugProjectionWireShapeTests.swift helper-poll 1
 Tests/SwiftStateTreeTests/InitializeResolverFailureTests.swift yield-poll 2
 Tests/SwiftStateTreeTests/LandDSLTests.swift helper-poll 1
@@ -95,7 +94,7 @@ Tests/SwiftStateTreeTransportTests/TransportAdapterOutboundWriterTests.swift clo
 Tests/SwiftStateTreeTransportTests/TransportAdapterOutboundWriterTests.swift helper-poll 14
 Tests/SwiftStateTreeTransportTests/TransportAdapterOutboundWriterTests.swift sleep-poll 2
 Tests/SwiftStateTreeTransportTests/TransportAdapterPendingEventsAcrossCyclesTests.swift clock-poll 1
-Tests/SwiftStateTreeTransportTests/TransportAdapterPendingEventsAcrossCyclesTests.swift helper-poll 26
+Tests/SwiftStateTreeTransportTests/TransportAdapterPendingEventsAcrossCyclesTests.swift helper-poll 20
 Tests/SwiftStateTreeTransportTests/TransportAdapterPendingEventsAcrossCyclesTests.swift sleep-poll 2
 Tests/SwiftStateTreeTransportTests/TransportAdapterSkipConvergenceTests.swift helper-poll 6
 Tests/SwiftStateTreeTransportTests/TransportAdapterSnapshotForSyncCacheTests.swift helper-poll 2
@@ -107,7 +106,7 @@ Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTests.swift helper-p
 Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTimingTests.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterSyncStrategyTests.swift helper-poll 4
-Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift helper-poll 8
+Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift helper-poll 6
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift sleep-poll 1

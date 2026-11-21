@@ -13,6 +13,7 @@
 import Foundation
 import Testing
 import SwiftStateTreeMessagePack
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
@@ -460,23 +461,22 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
     @Test("4: events read by cycle N are not resent by cycle N+1 (exact frame counts)")
     func noDuplicatesAcrossCycles() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)
+        // Each `syncNow` is one sync-only turn, which enqueues its frames before it returns, so
+        // the writer's idle is the cycle's delivery.
 
         // Cycle N: a per-player change, and a targeted and a broadcast event queued before it.
         try await f.set("score", 1)
         await f.targetedEvent("tg-1", to: f.a)
         await f.broadcastEvent("bc-1")
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.settle()
+        try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
         // Cycle N+1: nothing new but a broadcast event queued after N.
         await f.broadcastEvent("bc-2")
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.settle()
+        try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
         // Cycle N+2: nothing at all.
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.settle()
+        try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
 
         let frames = f.frames(f.a)
         let kinds = opcodes(frames)

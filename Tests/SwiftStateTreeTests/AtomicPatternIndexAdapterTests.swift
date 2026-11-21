@@ -168,7 +168,7 @@ struct AtomicPatternIndexAdapterTests {
         await adapter.registerSession(sessionID: session, clientID: client, playerID: player, authInfo: nil)
         _ = await adapter.allocatePlayerSlot(accountKey: player.rawValue, for: player)
         await adapter.syncStateForNewPlayer(playerID: player, sessionID: session)
-        #expect(await adapter.waitForOutboundDrain())
+        #expect(await idleWithinBound(adapter), "the first view never reached the transport")
 
         let hasher = PathHasher(pathHashes: pathHashes)
         let format: StateFrameFormat = testCase.messagePack ? .messagePack : .json
@@ -246,10 +246,29 @@ struct AtomicPatternIndexAdapterTests {
             script.queue(step)
             await keeper.stepTickOnce()
             await adapter.syncNow()
-            #expect(await adapter.waitForOutboundDrain())
+            #expect(await idleWithinBound(adapter), "\(name): the step's frames never reached the transport")
             try await readFrames(name)
         }
         #expect(stateFrames > steps.count, "\(testCase.testDescription): the join's view and every step reached the client")
         #expect(keyed.isEmpty, "\(testCase.testDescription): keyed atomic values sent at \(keyed)")
+    }
+}
+
+/// True once the adapter's writer handed every queued frame to the transport (woken by the
+/// writer's consumer), false when the bound passed first. This target doesn't depend on the test
+/// support module, so `withinHangBound` is spelled out here.
+private func idleWithinBound<State: StateNodeProtocol>(_ adapter: TransportAdapter<State>) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await adapter.waitForOutboundIdleForTesting()
+            return true
+        }
+        group.addTask {
+            try? await safeTaskSleep(for: .seconds(60))
+            return false
+        }
+        let first = await group.next() ?? false
+        group.cancelAll()
+        return first
     }
 }

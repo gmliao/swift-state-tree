@@ -235,7 +235,8 @@ struct TransportAdapterSyncLagTests {
         await adapter.onConnect(sessionID: fixture.sessionID, clientID: fixture.clientID)
         try await simulateRouterJoin(
             adapter: adapter, keeper: keeper,
-            sessionID: fixture.sessionID, clientID: fixture.clientID, playerID: fixture.playerID
+            sessionID: fixture.sessionID, clientID: fixture.clientID, playerID: fixture.playerID,
+            waitsByEvent: true
         )
         return fixture
     }
