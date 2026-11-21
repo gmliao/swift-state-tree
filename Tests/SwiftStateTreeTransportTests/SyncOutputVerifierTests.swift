@@ -1526,3 +1526,47 @@ struct DebugFreezeSettleFailureTests {
         #expect(!outputs.contains { $0.turnKind == .legacyCycle }, "the settle cycle committed nothing")
     }
 }
+
+/// Records made by an earlier build, kept frozen (never regenerated), that must stay replayable
+/// after a change to how the live run records the same scenario (#546 L2d-1). See
+/// Fixtures/ReplayCompatibility/README.md.
+@Suite("Replay of records made by an earlier build", .timeLimit(.minutes(1)))
+struct ReplayCompatibilityRecordTests {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/ReplayCompatibility")
+
+    static func path(_ name: String) -> String {
+        directory.appendingPathComponent("\(name).reeval.sstr").path
+    }
+
+    @Test("A freeze settle recorded as a legacy cycle replays with every hash reproduced")
+    func legacyCycleSettleReplays() async throws {
+        let path = Self.path("freeze-resume-legacy-cycle-messagepack")
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        let stream = try #require(try await source.getSyncStream())
+        #expect(stream.contains { if case .output(let o) = $0 { o.turnKind == .legacyCycle } else { false } }, "the record holds the legacy-cycle settle")
+        let result = try await VerifierFixture.replay(recordAt: path)
+        #expect(result.tickHashes == result.recordedStateHashes, "state hashes")
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.initialize == .passed)
+    }
+
+    @Test("A settle failure recorded as applied by the next tick, which ends its inputs, replays with every hash reproduced")
+    func queuedSettleFailureReplays() async throws {
+        let path = Self.path("settle-failure-queued-tick")
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        let recorded = try #require(try await source.getLandFailure(), "the record holds the land failure")
+        #expect(recorded.failure.kind == .syncConversion)
+        #expect(recorded.failure.position.endsInputs == true, "the queued failure ended the next tick's inputs")
+        let result = try await VerifierFixture.replay(recordAt: path)
+        // The replay may run past the last recorded tick to the one that applied the failure:
+        // every recorded hash is reproduced.
+        #expect(!result.recordedStateHashes.isEmpty)
+        for (tickId, hash) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == hash, "state hash of tick \(tickId)")
+        }
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.liveFailure?.kind == .syncConversion)
+    }
+}

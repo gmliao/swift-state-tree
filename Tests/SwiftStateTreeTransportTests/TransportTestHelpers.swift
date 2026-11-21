@@ -4,6 +4,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 /// Simulate the join process usually handled by LandRouter.
 /// This allows testing TransportAdapter in isolation without needing the full LandRouter stack.
@@ -66,7 +67,7 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     // The adapter's outbound writer sends asynchronously; let firstSync reach the transport.
     // `waitsByEvent` waits for the writer's consumer instead of polling.
     if waitsByEvent {
-        await adapter.waitForOutboundIdleForTesting()
+        #expect(await withinHangBound { await adapter.waitForOutboundIdleForTesting() }, "outbound writer never went idle")
     } else {
         #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
