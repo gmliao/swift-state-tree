@@ -34,9 +34,8 @@ package enum PayloadNesting {
     package static let stateMaxDepth = 32
     /// The recursive steps without a container a state conversion may take on one path (#716).
     /// Provisional, sized by S0's wrapper-only measurement. An `Optional<Node>` at every level up
-    /// to `stateMaxDepth` takes one hop a level, so this must stay at least `stateMaxDepth`. A hop
-    /// can cost more stack than a container: 65 unwraps of a nested `Optional<Any>` overflowed
-    /// the debug pool stack on macOS, so the placeholder is the smallest value the rule allows.
+    /// to `stateMaxDepth` takes one hop a level, so this must stay at least `stateMaxDepth`. Until
+    /// S0 measures the unwrap loop, the placeholder is the smallest value that rule allows.
     package static let stateMaxHops = 32
 
     /// Data nested deeper than `limit`.

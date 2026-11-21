@@ -120,11 +120,9 @@ struct NestingBudgetTests {
         expectRefusal(.containers, limit: limit) { _ = try SnapshotValue.makeFull(from: wrapped(limit + 1)) }
     }
 
-    @Test("an Optional unwrapped through Mirror spends a hop: within the hops it converts, one more is refused")
+    @Test("every Optional spends a hop: within the hops it converts, one more is refused")
     func optionalHops() throws {
-        // A small hop budget, so the test never recurses deep: an unwrap of a nested
-        // `Optional<Any>` costs more stack than a container (each cast unwraps the rest again),
-        // and 65 of them overflowed the debug pool stack on macOS. S0 sizes `stateMaxHops`.
+        // A small hop budget, since this runs in process: the production limit is S0's to size.
         let budget = NestingBudget(containers: limit, hops: 4)
         _ = try SnapshotValue.make(from: optionalChain(4), budget: budget)
         _ = try SnapshotValue.makeFull(from: optionalChain(4), budget: budget)
@@ -177,11 +175,35 @@ struct NestingBudgetTests {
         }
     }
 
+    @Test("an Optional chain far past the hop limit is refused before any cast unwraps it (exit test)")
+    func farPastTheHopLimitIsRefused() async {
+        // With the unwrap loop removed, the first cast unwraps the whole chain inside the
+        // runtime and overflows the child's stack: a mutant for the Linux host.
+        await #expect(processExitsWith: .success) {
+            let deep = optionalChain(100_000)
+            for full in [false, true] {
+                do {
+                    _ = try full ? SnapshotValue.makeFull(from: deep) : SnapshotValue.make(from: deep)
+                    exit(1)
+                } catch let error {
+                    guard isNestingRefusal(error, .hops, limit: NestingBudget.hopLimit) else { exit(2) }
+                }
+            }
+            // Exit before `deep` is released: its release recurses once per level.
+            exit(0)
+        }
+    }
+
     @Test("a refused tree just past the limit is released after its refusal (exit test)")
     func refusedTreeIsReleased() async {
         await #expect(processExitsWith: .success) {
             var deep: SnapshotValue? = nestedSnapshot(NestingBudget.containerLimit + 1)
-            guard (try? SnapshotValue.make(from: deep as Any)) == nil else { exit(1) }
+            do {
+                _ = try SnapshotValue.make(from: deep as Any)
+                exit(1)
+            } catch let error {
+                guard isNestingRefusal(error, .containers, limit: NestingBudget.containerLimit) else { exit(2) }
+            }
             deep = nil
             _ = deep
         }

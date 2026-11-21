@@ -236,6 +236,25 @@ public extension SnapshotValue {
         return text.utf8.contains { $0 >= 0xCC }
     }
 
+    /// The value inside every `Optional` around `value`, with one hop spent per `.some`, or `nil`
+    /// for a `.none` (#716).
+    ///
+    /// Runs before any other cast in `make` and `makeFull`. A cast that fails on an `Optional`
+    /// unwraps it and casts its payload, and the payload of an `Optional<Any>` can be another
+    /// one, so the first cast on a long chain would recurse through every level inside the
+    /// runtime before a hop could refuse it. This cast succeeds at the first level, because
+    /// `Optional` itself conforms, and the loop takes the levels one at a time.
+    static func unwrappingOptionals(_ value: Any, budget: NestingBudget) throws -> (Any, NestingBudget)? {
+        var value = value
+        var budget = budget
+        while let optional = value as? any NestingOptionalPayload {
+            guard let payload = optional.nestingPayload else { return nil }
+            budget = try budget.hop()
+            value = payload
+        }
+        return (value, budget)
+    }
+
     /// Converts `value` as clients see it, from a root field's budget (`make(from:for:budget:)`).
     static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
         try make(from: value, for: playerID, budget: NestingBudget())
@@ -245,6 +264,7 @@ public extension SnapshotValue {
     /// every `Optional` it unwraps, spends from `budget`, and a value past it throws
     /// `SyncError.nestingTooDeep`.
     static func make(from value: Any, for playerID: PlayerID? = nil, budget: NestingBudget) throws -> SnapshotValue {
+        guard case let (value, budget)? = try unwrappingOptionals(value, budget: budget) else { return .null }
         // Short-circuit if value is already a snapshot-friendly type
         // A tree that is already built is checked iteratively: nothing below recurses on it.
         if let snapshotValue = value as? SnapshotValue {
@@ -424,6 +444,7 @@ public extension SnapshotValue {
 
         let mirror = Mirror(reflecting: value)
 
+        // Only a custom mirror can say `.optional` here: every `Optional` was unwrapped above.
         if mirror.displayStyle == .optional {
             if let child = mirror.children.first {
                 return try make(from: child.value, for: playerID, budget: try budget.hop())
@@ -569,6 +590,7 @@ public extension SnapshotValue {
     /// `makeFull(from:)` with the budget at `value` (#716), counted as `make(from:for:budget:)`
     /// counts.
     static func makeFull(from value: Any, budget: NestingBudget) throws -> SnapshotValue {
+        guard case let (value, budget)? = try unwrappingOptionals(value, budget: budget) else { return .null }
         if let snapshotValue = value as? SnapshotValue {
             try budget.check(snapshotValue)
             return snapshotValue
@@ -617,6 +639,7 @@ public extension SnapshotValue {
         let mirror = Mirror(reflecting: value)
         switch mirror.displayStyle {
         case .optional:
+            // Only a custom mirror: every `Optional` was unwrapped above.
             guard let child = mirror.children.first else { return .null }
             return try makeFull(from: child.value, budget: try budget.hop())
         case .collection:
@@ -766,4 +789,15 @@ public extension SnapshotValue {
         }
         return v
     }
+}
+
+/// An `Optional`'s payload, read without a cast that could unwrap it (#716,
+/// `SnapshotValue.unwrappingOptionals`).
+protocol NestingOptionalPayload {
+    /// The payload of a `.some`, boxed in `Any`, or `nil` for `.none`.
+    var nestingPayload: Any? { get }
+}
+
+extension Optional: NestingOptionalPayload {
+    var nestingPayload: Any? { map { $0 as Any } }
 }
