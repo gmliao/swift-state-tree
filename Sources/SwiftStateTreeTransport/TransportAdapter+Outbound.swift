@@ -150,7 +150,7 @@ extension TransportAdapter {
 
     /// Waits until every frame enqueued so far was handed to the transport, or `timeout`
     /// passes. Returns whether the backlog drained. For tests and diagnostics: a sync cycle
-    /// never waits for the writer. Only covers frames enqueued so far: a follow-up cycle that
+    /// never waits for the writer. Only covers frames enqueued so far: a requested sync turn that
     /// has not run yet enqueues later, so wait for its frames before asserting exact counts.
     /// Not a supported API: a benchmark uses it to count bytes only after they were handed over.
     @_spi(Diagnostics) public func waitForOutboundDrain(timeout: Duration = .seconds(5)) async -> Bool {
@@ -164,7 +164,8 @@ extension TransportAdapter {
 
     /// Tests only: returns once the outbound writer handed every queued frame to the transport,
     /// as `waitForOutboundDrain` checks, but woken by the writer's consumer instead of polled.
-    /// Background sync work (follow-ups, deferred retries) is the caller's to hold or await.
+    /// Background sync work (the delayed repair, the lag timer's request) is the caller's to
+    /// hold or await.
     func waitForOutboundIdleForTesting() async {
         await outboundWriter.waitForIdle()
     }

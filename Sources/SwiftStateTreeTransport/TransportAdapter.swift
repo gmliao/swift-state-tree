@@ -402,7 +402,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// When disabled, sync will:
     /// - Always use `.all` snapshot mode (no dirty-field filtering)
-    /// - Skip `clearDirty()` in `LandKeeper.beginSync(clearDirtyFlags:)` to avoid recursive reset cost
+    /// - Skip the sync phase's `clearDirty()` to avoid recursive reset cost
     ///
     /// Performance: With high update ratio (most fields changing every frame), disabling dirty tracking may be faster.
     /// With low-to-medium update ratio (typical game usage), keep it enabled to save serialization and diff cost.
@@ -1639,7 +1639,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Execute a block while marking player as initial syncing.
     /// Automatically removes the player from initialSyncingPlayers when done (even on error).
-    /// This ensures syncNow() and the broadcast-only sync skip this player during initial sync.
+    /// This ensures a sync phase skips this player during initial sync.
     ///
     /// `sessionID`'s `.joining` mark (`joiningSessions`) is handed over to the initial-sync
     /// mark here, in one synchronous segment, so the session is excluded throughout. The
@@ -2311,8 +2311,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Checked twice. Before the keeper's join, `playerID` is the requested one. On the in-turn
     /// path the keeper asks again with the player CanJoin resolved (`refusesResolvedJoin`,
-    /// #234), so a land that maps players in `CanJoin` is covered too. Off it (the adapter's
-    /// package-only off mode) only the requested player is checked.
+    /// #234), so a land that maps players in `CanJoin` is covered too. A join that doesn't run
+    /// in the keeper's turn (no attached keeper) checks only the requested player.
     private func staleJoinAttempt(_ attempt: UInt64, sessionID: SessionID, playerID: PlayerID) -> Bool {
         if endedSessions.contains(sessionID) { return true }
         return membershipCoordinator.sessionIDs(for: playerID).contains { member in
@@ -3131,8 +3131,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
-    /// that started another) and the keeper has no requested sync work pending (a writer-drain
+    /// Tests: returns once no background sync task is left (the delayed repair, or the lag
+    /// timer's request) and the keeper has no requested sync work pending (a writer-drain
     /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
     /// differential harness runs with its loops off and awaits this after each sync it asks for,
     /// so a skipped or deferred phase's retry is part of that step. Also returns when its task is
@@ -3811,8 +3811,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Records a committed plan's output (or a firstSync's seed) in the keeper's sync stream.
     /// Runs in the commit's synchronous segment, so commit order is stream order. An in-turn
-    /// phase's entries go back to the keeper as drafts with the phase's output (#553); a legacy
-    /// cycle's or an initial sync's, outside a turn, are submitted now.
+    /// phase's entries go back to the keeper as drafts with the phase's output (#553); an initial
+    /// sync's or the freeze settle's, outside a turn (recorded as `.legacyCycle`), are submitted
+    /// now.
     private func recordSyncStream(_ digest: SyncOutputDigestInput, broadcastCommitted: Bool, read: SyncOutputRead) {
         var drafts: [SyncStreamDraft] = []
         defer {
@@ -6043,9 +6044,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 /// Debug freeze and projection, used by E2E state convergence checks.
 ///
 /// A freeze pauses the land (no tick or sync body starts, tickless inputs are held), waits for
-/// in-flight work to finish, then runs one settle sync cycle. The projection is computed from
-/// the state copy that settle cycle synced, so every client that applied the settle frames can
-/// be compared with it. While frozen, `syncNow` and `syncBroadcastOnly` are deferred to resume.
+/// in-flight work to finish, then settles in one keeper job (#546 L2b). The projection is
+/// computed from the state copy the settle synced, so every client that applied the settle
+/// frames can be compared with it. While frozen, requested syncs are deferred to resume.
 ///
 /// Each freeze has a generation and a token. Further freezes while frozen add references to it;
 /// `debugResume(freezeToken:)` drops one, and a token of an older generation is a no-op. The
@@ -6057,7 +6058,8 @@ extension TransportAdapter {
     ///
     /// - Throws: `DebugFreezeError.settleTimedOut` when drain and settle miss their deadline (the
     ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
-    ///   auto-resume) before its settle finished, or the land failed or is closing.
+    ///   auto-resume) before its settle finished, or the land had already failed or is closing.
+    ///   A settle whose own plan fails throws that `LandFailure`.
     public func debugFreeze() async throws -> DebugFreezeResponse {
         if debugFreezeState.count == 0 {
             debugFreezeState.generation &+= 1
@@ -6175,7 +6177,7 @@ extension TransportAdapter {
     /// Pause and drain the keeper, then settle (#546 L2b, plan §3.4): wait for the writer, then
     /// one keeper job that checks the fence and commits, then publish. No `beginSync`: nothing to
     /// retry, and nothing latches behind it. One deadline covers the drain, the writer wait and
-    /// the keeper job.
+    /// the wait for the keeper job (the job checks it when it starts, not while it runs).
     private func debugSettle(generation: UInt64) async throws -> DebugFreezeState<State>.Settled {
         let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
         let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
