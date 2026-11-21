@@ -153,6 +153,23 @@ func boundedResult(
     await firstOrBound(task, sourceLocation: sourceLocation) ?? .failure(TurnHangBoundExceeded())
 }
 
+/// `call` run in a task of its own, under `firstOrBound`: for a file that makes no tasks itself
+/// (a machine's file, by the turns lint's machine-file rule).
+func firstOrBound<T: Sendable>(
+    sourceLocation: SourceLocation = #_sourceLocation,
+    call: @escaping @Sendable () async throws -> T
+) async -> Result<T, any Error>? {
+    await firstOrBound(Task { try await call() }, sourceLocation: sourceLocation)
+}
+
+/// `call` run in a task of its own, under `boundedResult`; see `firstOrBound(call:)`.
+func boundedResult(
+    sourceLocation: SourceLocation = #_sourceLocation,
+    call: @escaping @Sendable () async throws -> Int
+) async -> Result<Int, any Error> {
+    await boundedResult(Task { try await call() }, sourceLocation: sourceLocation)
+}
+
 /// What `boundedResult` answers for a task that never ended within the hang bound.
 struct TurnHangBoundExceeded: Error, CustomStringConvertible {
     var description: String { "hang bound exceeded" }

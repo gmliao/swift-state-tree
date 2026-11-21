@@ -79,8 +79,9 @@ actor DemoActor: TurnActor {
     /// Under the hang bound: a log that never gets there records an issue instead of parking
     /// the test (the call is `.ignoresCancel`, so it is abandoned, not awaited).
     func waitForLog(_ count: Int, sourceLocation: SourceLocation = #_sourceLocation) async {
-        let call = Task { try await self.sendAndWait(.awaitLog(count), cancellation: .ignoresCancel) }
-        _ = await firstOrBound(call, sourceLocation: sourceLocation)
+        _ = await firstOrBound(sourceLocation: sourceLocation) {
+            try await self.sendAndWait(.awaitLog(count), cancellation: .ignoresCancel)
+        }
     }
 
     // MARK: Reaching the actor from inside a step
