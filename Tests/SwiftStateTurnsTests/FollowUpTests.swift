@@ -419,13 +419,19 @@ struct FollowUpTests {
         }
         #expect(at("ran A") < at("parked P1"))
         #expect(at("parked P1") < at("ran B"))
-        // B steps in A's job, before the job ends; P2 and P3 step in later batches, at most the
-        // cap each (whichever entry runs a segment first releases them: the drain, or C's
-        // follow-ups job), and C in a later follow-ups job. No order is asserted between those
-        // later jobs (plan §3.3).
-        #expect(at("ran B") < at("parked P2"))
-        #expect(at("ran B") < at("ran C"))
         #expect(f.segments.allSatisfy { $0 <= 1 })
+        // One continuation job at a time (#723): each job captures the follow-ups due at its
+        // start and releases up to the cap. Job 1 takes A and B; A's step ends key 1 and arms C;
+        // P1 is released, the cap is hit, and B still steps. Job 2 releases P2 and steps C, armed
+        // before it started. Job 3 releases P3.
+        let relevant = { (lines: [String]) in lines.filter { $0.hasPrefix("ran") || $0.hasPrefix("parked") || $0.hasPrefix("armed") } }
+        let jobs = await a.logByJob().map(relevant)
+        #expect(jobs == [
+            ["armed A", "armed B"],
+            ["ran A", "armed C", "parked P1", "ran B"],
+            ["parked P2", "ran C"],
+            ["parked P3"],
+        ])
     }
 
     @Test("27b: a gate's result step that releases past the cap: its follow-up still steps in that segment")
@@ -684,5 +690,79 @@ struct FollowUpTests {
         #expect(log.all == [true])
         f.open("gate a")
         #expect(await settled(waiter))
+    }
+
+
+    // MARK: One continuation job (#723)
+
+    /// Key 1's request holds key 99, and two inputs park behind it.
+    static func parkTwo(_ a: FollowUpActor) async {
+        await a.send(.script([.start(1), .start(2), .hold(gate: "h")]))
+        for label in ["P1", "P2"] { await a.send(.parked(label)) }
+    }
+
+    static func steps(_ lines: [String]) -> [String] {
+        lines.filter { $0.hasPrefix("ran") || $0.hasPrefix("parked") }
+    }
+
+    @Test("40: a segment that hits the cap and leaves a follow-up due schedules one job, which releases, then steps the follow-up")
+    func oneJobForBothReasons() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f, maxReleasesPerBatch: 1)
+        await Self.parkTwo(a)
+        let before = await a.snapshot().stats.continuationJobs
+        // Ending key 1 frees key 99: P1 is released, P2 is left at the cap, and A is armed.
+        await a.send(.controlScript([.end(1), .arm("A", key: 2)]))
+        #expect(await bounded { await a.waitForQuiescence() })
+        f.open("gate h")
+        let jobs = await a.logByJob().map(Self.steps)
+        #expect(jobs == [["parked P1"], ["parked P2", "ran A"]])
+        #expect(await a.snapshot().stats.continuationJobs == before + 1)
+        // The quiescence wait woke at the job's one epilogue: P2's release had stepped too.
+        #expect(await a.snapshot().log.contains("parked P2"))
+    }
+
+    @Test("41: a follow-up armed inside a job steps in the next job, not in the one that armed it")
+    func jobCapturesAtItsStart() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .start(2), .arm("A", then: [.arm("C", key: 2)])]))
+        #expect(await bounded { await a.waitForQuiescence() })
+        let jobs = await a.logByJob().map(Self.steps)
+        #expect(jobs == [[], ["ran A"], ["ran C"]])
+    }
+
+    @Test("42: a job already pending when another entry's segment hits the cap: still one job, which does both")
+    func pendingJobTakesTheCappedReleases() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f, maxReleasesPerBatch: 1)
+        await Self.parkTwo(a)
+        let before = await a.snapshot().stats.continuationJobs
+        // In one actor turn: the first entry leaves A due (a job is scheduled); the second ends
+        // key 1, releases P1 and leaves P2 at the cap, with the job still pending.
+        await a.sendBoth(.script([.arm("A", key: 2)]), .controlScript([.end(1)]))
+        #expect(await bounded { await a.waitForQuiescence() })
+        f.open("gate h")
+        let jobs = await a.logByJob().map(Self.steps)
+        #expect(jobs == [["parked P1"], ["parked P2", "ran A"]])
+        #expect(await a.snapshot().stats.continuationJobs == before + 1)
+    }
+
+    @Test("43: a job whose work an earlier entry took runs empty")
+    func jobCanRunEmpty() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(2)]))
+        let before = await a.snapshot().stats.continuationJobs
+        // The first entry arms A (a job is scheduled); the second consumes A before the job runs.
+        await a.sendBoth(.script([.arm("A", key: 2)]), .controlScript([.consume(.a, key: 2)]))
+        // No follow-up is pending, so wait for the job itself; the call after it runs once the
+        // job's segment has ended.
+        await f.reach("job #1")
+        let jobs = await a.logByJob()
+        #expect(jobs.count == 2)
+        #expect(Self.steps(jobs.last ?? ["missing"]).isEmpty)
+        #expect(await a.snapshot().log.contains("consumed A"))
+        #expect(await a.snapshot().stats.continuationJobs == before + 1)
     }
 }

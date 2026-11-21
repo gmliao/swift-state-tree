@@ -231,15 +231,30 @@ extension TurnActor {
         runSegment()
     }
 
-    /// The follow-up job: steps the `.afterBatch` follow-ups armed before it, in arm order, in a
-    /// new batch. Ones armed by those steps go to the next job.
-    @inlinable func continueFollowUps() {
+    /// The core's one continuation job, a new batch. A segment schedules it when it leaves
+    /// parked inputs past the release cap, or `.afterBatch` follow-ups due, or both; at most one is
+    /// pending. It takes the follow-ups due at its start, in arm order, and runs a segment, which
+    /// releases parked inputs under a fresh budget and steps those follow-ups, each re-checked.
+    /// What its own steps arm, and what the cap leaves parked, goes to the next job.
+    @inlinable func continueBatch() {
         let core = self.core
-        core.followUpJobScheduled = false
+        core.continuationScheduled = false
+        core.onContinuationJobForTesting?()
         beginEntry()
-        for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
-        core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+        if TurnCore<M>.usesFollowUps {
+            for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
+            core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+        }
         runSegment()
+    }
+
+    /// Schedules `continueBatch`, unless one is already pending.
+    @inlinable func scheduleContinuation() {
+        let core = self.core
+        if core.continuationScheduled { return }
+        core.continuationScheduled = true
+        core.counters.continuationJobs += 1
+        Task { self.continueBatch() }
     }
 
     /// A follow-up's gate returned. The follow-up, if this arm's is still pending, becomes due
@@ -340,12 +355,6 @@ extension TurnActor {
         }
     }
 
-    @inlinable func continueDrain() {
-        core.drainScheduled = false
-        beginEntry()
-        runSegment()
-    }
-
     // MARK: The driver
 
     /// Not recursive. After every step: outputs are flushed, replies published and effects
@@ -378,11 +387,7 @@ extension TurnActor {
                 if budget == 0 {
                     // The rest steps in a later batch, as the actor's own job. Until then the
                     // key counts as blocked: a new input for it queues behind the ones still queued.
-                    if !core.drainScheduled {
-                        core.drainScheduled = true
-                        core.counters.drainContinuations += 1
-                        Task { self.continueDrain() }
-                    }
+                    scheduleContinuation()
                     // Follow-ups aren't parked inputs: the cap doesn't apply to them, so the ones
                     // this segment holds still step before it ends.
                     if !TurnCore<M>.usesFollowUps { break }
@@ -411,9 +416,8 @@ extension TurnActor {
             break
         }
         if released > 0 { core.onDiagnostic?(.batchEnded(released: released)) }
-        if TurnCore<M>.usesFollowUps, !core.rt.dueFollowUps.isEmpty, !core.followUpJobScheduled {
-            core.followUpJobScheduled = true
-            Task { self.continueFollowUps() }
+        if TurnCore<M>.usesFollowUps, !core.rt.dueFollowUps.isEmpty, !core.continuationScheduled {
+            scheduleContinuation()
         }
         // Checked here, not in the call: an empty check inline costs a load, a call per segment
         // costs the whole frame.

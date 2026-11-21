@@ -96,7 +96,8 @@ public enum Hold<Key: Hashable & Sendable>: Sendable {
 /// When a pending follow-up (`Turn.followUp`) steps.
 public enum FollowUpTrigger<Effect: Sendable>: Sendable {
     /// In a new batch, as the actor's own job after the current one: a follow-up that arms its
-    /// successor makes a chain of jobs, never a loop inside one batch.
+    /// successor makes a chain of jobs, never a loop inside one batch. That job is the core's one
+    /// continuation, which also releases parked inputs left past the release cap.
     case afterBatch
     /// When `perform(effect)` returns (the gate). A `deadline` that passes first closes the
     /// follow-up with `.deadline`. The gate's own result, if any, steps first, as a `run`'s does.
