@@ -84,6 +84,9 @@ struct WatermarkThrowingResolver: ContextResolver {
 }
 
 /// Test-controlled gate: the caller signals entry and then waits until the test releases it.
+///
+/// One use per gate: once entered or released it stays so. `resolver` is shared by every test
+/// in the process (it has one user, `WatermarkGatedResolver`'s test).
 final class WatermarkGate: @unchecked Sendable {
     /// Gate used by `WatermarkGatedResolver` (resolvers are static, so the gate is shared).
     static let resolver = WatermarkGate()
@@ -91,17 +94,19 @@ final class WatermarkGate: @unchecked Sendable {
     private let lock = NSLock()
     private var entered = false
     private var released = false
-    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var nextWaiter = 0
+    private var enteredWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var registrationObserver: AsyncStream<Void>.Continuation?
 
     func enterAndWait() async {
-        let toResume: [CheckedContinuation<Void, Never>] = lock.withLock {
+        let toResume: [CheckedContinuation<Bool, Never>] = lock.withLock {
             entered = true
-            let waiters = enteredWaiters
-            enteredWaiters = []
+            let waiters = Array(enteredWaiters.values)
+            enteredWaiters = [:]
             return waiters
         }
-        toResume.forEach { $0.resume() }
+        toResume.forEach { $0.resume(returning: true) }
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let resumeNow: Bool = lock.withLock {
@@ -114,30 +119,48 @@ final class WatermarkGate: @unchecked Sendable {
     }
 
     /// Waits until code under test enters the gate, at most `deadline`. A gate never entered
-    /// records an issue at the caller's line and returns `false`, so a hold that never fires
-    /// fails the test by name instead of parking the run: the entry wait ignores cancellation,
-    /// and a suite's time limit can't end it. Nothing waits at the gate then, so the caller
-    /// can go on; a late entry after `release()` passes straight through.
-    @discardableResult
+    /// records an issue at the caller's line, naming `step`, and returns `false`. The entry wait
+    /// itself ignores cancellation, and a suite's time limit can't end it, so this bound is what
+    /// turns a hold that never fires into a failure. The caller decides what follows: a test
+    /// that would next await something only the entry unblocks returns on `false`.
     func waitUntilEntered(
+        _ step: String? = nil,
         deadline: Duration = .seconds(10),
         sourceLocation: SourceLocation = #_sourceLocation
     ) async -> Bool {
-        guard case .timedOut = await raceDeadline(deadline, { await self.waitForEntry() }) else { return true }
-        Issue.record("WatermarkGate never entered within \(deadline)", sourceLocation: sourceLocation)
+        let id: Int = lock.withLock {
+            nextWaiter += 1
+            return nextWaiter
+        }
+        let outcome = await raceDeadline(deadline) { await self.waitForEntry(id) }
+        if case .finished(.success(true)) = outcome { return true }
+        // Timed out: the wait is removed and resumed, so neither it nor its task outlives
+        // this call.
+        let stale = lock.withLock { enteredWaiters.removeValue(forKey: id) }
+        stale?.resume(returning: false)
+        let what = step.map { ": \($0)" } ?? ""
+        Issue.record("WatermarkGate never entered within \(deadline)\(what)", sourceLocation: sourceLocation)
         return false
     }
 
-    /// The unbounded entry wait. On a timeout `raceDeadline` leaves it behind; a later entry
-    /// resumes it.
-    private func waitForEntry() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let resumeNow: Bool = lock.withLock {
-                if entered { return true }
-                enteredWaiters.append(continuation)
-                return false
+    /// Tests of the gate itself: entry waits still registered.
+    var registeredEntryWaitsForTesting: Int { lock.withLock { enteredWaiters.count } }
+
+    /// Tests of the gate itself: `observer` gets one element per entry wait that registers.
+    func observeRegistrationsForTesting(_ observer: AsyncStream<Void>.Continuation) {
+        lock.withLock { registrationObserver = observer }
+    }
+
+    /// Registers entry wait `id`: `true` on entry, `false` once `waitUntilEntered` removes it.
+    private func waitForEntry(_ id: Int) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let (enteredNow, observer): (Bool, AsyncStream<Void>.Continuation?) = lock.withLock {
+                if entered { return (true, nil) }
+                enteredWaiters[id] = continuation
+                return (false, registrationObserver)
             }
-            if resumeNow { continuation.resume() }
+            if enteredNow { continuation.resume(returning: true) }
+            observer?.yield()
         }
     }
 
@@ -551,7 +574,7 @@ struct ReplaySequenceWatermarkTests {
             )
         }
         // The gated action has taken its sequence number once the resolver is entered.
-        await WatermarkGate.resolver.waitUntilEntered()
+        guard await WatermarkGate.resolver.waitUntilEntered() else { return }
 
         // Inputs arriving while the gated resolver is pending take later sequence numbers.
         _ = try await keeper.handleActionEnvelope(
@@ -809,7 +832,7 @@ struct ReplaySequenceWatermarkTests {
         )
         await transport.armGate()
         let suspendedTick = Task { await keeper.stepTickOnce() }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         _ = try await keeper.handleActionEnvelope(
             emitActionEnvelope(2),
             playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
