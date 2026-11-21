@@ -215,6 +215,12 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var laneBudget = 0
+    /// Set while an epilogue's remainder wake is scheduled and hasn't started, so a flood of
+    /// entries that spend their budget schedules one (a post's own wake isn't coalesced).
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var laneWakeScheduled = false
     /// A report's own step is running: its `Turn.takeReports()` returns nothing, and reports
     /// posted meanwhile step at the next check.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
@@ -393,8 +399,10 @@ public final class TurnCore<M: TurnMachine> {
         onReplayDivergence(divergence)
     }
 
-    /// A non-report step is dispatched: it takes the next ordinal. In replay, anything still
-    /// staged for an earlier place is unconsumed.
+    /// A boundary: a non-report step is dispatched, or an input is admitted (whatever the
+    /// admission's outcome: stepped, parked or refused). It takes the next ordinal, so a report's
+    /// `before` key names the boundary after which it stepped. In replay, anything still staged
+    /// for an earlier place is unconsumed.
     @inlinable func noteDispatch() {
         guard Self.usesLane else { return }
         if laneReplay != nil {

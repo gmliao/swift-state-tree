@@ -18,12 +18,15 @@ actor LaneActor: TurnActor {
     /// How deep flushes nest now, and the deepest seen.
     private var flushDepth = 0
     private(set) var deepestFlush = 0
+    /// Runs once at the start of the next continuation job, before it captures its due
+    /// follow-ups.
+    nonisolated let atNextJob = OneShot()
 
-    init(fixture: Fixture, maxReleasesPerBatch: Int, laneCapacity: Int, replay: [LaneRecordEntry<LaneNote>]? = nil) {
+    init(fixture: Fixture, maxReleasesPerBatch: Int, laneCapacity: Int, queueLimit: Int = 64, replay: [LaneRecordEntry<LaneNote>]? = nil) {
         let clock = TestClock(fixture: fixture)
         self.fixture = fixture
         self.clock = clock
-        let core = TurnCore(LaneMachine(), queueLimit: 64, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock, laneCapacity: laneCapacity)
+        let core = TurnCore(LaneMachine(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock, laneCapacity: laneCapacity)
         core.onDiagnostic = { event in fixture.observe(event) }
         let wakes = self.wakes
         let jobs = self.jobs
@@ -32,9 +35,11 @@ actor LaneActor: TurnActor {
             wakes.mark(core.read { $0.log.count })
             fixture.openCounted("wake")
         }
+        let atNextJob = self.atNextJob
         core.onContinuationJobForTesting = { [unowned core] in
             jobs.mark(core.read { $0.log.count })
             fixture.openCounted("job")
+            atNextJob.take()?()
         }
         let records = self.records
         if let replay {
@@ -52,9 +57,10 @@ actor LaneActor: TurnActor {
         _ fixture: Fixture = Fixture(),
         maxReleasesPerBatch: Int = 64,
         laneCapacity: Int = 8,
+        queueLimit: Int = 64,
         replay: [LaneRecordEntry<LaneNote>]? = nil
     ) async -> LaneActor {
-        let actor = LaneActor(fixture: fixture, maxReleasesPerBatch: maxReleasesPerBatch, laneCapacity: laneCapacity, replay: replay)
+        let actor = LaneActor(fixture: fixture, maxReleasesPerBatch: maxReleasesPerBatch, laneCapacity: laneCapacity, queueLimit: queueLimit, replay: replay)
         await actor.send(.control([.start(0)]))
         return actor
     }
@@ -125,4 +131,19 @@ final class LaneRecords: @unchecked Sendable {
 
     var entries: [LaneRecordEntry<LaneNote>] { lock.withLock { recorded } }
     var diverged: [TurnReplayDivergence] { lock.withLock { divergences } }
+}
+
+/// A closure set from a test and taken once, from any thread.
+final class OneShot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var body: (@Sendable () -> Void)?
+
+    func set(_ body: @escaping @Sendable () -> Void) { lock.withLock { self.body = body } }
+
+    func take() -> (@Sendable () -> Void)? {
+        lock.withLock {
+            defer { body = nil }
+            return body
+        }
+    }
 }

@@ -11,30 +11,34 @@ import Foundation
 /// a report posted during the check waits for the next one, and a step's own
 /// `Turn.takeReports()` takes from the same queue, in order.
 public final class TurnLane<Report: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    /// Guarded by `lock`.
-    private var reports: [(sequence: UInt64, report: Report)] = []
+    @usableFromInline let lock = NSLock()
+    /// A ring of `capacity` slots, guarded by `lock`. Accepted posts are numbered one after
+    /// another and removed in order, so the head's sequence number is
+    /// `lastSequence - count + 1` and no slot stores one. A removal moves its report out and
+    /// leaves the slot empty, so the lane never holds a report it has handed out.
+    private var slots: [Report?]
     private var head = 0
-    /// `reports.count - head`, kept as a plain `Int` so `isEmpty` and the capacity check don't
-    /// touch the generic array: in the unspecialized class each array access looks up the
-    /// element tuple's metadata at run time.
-    private var count = 0
+    /// How many reports the lane holds, guarded by `lock`. A plain `Int`, so `isEmpty` and the
+    /// capacity check touch no generic storage (unspecialized, each access to it would look up
+    /// metadata at run time).
+    @usableFromInline var count = 0
     private var lastSequence: UInt64 = 0
     private var refusals = 0
     /// How many reports the lane holds at once; a post past it is refused. Also the budget of
     /// reports one entry steps (`TurnCore.init`'s `laneCapacity:`).
     public let capacity: Int
 
-    @usableFromInline init(capacity: Int) {
+    @usableFromInline package init(capacity: Int) {
         // `fatalError`, not `precondition`: its message prints in release builds too.
         if capacity < 1 { fatalError("TurnLane: capacity must be at least 1") }
         self.capacity = capacity
+        slots = Array(repeating: nil, count: capacity)
     }
 
     /// Appends `report`, unless the lane is full: then it counts a refusal and returns nil.
     /// Otherwise returns whether the lane was empty, read in the same critical section as the
     /// append, so only the post that makes the lane non-empty owns its wake.
-    @usableFromInline func append(_ report: Report) -> Bool? {
+    @usableFromInline package func append(_ report: Report) -> Bool? {
         lock.lock()
         defer { lock.unlock() }
         if count >= capacity {
@@ -43,57 +47,73 @@ public final class TurnLane<Report: Sendable>: @unchecked Sendable {
         }
         let wasEmpty = count == 0
         lastSequence &+= 1
-        reports.append((lastSequence, report))
+        slots[(head + count) % capacity] = report
         count += 1
         return wasEmpty
     }
 
     /// True when the lane holds no report.
-    @usableFromInline var isEmpty: Bool {
+    @inlinable package var isEmpty: Bool {
         lock.lock()
         defer { lock.unlock() }
         return count == 0
     }
 
     /// The sequence number of the last report posted: a check's watermark.
-    @usableFromInline var watermark: UInt64 {
+    @usableFromInline package var watermark: UInt64 {
         lock.lock()
         defer { lock.unlock() }
         return lastSequence
     }
 
-    /// Removes and returns the head, if its sequence number is at or below `watermark`.
-    @usableFromInline func removeHead(atOrBelow watermark: UInt64) -> Report? {
+    /// Removes and returns the head, if its sequence number is at or below `watermark`. The
+    /// report is moved out of its slot, so it is released by the caller, after the lock is
+    /// dropped: a report whose `deinit` posts to this lane can't deadlock on it.
+    @usableFromInline package func removeHead(atOrBelow watermark: UInt64) -> Report? {
         lock.lock()
         defer { lock.unlock() }
-        guard count > 0, reports[head].sequence <= watermark else { return nil }
-        let report = reports[head].report
-        head += 1
+        guard count > 0, lastSequence &- UInt64(count) &+ 1 <= watermark else { return nil }
+        let report = slots[head].take()
+        head = (head + 1) % capacity
         count -= 1
-        if count == 0 {
-            reports.removeAll(keepingCapacity: true)
-            head = 0
-        }
         return report
     }
 
-    /// Removes and returns every report the lane holds, from the head.
-    @usableFromInline func removeAll() -> [Report] {
+    /// Removes and returns every report the lane holds, from the head; released by the caller,
+    /// after the lock is dropped.
+    @usableFromInline package func removeAll() -> [Report] {
         lock.lock()
         defer { lock.unlock() }
         if count == 0 { return [] }
-        let taken = reports[head...].map(\.report)
-        reports.removeAll(keepingCapacity: true)
-        head = 0
-        count = 0
+        var taken: [Report] = []
+        taken.reserveCapacity(count)
+        while count > 0 {
+            if let report = slots[head].take() { taken.append(report) }
+            head = (head + 1) % capacity
+            count -= 1
+        }
         return taken
     }
 
     /// How many posts the lane has refused since it was made.
-    @usableFromInline var refusedCount: Int {
+    @usableFromInline package var refusedCount: Int {
         lock.lock()
         defer { lock.unlock() }
         return refusals
+    }
+
+    /// The slots the lane's storage holds, stepped or not: always `capacity`.
+    package var slotCountForTesting: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return slots.count
+    }
+
+    /// The reports the storage still holds: never more than `count`.
+    package var heldReportsForTesting: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return slots.reduce(0) { $0 + ($1 == nil ? 0 : 1) }
     }
 }
 

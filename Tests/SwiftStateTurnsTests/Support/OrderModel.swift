@@ -16,8 +16,26 @@ struct OrderOutput: Sendable {
     var step: Int
 }
 
+/// The order machine's lane report: the harness's post number. `Never` makes the laneless
+/// twin, which drives the driver's `!usesLane` branches under the same operations.
+protocol OrderReport: Sendable {
+    /// The report for post `number`; nil for `Never`, which has none.
+    static func numbered(_ number: Int) -> Self?
+    var number: Int { get }
+}
+
+extension Int: OrderReport {
+    static func numbered(_ number: Int) -> Int? { number }
+    var number: Int { self }
+}
+
+extension Never: OrderReport {
+    static func numbered(_ number: Int) -> Never? { nil }
+    var number: Int { switch self {} }
+}
+
 @PlainData
-struct OrderModel: TurnMachine {
+struct OrderModel<LaneReport: OrderReport & PlainData>: TurnMachine {
     enum Input: Sendable {
         /// External work: queues behind `hold`, scoped to `scope` (sent after the scope's
         /// `scopeEnds`-th end or supersede), withdrawn if `token` ended. `pinned`: queued by a
@@ -60,8 +78,6 @@ struct OrderModel: TurnMachine {
     typealias Key = Int
     typealias Reply = Int
     typealias FollowUpSlot = Int
-    /// A lane report: the harness's post number.
-    typealias LaneReport = Int
 
     var violations: [String] = []
     /// Request seq → id, for the requests this machine believes open.
@@ -126,11 +142,12 @@ struct OrderModel: TurnMachine {
         stepCount += 1
     }
 
-    mutating func handleReport(_ report: Int, _ turn: inout Turn<OrderModel>) {
+    mutating func handleReport(_ report: LaneReport, _ turn: inout Turn<OrderModel>) {
         enter()
         defer { depth -= 1 }
-        if reportsStepped.contains(report) { violate("report \(report) stepped twice") }
-        reportsStepped.append(report)
+        let number = report.number
+        if reportsStepped.contains(number) { violate("report \(number) stepped twice") }
+        reportsStepped.append(number)
     }
 
     mutating func handle(_ input: Input, _ turn: inout Turn<OrderModel>) {

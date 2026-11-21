@@ -367,7 +367,7 @@ init() {
 _ = keeper.post(.transportFailed)
 ```
 
-每個 step 之前，driver 會依 post 的順序 step 在那之前 post 的 report。一個 entry 最多 step `laneCapacity` 個 report（`TurnCore.init`，預設 8），其餘在之後的 batch 裡 step，所以 handler 會再 post 一個的 report 不會餓死其他工作。lane 滿了就拒絕 post：`post` 回傳 false，`refusedReports` 計數，第一個待處理的 report 勝出。必須看到自己執行期間 post 的 report 的 step，會自己取 lane：
+每個 step 之前，driver 會依 post 的順序 step 在那之前 post 的 report。report 的 step 造成的事（它的 output 送出的 input、它放行的 parked input）會在該 entry 自己的 input 之前 step，就像那個 report 在自己的 batch 裡 step 一樣。一個 entry 最多 step `laneCapacity` 個 report（`TurnCore.init`，預設 8），其餘在之後的 batch 裡 step，所以 handler 會再 post 一個的 report 不會餓死其他工作。lane 滿了就拒絕 post：`post` 回傳 false，`refusedReports` 計數，第一個待處理的 report 勝出。必須看到自己執行期間 post 的 report 的 step，會自己取 lane：
 
 ```swift
 // A failure posted while this step ran stops its output.
@@ -377,7 +377,7 @@ if failed == nil { turn.emit(.sync, for: .land) }
 
 取 lane 是環境讀取，和 `now` 一樣：replay 時提供錄下的那次取用。`LaneReport` 是 `Never`（預設）的 machine 沒有 lane，也不為它付出任何成本。
 
-API：`LaneReport`、`handleReport`、`TurnLane`、`TurnActor.lane`、`post`、`Turn.takeReports`、`TurnCore.init`（`laneCapacity:`）、`TurnStats`（`emptyLaneWakes`、`refusedReports`）。
+API：`LaneReport`、`handleReport`、`TurnLane`、`TurnActor.lane`（由 `TurnCore.lane` 指定）、`post`、`Turn.takeReports`、`TurnCore.init`（`laneCapacity:`）、`TurnStats`（`emptyLaneWakes`、`refusedReports`）。
 
 ### Batch 與 `maxReleasesPerBatch`
 

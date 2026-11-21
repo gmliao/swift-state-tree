@@ -107,7 +107,9 @@ extension TurnActor {
     // MARK: The lane
 
     /// Posts `report` to the core's lane, from any thread, without awaiting: the core steps it
-    /// before its next step (`handleReport`), within one entry's budget. False when the lane is
+    /// (`handleReport`) before the next step after the check that sees it, within an entry's
+    /// budget. A report posted after a check's watermark, or while an entry is admitting its
+    /// own input, steps after that step, at the next check. False when the lane is
     /// full: the report isn't stored (the first pending report wins) and the refusal is counted.
     /// The post that finds the lane empty schedules one wake (`laneWoke`).
     @inlinable public nonisolated func post(_ report: M.LaneReport) -> Bool {
@@ -138,6 +140,7 @@ extension TurnActor {
     @inlinable func laneWoke() {
         let core = self.core
         core.onLaneWakeForTesting?()
+        core.laneWakeScheduled = false
         if let lane = core.lane, lane.isEmpty { core.counters.emptyLaneWakes += 1 }
         beginEntry()
         if core.rt.dirty { runSegment() }
@@ -145,8 +148,15 @@ extension TurnActor {
 
     /// The entry's lane take. It steps the reports posted before it, in the segment's mode
     /// (`inSegment` set, so a send from `flush` queues and a query answers in place), draining
-    /// each one's products before the next. It marks the core dirty when it stepped a report or
-    /// left some, so the entry's epilogue runs a segment, which schedules the remainder's wake.
+    /// each one's products before the next. When it stepped a report or left some, the entry
+    /// runs a segment now, before its own checks and step (products first, plan §3.4): the
+    /// whole loop, so what the reports caused (queued sends, releases, abandonments, due
+    /// follow-ups, reports posted meanwhile) steps before the entry's own work, as a wake's
+    /// segment would have stepped it before any later entry. That is what replay relies on: it
+    /// steps a wake's report at the next entry's take. Leaving reports (a post after the
+    /// watermark) happens only live; running the segment for it too is a live ordering choice,
+    /// reports before the entry's work, not a replay need. Inside a segment, the enclosing loop
+    /// steps the products instead.
     @inlinable func takeLaneBeforeStep() {
         let core = self.core
         // Not from inside a step or a read (a `query` from a collaborator a step calls): that
@@ -158,7 +168,10 @@ extension TurnActor {
         core.inSegment = true
         let stepped = replaying ? takeStaged() : takeLane(lane)
         core.inSegment = wasInSegment
-        if stepped || !lane.isEmpty { core.rt.dirty = true }
+        if stepped || !lane.isEmpty {
+            core.rt.dirty = true
+            if !wasInSegment { runSegment() }
+        }
     }
 
     /// One check: the reports at or below the lane's watermark now, one head at a time, each
@@ -247,6 +260,9 @@ extension TurnActor {
     /// `arrival`: a deferred input's scope-end clock when it arrived; nil when admitted on arrival.
     @inlinable func admit(_ input: M.Input, caller: InputID?, arrival: UInt64? = nil) {
         let core = self.core
+        // A boundary, whatever the outcome: a report keyed after a parked or refused admission
+        // can't replay ahead of it (plan §3.9).
+        core.noteDispatch()
         switch core.machine.inputPolicy(for: input) {
         case .control:
             core.step(input, caller: caller)
@@ -378,10 +394,27 @@ extension TurnActor {
         let core = self.core
         core.continuationScheduled = false
         core.onContinuationJobForTesting?()
-        beginEntry()
-        if TurnCore<M>.usesFollowUps {
-            for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
-            core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+        if TurnCore<M>.usesLane {
+            // The follow-ups due at the job's start, captured before the lane's take: an
+            // `.afterBatch` follow-up a report arms becomes due after this, so it steps in the
+            // next job, in a new batch as `.afterBatch` promises. They are pushed after the take,
+            // so the reports' products-first segment steps before them. The swap moves the
+            // buffer out and back, so the capture doesn't allocate.
+            var due: [RequestID] = []
+            if TurnCore<M>.usesFollowUps { swap(&due, &core.rt.dueFollowUps) }
+            beginEntry()
+            if TurnCore<M>.usesFollowUps {
+                for id in due { core.followUpsToStep.push(id) }
+                due.removeAll(keepingCapacity: true)
+                due.append(contentsOf: core.rt.dueFollowUps)
+                core.rt.dueFollowUps = due
+            }
+        } else {
+            beginEntry()
+            if TurnCore<M>.usesFollowUps {
+                for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
+                core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+            }
         }
         runSegment()
     }
@@ -566,7 +599,8 @@ extension TurnActor {
         // steps up to its watermark and the loop comes round, so the first report posted after
         // the lane empties finds it empty and schedules its own wake. The budget test keeps the
         // lock off an entry that spent none.
-        if TurnCore<M>.usesLane, core.laneBudget == 0, let lane = core.lane, !lane.isEmpty {
+        if TurnCore<M>.usesLane, core.laneBudget == 0, !core.laneWakeScheduled, let lane = core.lane, !lane.isEmpty {
+            core.laneWakeScheduled = true
             Task { await self.laneWoke() }
         }
         // Checked here, not in the call: an empty check inline costs a load, a call per segment

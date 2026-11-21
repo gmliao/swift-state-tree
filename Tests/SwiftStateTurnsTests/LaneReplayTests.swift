@@ -11,13 +11,14 @@ struct LaneReplayTests {
     /// divergences. `inputs` posts only when `posting` is true.
     static func liveThenReplay(
         maxReleasesPerBatch: Int = 64,
+        queueLimit: Int = 64,
         edit: ([LaneRecordEntry<LaneNote>]) -> [LaneRecordEntry<LaneNote>] = { $0 },
         _ inputs: @escaping (LaneActor, Bool) async -> Void
     ) async -> (live: [String], replayed: [String], record: [LaneRecordEntry<LaneNote>], diverged: [TurnReplayDivergence]) {
-        let live = await LaneActor.started(maxReleasesPerBatch: maxReleasesPerBatch)
+        let live = await LaneActor.started(maxReleasesPerBatch: maxReleasesPerBatch, queueLimit: queueLimit)
         await inputs(live, true)
         let record = live.records.entries
-        let replay = await LaneActor.started(maxReleasesPerBatch: maxReleasesPerBatch, replay: edit(record))
+        let replay = await LaneActor.started(maxReleasesPerBatch: maxReleasesPerBatch, queueLimit: queueLimit, replay: edit(record))
         await inputs(replay, false)
         await replay.finishReplay()
         return (await live.log, await replay.log, record, replay.records.diverged)
@@ -38,7 +39,7 @@ struct LaneReplayTests {
         }
         #expect(run.live == ["took R"])
         #expect(run.replayed == run.live)
-        #expect(run.record.map(\.key) == [.inside(step: 1, take: 0)])
+        #expect(run.record.map(\.key) == [.inside(step: 3, take: 0)])
         #expect(run.diverged.isEmpty)
     }
 
@@ -77,7 +78,7 @@ struct LaneReplayTests {
         }
         #expect(run.live == ["report R", "X"])
         #expect(run.replayed == run.live)
-        #expect(run.record.map(\.key) == [.before(step: 1, index: 0)])
+        #expect(run.record.map(\.key) == [.before(step: 2, index: 0)])
         #expect(run.diverged.isEmpty)
     }
 
@@ -93,7 +94,7 @@ struct LaneReplayTests {
         #expect(run.live == ["abandoned h keyEnded", "parked P1", "report R", "parked P2"])
         #expect(run.replayed == run.live)
         // Keyed before P2's step, not before the entry's.
-        #expect(run.record.map(\.key) == [.before(step: 5, index: 0)])
+        #expect(run.record.map(\.key) == [.before(step: 10, index: 0)])
         #expect(run.diverged.isEmpty)
     }
 
@@ -104,6 +105,9 @@ struct LaneReplayTests {
             if on {
                 _ = a.post(LaneNote("W", then: [.readNow]))
                 await a.fixture.reach("wake #1")
+                // The hook fires at the wake's start, before its check reads the clock; the
+                // clock is nonisolated, so hop onto the actor (after the wake's job) first.
+                _ = await a.log
             }
             a.clock.set(seconds: 20)
             await a.send(.script([.readNow]))
@@ -113,10 +117,47 @@ struct LaneReplayTests {
             if on {
                 _ = a.post(LaneNote("E", then: [.log("E")]))
                 await a.fixture.reach("wake #2")
+                _ = await a.log
             }
         }
         #expect(run.live == ["report W", "now 10", "now 20", "Z", "report E", "E"])
         // W steps at the input's check with the wake's now; the input still reads its own.
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13g: a wake-stepped report whose flush sends replays with its send before the next input")
+    func wakeReportWithASend() async {
+        let run = await Self.liveThenReplay { a, on in
+            if on {
+                _ = a.post(LaneNote("A", then: [.send([.log("S")])]))
+                await a.fixture.reach("wake #1")
+                // After the wake's job: its segment stepped S.
+                _ = await a.log
+            }
+            await a.send(.script([.log("X")]))
+        }
+        #expect(run.live == ["report A", "S", "X"])
+        // Replay steps A at X's lane take; products first steps S before X.
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13h: a report stepped after a refused admission replays after it, so the refusal stands")
+    func reportAfterARefusal() async {
+        let run = await Self.liveThenReplay(queueLimit: 1) { a, on in
+            // P1 parks behind h's hold; P2 is refused (the queue holds one).
+            await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+            await a.send(.parked("P1"))
+            await a.send(.parked("P2"))
+            // R ends key 1, closing h's request, which frees the queue and the hold.
+            if on { await LaneTests.heldPost(a, LaneNote("R", then: [.end(1)])) }
+            await a.send(.script([.log("X")]))
+            if on { a.fixture.open("wake R") }
+        }
+        #expect(run.live == ["report R", "abandoned h keyEnded", "parked P1", "X"])
+        // Keyed after P2's admission (admissions take an ordinal), R can't step ahead of it in
+        // replay and turn the refusal into a park.
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }

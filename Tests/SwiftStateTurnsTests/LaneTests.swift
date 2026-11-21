@@ -106,6 +106,28 @@ struct LaneTests {
         // R stepped in the capped segment, before its job.
         #expect(parts.first?.suffix(2) == ["parked P1", "report R"])
         #expect(parts.last?.first == "parked P2")
+        // The segment's check took R, not R's own wake: that wake found the lane empty.
+        await a.fixture.reach("wake #1")
+        #expect(await a.stats.emptyLaneWakes == 1)
+        a.fixture.open("gate h")
+    }
+
+    @Test("5b: a report posted after the segment is capped is still checked before its next step")
+    func reportAfterTheCap() async {
+        let a = await LaneActor.started(maxReleasesPerBatch: 1)
+        await a.send(.script([.start(1), .hold(gate: "h")]))
+        // P1's flush sends Q, which steps after the release left P2 at the cap, and posts R.
+        await a.send(.parked("P1", [.send([.hook, .log("Q")])]))
+        await a.send(.parked("P2"))
+        await StepHooks.$duringStep.withValue({ _ = a.post(LaneNote("R")) }) {
+            await a.send(.control([.end(1)]))
+        }
+        await a.fixture.reach("job #1")
+        let parts = await a.log(cutBy: a.jobs)
+        #expect(parts.first?.suffix(3) == ["parked P1", "Q", "report R"])
+        #expect(parts.last?.first == "parked P2")
+        await a.fixture.reach("wake #1")
+        #expect(await a.stats.emptyLaneWakes == 1)
         a.fixture.open("gate h")
     }
 
@@ -154,8 +176,9 @@ struct LaneTests {
         a.fixture.open("gate w")
         await a.fixture.reach("flushed R stepped")
         await a.send(.script([.log("after")]))
-        // The stale completion steps in the entry; the abandonment the report queued, in its segment.
-        #expect(await a.log == ["report R", "late w", "abandoned w keyEnded", "after"])
+        // Products first: the abandonment the report queued steps in the entry's first segment,
+        // before the entry's own (stale) completion.
+        #expect(await a.log == ["report R", "abandoned w keyEnded", "late w", "after"])
         a.fixture.open("wake R")
     }
 
@@ -231,6 +254,27 @@ struct LaneTests {
         #expect(batches == [["report R1", "report R2"], ["report R3", "report R4"], ["report R5"]])
     }
 
+    @Test("11c: after a loop check that stepped, the loop checks again: a report posted between its watermark and its removal steps in the same segment")
+    func loopComesRoundAfterAStep() async {
+        let a = await LaneActor.started()
+        // R1 is posted during X's step, so the loop's check (not the entry's take) steps it;
+        // R1's own wake runs after this job.
+        let once = Once()
+        await a.onLaneCheck { [weak a] in
+            // At the check's hold point, past its watermark: the lane holds R1, so no wake.
+            once.run { _ = a?.post(LaneNote("R3")) }
+        }
+        await StepHooks.$duringStep.withValue({ _ = a.post(LaneNote("R1")) }) {
+            // `.note` makes X's step dirty, so its segment runs the loop.
+            await a.send(.script([.hook, .log("X"), .note("x")]))
+        }
+        await a.fixture.reach("wake #1")
+        let batches = await a.log(cutBy: a.wakes)
+        // R3 stepped before R1's wake, in X's segment, because the loop came round.
+        #expect(batches.first?.suffix(3) == ["X", "report R1", "report R3"])
+        #expect(await a.stats.emptyLaneWakes == 1)
+    }
+
     @Test("11b: a report the budget leaves, posted while the lane wasn't empty, is stepped by the epilogue's wake")
     func epilogueOwnsTheRemainderWake() async {
         let a = await LaneActor.started(laneCapacity: 2)
@@ -272,12 +316,33 @@ struct LaneTests {
         a.fixture.open("gate r")
     }
 
-    @Test("16: exception 2: a report the entry's lane take steps posts another, which steps after the entry's input")
-    func exceptionTwo() async {
+    @Test("18: a report a continuation job's lane take steps arms an afterBatch follow-up, which steps in the next job")
+    func continuationCapturesBeforeTheLane() async {
         let a = await LaneActor.started()
-        await Self.heldPost(a, LaneNote("A", then: [.post("B")]))
+        let jobsBefore = await a.stats.continuationJobs
+        // R is posted at the job's start, before it captures F1; its wake runs after the job.
+        a.atNextJob.set { _ = a.post(LaneNote("R", then: [.armAfterBatch("F2", key: 2)])) }
+        await a.send(.script([.start(1), .start(2), .armAfterBatch("F1", key: 1)]))
+        await a.fixture.reach("job #2")
+        _ = await a.log
+        let batches = await a.log(cutBy: a.jobs).dropFirst().map(Array.init)
+        // F1 was due at the first job's start; F2, armed by R in that job, waits for the next.
+        #expect(batches == [["report R", "armed F2", "ran F1"], ["ran F2"]])
+        #expect(await a.stats.continuationJobs == jobsBefore + 2)
+    }
+
+    @Test("16: products first: what the entry's lane take caused (a report it posts, a release) steps before the entry's input")
+    func productsFirst() async {
+        let a = await LaneActor.started()
+        // P waits behind the hold on key 99, which h's request under key 1 owns.
+        await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+        await a.send(.parked("P"))
+        // A ends key 1 (closing h's request, which frees P) and posts B from its flush.
+        await Self.heldPost(a, LaneNote("A", then: [.end(1), .post("B")]))
         await a.send(.script([.log("X")]))
-        #expect(await a.log == ["report A", "X", "report B"])
+        // The entry's first segment steps B and releases P before X, as a wake's segment would
+        // have before any later entry (plan §3.4).
+        #expect(await a.log == ["report A", "report B", "abandoned h keyEnded", "parked P", "X"])
         a.fixture.open("wake A")
     }
 }

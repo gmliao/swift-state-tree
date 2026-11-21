@@ -25,6 +25,8 @@ indirect enum LaneOp: Sendable {
     /// An `.afterWork` follow-up under `key`, whose gate is "gate `gate`"; its step logs "ran
     /// `label`", then runs `then`.
     case arm(String, key: Int = 1, gate: String, then: [LaneOp] = [])
+    /// An `.afterBatch` follow-up under `key` (slot `b`), whose step logs "ran `label`".
+    case armAfterBatch(String, key: Int = 1)
     case consume(key: Int = 1)
     /// An output whose flush sends `.script(ops)`.
     case send([LaneOp])
@@ -177,6 +179,10 @@ struct LaneMachine: TurnMachine {
                     log.append("armed \(label)")
                 case .joined, .refused:
                     log.append("not armed \(label)")
+                }
+            case .armAfterBatch(let label, let key):
+                if case .armed = turn.followUp(.ran(label, []), .b, of: key, .afterBatch) {
+                    log.append("armed \(label)")
                 }
             case .consume(let key):
                 if case .ran(let label, _)? = turn.consumeFollowUp(.a, of: key) {

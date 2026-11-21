@@ -367,7 +367,7 @@ init() {
 _ = keeper.post(.transportFailed)
 ```
 
-Before every step, the driver steps the reports posted before that point, in post order. One entry steps at most `laneCapacity` reports (`TurnCore.init`, default 8), and the rest step in a later batch, so a report whose handler posts another can't starve other work. A full lane refuses a post: `post` returns false, `refusedReports` counts it, and the first pending report wins. A step that must see a report posted while it runs takes the lane itself:
+Before every step, the driver steps the reports posted before that point, in post order. What a report's step causes (the inputs its outputs send, the parked inputs it frees) steps before the entry's own input, as if the report had stepped in a batch of its own. One entry steps at most `laneCapacity` reports (`TurnCore.init`, default 8), and the rest step in a later batch, so a report whose handler posts another can't starve other work. A full lane refuses a post: `post` returns false, `refusedReports` counts it, and the first pending report wins. A step that must see a report posted while it runs takes the lane itself:
 
 ```swift
 // A failure posted while this step ran stops its output.
@@ -377,7 +377,7 @@ if failed == nil { turn.emit(.sync, for: .land) }
 
 A take is an environment read, like `now`: a replay serves the recorded take. A machine whose `LaneReport` is `Never` (the default) has no lane and pays nothing for it.
 
-API: `LaneReport`, `handleReport`, `TurnLane`, `TurnActor.lane`, `post`, `Turn.takeReports`, `TurnCore.init` (`laneCapacity:`), `TurnStats` (`emptyLaneWakes`, `refusedReports`).
+API: `LaneReport`, `handleReport`, `TurnLane`, `TurnActor.lane` (assigned from `TurnCore.lane`), `post`, `Turn.takeReports`, `TurnCore.init` (`laneCapacity:`), `TurnStats` (`emptyLaneWakes`, `refusedReports`).
 
 ### Batch and `maxReleasesPerBatch`
 
