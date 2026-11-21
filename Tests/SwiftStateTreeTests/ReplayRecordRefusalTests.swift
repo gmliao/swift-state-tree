@@ -80,7 +80,8 @@ struct ReplayRecordRefusalTests {
 
     @Test("The last tick a live run can write still opens (#640)")
     func lastWritableTickOpens() async throws {
-        let source = try JSONReevaluationSource(data: jsonRecord(tickIds: [0, Int64.max - 1]))
+        // The run length bound (#728) is lifted: the tick range is what this test pins.
+        let source = try JSONReevaluationSource(data: jsonRecord(tickIds: [0, Int64.max - 1]), maxReplayTicks: Int64.max)
         #expect(try await source.getMaxTickId() == Int64.max - 1)
     }
 
@@ -116,10 +117,66 @@ struct ReplayRecordRefusalTests {
     @Test("A custom runner one tick below the overflow still runs (#640)")
     func runnerTickCountAtTheBoundRuns() async throws {
         let runner = FixedTickRunner(maxTickId: Int64.max - 1)
-        let service = ReevaluationRunnerService(factory: FixedFactory(runner: runner))
+        let service = ReevaluationRunnerService(factory: FixedFactory(runner: runner), maxReplayTicks: Int64.max)
         service.startVerification(landType: "record-refusal", recordFilePath: "/unused")
         let status = try await terminalStatus(of: service)
         #expect(status.phase == .completed)
         #expect(status.totalTicks == Int64.max)
+    }
+
+    @Test("A custom runner past the service's default limit fails the run before its first step (#728)")
+    func runnerPastTheDefaultLimitFailsTheRun() async throws {
+        let limit = ReevaluationRecordFile.defaultMaxReplayTicks
+        let atLimit = FixedTickRunner(maxTickId: limit - 1)
+        let okService = ReevaluationRunnerService(factory: FixedFactory(runner: atLimit))
+        okService.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        let ok = try await terminalStatus(of: okService)
+        #expect(ok.phase == .completed)
+        #expect(ok.totalTicks == limit)
+
+        let past = FixedTickRunner(maxTickId: limit)
+        let service = ReevaluationRunnerService(factory: FixedFactory(runner: past))
+        service.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        let status = try await terminalStatus(of: service)
+        #expect(status.phase == .failed)
+        #expect(
+            status.errorMessage == ReevaluationRecordContentError.replayTooLong(lastTick: limit, limit: limit).description,
+            "\(status.errorMessage)"
+        )
+        #expect(await past.stepCalls == 0)
+    }
+
+    @Test("A smaller limit on the service is honored: at the limit the run goes on, one past it fails before its first step (#728)")
+    func serviceLimitIsHonored() async throws {
+        let atLimit = FixedTickRunner(maxTickId: 99)
+        let okService = ReevaluationRunnerService(factory: FixedFactory(runner: atLimit), maxReplayTicks: 100)
+        okService.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        #expect(try await terminalStatus(of: okService).phase == .completed)
+
+        let past = FixedTickRunner(maxTickId: 100)
+        let service = ReevaluationRunnerService(factory: FixedFactory(runner: past), maxReplayTicks: 100)
+        service.startVerification(landType: "record-refusal", recordFilePath: "/unused")
+        let status = try await terminalStatus(of: service)
+        #expect(status.phase == .failed)
+        #expect(status.errorMessage.contains("100"), "\(status.errorMessage)")
+        #expect(await past.stepCalls == 0)
+    }
+
+    @Test("A run whose record is past the default limit fails with the typed error, and the service takes the next run (#728)")
+    func longRecordFailsTheRun() async throws {
+        let path = tempRecordPath()
+        try jsonRecord(tickIds: [0, 1_000_000_000_000]).write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let service = ReevaluationRunnerService(factory: OpeningFactory())
+        service.startVerification(landType: "record-refusal", recordFilePath: path)
+        let failed = try await terminalStatus(of: service)
+        #expect(failed.phase == .failed)
+        #expect(failed.errorMessage.contains("1000000000000"), "\(failed.errorMessage)")
+
+        let good = tempRecordPath()
+        try jsonRecord(tickIds: [0, 1]).write(to: URL(fileURLWithPath: good))
+        defer { try? FileManager.default.removeItem(atPath: good) }
+        service.startVerification(landType: "record-refusal", recordFilePath: good)
+        #expect(try await terminalStatus(of: service).phase == .completed)
     }
 }

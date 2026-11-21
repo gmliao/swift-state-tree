@@ -161,10 +161,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     public init(
         definition: LandDefinition<State>,
         recordFilePath: String,
-        requiredRecordVersion: String? = nil
+        requiredRecordVersion: String? = nil,
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) async throws {
         self.definition = definition
-        source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
+        source = try ReevaluationRecordFile.openSource(filePath: recordFilePath, maxReplayTicks: maxReplayTicks)
         recordSource = source
         integralFloats = ReevaluationReplayFrame.integralFloats(for: source)
         let metadata = try await source.getMetadata()
@@ -238,10 +239,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         initialState: State,
         recordFilePath: String,
         requiredRecordVersion: String? = nil,
-        services: LandServices = LandServices()
+        services: LandServices = LandServices(),
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) async throws {
         self.definition = definition
-        source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
+        source = try ReevaluationRecordFile.openSource(filePath: recordFilePath, maxReplayTicks: maxReplayTicks)
         recordSource = source
         integralFloats = ReevaluationReplayFrame.integralFloats(for: source)
         let metadata = try await source.getMetadata()

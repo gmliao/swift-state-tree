@@ -24,10 +24,18 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// the land's tick can't meet a frame it can't show (#521 PR 1b, S1).
     private var replayLandState: (id: ObjectIdentifier, name: String)?
 
+    /// The most steps a run may take: its runner's last tick + 1 (#728).
+    private let maxReplayTicks: Int64
+
+    /// - Parameter maxReplayTicks: a run whose runner's last tick + 1 is past this fails before its
+    ///   first step, whatever runner the factory made. A runner that opens a record file bounds
+    ///   it too, at its own `maxReplayTicks`: raise both to allow longer records.
     public init(
         factory: any ReevaluationTargetFactory,
-        projectorResolver: @escaping ReevaluationReplayProjectorResolver = ReevaluationReplayProjectorRegistry.defaultResolver
+        projectorResolver: @escaping ReevaluationReplayProjectorResolver = ReevaluationReplayProjectorRegistry.defaultResolver,
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) {
+        self.maxReplayTicks = maxReplayTicks
         self.factory = factory
         self.projectorResolver = projectorResolver
         (requests, requestContinuation) = AsyncStream.makeStream()
@@ -241,6 +249,13 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         guard !overflow else {
             _status.phase = .failed
             _status.errorMessage = "the runner's last tick is \(runner.maxTickId), so its tick count doesn't fit in Int64"
+            return false
+        }
+        guard totalTicks <= maxReplayTicks else {
+            _status.phase = .failed
+            _status.errorMessage = ReevaluationRecordContentError.replayTooLong(
+                lastTick: runner.maxTickId, limit: maxReplayTicks
+            ).description
             return false
         }
         _status.phase = .verifying
