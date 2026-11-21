@@ -33,39 +33,26 @@ public struct InTurnSyncFold: Sendable, Equatable {
 /// the architectural separation where Core (LandKeeper) doesn't depend on
 /// Transport layer, while Transport layer depends on Core.
 ///
-/// The keeper awaits `sendEventToTransport` and `syncBroadcastOnlyFromTransport` in ordered
-/// delivery: on a re-evaluation keeper's legacy path (no live keeper takes it since #546 L2d), a
-/// tickless land's passes deliver one after another, in apply order. An implementation must not await a keeper input (a join, a leave, an action or a
-/// client event) from those two calls: that input's pass delivers behind the call's own
-/// delivery, which waits for it, so both hang. Start the input in a task of its own instead,
-/// without awaiting it there. `syncNowFromTransport` isn't ordered this way.
+/// A live keeper hands its output to the transport inside its turns (`runSyncPhaseInTurn`).
 public protocol LandKeeperTransport: Sendable {
     /// Send a server event to clients.
     ///
     /// - Parameters:
     ///   - event: The server event to send.
     ///   - target: The target recipients (session, player, broadcast, etc.).
-    ///
-    /// Must not await a keeper input (see the protocol's doc): a legacy tickless pass awaits
-    /// this call in ordered delivery.
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async
     
     /// Trigger immediate state synchronization to all connected players.
     ///
-    /// This should extract the current state, compute diffs, and send updates
-    /// to all connected players.
+    /// No live keeper calls it (it syncs in its turns, #546 L2d); a re-evaluation keeper with a
+    /// transport (`ReevaluationOutputMode.transportAndSink`) does from its sync loop, until #612.
+    /// The default does nothing.
     func syncNowFromTransport() async
     
     /// Sync only broadcast changes (optimized for player leaving).
     ///
-    /// This is an optimization for cases where only broadcast fields have changed
-    /// (e.g., a player leaving). It should only extract and compare broadcast fields,
-    /// avoiding per-player snapshot extraction.
-    ///
-    /// If not implemented, should fall back to `syncNowFromTransport()`.
-    ///
-    /// Must not await a keeper input (see the protocol's doc): a legacy tickless pass awaits
-    /// this call in ordered delivery.
+    /// No live keeper calls it (a leave's sync runs in its turn, #546 L2d); a re-evaluation
+    /// keeper with a transport does after a replayed leave, until #612. The default does nothing.
     func syncBroadcastOnlyFromTransport() async
     
     /// Notify transport that the land has been destroyed.
@@ -364,6 +351,12 @@ public enum InTurnSyncResult: Sendable, Equatable {
 }
 
 extension LandKeeperTransport {
+    /// Default: nothing; only a re-evaluation keeper's sync loop calls it (until #612).
+    public func syncNowFromTransport() async {}
+
+    /// Default: nothing; only a re-evaluation keeper's replayed leave calls it (until #612).
+    public func syncBroadcastOnlyFromTransport() async {}
+
     /// Default: in-turn sync is not supported for any keeper.
     public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
 

@@ -12,12 +12,15 @@ extension TransportAdapter: LandKeeperTransport, LandKeeperSettlePort {
         await self.sendEvent(event, to: target)
     }
     
-    /// The keeper's legacy paths reach it until #546 L2d: one requested sync-only turn.
+    /// Only a re-evaluation keeper that holds this adapter (`ReevaluationOutputMode.transportAndSink`)
+    /// calls it, from its sync loop, until #612: one requested sync-only turn. A live keeper syncs
+    /// in its turns.
     public func syncNowFromTransport() async {
         await self.syncNow()
     }
 
-    /// The keeper's legacy paths reach it until #546 L2d: one requested sync-only turn.
+    /// Only a re-evaluation keeper that holds this adapter calls it, after a replayed leave,
+    /// until #612: one requested sync-only turn. A live keeper syncs in its turns.
     public func syncBroadcastOnlyFromTransport() async {
         await self._syncBroadcastOnlyImpl()
     }
