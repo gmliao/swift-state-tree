@@ -229,12 +229,22 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// Whether `ticket` is still the current run's (under the lock).
     private func isCurrentLocked(_ ticket: UInt64) -> Bool { generation == ticket }
 
+    /// False when the run is no longer current, or when its runner's tick count is refused: the
+    /// status is then `.failed`, and the run ends before its first step.
     private func setRunnerInstance(_ runner: any ReevaluationRunnerProtocol, ticket: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard isCurrentLocked(ticket) else { return false }
+        // `ReevaluationRunnerProtocol` is public, so a runner can report any last tick: a count
+        // that doesn't fit fails the run instead of trapping the process (#640).
+        let (totalTicks, overflow) = runner.maxTickId.addingReportingOverflow(1)
+        guard !overflow else {
+            _status.phase = .failed
+            _status.errorMessage = "the runner's last tick is \(runner.maxTickId), so its tick count doesn't fit in Int64"
+            return false
+        }
         _status.phase = .verifying
-        _status.totalTicks = runner.maxTickId + 1
+        _status.totalTicks = totalTicks
         return true
     }
 
