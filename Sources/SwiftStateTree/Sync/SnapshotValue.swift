@@ -169,6 +169,18 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 /// whose default instance holds a class, and conversion refuses a conforming class.
 public protocol SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue
+    /// `toSnapshotValue()` with the budget at this value (#716). The default checks what
+    /// `toSnapshotValue()` returned, after it ran; a conversion that recurses into its own type
+    /// implements this one, so the count reaches its recursion.
+    func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue
+}
+
+public extension SnapshotValueConvertible {
+    func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+        let value = try toSnapshotValue()
+        try budget.check(value)
+        return value
+    }
 }
 
 extension SnapshotValue {
@@ -224,13 +236,25 @@ public extension SnapshotValue {
         return text.utf8.contains { $0 >= 0xCC }
     }
 
+    /// Converts `value` as clients see it, from a root field's budget (`make(from:for:budget:)`).
     static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
+        try make(from: value, for: playerID, budget: NestingBudget())
+    }
+
+    /// `make(from:for:)` with the budget at `value` (#716): every container it converts, and
+    /// every `Optional` it unwraps, spends from `budget`, and a value past it throws
+    /// `SyncError.nestingTooDeep`.
+    static func make(from value: Any, for playerID: PlayerID? = nil, budget: NestingBudget) throws -> SnapshotValue {
         // Short-circuit if value is already a snapshot-friendly type
+        // A tree that is already built is checked iteratively: nothing below recurses on it.
         if let snapshotValue = value as? SnapshotValue {
+            try budget.check(snapshotValue)
             return snapshotValue
         }
         if let snapshot = value as? StateSnapshot {
-            return .object(snapshot.values)
+            let object = SnapshotValue.object(snapshot.values)
+            try budget.check(object)
+            return object
         }
         
         // Priority 1: Check if type conforms to StateNodeProtocol (for recursive filtering)
@@ -240,7 +264,7 @@ public extension SnapshotValue {
                 try refusePlayerDependentNode(stateNode)
             }
             // Recursively apply @Sync policies by calling snapshot(for:)
-            let snapshot = try stateNode.snapshot(for: playerID, dirtyFields: nil)
+            let snapshot = try stateNode.snapshot(for: playerID, dirtyFields: nil, budget: try budget.enteringContainer())
             // Convert StateSnapshot to SnapshotValue.object
             return .object(snapshot.values)
         }
@@ -252,15 +276,18 @@ public extension SnapshotValue {
             // `type(of: value)` stays `Optional<C>`. A metatype check, since `value is AnyObject`
             // is true for a bridged `String` on Darwin.
             if Swift.type(of: convertible) is AnyObject.Type { throw classRefusal(convertible) }
-            return try convertible.toSnapshotValue()
+            return try convertible.toSnapshotValue(budget: budget)
         }
         
         // Priority 3: Handle known collection types directly (avoid Mirror overhead)
         // This significantly reduces dynamic dispatch overhead for common types
         if let arrayValue = value as? [SnapshotValue] {
-            return .array(arrayValue)
+            let array = SnapshotValue.array(arrayValue)
+            try budget.check(array)
+            return array
         }
         if let dictValue = value as? [String: SnapshotValue] {
+            try budget.check(.object(dictValue))
             // Its own keys are written in NFC, as `makeFull` writes them (through `[String: Any]`);
             // objects inside its values are the caller's and are sent as written.
             guard dictValue.keys.contains(where: mayNotBeNFC) else { return .object(dictValue) }
@@ -272,9 +299,11 @@ public extension SnapshotValue {
             return .object(object)
         }
         if let playerSnapshotDict = value as? [PlayerID: SnapshotValue] {
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerSnapshotDict.count)
             for (key, val) in playerSnapshotDict {
+                try inner.check(val)
                 object[key.rawValue] = val
             }
             return .object(object)
@@ -282,10 +311,12 @@ public extension SnapshotValue {
         
         // Priority 4: Handle other common collection types directly
         if let stringArray = value as? [String] {
+            _ = try budget.enteringContainer()
             let mapped = stringArray.map { SnapshotValue.string($0) }
             return .array(mapped)
         }
         if let intArray = value as? [Int] {
+            _ = try budget.enteringContainer()
             let mapped = intArray.map { SnapshotValue.int($0) }
             return .array(mapped)
         }
@@ -293,14 +324,16 @@ public extension SnapshotValue {
         // node that is also `SnapshotValueConvertible` (`@SnapshotConvertible`) must still be
         // converted by its own `@Sync` policies, and `make` checks `StateNodeProtocol` first (#175).
         if let playerConvertibleDict = value as? [PlayerID: SnapshotValueConvertible] {
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerConvertibleDict.count)
             for (key, val) in playerConvertibleDict {
-                object[key.rawValue] = try make(from: val, for: playerID)
+                object[key.rawValue] = try make(from: val, for: playerID, budget: inner)
             }
             return .object(object)
         }
         if let playerStateNodeDict = value as? [PlayerID: any StateNodeProtocol] {
+            let inner = try budget.enteringContainer()
             // Process all StateNodes in the dictionary (including single-element dictionaries from perPlayerSlice)
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerStateNodeDict.count)
@@ -308,34 +341,37 @@ public extension SnapshotValue {
                 if playerID == nil {
                     try refusePlayerDependentNode(val)
                 }
-                let snapshot = try val.snapshot(for: playerID, dirtyFields: nil)
+                let snapshot = try val.snapshot(for: playerID, dirtyFields: nil, budget: try inner.enteringContainer())
                 object[key.rawValue] = .object(snapshot.values)
             }
             return .object(object)
         }
         if let stringConvertibleDict = value as? [String: SnapshotValueConvertible] {
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(stringConvertibleDict.count)
             for (key, val) in stringConvertibleDict {
-                object[wireKey(key)] = try make(from: val, for: playerID)
+                object[wireKey(key)] = try make(from: val, for: playerID, budget: inner)
             }
             return .object(object)
         }
         if let dictStringAny = value as? [String: Any] {
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(dictStringAny.count)
             for (key, val) in dictStringAny {
-                object[wireKey(key)] = try make(from: val, for: playerID)
+                object[wireKey(key)] = try make(from: val, for: playerID, budget: inner)
             }
             return .object(object)
         }
         if let playerIDDict = value as? [PlayerID: Any] {
+            let inner = try budget.enteringContainer()
             // Treat as a normal dictionary (including single-element dictionaries from perPlayerSlice)
             // The structure is consistent: server and client both see dictionary structure
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerIDDict.count)
             for (key, val) in playerIDDict {
-                object[key.rawValue] = try make(from: val, for: playerID)
+                object[key.rawValue] = try make(from: val, for: playerID, budget: inner)
             }
             return .object(object)
         }
@@ -390,7 +426,7 @@ public extension SnapshotValue {
 
         if mirror.displayStyle == .optional {
             if let child = mirror.children.first {
-                return try make(from: child.value, for: playerID)
+                return try make(from: child.value, for: playerID, budget: try budget.hop())
             } else {
                 return .null
             }
@@ -398,16 +434,18 @@ public extension SnapshotValue {
 
         switch mirror.displayStyle {
         case .collection:
+            let inner = try budget.enteringContainer()
             // Optimize: Direct iteration instead of map to reduce dynamic dispatch
             // Pre-count children if possible for capacity reservation
             let childrenArray = Array(mirror.children)
             var array: [SnapshotValue] = []
             array.reserveCapacity(childrenArray.count)
             for child in childrenArray {
-                array.append(try make(from: child.value, for: playerID))
+                array.append(try make(from: child.value, for: playerID, budget: inner))
             }
             return .array(array)
         case .dictionary:
+            let inner = try budget.enteringContainer()
             // Optimize: Pre-allocate capacity and use direct iteration
             let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
@@ -422,7 +460,7 @@ public extension SnapshotValue {
                 let keyMirror = pairChildren[0]
                 let valueMirror = pairChildren[1]
                 let keyString = try makeKeyString(from: keyMirror.value)
-                let mappedValue = try make(from: valueMirror.value, for: playerID)
+                let mappedValue = try make(from: valueMirror.value, for: playerID, budget: inner)
                 // Two keys that convert to the same string: one would overwrite the other on
                 // every client (#535 D8).
                 if object.updateValue(mappedValue, forKey: keyString) != nil {
@@ -435,13 +473,14 @@ public extension SnapshotValue {
             // one only known at runtime, in an `Any` or `any P` field.
             throw classRefusal(value)
         case .struct:
+            let inner = try budget.enteringContainer()
             // Optimize: Pre-allocate capacity based on expected field count
             let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(childrenArray.count)
             for child in childrenArray {
                 guard let label = child.label else { continue }
-                object[label] = try make(from: child.value, for: playerID)
+                object[label] = try make(from: child.value, for: playerID, budget: inner)
             }
             return .object(object)
         default:
@@ -453,8 +492,14 @@ public extension SnapshotValue {
     /// a node, without boxing it into `Any` first. Refuses a node with player-dependent fields
     /// (#179). The macro's broadcast path for a single nested node calls it on every encode.
     static func broadcastView(of node: some StateNodeProtocol) throws -> SnapshotValue {
+        try broadcastView(of: node, budget: NestingBudget())
+    }
+
+    /// `broadcastView(of:)` with the budget at the node's value (#716): the node's object is a
+    /// container, and its fields convert inside it.
+    static func broadcastView(of node: some StateNodeProtocol, budget: NestingBudget) throws -> SnapshotValue {
         try refusePlayerDependentNode(node)
-        return .object(try node.snapshot(for: nil, dirtyFields: nil).values)
+        return .object(try node.snapshot(for: nil, dirtyFields: nil, budget: try budget.enteringContainer()).values)
     }
 
     /// The view without a player (a broadcast encoding) of a state node with player-dependent
@@ -496,6 +541,17 @@ public extension SnapshotValue {
 /// a hand-written `toSnapshotValue()` is hashed through that, as clients see it.
 public protocol FullSnapshotValueConvertible {
     func toFullSnapshotValue() throws -> SnapshotValue
+    /// `toFullSnapshotValue()` with the budget at this value (#716), defaulted as
+    /// `toSnapshotValue(budget:)` is.
+    func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue
+}
+
+public extension FullSnapshotValueConvertible {
+    func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+        let value = try toFullSnapshotValue()
+        try budget.check(value)
+        return value
+    }
 }
 
 public extension SnapshotValue {
@@ -507,15 +563,24 @@ public extension SnapshotValue {
     /// two keys that collide as strings throw, and set elements are ordered by their canonical
     /// encoding under this conversion. Never used on a client path.
     static func makeFull(from value: Any) throws -> SnapshotValue {
+        try makeFull(from: value, budget: NestingBudget())
+    }
+
+    /// `makeFull(from:)` with the budget at `value` (#716), counted as `make(from:for:budget:)`
+    /// counts.
+    static func makeFull(from value: Any, budget: NestingBudget) throws -> SnapshotValue {
         if let snapshotValue = value as? SnapshotValue {
+            try budget.check(snapshotValue)
             return snapshotValue
         }
         if let snapshot = value as? StateSnapshot {
-            return .object(snapshot.values)
+            let object = SnapshotValue.object(snapshot.values)
+            try budget.check(object)
+            return object
         }
         if let stateNode = value as? any StateNodeProtocol {
             FullStateConversionProbe.record()
-            return .object(try stateNode.fullStateSnapshot().values)
+            return .object(try stateNode.fullStateSnapshot(budget: try budget.enteringContainer()).values)
         }
         if let leaf = fullLeaf(value) {
             return leaf
@@ -523,26 +588,28 @@ public extension SnapshotValue {
         if let full = value as? FullSnapshotValueConvertible {
             // The cast's result, as in `make`: an `Optional` boxed in `Any` is unwrapped by `as?`.
             if Swift.type(of: full) is AnyObject.Type { throw classRefusal(full) }
-            return try full.toFullSnapshotValue()
+            return try full.toFullSnapshotValue(budget: budget)
         }
         if let convertible = value as? SnapshotValueConvertible {
             if Swift.type(of: convertible) is AnyObject.Type { throw classRefusal(convertible) }
-            return try convertible.toSnapshotValue()
+            return try convertible.toSnapshotValue(budget: budget)
         }
         // Common containers without Mirror.
         if let dict = value as? [String: Any] {
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(dict.count)
             for (key, element) in dict {
-                object[wireKey(key)] = try makeFull(from: element)
+                object[wireKey(key)] = try makeFull(from: element, budget: inner)
             }
             return .object(object)
         }
         if let dict = value as? [PlayerID: Any] {
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(dict.count)
             for (key, element) in dict {
-                object[key.rawValue] = try makeFull(from: element)
+                object[key.rawValue] = try makeFull(from: element, budget: inner)
             }
             return .object(object)
         }
@@ -551,25 +618,28 @@ public extension SnapshotValue {
         switch mirror.displayStyle {
         case .optional:
             guard let child = mirror.children.first else { return .null }
-            return try makeFull(from: child.value)
+            return try makeFull(from: child.value, budget: try budget.hop())
         case .collection:
+            let inner = try budget.enteringContainer()
             var array: [SnapshotValue] = []
             array.reserveCapacity(Int(mirror.children.count))
             for child in mirror.children {
-                array.append(try makeFull(from: child.value))
+                array.append(try makeFull(from: child.value, budget: inner))
             }
             return .array(array)
         case .set:
+            let inner = try budget.enteringContainer()
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             var keyed: [(key: [UInt8], value: SnapshotValue)] = []
             for child in mirror.children {
-                let converted = try makeFull(from: child.value)
+                let converted = try makeFull(from: child.value, budget: inner)
                 keyed.append((Array(try encoder.encode(converted)), converted))
             }
             keyed.sort { $0.key.lexicographicallyPrecedes($1.key) }
             return .array(keyed.map(\.value))
         case .dictionary:
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(Int(mirror.children.count))
             for child in mirror.children {
@@ -581,16 +651,17 @@ public extension SnapshotValue {
                 guard object[key] == nil else {
                     throw collidingKeys(in: value, key: key)
                 }
-                object[key] = try makeFull(from: pair[1].value)
+                object[key] = try makeFull(from: pair[1].value, budget: inner)
             }
             return .object(object)
         case .class:
             throw classRefusal(value)
         case .struct:
+            let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             for child in mirror.children {
                 guard let label = child.label else { continue }
-                object[label] = try makeFull(from: child.value)
+                object[label] = try makeFull(from: child.value, budget: inner)
             }
             return .object(object)
         case .enum:
@@ -599,11 +670,12 @@ public extension SnapshotValue {
             guard let payload = mirror.children.first else {
                 return .string(String(describing: value))
             }
-            return .object([payload.label ?? String(describing: value): try makeFull(from: payload.value)])
+            return .object([payload.label ?? String(describing: value): try makeFull(from: payload.value, budget: try budget.enteringContainer())])
         case .tuple:
-            return .array(try mirror.children.map { try makeFull(from: $0.value) })
+            let inner = try budget.enteringContainer()
+            return .array(try mirror.children.map { try makeFull(from: $0.value, budget: inner) })
         default:
-            return try make(from: value)
+            return try make(from: value, budget: budget)
         }
     }
 

@@ -27,6 +27,17 @@ import Logging
 package enum PayloadNesting {
     package static let clientFrameMaxDepth = 32
     package static let serverFrameMaxDepth = 64
+    /// The containers a state conversion may descend below a root field (#716). Provisional:
+    /// S0 measures each recursive stage's stack per level, and this becomes the largest value
+    /// that leaves about 2x headroom on the smallest stack, capped by `serverFrameMaxDepth` minus
+    /// the deepest state frame's overhead. A test pins the cap.
+    package static let stateMaxDepth = 32
+    /// The recursive steps without a container a state conversion may take on one path (#716).
+    /// Provisional, sized by S0's wrapper-only measurement. An `Optional<Node>` at every level up
+    /// to `stateMaxDepth` takes one hop a level, so this must stay at least `stateMaxDepth`. A hop
+    /// can cost more stack than a container: 65 unwraps of a nested `Optional<Any>` overflowed
+    /// the debug pool stack on macOS, so the placeholder is the smallest value the rule allows.
+    package static let stateMaxHops = 32
 
     /// Data nested deeper than `limit`.
     package struct TooDeep: Error, CustomStringConvertible, Sendable {
