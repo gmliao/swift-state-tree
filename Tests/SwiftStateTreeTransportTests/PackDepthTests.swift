@@ -437,13 +437,16 @@ struct PackDepthTests {
     }
 
     /// A land's state reaches the packer through its snapshot, which recurses once per level of
-    /// nested state nodes. Nested deep enough to pass 64, those levels can overflow the stack
-    /// before the packer refuses the frame (#716), so the land-level case stays at a depth that
-    /// fits; `stateFrameBound` checks the refusal at the encoder, and a thrown state encode ends
-    /// the land with `.syncEncode` as for any state frame that doesn't encode.
-    @Test("Nested state that fits in a frame syncs, and its frames unpack")
+    /// nested state nodes. The state conversion's budget (#716) refuses a tree past
+    /// `stateMaxDepth` before it recurses deeper, so the land-level cases sit at the limit;
+    /// `stateFrameBound` checks the packer's refusal at the encoder.
+    @Test("Nested state within the state limit syncs, and its frames unpack")
     func shallowStateSyncs() async throws {
-        let land = try await DeepStateLand.make(levels: 20)
+        // 2·(levels + 1) containers: exactly at the limit, as the whole value counts them (the
+        // sync path without tables). The sync tables count 2 fewer, since a map row starts from
+        // the root budget (#716 S1a-2), so this converts on both paths.
+        let levels = PayloadNesting.stateMaxDepth / 2 - 1
+        let land = try await DeepStateLand.make(levels: levels)
         await land.adapter.waitForOutboundIdleForTesting()
         let before = await land.transport.sends
         await land.keeper.stepTickOnce()
@@ -453,9 +456,26 @@ struct PackDepthTests {
         let frames = await framesSent(land.transport, after: before)
         #expect(!frames.isEmpty, "the sync sent a frame")
         for frame in frames { #expect(throws: Never.self) { _ = try unpack(frame) } }
-        // 20 levels of nodes, 2 containers each: some frame carries the whole tree.
+        // `levels` levels of nodes, 2 containers each: some frame carries the whole tree.
         let depths = try frames.map { nestingDepth(try unpack($0)) }
-        #expect((depths.max() ?? 0) >= 2 * 20, "the tree is in a frame: \(depths)")
+        #expect((depths.max() ?? 0) >= 2 * levels, "the tree is in a frame: \(depths)")
+    }
+
+    @Test("Nested state past the state limit ends the land with syncConversion, naming the field (#716)")
+    func statePastTheLimitEndsTheLand() async throws {
+        // The shallowest chain of this shape refused on both sync paths: the tables' count, 2
+        // fewer than the whole value's, passes the limit only here.
+        let land = try await DeepStateLand.make(levels: PayloadNesting.stateMaxDepth / 2 + 1)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let before = await land.transport.sends
+        await land.keeper.stepTickOnce()
+        await land.keeper.waitUntilDrained()
+        await land.adapter.waitForOutboundIdleForTesting()
+        let failure = try #require(land.keeper.failure, "the land ended")
+        #expect(failure.kind == .syncConversion, "\(failure)")
+        #expect(failure.field == "tree", "\(failure)")
+        #expect(failure.detail.contains("nestingTooDeep"), "\(failure)")
+        #expect(await land.transport.sends == before, "no state frame went out")
     }
 
     private func expectEventDepth(leafDepth: Int, fits: Bool, target: SwiftStateTree.EventTarget, opcode expected: Int64) async throws {
