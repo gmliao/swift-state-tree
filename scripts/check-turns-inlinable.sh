@@ -66,7 +66,9 @@ missing_in() {  # binary types required
     || { echo "check-turns-inlinable: FAILED: swift demangle failed on $1" >&2; return 1; }
   grep -q -F 'TurnsBench.' <<<"$demangled" \
     || { echo "check-turns-inlinable: FAILED: no TurnsBench symbols in $1" >&2; return 1; }
-  specialized="$(grep -E "^generic specialization <[^>]*$2" <<<"$demangled" || true)"
+  # Identical specializations on two bench actors are folded into one `merged generic
+  # specialization` symbol, named after one of them: it counts.
+  specialized="$(grep -E "^(merged )?generic specialization <[^>]*$2" <<<"$demangled" || true)"
   while IFS= read -r required; do
     [ -n "$required" ] || continue
     grep -q -F -- "> of $required" <<<"$specialized" || echo "$required"

@@ -20,8 +20,16 @@ public protocol TurnMachine: Sendable {
     /// Names a key's coalesced follow-ups apart (`Turn.followUp`): one pending per key and slot.
     /// Default: none.
     associatedtype FollowUpSlot: Hashable & Sendable = Never
+    /// What another thread tells the machine through the core's lane (`TurnActor.post`), taken
+    /// before the next step. Default: none, and the lane's paths fold away.
+    associatedtype LaneReport: Sendable = Never
 
     /// How `input` is admitted. Default: normal, with no hold and no scope.
+    ///
+    /// Whether it is `.control` or `.normal` must depend on the input alone, never on the
+    /// machine's state: `sendAndWait(.cancelsCall)` reads it before the entry takes the lane, so
+    /// a report stepped in between must not change it (debug builds check). A `.normal` case's
+    /// hold, scope and token may depend on state; they are read after the lane.
     func inputPolicy(for input: Input) -> InputPolicy<Key>
     mutating func handle(_ input: Input, _ turn: inout Turn<Self>)
     /// A request closed without its completion. Default: nothing.
@@ -29,6 +37,9 @@ public protocol TurnMachine: Sendable {
     /// The result of a request that had already closed: its worker has returned. Default: nothing.
     mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Self>)
     mutating func answer(_ query: Query, _ turn: inout Turn<Self>) -> Answer
+    /// A report from the lane, stepped as a control input: holds, `close`, the queue limit and
+    /// withdrawal don't apply, and it has no caller to reply to.
+    mutating func handleReport(_ report: LaneReport, _ turn: inout Turn<Self>)
 }
 
 extension TurnMachine {
@@ -40,5 +51,11 @@ extension TurnMachine {
 extension TurnMachine where Query == Never, Answer == Never {
     @inlinable public mutating func answer(_ query: Never, _ turn: inout Turn<Self>) -> Never {
         switch query {}
+    }
+}
+
+extension TurnMachine where LaneReport == Never {
+    @inlinable public mutating func handleReport(_ report: Never, _ turn: inout Turn<Self>) {
+        switch report {}
     }
 }

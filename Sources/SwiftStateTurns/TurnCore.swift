@@ -26,6 +26,10 @@ public struct TurnStats: Sendable, Equatable {
     public var cancelledCalls = 0
     /// Follow-ups armed and not yet stepped, consumed or closed.
     public var pendingFollowUps = 0
+    /// Lane wakes that found the lane empty: an entry took the reports first.
+    public var emptyLaneWakes = 0
+    /// Posts refused because the lane was full (the first pending report wins).
+    public var refusedReports = 0
 
     @inlinable public init() {}
 }
@@ -70,6 +74,9 @@ public final class TurnCore<M: TurnMachine> {
     /// machine, so the driver's follow-up paths fold away for one that keeps the default
     /// (`Never`) and it pays nothing per segment for them.
     @inlinable static var usesFollowUps: Bool { M.FollowUpSlot.self != Never.self }
+    /// The machine takes lane reports. A constant once specialized, as `usesFollowUps`: every
+    /// lane path folds away for a machine that keeps the default (`Never`).
+    @inlinable static var usesLane: Bool { M.LaneReport.self != Never.self }
 
     // Release builds skip the runtime exclusivity checks on the core's own state (#621): with
     // the core inlined into its adopter, each use of a stored var otherwise pays a
@@ -202,6 +209,76 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onContinuationJobForTesting: (() -> Void)?
+    /// How many more lane reports this entry may step: `lane.capacity` at each entry, spent by
+    /// the entry's lane take and by every check in its segment.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var laneBudget = 0
+    /// A report's own step is running: its `Turn.takeReports()` returns nothing, and reports
+    /// posted meanwhile step at the next check.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var inReportStep = false
+    /// Tests: called on the actor at each lane check, after it reads its watermark and before
+    /// its first removal, so a test can post there. Observe-only, apart from `post`.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onLaneCheckForTesting: (() -> Void)?
+    /// Tests: called on the actor at the start of each lane wake (`laneWoke`), before its lane
+    /// take; a test sees the wake boundaries with it. Observe-only.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onLaneWakeForTesting: (() -> Void)?
+    /// The next non-report step's ordinal, counted over every step the core dispatches (inputs,
+    /// releases, follow-ups, answers, completions, timers, abandonments); a lane record's keys
+    /// name steps by it. Counted only for a machine that takes reports.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var nextOrdinal: UInt64 = 0
+    /// The ordinal of the step running now, or of the last one.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var currentOrdinal: UInt64 = 0
+    /// Reports checks have stepped since the last dispatch: the next `before` key's index.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var beforeIndex = 0
+    /// Takes the running step has made: the next `inside` key's take.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var takeIndex = 0
+    /// Replay: the recorded hand-outs, served in place of the lane. Nil when live.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var laneReplay: LaneReplayStage<M.LaneReport>?
+    /// Replay: the recorded `now` served inside the report step running now. Scoped to that
+    /// step: it doesn't set `cachedNow`.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var reportNow: TurnInstant?
+    /// Live: called with each hand-out, for the adopter's record. A check's report, before it
+    /// steps, with the check's `now`; a non-empty mid-step take, with nil. Empty takes aren't
+    /// passed.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onReportsTaken: ((LaneRecordKey, [M.LaneReport], TurnInstant?) -> Void)?
+    /// Replay: called with a divergence, which fails the adopter's replay run. With none set, a
+    /// divergence stops the process.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onReplayDivergence: ((TurnReplayDivergence) -> Void)?
     // Debug builds fill these (`effectsByInput`). Stored in every build, because inlined code
     // in a client compiled in another configuration may name them.
     /// The case name of the input stepping now.
@@ -224,6 +301,9 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline let queueLimit: Int
     @usableFromInline let maxReleasesPerBatch: Int
     @usableFromInline let clock: any TurnClock
+    /// The lane, when the machine takes reports (`LaneReport` isn't `Never`); its actor stores
+    /// this same instance.
+    public let lane: TurnLane<M.LaneReport>?
 
     /// - Parameters:
     ///   - machine: the machine in its initial state.
@@ -231,10 +311,12 @@ public final class TurnCore<M: TurnMachine> {
     ///   - maxReleasesPerBatch: how many queued inputs a hold's release lets step per batch;
     ///     abandonments and sends that arrive during the batch don't count.
     ///   - clock: what `Turn.now`, deadlines and timers read and sleep on.
+    ///   - laneCapacity: how many reports the lane holds at once, and how many one entry steps;
+    ///     at least 1. Ignored for a machine without reports.
     ///
     /// Only a `PlainData` machine can be run: `@PlainData` writes that conformance and checks
     /// every stored field, so a machine that stores a class or a closure doesn't compile here.
-    public init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock) where M: PlainData {
+    public init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock, laneCapacity: Int = 8) where M: PlainData {
         // `fatalError`, not `precondition`: its message prints in release builds too.
         if M.self is AnyClass { fatalError("TurnCore: the machine must be a value type, not \(M.self)") }
         if queueLimit < 0 { fatalError("TurnCore: queueLimit must not be negative") }
@@ -244,6 +326,7 @@ public final class TurnCore<M: TurnMachine> {
         self.maxReleasesPerBatch = maxReleasesPerBatch
         self.clock = clock
         self.incarnation = UInt64.random(in: UInt64.min ... UInt64.max)
+        self.lane = Self.usesLane ? TurnLane(capacity: laneCapacity) : nil
     }
 
     deinit {
@@ -272,6 +355,7 @@ public final class TurnCore<M: TurnMachine> {
         stats.droppedSends += rt.droppedParkedSends
         stats.ignoredAfterEnd = rt.ignoredAfterEnd
         stats.pendingFollowUps = rt.followUps.count
+        if Self.usesLane, let lane { stats.refusedReports = lane.refusedCount }
         return stats
     }
 
@@ -286,11 +370,55 @@ public final class TurnCore<M: TurnMachine> {
     // MARK: The clock
 
     @inlinable func segmentNow() -> TurnInstant {
+        if Self.usesLane, inReportStep, let reportNow { return reportNow }
         if let cachedNow { return cachedNow }
         let now = clock.now
         cachedNow = now
         onDiagnostic?(.clockRead)
         return now
+    }
+
+    // MARK: Replay
+
+    /// Replays the lane from `entries` (a record's hand-outs): the lane isn't read, checks step
+    /// the staged `before` reports and takes return the staged `inside` ones. Before the first
+    /// entry.
+    package func replayReports(_ entries: [LaneRecordEntry<M.LaneReport>]) {
+        laneReplay = LaneReplayStage(entries)
+    }
+
+    @inlinable func diverged(_ divergence: TurnReplayDivergence) {
+        laneReplay?.removeFirst()
+        guard let onReplayDivergence else { fatalError("TurnCore: the replay diverged from its record: \(divergence)") }
+        onReplayDivergence(divergence)
+    }
+
+    /// A non-report step is dispatched: it takes the next ordinal. In replay, anything still
+    /// staged for an earlier place is unconsumed.
+    @inlinable func noteDispatch() {
+        guard Self.usesLane else { return }
+        if laneReplay != nil {
+            while let head = laneReplay?.first {
+                if head.key.step < nextOrdinal {
+                    diverged(.unconsumed(head.key))
+                } else if case .before(let step, _) = head.key, step == nextOrdinal {
+                    diverged(.unconsumed(head.key))
+                } else {
+                    break
+                }
+            }
+        }
+        currentOrdinal = nextOrdinal
+        nextOrdinal &+= 1
+        beforeIndex = 0
+        takeIndex = 0
+    }
+
+    /// A take inside the running step: the staged entry for its key, or nothing.
+    @inlinable func serveTake(_ key: LaneRecordKey) -> [M.LaneReport] {
+        guard let head = laneReplay?.first, head.key == key else { return [] }
+        laneReplay?.removeFirst()
+        return head.reports
     }
 
     @inlinable func noteEffect() {
@@ -332,6 +460,7 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func step(_ input: M.Input, caller: InputID?) {
+        noteDispatch()
         enterStep(input)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: caller)
@@ -339,6 +468,7 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func stepStale(_ input: M.Input) {
+        noteDispatch()
         enterStep(input)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
@@ -346,14 +476,27 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func stepAbandoned(_ id: RequestID, _ why: Abandonment) {
+        noteDispatch()
         enterStep(nil)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
         machine.handleAbandoned(id, why, &turn)
     }
 
+    @inlinable func stepReport(_ report: M.LaneReport) {
+        enterStep(nil)
+        inReportStep = true
+        defer {
+            inReportStep = false
+            leaveStep()
+        }
+        var turn = Turn<M>(core: self, input: nil)
+        machine.handleReport(report, &turn)
+    }
+
     @inlinable func stepAnswer(_ query: M.Query) -> M.Answer {
         if borrows < 0 { fatalError("TurnCore: query was called from inside a step") }
+        noteDispatch()
         enterStep(nil)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)

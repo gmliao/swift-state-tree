@@ -20,6 +20,21 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         mutating get { core.segmentNow() }
     }
 
+    /// Takes every report in the lane now, oldest first, so this step can act on a report
+    /// posted while it runs (a failure that must stop the step's outputs). Taken reports don't
+    /// step through `handleReport`. Inside a report's own step it returns nothing; reports posted
+    /// meanwhile step at the next check. An environment read, like `now`: a replay serves the
+    /// recorded take.
+    @inlinable public mutating func takeReports() -> [M.LaneReport] {
+        guard TurnCore<M>.usesLane, let lane = core.lane, !core.inReportStep else { return [] }
+        let key = LaneRecordKey.inside(step: core.currentOrdinal, take: core.takeIndex)
+        core.takeIndex += 1
+        if core.laneReplay != nil { return core.serveTake(key) }
+        let taken = lane.removeAll()
+        if !taken.isEmpty { core.onReportsTaken?(key, taken, nil) }
+        return taken
+    }
+
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed
