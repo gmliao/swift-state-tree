@@ -91,6 +91,9 @@ event 編碼失敗是值本身的問題，與接收者無關：每個 event 在�
 |---|---|---|
 | OnLeave 與 destroy handler | 失敗的 land 在失敗的 turn 內清除玩家，不執行 OnLeave；destroy handler 與存檔執行時看得到 `LandDestructionCause.failed` 與 `LandKeeper.failure`（`LandKeeper.swift:4892`）。有 host 時，失敗的拆除透過 host（`NIOLandServer`）停止 land：router 轉送每個 session 的 leave，leave 找不到玩家，不執行 OnLeave，然後關閉該 session。管理端停止在失敗之前就關閉的 session，其 leave 與任何停止一樣照常執行 | 已符合（#535 PR 1 part B） |
 | 重新評估的錄製 | 失敗只錄一次，錄在其 tick 的 frame 中，就在結束 land 的 turn 片段內（`ReevaluationTickFrame.landFailure`，錄製格式 3.4）。Replay 停在該 tick 並回報它（`RunResult.liveFailure`）；見 [Reevaluation](reevaluation.zh-TW.md#pass-序號與-land-失敗34) | 已符合 |
+| 失敗之後送出什麼 | land 的 output gate 關閉後，該 land 不再有任何 frame 進入佇列：沒有 state 或 event frame，沒有 action 的 response 或錯誤回覆，沒有 join response 或 join 錯誤，也沒有經由該 land 的 adapter 送出的 router frame。被丟棄的 frame 會計數（`framesDroppedLandFailed`）。有兩種 frame 仍會送出：session 帶著關閉的最後一個 frame（admission 之前結束的 join、join 之後 inbound 超量、router 的 join 失敗），以及每個 session 的 4016 關閉 | 已符合（#696） |
+| 在 turn 之外發現的失敗 | action 的回覆或 `sendEvent` 的 event 編碼失敗，或 joiner 的第一次 sync 失敗，是 adapter 在 keeper 的 turn 之外發現的。adapter 在同一個 segment 內關閉 output gate，並把失敗記在 keeper 上。keeper 的下一個 step 在該 step 送出任何東西之前，就以這個失敗結束 land：tick turn 或 input turn 在套用 input 之後結束，sync-only turn 在其 phase 之前結束。因此等待中的 join 不會 flip，sync plan 不會執行，記下的失敗仍是第一個原因。沒有 step 待執行時，由 adapter 的提交結束 land | 已符合（#704） |
+| 結束 land 的 turn 的呼叫者 | 結束 land 的 turn 不送出任何東西，回覆也不送，所以它消耗的每個 input 的呼叫者都得到 `LandInputRejection.landClosed`，handler 已回傳 response 的呼叫者也一樣。這適用於 turn 的 input 中有失敗項目、在 turn 之外記下的失敗，以及失敗的 sync phase。在 tick land 上，action 在提交時就已確認，這個確認保留。錄製把這些 input 記為已套用；錄下的 input 沒有結果，所以重播沒有結果可比對 | 已符合（#704） |
 
 ## Close code
 
