@@ -2445,6 +2445,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         fillActionSlot(sequence, with: outcome)
     }
 
+    /// Test hooks for `LegacyEntryStopTests`: the legacy pass entries, which a live keeper never
+    /// reaches (#546 L2d-2). On a live keeper each stops the process.
+    func runTicklessJobPassForTesting() async { await runTicklessJobPass() }
+    func runLegacyPassForTesting(sequence: Int64) async throws { _ = try await runLegacyPass(for: sequence) }
+
     /// The trigger pass of a tickless job's completion (in-turn sync off).
     private func runTicklessJobPass() async {
         precondition(mode == .reevaluation, "LandKeeper.runTicklessJobPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
