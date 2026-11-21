@@ -353,34 +353,33 @@ private actor CollectingSink: ReevaluationSink {
     }
 }
 
-private actor RecordingTransport: LandKeeperTransport {
-    private(set) var sent: [String] = []
-    private let gate: WatermarkGate?
-    private var gateArmed = false
+/// Records the events each turn hands over, in emit order (#546 L2d: a live keeper's transport
+/// runs its sync phase in turn).
+private final class RecordingTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    var sent: [String] { lock.withLock { entries } }
 
-    init(gate: WatermarkGate? = nil) {
-        self.gate = gate
-    }
-
-    /// The next send suspends on `gate` until the test releases it.
-    func armGate() {
-        gateArmed = true
-    }
-
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
-        if gateArmed, let gate {
-            gateArmed = false
-            await gate.enterAndWait()
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let payload = (try? encoder.encode(event.payload)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        sent.append("\(event.type):\(payload)")
-    }
-
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = events.map { item in
+            let payload = (try? encoder.encode(item.event.payload)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            return "\(item.event.type):\(payload)"
+        }
+        lock.withLock { entries.append(contentsOf: encoded) }
+        return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+    }
 }
 
 private func makeLiveKeeper(
@@ -801,7 +800,7 @@ struct ReplaySequenceWatermarkTests {
                 }
                 await keeper.stepTickOnce()
             }
-            return (await transport.sent, await keeper.currentState())
+            return (transport.sent, await keeper.currentState())
         }
 
         let withRecording = try await run(recording: true)
@@ -813,26 +812,29 @@ struct ReplaySequenceWatermarkTests {
     }
 
     // Test 9b
-    @Test("An input that arrives while a live tick is suspended after its watermarks: replay still matches")
+    @Test("An input that arrives while a live tick's record is held, after its watermarks: replay still matches")
     func inputDuringTickSuspensionStillMatches() async throws {
         let definition = makeWatermarkTestDefinition()
         let gate = WatermarkGate()
-        let transport = RecordingTransport(gate: gate)
-        let keeper = await makeLiveKeeper(definition: definition, transport: transport)
+        let keeper = await makeLiveKeeper(definition: definition, transport: RecordingTransport())
         let path = tempRecordPath("mid-tick-input")
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
         await keeper.stepTickOnce()
 
-        // Tick 1 suspends in its output flush (after the tick handler); an action arrives then.
+        // Tick 1's turn is held at its record (after the tick handler and its outputs); an
+        // action arrives then.
         _ = try await keeper.handleActionEnvelope(
             emitActionEnvelope(1),
             playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
         )
-        await transport.armGate()
+        await keeper.installHolds { point in
+            if point == .turnRecord { await gate.enterAndWait() }
+        }
         let suspendedTick = Task { await keeper.stepTickOnce() }
         guard await gate.waitUntilEntered() else { return }
+        await keeper.installHolds(nil)
         _ = try await keeper.handleActionEnvelope(
             emitActionEnvelope(2),
             playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")

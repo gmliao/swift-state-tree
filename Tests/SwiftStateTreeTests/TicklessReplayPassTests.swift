@@ -160,32 +160,14 @@ private func makePassDefinition(initializeWithResolver: Bool = false) -> LandDef
     }
 }
 
-/// A legacy (not in-turn) transport that counts `syncNowFromTransport` calls.
-private actor PassSyncCountingTransport: LandKeeperTransport {
-    private(set) var syncNowCount = 0
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
-    func syncNowFromTransport() async { syncNowCount += 1 }
-    func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async {}
-}
-
-/// A legacy (not in-turn) transport that logs its delivery calls in order: `broadcast` for a
-/// broadcast-only sync, `event:<entry>` for a `PassLogged` event.
-private actor PassDeliveryLogTransport: LandKeeperTransport {
-    private(set) var log: [String] = []
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
-        let data = (try? JSONEncoder().encode(event.payload)) ?? Data()
-        let entry = (try? JSONDecoder().decode(PassLogged.self, from: data))?.entry ?? event.type
-        log.append("event:\(entry)")
-    }
-    func syncNowFromTransport() async {}
-    func syncBroadcastOnlyFromTransport() async { log.append("broadcast") }
-    func onLandDestroyed() async {}
-}
-
-/// Reports in-turn sync for every keeper, so a keeper attached to it takes the input-drain
-/// path (`usesInTurnSync`) whatever the adapter's mode.
+/// Runs the sync phase in turn for every keeper (`syncsInTurn`), and logs what each turn hands
+/// over, in order: `sync` when the turn runs a sync phase, then `event:<entry>` per `PassLogged`
+/// event.
 private final class PassInTurnTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    var log: [String] { lock.withLock { entries } }
+
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
@@ -197,7 +179,12 @@ private final class PassInTurnTransport: LandKeeperTransport, @unchecked Sendabl
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
+        let logged = events.map { item -> String in
+            let data = (try? JSONEncoder().encode(item.event.payload)) ?? Data()
+            return "event:" + ((try? JSONDecoder().decode(PassLogged.self, from: data))?.entry ?? item.event.type)
+        }
+        lock.withLock { entries.append(contentsOf: (includeSync ? ["sync"] : []) + logged) }
+        return InTurnSyncOutput(syncPhaseResult(state: state, events: events, includeSync: includeSync))
     }
 
     private func syncPhaseResult<S: StateNodeProtocol>(
@@ -214,14 +201,16 @@ private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 private let p2 = PlayerID("p2"), c2 = ClientID("c2"), s2 = SessionID("s2")
 private let p3 = PlayerID("p3"), c3 = ClientID("c3"), s3 = SessionID("s3")
 
-private func makePassKeeper(inTurn: Bool, initializeWithResolver: Bool = false) async throws -> LandKeeper<PassOrderState> {
+/// `withPort`: a transport that runs the sync phase in turn, or none (a portless live keeper,
+/// which runs the same turns and delivers nothing).
+private func makePassKeeper(withPort: Bool, initializeWithResolver: Bool = false) async throws -> LandKeeper<PassOrderState> {
     let definition = makePassDefinition(initializeWithResolver: initializeWithResolver)
     let keeper = LandKeeper<PassOrderState>(
         definition: definition,
         initialState: PassOrderState(),
         enableLiveStateHashRecording: true,
         autoStartLoops: false,
-        transport: inTurn ? PassInTurnTransport() : nil
+        transport: withPort ? PassInTurnTransport() : nil
     )
     // One land ID per keeper: parallel tests must not share a recorder spool.
     let landID = "pass-order:\(UUID().uuidString)"
@@ -293,9 +282,9 @@ private func makePassReplayKeeper(_ path: String, sink: PassReplaySink) async th
 @Suite("Tickless replay in recorded apply order (#325, #321)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TicklessReplayPassTests {
     @Test("An input overtaking a pending action replays in live order, across sessions and kinds", arguments: [false, true])
-    func overtakingInputsReplayInLiveOrder(inTurn: Bool) async throws {
+    func overtakingInputsReplayInLiveOrder(withPort: Bool) async throws {
         let key = PassGates.freshKey()
-        let keeper = try await makePassKeeper(inTurn: inTurn)
+        let keeper = try await makePassKeeper(withPort: withPort)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
 
@@ -327,7 +316,7 @@ struct TicklessReplayPassTests {
 
     @Test("A pass that applies several inputs restores its counter; replayed sequences equal live ones")
     func multiInputPassReplaysExactSequences() async throws {
-        let keeper = try await makePassKeeper(inTurn: true)
+        let keeper = try await makePassKeeper(withPort: true)
         // The join's drain must have ended before the hold goes in: a drain still in its loop
         // (past its `.inputDrain` hold, yielding between turns) would take x itself.
         let (drainEnds, drainEnded) = AsyncStream.makeStream(of: Void.self)
@@ -386,12 +375,14 @@ struct TicklessReplayPassTests {
         #expect(result.serverEventVerification == .passed)
     }
 
-    @Test("Legacy passes interleaving at the record hold are recorded in apply order")
-    func legacyPassesRecordInApplyOrder() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+    @Test("A turn held at its record and a turn queued meanwhile are recorded in apply order")
+    func heldAndQueuedTurnsRecordInApplyOrder() async throws {
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        // Hold the first pass after its record is enqueued; the second runs to its end.
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
+        // Hold the first turn at its record; the second input is queued meanwhile.
         let gate = WatermarkGate()
         let held = ManagedFlag()
         await keeper.installHolds { point in
@@ -401,9 +392,15 @@ struct TicklessReplayPassTests {
             try await keeper.handleActionEnvelope(plainAction("first"), playerID: p1, clientID: c1, sessionID: s1)
         }
         guard await gate.waitUntilEntered() else { return }
-        _ = try await keeper.handleActionEnvelope(plainAction("second"), playerID: p2, clientID: c2, sessionID: s2)
+        // The second input's turn runs after the held one's record: its caller waits for it.
+        let second = Task {
+            try await keeper.handleActionEnvelope(plainAction("second"), playerID: p2, clientID: c2, sessionID: s2)
+        }
+        // Queued while the first is held (the first input was the first queued).
+        guard await signals.wait(for: "action-queued", count: 2) else { return }
         gate.release()
         _ = try await first.value
+        _ = try await second.value
         #expect(await keeper.currentState().log == ["join:p1", "join:p2", "first", "second"])
 
         let path = try await savePassRecord(keeper, name: "pass-interleave")
@@ -417,7 +414,7 @@ struct TicklessReplayPassTests {
 
     @Test("Replay runs each pass as an input turn: observable at the turn hold, nothing left over, tick 0")
     func replayRunsPassesAsTurns() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -448,9 +445,9 @@ struct TicklessReplayPassTests {
         #expect(replayed.map(\.event.sequence) == recorded.map(\.sequence))
     }
 
-    @Test("A legacy pass's sync request runs in its own finish, not in a pass that ran during its hold")
-    func legacySyncRequestStaysWithItsPass() async throws {
-        let transport = PassSyncCountingTransport()
+    @Test("A turn's sync request runs in that turn's sync phase, not in a turn queued during its record hold")
+    func syncRequestStaysWithItsTurn() async throws {
+        let transport = PassInTurnTransport()
         let keeper = LandKeeper<PassOrderState>(
             definition: makePassDefinition(),
             initialState: PassOrderState(),
@@ -460,12 +457,13 @@ struct TicklessReplayPassTests {
         await keeper.setLandID("pass-order:\(UUID().uuidString)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let before = await transport.syncNowCount
-        // Pass 1 requests a sync and is held at its record; pass 2 requests none and runs to its end.
+        let base = transport.log.count
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
+        // Turn 1 requests a sync and is held at its record; turn 2 requests none.
         let gate = WatermarkGate()
-        let held = ManagedFlag()
         await keeper.installHolds { point in
-            if point == .turnRecord, held.setOnce() { await gate.enterAndWait() }
+            if point == .turnRecord { await gate.enterAndWait() }
         }
         let first = Task {
             try await keeper.handleActionEnvelope(
@@ -474,16 +472,22 @@ struct TicklessReplayPassTests {
             )
         }
         guard await gate.waitUntilEntered() else { return }
-        _ = try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
-        #expect(await transport.syncNowCount == before, "pass 2 ran pass 1's sync request")
+        await keeper.installHolds(nil)
+        #expect(Array(transport.log.dropFirst(base)) == ["sync", "event:sync"], "turn 1's phase ran in turn 1")
+        let second = Task {
+            try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
+        }
+        // Turn 2's input is queued during turn 1's hold.
+        guard await signals.wait(for: "action-queued", count: 2) else { return }
         gate.release()
         _ = try await first.value
-        #expect(await transport.syncNowCount == before + 1, "pass 1's sync request was lost")
+        _ = try await second.value
+        #expect(Array(transport.log.dropFirst(base)) == ["sync", "event:sync", "event:plain"], "turn 2 ran no sync phase")
     }
 
-    @Test("Legacy passes deliver in apply order: record, broadcast-only sync, then events, behind the earlier pass")
-    func legacyDeliveryKeepsApplyOrder() async throws {
-        let transport = PassDeliveryLogTransport()
+    @Test("Turns hand over in apply order: a leave's sync phase and event, then the next turn's event")
+    func deliveryKeepsApplyOrder() async throws {
+        let transport = PassInTurnTransport()
         let keeper = LandKeeper<PassOrderState>(
             definition: makePassDefinition(),
             initialState: PassOrderState(),
@@ -493,45 +497,16 @@ struct TicklessReplayPassTests {
         await keeper.setLandID("pass-order:\(UUID().uuidString)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let base = await transport.log.count
-        // Pass 1 (a leave: a broadcast-only sync and an event) is held at its delivery's start;
-        // pass 2 (an action) applies and is held at its record hold, its delivery queued.
-        let firstDelivery = WatermarkGate(), secondFrame = WatermarkGate()
-        let deliveries = PassHoldCounter(), frames = PassHoldCounter()
-        let seenAtSecondDelivery = PassDeliverySnapshot()
-        await keeper.installHolds { point in
-            switch point {
-            case .legacyDelivery:
-                let n = await deliveries.next()
-                if n == 1 { await firstDelivery.enterAndWait() }
-                if n == 2 { await seenAtSecondDelivery.set(await transport.log) }
-            case .turnRecord:
-                if await frames.next() == 2 { await secondFrame.enterAndWait() }
-            default:
-                break
-            }
-        }
-        let leave = Task { try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1) }
-        guard await firstDelivery.waitUntilEntered() else { return }
-        let action = Task {
-            try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
-        }
-        guard await secondFrame.waitUntilEntered() else { return }
+        let base = transport.log.count
+        try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
+        _ = try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
         #expect(await keeper.currentState().log.suffix(2) == ["leave:p1", "plain"])
-        #expect(await transport.log.count == base, "a pass delivered while the earlier pass's delivery was held")
-        firstDelivery.release()
-        secondFrame.release()
-        try await leave.value
-        _ = try await action.value
-
-        #expect(Array(await transport.log.dropFirst(base)) == ["broadcast", "event:leave:p1", "event:plain"])
-        // Pass 2's delivery started only after pass 1's had sent everything.
-        #expect(await seenAtSecondDelivery.value.map { Array($0.dropFirst(base)) } == ["broadcast", "event:leave:p1"])
+        #expect(Array(transport.log.dropFirst(base)) == ["sync", "event:leave:p1", "event:plain"])
     }
 
     @Test("OnInitialize with resolvers, a join and actions replay exactly; OnInitialize is outside the passes", arguments: [false, true])
-    func initializeWithResolverStaysOutsidePasses(inTurn: Bool) async throws {
-        let keeper = try await makePassKeeper(inTurn: inTurn, initializeWithResolver: true)
+    func initializeWithResolverStaysOutsidePasses(withPort: Bool) async throws {
+        let keeper = try await makePassKeeper(withPort: withPort, initializeWithResolver: true)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         _ = try await keeper.handleActionEnvelope(plainAction("a"), playerID: p1, clientID: c1, sessionID: s1)
         _ = try await keeper.handleActionEnvelope(plainAction("b"), playerID: p1, clientID: c1, sessionID: s1)
@@ -588,7 +563,7 @@ struct TicklessReplayPassTests {
     /// fingerprint (#521 D15).
     @Test("A 3.0 tickless record is read without passes, and refused at replay")
     func recordWithoutPassesIsReadAndRefused() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -609,7 +584,7 @@ struct TicklessReplayPassTests {
 
     @Test("The JSON view keeps a current record's passes and replays; a 2.x JSON tickless record is read and refused at replay")
     func jsonRecordsReplay() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -651,7 +626,7 @@ struct TicklessReplayPassTests {
         "missing", "unknown", "duplicate", "decreasing", "duplicate-input", "unready",
     ])
     func mismatchedPassesFailTheTick(kind: String) async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -715,7 +690,7 @@ struct TicklessReplayPassTests {
 
     @Test("Replaying a tickless frame of many one-input passes scans the queue a bounded number of times per input")
     func replayIsLinearInTheFrame() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let count = 2_000
         for index in 0..<count {
@@ -740,7 +715,7 @@ struct TicklessReplayPassTests {
 
     @Test("Replay doesn't apply an input that left the queue across a pass's await")
     func replayRereadsAChangedQueue() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -798,21 +773,6 @@ struct TicklessReplayPassTests {
 private actor PassLogLengths {
     private(set) var values: [Int] = []
     func append(_ value: Int) { values.append(value) }
-}
-
-/// Counts calls at one hold point (1 for the first).
-private actor PassHoldCounter {
-    private var count = 0
-    func next() -> Int {
-        count += 1
-        return count
-    }
-}
-
-/// The transport log as one hold saw it.
-private actor PassDeliverySnapshot {
-    private(set) var value: [String]?
-    func set(_ log: [String]) { value = log }
 }
 
 /// Sets once, from any thread.
