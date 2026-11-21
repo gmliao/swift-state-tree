@@ -879,30 +879,26 @@ public struct ReevaluationEventTargetRecord: Codable, Sendable {
         }
     }
 
-    /// Convert ReevaluationEventTargetRecord back to EventTarget for replay forwarding.
-    public func toEventTarget() -> EventTarget {
-        switch kind {
-        case "all":
+    /// The recorded target as an `EventTarget`, for replay (#641). It accepts exactly what
+    /// `from(_:)` writes: `all` with no IDs; `player`, `client` or `session` with one ID; and
+    /// `players` with any number of IDs, where none is a target with no recipients, as it was
+    /// live. Anything else didn't come from a live run and throws
+    /// `ReevaluationRecordContentError.malformedEventTarget`, so replay never widens a targeted
+    /// event to every client.
+    public func eventTarget() throws -> EventTarget {
+        switch (kind, ids.count) {
+        case ("all", 0):
             return .all
-        case "player":
-            if let id = ids.first {
-                return .player(PlayerID(id))
-            }
-            return .all
-        case "client":
-            if let id = ids.first {
-                return .client(ClientID(id))
-            }
-            return .all
-        case "session":
-            if let id = ids.first {
-                return .session(SessionID(id))
-            }
-            return .all
-        case "players":
+        case ("player", 1):
+            return .player(PlayerID(ids[0]))
+        case ("client", 1):
+            return .client(ClientID(ids[0]))
+        case ("session", 1):
+            return .session(SessionID(ids[0]))
+        case ("players", _):
             return .players(ids.map { PlayerID($0) })
         default:
-            return .all
+            throw ReevaluationRecordContentError.malformedEventTarget(kind: kind, idCount: ids.count)
         }
     }
 }

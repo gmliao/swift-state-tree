@@ -96,7 +96,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [A view restart on a live connection, recorded without a clear](2026-11-09-a-view-restart-recorded-without-a-clear.md) | recording, replay, sync-stream, resync, verifier |
 | 2026-11-09 | [An ordering check must fail under the mutant that breaks it](2026-11-09-an-ordering-check-must-fail-under-its-mutant.md) | testing, mutants, reentrancy, concurrency |
 | 2026-11-09 | [A hand-written codec form drops a field added later](2026-11-09-a-hand-written-codec-form-drops-a-field-added-later.md) | codec, messagepack, serialization, testing |
-| 2026-11-09 | [Wire-fed integer conversions must be exact and throwing](2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md) | codec, messagepack, security, decoding, crash |
+| 2026-11-09 | [Wire-fed integer conversions must be exact and throwing](2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md) | codec, messagepack, security, decoding, crash, record, replay |
 | 2026-11-09 | [A child inherits the worker thread's blocked signals](2026-11-09-a-child-inherits-the-worker-threads-blocked-signals.md) | signals, linux, cross-platform, process, testing |
 | 2026-11-09 | [An ID a client can build is not an authorization](2026-11-09-an-id-a-client-can-build-is-not-an-authorization.md) | security, authorization, replay, auto-create |
 | 2026-11-09 | [A test on a ticking land awaits a join's effect without stepping the turn that applies it](2026-11-09-a-ticking-land-applies-a-join-in-its-next-turn.md) | testing, keeper, tick, lifecycle-input, hang, time-limit, tickless, join-flip, input-drain |
@@ -170,3 +170,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-21 | [A closure that captures only actor state runs off the actor](2026-11-21-a-closure-that-captures-only-actor-state-runs-off-the-actor.md) | turns, concurrency, isolation, continuation, lost-wakeup, quiescence |
 | 2026-11-21 | [A feature path in the driver costs machines that don't use it](2026-11-21-a-feature-path-in-the-driver-costs-machines-that-do-not-use-it.md) | turns, driver, performance, instruction-gate, specialization, measurement |
 | 2026-11-21 | [A hang bound can't end a wait that ignores cancellation](2026-11-21-a-hang-bound-cannot-end-a-wait-that-ignores-cancellation.md) | testing, hang-bound, cancellation, test-gate, continuation |
+| 2026-11-21 | [A gate checked per send site leaks at the next site; a failure found outside a turn needs a mailbox](2026-11-21-a-gate-checked-per-send-site-leaks-at-the-next-site.md) | transport, reentrancy, failure, output-gate, turns |

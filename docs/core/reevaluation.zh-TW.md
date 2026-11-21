@@ -202,7 +202,9 @@ replay land 以有型別的方式顯示每個錄製的 server event（#521、#53
 - JSON 檢視中的 `-0.0` 讀回為 `+0.0`（儲存的錄製檔會保留）；
 - 正規等價（同一段文字的 NFC 與 NFD 寫法）的 map key 在讀取錄製檔時會合併成一個 key。
 
-無法解析的 tick 會讓 replay run 以 `ReevaluationReplayResolutionError` 失敗。錯誤會指出該 tick、event 的來源（錄製或 replay 送出）、序號與名稱，以及原因。以下情況的 tick 無法解析：名稱未註冊或 payload 無法解碼的 server event、讀取錄製檔失敗、state snapshot 無法編碼、以及無法從 snapshot 重建 state。run 在 admin 狀態中變成 `failed`。之前的 tick 仍留在佇列中並會顯示；replay land 保持運作，之後不會再收到任何內容。
+無法解析的 tick 會讓 replay run 以 `ReevaluationReplayResolutionError` 失敗。錯誤會指出該 tick、event 的來源（錄製或 replay 送出）、序號與名稱，以及原因。以下情況的 tick 無法解析：名稱未註冊、payload 無法解碼，或錄製的 target 不是 live run 會寫出的形式（未知的 kind，或 player、client、session target 的 ID 不是剛好一個；#641）的 server event、讀取錄製檔失敗、state snapshot 無法編碼、以及無法從 snapshot 重建 state。run 在 admin 狀態中變成 `failed`。之前的 tick 仍留在佇列中並會顯示；replay land 保持運作，之後不會再收到任何內容。
+
+live run 不可能寫出的錄製檔，會在開啟時、run 的第一個 tick 之前被拒絕：同一個 tick 有兩個 frame，或 tick 不在 `0 ..< Int64.max` 之內（`ReevaluationRecordContentError`，#639、#640）。run 變成 `failed`，錯誤會指出該 tick，伺服器照常運作。自訂 runner 若回報 `Int64.max` 為最後一個 tick，它的 run 也會以同樣方式、在第一步之前失敗。
 
 供給 replay land 的 run，遇到 land 無法顯示的結果也會失敗：沒有 frame 的結果（`unresolvedResult`，自訂 runner 沒有呼叫 `ReevaluationReplayFrame.resolve`）、其他 state 型別的 frame（`stateTypeMismatch`）、或沒有 state 的 frame（`stateUnavailable`）。無法計算 state hash 的 tick（§ 無法計算的 State Hash）沒有 state，其原因就是 hash 的錯誤。不供給 replay land 的 run（monitor 的驗證）會把這種 tick 回報為無法驗證，並繼續執行。`registerWithGenericReplay` 會在排入佇列前拒絕這些結果。只用 `GenericReplayLand.makeLand` 建立的 land 會在讀取每個結果時檢查，並讓 run 失敗，所以結果不會被默默丟掉。
 

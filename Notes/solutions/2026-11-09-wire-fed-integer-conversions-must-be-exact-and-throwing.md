@@ -17,8 +17,13 @@ tags:
   - security
   - decoding
   - crash
+  - record
+  - replay
 related:
   - "#312"
+  - "#639"
+  - "#640"
+  - "#641"
 ---
 
 # Wire-fed integer conversions must be exact and throwing
@@ -58,4 +63,8 @@ The unpacker rejects a count above the bytes left before reserving, and nesting 
 - **Bound counts before allocating.** A count read from the wire is checked against the bytes left before anything is reserved.
 - **Limit recursion depth.** A recursive decoder has a depth limit set well below what a debug build's thread stack holds.
 - **Guard index reads.** A wire array's elements are read through `first`, a count check, or an `indices` check.
-- **Test it as a crash.** A test of such a site sends the out-of-range value and expects an error. On a trapping decoder it crashes the run, which is the failure we want.
+- **A record is wire data too.** A replay record is uploaded through the admin start or handed to a runner, so the same rules hold for what is read from it:
+  - `Dictionary(uniqueKeysWithValues:)` over keys read from a record traps on a duplicate (#639). Index with `updateValue(_:forKey:)` and throw on a duplicate.
+  - Arithmetic on a recorded value traps on overflow, as `maxTickId + 1` did (#640). Check the range when the record is opened, or use `addingReportingOverflow`.
+- **A default is a silent wrong value too.** A recorded value outside its domain throws. Mapping it to a default widens what the data says: an unknown event target replayed as `.all` sent a targeted event to every client (#641).
+- **Test it as a crash.** A test of such a site sends the out-of-range value and expects an error. On a trapping decoder it crashes the run, which is the failure we want. On a Mac every crash raises the crash reporter's dialog, so run the failing-first run of a trapping site on Linux, and keep only the passing `#expect(throws:)` form on the Mac.

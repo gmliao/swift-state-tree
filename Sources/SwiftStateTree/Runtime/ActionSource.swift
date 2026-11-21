@@ -119,6 +119,53 @@ extension ReevaluationSource {
     }
 }
 
+// MARK: - Record content checks
+
+/// A record whose content isn't one a live run writes (#639, #640, #641). A source refuses it
+/// when the record is opened, and a replay resolve when it reads the tick, so the replay run
+/// fails with the cause and the process goes on.
+public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
+    /// Two frames of the record hold the same tick (#639).
+    case duplicateTickId(Int64)
+    /// A frame's tick is outside `0 ..< Int64.max` (#640). A live keeper numbers its ticks from 0
+    /// and can't record `Int64.max`: advancing its tick counter past it would overflow first.
+    case tickIdOutOfRange(Int64)
+    /// A recorded event target that `ReevaluationEventTargetRecord.from(_:)` doesn't write (#641).
+    case malformedEventTarget(kind: String, idCount: Int)
+
+    public var description: String {
+        switch self {
+        case .duplicateTickId(let tickId):
+            "the record holds two frames for tick \(tickId); a live run writes one frame per tick"
+        case .tickIdOutOfRange(let tickId):
+            "the record holds a frame for tick \(tickId), outside the ticks a live run writes (0 ..< \(Int64.max))"
+        case let .malformedEventTarget(kind, idCount):
+            "a recorded event target of kind '\(kind)' with \(idCount) IDs; a live run writes 'all' with none, 'player', 'client' or 'session' with one, and 'players' with any number"
+        }
+    }
+
+    /// The run's status shows this text (the runner service reports `localizedDescription`).
+    public var errorDescription: String? { description }
+}
+
+enum ReevaluationRecordContentCheck {
+    /// The frames indexed by tick. Throws at the first frame, in record order, whose tick is out
+    /// of range or is already indexed.
+    static func tickIndex(_ frames: [ReevaluationTickFrame]) throws -> [Int64: ReevaluationTickFrame] {
+        var index: [Int64: ReevaluationTickFrame] = [:]
+        index.reserveCapacity(frames.count)
+        for frame in frames {
+            guard frame.tickId >= 0, frame.tickId < Int64.max else {
+                throw ReevaluationRecordContentError.tickIdOutOfRange(frame.tickId)
+            }
+            guard index.updateValue(frame, forKey: frame.tickId) == nil else {
+                throw ReevaluationRecordContentError.duplicateTickId(frame.tickId)
+            }
+        }
+        return index
+    }
+}
+
 // MARK: - JSONReevaluationSource
 
 /// ReevaluationSource implementation that reads from a JSON file.
@@ -173,7 +220,8 @@ public actor JSONReevaluationSource: ReevaluationSource {
         let frames = recordFile.tickFrames
         
         self.frames = frames
-        self.framesByTickId = Dictionary(uniqueKeysWithValues: frames.map { ($0.tickId, $0) })
+        // A record is untrusted input: a duplicate or out-of-range tick throws, it never traps (#639, #640).
+        self.framesByTickId = try ReevaluationRecordContentCheck.tickIndex(frames)
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         // Every 2.x record is older than 3.3 (#446).
         self.holdsNonNFCText = Self.holdsNonNFCText(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
@@ -192,10 +240,18 @@ public actor JSONReevaluationSource: ReevaluationSource {
     
     /// Initialize from tick frames (for testing). The frames are taken as this build's: their
     /// text is not scanned, and `getHoldsNonNFCText()` is false.
+    ///
+    /// - Precondition: every frame's tick is in `0 ..< Int64.max`, and no two frames share a
+    ///   tick. The frames come from code, so a frame that breaks this stops the process; a record
+    ///   read from bytes or a file throws instead (#639).
     public init(metadata: ReevaluationRecordMetadata, frames: [ReevaluationTickFrame]) {
         self.metadata = metadata
         self.frames = frames
-        self.framesByTickId = Dictionary(uniqueKeysWithValues: frames.map { ($0.tickId, $0) })
+        do {
+            self.framesByTickId = try ReevaluationRecordContentCheck.tickIndex(frames)
+        } catch {
+            preconditionFailure("JSONReevaluationSource(metadata:frames:): \(error)")
+        }
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         self.holdsNonNFCText = false
     }
@@ -283,7 +339,8 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
         let contents = try ReevaluationRecordLogReader.read(bytes)
         metadata = contents.metadata
         frames = contents.frames
-        framesByTickId = Dictionary(uniqueKeysWithValues: contents.frames.map { ($0.tickId, $0) })
+        // The assembler merges one tick's records into one frame, so only the range can fail here.
+        framesByTickId = try ReevaluationRecordContentCheck.tickIndex(contents.frames)
         maxTickId = contents.frames.map(\.tickId).max() ?? -1
         completeness = contents.completeness
         holdsNonNFCText = contents.holdsNonNFCText
