@@ -246,7 +246,7 @@
           "perPlayerHash" : "a8c7f832281a39c5",
           "sequence" : 9,
           "streamIndex" : 4,
-          "turnKind" : "legacyCycle"
+          "turnKind" : "syncOnly"
         }
       ],
       "tickId" : 1
