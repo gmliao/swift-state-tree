@@ -1,0 +1,60 @@
+# Allowlist for scripts/l2d-census.sh (#546 L2d-2): path symbol count reason.
+# A count above its line fails; an unlisted path allows 0. L2d-3 lowers these (plan §3.8.5).
+
+# The legacy transport calls: only re-evaluation paths and tests reach them now.
+Sources/SwiftStateTree/Runtime/LandKeeper.swift syncBroadcastOnlyFromTransport-call 3 re-evaluation paths (processPendingActions, deliverLegacyPass, replayed passes in runTick); a re-evaluation keeper has no transport in production; L2d-3 / #612
+Tests/SwiftStateTreeTransportTests/TransportAdapterRequestedSyncTurnTests.swift syncBroadcastOnlyFromTransport-call 1 broadcastOnlyBridgeIsARequestedTurn, retired with the bridge in L2d-3
+Tests/SwiftStateTreeTests/DrainTurnTests.swift syncNowFromTransport-call 1 a late call after the destruction reaches the released placeholder, which counts it
+
+# The requirement, the placeholder, the adapter's forwards (defaults in L2d-3) and the test fakes' conformances.
+Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift syncNowFromTransport-decl 2 LandKeeperTransport requirement and ReleasedLandTransport
+Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 2 LandKeeperTransport requirement and ReleasedLandTransport
+Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift syncNowFromTransport-decl 1 the adapter's forward, deleted in L2d-3
+Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 1 the adapter's forward, deleted in L2d-3
+Tests/SwiftStateTreeTests/ActionEventSyncTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/DrainTurnTests.swift syncNowFromTransport-decl 2 test fake conformance
+Tests/SwiftStateTreeTests/InTurnSyncFoldReportTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/InitializeResolverFailureTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LandDSLTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LandFailureTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LandKeeperReevaluationOutputModeTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LiveRoutingPinTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/PerSequenceResultTests.swift syncNowFromTransport-decl 3 test fake conformance
+Tests/SwiftStateTreeTests/ReplaySequenceWatermarkTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/RequestedSyncTurnKeeperTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ResolverDeadlineTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ResolverDeliveryTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ServerInputTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ShutdownTurnTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/SyncRegistrationTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/TicklessActionJobTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/TicklessReplayPassTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/TransportRefusalTests.swift syncNowFromTransport-decl 2 test fake conformance
+Tests/SwiftStateTreeTests/TwoPhaseHandlerTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTransportTests/MockLandKeeperTransport.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ActionEventSyncTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/DrainTurnTests.swift syncBroadcastOnlyFromTransport-decl 2 test fake conformance
+Tests/SwiftStateTreeTests/InTurnSyncFoldReportTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/InitializeResolverFailureTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LandDSLTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LandFailureTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LandKeeperReevaluationOutputModeTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/LiveRoutingPinTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/PerSequenceResultTests.swift syncBroadcastOnlyFromTransport-decl 3 test fake conformance
+Tests/SwiftStateTreeTests/ReplaySequenceWatermarkTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/RequestedSyncTurnKeeperTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ResolverDeadlineTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ResolverDeliveryTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ServerInputTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/ShutdownTurnTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/SyncRegistrationTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/TicklessActionJobTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/TicklessReplayPassTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/TransportRefusalTests.swift syncBroadcastOnlyFromTransport-decl 2 test fake conformance
+Tests/SwiftStateTreeTests/TwoPhaseHandlerTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTransportTests/MockLandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+
+# The standalone firstSync's record kind, until B3.
+Sources/SwiftStateTreeTransport/TransportAdapter.swift legacyCycle 2 the standalone firstSync (TA settle read and record), until B3
+Tests/SwiftStateTreeTransportTests/RecordFieldListTests.swift legacyCycle 1 the record field list keeps the kind
+Tests/SwiftStateTreeTransportTests/SyncOutputVerifierTests.swift legacyCycle 1 a record holding the legacy-cycle settle still verifies
