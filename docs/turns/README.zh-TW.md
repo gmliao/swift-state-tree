@@ -167,7 +167,14 @@ core 用到十幾個概念。下面每一個都建立在前面幾個之上，也
 
 *input* 是送給狀態機的一則訊息，例如「player 7 想加入」。*step* 是狀態機處理一個 input。step 一次只跑一個，而且不能 `await`，所以 step 讀狀態時，沒有任何東西會改變它。
 
-input 有三種送達方式。`send` 送出 input，不等回覆就返回；它在 input 執行完或排入佇列（見「Input policy」）後返回。`sendAndWait` 送出 input，並等待狀態機的回覆，step 用 `reply` 給出回覆。`query` 向狀態機提出一個同步的問題，在一個 step 裡回答，並傳回答案。
+step 拿到兩樣東西：狀態機的狀態（`self`）和一個 `Turn`。turn 是 step 對外行動的唯一途徑，例如提出 request、執行工作、設定 timer、送出輸出、回覆，或開始與結束一個 key。其中有些立刻生效：`start`、`end` 與 `request` 會更新 core 的記錄，同一個 step 就看得到變化（`isLive`、request 的 ID）。發布與啟動則等 step 結束：這時 actor 送出（flush）輸出、發布回覆並啟動 effect，每個 effect 的結果在之後的 step 才到。step 可以把 turn 以 `inout` 參數借給同步的 helper。它不能建立、複製、保存或移走 turn，`Task` 或 escaping closure 也不能捕捉它，所以 turn 只存在於收到它的那個 step。`Turn<M>` 對狀態機泛型，讓它的方法使用狀態機自己的型別：`request` 接受 `M.Effect`、`emit` 接受 `M.Output`、`reply` 接受 `M.Reply`、`start` 接受 `M.Key`。這個詞來自 actor model。在 E 裡，turn 是把一則訊息處理完；在 Orleans 裡，turn 跑到 handler 的下一個 `await` 為止。step 沒有 `await`，所以每個 step 就是一整個 turn。
+
+狀態機只在 input 到達時才行動。它沒有 run loop，也沒有自己的 task。input 來自三個地方：
+- I/O 端（例如連線的讀取端）呼叫 `send`、`sendAndWait` 或 `query`。
+- core 送回 effect 的結果與 timer 的觸發，並在 request 的期限過了時執行 `handleAbandoned`。
+- step 為狀態機排定之後的 input：用 `timer`、用 `request`（它的結果）、用 `queue(_:behind:)`，以及用 request 的期限。
+
+input 有三種送達方式。`send` 送出 input，不等回覆就返回；它在 input 執行完、排入佇列或被延後，或被拒絕（見「send 在等什麼」）後返回。`sendAndWait` 送出 input，並等待狀態機的回覆，step 用 `reply` 給出回覆。`query` 向狀態機提出一個同步的問題，在一個 step 裡回答，並傳回答案。
 
 ```swift
 let connection = WithdrawToken()
@@ -188,7 +195,11 @@ API：`send`、`sendAndWait`、`reply`、`query`、`answer`。
 turn.run(.log("joined \(player)"))
 ```
 
-API：`perform`、`request`、`run`。
+`perform` 與 `flush` 是 actor 對外的兩條路，兩者不同。`perform` 是命令：它非同步地在 actor 之外執行，結果以 input 回來。`flush` 是事件：actor 在兩個 step 之間同步呼叫它，它不傳回任何東西，並依 step 送出的順序拿到輸出。資料庫載入是 effect；伺服器送給客戶端的訊息寫在 `flush` 裡。
+
+effect 以資料表示，是為了讓 step 的工作可以被檢查、被替換。測試的假 `perform` 可以記錄 step 提出的每個 effect，並傳回編造的結果，不需要資料庫；`effectsByInput` 依 input 的 case 計算 effect 數量，只在 debug build 有效。不論 `perform` 做真正的工作、假的、模擬，或重播錄下的結果，狀態機都不變。
+
+API：`perform`、`flush`、`request`、`run`、`effectsByInput`。
 
 ### Key
 
@@ -255,6 +266,8 @@ case .chat(let player, _): .normal(waitsFor: .database, belongsTo: .player(playe
 case .saveStats: .normal(waitsFor: .database, belongsTo: nil)
 ```
 
+只有排在 hold 後面等待的 input，或 step 用 `queue(_:behind:)` 排入的 input（即使 key 沒被佔用也會排入），才會排入佇列。其他被接受的 input 都在它到達的那個 batch 裡執行；batch 執行期間送來而被延後的 input，在該 batch 稍後執行（見「send 在等什麼」）。
+
 佇列有上限，在建立 core 時設定。超過上限的 input 會以 `queueFull` 被拒絕，所以大量湧入的 input 不會讓記憶體無限成長。`control` input 從不受限：斷線或停止一定會執行。step 自己的後續工作可以用 `queue` 在 hold 後面保留位置。這種*釘住*（pinned）的 input 不會因 scope 被撤回，也不會因上限被拒絕。
 
 API：`InputPolicy`、`queue(_:behind:)`、`TurnError`。
@@ -285,6 +298,8 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 
 `turn.now` 讀取 core 的時鐘，每個 batch 一次。時鐘是注入的，沒有預設值。測試傳入一個由它手動推進的時鐘，所以一分鐘的 timer 在測試指定的時候觸發，而不是真的等一分鐘。
 
+週期性的遊戲 tick 是一個會自己重新設定的 timer，不是 `while` 迴圈。tick 的 input 帶著它原本排定的時刻，它的 step 做 tick 的工作並設定下一個 tick。延遲觸發後下一個 tick 排在何時，由狀態機決定。core 的測試把它排在 `turn.now` 之後、週期格點上的第一個時刻：週期 2 秒、原定在 2 秒的 tick 若在 7 秒才觸發，就重新設定在 8 秒，錯過的 tick 被跳過，而不是一次補跑。每個 tick 都是一般的 input，測試推進時鐘就能觸發它，結束該 key 就會停止 tick。
+
 API：`timer(at:for:_:)`、`now`、`TurnClock`、`TurnInstant`。
 
 ### Batch 與 `maxReleasesPerBatch`
@@ -298,6 +313,22 @@ clock: ContinuousTurnClock()
 ```
 
 API：`TurnCore.init`。
+
+### send 在等什麼
+
+`send` 本身是同步的。`await room.send(...)` 裡的 `await` 是 Swift 的 actor 切換（actor hop）：呼叫端等到 actor 空出來，也就是排在它前面的 batch 都結束。進入之後，input 在 `send` 返回前會是以下四種之一：
+- 立刻執行，它的 batch 在 `send` 返回前跑完。
+- 排在某個 hold 後面的佇列裡。
+- 被延後：`send` 在 batch 執行期間被呼叫時（例如從 `flush`）。它在該 batch 稍後依相同規則被接納。
+- 被拒絕（已關閉、已撤回或超過佇列上限）：被丟棄，並計入 `droppedSends`。
+
+`send` 不等 input 的任何結果或回覆。`sendAndWait` 等 step 的 `reply`，input 被拒絕或撤回時拋出 `TurnError`。
+
+所以有三個佇列。actor 自己的佇列由 Swift runtime 管理，放著等待進入的呼叫端。core 的延後清單放著 batch 執行期間送來的 input，由該 batch 清空。core 的 hold 佇列放著排在 hold 後面的 input。等待發生在呼叫端、進入之前，所以 step 從不會被暫停。在 `await` 之前檢查過自己狀態的呼叫端，之後要重新檢查，任何 actor 程式碼都一樣。
+
+Swift 不保證不同 task 的呼叫之間有任何順序：哪一個先到 actor，取決於排程與優先權。同一條連線的 input 只有在由一個 task 依序送出時才保持順序，所以每條連線用一個迴圈依序 await 每次 `send`，不要每則訊息開一個 task。
+
+API：`send`、`sendAndWait`、`TurnStats`（`droppedSends`）。
 
 ### Incarnation
 
@@ -325,6 +356,7 @@ API：`CallerCancellation`。
 | Withdraw token | 送出者能在 input 執行前放棄它嗎？ | `WithdrawToken`、`revoke` |
 | Timer 與時鐘 | step 如何在之後行動？測試如何控制時間？ | `timer`、`now`、`TurnClock` |
 | Batch | 每次進入執行多少？ | `maxReleasesPerBatch` |
+| send 在等什麼 | `await send` 在等什麼？順序如何？ | `send`、`sendAndWait` |
 | Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |
 | 呼叫端取消 | 呼叫端的 task 被取消時會怎樣？ | `CallerCancellation` |
 
