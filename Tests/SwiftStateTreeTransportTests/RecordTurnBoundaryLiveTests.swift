@@ -5,7 +5,7 @@ import Testing
 
 // #327: a live keeper's 3.0 record is the same bytes whether or not the recorder's flush timer
 // fires mid-turn. The timer is forced to fire after every recorder call (no timing), on tick
-// and tickless lands, with in-turn sync on and off (the legacy paths).
+// and tickless lands.
 //
 // Fields that are not framing are pinned: player, client and session IDs, the land ID (and so
 // the RNG seed), and the header's `createdAt`, the only wall-time field of a record (the
@@ -76,13 +76,12 @@ private struct TurnBoundaryRun {
     let bytes: Data
     let backstopCloses: Int
     let turns: [ReevaluationTickRecord]
-    let inTurn: Bool
     /// Pending (open) records after the script, before the save.
     let openAtEnd: Int
 }
 
 /// Plays one fixed script on a fresh keeper and returns its saved record.
-private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, path: String) async throws -> TurnBoundaryRun {
+private func recordTurnBoundaryRun(tick: Bool, forceTimer: Bool, path: String) async throws -> TurnBoundaryRun {
     let keeper = LandKeeper<TurnBoundaryState>(
         definition: makeTurnBoundaryLand(tick: tick),
         initialState: TurnBoundaryState(),
@@ -94,12 +93,12 @@ private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, p
     await keeper.setLandID(turnBoundaryLandID)
     let transport = VerifierTransport()
     let adapter = TransportAdapter<TurnBoundaryState>(
-        keeper: keeper, transport: transport, landID: turnBoundaryLandID, inTurnSync: inTurn
+        keeper: keeper, transport: transport, landID: turnBoundaryLandID
     )
     await transport.setDelegate(adapter)
     await keeper.awaitInitialization()
     await keeper.setTransport(adapter)
-    #expect(await keeper.isUsingInTurnSync() == inTurn)
+    #expect(await keeper.isUsingInTurnSync())
     // The header first, as `LandManager` sets it: the records stream into the file from here.
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: turnBoundaryLandID,
@@ -116,8 +115,7 @@ private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, p
     // the join flips in the sync-only turn its registration requests, and `performJoin` returns
     // after that flip (a tickless sync-only turn that records a seed marker). A tick land's
     // join would wait for a tick, so it joins the direct way.
-    let keeperInTurn = await keeper.isUsingInTurnSync()
-    let joinsInTurn = !tick && keeperInTurn
+    let joinsInTurn = !tick
     func join(_ n: Int) async throws {
         let session = SessionID("s\(n)"), client = ClientID("c\(n)")
         await adapter.onConnect(sessionID: session, clientID: client)
@@ -186,25 +184,24 @@ private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, p
         bytes: bytes,
         backstopCloses: await recorder.backstopClosesForTesting,
         turns: try ReevaluationRecordLogReader.records(Array(bytes)),
-        inTurn: keeperInTurn,
         openAtEnd: openAtEnd
     )
 }
 
 @Test(
     "A live record is the same bytes with the flush timer firing after every recorder call (#327)",
-    arguments: [(true, true), (true, false), (false, true), (false, false)]
+    arguments: [true, false]
 )
-func liveRecordBytesDoNotDependOnTheTimer(tick: Bool, inTurn: Bool) async throws {
+func liveRecordBytesDoNotDependOnTheTimer(tick: Bool) async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("record-turn-boundary-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let plain = try await recordTurnBoundaryRun(
-        tick: tick, inTurn: inTurn, forceTimer: false, path: directory.appendingPathComponent("plain.sstr").path
+        tick: tick, forceTimer: false, path: directory.appendingPathComponent("plain.sstr").path
     )
     let forcedPath = directory.appendingPathComponent("forced.sstr").path
-    let forced = try await recordTurnBoundaryRun(tick: tick, inTurn: inTurn, forceTimer: true, path: forcedPath)
+    let forced = try await recordTurnBoundaryRun(tick: tick, forceTimer: true, path: forcedPath)
 
     #expect(plain.bytes == forced.bytes, "\(plain.bytes.count) B against \(forced.bytes.count) B")
     #expect(plain.turns.count == forced.turns.count)
@@ -226,18 +223,12 @@ func liveRecordBytesDoNotDependOnTheTimer(tick: Bool, inTurn: Bool) async throws
         let joinTurns = turns.filter { $0.syncMarkers.contains { $0.kind == .seed } }
         // Every turn closed itself: none waits for the save.
         #expect(plain.openAtEnd == 0 && forced.openAtEnd == 0)
-        if forced.inTurn {
-            // OnInitialize, 2 join sync-only turns, 5 input turns, and the clear marker's own
-            // record.
-            #expect(turns.count == 9)
-            #expect(actionTurns.filter { !$0.syncOutputs.isEmpty }.count == 3, "the actions with a value from 5 on")
-            #expect(joinTurns.count == 2 && joinTurns.allSatisfy { $0.actions.isEmpty && $0.syncOutputs.count == 1 })
-            #expect(turns.last.map { $0.syncMarkers.map(\.kind) == [.clear] && $0.lifecycleEvents.isEmpty } == true)
-        } else {
-            // OnInitialize and 5 passes; no sync stream.
-            #expect(turns.count == 6)
-            #expect(turns.allSatisfy { $0.syncMarkers.isEmpty })
-        }
+        // OnInitialize, 2 join sync-only turns, 5 input turns, and the clear marker's own
+        // record.
+        #expect(turns.count == 9)
+        #expect(actionTurns.filter { !$0.syncOutputs.isEmpty }.count == 3, "the actions with a value from 5 on")
+        #expect(joinTurns.count == 2 && joinTurns.allSatisfy { $0.actions.isEmpty && $0.syncOutputs.count == 1 })
+        #expect(turns.last.map { $0.syncMarkers.map(\.kind) == [.clear] && $0.lifecycleEvents.isEmpty } == true)
     }
 
     // The forced record replays on its own land definition (a tickless record on the tickless

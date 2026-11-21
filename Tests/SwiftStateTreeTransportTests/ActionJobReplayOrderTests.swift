@@ -4,8 +4,8 @@
 // reconstructed from the record. An action with resolvers is bound to the tick of its
 // completion (`resolvedAtTick`), and replay applies inputs by `(resolvedAtTick, sequence)`.
 // Here a resolver-free action overtakes an earlier action whose resolver is held (gates, not
-// timing), the held one completes a tick later, and the record replays to the live state,
-// with in-turn sync on and off. The land's state is an ordered list, so a replay that applied
+// timing), the held one completes a tick later, and the record replays to the live state.
+// The land's state is an ordered list, so a replay that applied
 // the two in sequence order would end in a different state.
 
 import Foundation
@@ -156,10 +156,9 @@ private actor ReplayOrderTransport: Transport {
 @Suite("Action jobs: the processing order is reconstructable from the record (tick lands)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct ActionJobReplayOrderTests {
     @Test(
-        "An action that a resolver-free action overtakes replays in its recorded (resolvedAtTick, sequence) order",
-        arguments: [true, false]
+        "An action that a resolver-free action overtakes replays in its recorded (resolvedAtTick, sequence) order"
     )
-    func overtakenActionReplaysInRecordedOrder(inTurn: Bool) async throws {
+    func overtakenActionReplaysInRecordedOrder() async throws {
         let landID = "action-job-replay-order:local"
         let keeper = LandKeeper<ReplayOrderJobState>(
             definition: makeReplayOrderLand(),
@@ -170,11 +169,11 @@ struct ActionJobReplayOrderTests {
         await keeper.setLandID(landID)
         let transport = ReplayOrderTransport()
         let adapter = TransportAdapter<ReplayOrderJobState>(
-            keeper: keeper, transport: transport, landID: landID, inTurnSync: inTurn
+            keeper: keeper, transport: transport, landID: landID
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
-        #expect(await keeper.isUsingInTurnSync() == inTurn)
+        #expect(await keeper.isUsingInTurnSync())
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
             landID: landID,

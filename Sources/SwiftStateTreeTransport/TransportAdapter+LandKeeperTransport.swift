@@ -12,50 +12,46 @@ extension TransportAdapter: LandKeeperTransport {
         await self.sendEvent(event, to: target)
     }
     
+    /// The keeper's legacy paths reach it until #546 L2d: one requested sync-only turn.
     public func syncNowFromTransport() async {
         await self.syncNow()
     }
-    
+
+    /// The keeper's legacy paths reach it until #546 L2d: one requested sync-only turn.
     public func syncBroadcastOnlyFromTransport() async {
         await self._syncBroadcastOnlyImpl()
     }
 
-    /// `true` only with in-turn sync on and for this adapter's own keeper, whose executor it
-    /// then shares (`unownedExecutor`).
+    /// `true` only for this adapter's own keeper, whose executor it shares (`unownedExecutor`).
     public nonisolated func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool {
-        inTurnSyncEnabled && isAttached(to: keeper)
+        isAttached(to: keeper)
     }
 
-    /// Called by the keeper inside its join, on the shared executor (in-turn sync only; the
-    /// keeper never calls it otherwise). `assumeIsolated` traps off that executor.
+    /// Called by the keeper inside its join, on the shared executor. `assumeIsolated` traps off
+    /// that executor.
     public nonisolated func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
-        guard inTurnSyncEnabled else { return .notAdmitted }
-        return assumeIsolated { adapter in
+        assumeIsolated { adapter in
             adapter.admitJoiningSessionIsolated(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: joinSequence)
         }
     }
 
-    /// Called by the keeper in its join, in the segment of the CanJoin decision (in-turn sync
-    /// only). Off it, `false` before any `assumeIsolated`: the legacy path shares no executor.
+    /// Called by the keeper in its join, in the segment of the CanJoin decision.
     public nonisolated func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool {
-        guard inTurnSyncEnabled else { return false }
-        return assumeIsolated { adapter in
+        assumeIsolated { adapter in
             adapter.refusesResolvedJoinIsolated(playerID: playerID, sessionID: sessionID)
         }
     }
 
-    /// Called by the keeper inside the turn that applied the join inputs (in-turn sync only).
+    /// Called by the keeper inside the turn that applied the join inputs.
     public nonisolated func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
-        guard inTurnSyncEnabled else { return }
         assumeIsolated { adapter in
             adapter.noteJoinInputsConsumedIsolated(results)
         }
     }
 
-    /// Read by the keeper inside its turn (in-turn sync only).
+    /// Read by the keeper inside its turn.
     public nonisolated var hasJoinsAwaitingSync: Bool {
-        guard inTurnSyncEnabled else { return false }
-        return assumeIsolated { adapter in
+        assumeIsolated { adapter in
             adapter.hasJoinsAwaitingSyncIsolated()
         }
     }
@@ -88,8 +84,7 @@ extension TransportAdapter: LandKeeperTransport {
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        guard inTurnSyncEnabled else { return InTurnSyncOutput(.unsupported) }
-        return assumeIsolated { adapter in
+        assumeIsolated { adapter in
             adapter.runSyncPhaseInTurnIsolated(state: state, events: events, includeSync: includeSync, recording: recording)
         }
     }

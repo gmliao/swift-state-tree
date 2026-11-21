@@ -183,7 +183,6 @@ struct TransportAdapterSyncLagTests {
     /// only their own syncs plan.
     func makeFixture(
         timerInterval: Duration = .seconds(3600), binary: Bool = false, syncSequence: Bool = true,
-        inTurnSync: Bool = true,
         syncTables: Bool? = nil,
         failViewEncode: Bool = false,
         keeperTransport: Bool = false,
@@ -210,8 +209,7 @@ struct TransportAdapterSyncLagTests {
                     message: .messagepack, stateUpdate: .opcodeMessagePack, pathIndex: false, fieldMerge: false, syncSequence: true
                 )
                 : TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: syncSequence),
-            pathHashes: binary ? syncLagPathHashes : nil,
-            inTurnSync: inTurnSync
+            pathHashes: binary ? syncLagPathHashes : nil
         )
         await transport.setDelegate(adapter)
         let clock = SyncLagManualClock()
@@ -325,21 +323,6 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagPendingMarks == 0)
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
         #expect(await f.adapter.syncLagSlowConsumerCloses == 0)
-    }
-
-    @Test("In-turn off: the standalone firstSync's commit is the attempt's initialSyncCommitted (#555)")
-    func initialSyncCommittedWithInTurnOff() async throws {
-        typealias Key = TransportAdapter<SyncLagTestState>.JoinAttemptKey
-        // Opt-in: without it the commit records nothing.
-        let off = try await makeFixture(inTurnSync: false)
-        #expect(try await off.stateFrames().map(\.op) == [1])
-        #expect(await !off.adapter.initialSyncCommittedForTesting(Key(sessionID: off.sessionID, attempt: nil)), "not captured")
-
-        let f = try await makeFixture(inTurnSync: false, captureJoinCommits: true)
-        #expect(try await f.stateFrames().map(\.op) == [1], "the firstSync was sent")
-        #expect(await f.adapter.initialSyncCommittedForTesting(Key(sessionID: f.sessionID, attempt: nil)))
-        #expect(await !f.adapter.joinFlippedForTesting(Key(sessionID: f.sessionID, attempt: nil)), "no in-turn flip")
-        #expect(await !f.adapter.initialSyncCommittedForTesting(Key(sessionID: SessionID("other"), attempt: nil)))
     }
 
     @Test("Silent past 3 s: frames are withheld; acks resuming bring a resync")
@@ -671,7 +654,7 @@ struct TransportAdapterSyncLagTests {
     @Test("Legacy join whose first view doesn't encode ends the land: 4016, never 4012, no retry (#535 row 13)", arguments: [true, false])
     func unencodableFirstViewEndsTheLand(syncSequence: Bool) async throws {
         let f = try await makeFixture(
-            syncSequence: syncSequence, inTurnSync: false, failViewEncode: true, keeperTransport: true
+            syncSequence: syncSequence, failViewEncode: true, keeperTransport: true
         )
         try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
         await f.keeper.waitUntilDrained()

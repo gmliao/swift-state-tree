@@ -30,7 +30,7 @@
 
 **Unchanged by L2:**
 - The standalone initial sync (`_syncStateForNewPlayer`, TA:5588) and its re-checks: the ticket, the player binding, the output gate and the commit epoch. It stays until B2 (`.initialSyncCommit`) and B3 (membership). Its recorder tag `.legacyCycle` stays (`ReevaluationSyncStream.swift:20`).
-- What `.reevaluation` keepers reach: `processPendingActions`, `replayRecordedPasses`, the replay broadcast calls (LK:3802, :4516), the sync loop's transport call (LK:5564), and `LandKeeperTransport`'s `syncNowFromTransport`/`syncBroadcastOnlyFromTransport`, kept with do-nothing defaults (§3.5). `LandKeeperReevaluationOutputModeTests` keeps its `.reevaluation` keepers.
+- What `.reevaluation` keepers reach: `processPendingActions`, `replayRecordedPasses`, the replay broadcast calls (LK:3802, :4516), the sync loop's transport call (LK:5564), and `LandKeeperTransport`'s `syncNowFromTransport`/`syncBroadcastOnlyFromTransport`, kept with do-nothing defaults from L2d (§3.5). `LandKeeperReevaluationOutputModeTests` keeps its `.reevaluation` keepers.
 - Frames on the default production path. A server built from `main` already runs in-turn, and production's periodic sync already runs `runSyncOnlyTurn`.
 
 ## 2. Who reaches the off mode after L1
@@ -374,7 +374,7 @@ The PR gives each test its fate and reason.
 
 **Fakes on `.reevaluation` keepers** (`LandKeeperReevaluationOutputModeTests` :41) are reached through the mode. They stay, with the code they reach (§1), until #612 S2 and S6.
 
-**The two transport requirements.** `syncNowFromTransport` and `syncBroadcastOnlyFromTransport` stay in `LandKeeperTransport`, since `.reevaluation` keepers' calls reach them (LK:3802, :4516, :5564). L2c deletes the adapter's implementations, and both requirements get do-nothing defaults with a doc comment: kept as a compatibility surface for keepers that replay, until #612 S6. `ReleasedLandTransport` keeps its drops (LKT:378–379), as the teardown placeholder.
+**The two transport requirements.** `syncNowFromTransport` and `syncBroadcastOnlyFromTransport` stay in `LandKeeperTransport`, since `.reevaluation` keepers' calls reach them (LK:3802, :4516, :5564). The adapter keeps its implementations until L2d, as forwards to one requested sync-only turn (§3.6), since a live keeper's legacy paths still reach them. L2d deletes the forwards, and both requirements then get do-nothing defaults with a doc comment: kept as a compatibility surface for keepers that replay, until #612 S6. `ReleasedLandTransport` keeps its drops (LKT:378–379), as the teardown placeholder.
 
 Rejected:
 - **A null transport that opts in.** It would run a sync phase that sends nothing, clear dirty flags every turn, and change what the 2e tests observe.
@@ -387,7 +387,7 @@ Rejected:
 - `withSyncState` (TA:3297), `beginSyncLocatedIfRecording` (TA:3917), `legacyCycleRead` (TA:3903), `beginSyncRequests` (TA:748);
 - the off adapter's cycle: `_syncNowImpl`'s cycle branch, `_syncBroadcastOnlyImpl` and `planBroadcastOnlySyncPhase` (TA:5234, :5281), the kept-event follow-up, the backlog and busy retry (`deferSyncForOutboundBacklog`, `runBacklogDeferredSync` and their fields), and `syncSkips.busy` with `SyncSkipCounts.busy`. The background-work tracker (`startBackgroundSync`/`backgroundSyncTasks`, TA:3166–3191) stays: the delayed repair and the lag timer's request use it;
 - the off settle and resume (§3.4);
-- the adapter's `syncNowFromTransport`/`syncBroadcastOnlyFromTransport` (`TransportAdapter+LandKeeperTransport.swift:15–21`). A live keeper still reaches them on an in-turn adapter through its legacy paths until L2d (for example, a legacy pass queued before an attach reads the transport after its awaits, LK :3938 at 1a826823). From L2b both forward to `syncTurnNow` on an in-turn adapter (L2b delta in §4), so deleting the off cycle under them changes nothing they do. No `.reevaluation` keeper has an adapter;
+- not the adapter's `syncNowFromTransport`/`syncBroadcastOnlyFromTransport` (`TransportAdapter+LandKeeperTransport.swift:15–21`): they stay until L2d. A live keeper still reaches them on an in-turn adapter through its legacy paths until then (for example, a legacy pass queued before an attach reads the transport after its awaits, LK :3938 at 1a826823). From L2b both forward to `syncTurnNow` on an in-turn adapter (L2b delta in §4), so deleting the off cycle under them changes nothing they do. No `.reevaluation` keeper has an adapter;
 - the adapter's hold points only the off cycle reaches: `.cycleBeforeEndSync`, `.busyRetry` and `.followUpSynced`;
 - the off arms of every explicit off caller (§2). `WallClockCadenceSmokeTests` keeps its on leg, and CI keeps the check that it ran;
 - the legacy witnesses (`join-during-sync-cycle`, `TransportAdapterInTurnSyncTests.swift:927–937`), the remaining legacy-cycle cases, and the harness's legacy cells (§5.3);
@@ -404,6 +404,7 @@ The keeper's routing doesn't change in L2c. Its callers of `beginSync`/`endSync`
 - on the keeper: `beginSync`, `beginSyncLocated`, `endSync()` and `endSync(clearDirtyFlags:)` (LK:1336–1395), `isSyncing` (LK:663), and the latch `syncOnlyTurnAfterLegacyCycle` (LK:704) with its reads in `runTurnOutputs` (LK:4629) and `runSyncOnlyTurn` (LK:5043);
 - **the live legacy pass**: `finishTicklessLegacyPass`, `deliverLegacyPass`, `legacyDeliveries`, `runLegacyPass`, and `runSyncRequests`' `else if mode == .live` branch (LK:641–647). They are entered only from live branches (`runLegacyPass` around LK:1654, :1892, :2588 and :2914; `finishTicklessLegacyPass` at :3758), so `.reevaluation` keepers never reach them;
 - `runTicklessJobPass`, its hold `.ticklessJobPass` and the `legacyPass*` fields (LK:3884–3890), unreachable once LK:2202 routes by mode. `TicklessActionJobTests.swift:425` holds `.ticklessJobPass` on its off arm, so that arm is deleted with them;
+- the adapter's forwards `syncNowFromTransport`/`syncBroadcastOnlyFromTransport`, kept through L2c; the two requirements get their do-nothing defaults (§3.5);
 - `runSync`'s fallback call `transport?.syncNowFromTransport()` (LK:5564) is restricted to `.reevaluation` keepers. A live fake that doesn't opt in no longer receives it;
 - the keeper's hold points `.syncOnlyAfterLegacyCycle`, `.legacyDelivery` and `.legacyShutdownPass`;
 - `LandKeeperSyncLockTests` and the direct `beginSync`/`endSync` calls (§2);
@@ -588,7 +589,7 @@ The adapter is `package` since E, so `syncNow()`, `syncBroadcastOnly()` and the 
   - `SyncSkipCounts.busy` (a public field and init parameter, `TransportAdapter+Outbound.swift:237–247`) is removed. Both `MeasuredSync.swift`s stop reading it.
   - The profiler's `syncSkipsBusy` JSONL field (`TransportProfilingActor.swift:595`) stays, always `0`, so the profile format doesn't change: `ws-loadtest/src/server-sync.ts:14` requires it, and old and new profiles parse alike. `METRICS.md:136` says it is always 0 since L2. Dropping it would be a format change for its own PR, with ws-loadtest and its test (`tests/server-sync.test.ts:14`) changed together.
   - `TransportAdapterBenchmarkHandle.inTurnSyncEnabled` (`TransportAdapterBenchmarkHandle.swift:59`) is removed. EncodingBenchmark writes `true` in its place in the record metadata (`EncodingBenchmarkMain.swift:158–159`), so records keep their shape.
-  - `LandKeeperTransport.syncNowFromTransport()` and `syncBroadcastOnlyFromTransport()` stay as requirements with documented do-nothing defaults (§3.5). #612 S6 removes them.
+  - `LandKeeperTransport.syncNowFromTransport()` and `syncBroadcastOnlyFromTransport()` stay as requirements, and the adapter keeps its forwards (§3.5, §3.6). L2d deletes the forwards and adds the documented do-nothing defaults; #612 S6 removes the requirements.
 - **L2d:**
   - `LandKeeper.beginSync(clearDirtyFlags:)`, `endSync()` and `endSync(clearDirtyFlags:)` are removed.
   - `LandKeeper.isUsingInTurnSync()` keeps its signature and its answers (§3.5). `LandKeeper`'s init doesn't change.

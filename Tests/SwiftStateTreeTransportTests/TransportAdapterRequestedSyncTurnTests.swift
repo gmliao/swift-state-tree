@@ -77,8 +77,7 @@ private struct RequestedSyncTurnFixture {
                 syncStrategy: .delta,
                 profilingConfig: nil
             ),
-            encodingConfig: .json,
-            inTurnSync: true
+            encodingConfig: .json
         )
     }
 
@@ -95,15 +94,13 @@ private struct RequestedSyncTurnFixture {
 struct TransportAdapterRequestedSyncTurnTests {
     // MARK: The binding
 
-    @Test("the keeper's broadcast-only bridge on an in-turn adapter is one requested turn, not a legacy cycle")
+    @Test("the keeper's broadcast-only bridge on an in-turn adapter is one requested turn")
     func broadcastOnlyBridgeIsARequestedTurn() async throws {
         let f = try await RequestedSyncTurnFixture.make(attached: true)
         try await f.set(1)
         let before = await f.keeper.requestedSyncTurnsForTesting[.broadcastOnly, default: 0]
-        let cyclesBefore = await f.adapter.beginSyncRequests
         await f.adapter.syncBroadcastOnlyFromTransport()
         #expect(await f.keeper.requestedSyncTurnsForTesting[.broadcastOnly, default: 0] == before + 1)
-        #expect(await f.adapter.beginSyncRequests == cyclesBefore, "no legacy cycle, so nothing can latch")
         let outbound = f.adapter
         #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
         #expect(

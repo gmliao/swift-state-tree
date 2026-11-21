@@ -75,9 +75,8 @@ private struct BPFixture {
     let client: ClientID
     let player: PlayerID
 
-    /// `inTurnSync: false`: the adapter's own cycle and its backlog retry (until #546 L2c removes
-    /// them). In-turn, the retry is the keeper's writer-drain retry.
-    static func make(_ id: String, encoding: TransportEncodingConfig, keeperDrivesSync: Bool = false, inTurnSync: Bool = true) async throws -> BPFixture {
+    /// The backlog retry is the keeper's writer-drain retry.
+    static func make(_ id: String, encoding: TransportEncodingConfig, keeperDrivesSync: Bool = false) async throws -> BPFixture {
         let transport = BlockingTransport()
         let keeper = LandKeeper<BackPressureState>(definition: bpLand(id), initialState: BackPressureState())
         let adapter = TransportAdapter<BackPressureState>(
@@ -85,8 +84,7 @@ private struct BPFixture {
             transport: transport,
             landID: id,
             transportEnvConfig: bpEnvConfig(),
-            encodingConfig: encoding,
-            inTurnSync: inTurnSync
+            encodingConfig: encoding
         )
         if keeperDrivesSync { await keeper.setTransport(adapter) }
         await transport.setDelegate(adapter)
@@ -156,34 +154,6 @@ struct TransportAdapterSyncBackPressureTests {
         #expect(await f.keeper.currentState().stamp == bpMarker(2))
     }
 
-    @Test("tickless land: a sync rejected because a cycle is in flight runs once more after it")
-    func busyRejectedSyncRunsAfterCycleInFlight() async throws {
-        let f = try await BPFixture.make("bp-busy", encoding: .json, inTurnSync: false)
-        let hold = SyncCycleHold()
-        await hold.install(on: f.adapter)
-        try await f.set(1)
-        hold.arm()
-        let adapter = f.adapter
-        let first = Task { await adapter.syncNow() }
-        try await hold.waitUntilHeld()
-
-        // The held cycle took its copy before stamp 2; this request is rejected as busy. The held
-        // cycle already enqueued its element: let the writer deliver it first, or the request is
-        // skipped for the outbound backlog instead (before beginSync).
-        #expect(await f.adapter.waitForOutboundDrain())
-        try await f.set(2)
-        let skipsBefore = await f.adapter.syncSkipCounts()
-        await f.adapter.syncNow()
-        #expect(await f.adapter.syncSkipCounts() == SyncSkipCounts(busy: skipsBefore.busy + 1, outboundBacklog: skipsBefore.outboundBacklog))
-
-        hold.release()
-        await first.value
-        try await orderedWaitUntil("stamp 2 without another explicit sync") {
-            has(f.transport.frames(for: f.session), bpMarker(2)) > 0
-        }
-        #expect(await f.adapter.waitForOutboundDrain())
-    }
-
     @Test("event and response elements in the writer never hold back a state cycle")
     func eventBacklogDoesNotSuppressStateSyncs() async throws {
         let f = try await BPFixture.make("bp-events", encoding: .json)
@@ -214,36 +184,6 @@ struct TransportAdapterSyncBackPressureTests {
         for n in 1...21 {
             #expect(has(frames, bpMarker(n)) >= 1, "stamp \(n) delivered")
         }
-    }
-
-    @Test("tickless land: teardown with a state element stuck in the writer ends the deferred retry, and later sync requests return")
-    func teardownWithPendingElementEndsDeferral() async throws {
-        let f = try await BPFixture.make("bp-teardown", encoding: .json, inTurnSync: false)
-        try await f.blockWithCycleInWriter(stamp: 1)  // never released: the transport never returns
-        try await f.set(2)
-        await f.adapter.syncNow()  // skipped: deferred until the writer drains
-        #expect(await f.adapter.syncSkipCounts().outboundBacklog == 1)
-        #expect(await f.adapter.backlogRetryRuns == 0, "the retry waits for the drain")
-
-        // Teardown times out on the stuck transport and gives up on the consumer.
-        await f.adapter.onLandDestroyed()
-        #expect(await f.adapter.hasPendingStateElement == false, "nothing is pending after teardown")
-
-        // The waiting retry runs once and ends; it does not spin.
-        let deadline = ContinuousClock.now + .seconds(2)
-        while await f.adapter.backlogRetryRuns == 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(await f.adapter.backlogRetryRuns == 1, "one retry after teardown, no loop")
-
-        // Later requests (full and broadcast-only) return and schedule nothing.
-        await f.adapter.syncNow()
-        await f.adapter.syncNow()
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await f.adapter.backlogRetryRuns == 1)
-        #expect(await f.adapter.backlogRetryScheduled == false)
-        f.transport.release()
     }
 
     @Test("a joiner's firstSync is not skipped while the writer holds a cycle")

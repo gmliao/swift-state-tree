@@ -73,7 +73,6 @@ private struct Fixture {
 }
 
 private func makeFixture(
-    inTurn: Bool,
     tick: Bool = false,
     attachTransport: Bool = true,
     encoding: InTurnEncoding = .json
@@ -110,8 +109,7 @@ private func makeFixture(
         transport: transport,
         landID: "joining-admission",
         encodingConfig: encoding.config,
-        pathHashes: encoding == .json ? nil : ["joins": DeterministicHash.fnv1a32("joins")],
-        inTurnSync: inTurn
+        pathHashes: encoding == .json ? nil : ["joins": DeterministicHash.fnv1a32("joins")]
     )
     await transport.setDelegate(adapter)
     if attachTransport {
@@ -140,10 +138,10 @@ private func join(
 struct TransportAdapterJoiningAdmissionTests {
     @Test(
         "A joining session gets no sync frame and no group event before its initial sync",
-        arguments: [true, false], InTurnEncoding.allCases
+        arguments: InTurnEncoding.allCases
     )
-    func joiningSessionGetsNothingBeforeInitialSync(inTurn: Bool, encoding: InTurnEncoding) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true, encoding: encoding)
+    func joiningSessionGetsNothingBeforeInitialSync(encoding: InTurnEncoding) async throws {
+        let fixture = await makeFixture(tick: true, encoding: encoding)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
 
@@ -175,7 +173,7 @@ struct TransportAdapterJoiningAdmissionTests {
 
     @Test("A joining session still gets frames addressed to it (its JoinResponse)")
     func joiningSessionGetsSessionFrames() async throws {
-        let fixture = await makeFixture(inTurn: true, tick: true)
+        let fixture = await makeFixture(tick: true)
         let s1 = SessionID("s1")
         _ = try await join(fixture, session: s1, client: ClientID("c1"), player: PlayerID("p1"))
         #expect(await fixture.adapter.sessionIDs(for: .session(s1)) == [s1])
@@ -183,9 +181,9 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await fixture.adapter.sessionIDs(for: .broadcast) == [])
     }
 
-    @Test("The in-turn keeper admits inside its join; otherwise the adapter does; exactly once", arguments: [true, false])
-    func admissionPointAndExactlyOnce(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test("The in-turn keeper admits inside its join; otherwise the adapter does; exactly once")
+    func admissionPointAndExactlyOnce() async throws {
+        let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1")
         let result = try await join(fixture, session: s1, client: ClientID("c1"), player: PlayerID("p1"))
@@ -198,7 +196,7 @@ struct TransportAdapterJoiningAdmissionTests {
 
     @Test("A tickless in-turn land: the OnJoin turn inside the join sends the joiner nothing")
     func ticklessOnJoinTurnSendsJoinerNothing() async throws {
-        let fixture = await makeFixture(inTurn: true)
+        let fixture = await makeFixture()
         let adapter = fixture.adapter
         // A player already joined, so a sync has a recipient and commits.
         let s0 = SessionID("s0"), p0 = PlayerID("p0")
@@ -222,7 +220,7 @@ struct TransportAdapterJoiningAdmissionTests {
 
     @Test("A join before the keeper has its transport is admitted by the adapter")
     func joinBeforeSetTransport() async throws {
-        let fixture = await makeFixture(inTurn: true, tick: true, attachTransport: false)
+        let fixture = await makeFixture(tick: true, attachTransport: false)
         let s1 = SessionID("s1")
         _ = try await join(fixture, session: s1, client: ClientID("c1"), player: PlayerID("p1"))
         #expect(await fixture.adapter.inTurnAdmissionCountForTesting == 0)
@@ -230,9 +228,9 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await fixture.adapter.membershipSessionIDs(for: PlayerID("p1")) == [s1])
     }
 
-    @Test("A disconnect after performJoin returned and before the handover: no firstSync, no per-player state", arguments: [true, false])
-    func disconnectBeforeHandover(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test("A disconnect after performJoin returned and before the handover: no firstSync, no per-player state")
+    func disconnectBeforeHandover() async throws {
+        let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
         _ = try await join(fixture, session: s1, client: c1, player: p1)
@@ -250,9 +248,9 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.getPlayerSlot(for: p1) == nil)
     }
 
-    @Test("A disconnect while the initial sync reads the state: no firstSync commit", arguments: [true, false])
-    func disconnectDuringStateRead(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test("A disconnect while the initial sync reads the state: no firstSync commit")
+    func disconnectDuringStateRead() async throws {
+        let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
         _ = try await join(fixture, session: s1, client: c1, player: p1)
@@ -271,9 +269,9 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.getPlayerSlot(for: p1) == nil)
     }
 
-    @Test("A re-join on the same SessionID while the old initial sync reads the state: only the new one commits", arguments: [true, false])
-    func rejoinSameSessionDuringStateRead(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test("A re-join on the same SessionID while the old initial sync reads the state: only the new one commits")
+    func rejoinSameSessionDuringStateRead() async throws {
+        let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
         _ = try await join(fixture, session: s1, client: c1, player: p1)
@@ -299,9 +297,9 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == true)
     }
 
-    @Test("A direct register that rebinds the session during the initial sync's state read: the old sync commits nothing", arguments: [true, false])
-    func rebindDuringStateRead(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test("A direct register that rebinds the session during the initial sync's state read: the old sync commits nothing")
+    func rebindDuringStateRead() async throws {
+        let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1"), p2 = PlayerID("p2")
         _ = try await join(fixture, session: s1, client: c1, player: p1)
@@ -323,9 +321,9 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == false)
     }
 
-    @Test("An old join's initial sync after the SessionID was admitted again for another player: it takes nothing", arguments: [true, false])
-    func oldInitialSyncAfterReadmissionAsAnotherPlayer(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test("An old join's initial sync after the SessionID was admitted again for another player: it takes nothing")
+    func oldInitialSyncAfterReadmissionAsAnotherPlayer() async throws {
+        let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1"), p2 = PlayerID("p2")
         _ = try await join(fixture, session: s1, client: c1, player: p1)
@@ -349,7 +347,7 @@ struct TransportAdapterJoiningAdmissionTests {
 
     @Test("A disconnect while joining clears the joining mark")
     func disconnectWhileJoining() async throws {
-        let fixture = await makeFixture(inTurn: true, tick: true)
+        let fixture = await makeFixture(tick: true)
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
         _ = try await join(fixture, session: s1, client: c1, player: p1)
         await fixture.adapter.onDisconnect(sessionID: s1, clientID: c1)

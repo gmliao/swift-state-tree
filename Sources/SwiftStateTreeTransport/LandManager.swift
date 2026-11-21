@@ -218,7 +218,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     
     private let enableLiveStateHashRecording: Bool
     private let enableLoopPhaseOffset: Bool
-    private let inTurnSync: Bool
     /// The sync-lag thresholds every land's adapter gets (#332).
     private let syncLagPolicy: SyncLagPolicy?
     /// Tests: the record identity every land built afterwards writes into its record's metadata
@@ -312,8 +311,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// The init with sync-lag thresholds (#332), for hosted lands (`NIOLandServer`): tracking runs
     /// only with an encoding that carries the sync sequence, which only package code builds.
-    /// `inTurnSync: false` reaches the adapter's package-only off mode (the differential harness's
-    /// legacy cells and tests) until that mode is removed (#546 L2).
     package init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
@@ -330,7 +327,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         clientEventHashes: [String: Int]? = nil,
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
-        inTurnSync: Bool = true,
         syncLagPolicy: SyncLagPolicy?,
         autoStartLoops: Bool = true,
         logger: Logger? = nil
@@ -345,7 +341,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.stateUpdateFeatures = transportEncoding.effective(pathHashes: pathHashes).withRowAddressing(false).stateUpdateFeatures
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
-        self.inTurnSync = inTurnSync
         self.syncLagPolicy = syncLagPolicy
         self.autoStartLoops = autoStartLoops
         self.pathHashes = pathHashes
@@ -648,7 +643,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             pathHashes: pathHashes,
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
-            inTurnSync: inTurnSync,
             logger: logger,
             // With a shared transport the router owns its delegate and every join.
             joinsThroughRouter: sharedTransport != nil
@@ -695,8 +689,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 version: ReevaluationRecordVersion.current,
                 extensions: nil,
                 hardwareInfo: hardwareInfo,
-                recordsSyncStream: transportAdapter.inTurnSyncEnabled,
-                syncConfig: transportAdapter.inTurnSyncEnabled ? transportAdapter.syncConfigForRecord : nil
+                recordsSyncStream: true,
+                syncConfig: transportAdapter.syncConfigForRecord
             )
             await recorder.setMetadata(recordingMetadata)
         }
