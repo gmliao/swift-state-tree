@@ -383,6 +383,7 @@ extension TurnActor {
                     }
                     // Follow-ups aren't parked inputs: the cap doesn't apply to them, so the ones
                     // this segment holds still step before it ends.
+                    if !TurnCore<M>.usesFollowUps { break }
                     capped = true
                     continue
                 }
@@ -397,7 +398,7 @@ extension TurnActor {
                 }
                 continue
             }
-            if let id = core.followUpsToStep.pop() {
+            if TurnCore<M>.usesFollowUps, let id = core.followUpsToStep.pop() {
                 // Skipped when it was consumed or closed after its job took it.
                 if let name = core.rt.followUpIDs[id], core.rt.followUps[name]?.waiting == false,
                    let record = core.rt.removeFollowUp(id) {
@@ -408,11 +409,13 @@ extension TurnActor {
             break
         }
         if released > 0 { core.onDiagnostic?(.batchEnded(released: released)) }
-        if !core.rt.dueFollowUps.isEmpty, !core.followUpJobScheduled {
+        if TurnCore<M>.usesFollowUps, !core.rt.dueFollowUps.isEmpty, !core.followUpJobScheduled {
             core.followUpJobScheduled = true
             Task { self.continueFollowUps() }
         }
-        settleQuiescence()
+        // Checked here, not in the call: an empty check inline costs a load, a call per segment
+        // costs the whole frame.
+        if !core.quiescenceWaiters.isEmpty { settleQuiescence() }
         core.rt.dirty = false
     }
 
@@ -457,7 +460,7 @@ extension TurnActor {
             }
             if core.rt.deadlinesToCancel {
                 core.rt.deadlinesToCancel = false
-                for id in Array(core.deadlineTasks.keys) where core.rt.open[id] == nil && !core.rt.gateDeadlineLive(id) {
+                for id in Array(core.deadlineTasks.keys) where core.rt.open[id] == nil && !(TurnCore<M>.usesFollowUps && core.rt.gateDeadlineLive(id)) {
                     core.deadlineTasks.removeValue(forKey: id)?.cancel()
                 }
             }
@@ -478,7 +481,7 @@ extension TurnActor {
                 }
                 progressed = true
             }
-            if !core.rt.followUpGates.isEmpty {
+            if TurnCore<M>.usesFollowUps, !core.rt.followUpGates.isEmpty {
                 var gates: [PendingEffect<M>] = []
                 swap(&gates, &core.rt.followUpGates)
                 // A gate whose follow-up closed in the step that armed it isn't launched.

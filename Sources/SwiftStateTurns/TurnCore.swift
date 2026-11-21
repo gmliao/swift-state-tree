@@ -64,6 +64,11 @@ struct QuiescenceWaiter<M: TurnMachine> {
 /// The machine, the runtime and the step. Not `Sendable`: only its actor reaches it, through
 /// a stored `let`.
 public final class TurnCore<M: TurnMachine> {
+    /// The machine names follow-up slots. A constant once the core is specialized for a
+    /// machine, so the driver's follow-up paths fold away for one that keeps the default
+    /// (`Never`) and it pays nothing per segment for them.
+    @inlinable static var usesFollowUps: Bool { M.FollowUpSlot.self != Never.self }
+
     // Release builds skip the runtime exclusivity checks on the core's own state (#621): with
     // the core inlined into its adopter, each use of a stored var otherwise pays a
     // `swift_beginAccess`/`swift_endAccess` pair. The actor serializes every access, and the core
