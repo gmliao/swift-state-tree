@@ -85,8 +85,12 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     var droppedAfterFinish = 0
     var syncCycleElements = 0
     var lastCeilingLogAt: ContinuousClock.Instant?
-    /// Waiters for `syncCycleElements == 0` (see `OutboundWriter.waitForSyncCycleDrain`).
-    var syncCycleDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Waiters for `syncCycleElements == 0` (see `OutboundWriter.waitForSyncCycleDrain`), by
+    /// waiter ID, so a cancelled wait removes its own.
+    var syncCycleDrainWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    var nextSyncCycleDrainWaiterID = 0
+    /// Tests only: called after a sync-cycle drain wait registered, outside the lock.
+    var onSyncCycleDrainWaitRegisteredForTesting: (@Sendable () -> Void)?
     /// Waiters for `elements == 0` (see `OutboundWriter.waitForIdle`), by waiter ID, so a
     /// cancelled wait removes its own.
     var idleWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
@@ -110,8 +114,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         if isSyncCycle, !consumerEnded {
             syncCycleElements -= 1
             if syncCycleElements == 0 {
-                waiters += syncCycleDrainWaiters
-                syncCycleDrainWaiters = []
+                waiters += syncCycleDrainWaiters.values
+                syncCycleDrainWaiters = [:]
             }
         }
         lock.unlock()
@@ -124,8 +128,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         lock.lock()
         consumerEnded = true
         syncCycleElements = 0
-        var waiters = syncCycleDrainWaiters
-        syncCycleDrainWaiters = []
+        var waiters = Array(syncCycleDrainWaiters.values)
+        syncCycleDrainWaiters = [:]
         if !idleWaiters.isEmpty {
             waiters += idleWaiters.values
             idleWaiters = [:]
@@ -254,8 +258,6 @@ final class OutboundWriter: @unchecked Sendable {
         counters.backlog
     }
 
-    /// Returns once no sync cycle element is queued (at once when none is), or when the
-    /// consumer has ended.
     /// Whether `finish(timeout:)` was called: later frames are dropped, so no sync cycle needs
     /// to wait for the writer any more.
     var isFinished: Bool {
@@ -264,17 +266,45 @@ final class OutboundWriter: @unchecked Sendable {
         return continuation == nil
     }
 
+    /// Returns once no sync cycle element is queued (at once when none is), when the consumer
+    /// has ended, or when the waiting task is cancelled (the debug settle bounds it with its
+    /// deadline, #546 L2d-1). Registration and cancellation follow `waitForIdle`'s rule: the
+    /// wait registers only if its task isn't cancelled, checked under the lock that registers
+    /// it, and the cancellation handler only removes a registered waiter.
     func waitForSyncCycleDrain() async {
-        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
-            counters.lock.lock()
-            if counters.syncCycleElements == 0 || counters.consumerEnded {
-                counters.lock.unlock()
-                waiter.resume()
-                return
-            }
-            counters.syncCycleDrainWaiters.append(waiter)
-            counters.lock.unlock()
+        let counters = counters
+        let id: Int = counters.lock.withLock {
+            defer { counters.nextSyncCycleDrainWaiterID += 1 }
+            return counters.nextSyncCycleDrainWaiterID
         }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+                counters.lock.lock()
+                if counters.syncCycleElements == 0 || counters.consumerEnded || Task.isCancelled {
+                    counters.lock.unlock()
+                    waiter.resume()
+                    return
+                }
+                counters.syncCycleDrainWaiters[id] = waiter
+                let onRegistered = counters.onSyncCycleDrainWaitRegisteredForTesting
+                counters.lock.unlock()
+                onRegistered?()
+            }
+        } onCancel: {
+            let waiter = counters.lock.withLock { counters.syncCycleDrainWaiters.removeValue(forKey: id) }
+            waiter?.resume()
+        }
+    }
+
+    /// Tests only: `hook` runs each time a sync-cycle drain wait registers, after the lock is
+    /// released, so a test can wait for the registration instead of polling for it.
+    func setOnSyncCycleDrainWaitRegisteredForTesting(_ hook: (@Sendable () -> Void)?) {
+        counters.lock.withLock { counters.onSyncCycleDrainWaitRegisteredForTesting = hook }
+    }
+
+    /// Tests only: the sync-cycle drain waits' bookkeeping entries the writer still holds.
+    var syncCycleDrainWaitEntriesForTesting: Int {
+        counters.lock.withLock { counters.syncCycleDrainWaiters.count }
     }
 
     /// Tests only: returns once every queued element was handed to the transport (at once when

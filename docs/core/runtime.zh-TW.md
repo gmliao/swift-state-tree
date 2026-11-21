@@ -431,7 +431,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 
 已知限制：
 
-- Debug freeze 的 settle 不是 turn，而是 keeper 上的一個 job：它先確認仍是同一次 freeze、land 沒有失敗、settle 的期限還沒過，再從凍結的 state 規劃並 commit 一次 sync phase，全部在這個 job 內完成。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
+- Debug freeze 的 settle 是它自己的一個 sync-only turn。它依序確認：land 是 live、沒有失敗也還沒開始關閉，settle 的期限還沒過，仍是同一次 freeze，且經由 keeper 所掛載的 adapter 執行。接著在同一個 turn 內從凍結的 state 規劃並 commit 一次 sync phase，不因 writer back-pressure 延後，也不 flip join；凍結期間執行的一般 phase 仍把同步留給 resume。檢查未通過的 settle 什麼都不規劃：freeze 已釋放時回 `released`，land 已失敗時回該失敗，正在關閉時回 `LandInputRejection.landClosed`。它的 plan 第一次拋出錯誤就在該 turn 結束 land，與任何 sync phase 相同。它不會接手其他 turn 待辦的同步工作，那些由 resume 送出。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
 - `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 

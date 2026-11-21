@@ -236,10 +236,13 @@ struct TransportAdapterTargetedEventOnceTests {
         let playerB = PlayerID("to-player-b")
         try await f.joinSecondSession(session: sessionB, client: clientB, player: playerB)
 
-        /// Runs one sync-only turn (it enqueues its frames before it returns) and returns what
-        /// each session received since the previous cycle, then clears the record.
+        /// Runs one sync-only turn (it enqueues its frames before it returns), waits for any sync
+        /// work it scheduled, and returns what each session received since the previous cycle,
+        /// then clears the record. Waiting for the follow-ups first means an event a regression
+        /// leaves pending and sends in a follow-up sync lands in this cycle's record.
         func cycle() async throws -> (a: [Data], b: [Data]) {
             await f.adapter.syncNow()
+            try #require(await withinHangBound { await f.adapter.waitForBackgroundSyncsForTesting() }, "the cycle's follow-up sync work never finished")
             try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
             let frames = (a: await f.transport.frames(for: f.session), b: await f.transport.frames(for: sessionB))
             await f.transport.clear()

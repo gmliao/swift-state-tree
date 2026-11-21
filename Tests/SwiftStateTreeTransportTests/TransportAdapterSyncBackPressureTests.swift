@@ -9,6 +9,7 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 @StateNodeBuilder
 struct BackPressureState: StateNodeProtocol {
@@ -218,6 +219,8 @@ struct TransportAdapterSyncBackPressureTests {
     @Test("the debug settle is not skipped: it waits for the writer to drain, then syncs")
     func settleWaitsForDrain() async throws {
         let f = try await BPFixture.make("bp-settle", encoding: .json)
+        // The settle runs only through the keeper's attached transport (#546 L2d-1).
+        await f.keeper.setTransport(f.adapter)
         try await f.blockWithCycleInWriter(stamp: 1)
         try await f.set(2)
 
@@ -233,6 +236,80 @@ struct TransportAdapterSyncBackPressureTests {
         #expect(await f.adapter.waitForOutboundDrain())
         #expect(has(f.transport.frames(for: f.session), bpMarker(2)) > 0, "the settle cycle delivered stamp 2")
         #expect(await f.adapter.debugResume(freezeToken: response.freezeToken).resumed)
+    }
+
+    @Test("the debug settle behind a writer that never drains times out at its deadline and leaves no wait behind")
+    func settleTimesOutBehindAStuckWriter() async throws {
+        let f = try await BPFixture.make("bp-settle-stuck", encoding: .json)
+        // The settle runs only through the keeper's attached transport (#546 L2d-1).
+        await f.keeper.setTransport(f.adapter)
+        defer { f.transport.release() }
+        try await f.blockWithCycleInWriter(stamp: 1)
+        try await f.set(2)
+        // The settle's own deadline is what ends the wait; the writer never drains before it.
+        await f.adapter.setDebugFreezeSettleDeadline(.milliseconds(100))
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        // When the hang bound runs out first, releasing the transport drains the writer, so a
+        // wait the deadline couldn't end returns and the test fails by name instead of hanging.
+        let outcome = await withTaskGroup(of: Result<DebugFreezeResponse, any Error>?.self) { group in
+            group.addTask { await freeze.result }
+            group.addTask {
+                try? await safeTaskSleep(for: testHangBound)
+                f.transport.release()
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        let result = try #require(outcome, "the settle didn't end at its deadline")
+        #expect(throws: DebugFreezeError.settleTimedOut) { try result.get() }
+        #expect(await f.adapter.outboundWriter.syncCycleDrainWaitEntriesForTesting == 0, "the timed-out wait left its waiter")
+        #expect(await f.adapter.isDebugFrozen() == false, "the timed-out freeze was released")
+    }
+
+    @Test("a release ends a debug settle waiting behind a writer that never drains: released, at once, and no wait is left behind")
+    func releaseEndsTheSettlesWriterWait() async throws {
+        let f = try await BPFixture.make("bp-settle-released", encoding: .json)
+        // The settle runs only through the keeper's attached transport (#546 L2d-1).
+        await f.keeper.setTransport(f.adapter)
+        defer { f.transport.release() }
+        try await f.blockWithCycleInWriter(stamp: 1)
+        try await f.set(2)
+        // Far past the hang bound: only the release can end the wait in time.
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
+        let registered = TestGate()
+        registered.open()
+        let writer = await f.adapter.outboundWriter
+        writer.setOnSyncCycleDrainWaitRegisteredForTesting { Task { await registered.arrive() } }
+        defer { writer.setOnSyncCycleDrainWaitRegisteredForTesting(nil) }
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await registered.waitForArrivals(1), "the settle never waited for the writer")
+        let token = await f.adapter.debugFreezeState.token
+        #expect(await f.adapter.debugResume(freezeToken: token).resumed)
+
+        // When the hang bound runs out first, releasing the transport drains the writer, so a
+        // wait the release couldn't end returns and the test fails by name instead of hanging.
+        let outcome = await withTaskGroup(of: Result<DebugFreezeResponse, any Error>?.self) { group in
+            group.addTask { await freeze.result }
+            group.addTask {
+                try? await safeTaskSleep(for: testHangBound)
+                f.transport.release()
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        let result = try #require(outcome, "the released settle kept waiting for the writer")
+        #expect(throws: DebugFreezeError.released) { try result.get() }
+        #expect(writer.syncCycleDrainWaitEntriesForTesting == 0, "the cancelled wait left its waiter")
+        #expect(await f.adapter.isDebugFrozen() == false)
     }
 
     @Test("tickless land: an action during the backlog gets its response, and its state reaches the client")

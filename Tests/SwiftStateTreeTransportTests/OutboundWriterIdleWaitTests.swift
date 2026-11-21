@@ -69,13 +69,16 @@ struct OutboundWriterIdleWaitTests {
         #expect(writer.idleWaitEntriesForTesting == 0)
     }
 
-    /// Starts a wait on `writer` and returns once it registered (the writer's registration hook
-    /// opens the gate), or `nil` when it never did.
+    /// Starts a wait on `writer` and returns once it registered, or `nil` when it never did. The
+    /// writer's registration hook arrives at an open gate, and the test waits with the gate's
+    /// arrival waiter, which its own bound and cancellation both end (`arrive()` ignores
+    /// cancellation, so a bound around it couldn't end the wait).
     private func registeredWait(_ writer: OutboundWriter) async -> Task<Void, Never>? {
         let registered = TestGate()
-        writer.setOnIdleWaitRegisteredForTesting { registered.open() }
+        registered.open()
+        writer.setOnIdleWaitRegisteredForTesting { Task { await registered.arrive() } }
         let wait = Task { await writer.waitForIdle() }
-        guard await withinHangBound({ await registered.arrive() }) else {
+        guard await registered.waitForArrivals(1) else {
             wait.cancel()
             return nil
         }
@@ -99,6 +102,7 @@ struct OutboundWriterIdleWaitTests {
     func registeredWaitReturnsWhenIdle() async throws {
         let transport = BlockingTransport()
         transport.block()
+        defer { transport.release() }
         let writer = OutboundWriter(transport: transport, maxBytes: 1 << 20, logger: Self.logger)
         writer.enqueue([frame("first")])
         writer.enqueue([frame("last")])

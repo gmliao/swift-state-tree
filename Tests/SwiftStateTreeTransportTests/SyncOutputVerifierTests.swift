@@ -947,17 +947,23 @@ struct SyncOutputVerifierTests {
         #expect(mismatch.observedTickId == 1, "the action and the tick handler run in tick 1's turn")
     }
 
-    @Test("A legacy cycle's output (a debug freeze's settle) is verified")
-    func legacyCycleIsVerified() async throws {
+    @Test("A debug freeze settle's sync-only output is verified")
+    func settleSyncTurnIsVerified() async throws {
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick(2)
         try await f.set(1, "score", 5)
+        let settleIndex = UInt64(try await f.stream().count)
         let frozen = try await f.adapter.debugFreeze()
         _ = await f.adapter.debugResume(freezeToken: frozen.freezeToken)
         await f.tick()
-        let frames = await f.keeper.getReevaluationRecorder()!.getAllFrames()
-        #expect(frames.flatMap(\.syncOutputs).contains { $0.turnKind == .legacyCycle })
+        let settle = try await f.stream().first { $0.streamIndex == settleIndex }
+        guard case .output(let output) = try #require(settle, "the settle recorded an entry") else {
+            Issue.record("the settle's entry is not an output")
+            return
+        }
+        #expect(output.turnKind == .syncOnly, "the settle is a sync-only turn (#546 L2d-1)")
+        #expect(output.observedTickId == frozen.tickId)
         let sync = try await f.replay().syncOutput
         #expect(sync.verdict == .passed, "\(sync.summary)")
     }
@@ -1499,30 +1505,153 @@ struct SyncOutputVerifierOldDropTests {
 
 @Suite("Debug freeze settle: a sync failure ends the land (#535)", .timeLimit(.minutes(1)))
 struct DebugFreezeSettleFailureTests {
-    @Test("A settle cycle whose plan throws ends the land: the gate closes, the failure reaches the keeper, the freeze fails")
+    @Test("A settle whose plan throws ends the land in the settle's turn: the gate closes and the freeze throws the failure")
     func settleFailureEndsTheLand() async throws {
         let f = await VerifierFixture.make(encoding: .json)
         try await f.join(1)
         await f.tick()
-        // Quiet ticks request no sync: the broken field is first planned by the settle cycle.
+        // Quiet ticks request no sync: the broken field is first planned by the settle.
         try await f.set(1, "quiet")
         await f.tick()
         try await f.set(1, "break")
         await f.tick()
         #expect(f.keeper.failure == nil, "no plan has met the throw yet")
+        let settleIndex = UInt64(try await f.stream().count)
         do {
             _ = try await f.adapter.debugFreeze()
             Issue.record("the freeze succeeded")
+        } catch let failure as LandFailure {
+            #expect(failure.kind == .syncConversion)
         } catch {
-            // The settle closed the gate before its error reached the caller.
-            #expect(f.adapter.outputGate.isClosed, "closed when the freeze throws")
+            Issue.record("the freeze threw \(error), not the land failure")
         }
-        // A submitted failure is applied by the keeper's next turn: on a tick land, its next tick.
-        await f.keeper.stepTickOnce()
-        try #require(await f.keeper.waitForFailureForTesting(), "the land failed")
+        // Ended in the settle's turn (#546 L2d-1): no later turn applies it.
+        #expect(f.adapter.outputGate.isClosed, "closed when the freeze throws")
         #expect(f.keeper.failure?.kind == .syncConversion)
         #expect(f.keeper.failure?.field == "fragile")
-        let outputs = try await f.stream().compactMap { if case .output(let o) = $0 { return o } else { return nil } }
-        #expect(!outputs.contains { $0.turnKind == .legacyCycle }, "the settle cycle committed nothing")
+        // Earlier sync-only outputs may exist: only the settle's index and later are checked.
+        let late = try await f.stream().filter { $0.streamIndex >= settleIndex }
+        #expect(late.allSatisfy { if case .output = $0 { false } else { true } }, "the failed settle committed nothing: \(late)")
+    }
+
+    @Test("A settle failure on a tick land is recorded in the last committed tick's frame, without ending inputs; the record replays")
+    func tickSettleFailureRecord() async throws {
+        let f = await VerifierFixture.make(encoding: .json)
+        try await f.join(1)
+        await f.tick()
+        try await f.set(1, "quiet")
+        await f.tick()
+        try await f.set(1, "break")
+        await f.tick()
+        let settleIndex = UInt64(try await f.stream().count)
+        _ = try? await f.adapter.debugFreeze()
+        let lastTick = await f.keeper.debugLastCommittedTickId()
+        await f.keeper.waitForRecorderSubmissionsForTesting()
+        let frames = await f.keeper.getReevaluationRecorder()!.getAllFrames()
+        let failing = try #require(frames.first { $0.landFailure != nil }, "the failure is recorded")
+        #expect(frames.filter { $0.landFailure != nil }.count == 1)
+        #expect(failing.tickId == lastTick, "the last committed tick's frame")
+        #expect(failing.landFailure?.position.tickId == lastTick)
+        #expect(failing.landFailure?.position.endsInputs == nil, "the failure ends no input batch")
+        // The committed-output prefix: every output is before the settle.
+        let outputs = ReevaluationSyncStreamEntry.stream(of: frames).filter { if case .output = $0 { true } else { false } }
+        #expect(!outputs.isEmpty)
+        #expect(outputs.allSatisfy { $0.streamIndex < settleIndex })
+        let result = try await f.replay()
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.liveFailure?.kind == .syncConversion)
+        for (tickId, hash) in result.recordedStateHashes where tickId < lastTick {
+            #expect(result.tickHashes[tickId] == hash, "state hash of tick \(tickId)")
+        }
+    }
+
+    @Test("A settle failure on a tickless land shares the last pass, without ending inputs; the record replays")
+    func ticklessSettleFailureRecord() async throws {
+        let f = await VerifierFixture.make(encoding: .json, definition: makeTicklessVerifierLand())
+        try await f.join(1)
+        try await f.set(1, "score", 3)
+        try await f.set(1, "break")
+        #expect(f.keeper.failure == nil, "no plan has met the throw yet")
+        await f.keeper.waitForRecorderSubmissionsForTesting()
+        let passes = Int64(await f.keeper.getReevaluationRecorder()!.getAllFrames().flatMap(\.passes).count)
+        try #require(passes > 0)
+        let settleIndex = UInt64(try await f.stream().count)
+        _ = try? await f.adapter.debugFreeze()
+        #expect(f.keeper.failure?.kind == .syncConversion, "ended in the settle's turn")
+        await f.keeper.waitForRecorderSubmissionsForTesting()
+        let frames = await f.keeper.getReevaluationRecorder()!.getAllFrames()
+        let failure = try #require(frames.compactMap(\.landFailure).first, "the failure is recorded")
+        #expect(failure.position.pass.map(Int64.init) == passes, "the last pass")
+        #expect(failure.position.tickId == nil)
+        #expect(failure.position.endsInputs == nil, "the failure ends no input batch")
+        #expect(frames.flatMap(\.passes).count == Int(passes), "the settle adds no pass")
+        let outputs = ReevaluationSyncStreamEntry.stream(of: frames).filter { if case .output = $0 { true } else { false } }
+        #expect(outputs.allSatisfy { $0.streamIndex < settleIndex })
+        let result = try await f.replay()
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.liveFailure?.kind == .syncConversion)
+    }
+}
+
+/// The verifier land without a tick: inputs run in passes. "score" asks for a sync; "break"
+/// doesn't, so the broken `fragile` is first planned by a debug freeze settle.
+func makeTicklessVerifierLand() -> LandDefinition<VerifierState> {
+    Land("sync-output-verifier-tickless-test", using: VerifierState.self) {
+        ServerEvents { Register(SyncStreamTestEvent.self) }
+        Rules {
+            HandleAction(VerifierSetAction.self) { (state: inout VerifierState, action: VerifierSetAction, ctx: LandContext) in
+                switch action.field {
+                case "break": state.fragile.broken = true
+                default:
+                    state.scores[ctx.playerID] = action.value
+                    ctx.requestSyncNow()
+                }
+                return SyncStreamSetResponse(ok: true)
+            }
+        }
+    }
+}
+
+/// Records made by an earlier build, kept frozen (never regenerated), that must stay replayable
+/// after a change to how the live run records the same scenario (#546 L2d-1). See
+/// Fixtures/ReplayCompatibility/README.md.
+@Suite("Replay of records made by an earlier build", .timeLimit(.minutes(1)))
+struct ReplayCompatibilityRecordTests {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/ReplayCompatibility")
+
+    static func path(_ name: String) -> String {
+        directory.appendingPathComponent("\(name).reeval.sstr").path
+    }
+
+    @Test("A freeze settle recorded as a legacy cycle replays with every hash reproduced")
+    func legacyCycleSettleReplays() async throws {
+        let path = Self.path("freeze-resume-legacy-cycle-messagepack")
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        let stream = try #require(try await source.getSyncStream())
+        #expect(stream.contains { if case .output(let o) = $0 { o.turnKind == .legacyCycle } else { false } }, "the record holds the legacy-cycle settle")
+        let result = try await VerifierFixture.replay(recordAt: path)
+        #expect(result.tickHashes == result.recordedStateHashes, "state hashes")
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.initialize == .passed)
+    }
+
+    @Test("A settle failure recorded as applied by the next tick, which ends its inputs, replays with every hash reproduced")
+    func queuedSettleFailureReplays() async throws {
+        let path = Self.path("settle-failure-queued-tick")
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        let recorded = try #require(try await source.getLandFailure(), "the record holds the land failure")
+        #expect(recorded.failure.kind == .syncConversion)
+        #expect(recorded.failure.position.endsInputs == true, "the queued failure ended the next tick's inputs")
+        let result = try await VerifierFixture.replay(recordAt: path)
+        // The replay may run past the last recorded tick to the one that applied the failure:
+        // every recorded hash is reproduced.
+        #expect(!result.recordedStateHashes.isEmpty)
+        for (tickId, hash) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == hash, "state hash of tick \(tickId)")
+        }
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.liveFailure?.kind == .syncConversion)
     }
 }

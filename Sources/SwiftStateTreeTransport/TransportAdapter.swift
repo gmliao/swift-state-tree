@@ -28,11 +28,11 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// An action's answer (its response or its error reply) that didn't encode, after the
     /// output gate closed and before the failure is submitted to the keeper.
     case answerFailureSubmit
-    /// An in-turn freeze settle after its writer wait, before its keeper job
-    /// (`debugSettleTurn`): a release, refreeze, shutdown or expiry here is caught by the job's
-    /// fence (#546 L2b).
+    /// An in-turn freeze settle after its writer wait, before its keeper turn
+    /// (`LandKeeper.settleTurn`): a release, refreeze, shutdown or expiry here is caught by the
+    /// turn's fence (#546 L2d-1).
     case settleBeforeCommit
-    /// An in-turn freeze settle after its keeper job committed, before it checks its generation
+    /// An in-turn freeze settle after its keeper turn committed, before it checks its ticket
     /// and publishes: work that arrives here comes after the settle's copy (#546 L2b).
     case settleBeforePublish
     /// An in-turn resume after its deferred sync's request returned, before it checks for a
@@ -807,6 +807,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Debug freeze bookkeeping (see `TransportAdapter+DebugFreeze.swift`).
     var debugFreezeState = DebugFreezeState<State>()
+    /// One generation per freeze: issued when a freeze starts from zero references, ended when
+    /// it is released. A settle captures its ticket before its first await and acts only while
+    /// it is current, so a settle of a released freeze never publishes over, or clears, a newer
+    /// freeze's state (#546 L2d-1).
+    var debugFreezeTickets = GenerationTable<DebugFreezeKey>()
 
     /// Whether to merge server events with state update (opcode 107): the state update encoding
     /// is `opcodeMessagePack`. Decided once at init (#521 D10): `StateUpdateEncoder.encoding` is a
@@ -3811,9 +3816,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Records a committed plan's output (or a firstSync's seed) in the keeper's sync stream.
     /// Runs in the commit's synchronous segment, so commit order is stream order. An in-turn
-    /// phase's entries go back to the keeper as drafts with the phase's output (#553); an initial
-    /// sync's or the freeze settle's, outside a turn (recorded as `.legacyCycle`), are submitted
-    /// now.
+    /// phase's entries go back to the keeper as drafts with the phase's output (#553), the freeze
+    /// settle's included (#546 L2d-1); a standalone initial sync's, outside a turn (recorded as
+    /// `.legacyCycle`), are submitted now.
     private func recordSyncStream(_ digest: SyncOutputDigestInput, broadcastCommitted: Bool, read: SyncOutputRead) {
         var drafts: [SyncStreamDraft] = []
         defer {
@@ -6044,7 +6049,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 /// Debug freeze and projection, used by E2E state convergence checks.
 ///
 /// A freeze pauses the land (no tick or sync body starts, tickless inputs are held), waits for
-/// in-flight work to finish, then settles in one keeper job (#546 L2b). The projection is
+/// in-flight work to finish, then settles in one sync-only keeper turn (#546 L2d-1). The projection is
 /// computed from the state copy the settle synced, so every client that applied the settle
 /// frames can be compared with it. While frozen, requested syncs are deferred to resume.
 ///
@@ -6058,15 +6063,17 @@ extension TransportAdapter {
     ///
     /// - Throws: `DebugFreezeError.settleTimedOut` when drain and settle miss their deadline (the
     ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
-    ///   auto-resume) before its settle finished, or the land had already failed or is closing.
-    ///   A settle whose own plan fails throws that `LandFailure`.
+    ///   auto-resume) before its settle finished. A land that failed throws its `LandFailure`
+    ///   (also when the settle's own plan fails, which ends the land in the settle's turn), and
+    ///   one that is closing throws `LandInputRejection.landClosed`.
     public func debugFreeze() async throws -> DebugFreezeResponse {
         if debugFreezeState.count == 0 {
             debugFreezeState.generation &+= 1
             debugFreezeState.token = UUID().uuidString
             debugFreezeState.settled = nil
             let generation = debugFreezeState.generation
-            debugFreezeState.settleTask = Task { try await self.debugSettle(generation: generation) }
+            let ticket = debugFreezeTickets.issue(.freeze)
+            debugFreezeState.settleTask = Task { try await self.debugSettle(generation: generation, ticket: ticket) }
         }
         debugFreezeState.count += 1
         let reused = debugFreezeState.count > 1
@@ -6079,6 +6086,7 @@ extension TransportAdapter {
         }
         let settled: DebugFreezeState<State>.Settled
         do {
+            // The settle published its result itself, while its ticket was current.
             settled = try await settleTask.value
         } catch {
             // Drop this caller's reference, only if its freeze is still the current one.
@@ -6094,7 +6102,6 @@ extension TransportAdapter {
         guard debugFreezeState.generation == generation, debugFreezeState.count > 0 else {
             throw DebugFreezeError.released
         }
-        debugFreezeState.settled = settled
         return DebugFreezeResponse(
             freezeToken: token,
             tickId: settled.tickId,
@@ -6168,116 +6175,172 @@ extension TransportAdapter {
         debugFreezeState.generation == generation && debugFreezeState.count > 0
     }
 
-    /// What the settle's commit did, in the keeper's job.
-    private enum DebugSettleCommit: Sendable {
-        case committed(State, membershipEpoch: UInt64)
-        case failed(LandFailure)
-    }
-
-    /// Pause and drain the keeper, then settle (#546 L2b, plan §3.4): wait for the writer, then
-    /// one keeper job that checks the fence and commits, then publish. No `beginSync`: nothing to
-    /// retry, and nothing latches behind it. One deadline covers the drain, the writer wait and
-    /// the wait for the keeper job (the job checks it when it starts, not while it runs).
-    private func debugSettle(generation: UInt64) async throws -> DebugFreezeState<State>.Settled {
+    /// Pause and drain the keeper, then settle (#546 L2d-1, plan §3.8.3): wait for the writer,
+    /// then the keeper's settle turn (`LandKeeper.settleTurn`), which checks the fence and runs
+    /// the settle phase (`runSettlePhaseInTurn`), then publish. One deadline covers the drain,
+    /// the writer wait and the wait for the turn (the turn checks it when it starts, not while
+    /// it runs). `ticket` is this freeze's: every check after an await, and the publish, act only
+    /// while it is current.
+    private func debugSettle(
+        generation: UInt64,
+        ticket: Ticket<DebugFreezeKey>
+    ) async throws -> DebugFreezeState<State>.Settled {
         let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
         let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
-        guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+        guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
         guard drained else { throw DebugFreezeError.settleTimedOut }
-        // Wait until earlier phases' frames left the writer, so the settle frames are not queued
-        // behind them. Not skipped for back-pressure, and bounded by the settle's deadline.
-        while hasPendingStateElement {
-            guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
-            try await safeTaskSleep(for: .milliseconds(2))
-            guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
-        }
-        await holds.at(.settleBeforeCommit)
-        let outcome = await keeper.debugSettleTurn(
-            generation: generation,
-            deadline: deadline,
-            admit: { [self] in
-                assumeIsolated { adapter in adapter.debugSettleAdmitIsolated(generation) }
-            },
-            commit: { [self] state, position, records in
-                assumeIsolated { adapter in
-                    adapter.debugSettleCommitIsolated(state: state, position: position, recordsSyncStream: records)
-                }
+        let fence = LandKeeper<State>.SettleFence(generation: generation, deadline: deadline)
+        var found: DebugFreezeState<State>.Settled?
+        while found == nil {
+            // Wait until earlier phases' frames left the writer, so the settle frames are not
+            // queued behind them. Not skipped for back-pressure, and bounded by the deadline.
+            if hasPendingStateElement {
+                let writerDrained = await waitForSyncCycleDrain(before: deadline)
+                guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
+                guard writerDrained else { throw DebugFreezeError.settleTimedOut }
             }
-        )
-        let state: State
-        let membershipEpoch: UInt64
-        let tickId: Int64
-        switch outcome {
-        case let .ran(.committed(copy, epoch), committedTick):
-            (state, membershipEpoch, tickId) = (copy, epoch, committedTick)
-        case let .ran(.failed(failure), _):
-            // The output closed in the job; the failure reaches the keeper as an input.
-            await keeper.submitLandFailure(failure)
-            throw failure
-        case .timedOut:
-            throw DebugFreezeError.settleTimedOut
-        case .released, .closed, .refused:
-            // A closed land (failed, draining, its output closed) has nothing to settle; the
-            // freeze ends as released.
-            throw DebugFreezeError.released
+            await holds.at(.settleBeforeCommit)
+            let outcome = await keeper.settleTurn(via: self, fence: fence)
+            switch outcome {
+            case let .settled(state, tickId, membershipEpoch, _):
+                found = DebugFreezeState<State>.Settled(state: state, tickId: tickId, membershipEpoch: membershipEpoch)
+            case let .failed(failure):
+                // The land ended in the settle's turn.
+                throw failure
+            case .timedOut:
+                throw DebugFreezeError.settleTimedOut
+            case .released, .refused(.notCurrent):
+                throw DebugFreezeError.released
+            case let .closed(failure):
+                // A failed land names its failure; a draining one is closed.
+                throw failure ?? LandInputRejection.landClosed
+            case .refused(.outputClosed):
+                throw outputGate.failure ?? LandInputRejection.landClosed
+            case .refused(.writerBusy):
+                // A sync cycle's element entered the writer since the wait: wait again.
+                guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
+            case .refused(.syncInFlight):
+                // TODO(#546 L2d-3): remove with `isSyncing`. A direct `beginSync` holds the
+                // keeper's sync flag, and nothing reports its `endSync`: retry shortly, within
+                // the deadline. The sleep is clamped to what is left of it. A release cancels
+                // this task (`debugReleaseFreeze`): the sleep then ends early, and the ticket
+                // check names it `released`, not a `CancellationError`.
+                let remaining = deadline - ContinuousClock.now
+                guard remaining > .zero else { throw DebugFreezeError.settleTimedOut }
+                try? await safeTaskSleep(for: min(.milliseconds(2), remaining))
+                guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
+                try Task.checkCancellation()
+            }
         }
+        guard let settled = found else { preconditionFailure("the settle loop ends only with a result") }
         await holds.at(.settleBeforePublish)
-        // Checked after the last await, so a release meanwhile is never published.
-        guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
-        // Events still queued (kept by the settle's phase, or queued since): on a land without
-        // periodic sync nothing else delivers them, and syncs are frozen, so the resume does.
-        // After the hold, so an event queued there is seen.
-        if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
-            debugFreezeState.deferredSyncNow = true
+        // Checked after the last await, in the publish's segment, so a release meanwhile is
+        // never published and an older settle never writes over a newer freeze's state.
+        let published = debugFreezeTickets.ifCurrent(ticket) { _ -> DebugFreezeState<State>.Settled in
+            // Events still queued (kept by the settle's phase, or queued since): on a land
+            // without periodic sync nothing else delivers them, and syncs are frozen, so the
+            // resume does. After the hold, so an event queued there is seen.
+            if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
+                debugFreezeState.deferredSyncNow = true
+            }
+            debugFreezeState.settled = settled
+            return settled
         }
-        return DebugFreezeState<State>.Settled(state: state, tickId: tickId, membershipEpoch: membershipEpoch)
+        guard let published else { throw DebugFreezeError.released }
+        return published
     }
 
-    /// The settle job's admission, in the keeper's job: nil refuses (the generation was released
-    /// or the output closed); otherwise whether to clear dirty flags. An empty land takes the
-    /// copy without clearing them, as before.
-    private func debugSettleAdmitIsolated(_ generation: UInt64) -> Bool? {
-        guard debugIsCurrent(generation), !outputGate.isClosed else { return nil }
-        return enableDirtyTracking && !membershipCoordinator.isEmpty
+    /// Waits until the writer holds no sync cycle element; `false` when `deadline` passed first.
+    /// The deadline's timer cancels the wait, so no wait is left behind.
+    private func waitForSyncCycleDrain(before deadline: ContinuousClock.Instant) async -> Bool {
+        let remaining = deadline - ContinuousClock.now
+        guard remaining > .zero else { return false }
+        let writer = outboundWriter
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await writer.waitForSyncCycleDrain()
+                return !Task.isCancelled
+            }
+            group.addTask {
+                try? await safeTaskSleep(for: remaining)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
     }
 
-    /// The settle's commit, in the keeper's job: the membership epoch (a join or leave from here
-    /// on is not in the copy and shows up as `membershipChanged`), then the full phase, with no
-    /// joiners. A plan's first throw ends the land (#535): the output closes in this segment,
-    /// and the caller submits the failure.
-    private func debugSettleCommitIsolated(
-        state: State,
-        position: SyncReadPosition,
-        recordsSyncStream: Bool
-    ) -> DebugSettleCommit {
+    /// The settle phase, in the keeper's settle turn (`LandKeeper.settleTurn`), on the shared
+    /// executor: no frozen defer, no back-pressure deferral and no joiners, so no other phase
+    /// changes how it runs. Refuses when `settle` isn't the current freeze, the output is
+    /// closed, or a sync cycle's element entered the writer since the settle's wait. The
+    /// membership epoch is read in the plan's segment (a join or leave from here on is not in
+    /// the copy and shows up as `membershipChanged`). An empty land plans nothing and keeps its
+    /// dirty flags. A plan's first throw ends the land (#535): the keeper ends it in the turn.
+    func runSettlePhaseInTurnIsolated<S: StateNodeProtocol>(
+        state: S,
+        settle: InTurnSettle,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        // Checked in release builds too: a draft left here would be sent as the settle's.
+        precondition(inTurnSyncStreamDrafts.isEmpty, "sync-stream drafts left from an earlier phase")
+        let commit = runSettlePhase(state: state, settle: settle, recording: recording)
+        let drafts = inTurnSyncStreamDrafts
+        inTurnSyncStreamDrafts = []
+        let result: InTurnSyncResult
+        switch commit {
+        case let .committed(_, clearDirtyFlags): result = .committed(clearDirtyFlags: clearDirtyFlags)
+        case .empty, .refused: result = .skipped
+        case let .failed(failure): result = .landFailed(failure)
+        }
+        return InTurnSyncOutput(result, syncStream: drafts, settle: commit)
+    }
+
+    private func runSettlePhase<S: StateNodeProtocol>(
+        state: S,
+        settle: InTurnSettle,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSettleCommit {
+        guard debugIsCurrent(settle.generation) else { return .refused(.notCurrent) }
+        guard !outputGate.isClosed, !outboundWriter.isFinished else { return .refused(.outputClosed) }
+        guard !hasPendingStateElement else { return .refused(.writerBusy) }
         let membershipEpoch = membershipCoordinator.membershipEpoch
-        guard !membershipCoordinator.isEmpty else { return .committed(state, membershipEpoch: membershipEpoch) }
-        let read = recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: position) : nil
+        guard !membershipCoordinator.isEmpty else { return .empty(membershipEpoch: membershipEpoch) }
+        guard let state = state as? State else {
+            preconditionFailure("runSettlePhaseInTurn called with a state of another land type")
+        }
+        // Read once, as the ordinary phase does.
+        let clearDirtyFlags = enableDirtyTracking
         do {
+            let read = recording.map { SyncOutputRead(turnKind: $0.turnKind, position: $0.position) }
             try runFullSyncPhase(state: state, read: read)
         } catch {
-            let failure = error as? LandFailure ?? LandFailure(
-                kind: .syncPlan,
-                detail: String(describing: error),
-                position: LandFailurePosition(stage: .syncPhase)
-            )
             logger.error("Debug freeze settle sync failed: the land ends", metadata: [
                 "error": .string("\(error)")
             ])
-            outputGate.close(failure)
-            return .failed(failure)
+            return .failed(error as? LandFailure ?? LandFailure(
+                kind: .syncPlan,
+                detail: String(describing: error),
+                position: LandFailurePosition(stage: .syncPhase)
+            ))
         }
-        return .committed(state, membershipEpoch: membershipEpoch)
+        return .committed(membershipEpoch: membershipEpoch, clearDirtyFlags: clearDirtyFlags)
     }
 
-    /// Release the current freeze generation. Does not wait for an unfinished settle: it sees
-    /// the generation is no longer current and publishes nothing, and the keeper refuses to
-    /// freeze a released generation again.
+    /// Release the current freeze generation. Does not wait for an unfinished settle: it cancels
+    /// it, so a settle waiting for the writer or between retries ends at once instead of at its
+    /// deadline. After the ticket ends, so every check after its await sees the release and
+    /// throws `released`. It publishes nothing, and the keeper refuses to freeze a released
+    /// generation again.
     private func debugReleaseFreeze() async {
         let generation = debugFreezeState.generation
+        debugFreezeTickets.end(.freeze)
         debugFreezeState.count = 0
         debugFreezeState.autoResumeTask?.cancel()
         debugFreezeState.autoResumeTask = nil
         debugFreezeState.autoResumeGeneration &+= 1
+        debugFreezeState.settleTask?.cancel()
         debugFreezeState.settleTask = nil
         debugFreezeState.settled = nil
         let runSyncNow = debugFreezeState.deferredSyncNow

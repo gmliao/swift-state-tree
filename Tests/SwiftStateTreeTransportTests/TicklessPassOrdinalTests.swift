@@ -257,21 +257,32 @@ struct TicklessPassOrdinalTests {
         #expect(result.recordedPassMismatches.isEmpty)
     }
 
-    @Test("A tickless land's freeze settle and resume commit outside a turn, and verify at their pass")
-    func legacyCycleCommitsVerify() async throws {
+    @Test("A tickless land's freeze settle is its own sync-only turn record, and verifies at its pass")
+    func settleTurnCommitsVerify() async throws {
         let f = await OrdinalFixture.make()
         try await f.join(1)
         try await f.add(1, 2)
+        let before = try await f.frames()
+        let settleIndex = UInt64(ReevaluationSyncStreamEntry.stream(of: before).count)
+        let passesBefore = before.flatMap(\.passes).count
         let frozen = try await f.adapter.debugFreeze()
         _ = await f.adapter.debugResume(freezeToken: frozen.freezeToken)
         try await f.add(1, 5)
         await f.adapter.waitForOutboundIdleForTesting()
-        let stream = ReevaluationSyncStreamEntry.stream(of: try await f.frames())
-        let legacy = stream.compactMap { entry -> ReevaluationRecordedSyncOutput? in
-            if case .output(let output) = entry, output.turnKind == .legacyCycle { return output } else { return nil }
+        let frames = try await f.frames()
+        let stream = ReevaluationSyncStreamEntry.stream(of: frames)
+        guard case .output(let settle) = try #require(stream.first { $0.streamIndex == settleIndex }, "the settle recorded an entry") else {
+            Issue.record("the settle's entry is not an output")
+            return
         }
-        #expect(!legacy.isEmpty, "the freeze settle commits a legacy cycle")
-        #expect(legacy.allSatisfy { $0.afterPass != nil })
+        #expect(settle.turnKind == .syncOnly, "the settle is a sync-only turn (#546 L2d-1)")
+        #expect(settle.afterPass == Int64(passesBefore), "it reads after the last pass")
+        // The settle is a turn record of its own, so the later action's pass reads after it.
+        let later = stream.compactMap { entry -> ReevaluationRecordedSyncOutput? in
+            if case .output(let output) = entry, output.streamIndex > settleIndex { return output } else { return nil }
+        }
+        #expect(!later.isEmpty)
+        #expect(later.allSatisfy { ($0.afterPass ?? 0) > Int64(passesBefore) })
         let result = try await f.replay()
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
     }
