@@ -667,7 +667,7 @@ struct TransportAdapterSyncLagTests {
         gate.open()
     }
 
-    @Test("Legacy join whose first view doesn't encode ends the land: 4016, never 4012, no retry (#535 row 13)", arguments: [true, false])
+    @Test("A join whose first view doesn't encode ends the land: 4016, never 4012, no retry (#535 row 13)", arguments: [true, false])
     func unencodableFirstViewEndsTheLand(syncSequence: Bool) async throws {
         let f = try await makeFixture(
             syncSequence: syncSequence, failViewEncode: true, keeperTransport: true

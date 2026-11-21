@@ -128,7 +128,6 @@ private final class GatedSerialExecutor: SerialExecutor, @unchecked Sendable {
 private final class KeptEventsRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var frames: [(session: SessionID?, data: Data)] = []
-    private var batches = 0
 
     func record(_ data: Data, to target: SwiftStateTreeTransport.EventTarget) {
         lock.lock(); defer { lock.unlock() }
@@ -152,24 +151,8 @@ private final class KeptEventsRecorder: @unchecked Sendable {
     func clear() {
         lock.lock(); defer { lock.unlock() }
         frames.removeAll()
-        batches = 0
     }
 
-    var batchCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return batches
-    }
-
-    /// Called by `sendBatch` (one writer element per call). Counts the per-player batches: elements
-    /// carrying a per-player state frame (opcode 0...2). Before #60 those were the only frames
-    /// sent through `sendBatch` (the merged frame went through `send`), so this keeps the count's
-    /// meaning: cycles that sent a per-player batch.
-    func countBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) {
-        let hasPerPlayerFrame = updates.contains { (0...2).contains(opcodes([$0.0]).first ?? -1) }
-        guard hasPerPlayerFrame else { return }
-        lock.lock(); defer { lock.unlock() }
-        batches += 1
-    }
 }
 
 private actor KeptEventsTransport: Transport {
@@ -191,18 +174,10 @@ private actor KeptEventsTransport: Transport {
         for (data, target) in updates {
             recorder.record(data, to: target)
         }
-        recorder.countBatch(updates)
     }
 }
 
 // MARK: - Helpers
-
-private final class KeptEventsFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    func set() { lock.lock(); value = true; lock.unlock() }
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-}
 
 /// Polls `condition` (no fixed sleeps as synchronization; the poll only waits for work in flight).
 private func waitUntil(
@@ -271,8 +246,7 @@ private struct KeptEventsFixture {
 
     static func make(
         _ land: KeptEventsLand,
-        members names: [String] = ["a"],
-        autoStartLoops: Bool = true
+        members names: [String] = ["a"]
     ) async throws -> KeptEventsFixture {
         let definition: LandDefinition<KeptEventsTestState>
         switch land {
@@ -317,8 +291,7 @@ private struct KeptEventsFixture {
         let transport = KeptEventsTransport()
         let keeper = LandKeeper<KeptEventsTestState>(
             definition: definition,
-            initialState: KeptEventsTestState(),
-            autoStartLoops: autoStartLoops
+            initialState: KeptEventsTestState()
         )
         let adapter = TransportAdapter<KeptEventsTestState>(
             keeper: keeper,
