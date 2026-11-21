@@ -365,7 +365,7 @@ struct DifferentialHarnessHooksTests {
     func observationsThroughTheRouter() async throws {
         let h = try await HooksHarness.make(autoStartLoops: false)
         // The in-turn join's observations.
-        guard await h.keeper.isUsingInTurnSync() else { return }
+        try #require(await h.keeper.isUsingInTurnSync())
         await h.adapter.captureJoinCommitsForTesting()
         let gate = TestGate()
         await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
@@ -392,7 +392,7 @@ struct DifferentialHarnessHooksTests {
     @Test("admittedNotRegistered reads the transport's player table, not only the adapter's bit")
     func admittedNotRegisteredReadsTheTransport() async throws {
         let h = try await HooksHarness.make(autoStartLoops: false)
-        guard await h.keeper.isUsingInTurnSync() else { return }
+        try #require(await h.keeper.isUsingInTurnSync())
         let gate = TestGate()
         await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let session = SessionID("s-table")
