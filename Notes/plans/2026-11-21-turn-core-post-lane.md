@@ -205,6 +205,8 @@ Setting `inSegment` is what makes reentrancy safe. While a report's products flu
 - **Why.** Live, a report is often stepped by a wake, whose segment steps the report's products before any later entry. Replay has no wake: the report steps at the next entry's helper. Without this rule, that entry's own input stepped before the report's products, and replay reordered two non-report steps silently (§3.9).
 - **What it replaces.** Exception 2 is gone. B, posted by A's step during the helper of an entry with input X, steps in that segment's loop check, so the order is A, B, X. Test 16 pins it.
 - **Where it doesn't apply.** A helper called inside a segment (`wasInSegment`) runs no segment of its own: the enclosing segment's loop steps the products.
+- **The whole loop.** The products-first segment is a full `runSegment()`: it also steps the releases, abandonments and due follow-ups the report caused, not only its sends. That is intended, and matches live, where the wake's segment ran the same loop. Test 16 includes a release the report frees.
+- **"Or left one in the lane"** is a live ordering choice (reports before the entry's own work), not a replay need: replay never leaves a staged report behind its watermark.
 
 **`continueBatch` captures before the helper (rev 4).** The continuation job takes the follow-ups due at its start, then runs the helper (and its segment), then steps the captured follow-ups. An `.afterBatch` follow-up a report arms is due after the capture, so it steps in the next job, as `.afterBatch` promises. Test 18 pins it.
 
@@ -267,6 +269,8 @@ Replay can't point a report at its place from outside. The driver can step a rep
 - every admission (`admit`), whatever its outcome: stepped, parked or refused. A stepped admission takes two ordinals, its admission and its dispatch, on both sides alike.
 
 Why admissions: an admission that parks or refuses dispatches nothing, and a report can change its outcome (a hold or the queue limit read after the report). Live, a report stepped after such an admission is keyed for the next dispatch, and replay, which steps it at the first check where that ordinal is next, would step it before the admission and flip the outcome. With admissions counted, the key names the boundary after the admission. Test 13h pins it.
+
+Why not outside `query` entries: their answers aren't replay inputs and aren't compared, so their place doesn't matter. If they ever become inputs, each takes an ordinal, as an admission does.
 
 Why not entry starts: an entry that dispatches nothing returns stale (a closed request, a superseded timer generation, a consumed follow-up, a foreign incarnation), and staleness never reverts, so a later report can't change that outcome. Counting entry starts would also count a live wake, which replay doesn't have.
 
@@ -377,7 +381,7 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
 2. A post during a step (from a collaborator the step calls) is taken after that step's products drain, before the next step in the segment.
 3. A post from another executor, held after the append and before the wake is scheduled: the next entry takes it, and the wake later finds the lane empty (`emptyLaneWakes == 1`).
 4. No lost wakeup: posts from another executor, at every hold point of the lane's hook, are each stepped (`bounded` waits).
-5. A capped segment (`maxReleasesPerBatch: 1`) still checks the lane before each step it makes. A post lands during a step through the hook.
+5. A capped segment (`maxReleasesPerBatch: 1`) still checks the lane before each step it makes. A post lands during a step through the hook. The report's own wake then finds the lane empty (`emptyLaneWakes` is 1), so the segment's check took it. 5b: the same, posted by a step that runs after the cap (a send from the released input's flush).
 6. At capacity 1, a second post before the check returns `false`, and the first is the one stepped; `refusedReports == 1`. (`capacity < 1` is a `fatalError`, with no test.)
 7. `turn.takeReports()` in a step returns a report posted, under a hold, during that step. The step emits nothing, and the report isn't stepped again. A later post is stepped by the driver after it.
 8. Through `close` and after `endAll`, a report still steps.
