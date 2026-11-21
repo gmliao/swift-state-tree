@@ -317,7 +317,7 @@ case .publish:
     turn.emit(scores, for: .board)
 ```
 
-`.afterBatch` 在新的 batch 裡 step 它，作為目前這個之後 actor 自己的 job。`.afterWork(effect, deadline:)` 在 `perform(effect)` 回來時 step 它，例如「writer 清空後再 sync 一次」；deadline 先到則關閉它，並 step `handleAbandoned(id, .deadline)`。兩者都以 control input step，且 slot 在 step 之前就釋出，所以它的 step 可以 arm 下一個。
+`.afterBatch` 在新的 batch 裡 step 它，作為目前這個之後 actor 自己的 job。這個 job 是 core 唯一的 continuation：它也會釋出前一個 batch 超過 release 上限而留下的 parked input，並 step 它開始時已到期的 follow-up，排在迴圈先找到的 release 之後。actor 上已排隊的其他 entry 可能先於它執行。`.afterWork(effect, deadline:)` 在 `perform(effect)` 回來時 step 它，例如「writer 清空後再 sync 一次」；deadline 先到則關閉它，並 step `handleAbandoned(id, .deadline)`。兩者都以 control input step，且 slot 在 step 之前就釋出，所以它的 step 可以 arm 下一個。
 
 follow-up 屬於它 key 的 generation。結束或取代該 key 會讓它不執行就關閉，並呼叫 `handleAbandoned(id, .keyEnded)`，所以舊 binding 下 arm 的 follow-up 不會在新 binding 下執行。自己就把工作做掉的 step 會把待執行的那個收回：
 

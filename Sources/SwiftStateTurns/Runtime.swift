@@ -182,7 +182,7 @@ struct Runtime<M: TurnMachine> {
     // Follow-ups: one pending per key and slot, owned by the key's generation.
     @usableFromInline var followUps: [FollowUpKey<M>: FollowUpRecord<M>] = [:]
     @usableFromInline var followUpIDs: [RequestID: FollowUpKey<M>] = [:]
-    /// `.afterBatch` follow-ups armed since the last follow-up job, in arm order (a closed or
+    /// `.afterBatch` follow-ups armed since the last continuation job took them, in arm order (a closed or
     /// consumed one is skipped when it comes up).
     @usableFromInline var dueFollowUps: [RequestID] = []
     /// Gates (`.afterWork`) for the driver to launch.
