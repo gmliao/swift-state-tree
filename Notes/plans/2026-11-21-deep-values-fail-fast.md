@@ -2,7 +2,7 @@
 
 Rev 2, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 05c429b5.
 
-Rev 2 answers Review's NOT GO on rev 1 (5 must-fix, 4 should). It defines the counted tree (§3.1), gives frame overhead per frame shape (§3.2), specifies the protocol migration (§3.3), decides the hash path's failure semantics (§3.4) and the replay contract (§3.6), and widens the stage table (§2). Q1–Q4 are now maintainer orders; this revision follows Review's recommendation on each, **pending maintainer** (§5). Where a decision rests on one of them, the text says so.
+Rev 2 answers Review's NOT GO on rev 1 (5 must-fix, 4 should). It defines the counted tree (§3.1), gives frame overhead per frame shape (§3.2), specifies the protocol migration (§3.3), decides the hash path's failure semantics (§3.4) and the replay contract (§3.6), and widens the stage table (§2). Q1–Q4 are maintainer orders. Q1–Q3 were **decided 2026-11-21** as Review recommended; Q4 follows Review's recommendation, **pending maintainer** (§5). Where a decision rests on one of them, the text says so.
 
 **Baseline.** The packer bound this plan keeps as the last check is #697's, in PR #720, not merged at 05c429b5. S0 can run before it. S1 and S2 build on main after #720 merges, and each PR names the main commit it starts from.
 
@@ -79,14 +79,14 @@ A protocol requirement can't take a default argument, and an extension-only over
 
 Benchmark: S1 measures the budget on the hot path (EncodingBenchmark A/B on the Mac; a host A/B if beyond noise), as rev 1 said.
 
-### 3.4 How a too-deep state fails (Q2: `syncConversion`, pending maintainer)
+### 3.4 How a too-deep state fails (Q2: `syncConversion`, decided 2026-11-21)
 
 - **Sync phase (R1, R2, and §3.1's full check):** `nestingTooDeep` is a conversion failure. It ends the land through `ExtractionDrops` and `noteExtractionDrops` with `LandFailure.Kind.syncConversion`, before commit. The field is named, and the detail gives the limit. `syncEncode` stays for a frame that doesn't encode.
 - **Hash (R3), decided:** today `liveStateHash` absorbs a conversion error: it records `unavailableHash`, counts it and goes on (`liveStateHash`, `LandKeeper.swift:4977`, documented at :4974; by design since #180). Under this plan `nestingTooDeep` found by the hash **ends the land** with `syncConversion` and the field, at its first occurrence. That covers every live recording site of `liveStateHash`: initialize (`makeInitializeRecord`, :4966), the legacy tick (`runTick`, :4671), the in-turn tick (`runTickTurn`, :4864) and a tick land's shutdown turn (:2840). S1 lists whether a tickless pass records a hash anywhere else; §3.1's sync-phase check covers a tickless land either way. A keeper with no transport attached has no sync phase, so its state is first converted at a joiner's first sync or by the hash, and the land ends at whichever comes first: a later turn than with a transport, but the same outcome, and replay compares against the turn recorded. `calculateStateHashAndSnapshot` gains a throwing sibling that the live sites use. **Every other hash error keeps today's unavailable-hash semantics**, unless the maintainer extends the change.
 - With §3.1's full check in the sync phase, the hash and the sync refuse in the same turn. Which one reports depends on their order in that turn. The failure's kind, field and tick are the same either way; its stage says which. `LandFailurePosition.Stage` gains `stateHash` for the hash site, a public addition listed under Public API.
 - **Replay and the monitor runner:** a depth refusal found while replaying fails the run (§3.6). It is not an unverifiable tick.
 
-### 3.5 Cycles and class fields in payloads (Q3: refuse at registration, pending maintainer)
+### 3.5 Cycles and class fields in payloads (Q3: refuse at registration, decided 2026-11-21)
 
 - **Registration:** refuse a class-typed field at every level of an event's, action's or response's declared type, as #464 does for synced state (`SyncValueSemantics`). One validator for both. Its reach is what the metadata describes. `@Payload` exposes each type's immediate field metatypes, and the validator descends through those. A payload has no general default instance, so there is no Mirror descent as for state nodes. The check stops at an existential (`Any`, `AnyCodable`, a protocol type), a type-erased generic, and a field hidden by a hand-written `encode(to:)`. A grep of `Examples/` and `Tests/` finds no statically class-typed `@Payload` field, so today's in-repo break is none. Behavior change: a land with such a payload no longer registers. It goes under Public API with a docs line, in en and zh-TW.
 - **Runtime bound** for what registration can't see: the direct encoder and `MessagePackValueEncoder` (both directions), and the record codec (R9), count depth against the payload budget (§3.2). The count is carried across the value encoder's re-entry into the direct encoder, so a boxed value doesn't restart it. That also stops a cycle.
@@ -143,11 +143,13 @@ Today's replay verifier runs full R1 extraction in a shadow `SyncEngine`, never 
 
 S1 and S2 are independent PRs. Each touches `Sources/`, so each goes through a PR and Review.
 
-## 5. Decisions (maintainer orders q1-716 to q4-716): Review's recommendations, pending maintainer
+## 5. Decisions (maintainer orders q1-716 to q4-716)
 
-- **Q1, the limit:** measured, not taken from the wire. S0 prototypes the thin dispatcher: `SnapshotValue.make` with its slow paths moved out (`@inline(never)`), so each level's frame is small. The limit is then the largest value that leaves about 2× measured headroom on the smallest stack in the worst path, capped at `serverFrameMaxDepth` minus the deepest frame shape's overhead (§3.2). If S0 leaves it between two values, take the lower one: loosening later never breaks an adopter, and tightening does. 32 containers is a reasonable measured candidate.
-- **Q2, the kind:** `syncConversion` (§3.4). The docs row says that the wire's 64 is why the state limit exists.
-- **Q3, class payload fields:** refused at registration, paired with the runtime bound in the framework's own traversals (§3.5). A hand-written `encode(to:)` and JSON payloads are documented as the adopter's.
-- **Q4, the carrier:** an explicit budget in the compatible shape of §3.3, not a per-thread counter. A budget is auditable: every row, fallback and custom conversion visibly gets the budget left at its path. A throw unwinds it for free, and there is no hidden thread state. A per-thread counter needs a lookup and a write per container, a `defer` on every level and a rule for synchronous re-entry, and still can't see recursion inside a hand-written hook.
+Q1–Q3 were decided 2026-11-21, as Review recommended. Q4 is Review's recommendation, pending maintainer.
+
+- **Q1, the limit (decided 2026-11-21):** measured, not taken from the wire. S0 prototypes the thin dispatcher: `SnapshotValue.make` with its slow paths moved out (`@inline(never)`), so each level's frame is small. The limit is then the largest value that leaves about 2× measured headroom on the smallest stack in the worst path, capped at `serverFrameMaxDepth` minus the deepest frame shape's overhead (§3.2). If S0 leaves it between two values, take the lower one: loosening later never breaks an adopter, and tightening does. 32 containers is a reasonable measured candidate.
+- **Q2, the kind (decided 2026-11-21):** `syncConversion` (§3.4). The docs row says that the wire's 64 is why the state limit exists.
+- **Q3, class payload fields (decided 2026-11-21):** refused at registration, paired with the runtime bound in the framework's own traversals (§3.5). A hand-written `encode(to:)` and JSON payloads are documented as the adopter's.
+- **Q4, the carrier (pending maintainer):** an explicit budget in the compatible shape of §3.3, not a per-thread counter. A budget is auditable: every row, fallback and custom conversion visibly gets the budget left at its path. A throw unwinds it for free, and there is no hidden thread state. A per-thread counter needs a lookup and a write per container, a `defer` on every level and a rule for synchronous re-entry, and still can't see recursion inside a hand-written hook.
 
 **Phase fit.** The count runs in the sync phase (conversion) and in recording. Nothing moves into apply, and the failure ends the land through the existing path where a throw in the sync plan happens before commit. Refusing at mutation time would be earlier, but it would cost a walk per mutation.
