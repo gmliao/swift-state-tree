@@ -195,8 +195,9 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline package var onQuiescenceRegistrationForTesting: (() -> Void)?
     /// Tests: called once at the start of each continuation job, before it takes the due
     /// follow-ups, in every build configuration; a test sees the job boundaries with it.
-    /// Observe-only: it must not call into the actor or change the core. It runs on the actor,
-    /// and costs one nil check per job (not per segment).
+    /// It runs on the actor, between steps, after the job's flag clears and before the job takes
+    /// the due follow-ups. Observe-only: a hook that called `send` or `query` would run a nested
+    /// segment there, ahead of the capture. It costs one nil check per job, not per segment.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif

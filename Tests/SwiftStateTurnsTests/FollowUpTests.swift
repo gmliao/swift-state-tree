@@ -720,8 +720,6 @@ struct FollowUpTests {
         let jobs = await a.logByJob().map(Self.steps)
         #expect(jobs == [["parked P1"], ["parked P2", "ran A"]])
         #expect(await a.snapshot().stats.continuationJobs == before + 1)
-        // The quiescence wait woke at the job's one epilogue: P2's release had stepped too.
-        #expect(await a.snapshot().log.contains("parked P2"))
     }
 
     @Test("41: a follow-up armed inside a job steps in the next job, not in the one that armed it")
