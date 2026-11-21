@@ -236,7 +236,7 @@ struct TicklessActionJobTests {
 
         // A's resolver holds; every later input of the same session goes through.
         let a = try await submitPending(keeper, key: keyA, tag: "A")
-        await TicklessJobGates.gate(keyA).waitUntilEntered()
+        guard await TicklessJobGates.gate(keyA).waitUntilEntered() else { return }
         try await keeper.handleClientEvent(AnyClientEvent(TicklessJobNote(tag: "E")), playerID: p1, clientID: c1, sessionID: s1)
         let plainResponse = try await keeper.handleActionEnvelope(plain("plain"), playerID: p1, clientID: c1, sessionID: s1)
         #expect(ack(plainResponse)?.entry == "plain")
@@ -272,7 +272,7 @@ struct TicklessActionJobTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
-        await TicklessJobGates.gate(k).waitUntilEntered()
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
         // No other input follows: nothing but the completion can start a pass.
         TicklessJobGates.gate(k).release()
         let result = try await readResult(keeper, sequence)
@@ -314,7 +314,7 @@ struct TicklessActionJobTests {
         let recordHold = WatermarkGate()
         await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.turnRecord) { await recordHold.enterAndWait() })
         TicklessJobGates.gate(k).release()
-        await recordHold.waitUntilEntered()
+        guard await recordHold.waitUntilEntered() else { return }
         #expect(await keeper.currentState().log == ["join:p1", "A"])
         #expect(await keeper.actionSlotIsFilledForTesting(sequence) == false, "the response left before its input was recorded")
         await keeper.installHolds(nil)
@@ -334,7 +334,7 @@ struct TicklessActionJobTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
-        await TicklessJobGates.gate(k).waitUntilEntered()
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
 
         let freeze = Task { () -> (frozen: Bool, filled: Bool) in
             let frozen = await keeper.debugFreeze(generation: 1, timeout: .seconds(30))
@@ -360,7 +360,7 @@ struct TicklessActionJobTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
-        await TicklessJobGates.gate(k).waitUntilEntered()
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         let result = try await readResult(keeper, sequence)
         #expect(throws: LandInputRejection.self) { try result?.get() }
@@ -376,7 +376,7 @@ struct TicklessActionJobTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
-        await TicklessJobGates.gate(k).waitUntilEntered()
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         TicklessJobGates.gate(k).release()
@@ -401,7 +401,7 @@ struct TicklessActionJobTests {
             if held.setOnce() { await recordHold.enterAndWait() }
         })
         TicklessJobGates.gate(k).release()
-        await recordHold.waitUntilEntered()
+        guard await recordHold.waitUntilEntered() else { return }
         let leave = Task { try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1) }
         recordHold.release()
         try await leave.value
@@ -417,7 +417,7 @@ struct TicklessActionJobTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
-        await TicklessJobGates.gate(k).waitUntilEntered()
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
         // The completion delivers A; the turn (in-turn: its drain, legacy: its trigger pass)
         // that would apply it is held before it applies anything.
         let applyHold = WatermarkGate()
@@ -427,7 +427,7 @@ struct TicklessActionJobTests {
             if held.setOnce() { await applyHold.enterAndWait() }
         })
         TicklessJobGates.gate(k).release()
-        await applyHold.waitUntilEntered()
+        guard await applyHold.waitUntilEntered() else { return }
         #expect(await keeper.currentState().log == ["join:p1"], "A is delivered, not applied")
         #expect(await !keeper.actionSlotIsFilledForTesting(sequence))
         // p1 leaves in that window.
@@ -454,7 +454,7 @@ struct TicklessActionJobTests {
             Issue.record("Expected a pending job, got \(submission)")
             return
         }
-        await TicklessJobGates.gate(k).waitUntilEntered()
+        guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
         #expect(await keeper.debugInFlightWorkForTesting() == 1)
         TicklessJobGates.gate(k).release()
         let result = try await readResult(keeper, sequence)

@@ -206,7 +206,7 @@ struct LandKeeperDebugFreezeTests {
             if point == .turnRecord { await record.enterAndWait() }
         }
         let tick = Task { await keeper.stepTickOnce() }
-        await record.waitUntilEntered()
+        guard await record.waitUntilEntered() else { return }
 
         let freezeDone = DoneFlag()
         let freeze = Task {

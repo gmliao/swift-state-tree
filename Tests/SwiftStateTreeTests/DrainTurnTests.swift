@@ -323,7 +323,7 @@ struct DrainTurnTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let drain = Task { await keeper.forceShutdown() }
         // Held inside onLandDestroyed: the transport is still attached during its last call.
-        await transport.gate.waitUntilEntered()
+        guard await transport.gate.waitUntilEntered() else { return }
         #expect(await keeper.transportForTesting is DestroyHoldTransport, "attached while onLandDestroyed runs")
         transport.gate.release()
         await drain.value
@@ -354,7 +354,7 @@ struct DrainTurnTests {
         try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
         await hold.install(on: keeper)
         let tick = Task { await keeper.stepTickOnce() }
-        await hold.gate.waitUntilEntered()
+        guard await hold.gate.waitUntilEntered() else { return }
 
         let signals = KeeperProbeSignals()
         await keeper.setInTurnProbeForTesting(signals.probe)
@@ -395,7 +395,7 @@ struct DrainTurnTests {
         await keeper.setLandID("drain-finalize:\(gateKey)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let shutdown = Task { await keeper.forceShutdown() }
-        await DeliveryGates.gate(gateKey).waitUntilEntered()
+        guard await DeliveryGates.gate(gateKey).waitUntilEntered() else { return }
 
         await expectLandClosed {
             _ = try await keeper.handleActionEnvelope(
@@ -430,7 +430,7 @@ struct DrainTurnTests {
                 playerID: p1, clientID: c1, sessionID: s1
             )
         }
-        await DeliveryGates.gate(amount).waitUntilEntered()
+        guard await DeliveryGates.gate(amount).waitUntilEntered() else { return }
         await keeper.forceShutdown()
 
         DeliveryGates.gate(amount).release()
@@ -473,10 +473,10 @@ struct DrainTurnTests {
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
 
         let leave = Task { try await keeper.leave(playerID: heldLeaver, clientID: c1, sessionID: s1) }
-        await DeliveryGates.gate(key).waitUntilEntered()
+        guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
         // p2's leave empties the land; the destroy timer drains it and finalizes.
         try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
-        await transport.gate.waitUntilEntered()
+        guard await transport.gate.waitUntilEntered() else { return }
 
         DeliveryGates.gate(key).release()
         try await leave.value
@@ -493,7 +493,7 @@ struct DrainTurnTests {
         try await keeper.join(playerID: heldLeaver, clientID: c1, sessionID: s1)
 
         let leave = Task { try await keeper.leave(playerID: heldLeaver, clientID: c1, sessionID: s1) }
-        await DeliveryGates.gate(key).waitUntilEntered()
+        guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
         await keeper.forceShutdown()
 
         DeliveryGates.gate(key).release()
@@ -508,7 +508,7 @@ struct DrainTurnTests {
         let key = DeliveryGates.freshKey()
         let keeper = await makeLifecycleKeeper(gateKey: key)
         let join = Task { try await keeper.join(playerID: heldJoiner, clientID: c1, sessionID: s1) }
-        await DeliveryGates.gate(key).waitUntilEntered()
+        guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
         await keeper.forceShutdown()
 
         DeliveryGates.gate(key).release()
@@ -544,7 +544,7 @@ struct DrainTurnTests {
         try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
         await hold.install(on: keeper)
         let tickA = Task { await keeper.stepTickOnce() }
-        await hold.gate.waitUntilEntered()
+        guard await hold.gate.waitUntilEntered() else { return }
         await keeper.stepTickOnce()
 
         let signals = KeeperProbeSignals()
@@ -605,7 +605,7 @@ struct DrainTurnTests {
         let applied = Task {
             try await keeper.handleActionEnvelope(plainAction(2), playerID: p1, clientID: c1, sessionID: s1)
         }
-        await recordGate.waitUntilEntered()
+        guard await recordGate.waitUntilEntered() else { return }
         let before = Task {
             try await keeper.handleActionEnvelope(plainAction(5), playerID: p1, clientID: c1, sessionID: s1)
         }

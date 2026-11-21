@@ -1119,7 +1119,7 @@ func testOnInitializeBeforeTick() async throws {
     )
     
     // While OnInitialize is held in its resolver, the tick loop hasn't started.
-    await gate.waitUntilEntered()
+    guard await gate.waitUntilEntered() else { return }
     #expect(await keeper.hasTickLoopForTesting() == false, "the tick loop starts only after OnInitialize")
     gate.release()
     await keeper.awaitInitialization()

@@ -290,7 +290,7 @@ struct TicklessReplayPassTests {
         let actionA = Task {
             try await keeper.handleActionEnvelope(gatedAction(key: key, tag: "A"), playerID: p1, clientID: c1, sessionID: s1)
         }
-        await PassGates.gate(key).waitUntilEntered()
+        guard await PassGates.gate(key).waitUntilEntered() else { return }
         // A client event, an action and a join overtake it.
         try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "E")), playerID: p2, clientID: c2, sessionID: s2)
         _ = try await keeper.handleActionEnvelope(plainAction("B"), playerID: p2, clientID: c2, sessionID: s2)
@@ -344,7 +344,7 @@ struct TicklessReplayPassTests {
         }
         let x = send("x")
         _ = await queuedIterator.next()
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         let y = send("y")
         _ = await queuedIterator.next()
         let z = send("z")
@@ -387,7 +387,7 @@ struct TicklessReplayPassTests {
         let first = Task {
             try await keeper.handleActionEnvelope(plainAction("first"), playerID: p1, clientID: c1, sessionID: s1)
         }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         // The second input's turn runs after the held one's record: its caller waits for it.
         let second = Task {
             try await keeper.handleActionEnvelope(plainAction("second"), playerID: p2, clientID: c2, sessionID: s2)
@@ -463,7 +463,7 @@ struct TicklessReplayPassTests {
                 playerID: p1, clientID: c1, sessionID: s1
             )
         }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         await keeper.installHolds(nil)
         #expect(Array(transport.log.dropFirst(base)) == ["sync", "event:sync"], "turn 1's phase ran in turn 1")
         let second = Task {
