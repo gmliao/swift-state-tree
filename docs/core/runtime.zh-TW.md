@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot 同步模式
 
-> 本節與[同步流程](#同步流程)描述的是 legacy 路徑，也就是 `beginSync` / `endSync` cycle。在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。
+> 本節與[同步流程](#同步流程)描述的是 keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑：在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。在移除之前，re-evaluation 的 keeper 與測試仍會用到這個 cycle。
 
 `LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
 
@@ -439,11 +439,11 @@ In-turn sync 無法關閉。`IN_TURN_SYNC` 環境變數原本是它的開關，�
 
 ### Writer Back-Pressure
 
-每個 adapter 都透過一個有序的 outbound writer 送出。當 writer 仍持有先前 cycle 的 sync frame 時，新的 cycle 會在取得 copy 之前被略過：不做任何 plan，dirty flag 與排隊中的 event 保留，下一個 cycle 會與最後送出的狀態做 diff，因此包含所有變更。有週期同步的 land 靠它的下一個週期 cycle；沒有的 land 會在 writer 清空後重試一次。過載因此變成略過的 cycle，而不是不斷增長的佇列。Event 與 action response 的 frame 不會被擋下。開啟 in-turn sync 時，被略過的 phase 記為 deferred turn；transport profiler 會回報兩者（見 [Transport](../transport/README.zh-TW.md#profiling)）。
+每個 adapter 都透過一個有序的 outbound writer 送出。當 writer 仍持有先前 cycle 的 sync frame 時，新的 cycle 會在取得 copy 之前被略過：不做任何 plan，dirty flag 與排隊中的 event 保留，下一個 cycle 會與最後送出的狀態做 diff，因此包含所有變更。有週期同步的 land 靠它的下一個週期 cycle；沒有的 land 會在 writer 清空後重試一次。過載因此變成略過的 cycle，而不是不斷增長的佇列。Event 與 action response 的 frame 不會被擋下。被略過的 phase 同時記為一次略過與一個 deferred turn；transport profiler 會回報兩者（見 [Transport](../transport/README.zh-TW.md#profiling)）。
 
 ### 同步流程
 
-> Legacy 路徑，也就是 `beginSync` / `endSync` cycle。
+> Keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑。
 
 同步使用 snapshot 模式，不阻塞狀態變更：
 
@@ -467,7 +467,7 @@ public func endSync() {
 }
 ```
 
-Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`TransportAdapter` 在 broadcast-only 週期（不比對 per-player 欄位）以及停用 dirty tracking 時傳入 `clearDirtyFlags: false`。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
+Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
 
 ### 同步去重
 
