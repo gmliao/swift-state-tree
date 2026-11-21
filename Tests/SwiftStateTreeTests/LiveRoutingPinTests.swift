@@ -189,11 +189,11 @@ struct LiveRoutingPinTests {
         await keeper.waitForInFlightWorkForTesting()
         try await keeper.leave(playerID: p1, clientID: c1)
 
-        #expect(probe.turnsBegun == 0, "the legacy pass runs no turn")
+        #expect(probe.turnsBegun == 5, "one input turn per input")
         #expect(await keeper.currentState().log == ["initialize", "join:p1", "action:a", "event:e", "input:i", "leave:p1"])
         #expect(await keeper.emittedEventTicksForTesting().filter { $0 >= 0 } == [])
         let syncRequestTicks = await keeper.syncRequestTicksForTesting()
-        #expect(syncRequestTicks == [-1], "only OnInitialize's request, never taken")
+        #expect(syncRequestTicks == [], "every turn took its request, OnInitialize's too")
     }
 
     @Test("Tickless, no port: the forced shutdown is applied by an input turn")
@@ -204,7 +204,7 @@ struct LiveRoutingPinTests {
         await keeper.setInTurnProbeForTesting(probe.append)
         await keeper.forceShutdown()
         #expect(probe.all.contains("shutdown-queued"))
-        #expect(probe.turnsBegun == 0, "the legacy shutdown pass runs no turn")
+        #expect(probe.turnsBegun == 1, "the shutdown's input turn")
     }
 
     @Test("Tick land, no port: a stepped tick is a tick turn whose events and sync request are taken and recorded")
@@ -214,17 +214,36 @@ struct LiveRoutingPinTests {
         let probe = RoutingPinProbe()
         await keeper.setInTurnProbeForTesting(probe.append)
         await keeper.stepTickOnce()
-        #expect(probe.turnsBegun == 0, "the legacy tick runs no turn")
+        #expect(probe.all.first == "turn-begin", "a tick turn")
+        #expect(probe.all.contains("turn-end"))
         #expect(await keeper.currentState().ticks == 1)
         #expect(await keeper.emittedEventTicksForTesting().filter { $0 >= 0 } == [])
         let syncRequestTicks = await keeper.syncRequestTicksForTesting()
-        #expect(syncRequestTicks == [-1], "only OnInitialize's request, never taken")
+        #expect(syncRequestTicks == [], "every turn took its request, OnInitialize's too")
 
         let frame = try #require(try await frames(keeper).first { $0.tickId == 0 })
         #expect(frame.serverEvents.map { $0.sequence }.count == 2, "OnJoin's event and the tick's")
         #expect(frame.lifecycleEvents.map(\.kind).contains("join"))
         #expect(frame.sequenceBeforeInputs != nil)
         #expect(frame.sequenceBeforeTickHandler != nil)
+    }
+
+    @Test("No port: a failure noted outside a turn ends the land at the next turn's apply step (#704)", arguments: [false, true])
+    func notedFailureEndsPortlessTurn(tick: Bool) async throws {
+        let keeper = await makePortlessKeeper(tick: tick)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        if tick { await keeper.stepTickOnce() }
+        let noted = LandFailure(kind: .eventEncode, detail: "noted outside a turn", position: LandFailurePosition(stage: .eventFlush))
+        keeper.notePendingFailure(noted)
+        // A turn with no port skips its output step; its apply step still reads the mailbox.
+        if tick {
+            await keeper.stepTickOnce()
+            #expect(await keeper.currentState().ticks == 1, "the tick handler of the failed turn never ran")
+        } else {
+            _ = try? await keeper.handleActionEnvelope(envelope("a"), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        #expect(keeper.failure?.kind == noted.kind)
+        #expect(keeper.failure?.detail == noted.detail)
     }
 
     @Test("No port: a sync loop iteration sets no due sync and runs no turn", arguments: [false, true])
@@ -248,7 +267,7 @@ struct PreAttachOutputPinTests {
     @Test("Tickless: OnInitialize's event and the input before the attach are recorded and never delivered")
     func ticklessPreAttach() async throws {
         let keeper = await makePortlessKeeper(tick: false)
-        #expect(await keeper.emittedEventTicksForTesting() == [-1], "the initialize event stays in the collector")
+        #expect(await keeper.emittedEventTicksForTesting() == [], "the initialize turn took its event")
 
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
 
@@ -257,7 +276,7 @@ struct PreAttachOutputPinTests {
         _ = try await keeper.handleActionEnvelope(envelope("after"), playerID: p1, clientID: c1, sessionID: s1)
 
         #expect(port.delivered == ["action:after"])
-        #expect(await keeper.emittedEventTicksForTesting() == [-1])
+        #expect(await keeper.emittedEventTicksForTesting() == [])
 
         let all = try await frames(keeper)
         let frame0 = try #require(all.first { $0.tickId == 0 })
@@ -271,9 +290,9 @@ struct PreAttachOutputPinTests {
     @Test("Tick land: OnInitialize and tick 0 share frame 0; the tick before the attach delivers nothing")
     func tickPreAttach() async throws {
         let keeper = await makePortlessKeeper(tick: true)
-        #expect(await keeper.emittedEventTicksForTesting() == [-1])
+        #expect(await keeper.emittedEventTicksForTesting() == [], "the initialize turn took its event")
         await keeper.stepTickOnce()
-        #expect(await keeper.emittedEventTicksForTesting() == [-1])
+        #expect(await keeper.emittedEventTicksForTesting() == [])
 
         let port = RoutingPinPort()
         await keeper.setTransport(port)
