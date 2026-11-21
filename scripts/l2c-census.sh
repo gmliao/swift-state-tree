@@ -4,13 +4,14 @@
 #
 # For each symbol: the readers at BASE (default: the merge base with origin/main), file by file,
 # and how many are left at HEAD. A symbol L2c deletes must be left nowhere; the forwards L2c keeps
-# until L2d are listed with their expected HEAD count instead.
+# until L2d are listed with their HEAD count, and fail if the adapter no longer declares them.
 #
 # Usage: scripts/l2c-census.sh [BASE]
 set -euo pipefail
 
 base="${1:-$(git merge-base HEAD origin/main)}"
 paths=(Sources Tests Examples Tools)
+forwards_file=Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift
 
 # pattern|kept   (kept = the symbol stays through L2c; its HEAD count is reported, not required to be 0)
 symbols=(
@@ -47,7 +48,14 @@ for entry in "${symbols[@]}"; do
   before=$(count_at "$base" "$pattern")
   after=$(count_at HEAD "$pattern")
   if [[ -n "$kept" ]]; then
-    verdict="kept until L2d"
+    # A kept symbol still has protocol and test references, so its count alone proves nothing:
+    # the adapter's own forward must be declared at HEAD.
+    if git grep -q -E "func ${pattern}\(" HEAD -- "$forwards_file"; then
+      verdict="kept until L2d"
+    else
+      verdict="FORWARD MISSING"
+      status=1
+    fi
   elif [[ "$after" -eq 0 ]]; then
     verdict="gone"
   else
