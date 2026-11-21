@@ -152,6 +152,12 @@ public enum ReevaluationEngine {
     ///
     /// A watermarked tick fails on any mismatch. A tick without watermarks fails only when the
     /// events differ in something other than `sequence` (count, tick, type, payload or target).
+    ///
+    /// `expected` holds the events as read from a record: payloads are trees in the record's form.
+    /// `actual` holds the replayed events: typed payloads (or trees), which the comparison puts in
+    /// the record's form first (#633). Typed payloads on both sides compare in different forms: a
+    /// `Date`, `Data`, `URL` or `Float` field then differs, and the tick fails even when only
+    /// `sequence` differs.
     public static func classifyServerEventMismatches(
         _ mismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])],
         watermarkedTicks: Set<Int64>
@@ -431,7 +437,14 @@ public enum ReevaluationEngine {
         return result
     }
     
-    /// Compare recorded vs emitted server events (by JSON encoding for AnyCodable payload equality).
+    /// Compare recorded vs emitted server events: their sequence, tick, type, payload and target.
+    ///
+    /// A recorded payload is a tree in the record's form, as `CanonicalMessagePack` wrote it (#633):
+    /// a `Date` as an ISO string at whole seconds, `Data` as an array of bytes, a `URL` or `Decimal`
+    /// in its keyed `Codable` form, a `Float` widened to `Double`. An emitted payload is the replay's
+    /// typed value. It is put in the record's form first (`recordForm(_:)`), and the two trees are
+    /// compared by their sorted-key JSON, which both record forms (a saved record and its JSON view)
+    /// write alike.
     private static func serverEventsMatch(
         recorded: [ReevaluationRecordedServerEvent],
         emitted: [ReevaluationRecordedServerEvent],
@@ -447,7 +460,8 @@ public enum ReevaluationEngine {
             else { return false }
             // A payload or target that doesn't encode is a mismatch (A6, #521 PR 1b), never an
             // empty value on both sides, which compared two unencodable payloads equal.
-            guard let rData = try? encoder.encode(r.payload), let eData = try? encoder.encode(e.payload),
+            guard let eTree = try? recordForm(e.payload),
+                  let rData = try? encoder.encode(r.payload), let eData = try? encoder.encode(eTree),
                   rData == eData
             else { return false }
             guard let rTarget = try? encoder.encode(r.target), let eTarget = try? encoder.encode(e.target),
@@ -455,6 +469,13 @@ public enum ReevaluationEngine {
             else { return false }
         }
         return true
+    }
+
+    /// `payload` in the form a record holds it: written with `CanonicalMessagePack`, as the recorder
+    /// writes, and read back as a tree, as the record reader reads. A payload that is already a tree
+    /// in that form comes back unchanged.
+    static func recordForm(_ payload: AnyCodable) throws -> AnyCodable {
+        try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(payload))
     }
 
     /// The snapshot a state hash of `definition` covers.
