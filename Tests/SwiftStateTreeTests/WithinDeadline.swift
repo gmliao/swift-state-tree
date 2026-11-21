@@ -51,4 +51,33 @@ struct RaceDeadlineTests {
         }
         gate.release()
     }
+
+    @Test("A gate entered before or after the wait starts returns true")
+    func gateEntered() async {
+        let early = WatermarkGate()
+        let earlyEntry = Task { await early.enterAndWait() }
+        #expect(await early.waitUntilEntered())
+        early.release()
+        await earlyEntry.value
+
+        let late = WatermarkGate()
+        let lateEntry = Task {
+            await Task.yield()
+            await late.enterAndWait()
+        }
+        #expect(await late.waitUntilEntered())
+        late.release()
+        await lateEntry.value
+    }
+
+    @Test("A gate never entered fails the wait by name at its deadline instead of parking the test")
+    func gateNeverEntered() async {
+        let gate = WatermarkGate()
+        await withKnownIssue("the bound's own issue") {
+            #expect(await gate.waitUntilEntered(deadline: .milliseconds(50)) == false)
+        }
+        // A late entry after the release passes straight through.
+        gate.release()
+        await gate.enterAndWait()
+    }
 }

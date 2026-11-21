@@ -113,7 +113,24 @@ final class WatermarkGate: @unchecked Sendable {
         }
     }
 
-    func waitUntilEntered() async {
+    /// Waits until code under test enters the gate, at most `deadline`. A gate never entered
+    /// records an issue at the caller's line and returns `false`, so a hold that never fires
+    /// fails the test by name instead of parking the run: the entry wait ignores cancellation,
+    /// and a suite's time limit can't end it. Nothing waits at the gate then, so the caller
+    /// can go on; a late entry after `release()` passes straight through.
+    @discardableResult
+    func waitUntilEntered(
+        deadline: Duration = .seconds(10),
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async -> Bool {
+        guard case .timedOut = await raceDeadline(deadline, { await self.waitForEntry() }) else { return true }
+        Issue.record("WatermarkGate never entered within \(deadline)", sourceLocation: sourceLocation)
+        return false
+    }
+
+    /// The unbounded entry wait. On a timeout `raceDeadline` leaves it behind; a later entry
+    /// resumes it.
+    private func waitForEntry() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let resumeNow: Bool = lock.withLock {
                 if entered { return true }
