@@ -6,7 +6,7 @@
 
 Review gave rev 1 GO on the shape and the semantics. Changes:
 - **Q2 overturned (§3.6, test 8).** The per-wake cap is a fixed internal constant, `maxFiresPerWake = 64`, not `maxReleasesPerBatch`. That knob bounds parked releases per batch, and reusing it would couple release fairness to timer fairness.
-- **Decided:** Q3 (fire on `target`, no clock read), Q4 (internal constants: rebuild at half, with a floor of 64), Q5 (`park-64` as a recorded cell, its own commit), Q6 (keep `.staleDeadline`/`.staleTimer`; the docs say compacted or `endAll`-dropped entries emit nothing), Q7 (timers in scope). Q1 is the one open question.
+- **Decided:** Q3 (fire on `target`, no clock read), Q4 (internal constants: rebuild at half, with a floor of 64), Q5 (`park-64` as a recorded cell, its own commit), Q6 (keep `.staleDeadline`/`.staleTimer`; the docs say compacted or `endAll`-dropped entries emit nothing), Q7 (timers in scope). Q1 decided by the maintainer: now, as foundation work, right after L2d-3, with step 0 first and the 2k instr/op floor as the stop rule.
 - **Should 1 (§1.2, §3.4, §6).** `TurnClock.sleep(until:)`'s doc contract becomes "returns no earlier than the instant unless cancelled", and so does the WorkedExample clock's comment. The wake fires on `target` without reading the clock, so a clock that returned early would fire deadlines early.
 - **Should 2 (§3.1, test 12, §4.5).** A DEBUG `liveTimerInputsForTesting` count, pinned by a test: a replaced or dropped timer releases its input at once (the retention class of `ScheduledThreadPoolExecutor`'s lazy cancel).
 - **Should 3 (test 9, §4.5).** Test 9 asserts the wasted hop when a rebuild removes the sleeper's target. The wake finds nothing due, re-sleeps to the new head and emits no stale diagnostic. Two mutants, "re-arm on rebuild" and "drop the next target", must fail it.
@@ -408,7 +408,7 @@ The PR body's "Public API" section lists the two diagnostics' doc changes and th
 
 ## 7. Steps
 
-One SwiftStateTurns PR (core path), after step 0's numbers and the maintainer's go (Q1). The commits:
+One SwiftStateTurns PR (core path), after L2d-3 and step 0's numbers (Q1, decided). The commits:
 1. `DeadlineHeap` and its unit tests.
 2. Request and gate deadlines on the one timer: the core state, `armDeadline`, `timerWoke`, compaction, the stop from inside `Turn.endAll`'s step (§3.7, §3.8), and deinit. The sweeps for deadlines are removed. `TestClock`'s monotonic model, the request and gate tests of §4.2, and new tests 2–10 without the timer parts.
 3. Timers on the same timer: `rt.timers` with the input, `rt.timerKeys`, the timer sweep removed, the timer tests of §4.2, and new test 11.
