@@ -32,6 +32,7 @@ FOLLOW_UP_TYPES='TurnsBench\.(FollowUpBenchMachine|FollowUpBenchActor)'
 FOLLOW_UP_REQUIRED='SwiftStateTurns.TurnCore.step(
 (extension in SwiftStateTurns):SwiftStateTurns.TurnActor.runSegment(
 (extension in SwiftStateTurns):SwiftStateTurns.TurnActor.continueBatch(
+(extension in SwiftStateTurns):SwiftStateTurns.TurnActor.scheduleContinuation(
 (extension in SwiftStateTurns):SwiftStateTurns.TurnActor.settleQuiescence(
 (extension in SwiftStateTurns):SwiftStateTurns.TurnActor.registerQuiescenceWaiter('
 
