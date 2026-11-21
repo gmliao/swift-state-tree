@@ -106,7 +106,16 @@ public enum ReevaluationEngine {
         }
     }
 
-    /// Compares OnInitialize's replayed events and state with the initialize record.
+    /// Throws `ReevaluationRecordContentError.malformedEventTarget` for the first recorded event whose
+    /// target a live run doesn't write (#641, #729): a malformed target is the record's fault, so it
+    /// reports as that, not as a mismatch with the replayed event.
+    package static func checkTargets(of events: [ReevaluationRecordedServerEvent]) throws {
+        for event in events { _ = try event.target.eventTarget() }
+    }
+
+    /// Compares OnInitialize's replayed events and state with the initialize record. A caller
+    /// checks the record's targets first (`checkTargets(of:)`), so a malformed one is not
+    /// reported as a mismatch.
     package static func verifyInitialize<State: StateNodeProtocol>(
         record: ReevaluationRecordedInitialize?,
         emitted: [ReevaluationRecordedServerEvent],
@@ -272,6 +281,7 @@ public enum ReevaluationEngine {
         )
         await keeper.setLandID(metadata.landID)
         await keeper.awaitInitialization()
+        if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
         let initializeRecord = try await source.getInitializeRecord()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
@@ -281,6 +291,7 @@ public enum ReevaluationEngine {
         )
         let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version, stateType: State.self)
             ?? nfcIncomparability
+        try checkTargets(of: initializeRecord?.serverEvents ?? [])
         let initialize = verifyInitialize(
             record: initializeRecord,
             emitted: initializeEvents,
@@ -346,6 +357,7 @@ public enum ReevaluationEngine {
         if lastTickId >= 0 {
             for tickId in 0...lastTickId {
                 await keeper.stepTickOnce()
+                if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
                 let state = await keeper.currentState()
 
                 // The hash the record holds (`hashDefinition`). A conversion that throws makes
@@ -399,6 +411,7 @@ public enum ReevaluationEngine {
                 if let reason = await keeper.takeRecordedPassMismatch(for: tickId) {
                     recordedPassMismatches[tickId] = reason
                 }
+                try checkTargets(of: recordedEvents)
                 if !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
                     serverEventMismatches.append((tickId: tickId, expected: recordedEvents, actual: emittedEvents))
                 }

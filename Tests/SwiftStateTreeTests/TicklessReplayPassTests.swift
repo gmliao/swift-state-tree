@@ -662,8 +662,15 @@ struct TicklessReplayPassTests {
         defer { try? FileManager.default.removeItem(atPath: badPath) }
         // Edit one record: since #327 every pass is its own turn record.
         var edited = false
+        var passRecords = 0
         try rewriteLog(from: path, to: badPath) { record in
             guard !edited, let passes = record.passes, !passes.isEmpty else { return }
+            if kind == "decreasing" {
+                // The second pass starts below the first (the first starts at 1): it keeps its ordinal
+                // and inputs, so only the decreasing counter is wrong.
+                passRecords += 1
+                guard passRecords == 2 else { return }
+            }
             if kind == "duplicate-input" || kind == "unready" {
                 // An action's record: two inputs with one sequence, or one resolving after the tick.
                 guard var actions = record.actions, let first = actions.first else { return }
@@ -690,12 +697,20 @@ struct TicklessReplayPassTests {
             case "duplicate":
                 all.append(ReevaluationRecordedPass(sequenceBefore: 1_000, inputs: all[0].inputs))
             default:
-                all.append(ReevaluationRecordedPass(sequenceBefore: -1, inputs: []))
+                // 0 is a sequence a live run can write (#729), below the first pass's 1.
+                let later = all[0]
+                all[0] = ReevaluationRecordedPass(sequenceBefore: 0, inputs: later.inputs, ordinal: later.ordinal, rejected: later.rejected)
             }
             record.passes = all
         }
         let result = try await replayPassRecord(badPath)
         #expect(result.recordedPassMismatches.keys.sorted() == [0], "\(result.recordedPassMismatches)")
+        if kind == "decreasing" {
+            #expect(
+                result.recordedPassMismatches[0] == "pass 1 starts at sequence 0, before the previous pass's 1",
+                "\(result.recordedPassMismatches)"
+            )
+        }
         #expect(result.serverEventVerification == .failed(ticks: [0]))
 
         // The check runs before any turn: the frame applies nothing, and nothing is left queued.
