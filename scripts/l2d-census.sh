@@ -13,8 +13,14 @@
 # Usage: scripts/l2d-census.sh [REF]   (default HEAD; the revert check runs it at the base)
 set -euo pipefail
 
+# The pathspecs below are relative to the repository root, and a ref that doesn't resolve would
+# make every count 0: either is an error, never a pass.
+root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel) || { echo "l2d-census: not in a git repository" >&2; exit 2; }
+cd "$root"
 ref="${1:-HEAD}"
-allow_file="$(dirname "$0")/l2d-census.allow"
+git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || { echo "l2d-census: not a commit: $ref" >&2; exit 2; }
+allow_file="scripts/l2d-census.allow"
+[[ -f "$allow_file" ]] || { echo "l2d-census: missing $allow_file" >&2; exit 2; }
 paths=(Sources Tests Examples Tools)
 
 # name|pattern
@@ -29,7 +35,8 @@ symbols=(
 
 # Prints `path count` for non-comment lines matching pattern at ref.
 counts_at() { # ref pattern
-  { git grep -n -E "$2" "$1" -- "${paths[@]}" 2>/dev/null || true; } |
+  # git grep exits 1 for no match; any other failure prints its error (the ref is checked above).
+  { git grep -n -E "$2" "$1" -- "${paths[@]}" || true; } |
     sed -E "s#^$1:##" |
     awk -F: '{ line = $0; sub(/^[^:]+:[0-9]+:/, "", line); if (line ~ /^[[:space:]]*\/\//) next; n[$1]++ }
              END { for (f in n) print f, n[f] }' |

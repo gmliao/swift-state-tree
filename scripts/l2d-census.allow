@@ -4,6 +4,7 @@
 # The legacy transport calls: only re-evaluation paths and tests reach them now.
 Sources/SwiftStateTree/Runtime/LandKeeper.swift syncBroadcastOnlyFromTransport-call 3 re-evaluation paths (processPendingActions, deliverLegacyPass, replayed passes in runTick); a re-evaluation keeper has no transport in production; L2d-3 / #612
 Tests/SwiftStateTreeTransportTests/TransportAdapterRequestedSyncTurnTests.swift syncBroadcastOnlyFromTransport-call 1 broadcastOnlyBridgeIsARequestedTurn, retired with the bridge in L2d-3
+Sources/SwiftStateTree/Runtime/LandKeeper.swift syncNowFromTransport-call 1 the sync loop of a re-evaluation keeper with a transport (ReevaluationOutputMode.transportAndSink), until #612
 Tests/SwiftStateTreeTests/DrainTurnTests.swift syncNowFromTransport-call 1 a late call after the destruction reaches the released placeholder, which counts it
 
 # The requirement, the placeholder, the adapter's forwards (defaults in L2d-3) and the test fakes' conformances.
@@ -25,6 +26,7 @@ Tests/SwiftStateTreeTests/RequestedSyncTurnKeeperTests.swift syncNowFromTranspor
 Tests/SwiftStateTreeTests/ResolverDeadlineTests.swift syncNowFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/ResolverDeliveryTests.swift syncNowFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/ServerInputTests.swift syncNowFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/SettleFenceBindingTests.swift syncNowFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/ShutdownTurnTests.swift syncNowFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/SyncRegistrationTests.swift syncNowFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/TicklessActionJobTests.swift syncNowFromTransport-decl 1 test fake conformance
@@ -46,6 +48,7 @@ Tests/SwiftStateTreeTests/RequestedSyncTurnKeeperTests.swift syncBroadcastOnlyFr
 Tests/SwiftStateTreeTests/ResolverDeadlineTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/ResolverDeliveryTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/ServerInputTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
+Tests/SwiftStateTreeTests/SettleFenceBindingTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/ShutdownTurnTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/SyncRegistrationTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/TicklessActionJobTests.swift syncBroadcastOnlyFromTransport-decl 1 test fake conformance
