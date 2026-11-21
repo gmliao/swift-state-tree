@@ -128,59 +128,63 @@ actor RoomActor: TurnActor {
 struct ConceptsTests {
     @Test("A room: query, run, a scoped chat, a worker-returns save, a withdraw token and an idle timer")
     func room() async throws {
-        let f = Fixture()
-        let clock = TestClock(fixture: f)
-        let room = RoomActor(clock: clock)
-        // docs:room-use
-        let connection = WithdrawToken()
-        let seated = try await room.sendAndWait(.join(player: 7, connection: connection), cancellation: .cancelsCall)
-        let count = await room.query(.seatCount)
-        // docs:end
-        #expect(seated == 1)
-        #expect(count == 1)
+        try await withinTestHangBound {
+            let f = Fixture()
+            let clock = TestClock(fixture: f)
+            let room = RoomActor(clock: clock)
+            // docs:room-use
+            let connection = WithdrawToken()
+            let seated = try await room.sendAndWait(.join(player: 7, connection: connection), cancellation: .cancelsCall)
+            let count = await room.query(.seatCount)
+            // docs:end
+            #expect(seated == 1)
+            #expect(count == 1)
 
-        await room.send(.chat(player: 7, text: "hi"))
-        #expect(await room.sent == ["7: hi"])
+            await room.send(.chat(player: 7, text: "hi"))
+            #expect(await room.sent == ["7: hi"])
 
-        await room.send(.saveStats(player: 7))
-        for _ in 0 ..< 10_000 where await room.heldKeys() != 0 {
-            await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the save's result has run
+            await room.send(.saveStats(player: 7))
+            for _ in 0 ..< 10_000 where await room.heldKeys() != 0 {
+                await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the save's result has run
+            }
+            #expect(await room.heldKeys() == 0)
+
+            // docs:room-token
+            // The connection closed before its join stepped: the join is withdrawn.
+            let late = WithdrawToken()
+            late.withdraw()
+            await #expect(throws: TurnError.withdrawn) {
+                try await room.sendAndWait(.join(player: 8, connection: late), cancellation: .cancelsCall)
+            }
+            // docs:end
+
+            // The idle timer: the test clock moves to the deadline, and the timer's sleep returns.
+            clock.set(seconds: 60)
+            f.open("deadline 60")
+            for _ in 0 ..< 10_000 where await room.query(.seatCount) != 0 {
+                await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the timer has run
+            }
+            #expect(await room.query(.seatCount) == 0)
         }
-        #expect(await room.heldKeys() == 0)
-
-        // docs:room-token
-        // The connection closed before its join stepped: the join is withdrawn.
-        let late = WithdrawToken()
-        late.withdraw()
-        await #expect(throws: TurnError.withdrawn) {
-            try await room.sendAndWait(.join(player: 8, connection: late), cancellation: .cancelsCall)
-        }
-        // docs:end
-
-        // The idle timer: the test clock moves to the deadline, and the timer's sleep returns.
-        clock.set(seconds: 60)
-        f.open("deadline 60")
-        for _ in 0 ..< 10_000 where await room.query(.seatCount) != 0 {
-            await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the timer has run
-        }
-        #expect(await room.query(.seatCount) == 0)
     }
 
     @Test("A scoreboard: one coalesced publish per round, consumed by a publish-now")
     func scoreboard() async throws {
-        let board = ScoreboardActor(clock: TestClock(fixture: Fixture()))
-        await board.send(.open)
-        // docs:scoreboard-use
-        await board.send(.round(points: [3, 1, 4]))
-        await board.waitForQuiescence()
-        // docs:end
-        #expect(await board.published == [[3, 1, 4]])
+        try await withinTestHangBound {
+            let board = ScoreboardActor(clock: TestClock(fixture: Fixture()))
+            await board.send(.open)
+            // docs:scoreboard-use
+            await board.send(.round(points: [3, 1, 4]))
+            await board.waitForQuiescence()
+            // docs:end
+            #expect(await board.published == [[3, 1, 4]])
 
-        // A publish-now in the same step as a round: the round's follow-up is consumed, so the
-        // scores go out once.
-        await board.send(.roundAndPublish(points: [1, 1, 1]))
-        await board.waitForQuiescence()
-        #expect(await board.published == [[3, 1, 4], [4, 2, 5]])
+            // A publish-now in the same step as a round: the round's follow-up is consumed, so the
+            // scores go out once.
+            await board.send(.roundAndPublish(points: [1, 1, 1]))
+            #expect(await bounded { await board.waitForQuiescence() })
+            #expect(await board.published == [[3, 1, 4], [4, 2, 5]])
+        }
     }
 }
 

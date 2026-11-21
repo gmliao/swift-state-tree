@@ -17,12 +17,12 @@ struct ClockAndTimerTests {
         a.clock.set(seconds: 5)
         f.open("deadline 5")
         await a.waitForLog(2)
-        await f.wait("woke deadline 5")
+        await f.reach("woke deadline 5")
 
         // A new timer for the key replaces the armed one, whose sleep is cancelled.
         await a.send(.arm(job: 2, at: .seconds(6)))
         await a.send(.arm(job: 2, at: .seconds(7)))
-        await f.wait("cancelled deadline 6")
+        await f.reach("cancelled deadline 6")
         f.open("deadline 6")
         f.open("deadline 7")
         await a.waitForLog(3)
@@ -33,10 +33,10 @@ struct ClockAndTimerTests {
         await a.send(.arm(job: 3, at: .seconds(8)))
         await a.onOutput(3, open: "deadline 8", thenSend: .endJob(3))
         await a.send(.emit(3))
-        await f.wait("woke deadline 8")
+        await f.reach("woke deadline 8")
         // The woken task's trip back into the actor is ordered before the next arm: the drop is
         // the second stale timer (the replaced timer 6 was the first).
-        await f.wait("stale timer #2")
+        await f.reach("stale timer #2")
 
         // A later timer still fires.
         await a.send(.arm(job: 4, at: .seconds(9)))
@@ -68,7 +68,7 @@ struct ClockAndTimerTests {
         f.open("deadline 8")
         await a.waitForLog(2)
         await a.send(.endJob(1))
-        await f.wait("cancelled deadline 10")
+        await f.reach("cancelled deadline 10")
         let s = await a.snapshot()
         #expect(s.log == ["periodic 1 at 2 next 8", "periodic 1 at 8 next 10"])
         #expect(!f.isOpen("woke deadline 4"))
@@ -85,16 +85,16 @@ struct ClockAndTimerTests {
         await a.send(.replyAfter(job: 5, gate: "c5", deadline: .seconds(5)))
         await a.onOutput(5, open: "deadline 5", thenSend: nil)
         f.open("c5")
-        await f.wait("woke deadline 5")
-        await f.wait("stale deadline #1")
+        await f.reach("woke deadline 5")
+        await f.reach("stale deadline #1")
         await a.waitForLog(1)
 
         // The step that replaces the timer also opens the old timer's gate.
         await a.send(.arm(job: 6, at: .seconds(6)))
         await a.onOutput(6, open: "deadline 6", thenSend: .arm(job: 6, at: .seconds(7)))
         await a.send(.emit(6))
-        await f.wait("woke deadline 6")
-        await f.wait("stale timer #1")
+        await f.reach("woke deadline 6")
+        await f.reach("stale timer #1")
         f.open("deadline 7")
         await a.waitForLog(2)
 
@@ -102,8 +102,8 @@ struct ClockAndTimerTests {
         // opening its gate afterwards does nothing.
         await a.send(.replyAfter(job: 8, gate: "c8", deadline: .seconds(9)))
         await a.send(.cancelJob(8))
-        await f.wait("cancelled deadline 9")
-        await f.wait("stale deadline #2")
+        await f.reach("cancelled deadline 9")
+        await f.reach("stale deadline #2")
         f.open("deadline 9")
         f.open("c8")
         await a.waitForLog(4)
