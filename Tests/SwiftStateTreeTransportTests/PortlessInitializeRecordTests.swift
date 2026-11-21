@@ -4,7 +4,8 @@
 // land initialized before `LandManager`'s `.wiring`, which is every land without an init
 // resolver). The records in Fixtures/ReplayCompatibility/portless-initialize-*.reeval.sstr were
 // made by the build before L2d-2 from `PortlessInitializeScenario`; they must keep replaying, and
-// the same scenario recorded now must decode the same, apart from the differences listed below.
+// the same scenario recorded now must decode the same, frame by frame (a portless keeper records
+// no sync stream, so its turn-path initialize adds no marker).
 
 import Foundation
 import Testing

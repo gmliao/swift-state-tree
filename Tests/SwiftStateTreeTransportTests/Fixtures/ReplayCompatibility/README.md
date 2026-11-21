@@ -10,7 +10,7 @@ sync-output verdict `passed`.
 |------|---------|---------------|
 | `freeze-resume-legacy-cycle-messagepack` | `main` at a7ed4d2b (a copy of that build's `freeze-resume-messagepack` golden) | a debug freeze settle recorded as a `legacyCycle` output |
 | `settle-failure-queued-tick` | `main` at a7ed4d2b (`DebugFreezeSettleFailureTests`' scenario) | a settle whose plan throws: the failure is submitted and applied by the next tick, whose frame ends its inputs |
-| `portless-initialize-tick`, `portless-initialize-tickless` | #546 L2d-1's head 72fb9436 (`PortlessInitializeScenario` in `PortlessInitializeRecordTests.swift`, `PORTLESS_INITIALIZE_RECORD_DIR` set) | OnInitialize run before the transport was attached, recorded through the legacy record calls |
+| `portless-initialize-tick`, `portless-initialize-tickless` | #546 L2d-1's head 72fb9436, and reproduced byte for byte by `main` at f6cc9b28 (`PortlessInitializeScenario` in `PortlessInitializeRecordTests.swift`, copied into that build, `PORTLESS_INITIALIZE_RECORD_DIR` set) | OnInitialize run before the transport was attached, recorded through the legacy record calls |
 
 Since #546 L2d-1 the settle is a sync-only turn: it records a `syncOnly` output, and its failure
 ends the land in the settle's own turn.

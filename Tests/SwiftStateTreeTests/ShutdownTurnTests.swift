@@ -31,13 +31,14 @@ struct ShutdownAck: ResponsePayload {
     let ok: Bool
 }
 
-/// Where a test's keeper applies its inputs.
+/// The keeper a test runs. Every live keeper applies its inputs in turns (#546 L2d-2); the
+/// tickless arms differ only in whether a port receives the outputs.
 enum ShutdownPath: String, CaseIterable, Sendable, CustomTestStringConvertible {
-    /// Tickless, in-turn sync: the input drain.
+    /// Tickless, with a port that runs the sync phase in turn.
     case inTurn
-    /// Tickless, off in-turn sync: the legacy pass.
-    case legacy
-    /// A tick land (legacy tick path): the shutdown turn between ticks.
+    /// Tickless, with no port: the same input turns, outputs recorded and not delivered.
+    case portless
+    /// A tick land with no port: the shutdown turn between ticks.
     case tick
 
     var testDescription: String { rawValue }
@@ -396,7 +397,7 @@ struct ShutdownTurnTests {
         #expect(await keeper.currentState().log == ["join:p1", "finalize"])
     }
 
-    @Test("Tickless: a leave queued before the shutdown runs its OnLeave; a join after it is rejected", arguments: [ShutdownPath.inTurn, .legacy])
+    @Test("Tickless: a leave queued before the shutdown runs its OnLeave; a join after it is rejected", arguments: [ShutdownPath.inTurn, .portless])
     func arrivalOrder(path: ShutdownPath) async throws {
         let keeper = try await makeKeeper(path)
         try await join(keeper, path, [(p1, c1, s1), (p2, c2, s2)])

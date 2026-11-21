@@ -191,7 +191,7 @@ struct LiveRoutingPinTests {
 
         #expect(probe.turnsBegun == 5, "one input turn per input")
         #expect(await keeper.currentState().log == ["initialize", "join:p1", "action:a", "event:e", "input:i", "leave:p1"])
-        #expect(await keeper.emittedEventTicksForTesting().filter { $0 >= 0 } == [])
+        #expect(await keeper.emittedEventTicksForTesting() == [])
         let syncRequestTicks = await keeper.syncRequestTicksForTesting()
         #expect(syncRequestTicks == [], "every turn took its request, OnInitialize's too")
     }
@@ -217,7 +217,7 @@ struct LiveRoutingPinTests {
         #expect(probe.all.first == "turn-begin", "a tick turn")
         #expect(probe.all.contains("turn-end"))
         #expect(await keeper.currentState().ticks == 1)
-        #expect(await keeper.emittedEventTicksForTesting().filter { $0 >= 0 } == [])
+        #expect(await keeper.emittedEventTicksForTesting() == [])
         let syncRequestTicks = await keeper.syncRequestTicksForTesting()
         #expect(syncRequestTicks == [], "every turn took its request, OnInitialize's too")
 
