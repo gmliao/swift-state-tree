@@ -345,7 +345,7 @@ struct ResolverDeadlineTests {
         let joining = Task {
             try await withDeadline(generous, metrics: metrics) { try await join(keeper, "stuck-\(key)") }
         }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         joining.cancel()
         // Well before the 30 s deadline.
         _ = try await withinDeadline("the cancelled join returns", deadline: .seconds(10)) { () async -> Void in
@@ -371,7 +371,7 @@ struct ResolverDeadlineTests {
             await started.enterAndWait()
             try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-9") }
         }
-        await started.waitUntilEntered()
+        guard await started.waitUntilEntered() else { return }
         joining.cancel()
         started.release()
         // A hang would be a continuation nobody resumes: stop here rather than await it.
@@ -462,7 +462,7 @@ struct ResolverDeadlineTests {
             try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-1") }
         }
         // The join waits while the initialization is held, then goes through once released.
-        guard try await withinDeadline("the initialization is held", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the initialization is held") else { return }
         gate.release()
         try await joining.value
         #expect(await keeper.currentState().log == ["init", "join:p-1"])

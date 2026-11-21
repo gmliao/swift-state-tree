@@ -535,7 +535,7 @@ struct ServerInputTests {
             await kickHold.enterAndWait()
         }.hook)
         let a = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
-        await kickHold.waitUntilEntered()
+        guard await kickHold.waitUntilEntered() else { return }
 
         // The freeze waits for A's turn, which is in flight; B is accepted meanwhile.
         let freeze = Task { await keeper.debugFreeze(generation: 1, timeout: .seconds(30)) }
