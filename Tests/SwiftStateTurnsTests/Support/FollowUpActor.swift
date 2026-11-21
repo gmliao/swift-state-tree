@@ -72,6 +72,10 @@ actor FollowUpActor: TurnActor {
     func waiterCount() -> Int {
         core.quiescenceWaitersForTesting
     }
+
+    func deadlineTaskCount() -> Int {
+        core.deadlineTasksForTesting
+    }
 }
 
 /// A serial executor whose jobs run on one dispatch queue, which a test can ask, without

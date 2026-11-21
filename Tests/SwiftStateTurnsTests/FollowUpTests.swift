@@ -448,7 +448,7 @@ struct FollowUpTests {
         #expect(await a.snapshot().log == ["armed A", "ran A"])
     }
 
-    @Test("29: A's obsolete deadline leaves B pending in the same slot")
+    @Test("29: A's obsolete deadline leaves B pending in the same slot; a later sweep keeps B's live gate deadline")
     func obsoleteDeadlineLeavesSuccessor() async {
         let f = Fixture()
         let a = FollowUpActor(fixture: f)
@@ -459,11 +459,21 @@ struct FollowUpTests {
         await f.reach("stale deadline #1")
         #expect(await a.pendingWork() == 1)
         await f.reach("at gate b")
+        // B's deadline task now exists. C, in the other slot, is consumed in a step of its own,
+        // so that step's sweep runs with B's gate deadline live: it cancels C's and keeps B's.
+        await a.send(.script([.arm("C", .slot(.b), .work(gate: "c", deadlineSeconds: 11))]))
+        await f.reach("at gate c")
+        #expect(await a.deadlineTaskCount() == 2)
+        await a.send(.script([.consume(.b)]))
+        #expect(await a.deadlineTaskCount() == 1)
+        await f.reach("cancelled deadline 11")
+        await f.reach("stale deadline #2")
         f.open("gate b")
         #expect(await bounded { await a.waitForQuiescence() })
         f.open("gate a")
-        await f.reach("stale follow-up #1")
-        #expect(await a.snapshot().log == ["armed A", "consumed A", "armed B", "ran B"])
+        f.open("gate c")
+        await f.reach("stale follow-up #2")
+        #expect(await a.snapshot().log == ["armed A", "consumed A", "armed B", "armed C", "consumed C", "ran B"])
     }
 
     @Test("34: a foreign gate return and a foreign gate deadline are rejected after the core is replaced")
@@ -512,10 +522,11 @@ struct FollowUpTests {
         // Registered, then satisfied, then cancelled: true. The second wait's return shows the
         // settling segment ran, so the cancel reaches a waiter already answered.
         let satisfiedFirst = Task { await a.waitForQuiescence() }
-        await f.reach("registered #1")
+        await f.reach("registered #2")
         f.open("gate a")
         #expect(await bounded { await a.waitForQuiescence() })
         satisfiedFirst.cancel()
+        #expect(await settled(satisfiedFirst) == true)
     }
 
     @Test("31: a query whose answer step consumes the last follow-up wakes a registered waiter")
@@ -525,8 +536,7 @@ struct FollowUpTests {
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
         await f.reach("at gate a")
         let waiter = Task { await a.waitForQuiescence() }
-        await f.reach("registered #2")
-        #expect(await settled(satisfiedFirst) == true)
+        await f.reach("registered #1")
         #expect(await a.query(.consume(.a, key: 1)))
         #expect(await settled(waiter))
         f.open("gate a")
