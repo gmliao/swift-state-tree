@@ -176,6 +176,12 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline var nextQuiescenceWaiter: UInt64 = 0
     /// Tests: how many quiescence waiters are registered.
     package var quiescenceWaitersForTesting: Int { quiescenceWaiters.count }
+    /// Tests: called where a quiescence wait registers, after its re-check and before the entry,
+    /// so a test can see on which executor that runs.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onQuiescenceRegistrationForTesting: (() -> Void)?
     // Debug builds fill these (`effectsByInput`). Stored in every build, because inlined code
     // in a client compiled in another configuration may name them.
     /// The case name of the input stepping now.

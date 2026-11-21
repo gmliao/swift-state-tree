@@ -293,22 +293,35 @@ extension TurnActor {
         if core.rt.pendingCount(kinds, of: key) <= atMost { return true }
         core.nextQuiescenceWaiter &+= 1
         let id = core.nextQuiescenceWaiter
+        // Both closures reach the core through `self`: a closure inherits an actor instance's
+        // isolation only when it captures that instance, and one that captured only `core` would
+        // check and register off the actor, racing the segment that settles the waiters.
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-                // Re-checked here: a cancellation or a settle may land before the entry exists.
-                if Task.isCancelled {
-                    continuation.resume(returning: false)
-                    return
-                }
-                if core.rt.pendingCount(kinds, of: key) <= atMost {
-                    continuation.resume(returning: true)
-                    return
-                }
-                core.quiescenceWaiters[id] = QuiescenceWaiter(kinds: kinds, key: key, atMost: atMost, continuation: continuation)
+                self.registerQuiescenceWaiter(id, QuiescenceWaiter(kinds: kinds, key: key, atMost: atMost, continuation: continuation))
             }
         } onCancel: {
             Task { await self.quiescenceWaiterCancelled(id) }
         }
+    }
+
+    /// Registers `waiter`, or resumes it at once: re-checked here, because a cancellation or a
+    /// settle may land between the wait's first check and this entry.
+    @inlinable func registerQuiescenceWaiter(_ id: UInt64, _ waiter: QuiescenceWaiter<M>) {
+        // The check and the entry must share the segment that settles waiters: off the actor,
+        // a settle between them loses the wake.
+        self.preconditionIsolated("TurnCore: a quiescence wait registered off its actor")
+        let core = self.core
+        if Task.isCancelled {
+            waiter.continuation.resume(returning: false)
+            return
+        }
+        if core.rt.pendingCount(waiter.kinds, of: waiter.key) <= waiter.atMost {
+            waiter.continuation.resume(returning: true)
+            return
+        }
+        core.onQuiescenceRegistrationForTesting?()
+        core.quiescenceWaiters[id] = waiter
     }
 
     @inlinable func quiescenceWaiterCancelled(_ id: UInt64) {

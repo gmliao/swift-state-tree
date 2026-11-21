@@ -576,4 +576,58 @@ struct FollowUpTests {
         #expect(await bounded { await a.waitForQuiescence() })
         #expect(await a.snapshot().log == ["armed A", "cancel sent", "ran A"])
     }
+
+    @Test("36: arm then wait, repeated, from outside the actor: every wait returns after its run")
+    func armWaitRepeatedFromOutside() async {
+        let a = FollowUpActor()
+        await a.send(.script([.start(1)]))
+        for i in 0 ..< 50 {
+            await a.send(.script([.arm("A\(i)")]))
+            #expect(await bounded { await a.waitForQuiescence() })
+            #expect(await a.snapshot().ran == i + 1)
+        }
+    }
+
+    @Test("37: arm then wait, repeated, inside one actor method (the follow-up bench's shape)")
+    func armWaitRepeatedInside() async {
+        let a = FollowUpActor()
+        await a.send(.script([.start(1)]))
+        #expect(await bounded { await a.armAndWait(50) })
+    }
+
+    #if !DEBUG
+    @Test("38: release: eight actors arm and wait 3000 times each, in parallel; every wait wakes")
+    func armWaitInParallel() async {
+        // An extra check, not the gate (case 39 is): a waiter registered off its actor loses its
+        // wake to the settle it races, and this load hit that within the first thousand rounds.
+        let all = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0 ..< 8 {
+                group.addTask {
+                    let a = FollowUpActor()
+                    await a.send(.script([.start(1)]))
+                    return await bounded { await a.armAndWait(3000) }
+                }
+            }
+            var all = true
+            for await ok in group { all = all && ok }
+            return all
+        }
+        #expect(all)
+    }
+    #endif
+
+    @Test("39: a wait's re-check and registration run on the actor, in the segment that settles waiters")
+    func registrationRunsOnTheActor() async {
+        let f = Fixture()
+        let a = QueueFollowUpActor(fixture: f)
+        let log = RegistrationLog()
+        await a.watchRegistrations(log)
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
+        #expect(await f.reach("at gate a"))
+        let waiter = Task { await a.waitForQuiescence() }
+        #expect(await f.reach("registering"))
+        #expect(log.all == [true])
+        f.open("gate a")
+        #expect(await settled(waiter))
+    }
 }
