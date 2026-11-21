@@ -20,6 +20,7 @@
     - the step ordinal counts only when `usesLane` holds;
     - the epilogue wakes whenever reports remain;
     - `TurnReplayDivergence` is `package`.
+  - Review's glance on §3.9: trailing reports, stepped after the last dispatch, are keyed for an ordinal replay never reaches. `finishReplay()` steps them at the end of the record and fails on any leftover entry. A mid-run `laneWoke` report replays at the next dispatch's check, with its recorded `now`; the moved segment boundary is accepted. Test 13 gains both cases. Review's GO on that came with one condition: the served `now` is scoped to the report's step, and the later input's `turn.now` is checked too.
   - The prior art is corrected: "was empty, so kick" (the kernel's lock-free list queues, not `prepare_to_wait`); NAPI's `napi_poll` weight within `netdev_budget`; and the signal loop against the lane's budget.
 - Prior art (the maintainer): Unix signal delivery at a safe point, receive livelock and NAPI's budget, check-then-sleep, and FIFO across two takes, each tied to the section it shapes.
 
@@ -254,7 +255,17 @@ Replay can't point a report at its place from outside. The driver can step a rep
 
 **Divergence.** `TurnReplayDivergence` is `package`, like the replay source. It names the key and the case, and goes to the adopter's replay through a package hook, `onReplayDivergence`, which fails the replay run. With no hook set, it is a `fatalError`. The cases are:
 - **unconsumed:** step n dispatches while an entry for an ordinal below n is still staged;
-- **overdrawn:** a take finds nothing under its key, but a later take of the same step has an entry.
+- **overdrawn:** a take finds nothing under its key, but a later take of the same step has an entry;
+- **leftover:** at the end of the record, an entry is still staged after `finishReplay()` (below).
+
+**Trailing reports.** A check that runs after the last step the core ever dispatches steps its reports under `before(n, i)`, where n is the next ordinal, which no step takes. That happens for a `laneWoke` with no turn due (#704's idle failure is one), and for reports posted at the end of a record. Replay never dispatches step n, so no check steps them, and the unconsumed check, which runs only at a dispatch, never sees them.
+- The core gains a package `finishReplay()`. The adopter's replay calls it once, after the record's last input. It steps the reports staged under `before(n, 0…)` for the core's current next ordinal n, in order, through the same path as a check. Then any entry still staged fails the replay as **leftover**.
+- A replay that never calls it can't tell a trailing report from a missing one, so the adopter's replay must call it. That is part of the adopter's replay contract; for the keeper, §4.2's re-evaluation item.
+
+**Where a trailing report replays.** The same keying covers a report a `laneWoke` stepped mid-run, with no turn due: it is keyed `before(n)` for the next dispatch, and replay steps it at that dispatch's check, not at its own live entry. This is accepted, with two consequences:
+- **The segment boundary differs.** Live, the report steps in its own segment and that segment's epilogue runs. Replay steps it in the next dispatch's segment. Replay compares outputs, not settlement points, so a quiescence waiter's wake point is the only thing that moves, and replay has no waiters.
+- **`turn.now` would differ.** The report's step would read the next dispatch's time, not the wake's. So each `before` entry records the `now` of the check that stepped it, and replay serves that `now` inside the report's step. It applies to every `before` entry, trailing or not; for the others it is the same value the entry reads anyway.
+  - The served `now` is scoped to the report's step. It doesn't set the entry's cached `now`, so the replaying entry's own input and the later steps of its segment still read the entry's time, not the wake's.
 
 A live post's position depends on timing; the record fixes it.
 
@@ -304,7 +315,7 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
 - **#696's enqueue gate.** The output gate is read where each frame is enqueued, and that read stays. The lane stops the keeper's next turn. The gate stops frames already on their way.
 - **The census.** `scripts/gate-close-census.sh` is unchanged: the closers still go through `failOutsideTurn`, which now posts.
 - **The first cause, across a rebind.** The report is posted to the keeper's lane, not to an adapter, so a rebind doesn't lose it. `failLand` keeps the first cause.
-- **Re-evaluation.** Replay has no poster. A recorded failure comes from the record (§3.9).
+- **Re-evaluation.** Replay has no poster. A recorded failure comes from the record (§3.9). The keeper's replay calls `finishReplay()` after the record's last input, so a failure posted after the last step (a trailing report) is stepped and a stray staged entry fails the run.
 
 | #732 (keeper, today) | The core's lane (#700) |
 |---|---|
@@ -340,9 +351,10 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
     - a mid-step take in a follow-up's step;
     - a mid-step take in a query's answer asked from `flush`;
     - a driver-stepped report ahead of a direct input in one segment;
-   - a report stepped between two releases in one segment: posted under the hook while the first release steps, with `maxReleasesPerBatch: 2`.
+   - a report stepped between two releases in one segment: posted under the hook while the first release steps, with `maxReleasesPerBatch: 2`;
+   - trailing reports: a post with no turn due, stepped by `laneWoke` with a clock advanced since the last step, then a later input; and a post after the record's last input. Replay with `finishReplay()` steps both, the first at the later input's check with the wake's recorded `now` (the handler logs `turn.now`). The later input logs `turn.now` too, and it is the input's own time, not the wake's.
 
-    A replay with one take removed from the stage fails as overdrawn. One with an extra take staged fails as unconsumed.
+    A replay with one take removed from the stage fails as overdrawn. One with an extra take staged fails as unconsumed. One with an extra report staged after the last input fails as leftover at `finishReplay()`.
 14. FIFO across the two takes (MF 1): A and B posted, C posted while A steps (a hold inside A's handler). A's `takeReports()` returns B, C, and the log is A, B, C, with no report stepped twice.
 15. A report-induced stale deadline (MF 2): the report closes R, queues R's abandonment, and its flush queues a send. `deadlineFired(R)` runs the helper and finds R stale. The abandonment and the send both step with no later entry (`bounded` wait).
 16. Exception 2: an entry with input X, while the helper steps A and A posts B. The log is A, X, B.
@@ -359,7 +371,10 @@ Mutants, each to fail a named test:
 - the check detaching its whole snapshot instead of one head at a time (14);
 - a stale return in `deadlineFired` skipping the epilogue (15);
 - the replay stage served by position, ignoring the step ordinal (13);
-- the `before` key taken from the entry instead of the step (13's between-releases case).
+- the `before` key taken from the entry instead of the step (13's between-releases case);
+- `finishReplay()` that skips the leftover check (13's leftover case), and one that doesn't step the staged trailing reports (13's trailing case);
+- the report step reading the replaying entry's `now` instead of the recorded one (13's trailing case);
+- the recorded `now` written into the entry's cached `now` (13's trailing case: the later input reads the wake's time).
 
 ## 6. Steps
 

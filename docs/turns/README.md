@@ -317,7 +317,7 @@ case .publish:
     turn.emit(scores, for: .board)
 ```
 
-`.afterBatch` steps it in a new batch, as the actor's own job after the current one. `.afterWork(effect, deadline:)` steps it when `perform(effect)` returns, such as "sync again once the writer has drained"; a deadline that passes first closes it, and `handleAbandoned(id, .deadline)` steps. Either way it steps as a control input, and its slot is freed before it steps, so its step may arm the next one.
+`.afterBatch` steps it in a new batch, as the actor's own job after the current one. That job is the core's one continuation: it also releases the parked inputs a batch left past its release cap, and it steps the follow-ups that were due when it started, after the releases its loop finds first. Other entries already queued on the actor can run before it. `.afterWork(effect, deadline:)` steps it when `perform(effect)` returns, such as "sync again once the writer has drained"; a deadline that passes first closes it, and `handleAbandoned(id, .deadline)` steps. Either way it steps as a control input, and its slot is freed before it steps, so its step may arm the next one.
 
 A follow-up belongs to its key's generation. Ending or superseding the key closes it unrun, with `handleAbandoned(id, .keyEnded)`, so one armed under an old binding never runs under the new one. A step that does the work itself retires the pending one:
 
