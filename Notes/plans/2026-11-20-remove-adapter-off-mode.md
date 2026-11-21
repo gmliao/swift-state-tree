@@ -725,7 +725,9 @@ After L2d-2 a live keeper whose transport doesn't opt in would silently receive 
 - **`ReleasedLandTransport`:** the keeper installs it itself, bypassing `setTransport`'s check. Under (r) it is exempt by construction; under (c1) it needs the two methods; under (c2) nothing changes.
 - **Replay transports:** none in production. The test fake on `.reevaluation` keepers (`LandKeeperReevaluationOutputModeTests:41`) is exempt by mode under (r), untouched under (c2), and needs the two methods under (c1).
 
-**Recommendation: (r) in L2d-2.** It is the only option that closes the case that can't be typed: the attach to a wrong keeper or executor. It costs no signature, and it fails fast at the attach rather than at the first silent turn.
+**Decided (the maintainer, 2026-11-21): (r) in L2d-2 and (c1) in L2d-3.** (r): `preconditionFailure` at `init(transport:)` and `setTransport` on a live keeper when `runsSyncPhaseInTurn(of: self)` is false, in release too, with a message that says why; `nil`, `ReleasedLandTransport` and `.reevaluation` keepers are exempt, and the check applies only while `!destructionFinished`. (c1): with the legacy deletions, L2d-3 removes the defaults of `runsSyncPhaseInTurn(of:)` and `runSyncPhaseInTurn(…)`, so a conformer without the in-turn path doesn't compile; the fakes are fixed from the compile errors. Both go under "Public API" and "Behavior" in their PR bodies.
+
+**Recommendation (rev 8): (r) in L2d-2.** It is the only option that closes the case that can't be typed: the attach to a wrong keeper or executor. It costs no signature, and it fails fast at the attach rather than at the first silent turn.
 - (c1) adds boilerplate and closes nothing.
 - (c2) is sound hardening but closes the extension point. It is a separate maintainer decision, outside L2.
 
