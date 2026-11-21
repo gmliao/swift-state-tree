@@ -124,7 +124,7 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
                         ])
                     }
                     for resolved in eventsToSend {
-                        ctx.emitEvent(resolved.event, to: resolved.target.toEventTarget())
+                        ctx.emitEvent(resolved.event, to: resolved.target)
                     }
                 }
             }

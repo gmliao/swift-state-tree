@@ -195,14 +195,14 @@ struct ReevaluationReplayCompatibilityTests {
     }
 
     @Test("ReevaluationEventTargetRecord round-trip to EventTarget")
-    func reevaluationEventTargetRecordToEventTargetRoundTrip() {
+    func reevaluationEventTargetRecordToEventTargetRoundTrip() throws {
         // .all
         let allRecord = ReevaluationEventTargetRecord(kind: "all", ids: [])
-        if case .all = allRecord.toEventTarget() { } else { Issue.record("Expected .all") }
+        if case .all = try allRecord.eventTarget() { } else { Issue.record("Expected .all") }
 
         // .player
         let playerRecord = ReevaluationEventTargetRecord(kind: "player", ids: ["player-uuid-1"])
-        if case .player(let pid) = playerRecord.toEventTarget() {
+        if case .player(let pid) = try playerRecord.eventTarget() {
             #expect(pid.rawValue == "player-uuid-1")
         } else {
             Issue.record("Expected .player(PlayerID)")
@@ -210,7 +210,7 @@ struct ReevaluationReplayCompatibilityTests {
 
         // .players
         let playersRecord = ReevaluationEventTargetRecord(kind: "players", ids: ["a", "b"])
-        if case .players(let pids) = playersRecord.toEventTarget() {
+        if case .players(let pids) = try playersRecord.eventTarget() {
             #expect(pids.count == 2)
             #expect(pids[0].rawValue == "a")
             #expect(pids[1].rawValue == "b")
@@ -220,7 +220,7 @@ struct ReevaluationReplayCompatibilityTests {
 
         // .client
         let clientRecord = ReevaluationEventTargetRecord(kind: "client", ids: ["client-device-1"])
-        if case .client(let cid) = clientRecord.toEventTarget() {
+        if case .client(let cid) = try clientRecord.eventTarget() {
             #expect(cid.rawValue == "client-device-1")
         } else {
             Issue.record("Expected .client(ClientID)")
@@ -228,35 +228,41 @@ struct ReevaluationReplayCompatibilityTests {
 
         // .session
         let sessionRecord = ReevaluationEventTargetRecord(kind: "session", ids: ["session-conn-1"])
-        if case .session(let sid) = sessionRecord.toEventTarget() {
+        if case .session(let sid) = try sessionRecord.eventTarget() {
             #expect(sid.rawValue == "session-conn-1")
         } else {
             Issue.record("Expected .session(SessionID)")
         }
 
-        // Round-trip: EventTarget -> Record -> toEventTarget() (compare by pattern + values)
-        let allBack = ReevaluationEventTargetRecord.from(EventTarget.all).toEventTarget()
+        // Round-trip: EventTarget -> Record -> eventTarget() (compare by pattern + values)
+        let allBack = try ReevaluationEventTargetRecord.from(EventTarget.all).eventTarget()
         if case .all = allBack { } else { Issue.record("Round-trip .all failed") }
 
-        let playerBack = ReevaluationEventTargetRecord.from(EventTarget.player(PlayerID("p1"))).toEventTarget()
+        let playerBack = try ReevaluationEventTargetRecord.from(EventTarget.player(PlayerID("p1"))).eventTarget()
         if case .player(let p) = playerBack { #expect(p.rawValue == "p1") } else { Issue.record("Round-trip .player failed") }
 
-        let playersBack = ReevaluationEventTargetRecord.from(EventTarget.players([PlayerID("p1"), PlayerID("p2")])).toEventTarget()
+        let playersBack = try ReevaluationEventTargetRecord.from(EventTarget.players([PlayerID("p1"), PlayerID("p2")])).eventTarget()
         if case .players(let ps) = playersBack {
             #expect(ps.count == 2 && ps[0].rawValue == "p1" && ps[1].rawValue == "p2")
         } else { Issue.record("Round-trip .players failed") }
 
-        let clientBack = ReevaluationEventTargetRecord.from(EventTarget.client(ClientID("c1"))).toEventTarget()
+        let clientBack = try ReevaluationEventTargetRecord.from(EventTarget.client(ClientID("c1"))).eventTarget()
         if case .client(let c) = clientBack { #expect(c.rawValue == "c1") } else { Issue.record("Round-trip .client failed") }
 
-        let sessionBack = ReevaluationEventTargetRecord.from(EventTarget.session(SessionID("s1"))).toEventTarget()
+        let sessionBack = try ReevaluationEventTargetRecord.from(EventTarget.session(SessionID("s1"))).eventTarget()
         if case .session(let s) = sessionBack { #expect(s.rawValue == "s1") } else { Issue.record("Round-trip .session failed") }
 
-        // Unknown kind or empty ids fallback to .all
-        let unknownRecord = ReevaluationEventTargetRecord(kind: "unknown", ids: ["x"])
-        if case .all = unknownRecord.toEventTarget() { } else { Issue.record("Unknown kind should fallback to .all") }
-        let playerEmptyIds = ReevaluationEventTargetRecord(kind: "player", ids: [])
-        if case .all = playerEmptyIds.toEventTarget() { } else { Issue.record("Empty player ids should fallback to .all") }
+        // A target with no recipients converts as it was live.
+        let noneBack = try ReevaluationEventTargetRecord.from(EventTarget.players([])).eventTarget()
+        if case .players(let ps) = noneBack { #expect(ps.isEmpty) } else { Issue.record("Round-trip empty .players failed") }
+
+        // A form `from(_:)` doesn't write is refused, never widened to .all (#641).
+        #expect(throws: ReevaluationRecordContentError.malformedEventTarget(kind: "unknown", idCount: 1)) {
+            _ = try ReevaluationEventTargetRecord(kind: "unknown", ids: ["x"]).eventTarget()
+        }
+        #expect(throws: ReevaluationRecordContentError.malformedEventTarget(kind: "player", idCount: 0)) {
+            _ = try ReevaluationEventTargetRecord(kind: "player", ids: []).eventTarget()
+        }
     }
 
     @Test("ReevaluationStepResult recordedServerEvents preserved when projector runs")

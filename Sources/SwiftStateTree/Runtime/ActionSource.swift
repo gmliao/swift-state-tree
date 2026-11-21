@@ -121,14 +121,17 @@ extension ReevaluationSource {
 
 // MARK: - Record content checks
 
-/// A record whose content isn't one a live run writes (#639, #640). A source refuses it when
-/// the record is opened, so the replay run fails with the cause and the process goes on.
+/// A record whose content isn't one a live run writes (#639, #640, #641). A source refuses it
+/// when the record is opened, and a replay resolve when it reads the tick, so the replay run
+/// fails with the cause and the process goes on.
 public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
     /// Two frames of the record hold the same tick (#639).
     case duplicateTickId(Int64)
     /// A frame's tick is outside `0 ..< Int64.max` (#640). A live keeper numbers its ticks from 0
     /// and can't record `Int64.max`: advancing its tick counter past it would overflow first.
     case tickIdOutOfRange(Int64)
+    /// A recorded event target that `ReevaluationEventTargetRecord.from(_:)` doesn't write (#641).
+    case malformedEventTarget(kind: String, idCount: Int)
 
     public var description: String {
         switch self {
@@ -136,6 +139,8 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
             "the record holds two frames for tick \(tickId); a live run writes one frame per tick"
         case .tickIdOutOfRange(let tickId):
             "the record holds a frame for tick \(tickId), outside the ticks a live run writes (0 ..< \(Int64.max))"
+        case let .malformedEventTarget(kind, idCount):
+            "a recorded event target of kind '\(kind)' with \(idCount) IDs; a live run writes 'all' with none, 'player', 'client' or 'session' with one, and 'players' with any number"
         }
     }
 
