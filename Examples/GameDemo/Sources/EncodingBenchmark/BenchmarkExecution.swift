@@ -233,7 +233,7 @@ struct BenchmarkResult {
     /// Dirty tracking the adapters actually had when the measurement ended: the fixed mode
     /// (`dirtyTracking`), checked rather than assumed.
     var dirtyTrackingEffective = EffectiveDirtyTracking()
-    /// Measured sync cycles the adapters skipped (back-pressure or a cycle in flight); the run
+    /// Measured sync cycles the adapters skipped (writer back-pressure); the run
     /// exits unless it is 0 (#160).
     var syncSkips = 0
     /// The opcode encoders' frame prefix caches over the measured iterations, summed over every

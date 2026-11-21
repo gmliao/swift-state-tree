@@ -90,7 +90,8 @@ public enum DebugFreezeError: Error, Sendable, Equatable {
     /// the freeze was released.
     case settleTimedOut
     /// The freeze was released (resume or auto-resume) before its settle finished, or the land
-    /// failed or is closing.
+    /// had already failed or is closing. A settle whose own plan fails throws that
+    /// `LandFailure` instead.
     case released
 }
 

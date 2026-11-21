@@ -286,8 +286,10 @@ struct TransportAdapterConcurrentStabilityBenchmarkRunner: BenchmarkRunner {
         let averageTime = iterations > 0 ? totalSyncTime / Double(iterations) : 0
         let throughput = totalSyncTime > 0 ? Double(iterations) / totalSyncTime : 0
         let sendCounts = await mockTransport.snapshotCounts()
-        // Bytes per iteration, not per syncNow(): of the concurrent calls, the ones that find a
-        // cycle in flight are rejected (`skippedSyncs`) and coalesce into it.
+        // Bytes per iteration, not per syncNow(): of the concurrent calls, the ones that meet
+        // writer back-pressure are skipped (`skippedSyncs`). The printed label below still says
+        // "cycle in flight", kept so the output doesn't change; since #546 L2c no sync is
+        // skipped for a cycle in flight.
         let totalBytesPerSync = iterations > 0 ? Double(sendCounts.bytes) / Double(iterations) : 0.0
         let bytesPerPlayer = playerIDs.count > 0 ? Int(totalBytesPerSync / Double(playerIDs.count)) : nil
         let skippedSyncs = await MeasuredSync.skipCount(adapter) - skipsBefore

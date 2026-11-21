@@ -106,9 +106,7 @@ Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTests.swift helper-p
 Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTimingTests.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterSyncStrategyTests.swift helper-poll 4
-Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift clock-poll 1
-Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift helper-poll 8
-Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift sleep-poll 1
+Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift helper-poll 6
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift sleep-poll 1

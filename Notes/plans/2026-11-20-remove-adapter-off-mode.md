@@ -1,6 +1,6 @@
 # Remove the adapter's off mode on live lands (#546 L2)
 
-**Status:** rev 7, plan only, for review. No code until this plan is GO. L1 (#677) is merged (7a462bd1).
+**Status:** rev 8, GO for L2d-1 (2026-11-21). L1 (#677), L2a, L2b (#712) and L2c (#718, follow-ups #724) are merged. §3.8 holds L2d; L2d-2 waits on the maintainer's decision on a live transport that doesn't opt in (§3.8.6).
 - **Decided (the maintainer, 2026-11-20):**
   - §8's Q1 (a), Q2 (a) and Q3 (a); Q4, the settle as a sync-only turn in L2d (decided after #712's review);
   - a requested sync turn is a keeper input that carries its reason and a ticket, validated in the turn (§3.2, §8).
@@ -425,6 +425,393 @@ Each off arm or legacy case is deleted, or converted when the in-turn path has t
 - §5.3's `SyncPlanMode` drops broadcast-only, which L2c deletes;
 - #612 §3.3's "a recorder sets it under today's gate (LK:4881 …)" is the gate mix-up rev 1 had here (§3.5).
 
+### 3.8 L2d (rev 8)
+
+Rev 8 adds this section; §10b lists what changed. Where this section and §3.5, §3.6 or §7 differ, this section holds.
+
+**Base:** `main` at a72b007c. Since 63f3db18 only plan documents changed (#716), so the code pointers are the same as at 63f3db18.
+- "LK" is `Sources/SwiftStateTree/Runtime/LandKeeper.swift` (6219 lines).
+- "LKT" is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
+- "TA" is `Sources/SwiftStateTreeTransport/TransportAdapter.swift` (6381 lines).
+- "OW" is `Sources/SwiftStateTreeTransport/OutboundWriter.swift`.
+
+#### 3.8.0 What #719 changes for L2d
+
+#719 changed only `SwiftStateTurns`, so no L2d step changes. It does add two constraints:
+- **L2d lands before #700.** #719 dropped `.held` and `releaseFollowUp`, on the assumption that L2d deletes their only user, the latch `syncOnlyTurnAfterLegacyCycle` (turn-core plan §3.3, §5.4).
+- **`waitForQuiescence` isn't usable here.** The keeper isn't on `TurnCore` until #700, so `waitForRequestedSyncTurnsForTesting` stays. L2d-3 drops the latch from `requestedSyncWork` (its doc comment at LK:5428).
+
+#### 3.8.1 Staleness of §3.5, §3.6 and §7
+
+The pointers are refreshed; no item became stale in substance. One correction: **no differential cell freezes.** `git grep -i freeze` under `Tests/SwiftStateTreeNIOTests/Differential/` finds nothing.
+- The settle's golden change is the sync-output set `freeze-resume-messagepack`, four files under `Tests/SwiftStateTreeTransportTests/Fixtures/SyncOutputGoldens/`. It is regenerated with `Tools/regenerate-sync-output-goldens.sh`.
+- `classify-golden-changes.py` runs over the 84 harness goldens as a guard and must report no change.
+
+Pointer map (plan pointer → a72b007c):
+
+| Item | Plan pointer | Now |
+|---|---|---|
+| `usesInTurnSync` | LK:672 | LK:719 (21 reads, see the table in §3.8.4) |
+| `setTransport` | LK:467 | LK:475 |
+| `runTickTurn` | LK:4705 | LK:4827, called at LK:4426 |
+| `runInputTurn` output branch | LK:5442 | LK:5799 |
+| initialize | LK:1193 | LK:1262 |
+| `runSync` and its fallback | LK:5509–5564 | LK:5866–5921 |
+| `beginSync` … deprecated `endSync(clearDirtyFlags:)` | LK:1336–1395 | LK:1380–1464 |
+| `isSyncing` | LK:663 | LK:710; reads at LK:1406, :1409, :1437, :4740, :5166 |
+| the latch | LK:704 | LK:762, :765; its rerun :1452; set at :5194–5197 |
+| `runSyncRequests`' live branch | LK:641–647 | LK:687–694 |
+| `runLegacyPass` callers | LK:1654, :1892, :2588, :2914 | LK:1774, :2012, :2714, :3040 |
+| `finishTicklessLegacyPass` | LK:3758 | called LK:3888, declared :3955; `deliverLegacyPass` :3998; `legacyDeliveries` :796 |
+| `runTicklessJobPass` | — | LK:2349, called :2335; `legacyPass*` fields :4010–4016, also used at :3871–3882, :4025–4037, :5688–5690 |
+| reevaluation broadcast calls | LK:3802, :4516 | LK:3928, :4627 |
+| hold points | — | LK:59, :73, :82, :87 |
+| settle | — | `DebugSettleTurnOutcome` LK:1588, `debugSettleTurn` LK:1615; TA:6179–6268 |
+| default opt-out; released placeholder | LKT:281; LKT:351 | LKT:304; `ReleasedLandTransport` LKT:374 |
+| lint allowance | — | `scripts/lint-turns.sh:48` (`TransportAdapter.swift 5`) |
+
+#### 3.8.2 Order: three PRs
+
+**Size:** about −700/+250 in Sources, −1100/+700 in Tests and ±150 in docs. That is over one review, so the change is split. Review agreed on this order. Each PR leaves `main` green, carries its own docs, and has a **revert check**: revert that PR's Sources commit locally, then show that its new tests fail by name.
+
+1. **L2d-1, the settle as a sync-only turn** (§3.8.3). It has the only golden change and doesn't depend on the routing.
+2. **L2d-2, routing every live keeper by mode, with the fakes and the transport refusal** (§3.8.4, §3.8.6).
+3. **L2d-3, the deletions; the forwards become defaults** (§3.8.5).
+
+#### 3.8.3 L2d-1: the settle as a sync-only turn (Q4)
+
+**The types.** All are package; L2d-1 adds no public API (Review's should 1 on rev 8). The settle phase is a package refinement of `LandKeeperTransport` that only `TransportAdapter` conforms to, in the same package.
+
+```swift
+// SwiftStateTree, LandKeeperTransport.swift
+package struct InTurnSettle: Sendable, Equatable {
+    package let generation: UInt64
+    package init(generation: UInt64)
+}
+package enum InTurnSettleCommit: Sendable, Equatable {      // what the adapter's settle phase did
+    case committed(membershipEpoch: UInt64, clearDirtyFlags: Bool)
+    case empty(membershipEpoch: UInt64)                      // no members: copy taken, nothing planned
+    case refused(InTurnSettleRefusal)
+    case failed(LandFailure)
+}
+package enum InTurnSettleRefusal: Sendable, Equatable { case notCurrent, outputClosed, writerBusy, syncInFlight }
+// InTurnSyncOutput gains `package let settle: InTurnSettleCommit?` (package init param, default nil)
+
+// SwiftStateTree: a package refinement, so no public requirement is added
+package protocol LandKeeperSettlePort: LandKeeperTransport {
+    func runSettlePhaseInTurn<S: StateNodeProtocol>(state: S, settle: InTurnSettle, recording: InTurnSyncRecording?) -> InTurnSyncOutput
+}
+// TransportAdapter: LandKeeperSettlePort (same package)
+
+// LandKeeper
+package struct SettleFence: Sendable { package let generation: UInt64; package let deadline: ContinuousClock.Instant }
+package enum SettleTurnOutcome<State: Sendable>: Sendable {
+    case settled(state: State, tickId: Int64, membershipEpoch: UInt64, planned: Bool)
+    case timedOut, released, closed
+    case refused(InTurnSettleRefusal)     // the adapter's admission refused
+    case failed(LandFailure)              // the plan threw; the land ended in this turn
+}
+package func settleTurn(via port: any LandKeeperTransport, fence: SettleFence) -> SettleTurnOutcome<State>
+//   guard let port = port as? any LandKeeperSettlePort else { return .refused(.notCurrent) }
+```
+
+**MF1: the settle context rides in the one phase call.** There is no adapter-wide `settling` flag. The keeper passes `InTurnSettle` only to `runSettlePhaseInTurn`, inside its synchronous turn. The adapter's ordinary `runSyncPhaseInTurnResult` is unchanged, so every other phase keeps the frozen defer, back-pressure and joiners.
+- The adapter's `runSettlePhaseInTurn` is a separate function. It skips the frozen defer and back-pressure, passes no joiners, and takes the membership epoch in the same segment as the plan. It returns `InTurnSyncOutput(result, syncStream:, settle:)`.
+- **The ticket.** `debugSettle` captures the freeze generation as a `GenerationTable` ticket (`debugFreezeTickets`) before the drain. Every check after an await uses `ifCurrent(ticket)`: after the drain, after the writer wait, after the turn, and at publish, where the closure writes `debugFreezeState.settled`. So an older continuation can't publish over, or clear, a newer settle's state after a release and refreeze. `debugReleaseFreeze` advances the table.
+- **Test** (`TransportAdapterDebugFreezeTests`, new):
+  - hold at `.settleBeforeCommit`, run an ordinary `syncNow()` and a tick while frozen, and assert both return `.skipped`, set `deferredSyncNow` and plan no joiner;
+  - release and refreeze during the hold, then release the hold: the old settle throws `.released`, the new generation's settle publishes, and the old continuation writes nothing.
+  - Mutant: an adapter flag read by the ordinary phase. The first assertion fails.
+
+**MF2: a typed outcome from the turn.** The copy, `lastCommittedTickId` and the epoch are captured in the turn's one synchronous segment and returned together in `.settled`. There is no `debugLastCommittedTickId()` call after the await, and no re-reading of adapter state to name an error.
+- The adapter maps the outcome:
+
+  | Outcome | Adapter |
+  |---|---|
+  | `.timedOut` | `settleTimedOut` |
+  | `.released` | `released` |
+  | `.closed` | the cause: the land's `LandFailure` when it failed, a closed error when it is draining (not `released`) |
+  | `.refused(.notCurrent)` | `released` |
+  | `.refused(.outputClosed)` | the cause, as for `.closed` (not `released`) |
+  | `.refused(.syncInFlight)` | back to the writer wait while the deadline allows, as for `.writerBusy`; then `settleTimedOut` |
+  | `.refused(.writerBusy)` | back to the writer wait while the deadline allows; then `settleTimedOut` |
+  | `.failed(f)` | throw `f` |
+  | `.settled` | publish, in `ifCurrent` |
+
+- **An empty land succeeds:** `.settled(…, planned: false)`. The copy is taken, the dirty flags aren't cleared, and nothing is recorded, as today (TA:6264).
+
+**MF3: the settle's own bookkeeping, not `runSyncOnlyTurn`'s** (LK:5162). `settleTurn` is its own function. In order:
+1. **Fence, in this order.** Each failing check returns without running a phase or changing state:
+   - `mode == .live, failure == nil, !isDraining` → else `.closed`;
+   - `ContinuousClock.now < fence.deadline` → else `.timedOut`;
+   - `debugFrozen && debugActiveGeneration == fence.generation` → else `.released`;
+   - the port is the attached `transport` (identity) and `port.runsSyncPhaseInTurn(of: self)` → else `.refused(.notCurrent)`. There is no `bindSyncRequester` and no binding ticket: the settle never binds a requester, and the fence is checked before any binding is read.
+   - **While L2d-1 coexists with `isSyncing`:** `isSyncing` true (only a direct public `beginSync` can set it) → `.refused(.syncInFlight)`, its own refusal, retried like `.writerBusy`. It never latches.
+2. **Not consumed or reset:**
+   - `pendingSyncTurnAfterTurn`. Its turn runs later, skips as frozen and sets `deferredSyncNow`, so the resume delivers it.
+   - `inTurnSyncDue`, `joinSyncWaitsForCommit` and the drain-retry binding.
+   - No `scheduleJoinSyncTurn` and no `.keptEvents` request. The resume's step 2 and the adapter's kept-events check after publish own those (§3.4).
+3. **The phase:** `inTurnSyncTurnKind = .syncOnly`, then the `runSettlePhaseInTurn` call. `submitSyncStream(output.syncStream)`.
+   - `.committed(_, clear)`: `state.clearDirty()` when `clear`.
+   - `.empty`: nothing.
+   - `.failed(f)`: `failLand(f)` in this turn. It is terminal (MF4).
+   - `.refused`: no record.
+4. **The record:** on a tickless land, `enqueueTicklessTurnEnd(since:)`, as for any sync-only turn (#327). `requestedSyncTurnsForTesting[.settle] += 1` (a new `SyncTurnReason.settle`). The `turn-begin` and `turn-end` probes.
+
+**MF4: the failure ends the land in the settle's turn (Q2 decided), with a compatibility contract.**
+- **New records:**
+  - **Tick land:** the failure is recorded in the last committed tick's frame. That frame has no `endsInputs`, because the failure ends no input batch.
+  - **Tickless land:** the failure shares the last pass, at the keeper's position (`LandFailurePosition(stage: .syncPhase)` with no tick or pass takes the keeper's).
+  - **Both:** the committed-output prefix is every output before the settle, and the failed settle has no output.
+- **Old records stay replayable.** Pins, as new tests in `SyncOutputVerifierTests`, each verdict `.passed` with 0 mismatches:
+  1. **an old successful settle:** a copy of today's `freeze-resume-messagepack.reeval.sstr`, kept as the fixture `freeze-resume-legacy-cycle-messagepack.reeval.sstr`, replays after L2d-1;
+  2. **an old queued failure:** a record made on the base by `settleFailureEndsTheLand`'s scenario, with the failure applied by the next tick and `endsInputs` on that frame, kept as `settle-failure-queued-tick.reeval.sstr`, replays after L2d-1;
+  3. **a new failure on a tick land:** the frame, position and prefix as above;
+  4. **a new failure on a tickless land:** the same, on the last pass.
+- **`DebugFreezeSettleFailureTests.settleFailureEndsTheLand`** (`SyncOutputVerifierTests:1502`) drops `stepTickOnce`, and the land has failed when `debugFreeze()` throws. Its negative assertion stays scoped: no output has the settle's stream index or later. It isn't broadened to `!contains(.syncOnly)`, because earlier sync-only outputs exist.
+
+**The writer wait (should).** The 2 ms poll (TA:6186–6190) becomes `outboundWriter.waitForSyncCycleDrain()` (OW:264), made cancellation-aware with #724's waiter-table rule: register under the lock with a `Task.isCancelled` check, and a handler that only removes a registered waiter. It is bounded by the fence's deadline with a timer task that cancels the wait.
+- After it returns, `ifCurrent(ticket)` and the deadline are re-checked.
+- The backlog is re-checked at admission: `runSettlePhaseInTurn` returns `.refused(.writerBusy)` when a sync-cycle element entered since, and `debugSettle` loops back to the wait.
+- **Test:** a writer that never drains gives `settleTimedOut` at the deadline, with no task left behind (`withinHangBound`). Mutant: the old uncancellable wait hangs the bound.
+
+**Deleted in L2d-1:**
+- `DebugSettleTurnOutcome` and `debugSettleTurn` (LK:1588–1635);
+- `debugSettleAdmitIsolated`, `debugSettleCommitIsolated` and `DebugSettleCommit` (TA:6168–6268), with their two `assumeIsolated` closures;
+- `lint-turns.sh:48` goes from 5 to 3.
+
+**Tests:**
+- The three `.legacyCycle` assertions become the settle's sync-only output, matched by the settle's stream index:
+  - `SyncOutputVerifierTests.legacyCycleIsVerified` (:951), renamed `settleSyncTurnIsVerified`;
+  - `SyncStreamProducerTests.legacyCycleAndStreamOrder` (:470), with kinds `seed, tick, tick, syncOnly, clear`;
+  - `TicklessPassOrdinalTests.legacyCycleCommitsVerify` (:261): its own turn record, and the later turns' positions move by one.
+- The fence cases each run between the last writer check and the turn, with nothing planned: release, refreeze, shutdown, deadline expiry, and a direct `beginSync`.
+
+**Docs:** `runtime.md` In-Turn Sync's settle text (:434, :444–478 region) and `failure-handling.md`'s settle row, in en and zh-TW.
+
+**Gate:**
+- the touched suites;
+- the harness 84/84, with `classify-golden-changes.py` reporting no change;
+- `freeze-resume-messagepack` regenerated in the pinned image, classified as cause 1 only (`legacyCycle → syncOnly`, frames byte-identical);
+- the 4 replay pins;
+- the revert check.
+
+**A/B:** none (debug tooling).
+
+#### 3.8.4 L2d-2: routing every live keeper by mode
+
+**Order:**
+1. The pin test (§3.5, under the `.wiring` hold, tick and tickless) on the base.
+2. The predicates: `routesThroughTurn` is `mode == .live`; `syncsInTurn` is today's `usesInTurnSync`.
+3. The transport refusal (§3.8.6).
+4. The fakes.
+5. The census and the recording comparison.
+
+**The predicates, per read (should):**
+
+| Site | Read | Predicate |
+|---|---|---|
+| handler sync requests | LK:684 | `syncsInTurn`. Otherwise, live: dropped. `.reevaluation`: today's call |
+| `isUsingInTurnSync()` | LK:917 | `syncsInTurn` (answers unchanged) |
+| initialize | LK:1262 | turn: `routesThroughTurn`; phase: `syncsInTurn`; marker: `recordsSyncStream` |
+| join (tickless) | LK:1771, :2009 | `routesThroughTurn` |
+| admission helpers | LK:2023, :2031, :2038, :2044 | `syncsInTurn` (they call the port) |
+| action (tickless) | LK:2328, :3035 | `routesThroughTurn` |
+| leave (tickless) | LK:2711 | `routesThroughTurn` |
+| forced tickless shutdown | LK:2783 | `routesThroughTurn` |
+| client events | LK:3172 | `routesThroughTurn` |
+| server input kick | LK:3279 | `routesThroughTurn` |
+| tickless step in `runTick` | LK:4376 | `routesThroughTurn` |
+| tick turn | LK:4426 | `routesThroughTurn` (the phase inside on `syncsInTurn`) |
+| `recordsSyncStream` | LK:5003 | `mode == .live && reevaluationRecorder != nil && syncsInTurn` |
+| `runSyncOnlyTurnIfInTurn` | LK:5186 | `syncsInTurn` |
+| tickless turn outputs | LK:5799 | below |
+| `runSync` | LK:5896 | `syncsInTurn`. The fallback (LK:5921) only on `mode == .reevaluation` |
+
+**With no port opting in:**
+- **The input turn (LK:5799).** When the batch is non-empty and the land hasn't failed, the turn takes the events and the sync request (`takeEmittedEvents`, `takeSyncRequest`). They are recorded by `makeTurnRecord` and then dropped, so the collector is drained. `runTurnOutputs` runs only when `syncsInTurn`.
+- **The tick turn.** `runTickTurn(transport: (any LandKeeperTransport)?)` takes the tick's events and sync request on the same rule.
+
+**Census (should).** `scripts/l2d-census.sh`, in the L2c shape.
+- **Counting rule:** non-comment lines (lines whose first non-space characters are `//` are skipped) in `Sources Tests Examples Tools`, per symbol, at the base and at HEAD.
+- **Allowlist:** `scripts/l2d-census.allow` lists `path symbol count reason`. Examples:
+  - `.legacyCycle` in `ReevaluationSyncStream.swift`, TA:3819 and TA:5205 (the standalone firstSync, until B3);
+  - `syncNowFromTransport` and `syncBroadcastOnlyFromTransport` in the LKT requirement, its default and `ReleasedLandTransport`;
+  - the test fakes' conformances;
+  - the `.reevaluation` replay path (`processPendingActions`, `replayRecordedPasses`).
+- A count above the allowlist fails. The script also prints the migration list of keepers with no port (§3.5).
+
+**Fakes:** §3.8.8.
+
+**Docs:**
+- `runtime.md`: live keepers without an in-turn transport run turns, and their outputs are recorded, not delivered. "Re-evaluation keepers always use the legacy path" (:436) stays.
+- transport README: the refusal (§3.8.6).
+
+Both in en and zh-TW.
+
+**Gate:**
+- full `swift test`;
+- the pin;
+- the recording comparison (§3.5);
+- the census;
+- the GameDemo build;
+- the `HashCostBenchmark` smoke;
+- the harness (no change expected);
+- the A/B (§3.8.9);
+- the revert check.
+
+**Between L2d-2 and L2d-3 (Q4 decided).** The live-only legacy entries stay in the code but are unreachable, each guarded with `precondition(mode == .reevaluation)` or `preconditionFailure` (not `assert`, which release builds drop): `runLegacyPass`, `finishTicklessLegacyPass` and `runTicklessJobPass`.
+
+#### 3.8.5 L2d-3: the deletions
+
+**Deleted from the keeper:**
+- `beginSync`, `beginSyncLocated`, `endSync()` and `endSync(clearDirtyFlags:)` (LK:1380–1464);
+- `isSyncing` and its reads (LK:4740, :5166);
+- the latch (LK:762, :765, :1452, :5194–5197) and its share of `requestedSyncWork`;
+- the legacy pass: `runLegacyPass`, `finishTicklessLegacyPass`, `deliverLegacyPass`, `legacyDeliveries`, the `legacyPass*` fields with their drain uses (LK:5688–5690), `runTicklessJobPass`, and the action site's else branch (LK:2328–2336);
+- `runSyncRequests`' live branch (LK:687–694; it keeps a `.reevaluation` branch);
+- the hold points `.legacyShutdownPass`, `.syncOnlyAfterLegacyCycle`, `.legacyDelivery` and `.ticklessJobPass`.
+
+**The forwards become defaults:**
+- `LandKeeperTransport`'s extension (LKT:302) gets do-nothing defaults for `syncNowFromTransport` and `syncBroadcastOnlyFromTransport`, documented as the replay surface until #612 S6.
+- The adapter's forwards are deleted (`TransportAdapter+LandKeeperTransport.swift:15–23`), with `_syncBroadcastOnlyImpl` (TA:5089) and `SyncTurnReason.broadcastOnly`.
+- `_syncNowImpl` (TA:3118) stays, because `syncNow()` uses it.
+- `TransportAdapterRequestedSyncTurnTests.broadcastOnlyBridgeIsARequestedTurn` (:98) is retired with the bridge. Its leave claim is kept by the converted `TransportAdapterBroadcastOnlySyncTests`: OnLeave's sync runs in its turn.
+- The census lists `_syncBroadcastOnlyImpl` and `.broadcastOnly` as gone.
+
+**Docs:**
+- `runtime.md` drops `beginSync`/`endSync`/`isSyncing` (:41–62, :94–104, :444–478);
+- the comments at `LandError.swift:21` and TA:405 go;
+- `Examples/GameDemo/docs/benchmarks/WORKER_POOL_ANALYSIS.md:230`.
+
+All in en and zh-TW where the file has both. CLAUDE.md and AGENTS.md change separately (§3.8.10).
+
+**Gate:**
+- full `swift test`;
+- the census, with every deleted symbol at its allowlist count;
+- the GameDemo build;
+- the harness;
+- the revert check: the census fails on the revert.
+
+#### 3.8.6 MF5: a live custom transport that doesn't opt in
+
+After L2d-2 a live keeper whose transport doesn't opt in would silently receive nothing. The maintainer asked why a transport would not opt in at all (order `l2d-transport`).
+
+**Who conforms outside the tests** (Sources and Examples):
+- `TransportAdapter` (`Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift:8`): the only real one.
+- `ReleasedLandTransport` (LKT:374), internal: the teardown placeholder, set by the keeper itself (LK:475 through `releasedTransport`).
+- No replay transport exists: production replay keepers have none (`ReevaluationEngine.swift:263`, `ReevaluationRunnerImpl.swift:215`, :286 build `.reevaluation` keepers without `transport:`).
+- Every attach outside the tests passes an adapter:
+  - `LandManager.swift:708`;
+  - the two SDK benchmark runners (`TransportAdapterSyncBenchmarkRunner.swift:254`, `TransportAdapterConcurrentStabilityBenchmarkRunner.swift:150`);
+  - EncodingBenchmark (`BenchmarkExecution.swift:314`, :910, :1143; `EncodingBenchmarkMain.swift:145`, :477, :888, through the public `TransportAdapterBenchmarkHandle.keeperTransport`, `TransportAdapterBenchmarkHandle.swift:54`);
+  - the Demo/GameDemo `SyncTablesFrameIdentityTests` (:64, :79).
+
+**Why "it implements the method" isn't "it can run in turn".** The adapter answers `runsSyncPhaseInTurn(of:)` with `isAttached(to:)` (identity, TA:109), and it shares that keeper's executor through `unownedExecutor` (TA:104–106). Its `assumeIsolated` is valid only then. Any of these makes it a runtime condition, which no type can express:
+- an adapter built for keeper A and attached to keeper B;
+- a second keeper;
+- a class transport on its own executor.
+
+**Test fakes** (28 conformers in `Tests/`, 12 of which opt in):
+
+| Option | What it is | Fakes touched | Public API | What it closes |
+|---|---|---|---|---|
+| **(c1)** remove the defaults of `runsSyncPhaseInTurn` (LKT:304) and `runSyncPhaseInTurn` (LKT:336) | every conformer must write both | 16 (the 28 minus the 12 that already do), plus `ReleasedLandTransport` | a source break for any outside conformer; none exist | nothing: a conformer can still return `false` / `.unsupported`, and the attach-to-another-keeper case stays runtime |
+| **(c2)** make `LandKeeperTransport` package | only the package can conform | 0 (the tests are in the package) | `LandKeeper.setTransport` (LK:475) and `init(transport:)` (LK:973) become package, and `TransportAdapterBenchmarkHandle.keeperTransport` goes. A public attach replaces them (for example `TransportAdapterBenchmarkHandle.attach()`), and the 8 Examples call sites above change. The public types used by the protocol (`InTurnSyncResult`, `InTurnSyncOutput`, `JoinAdmission`, …) can stay public | outside conformers. The wrong-keeper attach stays runtime |
+| **(r)** refuse at attach (Review + Main recommendation) | `setTransport` and `init(transport:)` on a live keeper: a non-nil transport with `runsSyncPhaseInTurn(of: self) == false` stops with `preconditionFailure("…a live keeper's transport must run its sync phase in turn (#546 L2d)")`, in release too. It applies only while `!destructionFinished`: after destruction, `setTransport` swaps in the released placeholder | the fakes attached to live keepers that don't opt in: 15 (16 minus the `.reevaluation` fake, which the mode exempts). They opt in, or move to `.reevaluation` where that is their subject | none in signatures; a behavior change (a trap instead of silence) | every live mis-attach, including the wrong keeper and the wrong executor |
+
+**How the three special transports fare:**
+- **`nil`:** allowed under every option. The keeper runs turns and records; its outputs are delivered nowhere (§3.8.4).
+- **`ReleasedLandTransport`:** the keeper installs it itself, bypassing `setTransport`'s check. Under (r) it is exempt by construction; under (c1) it needs the two methods; under (c2) nothing changes.
+- **Replay transports:** none in production. The test fake on `.reevaluation` keepers (`LandKeeperReevaluationOutputModeTests:41`) is exempt by mode under (r), untouched under (c2), and needs the two methods under (c1).
+
+**Recommendation: (r) in L2d-2.** It is the only option that closes the case that can't be typed: the attach to a wrong keeper or executor. It costs no signature, and it fails fast at the attach rather than at the first silent turn.
+- (c1) adds boilerplate and closes nothing.
+- (c2) is sound hardening but closes the extension point. It is a separate maintainer decision, outside L2.
+
+#### 3.8.7 Public API (L2d)
+
+- **L2d-1:**
+  - Public: none. The settle phase is the package protocol `LandKeeperSettlePort` (`runSettlePhaseInTurn`), which `TransportAdapter` conforms to.
+  - Package: `InTurnSettle`, `LandKeeperSettlePort`, `SettleFence`, `SettleTurnOutcome`, `InTurnSettleCommit`, `InTurnSettleRefusal`, `InTurnSyncOutput.settle`, `SyncTurnReason.settle`.
+  - Removed, package: `debugSettleTurn`, `DebugSettleTurnOutcome`.
+  - Behavior: a settle whose plan throws ends the land in its own turn.
+- **L2d-2:** no signature change. Behavior:
+  - (r) a live keeper refuses, with a trap, a transport that doesn't run its phase in turn;
+  - live keepers with no transport run turns, and their outputs are recorded, not delivered.
+- **L2d-3:**
+  - Removed: `LandKeeper.beginSync(clearDirtyFlags:)`, `endSync()`, `endSync(clearDirtyFlags:)`.
+  - Added: do-nothing defaults for `syncNowFromTransport` and `syncBroadcastOnlyFromTransport`.
+  - Internal or package: the four hold points (`LandKeeperHoldPoint` is internal, LK:55), `beginSyncLocated`, `syncOnlyTurnAfterLegacyCycleForTesting`, `SyncTurnReason.broadcastOnly`.
+  - Unchanged: `isUsingInTurnSync()` and `LandKeeper`'s init.
+
+#### 3.8.8 Test fates
+
+| File | PR | Fate |
+|---|---|---|
+| `LandKeeperSyncLockTests` (9 tests) | L2d-3 | Delete 4 (:47, :142, :175, :202: snapshot, serialization, lock release, consistency; the lock is gone). Convert 5 (:339, :385, :403, :465, :524: the dirty-flag clearing claims) to sync-only turns through an opted-in fake |
+| `TicklessActionJobTests` | L2d-3 | Delete the off arm (:271, :286, the `.ticklessJobPass` at :425); drop the `inTurn:` parameter |
+| `ShutdownTurnTests.legacyCallerPassAppliesTheShutdown` (:413) | L2d-2 | Becomes a forced-shutdown turn held at `.inputDrain`; the `.legacy` builder arm goes |
+| `TicklessReplayPassTests` :390 / :452 / :485 | L2d-2 | :390 becomes two inputs in one batch. :452 and :485 hold at `.inputDrain` and assert the turn's order. The `.reevaluation` half (:420) stays |
+| `DrainTurnTests` | L2d-2 | `DestroyHoldTransport` (:281) opts in. `BroadcastHoldTransport` (:160; uses :333, :527) is replaced by a hold at `.inputDrain` |
+| `ResolverDeliveryTests` | L2d-2 | `HoldingTransport`/`BroadcastHoldingTransport` (:229, :249; uses :420, :491) are replaced by resolver holds at the same position in the turn |
+| `LandKeeperDebugFreezeTests` | L2d-2 | `DebugFreezeGatedKeeperTransport` (:134, :206–230) is replaced by a hold inside the tick turn |
+| `PerSequenceResultTests` | L2d-2 | `BroadcastSpyTransport` (:200, :376) opts in; the claim becomes "OnLeave's sync runs in its turn" |
+| `MockLandKeeperTransport`, `TransportAdapterBroadcastOnlySyncTests` (:20, :76) | L2d-2 | Opt in; assert the OnLeave sync turn |
+| `TransportAdapterRequestedSyncTurnTests.broadcastOnlyBridgeIsARequestedTurn` (:98) | L2d-3 | Retired with the bridge |
+| Non-opting live fakes: `ActionEventSyncTests`, `InitializeResolverFailureTests`, `LandDSLTests`, `ReplaySequenceWatermarkTests`, `ResolverDeadlineTests`, `SyncRegistrationTests`, and the second and third fakes in `DrainTurnTests`, `PerSequenceResultTests`, `ResolverDeliveryTests`, `TicklessReplayPassTests` | L2d-2 | (r) traps them at attach. Each opts in, or switches to `transport: nil` where it only observes state. The PR runs the suites first and lists each one (§10 risk 2; lesson `2026-11-09-a-tickless-keeper-without-a-transport-tests-only-the-legacy-path`) |
+| `LandKeeperReevaluationOutputModeTests` (:41) | — | Keep (`.reevaluation`, exempt) |
+| The `.legacyCycle` asserts (`SyncOutputVerifierTests` :951 and :1502; `SyncStreamProducerTests:470`; `TicklessPassOrdinalTests:261`) | L2d-1 | §3.8.3 |
+| `RecordFieldListTests:29` | — | Keep: `.legacyCycle` stays for the standalone firstSync |
+| Direct `beginSync`/`beginSyncLocated` (`TransportAdapterOrderedSendTests:575`, `TransportAdapterSyncDirtyWindowTests:250`, `SyncStreamProducerTests:519`) | L2d-3 | Convert to a hold inside a sync-only turn (`.inputDrain` or an adapter hold), or delete with the reason |
+| `TransportAdapterSyncConcurrencyTests` | L2d-3 | Keep; fix the comment (:4) |
+
+#### 3.8.9 A/B (Q6 decided)
+
+- **L2d-1:** none.
+- **L2d-3:** a Mac output check.
+- **L2d-2:** a scoped host A/B. Unattached worker-pool keepers' ticks move from the legacy `runTick` to `runTickTurn`.
+  - **Cells:** hero-defense, `messagepack-pathhash`, `--compare-worker-pool` (the static pool `runMultiRoomBenchmarkWithWorkerPool`, `BenchmarkExecution.swift:458`, and the dynamic pool `…WithDynamicWorkerPool`, :654, reported separately); `ticksPerSync` 1 and 2; 10×5 and 100×5. JSON only if cheap.
+  - **Null control:** the serial (attached) arm. Its keepers already run turns, so it should not move.
+  - **Pass bar:** zero skips and identical bytes on every cell, and `timeMs` within noise on every cell (or the cost stated and accepted by the maintainer). The serial null control must be within noise too.
+  - **Setup:** the 7600X with the pinned image; base = L2d-1's head, against L2d-2.
+- **Expected golden classification:**
+  - `freeze-resume-messagepack`: cause 1 only.
+  - The harness: no change in any PR.
+  - `ReevaluationRunner/main.swift:452` (L2d-2): a turn record per tick. The bar is decoded equality and the verifier's 0 mismatches.
+
+#### 3.8.10 CLAUDE.md and AGENTS.md (with L2d-3, on the maintainer's OK)
+
+They are changed once, after L2d-3 merges, as a direct change to `main`. There is no interim edit.
+
+**CLAUDE.md, current:**
+> Not yet true for the join/leave resolvers, the freeze settle (#129) and the legacy (off in-turn sync) tick path; those paths still re-check by hand until they move.
+
+The same section also says: "…the freeze accounting in `debugEndWork` and, tickless with in-turn sync, the turn waiter registration (`awaitInputTurn`)."
+
+**CLAUDE.md, after L2d:**
+> Not yet true for the join/leave resolvers and the freeze drain (#129: `debugFreeze` re-checks its generation and registers its waiter after each await); those paths still re-check by hand until they move. Re-evaluation keepers keep their non-turn replay path until #612.
+
+The bookkeeping sentence becomes "…the freeze accounting in `debugEndWork` and, on a tickless land, the turn waiter registration (`awaitInputTurn`)."
+
+**AGENTS.md:154, current:**
+> Not yet true for the join and leave resolvers, the freeze settle (#129) and the legacy tick path (in-turn sync off); until they move, those paths re-check by hand in the segment after the `await`.
+
+**AGENTS.md:154, after L2d:**
+> Not yet true for the join and leave resolvers and the freeze drain (#129); until they move, those paths re-check by hand in the segment after the `await`. Re-evaluation keepers keep their non-turn replay path until #612.
+
+AGENTS.md:156's "on a tickless land with in-turn sync" becomes "on a tickless land".
+
+The freeze drain was checked: LK:1531–1559 loops on `debugInFlightWork > 0, debugActiveGeneration == generation`, and writes `debugDrainWaiters` and re-tests after each await. L2d doesn't touch it.
+
+#### 3.8.11 Lessons consulted
+
+- `2026-11-09-a-tickless-keeper-without-a-transport-tests-only-the-legacy-path`: the non-opting fakes (§3.8.8).
+- `2026-11-09-an-ordering-check-must-fail-under-its-mutant`: the legacy pass's ordering assert (LK:4036) goes, so its claim is kept as in-turn tests.
+- `2026-11-19-a-harness-with-its-loops-off-must-order-the-work-it-starts`: the pin test uses `autoStartLoops: false`.
+- `2026-11-21-a-closure-that-captures-only-actor-state-runs-off-the-actor`: L2d-1 removes the settle's closures, and adds none.
+- `2026-11-20-a-time-limit-does-not-end-a-wait-that-never-resumes`: the fence and writer-wait tests use `withinHangBound`.
+
 ## 4. Steps
 
 Order: **L2a → L2b → L2c → L2d.**
@@ -650,6 +1037,27 @@ Main settles the rest: the A/B cells (§6), and where L2a–L2d sit among the ot
 
 - **§3.2's caller 2 is dropped** (agreed in L2a's review). An event queued outside a turn on a land without periodic sync doesn't request a sync-only turn: it waits for the next sync, and requesting one would be new behavior. One window narrows. Before L2a, on the in-turn adapter, an event queued while `syncNow()`'s legacy cycle was in flight was delivered by the follow-up after `endSync` (the retired test 7e). The requested turn is synchronous, so that window is gone, not just unreachable: such an event now waits for the next sync, like any event queued outside a turn. This is the intended direction. Four tests pin today's semantics: `TransportAdapterMembershipTests` (:130, :214), `SyncStreamProducerTests:479` and `TransportAdapterOrderedSendTests` test 5. The reason `.outOfTurnEvent` goes with it, and the callers are renumbered 1–4. Auto-delivery, if wanted, is a separate behavior change.
 - **L2b** restates the path of `eventKeptBySettleArrivesAfterResume`'s event (§3.4), which relied on caller 2.
+
+## 10b. Rev 8: what changed
+
+| Finding | Fix |
+|---|---|
+| MF1: an adapter `settling` flag spans the await | The settle context rides only in `runSettlePhaseInTurn`, within the turn. A `GenerationTable` ticket is captured before the drain and checked with `ifCurrent` at publish. The hold-point test checks that an ordinary phase still defers (§3.8.3) |
+| MF2: re-reading state after the await; the tick read after the call | A typed `SettleTurnOutcome` returns the copy, tick and epoch from one segment. Every error is distinguished. An empty land is `.settled(planned: false)` |
+| MF3: inheriting `runSyncOnlyTurn`'s bookkeeping | `settleTurn` is its own function. The fence comes first, in a fixed order. Each piece of bookkeeping is named as done or not done: the `isSyncing` interim, the pending request, the cadence and join resets, the follow-ups, the binding. The dirty-flag clear and the terminal failure are kept |
+| MF4: the failure's compatibility | The new record shapes are given for tick and tickless lands. Four replay pins cover the old successful `.legacyCycle` record, the old queued failure, and the new tick and tickless failures. The negative assertion stays scoped to the settle's stream index |
+| MF5: a live transport that doesn't opt in | The conformer census; (c1), (c2) and (r) compared; (r) recommended, for the maintainer (§3.8.6) |
+| should: the bridge test and the census | `broadcastOnlyBridgeIsARequestedTurn` is retired in L2d-3. `_syncBroadcastOnlyImpl` and `.broadcastOnly` are in the census. `_syncNowImpl` stays |
+| should: the writer poll | `waitForSyncCycleDrain`, cancellable and bounded by the deadline, with the backlog and fences re-checked at admission |
+| should: Q4 | `precondition`/`preconditionFailure`, not `assert` |
+| should: the predicates and the census | A predicate per read; the no-port drain at LK:5799; the census's counting rule and allowlist |
+| should: revert checks and docs | A revert check and docs for each PR. CLAUDE.md and AGENTS.md take the end state after L2d-3, on the maintainer's OK |
+| Q6 | The cells as given (§3.8.9) |
+| rev 8 review, should 1: no public API | `LandKeeperSettlePort`, a package refinement of `LandKeeperTransport`; `InTurnSettle` is package; the keeper casts the port and refuses `.notCurrent` otherwise. The lint allowance still goes 5→3 |
+| rev 8 review, should 2: `.closed` read as `released` | `.closed` and `.refused(.outputClosed)` surface the cause (the failure, or a closed error) |
+| rev 8 review, should 3: the A/B's performance bar | `timeMs` within noise per cell, or the cost accepted; the serial null control within noise |
+| rev 8 review, nits | the interim `isSyncing` gets its own refusal, `.syncInFlight`, retried like `.writerBusy`; (r) applies only while `!destructionFinished` |
+| Also | The pointers restated at a72b007c. The golden tool corrected (`regenerate-sync-output-goldens.sh` for the settle; `classify-golden-changes.py` as the harness guard). Q1 (`SettleFence`), Q2 (same-turn failure), Q3 (three PRs), Q4 and Q5 (one CLAUDE/AGENTS edit) are folded in as decided |
 
 ## 11. Rev 7: what changed
 

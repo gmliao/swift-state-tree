@@ -74,7 +74,7 @@ private struct InitRecordFixture {
 
     /// A recording keeper whose OnInitialize resolver waits at a gate. With
     /// `transportBeforeInitialize`, the adapter is attached while the resolver waits, so
-    /// OnInitialize runs as a turn when in-turn sync is on; otherwise OnInitialize finishes
+    /// OnInitialize runs as a turn; otherwise OnInitialize finishes
     /// before the adapter exists (the timing `LandManager` gives a land without resolvers).
     /// The land ID is `landPrefix` plus a fresh number, so its gate is this case's alone.
     static func make(landPrefix: String, transportBeforeInitialize: Bool) async throws -> InitRecordFixture {
@@ -113,8 +113,8 @@ private struct InitRecordFixture {
 @Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct SyncStreamInitializeRecordTests {
     @Test("The sync path records OnInitialize's events and post-initialize state hash")
-    func initializeRecordOnBothPaths() async throws {
-        let f = try await InitRecordFixture.make(landPrefix: "init-record-true", transportBeforeInitialize: true)
+    func initializeRecordOnTheSyncPath() async throws {
+        let f = try await InitRecordFixture.make(landPrefix: "init-record-sync", transportBeforeInitialize: true)
         #expect(await f.keeper.currentState().value == 7)
         let frame = try await f.frame0()
         let record = try #require(frame.initialize)
@@ -157,7 +157,7 @@ struct SyncStreamRecordHeaderTests {
             enableLiveStateHashRecording: true,
             syncLagPolicy: nil
         )
-        let landID = LandID(landType: "init-record-test", instanceId: "header-true")
+        let landID = LandID(landType: "init-record-test", instanceId: "header")
         let container = try await manager.getOrCreateLand(landID: landID, definition: makeInitRecordLand(), initialState: InitRecordTestState(), metadata: [:])
         let recorder = try #require(await container.keeper.getReevaluationRecorder())
         let metadata = try #require(await recorder.getMetadata())

@@ -14,6 +14,7 @@ import Testing
 import SwiftStateTreeMessagePack
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
+import SwiftStateTreeTestSupport
 
 // MARK: - Test state, action and event
 
@@ -161,23 +162,6 @@ private struct TargetedOnceFixture {
         #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 
-    /// Waits until a frame carrying `message` reached `sessionID` (the follow-up cycle runs in
-    /// its own task), then a little longer so a late duplicate is seen too.
-    func waitForEvent(_ message: String, at sessionID: SessionID) async throws {
-        let marker = Data(message.utf8)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await transport.frames(for: sessionID)).contains(where: { $0.range(of: marker) != nil }) {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("timed out waiting for \(message) at \(sessionID.rawValue)")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
-    }
-
     /// Indices (in send order) of frames that carry the targeted event with `message`.
     func eventFrameIndices(_ message: String = targetedOnceMarker) async -> [Int] {
         let marker = Data(message.utf8)
@@ -242,6 +226,61 @@ struct TransportAdapterTargetedEventOnceTests {
         let eventIndices = await f.eventFrameIndices()
         #expect(eventIndices.count == 1, "targeted event must arrive exactly once; event frames at \(eventIndices) of \(frames.count)")
         #expect(messagePackStateFrameIndices(frames).isEmpty, "no state frame expected without a state change")
+    }
+
+    @Test("opcode 107: two sessions, A with a per-player state update and B without one, each get their own events once per cycle")
+    func twoSessionsEventsArriveOnceAtTheirOwnSession() async throws {
+        let f = try await TargetedOnceFixture.make(encoding: .messagepack)
+        let sessionB = SessionID("to-session-b")
+        let clientB = ClientID("to-client-b")
+        let playerB = PlayerID("to-player-b")
+        try await f.joinSecondSession(session: sessionB, client: clientB, player: playerB)
+
+        /// Runs one sync-only turn (it enqueues its frames before it returns) and returns what
+        /// each session received since the previous cycle, then clears the record.
+        func cycle() async throws -> (a: [Data], b: [Data]) {
+            await f.adapter.syncNow()
+            try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
+            let frames = (a: await f.transport.frames(for: f.session), b: await f.transport.frames(for: sessionB))
+            await f.transport.clear()
+            return frames
+        }
+        func expectOnce(_ events: [String], in own: [Data], notIn other: [Data], _ who: String, _ name: String) {
+            for event in events {
+                #expect(frameIndices(containing: event, in: own).count == 1, "\(name): \(event) must reach \(who) exactly once")
+                #expect(frameIndices(containing: event, in: other).isEmpty, "\(name): \(event) must reach only \(who)")
+            }
+        }
+
+        // Cycle 1: A has a per-player state update, B has none; both have targeted events.
+        try await f.setScore(5)
+        await f.sendTargetedEvent("evt-a1-pre", to: f.player)
+        await f.sendTargetedEvent("evt-b1-pre", to: playerB)
+        await f.sendTargetedEvent("evt-a2-pre", to: f.player)
+        let first = try await cycle()
+        expectOnce(["evt-a1-pre", "evt-a2-pre"], in: first.a, notIn: first.b, "A", "cycle 1")
+        expectOnce(["evt-b1-pre"], in: first.b, notIn: first.a, "B", "cycle 1")
+        let aState = messagePackStateFrameIndices(first.a)
+        #expect(aState.count == 1, "cycle 1: expected one per-player state frame for A; got \(aState)")
+        #expect(messagePackStateFrameIndices(first.b).isEmpty, "cycle 1: B has no state update")
+        if let state = aState.first {
+            for event in ["evt-a1-pre", "evt-a2-pre"] {
+                if let index = frameIndices(containing: event, in: first.a).first {
+                    #expect(index < state, "\(event) (\(index)) must precede A's state frame (\(state))")
+                }
+            }
+        }
+
+        // Cycle 2: events queued after cycle 1, no state update; nothing of cycle 1 again.
+        await f.sendTargetedEvent("evt-a3-late", to: f.player)
+        await f.sendTargetedEvent("evt-b3-late", to: playerB)
+        let second = try await cycle()
+        expectOnce(["evt-a3-late"], in: second.a, notIn: second.b, "A", "cycle 2")
+        expectOnce(["evt-b3-late"], in: second.b, notIn: second.a, "B", "cycle 2")
+        for event in ["evt-a1-pre", "evt-a2-pre", "evt-b1-pre"] {
+            #expect(frameIndices(containing: event, in: second.a + second.b).isEmpty, "cycle 2 resent \(event)")
+        }
+        #expect(messagePackStateFrameIndices(second.a + second.b).isEmpty, "cycle 2 has no state update")
     }
 
     @Test(

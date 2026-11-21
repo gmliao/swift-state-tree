@@ -156,8 +156,8 @@ public enum ReevaluationEngine {
     /// `expected` holds the events as read from a record: payloads are trees in the record's form.
     /// `actual` holds the replayed events: typed payloads (or trees), which the comparison puts in
     /// the record's form first (#633). Typed payloads on both sides compare in different forms: a
-    /// `Date`, `Data`, `URL` or `Float` field then differs, and the tick fails even when only
-    /// `sequence` differs.
+    /// `Date`, `Data` or `URL` field then differs, and a `Float` field can (one that widens to the
+    /// same JSON doesn't), so the tick can fail even when only `sequence` differs.
     public static func classifyServerEventMismatches(
         _ mismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])],
         watermarkedTicks: Set<Int64>

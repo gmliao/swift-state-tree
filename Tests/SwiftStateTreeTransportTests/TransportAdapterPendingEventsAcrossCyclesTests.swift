@@ -13,6 +13,7 @@
 import Foundation
 import Testing
 import SwiftStateTreeMessagePack
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
@@ -128,7 +129,6 @@ private final class GatedSerialExecutor: SerialExecutor, @unchecked Sendable {
 private final class KeptEventsRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var frames: [(session: SessionID?, data: Data)] = []
-    private var batches = 0
 
     func record(_ data: Data, to target: SwiftStateTreeTransport.EventTarget) {
         lock.lock(); defer { lock.unlock() }
@@ -152,24 +152,8 @@ private final class KeptEventsRecorder: @unchecked Sendable {
     func clear() {
         lock.lock(); defer { lock.unlock() }
         frames.removeAll()
-        batches = 0
     }
 
-    var batchCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return batches
-    }
-
-    /// Called by `sendBatch` (one writer element per call). Counts the per-player batches: elements
-    /// carrying a per-player state frame (opcode 0...2). Before #60 those were the only frames
-    /// sent through `sendBatch` (the merged frame went through `send`), so this keeps the count's
-    /// meaning: cycles that sent a per-player batch.
-    func countBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) {
-        let hasPerPlayerFrame = updates.contains { (0...2).contains(opcodes([$0.0]).first ?? -1) }
-        guard hasPerPlayerFrame else { return }
-        lock.lock(); defer { lock.unlock() }
-        batches += 1
-    }
 }
 
 private actor KeptEventsTransport: Transport {
@@ -191,18 +175,10 @@ private actor KeptEventsTransport: Transport {
         for (data, target) in updates {
             recorder.record(data, to: target)
         }
-        recorder.countBatch(updates)
     }
 }
 
 // MARK: - Helpers
-
-private final class KeptEventsFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    func set() { lock.lock(); value = true; lock.unlock() }
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-}
 
 /// Polls `condition` (no fixed sleeps as synchronization; the poll only waits for work in flight).
 private func waitUntil(
@@ -271,8 +247,7 @@ private struct KeptEventsFixture {
 
     static func make(
         _ land: KeptEventsLand,
-        members names: [String] = ["a"],
-        autoStartLoops: Bool = true
+        members names: [String] = ["a"]
     ) async throws -> KeptEventsFixture {
         let definition: LandDefinition<KeptEventsTestState>
         switch land {
@@ -317,8 +292,7 @@ private struct KeptEventsFixture {
         let transport = KeptEventsTransport()
         let keeper = LandKeeper<KeptEventsTestState>(
             definition: definition,
-            initialState: KeptEventsTestState(),
-            autoStartLoops: autoStartLoops
+            initialState: KeptEventsTestState()
         )
         let adapter = TransportAdapter<KeptEventsTestState>(
             keeper: keeper,
@@ -482,6 +456,36 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         let frames = f.frames(f.a)
         #expect(count("bc-late", in: frames) == 1, "broadcast event must arrive exactly once")
         #expect(count("tg-late", in: frames) == 1, "targeted event must arrive exactly once")
+    }
+
+    @Test("4: events read by cycle N are not resent by cycle N+1 (exact frame counts)")
+    func noDuplicatesAcrossCycles() async throws {
+        let f = try await KeptEventsFixture.make(.periodicSync)
+        // Each `syncNow` is one sync-only turn, which enqueues its frames before it returns, so
+        // the writer's idle is the cycle's delivery.
+
+        // Cycle N: a per-player change, and a targeted and a broadcast event queued before it.
+        try await f.set("score", 1)
+        await f.targetedEvent("tg-1", to: f.a)
+        await f.broadcastEvent("bc-1")
+        await f.adapter.syncNow()
+        try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
+        // Cycle N+1: nothing new but a broadcast event queued after N.
+        await f.broadcastEvent("bc-2")
+        await f.adapter.syncNow()
+        try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
+        // Cycle N+2: nothing at all.
+        await f.adapter.syncNow()
+        try #require(await withinHangBound { await f.adapter.waitForOutboundIdleForTesting() }, "the cycle's frames never reached the transport")
+
+        let frames = f.frames(f.a)
+        let kinds = opcodes(frames)
+        #expect(count("tg-1", in: frames) == 1)
+        #expect(count("bc-1", in: frames) == 1)
+        #expect(count("bc-2", in: frames) == 1)
+        #expect(kinds.filter { $0 == 103 }.count == 1, "one targeted event frame (N); kinds \(kinds)")
+        #expect(kinds.filter { $0 == 107 }.count == 2, "one merged frame each in N and N+1; kinds \(kinds)")
+        #expect(kinds.filter { (0...2).contains($0) }.count == 1, "one per-player state frame (N); kinds \(kinds)")
     }
 
     @Test("5a: with every member in initial sync, queued events are dropped by both cycle types (#69)")

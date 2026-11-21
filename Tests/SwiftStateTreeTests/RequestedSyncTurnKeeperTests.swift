@@ -4,8 +4,8 @@
 // phase that reports events still queued (`keepsEvents`) gets one sync-only turn right after
 // its turn on a land without periodic sync, and none on a land with periodic sync. The
 // adapter's in-turn phase reads its event queue synchronously, so no adapter test reaches this
-// rule; the legacy follow-up it preserves is pinned on the off adapter
-// (`TransportAdapterPendingEventsAcrossCyclesTests`, tests 7 and 7c).
+// rule. It preserves the off adapter's post-cycle follow-up, whose tests went with that adapter
+// in #546 L2c.
 
 import Foundation
 import Testing

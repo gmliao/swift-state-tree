@@ -55,10 +55,6 @@ func expect(_ condition: Bool, _ what: @autoclosure () -> String) throws {
     guard condition else { throw DiffRunFailure(what()) }
 }
 
-/// MessagePack cells, for `.only`: a named function keeps the scenario literals cheap to
-/// type-check.
-@Sendable func isMessagePackCell(_ cell: DiffCell) -> Bool { cell.encoding == .messagepack }
-
 let diffScenarios: [DiffScenario] = [
     DiffScenario(
         name: "join-act-leave",

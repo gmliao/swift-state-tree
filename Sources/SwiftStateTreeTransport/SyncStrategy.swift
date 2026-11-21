@@ -4,7 +4,7 @@
 
 import Foundation
 
-/// What `TransportAdapter` sends on every `syncNow()` / broadcast-only sync.
+/// What `TransportAdapter` sends on every sync phase.
 ///
 /// - `delta`: only fields that changed since the previous sync (today's behaviour).
 /// - `fullSnapshot`: the recipient's complete visible view every sync, even when
