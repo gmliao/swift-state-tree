@@ -1,6 +1,6 @@
 # #716 S1a-2: the budget through generated members and the sync tables
 
-Rev 2, for review (a37151e7, with §3.3's conformance bullets corrected). Rev 1 (04fff7e8) was NOT GO, with two must-fixes and three shoulds; §8 lists how rev 2 answers each. Parent: [Deep or cyclic values fail fast](2026-11-21-deep-values-fail-fast.md) (§3.1, §3.3, §4 S1a). Base: main at 397acea0 (#735 merged).
+Rev 2, GO (65bf64d5), with Review's should and three nits folded in (§3.1, §3 tests, §5, §6). Rev 1 (04fff7e8) was NOT GO, with two must-fixes and three shoulds; §8 lists how rev 2 answers each. Parent: [Deep or cyclic values fail fast](2026-11-21-deep-values-fail-fast.md) (§3.1, §3.3, §4 S1a). Base: main at 397acea0 (#735 merged).
 
 ## 1. Why: two paths #735 left unbounded
 
@@ -40,6 +40,8 @@ S1a-3 follows, as agreed: the refusal path, §3.4. So does S1a-4: frame shapes, 
    - the `broadcastView(of: node)` lines in `snapshotForSync` pass the budget;
    - `fullStateSnapshot(budget:)` calls `makeFull(from:budget:)`.
 
+   Like every member the macro generates today, these are spelled `public`, whatever the node type's own access level. In an internal type a `public` member is effectively internal, so the generated code compiles in any type and adds no API to a non-public node.
+
    The old signatures forward with `NestingBudget()`. The root node's own object stays outside the budget. A nested node's object is spent by its caller: `make`'s `enteringContainer()`, or `broadcastView(of:budget:)`. The typed tables' `convert` closures (`_syncTableFields`, `_syncTablePerPlayerFields`) are unchanged in 2a. They call `make` and `broadcastView` without a budget, which start from the root budget, and 2b changes them.
 2. **`@SnapshotConvertible`** generates `toSnapshotValue(budget:)` and `toFullSnapshotValue(budget:)`. Each starts with `let inner = try budget.enteringContainer()` (an empty struct still spends it, as `check` counts its `.object`), and each property converts within `inner`. The old signatures forward with `NestingBudget()`.
 3. **The collection fast paths, by conformance.**
@@ -60,6 +62,9 @@ S1a-3 follows, as agreed: the refusal path, §3.4. So does S1a-4: frame shapes, 
 Tests:
 - **Macro expansions.** The goldens in `StateNodeBuilderMacroTests`, `StateNodeBuilderContainerTypeTests`, `StateNodeBuilderSnapshotDecodeTests` and `SnapshotConvertibleMacroTests` gain the budget members and arguments.
 - **In process, at the limit.** A node chain at the limit converts, and one level more is refused, through each of the four members and through `toSnapshotValue(budget:)`. The refusal must come from the conversion, not from a result check: a counter on the defaults' result check stays at zero on the generated path.
+- **Exit tests on Linux.**
+  - #735's `farPastTheLimitIsRefused` (a plain nested `[Any]`) stays in the list, so the `NSNull` bridging class stays pinned.
+  - The new `[String: Any]` and Optional-chain case (below) sits next to it.
 - **Exit test.** A 100 000-node chain is built iteratively, and the test exits before releasing it. It must be refused with `.containers` through `make`, `makeFull` and `snapshotForSync`. Its removed-guard mutant runs on Linux, through the cloud worker.
 - **Fast-path output equality.** Old and new produce equal output over every shape the old fast paths caught:
   - `[PlayerID: T]` and `[String: T]` of `@SnapshotConvertible` structs;
@@ -109,16 +114,23 @@ For Main's approval. Each new or changed symbol, with its access level:
 | Documentation of the six budget-aware requirements (the hand-written override note) | 2a | public docs | No signature change |
 | `SyncTableField.make` overloads with `convert: (V, NestingBudget) throws -> SnapshotValue` | 2b | public | Called by macro expansions in the adopter's module, like today's four overloads |
 | `SyncDiffPosition.budget` | 2b | internal | `SyncDiffPosition` is internal |
+| Test seams: the DEBUG counter on each map-conformance branch, the counter on the defaults' result check (2a), and the counter on row conversions (2b) | 2a, 2b | package, `#if DEBUG` only | Read by the tests through `@testable` or package access; absent from release builds |
 
 No public symbol is removed or renamed. `NestingBudget` stays as #735 made it: public, with a public root initializer and a package `init(containers:hops:)`. The static-bound symbols (`_StaticNestingBound` and the rest) go to S1b's API section.
 
 ## 6. Benchmark
 
+The numbers come from the measurement host. The Mac checks only the output: the benchmark runs, and its output matches between base and head. Both PRs can move the numbers:
+- 2a adds a conformance cast per map field per sync;
+- 2b adds a struct copy and a budget step per descent.
+
+So each PR gets its own run, after its Mac output check:
+
 | Run | Head | Base | Tier |
 |---|---|---|---|
-| 2a | 2a's head | main at 2a's base | the small tier (Mac EncodingBenchmark; host only if beyond the noise) |
-| 2b | 2b's head | 2a's head | as above |
-| Summary row | 2b's head | 15f87772 (before #735) | the combined cost of S1a-1, 2a and 2b |
+| 2a | 2a's head | main at 2a's base | host A/B, small tier |
+| 2b | 2b's head | 2a's head | host A/B, small tier |
+| Summary row | 2b's head | 15f87772 (before #735) | host, the combined cost of S1a-1, 2a and 2b |
 
 ## 7. Verification for each PR
 
@@ -135,6 +147,9 @@ No public symbol is removed or renamed. `NestingBudget` stays as #735 made it: p
 - **Should 1.** The static bounds move to S1b (§2).
 - **Should 2.** §2 states why 2a comes first, and that 2b follows directly.
 - **Should 3.** §4.4 covers consistency after a refusal, with its test.
+- **Review of rev 2 (GO).**
+  - Should: perf numbers from the host, an A/B per PR (§6).
+  - Nits: the test seams in §5; the access level of the generated members (§3.1); `farPastTheLimitIsRefused` kept in the Linux list (§3 tests).
 - **§7 answers.** Folded in:
   - 2a then 2b;
   - the budget on `SyncDiffPosition`;
