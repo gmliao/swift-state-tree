@@ -31,6 +31,7 @@ struct ReevaluationRunnerMain {
         var convertPaths: (input: String, output: String)?
         var timeOpenPath: String?
         var timeOpenRepeat = 200
+        var maxReplayTicks = ReevaluationRecordFile.defaultMaxReplayTicks
 
         var i = 1
         while i < args.count {
@@ -78,6 +79,13 @@ struct ReevaluationRunnerMain {
             case "--repeat":
                 timeOpenRepeat = (i + 1 < args.count) ? (Int(args[i + 1]) ?? 200) : 200
                 i += 2
+            case "--max-replay-ticks":
+                guard i + 1 < args.count, let value = Int64(args[i + 1]), value >= 1 else {
+                    print("Error: --max-replay-ticks needs a whole number of at least 1")
+                    printHelpAndExit(exitCode: 1)
+                }
+                maxReplayTicks = value
+                i += 2
             case "--help", "-h":
                 printHelpAndExit()
             default:
@@ -87,12 +95,12 @@ struct ReevaluationRunnerMain {
         }
         
         if let timeOpenPath {
-            try await timeOpen(path: timeOpenPath, repeatCount: max(1, timeOpenRepeat))
+            try await timeOpen(path: timeOpenPath, repeatCount: max(1, timeOpenRepeat), maxReplayTicks: maxReplayTicks)
             return
         }
 
         if let convertPaths {
-            try await convert(input: convertPaths.input, output: convertPaths.output)
+            try await convert(input: convertPaths.input, output: convertPaths.output, maxReplayTicks: maxReplayTicks)
             return
         }
 
@@ -122,10 +130,13 @@ struct ReevaluationRunnerMain {
         // source opens it: not comparable, not a mismatch, and nothing is replayed.
         let source: any ReevaluationSource
         do {
-            source = try ReevaluationRecordFile.openSource(filePath: inputFile)
+            source = try ReevaluationRecordFile.openSource(filePath: inputFile, maxReplayTicks: maxReplayTicks)
         } catch let error as ReevaluationRecordVersionError {
             print("❌ Verification not possible: \(error)")
             exit(10)
+        } catch let error as ReevaluationRecordContentError where error.isReplayTooLong {
+            print("❌ \(error); raise the limit with --max-replay-ticks")
+            exit(14)
         }
         let metadata = try await source.getMetadata()
         let landType = metadata.landType
@@ -238,7 +249,8 @@ struct ReevaluationRunnerMain {
                     sink: sink,
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
-                    logger: logger
+                    logger: logger,
+                    maxReplayTicks: maxReplayTicks
                 )
             }
         case VisibilityTestConfig.landType:
@@ -258,7 +270,8 @@ struct ReevaluationRunnerMain {
                         sink: sink,
                         exportJsonlPath: exportJsonlPath,
                         diffWithPath: diffWithPath,
-                        logger: logger
+                        logger: logger,
+                        maxReplayTicks: maxReplayTicks
                     )
                 }
                 break
@@ -271,7 +284,8 @@ struct ReevaluationRunnerMain {
                     sink: sink,
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
-                    logger: logger
+                    logger: logger,
+                    maxReplayTicks: maxReplayTicks
                 )
             }
         case ResolverTestConfig.landType:
@@ -283,7 +297,8 @@ struct ReevaluationRunnerMain {
                     sink: sink,
                     exportJsonlPath: exportJsonlPath,
                     diffWithPath: diffWithPath,
-                    logger: logger
+                    logger: logger,
+                    maxReplayTicks: maxReplayTicks
                 )
             }
         default:
@@ -505,18 +520,18 @@ struct ReevaluationRunnerMain {
     /// `ReevaluationRecordFile.openSource` (each open reads the file and builds the source),
     /// after 20 untimed warm-up opens, and prints one JSON line with the open-time percentiles.
     /// Measure with a release build only.
-    private static func timeOpen(path: String, repeatCount: Int) async throws {
+    private static func timeOpen(path: String, repeatCount: Int, maxReplayTicks: Int64) async throws {
         let bytes = (try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.intValue ?? 0
         var sink = Int64(0)
         for _ in 0 ..< 20 {
-            sink &+= try await ReevaluationRecordFile.openSource(filePath: path).getMaxTickId()
+            sink &+= try await ReevaluationRecordFile.openSource(filePath: path, maxReplayTicks: maxReplayTicks).getMaxTickId()
         }
         let clock = ContinuousClock()
         var samples: [Double] = []
         samples.reserveCapacity(repeatCount)
         for _ in 0 ..< repeatCount {
             let start = clock.now
-            let source = try ReevaluationRecordFile.openSource(filePath: path)
+            let source = try ReevaluationRecordFile.openSource(filePath: path, maxReplayTicks: maxReplayTicks)
             let elapsed = clock.now - start
             sink &+= try await source.getMaxTickId()
             let parts = elapsed.components
@@ -544,14 +559,14 @@ struct ReevaluationRunnerMain {
     /// read it back). Through JSON a payload `-0.0` reads as `-0`, which `AnyCodable` may decode
     /// as the integer 0: a converted JSON record can lose that sign. A record written as 3.x
     /// keeps it.
-    private static func convert(input: String, output: String) async throws {
+    private static func convert(input: String, output: String, maxReplayTicks: Int64) async throws {
         let data = try Data(contentsOf: URL(fileURLWithPath: input))
         if ReevaluationRecordLog.hasMagic(data) {
             try ReevaluationRecordFile.jsonView(ofRecordData: data).write(to: URL(fileURLWithPath: output))
             print("✅ Wrote the JSON view of \(input) to \(output)")
             return
         }
-        let source = try JSONReevaluationSource(data: data)
+        let source = try JSONReevaluationSource(data: data, maxReplayTicks: maxReplayTicks)
         let directory = URL(fileURLWithPath: output).deletingLastPathComponent()
         let recorder = ReevaluationRecorder(spoolDirectory: directory)
         await recorder.setMetadata(try await source.getMetadata())
@@ -631,8 +646,8 @@ struct ReevaluationRunnerMain {
         ReevaluationRunner (GameDemo)
 
         Usage:
-          swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--diff-with <path>]
-          swift run ReevaluationRunner --convert <in> <out>
+          swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--diff-with <path>] [--max-replay-ticks <n>]
+          swift run ReevaluationRunner --convert <in> <out> [--max-replay-ticks <n>]
           swift run -c release ReevaluationRunner --time-open <path> [--repeat <n>]
 
         Options:
@@ -652,6 +667,9 @@ struct ReevaluationRunnerMain {
           --export-jsonl <path>  Export JSONL stream (snapshot + events per tick); a failed
                                  write (a full disk) ends the run with exit 12
           --diff-with <path>     Compare with recorded state JSONL (output field-level diffs)
+          --max-replay-ticks <n> Longest run to replay or convert: a record whose last tick + 1 is
+                                 past n is refused (a replay exits 14). Default 1,000,000
+                                 (13.9 h at 50 ms ticks)
           --help, -h             Show this help message
 
         Sync Output (records with a sync stream, format 2.2 and later):

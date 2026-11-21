@@ -305,6 +305,11 @@ public actor NIOLandHost {
     /// Suffix used for replay land types. Updated by registerWithGenericReplay.
     var replayLandSuffix: String = "-replay"
 
+    /// The run length limit of each registered replay, by base land type. Set by
+    /// `registerWithGenericReplay` from `ReevaluationFeatureConfiguration.maxReplayTicks`, so the
+    /// admin start checks a record against the limit its run is meant to be held to (#728).
+    var maxReplayTicksByLandType: [String: Int64] = [:]
+
     /// Background tasks from middlewares (cancelled on shutdown).
     private var middlewareTasks: [Task<Void, Never>] = []
 
@@ -434,7 +439,8 @@ public actor NIOLandHost {
             adminAuth: adminAuth,
             logger: configuration.logger,
             replayWebSocketPathResolver: configuration.replayWebSocketPathResolver,
-            replayLandSuffix: replayLandSuffix
+            replayLandSuffix: replayLandSuffix,
+            maxReplayTicksByLandType: maxReplayTicksByLandType
         )
         
         await adminRoutes.registerRoutes(on: httpRouter)

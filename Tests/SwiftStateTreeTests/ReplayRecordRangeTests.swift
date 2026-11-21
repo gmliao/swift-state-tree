@@ -301,10 +301,10 @@ struct ReplayRecordRangeTests {
         for tickId in [Int64.max, -1] {
             let bytes = try logBytes(syncMetadata, turns: [ReevaluationTickRecord(tickId: 0), ReevaluationTickRecord(tickId: tickId)])
             #expect(throws: ReevaluationRecordContentError.tickIdOutOfRange(tickId)) {
-                _ = try ReevaluationRecordLogSource(bytes: bytes)
+                _ = try ReevaluationRecordLogSource(bytes: bytes, maxReplayTicks: Int64.max)
             }
             #expect(throws: ReevaluationRecordContentError.tickIdOutOfRange(tickId)) {
-                _ = try ReevaluationRecordFile.openSource(data: Data(bytes))
+                _ = try ReevaluationRecordFile.openSource(data: Data(bytes), maxReplayTicks: Int64.max)
             }
         }
     }
@@ -312,7 +312,8 @@ struct ReplayRecordRangeTests {
     @Test("A 3.x record whose last tick is Int64.max - 1 still opens (#729)")
     func binarySourceOpensTheLastWritableTick() async throws {
         let bytes = try logBytes(syncMetadata, turns: [ReevaluationTickRecord(tickId: 0), ReevaluationTickRecord(tickId: Int64.max - 1)])
-        let source = try ReevaluationRecordLogSource(bytes: bytes)
+        // The run length bound (#728) is lifted here: the tick range is what this test pins.
+        let source = try ReevaluationRecordLogSource(bytes: bytes, maxReplayTicks: Int64.max)
         #expect(try await source.getMaxTickId() == Int64.max - 1)
     }
 
@@ -494,5 +495,190 @@ struct ReplayRecordRangeTests {
         )
         #expect(result.initialize == .passed)
         #expect(result.serverEventMismatches.isEmpty)
+    }
+}
+
+// MARK: - A replay run's length is bounded at open (#728)
+
+/// A factory the precondition tests never reach.
+private struct NeverRunLengthFactory: ReevaluationTargetFactory {
+    func createRunner(landType _: String, recordFilePath _: String) async throws -> any ReevaluationRunnerProtocol {
+        throw RangeTestFailure("not reached")
+    }
+}
+
+/// An exit test's body can't capture, so these build the one-tick records it opens.
+private func oneTickJSON() throws -> Data {
+    try jsonRecord([ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])])
+}
+
+private func oneTickLog() throws -> [UInt8] {
+    try logBytes(syncMetadata, turns: [ReevaluationTickRecord(tickId: 0)])
+}
+
+@Suite("ReplayRunLengthTests", .timeLimit(.minutes(1)))
+struct ReplayRunLengthTests {
+    private static let farTick: Int64 = 1_000_000_000_000
+
+    /// A 2.6 JSON record with one empty frame per tick.
+    private static func recordWithTicks(_ ticks: [Int64]) throws -> Data {
+        try jsonRecord(ticks.map {
+            ReevaluationTickFrame(tickId: $0, actions: [], clientEvents: [], lifecycleEvents: [])
+        })
+    }
+
+    /// A 3.x record with one empty turn per tick.
+    private static func logRecord(ticks: [Int64]) throws -> [UInt8] {
+        try logBytes(syncMetadata, turns: ticks.map { ReevaluationTickRecord(tickId: $0) })
+    }
+
+    /// How an open ended: it opened, it was refused with a content error, or it failed otherwise.
+    /// An open that fails for another reason is never `.opened`.
+    private enum Opening: Equatable, CustomStringConvertible {
+        case opened
+        case refused(ReevaluationRecordContentError)
+        case failed(String)
+
+        var description: String {
+            switch self {
+            case .opened: "opened"
+            case .refused(let error): "refused: \(error)"
+            case .failed(let text): "failed: \(text)"
+            }
+        }
+    }
+
+    /// Opens the record in both formats, through the file entry point and the sources' own.
+    private static func openBoth(ticks: [Int64], limit: Int64?) async throws -> [Opening] {
+        func attempt(_ open: () throws -> Void) -> Opening {
+            do {
+                try open()
+                return .opened
+            } catch let error as ReevaluationRecordContentError {
+                return .refused(error)
+            } catch {
+                return .failed("\(error)")
+            }
+        }
+        let json = try recordWithTicks(ticks)
+        let log = try logRecord(ticks: ticks)
+        if let limit {
+            return [
+                attempt { _ = try JSONReevaluationSource(data: json, maxReplayTicks: limit) },
+                attempt { _ = try ReevaluationRecordLogSource(bytes: log, maxReplayTicks: limit) },
+                attempt { _ = try ReevaluationRecordFile.openSource(data: json, maxReplayTicks: limit) },
+                attempt { _ = try ReevaluationRecordFile.openSource(data: Data(log), maxReplayTicks: limit) },
+            ]
+        }
+        return [
+            attempt { _ = try JSONReevaluationSource(data: json) },
+            attempt { _ = try ReevaluationRecordLogSource(bytes: log) },
+            attempt { _ = try ReevaluationRecordFile.openSource(data: json) },
+            attempt { _ = try ReevaluationRecordFile.openSource(data: Data(log)) },
+        ]
+    }
+
+    @Test("A record with frames at tick 0 and tick 10^12 is refused at open, never run (#728)")
+    func farApartFramesAreRefused() async throws {
+        let refusal = Opening.refused(.replayTooLong(lastTick: Self.farTick, limit: 1_000_000))
+        let results = try await Self.openBoth(ticks: [0, Self.farTick], limit: nil)
+        #expect(results == [refusal, refusal, refusal, refusal], "\(results)")
+    }
+
+    @Test("A last tick + 1 equal to the default limit opens and one past it is refused, in JSON and 3.x (#728)")
+    func defaultLimitEdge() async throws {
+        let limit = ReevaluationRecordFile.defaultMaxReplayTicks
+        #expect(limit == 1_000_000)
+        let opened = [Opening](repeating: .opened, count: 4)
+        let atLimit = try await Self.openBoth(ticks: [0, limit - 1], limit: nil)
+        #expect(atLimit == opened, "\(atLimit)")
+        let past = Opening.refused(.replayTooLong(lastTick: limit, limit: limit))
+        let pastLimit = try await Self.openBoth(ticks: [0, limit], limit: nil)
+        #expect(pastLimit == [past, past, past, past], "\(pastLimit)")
+    }
+
+    @Test("A custom limit is honored at its edge, and the limit counts the last tick, not the frames (#728)")
+    func customLimitEdge() async throws {
+        let opened = [Opening](repeating: .opened, count: 4)
+        let ok = try await Self.openBoth(ticks: [0, 9], limit: 10)
+        #expect(ok == opened, "\(ok)")
+        let refusal = Opening.refused(.replayTooLong(lastTick: 10, limit: 10))
+        let past = try await Self.openBoth(ticks: [0, 10], limit: 10)
+        #expect(past == [refusal, refusal, refusal, refusal], "\(past)")
+        // Ten frames in the order they were written, the last one at tick 10: still past 10 steps.
+        let dense = try await Self.openBoth(ticks: Array(0 ... 10), limit: 10)
+        #expect(dense == [refusal, refusal, refusal, refusal], "\(dense)")
+        // A limit of 1 allows only tick 0, and an empty record has no step at all.
+        #expect(try await Self.openBoth(ticks: [0], limit: 1) == opened)
+        #expect(try await Self.openBoth(ticks: [], limit: 1) == opened)
+    }
+
+    @Test("A limit below 1 stops the process at each public entry point that takes one (#728)")
+    func limitBelowOneIsRejected() async {
+        await #expect(processExitsWith: .failure) { _ = try JSONReevaluationSource(data: oneTickJSON(), maxReplayTicks: 0) }
+        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordLogSource(bytes: oneTickLog(), maxReplayTicks: -1) }
+        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordFile.openSource(data: oneTickJSON(), maxReplayTicks: 0) }
+        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordFile.openSource(filePath: "/unused", maxReplayTicks: 0) }
+        await #expect(processExitsWith: .failure) { _ = try JSONReevaluationSource(filePath: "/unused", maxReplayTicks: 0) }
+        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordLogSource(filePath: "/unused", maxReplayTicks: 0) }
+        await #expect(processExitsWith: .failure) {
+            _ = try await ReevaluationEngine.run(
+                definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: "/unused", maxReplayTicks: 0
+            )
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = try await ConcreteReevaluationRunner(
+                definition: makeRangeTestLand(), recordFilePath: "/unused", maxReplayTicks: 0
+            )
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = try await ConcreteReevaluationRunner(
+                definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: "/unused", maxReplayTicks: 0
+            )
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = ReevaluationRunnerService(factory: NeverRunLengthFactory(), maxReplayTicks: 0)
+        }
+    }
+
+    @Test("The standalone engine refuses a record past its limit before the first step, and runs one at the limit (#728)")
+    func standaloneEngineRefuses() async throws {
+        // The recorded run has ticks 0 and 1, so its length is 2. The limit is what a refusal needs to
+        // cross, so the run is short whether or not the check is there.
+        let path = try await mutatedRecordPath { _ in }
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        await #expect(throws: ReevaluationRecordContentError.replayTooLong(lastTick: 1, limit: 1)) {
+            _ = try await ReevaluationEngine.run(
+                definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: path,
+                maxReplayTicks: 1
+            )
+        }
+        let result = try await ReevaluationEngine.run(
+            definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: path,
+            maxReplayTicks: 2
+        )
+        #expect(result.maxTickId == 1)
+    }
+
+    @Test("The hosted runner refuses a record past its limit when it is built, before any step (#728)")
+    func hostedRunnerRefusesBeforeItsFirstStep() async throws {
+        let path = try await mutatedRecordPath { frames in frames[1]["tickId"] = Self.farTick }
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        await #expect(throws: ReevaluationRecordContentError.replayTooLong(lastTick: Self.farTick, limit: 1_000_000)) {
+            _ = try await ConcreteReevaluationRunner(
+                definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: path
+            )
+        }
+        await #expect(throws: ReevaluationRecordContentError.replayTooLong(lastTick: Self.farTick, limit: 1_000_000)) {
+            _ = try await ConcreteReevaluationRunner(
+                definition: makeRangeTestLand(), recordFilePath: path
+            )
+        }
+        // A caller that raises the limit gets a runner (nothing is stepped here).
+        let runner = try await ConcreteReevaluationRunner(
+            definition: makeRangeTestLand(), recordFilePath: path, maxReplayTicks: Self.farTick + 1
+        )
+        let lastTick = await runner.maxTickId
+        #expect(lastTick == Self.farTick)
     }
 }

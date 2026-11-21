@@ -212,6 +212,8 @@ public enum ReevaluationEngine {
     /// definition fails the encoding-independent registration rows (#535): such a land can't
     /// have run live. Throws `ReevaluationRecordFingerprintError` before the first step for a
     /// record whose schema fingerprint is missing or differs from the definition's (#521 D15).
+    /// Throws `ReevaluationRecordContentError.replayTooLong` when the record's last tick + 1 is
+    /// past `maxReplayTicks` (#728, at least 1), when the record is opened.
     public static func run<State: StateNodeProtocol>(
         definition: LandDefinition<State>,
         initialState: State,
@@ -222,11 +224,13 @@ public enum ReevaluationEngine {
         includeStateHashInExport: Bool = true,
         diffWithPath: String? = nil,
         requiredRecordVersion: String? = nil,
-        logger: Logger? = nil
+        logger: Logger? = nil,
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
     ) async throws -> RunResult {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         try definition.validateForRegistration(context: .encodingIndependent)
-        // Opening the source rejects a record older than `minimumSupported`.
-        let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
+        // Opening the source rejects a record older than `minimumSupported`, or one longer than `maxReplayTicks`.
+        let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath, maxReplayTicks: maxReplayTicks)
         let metadata = try await source.getMetadata()
         // Without a required version, anything this build reads (2.5+, 3.x); with one, the same
         // rule as the runner and the replay start route (the same major). Checked before
