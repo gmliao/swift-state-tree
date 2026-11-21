@@ -150,9 +150,9 @@ enum DiffStep: Sendable {
     /// Waits until no counted disconnect forward is in flight, and applies nothing. It returns
     /// at once when none was started, and it covers forwards counted while it waits. A forward
     /// returns once the adapter's queued leave has returned from the keeper, and on a tickless
-    /// land that leave awaits its own input turn. So a later step's sync cycle can't hold the
-    /// sync flag while that turn runs, which would move the turn's sync phase into a sync-only
-    /// turn (#676).
+    /// land that leave awaits its own input turn. So a later step's sync can't run before that
+    /// turn (#676: a legacy sync cycle, removed in #546 L2d-3, then moved the turn's sync
+    /// phase into a sync-only turn).
     case awaitDisconnectForwards
     /// Starts the land's stop in a task of its own; `awaitStop` waits for it.
     case startStop

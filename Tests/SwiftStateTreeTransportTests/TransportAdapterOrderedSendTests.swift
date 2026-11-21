@@ -570,11 +570,9 @@ struct TransportAdapterOrderedSendTests {
                 await adapter.syncNow()
                 returned.set()
             }
+            // The cycle ended while the transport is blocked: a sync phase never waits on the
+            // transport's sends.
             try await orderedWaitUntil("syncNow \(i) to return while the transport is blocked") { returned.isSet }
-            // endSync ran: a new cycle can begin.
-            let state = await keeper.beginSync(clearDirtyFlags: false)
-            #expect(state != nil, "cycle \(i) must have ended (endSync) while the transport is blocked")
-            if state != nil { await keeper.endSync() }
         }
 
         // Cycle 1's element blocks in the transport; cycles 2...n are skipped while it is in the

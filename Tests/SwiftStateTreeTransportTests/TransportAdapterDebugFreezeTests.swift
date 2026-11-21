@@ -796,35 +796,6 @@ struct TransportAdapterDebugFreezeTests {
         _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
     }
 
-    @Test("A settle that meets a direct beginSync retries after its endSync, then settles")
-    func directBeginSyncIsRetried() async throws {
-        let f = try await Fixture()
-        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
-        let firstTry = TestGate(), retry = TestGate()
-        defer { firstTry.open(); retry.open() }
-        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
-            .on(.settleBeforeCommit, arrival: 1) { await firstTry.arrive() }
-            .on(.settleBeforeCommit, arrival: 2) { await retry.arrive() }
-            .hook)
-        try await f.makeDirty()
-
-        let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
-        try #require(await firstTry.waitForArrivals(1), "the settle didn't reach its keeper turn")
-        _ = try #require(await f.keeper.beginSync(clearDirtyFlags: false), "the test holds the sync flag")
-        firstTry.open()
-        // Refused while the flag is held: the settle comes back to its keeper turn.
-        try #require(await retry.waitForArrivals(1), "the settle didn't retry")
-        #expect(await f.isStillDirty(), "the refused try planned nothing")
-        await f.keeper.endSync()
-        retry.open()
-
-        let response = try await freeze.value
-        #expect(await !f.isStillDirty(), "the retry settled")
-        await f.adapter.installHolds(nil)
-        _ = await f.adapter.debugResume(freezeToken: response.freezeToken)
-    }
-
     @Test("The fence checks a failed land before the freeze generation: a failed and released land names its failure")
     func fenceChecksClosedBeforeReleased() async throws {
         let f = try await Fixture()

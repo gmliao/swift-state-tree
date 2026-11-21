@@ -6239,17 +6239,6 @@ extension TransportAdapter {
             case .refused(.writerBusy):
                 // A sync cycle's element entered the writer since the wait: wait again.
                 guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
-            case .refused(.syncInFlight):
-                // TODO(#546 L2d-3): remove with `isSyncing`. A direct `beginSync` holds the
-                // keeper's sync flag, and nothing reports its `endSync`: retry shortly, within
-                // the deadline. The sleep is clamped to what is left of it. A release cancels
-                // this task (`debugReleaseFreeze`): the sleep then ends early, and the ticket
-                // check names it `released`, not a `CancellationError`.
-                let remaining = deadline - ContinuousClock.now
-                guard remaining > .zero else { throw DebugFreezeError.settleTimedOut }
-                try? await safeTaskSleep(for: min(.milliseconds(2), remaining))
-                guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
-                try Task.checkCancellation()
             }
         }
         guard let settled = found else { preconditionFailure("the settle loop ends only with a result") }

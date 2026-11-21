@@ -298,8 +298,6 @@ package enum InTurnSettleRefusal: Sendable, Equatable {
     case outputClosed
     /// The writer holds a sync cycle's element again: the settle waits for it and retries.
     case writerBusy
-    /// A direct `beginSync` holds the keeper's sync flag: the settle retries.
-    case syncInFlight
 }
 
 /// A transport that runs the debug freeze settle in its keeper's turn (#546 L2d-1). A package

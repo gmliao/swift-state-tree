@@ -1,14 +1,11 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterSyncDirtyWindowTests.swift
 //
 // Regression tests for #68: a sync cycle must not clear dirty flags of mutations that happen
-// after it took its state copy. `LandKeeper.beginSync(clearDirtyFlags:)` returns a copy of the state; the cycle
-// then awaits (encoding, sends, actor hops), and the keeper can run actions or ticks in that
-// window. Those mutations are not in the copy, so their dirty flags must survive the cycle;
-// otherwise the next dirty-tracking cycle skips them and clients keep the stale value.
-//
-// The window is injected deterministically, never raced: call
-// `keeper.beginSync(clearDirtyFlags: true)` directly, mutate, then `keeper.endSync()`. The
-// adapter's sync runs inside the keeper turn, so no mutation lands inside an adapter cycle.
+// after it took its state copy; otherwise the next dirty-tracking cycle skips them and clients
+// keep the stale value. The window #68 found (a cycle that took its copy, then awaited while
+// the keeper mutated) no longer exists: every sync phase runs inside a keeper turn and clears
+// the dirty flags in that turn (#546 L2d), so no mutation lands inside a cycle. What stays is
+// the other half: a mutation after a committed cycle is sent by the next one.
 //
 // Every scenario dirties one more field before the checked cycle, so it is not an `.all` cycle:
 // a cycle with nothing dirty falls back to `.all`, which would repair the lost update and hide it.
@@ -240,19 +237,14 @@ private func makeDirtyWindowEnvConfig(
 @Suite("TransportAdapter sync dirty-flag window (#68)", .timeLimit(.minutes(1)))
 struct TransportAdapterSyncDirtyWindowTests {
 
-    @Test("a mutation after beginSync is sent by the next dirty-tracking sync", arguments: [true, false])
+    @Test("a mutation after a committed sync is sent by the next dirty-tracking sync", arguments: [true, false])
     func mutationInsideKeeperWindowIsSentNextCycle(useSnapshotForSync: Bool) async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
 
-        // A sync cycle has taken its copy; the keeper mutates `a` before the cycle ends.
-        guard await f.keeper.beginSync(clearDirtyFlags: true) != nil else {
-            Issue.record("beginSync rejected with no cycle in flight")
-            return
-        }
+        // The cycle committed and cleared the dirty flags; the keeper mutates `a` after it.
         try await f.set("a", 1)
-        await f.keeper.endSync()
 
         // Next cycle: `b` (same broadcast category) is dirty too, so no `.all` fallback.
         try await f.set("b", 2)

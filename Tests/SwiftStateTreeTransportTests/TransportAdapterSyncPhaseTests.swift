@@ -6,7 +6,7 @@
 // failure) commits nothing, so the caches still hold what every client was last sent. An encode
 // failure drops the patches that do not encode and commits; a field whose snapshot conversion
 // throws is left out and the rest commits. A plan that still throws (only the test fault hook)
-// commits nothing: its dirty fields (cleared by its `beginSync`) are merged into the next plan's,
+// commits nothing: its dirty fields (cleared in its turn) are merged into the next plan's,
 // and the next committed plan types every recipient's update `.firstSync` so the encoders and the
 // client reset the scope's dynamic key table.
 //
