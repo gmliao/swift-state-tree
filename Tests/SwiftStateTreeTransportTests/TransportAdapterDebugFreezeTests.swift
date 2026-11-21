@@ -510,6 +510,7 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -579,6 +580,7 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -623,6 +625,7 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
         await f.transport.clear()
@@ -646,12 +649,13 @@ struct TransportAdapterDebugFreezeTests {
         _ = await f.adapter.debugResume(freezeToken: response.freezeToken)
     }
 
-    @Test("A released and refrozen freeze: the old settle publishes nothing over the new one's result")
+    @Test("A released and refrozen freeze, the old settle held before its keeper turn: it is refused and publishes nothing over the new one's result")
     func oldSettleWritesNothingAfterRefreeze() async throws {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let firstSettle = TestGate(), fired = TestGate()
+        defer { firstSettle.open(); fired.open() }
         await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
             .on(.settleBeforeCommit, arrival: 1) { await firstSettle.arrive() }
             .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
@@ -684,11 +688,56 @@ struct TransportAdapterDebugFreezeTests {
         _ = await f.adapter.debugResume(freezeToken: second.freezeToken)
     }
 
+    @Test("A released and refrozen freeze, the old settle held before its publish: it committed, and its publish ticket keeps it off the new one's result")
+    func oldSettleHeldAtPublishWritesNothingAfterRefreeze() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let firstPublish = TestGate(), fired = TestGate()
+        defer { firstPublish.open(); fired.open() }
+        // The auto-resume is held where it fired, so the release lands only after the first
+        // settle's keeper turn committed and the settle waits at its publish.
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.settleBeforePublish, arrival: 1) { await firstPublish.arrive() }
+            .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
+            .hook)
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let first = Task { try await adapter.debugFreeze() }
+        try #require(await firstPublish.waitForArrivals(1), "the first settle didn't reach its publish")
+        #expect(await !f.isStillDirty(), "the first settle's keeper turn committed")
+        #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
+        let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
+        fired.open()
+        await timer.value
+        #expect(await f.adapter.isDebugFrozen() == false, "the auto-resume released the first freeze")
+
+        // The second freeze settles while the first waits at its publish.
+        try await f.update(headline: "second-freeze", score: 9)
+        let second = try await f.adapter.debugFreeze()
+        let published = try #require(await f.adapter.debugFreezeState.settled)
+        #expect(published.state.headline == "second-freeze")
+
+        // Only the publish's ticket check keeps the first settle's copy out.
+        firstPublish.open()
+        await #expect(throws: DebugFreezeError.released) {
+            try await first.value
+        }
+        let after = try #require(await f.adapter.debugFreezeState.settled, "the old settle cleared the new result")
+        #expect(after.state.headline == "second-freeze", "the old settle wrote over the new result")
+        #expect(try await f.adapter.debugProjection(playerID: nil).state["headline"] == .string("second-freeze"))
+        await f.adapter.installHolds(nil)
+        _ = await f.adapter.debugResume(freezeToken: second.freezeToken)
+    }
+
     @Test("A settle whose transport output closed before its keeper turn throws the closing failure and plans nothing")
     func closedOutputSurfacesItsCause() async throws {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -712,6 +761,7 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -733,6 +783,7 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let firstTry = TestGate(), retry = TestGate()
+        defer { firstTry.open(); retry.open() }
         await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
             .on(.settleBeforeCommit, arrival: 1) { await firstTry.arrive() }
             .on(.settleBeforeCommit, arrival: 2) { await retry.arrive() }
@@ -761,6 +812,7 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -786,6 +838,7 @@ struct TransportAdapterDebugFreezeTests {
         // once; the turn's fence then finds the zero deadline passed.
         await f.adapter.setDebugFreezeSettleDeadline(.zero)
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 

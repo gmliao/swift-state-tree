@@ -89,6 +89,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     /// waiter ID, so a cancelled wait removes its own.
     var syncCycleDrainWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     var nextSyncCycleDrainWaiterID = 0
+    /// Tests only: called after a sync-cycle drain wait registered, outside the lock.
+    var onSyncCycleDrainWaitRegisteredForTesting: (@Sendable () -> Void)?
     /// Waiters for `elements == 0` (see `OutboundWriter.waitForIdle`), by waiter ID, so a
     /// cancelled wait removes its own.
     var idleWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
@@ -284,12 +286,20 @@ final class OutboundWriter: @unchecked Sendable {
                     return
                 }
                 counters.syncCycleDrainWaiters[id] = waiter
+                let onRegistered = counters.onSyncCycleDrainWaitRegisteredForTesting
                 counters.lock.unlock()
+                onRegistered?()
             }
         } onCancel: {
             let waiter = counters.lock.withLock { counters.syncCycleDrainWaiters.removeValue(forKey: id) }
             waiter?.resume()
         }
+    }
+
+    /// Tests only: `hook` runs each time a sync-cycle drain wait registers, after the lock is
+    /// released, so a test can wait for the registration instead of polling for it.
+    func setOnSyncCycleDrainWaitRegisteredForTesting(_ hook: (@Sendable () -> Void)?) {
+        counters.lock.withLock { counters.onSyncCycleDrainWaitRegisteredForTesting = hook }
     }
 
     /// Tests only: the sync-cycle drain waits' bookkeeping entries the writer still holds.

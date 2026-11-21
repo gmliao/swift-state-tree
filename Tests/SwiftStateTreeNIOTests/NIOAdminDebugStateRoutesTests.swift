@@ -85,6 +85,29 @@ struct NIOAdminDebugStateRoutesTests {
         #expect(resume.status == .ok)
         #expect(try decode(DebugResumeResponse.self, from: resume) == DebugResumeResponse(freezeCount: 0, resumed: true))
     }
+
+    @Test("A freeze of a land that failed or is closing answers 409, not 500 (#546 L2d-1)")
+    func freezeOfAFailedOrClosingLandIsAConflict() async throws {
+        let failure = LandFailure(kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase))
+        for error in [failure as any Error & Sendable, LandInputRejection.landClosed] {
+            let router = try await makeRouter(enableDebugStateRoutes: true, freezeError: error)
+            let response = try #require(try await router.handle(request(.POST, "/admin/lands/\(landID.stringValue)/debug/freeze")))
+            #expect(response.status == .conflict, "\(error)")
+            #expect(body(of: response).contains("failed or is closing"), "\(error)")
+        }
+    }
+
+    @Test("A freeze whose settle was released answers 409; one that missed its deadline answers 503")
+    func releasedAndTimedOutFreezes() async throws {
+        let cases: [(DebugFreezeError, HTTPResponseStatus)] = [(.released, .conflict), (.settleTimedOut, .serviceUnavailable)]
+        for (error, status) in cases {
+            let router = try await makeRouter(enableDebugStateRoutes: true, freezeError: error)
+            let response = try #require(try await router.handle(request(.POST, "/admin/lands/\(landID.stringValue)/debug/freeze")))
+            #expect(response.status == status, "\(error)")
+            // Those lands throw their own cause now, so the released message doesn't name them.
+            #expect(!body(of: response).contains("failed or is closing"), "\(error)")
+        }
+    }
 }
 
 // MARK: - Helpers
@@ -94,9 +117,12 @@ private func debugRoutes(for id: LandID = landID) -> [(HTTPMethod, String)] {
     return [(.POST, "\(base)/freeze"), (.GET, "\(base)/projection"), (.POST, "\(base)/resume?freezeToken=t")]
 }
 
-private func makeRouter(enableDebugStateRoutes: Bool) async throws -> NIOHTTPRouter {
+private func makeRouter(
+    enableDebugStateRoutes: Bool,
+    freezeError: (any Error & Sendable)? = nil
+) async throws -> NIOHTTPRouter {
     let realm = LandRealm()
-    try await realm.register(landType: landType, server: MockDebugLandServer(debug: MockDebugLand()))
+    try await realm.register(landType: landType, server: MockDebugLandServer(debug: MockDebugLand(freezeError: freezeError)))
     let routes = NIOAdminRoutes(
         landRealm: realm,
         adminAuth: NIOAdminAuth(apiKey: apiKey),
@@ -118,6 +144,10 @@ private func request(_ method: HTTPMethod, _ uri: String, apiKey key: String? = 
     return NIOHTTPRequest(method: method, uri: uri, headers: headers, body: body)
 }
 
+private func body(of response: NIOHTTPResponse) -> String {
+    response.body.map { String(decoding: $0, as: UTF8.self) } ?? ""
+}
+
 private func decode<T: Codable & Sendable>(_ type: T.Type, from response: NIOHTTPResponse) throws -> T {
     let body = try #require(response.body)
     let decoded = try JSONDecoder().decode(AdminAPIResponse<T>.self, from: body)
@@ -128,8 +158,15 @@ private func decode<T: Codable & Sendable>(_ type: T.Type, from response: NIOHTT
 /// Freeze bookkeeping of the mock land.
 private actor MockDebugLand {
     private var frozen = false
+    /// Thrown by every freeze when set.
+    private let freezeError: (any Error & Sendable)?
 
-    func freeze() -> DebugFreezeResponse {
+    init(freezeError: (any Error & Sendable)? = nil) {
+        self.freezeError = freezeError
+    }
+
+    func freeze() throws -> DebugFreezeResponse {
+        if let freezeError { throw freezeError }
         frozen = true
         return DebugFreezeResponse(freezeToken: "token-1", tickId: 4, freezeCount: 1, reused: false)
     }
@@ -173,7 +210,7 @@ private struct MockDebugLandServer: LandServerProtocol {
 
     func debugFreeze(landID id: LandID) async throws -> DebugFreezeResponse? {
         guard id == landID else { return nil }
-        return await debug.freeze()
+        return try await debug.freeze()
     }
 
     func debugProjection(landID id: LandID, playerID: PlayerID?) async throws -> DebugProjectionResponse? {

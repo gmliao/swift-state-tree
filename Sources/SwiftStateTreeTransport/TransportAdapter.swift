@@ -6190,8 +6190,8 @@ extension TransportAdapter {
         guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
         guard drained else { throw DebugFreezeError.settleTimedOut }
         let fence = LandKeeper<State>.SettleFence(generation: generation, deadline: deadline)
-        var settled: DebugFreezeState<State>.Settled?
-        while settled == nil {
+        var found: DebugFreezeState<State>.Settled?
+        while found == nil {
             // Wait until earlier phases' frames left the writer, so the settle frames are not
             // queued behind them. Not skipped for back-pressure, and bounded by the deadline.
             if hasPendingStateElement {
@@ -6203,7 +6203,7 @@ extension TransportAdapter {
             let outcome = await keeper.settleTurn(via: self, fence: fence)
             switch outcome {
             case let .settled(state, tickId, membershipEpoch, _):
-                settled = DebugFreezeState<State>.Settled(state: state, tickId: tickId, membershipEpoch: membershipEpoch)
+                found = DebugFreezeState<State>.Settled(state: state, tickId: tickId, membershipEpoch: membershipEpoch)
             case let .failed(failure):
                 // The land ended in the settle's turn.
                 throw failure
@@ -6222,16 +6222,21 @@ extension TransportAdapter {
             case .refused(.syncInFlight):
                 // TODO(#546 L2d-3): remove with `isSyncing`. A direct `beginSync` holds the
                 // keeper's sync flag, and nothing reports its `endSync`: retry shortly, within
-                // the deadline.
-                guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
-                try await safeTaskSleep(for: .milliseconds(2))
+                // the deadline. The sleep is clamped to what is left of it. A release cancels
+                // this task (`debugReleaseFreeze`): the sleep then ends early, and the ticket
+                // check names it `released`, not a `CancellationError`.
+                let remaining = deadline - ContinuousClock.now
+                guard remaining > .zero else { throw DebugFreezeError.settleTimedOut }
+                try? await safeTaskSleep(for: min(.milliseconds(2), remaining))
                 guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
+                try Task.checkCancellation()
             }
         }
+        guard let settled = found else { preconditionFailure("the settle loop ends only with a result") }
         await holds.at(.settleBeforePublish)
         // Checked after the last await, in the publish's segment, so a release meanwhile is
         // never published and an older settle never writes over a newer freeze's state.
-        let published = debugFreezeTickets.ifCurrent(ticket) { _ -> DebugFreezeState<State>.Settled? in
+        let published = debugFreezeTickets.ifCurrent(ticket) { _ -> DebugFreezeState<State>.Settled in
             // Events still queued (kept by the settle's phase, or queued since): on a land
             // without periodic sync nothing else delivers them, and syncs are frozen, so the
             // resume does. After the hold, so an event queued there is seen.
@@ -6241,7 +6246,7 @@ extension TransportAdapter {
             debugFreezeState.settled = settled
             return settled
         }
-        guard let published = published ?? nil else { throw DebugFreezeError.released }
+        guard let published else { throw DebugFreezeError.released }
         return published
     }
 
@@ -6278,7 +6283,8 @@ extension TransportAdapter {
         settle: InTurnSettle,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        assert(inTurnSyncStreamDrafts.isEmpty, "sync-stream drafts left from an earlier phase")
+        // Checked in release builds too: a draft left here would be sent as the settle's.
+        precondition(inTurnSyncStreamDrafts.isEmpty, "sync-stream drafts left from an earlier phase")
         let commit = runSettlePhase(state: state, settle: settle, recording: recording)
         let drafts = inTurnSyncStreamDrafts
         inTurnSyncStreamDrafts = []
@@ -6322,9 +6328,11 @@ extension TransportAdapter {
         return .committed(membershipEpoch: membershipEpoch, clearDirtyFlags: clearDirtyFlags)
     }
 
-    /// Release the current freeze generation. Does not wait for an unfinished settle: it sees
-    /// the generation is no longer current and publishes nothing, and the keeper refuses to
-    /// freeze a released generation again.
+    /// Release the current freeze generation. Does not wait for an unfinished settle: it cancels
+    /// it, so a settle waiting for the writer or between retries ends at once instead of at its
+    /// deadline. After the ticket ends, so every check after its await sees the release and
+    /// throws `released`. It publishes nothing, and the keeper refuses to freeze a released
+    /// generation again.
     private func debugReleaseFreeze() async {
         let generation = debugFreezeState.generation
         debugFreezeTickets.end(.freeze)
@@ -6332,6 +6340,7 @@ extension TransportAdapter {
         debugFreezeState.autoResumeTask?.cancel()
         debugFreezeState.autoResumeTask = nil
         debugFreezeState.autoResumeGeneration &+= 1
+        debugFreezeState.settleTask?.cancel()
         debugFreezeState.settleTask = nil
         debugFreezeState.settled = nil
         let runSyncNow = debugFreezeState.deferredSyncNow
