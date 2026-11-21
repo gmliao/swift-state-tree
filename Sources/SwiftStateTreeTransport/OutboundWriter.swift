@@ -91,8 +91,6 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     /// cancelled wait removes its own.
     var idleWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     var nextIdleWaiterID = 0
-    /// Idle waits cancelled before they registered.
-    var cancelledIdleWaiterIDs: Set<Int> = []
     /// Set when the consumer task ended; later waits return at once.
     var consumerEnded = false
 
@@ -101,7 +99,7 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         elements -= 1
         bytes -= sentBytes
         var waiters: [CheckedContinuation<Void, Never>] = []
-        if elements == 0 {
+        if elements == 0, !idleWaiters.isEmpty {
             waiters = Array(idleWaiters.values)
             idleWaiters = [:]
         }
@@ -124,9 +122,12 @@ private final class OutboundWriterCounters: @unchecked Sendable {
         lock.lock()
         consumerEnded = true
         syncCycleElements = 0
-        let waiters = syncCycleDrainWaiters + Array(idleWaiters.values)
+        var waiters = syncCycleDrainWaiters
         syncCycleDrainWaiters = []
-        idleWaiters = [:]
+        if !idleWaiters.isEmpty {
+            waiters += idleWaiters.values
+            idleWaiters = [:]
+        }
         lock.unlock()
         for waiter in waiters { waiter.resume() }
     }
@@ -278,6 +279,11 @@ final class OutboundWriter: @unchecked Sendable {
     /// none is queued), when the consumer has ended, or when the waiting task is cancelled (so
     /// `withinHangBound` can end it). Event-driven: the consumer resumes it when the count
     /// reaches 0, so a test waits on the send, not on a clock.
+    ///
+    /// The wait registers only if its task isn't cancelled, checked under the lock that
+    /// registers it. The task's cancelled flag is set before its cancellation handler runs, so
+    /// either the registration sees the flag, or the handler finds the registered waiter and
+    /// removes it. The handler never records anything, so nothing is left behind.
     func waitForIdle() async {
         let counters = counters
         let id: Int = counters.lock.withLock {
@@ -287,8 +293,7 @@ final class OutboundWriter: @unchecked Sendable {
         await withTaskCancellationHandler {
             await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
                 counters.lock.lock()
-                if counters.elements == 0 || counters.consumerEnded
-                    || counters.cancelledIdleWaiterIDs.remove(id) != nil {
+                if counters.elements == 0 || counters.consumerEnded || Task.isCancelled {
                     counters.lock.unlock()
                     waiter.resume()
                     return
@@ -297,12 +302,14 @@ final class OutboundWriter: @unchecked Sendable {
                 counters.lock.unlock()
             }
         } onCancel: {
-            counters.lock.lock()
-            let waiter = counters.idleWaiters.removeValue(forKey: id)
-            if waiter == nil { counters.cancelledIdleWaiterIDs.insert(id) }
-            counters.lock.unlock()
+            let waiter = counters.lock.withLock { counters.idleWaiters.removeValue(forKey: id) }
             waiter?.resume()
         }
+    }
+
+    /// Tests only: the idle waits' bookkeeping entries the writer still holds.
+    var idleWaitEntriesForTesting: Int {
+        counters.lock.withLock { counters.idleWaiters.count }
     }
 
     /// Removes the continuation, so later `enqueue` calls are dropped.
