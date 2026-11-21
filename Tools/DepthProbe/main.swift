@@ -5,7 +5,8 @@
 // and exits 0 (the stage returned) or 3 (the stage threw: a clean refusal). A stack overflow
 // kills the process with a signal, which the caller records from the exit status.
 //
-// Usage: DepthProbe --stage <make|full|json|pack|unpack|pack-unbounded|unpack-unbounded|release>
+// Usage: DepthProbe --stage <make|full|json|pack|unpack|pack-unbounded|unpack-unbounded|
+//                           optional-any|optional-any-full|optional-array|release>
 //                   --depth <n>
 //                   --context <pool|thread> [--stack-kib <n>]
 
@@ -40,6 +41,27 @@ func nestedSnapshot(_ depth: Int) -> SnapshotValue {
 func nestedPack(_ depth: Int) -> MessagePackValue {
     var value = MessagePackValue.nil
     for _ in 0..<depth { value = .array([value]) }
+    return value
+}
+
+/// A plain struct: no cast in `make` matches it, so it converts through `Mirror`.
+struct ProbeLeaf {
+    var hp = 1
+}
+
+/// `depth` nested `Optional<Any>` around a `ProbeLeaf`: every level is an unwrap through
+/// `Mirror` (a hop, no container), the shape `make`'s hop path sees.
+func optionalAnyChain(_ depth: Int) -> Any {
+    var value: Any = ProbeLeaf()
+    for _ in 0..<depth { value = Optional<Any>.some(value) as Any }
+    return value
+}
+
+/// `depth` levels of a one-element `[Any]` holding an `Optional<Any>`: one container and one
+/// hop per level.
+func optionalArrayChain(_ depth: Int) -> Any {
+    var value: Any = ProbeLeaf()
+    for _ in 0..<depth { value = [Optional<Any>.some(value) as Any] as [Any] }
     return value
 }
 
@@ -116,6 +138,18 @@ func runStage(_ o: Options) -> String? {
         case "unpack-unbounded":
             let bytes = nestedBytes(o.depth)
             keepAlive.keep(try unpack(bytes, maxDepth: Int.max))
+        case "optional-any":
+            let value = optionalAnyChain(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.make(from: value))
+        case "optional-any-full":
+            let value = optionalAnyChain(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.makeFull(from: value))
+        case "optional-array":
+            let value = optionalArrayChain(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.make(from: value))
         case "release":
             // The uniquely owned tree's deinit recurses once per level.
             var value: SnapshotValue? = nestedSnapshot(o.depth)
