@@ -442,8 +442,10 @@ struct PackDepthTests {
     /// `stateFrameBound` checks the packer's refusal at the encoder.
     @Test("Nested state within the state limit syncs, and its frames unpack")
     func shallowStateSyncs() async throws {
-        // The deepest chain of this shape that converts: 2 containers a level, as counted.
-        let levels = PayloadNesting.stateMaxDepth / 2
+        // 2·(levels + 1) containers: exactly at the limit, as the whole value counts them (the
+        // sync path without tables). The sync tables count 2 fewer, since a map row starts from
+        // the root budget (#716 S1a-2), so this converts on both paths.
+        let levels = PayloadNesting.stateMaxDepth / 2 - 1
         let land = try await DeepStateLand.make(levels: levels)
         await land.adapter.waitForOutboundIdleForTesting()
         let before = await land.transport.sends
@@ -461,7 +463,8 @@ struct PackDepthTests {
 
     @Test("Nested state past the state limit ends the land with syncConversion, naming the field (#716)")
     func statePastTheLimitEndsTheLand() async throws {
-        // One level more than `shallowStateSyncs`: the shallowest chain of this shape refused.
+        // The shallowest chain of this shape refused on both sync paths: the tables' count, 2
+        // fewer than the whole value's, passes the limit only here.
         let land = try await DeepStateLand.make(levels: PayloadNesting.stateMaxDepth / 2 + 1)
         await land.adapter.waitForOutboundIdleForTesting()
         let before = await land.transport.sends
