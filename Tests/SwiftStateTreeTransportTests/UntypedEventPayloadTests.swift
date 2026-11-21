@@ -184,7 +184,7 @@ func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
 }
 
 /// Runs `fail`, which makes an action's answer fail to encode, with the failure held between
-/// the adapter and the keeper (`.answerFailureSubmit`). In that window the land hasn't failed
+/// the adapter and the keeper (`.failureSubmit`). In that window the land hasn't failed
 /// yet, but the adapter has closed its output gate in the failing segment, so an event sent then
 /// doesn't go out. Then the keeper applies the failure.
 func expectGateClosedBeforeTheFailureTurn(
@@ -193,7 +193,7 @@ func expectGateClosedBeforeTheFailureTurn(
     fail: @escaping @Sendable () async throws -> Void
 ) async throws {
     let submit = TestGate()
-    await land.adapter.installHolds(HoldRegistry.at(.answerFailureSubmit) { await submit.arrive() })
+    await land.adapter.installHolds(HoldRegistry.at(.failureSubmit) { await submit.arrive() })
     let sentBefore = await land.transport.sends
     let failing = Task { try await fail() }
     #expect(await submit.waitForArrivals(1), "\(label): the failure is held before the keeper")
