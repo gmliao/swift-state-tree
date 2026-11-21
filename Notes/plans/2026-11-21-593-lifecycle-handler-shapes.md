@@ -1,6 +1,6 @@
 # Lifecycle handler shapes before the turn core (#593)
 
-Status: rev 1, plan only, for review. Issue: #593. It follows #586's rule (`2026-11-18-two-phase-handlers.md`, #591): a handler that can fail is two-phase, a handler that can't fail is single and non-throwing, and nothing throws after it has written state.
+Status: rev 2, plan only (rev 1 GO on the design, with one should, folded in: §2.3 Replay, §4, Q2). Q1, Q3 and Q4 decided as recommended. No code until the maintainer answers on the public API breaks (§8) and L2d-3 merges. Issue: #593. It follows #586's rule (`2026-11-18-two-phase-handlers.md`, #591): a handler that can fail is two-phase, a handler that can't fail is single and non-throwing, and nothing throws after it has written state.
 
 Base: main @ 6f568ff6 (#739 merged). Line numbers are at that head: LK = `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, DSL = `Sources/SwiftStateTree/Land/LandDSL.swift`, LD = `Sources/SwiftStateTree/Land/LandDefinition.swift`. Gathered with grep and reads only; no build.
 
@@ -73,7 +73,11 @@ Each form comes in four arities: no resolvers, and `resolvers:` with 1, 2 or 3 t
 
   Nothing was written, and `validate` emitted nothing. The destroy handlers are skipped, since `initializationFailure` is set (LK :6221).
 - **`.continue`.** With `onResolverFailure: .continue`, `validate` runs without the group's outputs and may refuse. That is the place for the check the docs already ask the handler to make.
-- **Replay** (both sites). Each runs `invoke` with the recorded resolver outputs. A record holds an initialize entry only when the live `validate` passed, since the record is written after the handler. So a replayed `validate` that throws contradicts the record: `validate` was not deterministic. Q2 decides what replay does then.
+- **Replay** (both sites). Each runs `invoke` with the recorded resolver outputs. A record holds an initialize entry only when the live `validate` passed, since the record is written after the handler. So a replayed `validate` that throws contradicts the record: `validate` was not deterministic. (Q2, decided.)
+  - Both sites (`replayInitializeBeforeTickZero` and the lifecycle-item path) note the refusal on the keeper, set once: a `package` `replayedInitializeRefusal: String?` naming the handler (`OnInitialize`) and the error. Nothing is written, as live.
+  - `ReevaluationEngine.verifyInitialize` (`ReevaluationEngine.swift:119`) takes the refusal, and checks it first, before `guard let record`. With one it returns the existing `InitializeVerification.failed(reason:)` (:92), with a reason such as `OnInitialize's validate threw in replay: <error>`. Checked before the record, so an older record (no initialize record, the lifecycle-item path) reports `.failed` too, not `.notRecorded`.
+  - Both callers pass the keeper's refusal: the engine (:295) and the hosted runner (`ReevaluationRunnerImpl.swift:339`).
+  - The replay goes on after the refusal, as it does after any failed check: the later hashes report what follows, and the initialize verdict already says why.
 - **Comments.** LK :3514 and :3938, and `LandFailure.swift:22`'s #87 note, stop naming OnInitialize and the destroy handlers as handlers that throw after a write.
 
 ### 2.4 What the creator sees
@@ -99,7 +103,8 @@ This PR keeps that, since it is the path a resolver failure already takes. Q1 is
   - `validate` throws: the state equals the initial state, the land is torn down, a waiting join gets `landShuttingDown`, an action gets `LandInitializationError`, the destroy handlers don't run, no initialize record is written and no event goes out;
   - `validate` passes: `apply` gets the plan (and the Void form gets none);
   - `validate` reads a resolver output; with `.continue` it sees none and can refuse.
-- **OnInitialize, replay.** A recorded initialize replays through `validate`/`apply` with an equal state hash, at both sites (format 2.1 and the lifecycle item). The divergence case follows Q2.
+- **OnInitialize, replay.** A recorded initialize replays through `validate`/`apply` with an equal state hash, at both sites (format 2.1 and the lifecycle item).
+- **A replayed `validate` that throws** (a `validate` that reads a flag the test flips between the live run and the replay). Through the engine and through the hosted runner, at both sites, the initialize verdict is `.failed(reason:)` and its reason names OnInitialize and the error. The test asserts `.failed`, not only a later hash mismatch. A mutant that drops the refusal from `verifyInitialize` fails it.
 - **Destroy handlers.** A resolver failure skips the handler and the drain goes on (it exists today; keep it). The handler runs exactly once.
 - **Existing throwing bodies.** Every test or example whose lifecycle body throws stops compiling. The compiler lists them, and each is rewritten or moved to `validate`; the PR lists them. In `Examples/`, no `OnInitialize`, `OnFinalize` or `DestroyWhenEmpty` body throws (checked in all five files that declare one; the one `try` nearby is inside `AfterFinalize`, which already handles it).
 - **Mutants.**
@@ -122,11 +127,44 @@ None. `OnInitialize` runs once per land and the destroy handlers once per teardo
 
 ## 7. Questions
 
-- **Q1. A `validate` refusal: retryable?** Today an initialization failure gives a join the retryable `JOIN_DENIED` ("retry the join": the land is torn down, so a retry gets a new one). A refusal that comes from configuration recurs on every retry, so clients would keep creating lands that refuse. A resolver failure with `.failLand` has the same property today.
+- **Q1. A `validate` refusal: retryable? Decided: (a).** Today an initialization failure gives a join the retryable `JOIN_DENIED` ("retry the join": the land is torn down, so a retry gets a new one). A refusal that comes from configuration recurs on every retry, so clients would keep creating lands that refuse. A resolver failure with `.failLand` has the same property today.
   - (a) Keep the retryable path, the same as a resolver failure. **Recommended.**
-  - (b) A non-retryable reason for a `validate` refusal. That is a wire-visible change to the join error, and it would leave #238's resolver failure inconsistent, so it belongs to its own issue covering both.
-- **Q2. A replayed `validate` that throws.** The live run's record says it passed.
+  - (b) A non-retryable reason for a `validate` refusal. That is a wire-visible change to the join error, and it would leave #238's resolver failure inconsistent, so it belongs to its own issue covering both: the follow-up below, which Main files.
+- **Q2. A replayed `validate` that throws. Decided: between (a) and (b)**, the existing `InitializeVerification.failed(reason:)` (§2.3 Replay). The live run's record says it passed.
   - (a) Log it, leave the state as before OnInitialize, and let the existing checks report the divergence: the initialize event check at tick -1 and the state hashes from tick 0. No new mechanism. **Recommended**, with a test that a divergent `validate` fails the replay's verification.
   - (b) A typed re-evaluation failure (`initializeRefusedInReplay`) that stops the replay at once. Clearer, but a new failure kind in the runner and its report.
-- **Q3. The storage type.** A public struct `InitializeHandler` (§2.2, like `AnyActionHandler`), or keep a closure field and make it `package`? The struct keeps hand-built definitions possible without a throwing escape hatch. **Recommended: the struct.**
-- **Q4. A metric.** Should a `validate` refusal count somewhere? `ResolverDeadline.metrics.initFailures` counts resolver groups; it is not the place. **Recommended: log only**, the same error log a resolver failure writes, with the handler named.
+- **Q3. The storage type. Decided: the struct.** A public struct `InitializeHandler` (§2.2, like `AnyActionHandler`), or keep a closure field and make it `package`? The struct keeps hand-built definitions possible without a throwing escape hatch. **Recommended: the struct.**
+- **Q4. A metric. Decided: log only.** Should a `validate` refusal count somewhere? `ResolverDeadline.metrics.initFailures` counts resolver groups; it is not the place. **Recommended: log only**, the same error log a resolver failure writes, with the handler named.
+
+## 8. Public API
+
+The maintainer decides the breaks; Main approves the additions.
+
+| Change | Kind |
+|---|---|
+| `OnFinalize` ×4 and `DestroyWhenEmpty(after:_:)`: the body drops `throws` | break |
+| `LifetimeConfig.onFinalize` / `.onDestroyWhenEmpty` and `LifetimeHandlers.onFinalize` / `.onDestroyWhenEmpty`: the closure type drops `throws` | break |
+| `OnInitialize` ×4 single forms: the body drops `throws` | break |
+| `LifetimeConfig.onInitialize` and `LifetimeHandlers.onInitialize`: a throwing closure becomes `InitializeHandler<State>` | break |
+| `InitializeHandler<State>` (public inits: two stages, Plan and Void, or a non-throwing body) | addition |
+| `OnInitialize(validate:apply:)` and `OnInitialize(resolvers:onResolverFailure:validate:apply:)`, Plan and Void, ×4 arities | addition |
+
+## 9. Follow-up issue (text for Main to file)
+
+**Title:** A land that refuses its initialization keeps being recreated by retried joins
+
+**Body:**
+
+> A land whose initialization fails is torn down, and the join that was waiting gets the retryable `JOIN_DENIED` (`JoinError.landShuttingDown`, "retry the join"). A retry creates a new land. When the failure comes from configuration, it recurs on every land, so clients keep creating lands that refuse again.
+>
+> Two failures behave this way:
+> - an OnInitialize resolver group that throws with `onResolverFailure: .failLand` (#238), today;
+> - an OnInitialize `validate` that throws (#593), once two-phase OnInitialize lands.
+>
+> A timeout (`RESOLVER_INIT_TIMEOUT_MS`) is transient and should stay retryable.
+>
+> To decide together for both:
+> - whether a refusal tells the client not to retry (a non-retryable join error, which is a wire change), or the server stops recreating the land for a while (a backoff per land type or key);
+> - what the creator (`LandManager`, an admin create) sees, since today nothing waits for the initialization (`LandKeeper` starts it in a `Task` from its init).
+>
+> Related: #238, #593, #104.
