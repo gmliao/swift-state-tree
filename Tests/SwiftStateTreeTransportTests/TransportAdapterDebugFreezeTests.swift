@@ -139,7 +139,8 @@ private struct Fixture {
     let alice = (session: SessionID("s-alice"), client: ClientID("c-alice"), player: PlayerID("alice"))
     let bob = (session: SessionID("s-bob"), client: ClientID("c-bob"), player: PlayerID("bob"))
 
-    init() async throws {
+    /// `attach: false` builds the adapter for the keeper but never calls `setTransport`.
+    init(attach: Bool = true) async throws {
         keeper = LandKeeper<DebugFreezeAdapterState>(
             definition: makeDefinition(),
             initialState: DebugFreezeAdapterState()
@@ -156,7 +157,7 @@ private struct Fixture {
             )
         )
         await transport.setDelegate(adapter)
-        await keeper.setTransport(adapter)
+        if attach { await keeper.setTransport(adapter) }
         for member in [alice, bob] {
             await adapter.onConnect(sessionID: member.session, clientID: member.client)
             try await simulateRouterJoin(
@@ -776,6 +777,23 @@ struct TransportAdapterDebugFreezeTests {
         }
         #expect(await f.isStillDirty(), "the refused settle planned nothing")
         await f.adapter.installHolds(nil)
+    }
+
+    /// A keeper never attached syncs through the first adapter that asks (`bindSyncRequester`;
+    /// here the fixture's `syncNow()` bound it); its settle takes the same rule as the requested
+    /// turns, so it settles instead of being refused for having no attached transport (#546 L2d).
+    /// The settle's own binding, and that a refused settle binds nothing: SettleFenceBindingTests.
+    @Test("A keeper never attached settles through the adapter it syncs with")
+    func neverAttachedKeeperSettles() async throws {
+        let f = try await Fixture(attach: false)
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        #expect(await f.keeper.transportForTesting == nil, "the fixture never attached")
+        try await f.makeDirty()
+
+        let freeze = try await f.adapter.debugFreeze()
+        #expect(await !f.isStillDirty(), "the settle committed")
+        #expect(try #require(await f.adapter.debugFreezeState.settled).state.headline == "unsettled")
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
     }
 
     @Test("A settle that meets a direct beginSync retries after its endSync, then settles")

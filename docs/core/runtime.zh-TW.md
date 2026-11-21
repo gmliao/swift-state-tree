@@ -431,8 +431,10 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 
 已知限制：
 
-- Debug freeze 的 settle 是它自己的一個 sync-only turn。它依序確認：land 是 live、沒有失敗也還沒開始關閉，settle 的期限還沒過，仍是同一次 freeze，且經由 keeper 所掛載的 adapter 執行。接著在同一個 turn 內從凍結的 state 規劃並 commit 一次 sync phase，不因 writer back-pressure 延後，也不 flip join；凍結期間執行的一般 phase 仍把同步留給 resume。檢查未通過的 settle 什麼都不規劃：freeze 已釋放時回 `released`，land 已失敗時回該失敗，正在關閉時回 `LandInputRejection.landClosed`。它的 plan 第一次拋出錯誤就在該 turn 結束 land，與任何 sync phase 相同。它不會接手其他 turn 待辦的同步工作，那些由 resume 送出。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
+- Debug freeze 的 settle 是它自己的一個 sync-only turn。它依序確認：land 是 live、沒有失敗也還沒開始關閉，settle 的期限還沒過，仍是同一次 freeze，且經由 keeper 的同步 adapter 執行：也就是掛載到 keeper 的 adapter；若 keeper 從未掛載，則是 keeper 接受其同步請求的那個 adapter。接著在同一個 turn 內從凍結的 state 規劃並 commit 一次 sync phase，不因 writer back-pressure 延後，也不 flip join；凍結期間執行的一般 phase 仍把同步留給 resume。檢查未通過的 settle 什麼都不規劃：freeze 已釋放時回 `released`，land 已失敗時回該失敗，正在關閉時回 `LandInputRejection.landClosed`。它的 plan 第一次拋出錯誤就在該 turn 結束 land，與任何 sync phase 相同。它不會接手其他 turn 待辦的同步工作，那些由 resume 送出。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
 - `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
+- 沒有 transport 的 live keeper 也執行同樣的 turn。Benchmark 的 worker pool，或直接驅動 keeper 的測試，就是這種 keeper。它的 turn 會取出並記錄 event 與同步請求，但不送往任何地方。
+- Live keeper 會拒絕無法在 turn 內執行 sync phase 的 transport，並停止 process（[掛載 transport](../transport/README.zh-TW.md#掛載-transport)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
 In-turn sync 無法關閉。`IN_TURN_SYNC` 環境變數原本是它的開關，現已移除：仍設定它的 server 會忽略它，process 中第一個 adapter 會記錄一筆 warning 指出它。

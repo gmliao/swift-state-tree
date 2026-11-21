@@ -418,12 +418,11 @@ struct TicklessActionJobTests {
         let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         guard await TicklessJobGates.gate(k).waitUntilEntered() else { return }
-        // The completion delivers A; the turn (in-turn: its drain, legacy: its trigger pass)
-        // that would apply it is held before it applies anything.
+        // The completion delivers A; the input drain that would apply it is held before it
+        // applies anything (#546 L2d: every live keeper's completion starts a drain).
         let applyHold = WatermarkGate()
         let held = TicklessJobFlag()
-        let point: LandKeeperHoldPoint = inTurn ? .inputDrain : .ticklessJobPass
-        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(point) {
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.inputDrain) {
             if held.setOnce() { await applyHold.enterAndWait() }
         })
         TicklessJobGates.gate(k).release()

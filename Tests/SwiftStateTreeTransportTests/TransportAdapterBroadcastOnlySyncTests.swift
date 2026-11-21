@@ -17,7 +17,7 @@ struct BroadcastOnlyTestState: StateNodeProtocol {
     public init() {}
 }
 
-@Test("OnLeave handler triggers syncBroadcastOnly, not syncNow")
+@Test("OnLeave's sync runs in the leave's turn")
 func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
@@ -55,17 +55,13 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     #expect(stateAfterJoin.players[bob] == "Guest")
     
     // Reset counters
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Alice leaves
     try await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
     
-    // Verify syncBroadcastOnly was called, not syncNow
-    let syncNowCount = await mockTransport.syncNowCallCount
-    let syncBroadcastOnlyCount = await mockTransport.syncBroadcastOnlyCallCount
-    
-    #expect(syncNowCount == 0, "syncNow should not be called on leave")
-    #expect(syncBroadcastOnlyCount == 1, "syncBroadcastOnly should be called once on leave")
+    // The leave's broadcast-only request is a sync request of its turn (#546 L2d): one phase.
+    #expect(mockTransport.syncPhaseCount == 1, "one sync phase in the leave's turn")
     
     // Verify Alice was removed from state
     let stateAfterLeave = await keeper.currentState()
@@ -73,7 +69,7 @@ func testOnLeaveTriggersSyncBroadcastOnly() async throws {
     #expect(stateAfterLeave.players[bob] == "Guest", "Bob should still be in state")
 }
 
-@Test("syncBroadcastOnly is called when player leaves")
+@Test("A leave's turn runs one sync phase and hands over no event")
 func testSyncBroadcastOnlyIsCalledOnLeave() async throws {
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
@@ -106,16 +102,11 @@ func testSyncBroadcastOnlyIsCalledOnLeave() async throws {
     try await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
     
     // Reset counters
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Alice leaves
     try await keeper.leave(playerID: alice, clientID: ClientID("alice-client"))
     
-    // Verify syncBroadcastOnly was called
-    let syncBroadcastOnlyCount = await mockTransport.syncBroadcastOnlyCallCount
-    #expect(syncBroadcastOnlyCount == 1, "syncBroadcastOnly should be called once on leave")
-    
-    // Verify syncNow was NOT called
-    let syncNowCount = await mockTransport.syncNowCallCount
-    #expect(syncNowCount == 0, "syncNow should not be called on leave")
+    #expect(mockTransport.syncPhaseCount == 1, "one sync phase in the leave's turn")
+    #expect(mockTransport.sendEventCallCount == 0, "the leave emits no event")
 }

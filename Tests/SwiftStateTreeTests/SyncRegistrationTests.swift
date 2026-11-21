@@ -111,21 +111,40 @@ struct RegistrationBackstopRoot: StateNodeProtocol {
 }
 
 /// Records the land's destruction and wakes whoever waits for it.
-private actor RegistrationDestroyFlag: LandKeeperTransport {
+private final class RegistrationDestroyFlag: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
     private var destroyed = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {
-        destroyed = true
-        waiters.forEach { $0.resume() }
-        waiters = []
+        let resumed = lock.withLock {
+            destroyed = true
+            defer { waiters = [] }
+            return waiters
+        }
+        resumed.forEach { $0.resume() }
     }
 
     func waitUntilDestroyed() async {
-        if destroyed { return }
-        await withCheckedContinuation { waiters.append($0) }
+        await withCheckedContinuation { continuation in
+            let done = lock.withLock {
+                if !destroyed { waiters.append(continuation) }
+                return destroyed
+            }
+            if done { continuation.resume() }
+        }
+    }
+    /// Opts in (#546 L2d): a live keeper's transport runs its sync phase in turn. Sends nothing.
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
 }
 

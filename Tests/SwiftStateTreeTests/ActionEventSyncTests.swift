@@ -91,57 +91,56 @@ extension LandKeeper {
 
 // MARK: - Mock Transport for Testing
 
-/// Mock implementation of LandKeeperTransport for testing sync calls
-actor MockLandKeeperTransport: LandKeeperTransport {
+/// A transport that records what each of its keeper's turns hands over (#546 L2d: a live
+/// keeper's transport runs its sync phase in turn).
+final class MockLandKeeperTransport: LandKeeperTransport, @unchecked Sendable {
     typealias CoreEventTarget = SwiftStateTree.EventTarget
 
-    var sendEventCallCount = 0
-    var syncNowCallCount = 0
-    var syncBroadcastOnlyCallCount = 0
-    var lastEvent: AnyServerEvent?
-    var lastTarget: CoreEventTarget?
-    /// Reads the land state a sync request would send (set by tests that check what was synced).
-    private var stateProbe: (@Sendable () async -> Int?)?
-    /// `count` as each sync request saw it, in call order.
-    private(set) var syncObservedCounts: [Int] = []
+    private let lock = NSLock()
+    private var events = 0
+    private var phases = 0
+    private var last: InTurnServerEvent?
+    private var observed: [Int] = []
 
-    func setStateProbe(_ probe: @escaping @Sendable () async -> Int?) {
-        stateProbe = probe
-    }
+    /// Events handed over, over all turns.
+    var sendEventCallCount: Int { lock.withLock { events } }
+    /// Sync phases run (a turn with `includeSync`).
+    var syncPhaseCount: Int { lock.withLock { phases } }
+    var lastEvent: AnyServerEvent? { lock.withLock { last?.event } }
+    var lastTarget: CoreEventTarget? { lock.withLock { last?.target } }
+    /// `count` as each sync phase saw it, in turn order.
+    var syncObservedCounts: [Int] { lock.withLock { observed } }
 
-    private func recordSyncObservation() async {
-        if let stateProbe, let count = await stateProbe() {
-            syncObservedCounts.append(count)
+    func sendEventToTransport(_ event: AnyServerEvent, to target: CoreEventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events turnEvents: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        lock.withLock {
+            events += turnEvents.count
+            if let final = turnEvents.last { last = final }
+            if includeSync {
+                phases += 1
+                if let synced = state as? ActionEventSyncTestState { observed.append(synced.count) }
+            }
         }
+        return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
-    
-    func sendEventToTransport(_ event: AnyServerEvent, to target: CoreEventTarget) async {
-        sendEventCallCount += 1
-        lastEvent = event
-        lastTarget = target
-    }
-    
-    func syncNowFromTransport() async {
-        syncNowCallCount += 1
-        await recordSyncObservation()
-    }
-    
-    func syncBroadcastOnlyFromTransport() async {
-        syncBroadcastOnlyCallCount += 1
-        await recordSyncObservation()
-    }
-    
-    func onLandDestroyed() async {
-        // Mock implementation - no-op for testing
-    }
-    
+
     func reset() {
-        sendEventCallCount = 0
-        syncNowCallCount = 0
-        syncBroadcastOnlyCallCount = 0
-        lastEvent = nil
-        lastTarget = nil
-        syncObservedCounts = []
+        lock.withLock {
+            events = 0
+            phases = 0
+            last = nil
+            observed = []
+        }
     }
 }
 
@@ -184,7 +183,7 @@ func testActionModifiesState() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Execute action
     let action = IncrementAction(amount: 5)
@@ -259,7 +258,7 @@ func testEventModifiesState() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Send increment event
     let incrementEvent = AnyClientEvent(IncrementEvent(amount: 3))
@@ -276,7 +275,7 @@ func testEventModifiesState() async throws {
     // Sync must be triggered manually (via ctx.syncNow() in spawn) or via tick mechanism
     
     // Clear and test another event
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Send set message event
     let setMessageEvent = AnyClientEvent(SetMessageEvent(message: "Hello World"))
@@ -340,7 +339,7 @@ func testMultipleActionsAndEventsModifyState() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Execute action
     let action = IncrementAction(amount: 2)
@@ -405,7 +404,6 @@ func testActionWithTickTriggersSync() async throws {
     )
     
     await keeper.setTransport(mockTransport)
-    await mockTransport.setStateProbe { [weak keeper] in await keeper?.currentState().count }
     
     let playerID = PlayerID("test-player")
     let clientID = ClientID("test-client")
@@ -418,7 +416,7 @@ func testActionWithTickTriggersSync() async throws {
     try await Task.sleep(for: .milliseconds(100))
     
     // Clear sync call counts
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Execute action
     let action = IncrementAction(amount: 5)
@@ -427,7 +425,7 @@ func testActionWithTickTriggersSync() async throws {
     // Wait (bounded) for a sync request that sees the action's change: a sync before the
     // tick applied it would see the old count and does not count.
     await waitFor("a sync that includes the action's change", timeout: .seconds(2)) {
-        await mockTransport.syncObservedCounts.contains(5)
+        mockTransport.syncObservedCounts.contains(5)
     }
     
     // Assert: Verify state was modified
@@ -435,7 +433,7 @@ func testActionWithTickTriggersSync() async throws {
     #expect(state.count == 5, "State count should be 5 after action")
     
     // Assert: Verify sync was called by sync mechanism
-    let observed = await mockTransport.syncObservedCounts
+    let observed = mockTransport.syncObservedCounts
     #expect(observed.contains(5), "a sync after the action should see count == 5; syncs saw \(observed)")
 }
 
@@ -479,7 +477,6 @@ func testEventWithTickTriggersSync() async throws {
     )
     
     await keeper.setTransport(mockTransport)
-    await mockTransport.setStateProbe { [weak keeper] in await keeper?.currentState().count }
     
     let playerID = PlayerID("test-player")
     let clientID = ClientID("test-client")
@@ -492,7 +489,7 @@ func testEventWithTickTriggersSync() async throws {
     try await Task.sleep(for: .milliseconds(100))
     
     // Clear sync call counts
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Send event
     let event = AnyClientEvent(IncrementEvent(amount: 3))
@@ -501,7 +498,7 @@ func testEventWithTickTriggersSync() async throws {
     // Wait (bounded) for a sync request that sees the event's change: a sync before the
     // tick applied it would see the old count and does not count.
     await waitFor("a sync that includes the event's change", timeout: .seconds(2)) {
-        await mockTransport.syncObservedCounts.contains(3)
+        mockTransport.syncObservedCounts.contains(3)
     }
     
     // Assert: Verify state was modified
@@ -509,7 +506,7 @@ func testEventWithTickTriggersSync() async throws {
     #expect(state.count == 3, "State count should be 3 after event")
     
     // Assert: Verify sync was called by sync mechanism
-    let observed = await mockTransport.syncObservedCounts
+    let observed = mockTransport.syncObservedCounts
     #expect(observed.contains(3), "a sync after the event should see count == 3; syncs saw \(observed)")
 }
 
@@ -552,7 +549,7 @@ func testManualSyncNowRequest() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     
     // Clear sync call counts
-    await mockTransport.reset()
+    mockTransport.reset()
     
     // Act: Execute action
     let action = IncrementAction(amount: 7)
@@ -563,7 +560,7 @@ func testManualSyncNowRequest() async throws {
     #expect(state.count == 7, "State count should be 7 after action")
     
     // Assert: Verify sync was called manually
-    let syncNowCount = await mockTransport.syncNowCallCount
+    let syncNowCount = mockTransport.syncPhaseCount
     #expect(syncNowCount > 0, "Sync should be called when ctx.requestSyncNow() is invoked")
 }
 

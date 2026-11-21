@@ -113,7 +113,7 @@ private func makeDeliveryDefinition(tick: Bool) -> LandDefinition<DeliveryTestSt
 private let deliveryLandID = "delivery-test:local"
 
 /// Reports in-turn sync for every keeper and commits each requested sync phase, so a keeper
-/// attached to it takes the in-turn path (`usesInTurnSync`) whatever the adapter's mode. Not an
+/// attached to it takes the in-turn path (`syncsInTurn`) whatever the adapter's mode. Not an
 /// actor: its synchronous calls need no isolation.
 private final class InTurnTransport: LandKeeperTransport, @unchecked Sendable {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
@@ -224,45 +224,6 @@ private func recordedSequenceGaps(_ frames: [ReevaluationTickFrame]) -> [Int64] 
     })
     guard let highest = recorded.max() else { return [] }
     return (0...highest).filter { !recorded.contains($0) }
-}
-
-/// Records sent events; the next send after `arm()` holds on `gate` until released, which
-/// suspends a live tick in its output flush (after its watermarks).
-private actor HoldingTransport: LandKeeperTransport {
-    let gate = WatermarkGate()
-    private var armed = false
-
-    func arm() { armed = true }
-
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
-        if armed {
-            armed = false
-            await gate.enterAndWait()
-        }
-    }
-
-    func syncNowFromTransport() async {}
-    func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async {}
-}
-
-/// Holds the next `syncBroadcastOnlyFromTransport` after `arm()`. On the legacy tick path an
-/// applied OnLeave awaits it inside `processPendingActions`, between the tick's W1 and W2.
-private actor BroadcastHoldingTransport: LandKeeperTransport {
-    let gate = WatermarkGate()
-    private var armed = false
-
-    func arm() { armed = true }
-
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
-    func syncNowFromTransport() async {}
-    func syncBroadcastOnlyFromTransport() async {
-        if armed {
-            armed = false
-            await gate.enterAndWait()
-        }
-    }
-    func onLandDestroyed() async {}
 }
 
 @Suite("Resolver result delivered as a validated input", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
@@ -417,86 +378,13 @@ struct ResolverDeliveryTests {
         #expect(result.tickHashes == result.recordedStateHashes)
     }
 
-    @Test("Tick land: a delivery rejected after taking its number inside a tick's W1–W2 window; replay matches")
-    func rejectedDeliveryNumberedInsideW1W2ReplayMatches() async throws {
-        let transport = BroadcastHoldingTransport()
-        let keeper = LandKeeper<DeliveryTestState>(
-            definition: makeDeliveryDefinition(tick: true),
-            initialState: DeliveryTestState(),
-            enableLiveStateHashRecording: true,
-            autoStartLoops: false,
-            transport: transport
-        )
-        await keeper.setLandID(deliveryLandID)
-        let recorder = try #require(await keeper.getReevaluationRecorder())
-        await recorder.setMetadata(ReevaluationRecordMetadata(
-            landID: deliveryLandID,
-            landType: "delivery-test",
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            metadata: [:],
-            landDefinitionID: "delivery-test",
-            rngSeed: DeterministicSeed.fromLandID(deliveryLandID),
-            version: ReevaluationRecordVersion.current
-        ))
-        let path = FileManager.default.temporaryDirectory
-            .appendingPathComponent("delivery-w1w2-\(UUID().uuidString).json").path
-        defer { try? FileManager.default.removeItem(atPath: path) }
-
-        let p3 = PlayerID("p3"), c3 = ClientID("c3"), s3 = SessionID("s3")
-        let heldKey = DeliveryGates.freshKey()
-        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        try await keeper.join(playerID: p3, clientID: c3, sessionID: s3)
-        await keeper.stepTickOnce()
-
-        // p3's OnLeave is applied in tick 1, whose broadcast sync then holds before W2; p1's
-        // gated action takes its number there.
-        try await keeper.leave(playerID: p3, clientID: c3, sessionID: s3)
-        await transport.arm()
-        let suspendedTick = Task { await keeper.stepTickOnce() }
-        guard await transport.gate.waitUntilEntered() else { return }
-        guard let held = await sendHeld(keeper, amount: heldKey) else { return }
-        transport.gate.release()
-        await suspendedTick.value
-
-        try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
-        DeliveryGates.gate(heldKey).release()
-        await expectSenderSuperseded(held)
-        _ = try await keeper.handleActionEnvelope(plain(4), playerID: p2, clientID: c2, sessionID: s2)
-        await keeper.stepTickOnce()
-        await keeper.stepTickOnce()
-        #expect(await keeper.currentState().total == 4)
-
-        let frames = await recorder.getAllFrames()
-        let gaps = recordedSequenceGaps(frames)
-        #expect(gaps.count == 1)
-        let tick1 = try #require(frames.first { $0.tickId == 1 })
-        if let gap = gaps.first, let w1 = tick1.sequenceBeforeInputs, let w2 = tick1.sequenceBeforeTickHandler {
-            #expect(gap >= w1)
-            #expect(gap < w2)
-        } else {
-            Issue.record("Expected one gap and both of tick 1's watermarks")
-        }
-        try await recorder.save(to: path)
-
-        let result = try await ReevaluationEngine.run(
-            definition: makeDeliveryDefinition(tick: true),
-            initialState: DeliveryTestState(),
-            recordFilePath: path
-        )
-        #expect(result.serverEventMismatches.isEmpty)
-        #expect(result.tickHashes == result.recordedStateHashes)
-    }
-
-    @Test("Tick land: a delivery rejected after taking its number while a tick was suspended past its watermarks; replay matches")
+    @Test("Tick land: a delivery rejected after taking its number while a tick turn was held at its record; replay matches")
     func rejectedDeliveryNumberedMidTickReplayMatches() async throws {
-        let transport = HoldingTransport()
         let keeper = LandKeeper<DeliveryTestState>(
             definition: makeDeliveryDefinition(tick: true),
             initialState: DeliveryTestState(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false,
-            transport: transport
+            autoStartLoops: false
         )
         await keeper.setLandID(deliveryLandID)
         let recorder = try #require(await keeper.getReevaluationRecorder())
@@ -518,14 +406,18 @@ struct ResolverDeliveryTests {
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()
 
-        // Tick 1 applies p2's action and suspends in its event send; p1's gated action takes
-        // its number then, between tick 1's watermarks and tick 2's.
+        // Tick 1 applies p2's action and is held at its record; p1's gated action takes its
+        // number then, between tick 1's watermarks and tick 2's.
         _ = try await keeper.handleActionEnvelope(plain(1), playerID: p2, clientID: c2, sessionID: s2)
-        await transport.arm()
+        let gate = WatermarkGate()
+        await keeper.installHolds { point in
+            if point == .turnRecord { await gate.enterAndWait() }
+        }
         let suspendedTick = Task { await keeper.stepTickOnce() }
-        guard await transport.gate.waitUntilEntered() else { return }
+        guard await gate.waitUntilEntered() else { return }
+        await keeper.installHolds(nil)
         guard let held = await sendHeld(keeper, amount: heldKey) else { return }
-        transport.gate.release()
+        gate.release()
         await suspendedTick.value
 
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)

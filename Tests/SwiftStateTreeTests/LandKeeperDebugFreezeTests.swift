@@ -130,18 +130,6 @@ actor DebugFreezeGate {
     }
 }
 
-/// Keeper transport whose event send waits on a gate, so a tick body can be held in flight.
-actor DebugFreezeGatedKeeperTransport: LandKeeperTransport {
-    let gate = DebugFreezeGate(open: true)
-
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
-        await gate.pass()
-    }
-    func syncNowFromTransport() async {}
-    func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async {}
-}
-
 /// Resolver that waits on a shared gate; only `tickless resolver in flight` uses it.
 struct DebugFreezeGatedResolver: ContextResolver {
     typealias Output = DebugFreezeGatedResolverOutput
@@ -205,19 +193,20 @@ struct LandKeeperDebugFreezeTests {
 
     @Test("Freeze waits for a tick already running; no tick body starts while frozen")
     func freezeDrainsRunningTick() async throws {
-        let transport = DebugFreezeGatedKeeperTransport()
         let keeper = LandKeeper<DebugFreezeKeeperState>(
             definition: makeTickDefinition(),
             initialState: DebugFreezeKeeperState(),
-            autoStartLoops: false,
-            transport: transport
+            autoStartLoops: false
         )
         try await keeper.join(playerID: player, clientID: client, sessionID: session)
 
-        // Hold the tick inside its output flush.
-        await transport.gate.close()
+        // Hold the tick turn at its record: the turn has run, its in-flight count hasn't ended.
+        let record = WatermarkGate()
+        await keeper.installHolds { point in
+            if point == .turnRecord { await record.enterAndWait() }
+        }
         let tick = Task { await keeper.stepTickOnce() }
-        #expect(await eventually { await transport.gate.waitingCount == 1 })
+        guard await record.waitUntilEntered() else { return }
 
         let freezeDone = DoneFlag()
         let freeze = Task {
@@ -228,7 +217,8 @@ struct LandKeeperDebugFreezeTests {
         await settleScheduler()
         #expect(await freezeDone.isDone == false, "freeze returned while a tick was still running")
 
-        await transport.gate.open()
+        await keeper.installHolds(nil)
+        record.release()
         #expect(await freeze.value)
         await tick.value
         #expect(await keeper.currentState().ticks == 1)
