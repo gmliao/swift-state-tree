@@ -36,6 +36,10 @@ package struct MessagePackPayloadFieldWriter: _PayloadFieldWriter {
 /// object, a value without its key, two keys for one value, a key written twice in one object,
 /// a second value, a negative count) can be a user's. The first such call is recorded, later calls are ignored, and `result()`
 /// throws it: the encode fails, never the process (#690).
+///
+/// Objects nested deeper than `messagePackMaxNestingDepth` are refused the same way (#697): no
+/// frame can hold them, and refusing them as they are opened keeps the value this builds, and the
+/// recursion that later walks or frees it, bounded.
 struct MessagePackPrimitiveWriter: _PayloadPrimitiveWriter {
     private struct OpenObject {
         var remaining: Int
@@ -57,7 +61,9 @@ struct MessagePackPrimitiveWriter: _PayloadPrimitiveWriter {
 
     mutating func object(count: Int) {
         guard startsValue() else { return }
-        if count < 0 {
+        if stack.count >= messagePackMaxNestingDepth {
+            violation = "a leaf wrote objects nested deeper than \(messagePackMaxNestingDepth), deeper than any frame can hold"
+        } else if count < 0 {
             violation = "a leaf wrote an object with a negative count (\(count))"
         } else if count == 0 {
             put(.map([:]))

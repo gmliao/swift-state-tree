@@ -100,15 +100,24 @@ public enum MessagePackError: Error {
     case invalidData(String)
 }
 
+/// Packs `value`, refusing arrays and maps nested deeper than `messagePackMaxNestingDepth`: the
+/// default `unpack` would refuse those bytes, so a frame the server's own readers can't read is
+/// never written (#697).
 public func pack(_ value: MessagePackValue) throws -> Data {
+    try pack(value, maxDepth: messagePackMaxNestingDepth)
+}
+
+/// Packs `value`, refusing arrays and maps nested deeper than `maxDepth`. The depth is counted as
+/// `unpack(_:maxDepth:)` counts it, map keys included.
+package func pack(_ value: MessagePackValue, maxDepth: Int) throws -> Data {
     var data = Data()
-    var packer = MessagePackPacker()
+    var packer = MessagePackPacker(maxDepth: maxDepth)
     try packer.pack(value, into: &data)
     return data
 }
 
-/// Arrays and maps nested deeper than this don't unpack (they throw), unless a call gives its
-/// own limit. Each level is a recursive call here and in every decoder that walks the value, and
+/// Arrays and maps nested deeper than this don't unpack (they throw), and don't pack either, unless
+/// a call gives its own limit. Each level is a recursive call here and in every decoder that walks the value, and
 /// data must not be able to exhaust the stack. This default is for frames the server builds
 /// (`PayloadNesting.serverFrameMaxDepth`); a client's frames unpack at the smaller
 /// `PayloadNesting.clientFrameMaxDepth` (#362).
@@ -125,6 +134,24 @@ package func unpack(_ data: Data, maxDepth: Int) throws -> MessagePackValue {
 }
 
 private struct MessagePackPacker {
+    /// Arrays and maps may nest this deep, counted as the unpacker counts them.
+    let maxDepth: Int
+    /// Arrays and maps open around the value being packed.
+    private var depth = 0
+
+    init(maxDepth: Int) {
+        self.maxDepth = maxDepth
+    }
+
+    /// Opens an array or a map. Past `maxDepth` it throws, as `enterContainer` does when unpacking,
+    /// before the recursion goes deeper.
+    private mutating func enterContainer() throws {
+        guard depth < maxDepth else {
+            throw MessagePackError.invalidData("Nesting deeper than \(maxDepth)")
+        }
+        depth += 1
+    }
+
     mutating func pack(_ value: MessagePackValue, into data: inout Data) throws {
         switch value {
         case .nil:
@@ -232,6 +259,8 @@ private struct MessagePackPacker {
     }
 
     private mutating func packArray(_ values: [MessagePackValue], into data: inout Data) throws {
+        try enterContainer()
+        defer { depth -= 1 }
         let count = values.count
         if count <= 15 {
             data.appendByte(0x90 | UInt8(count))
@@ -250,6 +279,8 @@ private struct MessagePackPacker {
     }
 
     private mutating func packMap(_ values: [MessagePackValue: MessagePackValue], into data: inout Data) throws {
+        try enterContainer()
+        defer { depth -= 1 }
         let count = values.count
         if count <= 15 {
             data.appendByte(0x80 | UInt8(count))

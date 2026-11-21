@@ -18,7 +18,9 @@ struct VerifierCodecState: StateNodeProtocol {
     var ticks: Int = 0
 }
 
-/// Each field a JSON comparison of the typed value and the recorded tree tells apart.
+/// `at`, `blob` and `link` are the fields a JSON comparison of the typed value and the recorded
+/// tree tells apart; `ratio` (an integral `Double`) and `count` are controls that compare equal
+/// either way.
 @Payload
 struct VerifierCodecEvent: ServerEventPayload {
     let at: Date
@@ -79,13 +81,16 @@ enum VerifierRecordForm: String, CaseIterable, Sendable, CustomTestStringConvert
     var testDescription: String { rawValue }
 }
 
-private func tempPath(_ ext: String) -> String {
-    FileManager.default.temporaryDirectory.appendingPathComponent("verifier-codec-\(UUID().uuidString).\(ext)").path
+/// A directory of its own for one recording, removed by the caller.
+private func tempDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("verifier-codec-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
 }
 
 /// Runs OnInitialize and one tick of the land live with recording on, and returns the record's
 /// path in `form`.
-private func recordOneTick(emitting events: [any ServerEventPayload], form: VerifierRecordForm) async throws -> String {
+private func recordOneTick(emitting events: [any ServerEventPayload], form: VerifierRecordForm, in directory: URL) async throws -> String {
     let keeper = LandKeeper<VerifierCodecState>(
         definition: makeVerifierCodecLand(emitting: events),
         initialState: VerifierCodecState(),
@@ -105,10 +110,10 @@ private func recordOneTick(emitting events: [any ServerEventPayload], form: Veri
     ))
     await keeper.stepTickOnce()
     await keeper.waitForRecorderSubmissionsForTesting()
-    let saved = tempPath("sstr")
+    let saved = directory.appendingPathComponent("record.sstr").path
     try await recorder.save(to: saved)
     guard form == .jsonView else { return saved }
-    let json = tempPath("json")
+    let json = directory.appendingPathComponent("record.json").path
     try ReevaluationRecordFile.jsonView(ofRecordData: Data(contentsOf: URL(fileURLWithPath: saved)))
         .write(to: URL(fileURLWithPath: json))
     return json
@@ -120,7 +125,9 @@ private func verify(
     replayed: [any ServerEventPayload]? = nil,
     form: VerifierRecordForm
 ) async throws -> ReevaluationEngine.RunResult {
-    let path = try await recordOneTick(emitting: live, form: form)
+    let directory = try tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = try await recordOneTick(emitting: live, form: form, in: directory)
     return try await ReevaluationEngine.run(
         definition: makeVerifierCodecLand(emitting: replayed ?? live),
         initialState: VerifierCodecState(),

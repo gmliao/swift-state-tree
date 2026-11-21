@@ -167,7 +167,14 @@ The core uses a dozen ideas. Each one below builds on the ones before it, and ea
 
 An *input* is a message to the machine, such as "player 7 wants to join". A *step* is the machine handling one input. Steps run one at a time and can't `await`, so nothing changes the state while a step reads it.
 
-An input arrives in one of three ways. `send` delivers an input and returns without waiting for a reply; it returns once the input has stepped or queued (see Input policy). `sendAndWait` delivers it and waits for the machine's reply, which the step gives with `reply`. `query` puts a synchronous question to the machine, answered in a step, and returns the answer.
+A step gets two things: the machine's state (`self`) and a `Turn`. The turn is the step's only way to act on the outside: for example, to make a request, run work, arm a timer, emit an output, reply, or start and end a key. Some of that takes effect at once: `start`, `end` and `request` update the core's bookkeeping, and the same step sees the change (`isLive`, a request's ID). Publishing and launching wait for the step to end. Then the actor flushes the outputs, publishes the replies and launches the effects, and each effect's result arrives in a later step. A step can lend its turn to a synchronous helper as an `inout` parameter. It can't make, copy, store or move away a turn, and a `Task` or an escaping closure can't capture one, so a turn exists only for the step that received it. `Turn<M>` is generic over the machine so that its methods take the machine's own types: `request` takes an `M.Effect`, `emit` an `M.Output`, `reply` an `M.Reply`, and `start` an `M.Key`. The word comes from the actor model. In E, a turn is one message handled to completion; in Orleans, a turn runs until the handler's next `await`. A step has no `await`, so each step is one whole turn.
+
+The machine acts only when an input arrives. It has no run loop and no task of its own. Inputs come from three places:
+- The I/O side, such as a connection's reader, calls `send`, `sendAndWait` or `query`.
+- The core delivers the results of effects and the fires of timers, and steps `handleAbandoned` when a request's deadline passes.
+- A step schedules the machine's own later inputs: with `timer`, with `request` (its result), with `queue(_:behind:)`, and with a request's deadline.
+
+An input arrives in one of three ways. `send` delivers an input and returns without waiting for a reply; it returns once the input has stepped, been queued or deferred, or been refused (see What a send waits for). `sendAndWait` delivers it and waits for the machine's reply, which the step gives with `reply`. `query` puts a synchronous question to the machine, answered in a step, and returns the answer.
 
 ```swift
 let connection = WithdrawToken()
@@ -188,7 +195,11 @@ There are two ways to ask. A *request* is work that a key owns and that the core
 turn.run(.log("joined \(player)"))
 ```
 
-API: `perform`, `request`, `run`.
+`perform` and `flush` are the actor's two ways out, and they differ. `perform` is a command: it runs async, off the actor, and its result comes back as an input. `flush` is an event: the actor calls it synchronously between steps, it returns nothing, and it gets the outputs in the order the steps emitted them. A database load is an effect; a server's sends to its clients go in `flush`.
+
+Effects are data so that a step's work can be checked and replaced. A test's fake `perform` can record each effect a step asked for and return made-up results, with no database; `effectsByInput` counts the effects per input case, in debug builds only. The machine stays the same whether `perform` does the real work, a fake, a simulation or a replay of recorded results.
+
+API: `perform`, `flush`, `request`, `run`, `effectsByInput`.
 
 ### Key
 
@@ -255,6 +266,8 @@ case .chat(let player, _): .normal(waitsFor: .database, belongsTo: .player(playe
 case .saveStats: .normal(waitsFor: .database, belongsTo: nil)
 ```
 
+An input is queued only when it waits behind a hold, or when a step queues it with `queue(_:behind:)`, which parks it even when the key is free. Every other accepted input steps in the batch it arrives in; one deferred while a batch runs steps later in that batch (see What a send waits for).
+
 The queue has a limit, set when the core is made. An input over the limit is refused with `queueFull`, so a flood of inputs can't grow memory without bound. A `control` input is never gated: a disconnect or a stop always steps. A step's own follow-up can keep its place behind a hold with `queue`. Such a *pinned* input isn't withdrawn by a scope or refused by the limit.
 
 API: `InputPolicy`, `queue(_:behind:)`, `TurnError`.
@@ -284,6 +297,8 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 ```
 
 `turn.now` reads the core's clock, once per batch. The clock is injected, with no default. A test passes a clock it moves by hand, so a one-minute timer fires when the test says so, not after a minute.
+
+A periodic game tick is a timer that re-arms itself, not a `while` loop. The tick's input carries the instant it was scheduled for, and its step does the tick's work and arms the next tick. When the next tick falls after a late fire is the machine's choice. The core's tests re-arm at the first point of the period's grid after `turn.now`: with a 2-second period, a tick due at 2 s that fires at 7 s re-arms at 8 s, so the missed ticks are skipped, not run as a backlog. Each tick is an input like any other, a test moves the clock to fire it, and ending the key stops the ticks.
 
 API: `timer(at:for:_:)`, `now`, `TurnClock`, `TurnInstant`.
 
@@ -333,6 +348,22 @@ clock: ContinuousTurnClock()
 
 API: `TurnCore.init`.
 
+### What a send waits for
+
+`send` itself is synchronous. The `await` in `await room.send(...)` is Swift's actor hop: the caller waits until the actor is free, that is, until the batches ahead of it end. Once inside, the input does one of four things before `send` returns:
+- It steps now, and its batch runs before `send` returns.
+- It is queued behind a hold.
+- It is deferred, when `send` is called while a batch runs (from `flush`, say). It is admitted later in that batch, by the same rules.
+- It is refused (closed, withdrawn, or over the queue limit): dropped, and counted in `droppedSends`.
+
+`send` waits for none of the input's results or replies. `sendAndWait` waits for the step's `reply`, and throws `TurnError` when the input is refused or withdrawn.
+
+So there are three queues. The actor's own queue, kept by the Swift runtime, holds callers waiting to enter. The core's deferred list holds inputs sent while a batch runs; that batch drains it. The core's hold queue holds inputs waiting behind a hold. The wait happens in the caller, before it enters, so no step is ever suspended. A caller that checked its own state before the `await` re-checks it after, as any actor code does.
+
+Swift guarantees no order between calls from different tasks: which one reaches the actor first depends on scheduling and priority. Inputs from one connection keep their order only when one task sends them one after another, so give each connection one loop that awaits each `send` in turn, not a task per message.
+
+API: `send`, `sendAndWait`, `TurnStats` (`droppedSends`).
+
 ### Incarnation
 
 An *incarnation* is a random number each core gets when it is made. Every task the core starts carries it. A result whose incarnation doesn't match the actor's core is dropped and counted, never stepped. It guards the case where a result reaches a core other than the one that asked for it, whose request IDs could otherwise match. There is nothing to write: the core checks it.
@@ -360,6 +391,7 @@ API: `CallerCancellation`.
 | Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
 | Follow-up | How does a key ask for one step later, however often it asks? | `followUp`, `consumeFollowUp`, `waitForQuiescence` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
+| What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |
 | Caller cancellation | What happens when the caller's task is cancelled? | `CallerCancellation` |
 
