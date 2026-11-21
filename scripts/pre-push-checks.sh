@@ -7,6 +7,7 @@
 #   wall-clock  scripts/lint-wall-clock-tests.sh --self-test, then with the base's baseline
 #               (CI: wall-clock-tests)
 #   turns       scripts/lint-turns.sh --self-test, then the repository (CI: build › Lint turns)
+#   gate-close  scripts/gate-close-census.sh --self-test, then Sources (CI: build › Gate-close census)
 #   turns-doc-blocks  scripts/check-turns-doc-blocks.py --self-test, then the repository: every
 #               Swift block of the Turns docs appears in a tested file, the comparison
 #               SwiftStateTurnsTests makes after a build (CI: build › swift test)
@@ -102,6 +103,7 @@ echo "pre-push-checks: base $base (merge base ${fork:0:12}), $(grep -c . <<<"$ch
 run lessons lessons
 run wall-clock wall_clock
 run turns bash -c 'scripts/lint-turns.sh --self-test && scripts/lint-turns.sh'
+run gate-close bash -c 'scripts/gate-close-census.sh --self-test && scripts/gate-close-census.sh'
 run turns-doc-blocks bash -c 'python3 scripts/check-turns-doc-blocks.py --self-test && python3 scripts/check-turns-doc-blocks.py'
 run plan-index bash -c 'scripts/check-plan-index.sh --self-test && scripts/check-plan-index.sh'
 run text-encoding bash -c 'python3 scripts/lint-text-encoding.py --self-test && python3 scripts/lint-text-encoding.py'

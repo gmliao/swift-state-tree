@@ -154,7 +154,10 @@ struct LandFailureKeeperTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         transport.failing = true
-        _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        // The turn ends the land, so its caller gets landClosed, not the handler's ack (#704).
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        }
 
         // The failing turn set the cause and stored the failure before it returned.
         #expect(keeper.destructionCause == .failed)
@@ -171,7 +174,10 @@ struct LandFailureKeeperTests {
         let (keeper, transport, _) = await make()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
-        _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        // The turn ends the land, so its caller gets landClosed, not the handler's ack (#704).
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        }
         try #require(keeper.isDraining, "the action's sync phase failed the land")
         await #expect(throws: (any Error).self) {
             _ = try await keeper.handleActionEnvelope(addAction(2), playerID: p1, clientID: c1, sessionID: s1)
@@ -189,7 +195,10 @@ struct LandFailureKeeperTests {
         await keeper.installHolds(HoldRegistry.at(.landFailedTeardown) { await gate.arrive() })
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
-        _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        // The turn ends the land, so its caller gets landClosed, not the handler's ack (#704).
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        }
         // Without a failure the teardown never reaches the hold: stop here rather than wait.
         try #require(keeper.failure != nil, "the action's sync phase failed the land")
         try #require(await gate.waitUntilArrived(), "the teardown reached its hold")
@@ -202,15 +211,18 @@ struct LandFailureKeeperTests {
         #expect(keeper.destructionCause == .failed, "the first cause stays")
     }
 
-    @Test("an action job whose own turn fails the land gets its handler's response, not landClosed")
-    func actionJobInTheFailingTurnKeepsItsOutcome() async throws {
+    @Test("an action job whose own turn fails the land gets landClosed, not its handler's response (#704)")
+    func actionJobInTheFailingTurnGetsLandClosed() async throws {
         let (keeper, transport, finalized) = await make()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
         let envelope = ActionEnvelope(typeIdentifier: String(describing: LandFailureResolvedAction.self),
                                       payload: AnyCodable(LandFailureResolvedAction(amount: 3)))
-        let response = try await keeper.handleActionEnvelope(envelope, playerID: p1, clientID: c1, sessionID: s1)
-        #expect((response.base as? LandFailureAck)?.ok == true, "the consumed input keeps its outcome")
+        // The handler returned its ack, but the turn's sync phase ended the land: none of the
+        // turn's outputs go out, so its caller gets landClosed.
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.handleActionEnvelope(envelope, playerID: p1, clientID: c1, sessionID: s1)
+        }
         #expect(keeper.failure?.kind == .syncPlan)
         await keeper.waitUntilDrained()
         #expect(finalized.all == ["finalize:join,resolved"])
@@ -221,7 +233,10 @@ struct LandFailureKeeperTests {
         let (keeper, transport, finalized) = await make()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         transport.failing = true
-        _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        // The turn ends the land, so its caller gets landClosed, not the handler's ack (#704).
+        await #expect(throws: LandInputRejection.landClosed) {
+            _ = try await keeper.handleActionEnvelope(addAction(1), playerID: p1, clientID: c1, sessionID: s1)
+        }
         let first = try #require(keeper.failure)
         let second = LandFailure(kind: .eventEncode, detail: "second", position: LandFailurePosition(stage: .eventFlush))
         await keeper.failLandForTesting(second)
