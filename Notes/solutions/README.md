@@ -180,3 +180,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-21 | [Keeping a copy, then `removeAll(keepingCapacity:)`, allocates](2026-11-21-keeping-a-copy-then-removeall-keepingcapacity-allocates.md) | copy-on-write, allocation, keepingCapacity, turns, performance |
 | 2026-11-21 | [A generated local shadows a property of the same name](2026-11-21-a-macro-local-shadows-a-property-of-the-same-name.md) | macros, shadowing, snapshot-convertible, nesting-budget |
 | 2026-11-21 | [A collection cast converts every element](2026-11-21-a-collection-cast-converts-every-element.md) | casts, collections, conditional-conformance, nesting-budget, stack-overflow |
+| 2026-11-21 | [An exit body's local can be moved into a call's `Any` temporary and released there](2026-11-21-an-exit-body-local-can-be-released-through-a-calls-any-temporary.md) | exit-tests, lifetime, release-build, stack-overflow, nesting-budget |

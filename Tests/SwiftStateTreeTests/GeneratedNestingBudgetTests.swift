@@ -486,12 +486,19 @@ struct GeneratedNestingBudgetTests {
     }
 }
 
+/// The chain an exit test converts, held until the process exits (`refuseDeepChain`).
+nonisolated(unsafe) private var deepChainKeptAlive: ChainNode?
+
 /// Converts a 100 000-node chain through `make` (0), `makeFull` (1) or `snapshotForSync` (2), and
 /// exits 0 when it is refused at the container limit: an exit test's body.
 private func refuseDeepChain(through member: Int) -> Never {
-    let deep = chain(100_000)
-    // `deep` must outlive the process: its release recurses once per level, and a release build
-    // would otherwise release it after its last use, before `exit`.
+    // The chain's release recurses once per level, so its last reference must outlive the
+    // process. A local is not enough: on a path that ends in `exit` the local is never released,
+    // but a release build may move it into the `Any` temporary that `make` takes, and destroying
+    // that temporary after the refusal is then the last release. The global keeps one reference
+    // until `exit`, so the temporary holds a copy.
+    deepChainKeptAlive = chain(100_000)
+    let deep = deepChainKeptAlive!
     withExtendedLifetime(deep) {
         do {
             switch member {
