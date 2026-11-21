@@ -779,10 +779,11 @@ struct TransportAdapterDebugFreezeTests {
         await f.adapter.installHolds(nil)
     }
 
-    /// A keeper never attached syncs through the first adapter that asks (`bindSyncRequester`);
-    /// its settle takes the same rule as the requested turns, so it settles instead of being
-    /// refused for having no attached transport (#546 L2d).
-    @Test("A keeper never attached settles through the adapter it syncs with, which the settle binds if none is")
+    /// A keeper never attached syncs through the first adapter that asks (`bindSyncRequester`;
+    /// here the fixture's `syncNow()` bound it); its settle takes the same rule as the requested
+    /// turns, so it settles instead of being refused for having no attached transport (#546 L2d).
+    /// The settle's own binding, and that a refused settle binds nothing: SettleFenceBindingTests.
+    @Test("A keeper never attached settles through the adapter it syncs with")
     func neverAttachedKeeperSettles() async throws {
         let f = try await Fixture(attach: false)
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))

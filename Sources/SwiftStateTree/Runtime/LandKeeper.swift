@@ -1694,12 +1694,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard ContinuousClock.now < fence.deadline else { return .timedOut }
         guard debugFrozen, debugActiveGeneration == fence.generation else { return .released }
         // The requested turns' rule (`acceptsSyncTurn`): the attached transport or, on a keeper
-        // never attached, its sync requester, which a settle binds when none is (#546 L2d).
-        guard port.runsSyncPhaseInTurn(of: self), bindSyncRequester(port),
-              let settlePort = port as? any LandKeeperSettlePort else {
+        // never attached, its sync requester (#546 L2d). Checked without binding; a settle binds
+        // the requester only once every check has passed, so a refused one changes nothing.
+        guard port.runsSyncPhaseInTurn(of: self), let settlePort = port as? any LandKeeperSettlePort,
+              isSyncPort(port) else {
             return .refused(.notCurrent)
         }
         guard !isSyncing else { return .refused(.syncInFlight) }
+        _ = bindSyncRequester(port)
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
@@ -5463,6 +5465,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         boundSyncRequesterObject = port as AnyObject
         syncBinding.rebind()
         return true
+    }
+
+    /// `bindSyncRequester`'s answer without its binding: whether `port` is, or would become, the
+    /// port this keeper syncs through.
+    private func isSyncPort(_ port: any LandKeeperTransport) -> Bool {
+        let identity = ObjectIdentifier(port as AnyObject)
+        if let transport { return ObjectIdentifier(transport as AnyObject) == identity }
+        guard !hasHeldTransport else { return false }
+        guard let bound = boundSyncRequesterObject else { return true }
+        return ObjectIdentifier(bound) == identity
     }
 
     /// The checks every requested turn and follow-up makes in its synchronous job: a live land,
