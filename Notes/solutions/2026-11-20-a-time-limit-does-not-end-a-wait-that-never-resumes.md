@@ -81,6 +81,16 @@ A count the test could only read became an event it reaches: the registration ho
 
 All three race the awaited work against the bound and **never await the loser**: a reader task and a timer resume one continuation, whichever comes first, and the work is cancelled and abandoned. Cancelling and then awaiting it would not be enough, because a regression in the wait's own cancellation path (its `onCancel` hop) parks it the same way. The first version did exactly that. Case 35's reply is now awaited with `.cancelsCall` under the bound. Each helper records an issue when the bound runs out (or the expectation on its fallback fails), so the mutant fails the test instead of parking it. Effects and checks keep the plain `Fixture.wait`, because a test may end with one of them parked at a gate on purpose.
 
+## Recurrence: the other turn suites (#711)
+
+Converting the other suites' waits by grep wasn't enough. An event-withholding mutant (successful replies withheld, or no effect launched) still ran the full suite past 900 s, for three reasons:
+
+- **Waits hidden behind a helper.** `waitForLog(n)` is an `.ignoresCancel` call the test makes through the actor, and `await register(…).result` awaits a helper's call task. A grep for the call shape misses both. Run the mutant, not only the grep.
+- **Bounds in series.** A test that makes 20 waits in turn costs 20 bounds under a mutant, and 32 generated seeds cost 32. Each test fails, but the run takes many minutes. Once one wait has run out its bound, give the later ones a short one (`HangBoundTrip`).
+- **Lines that must stay verbatim.** A wait inside a `// docs:` block can't be wrapped, so the test's whole body runs under the bound instead (`withinTestHangBound`).
+
+When the test process is killed at a timeout, its buffered output is lost. Run it under a pty (`script -qfec`) to see which tests never ended.
+
 ## Stopping a mutation run
 
 The same 47 minutes showed a second trap. The run was stopped by killing its build and test processes by name, because a shared measurement needed the machine. The driver, a script that applies each mutant, builds and tests, was not among those names. It saw its test exit, restored the source and started the next mutant's build 15 seconds later.

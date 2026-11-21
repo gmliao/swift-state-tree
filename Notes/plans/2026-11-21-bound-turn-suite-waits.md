@@ -38,11 +38,13 @@ The counts come from a grep at #719's head, then each site was read.
 - **Kept on purpose:**
   - `Fixture.wait` inside effects and checks, where a test may end with one parked at a gate;
   - the yield loops in ComparisonTests, GeneratedOrderTests (`settle`), LifetimeTests and ConceptsTests. Each is `for _ in 0 ..< 10_000` and so ends; all are already marked `wall-clock:` and in the baseline.
-- **Not bounded:** code inside a `// docs:` block. The documentation test (`documentationMatchesTheTests`) needs those lines verbatim:
-  - WorkedExampleTests' first `sendAndWait`;
-  - ConceptsTests' `scoreboard-use` quiescence wait.
-
-  The quiescence wait returns false when its task is cancelled, so the suite's time limit still ends it. The worked example's call uses `ImmediateProfiles`, so no gate holds its reply.
+- **Found by the mutants (below), not by the grep:**
+  - `waitForLog(n)` in `DemoActor` and `MembershipActor`, an `.ignoresCancel` call the test makes through the actor. It now goes through `firstOrBound`.
+  - `await register(…).result` and the like in MembershipModelTests: a helper that returns a call task. 11 sites, now `boundedResult`.
+  - The generated-orders harness's `notes.wait`, now `Notes.reach` (one failure ends the seed).
+  - Its call tasks, awaited one by one. They now share one bound per seed.
+- **Doc blocks:** code inside a `// docs:` block stays verbatim, because the documentation test (`documentationMatchesTheTests`) compares it. The three tests with such waits (ConceptsTests' room and scoreboard, WorkedExampleTests' lobby) run their whole body under `withinTestHangBound`, which records an issue and abandons a body that never ends. The documentation test ignores the indentation this adds.
+- **Waits one after another:** a test that makes many waits in turn (the orders in M8–M10, the generated seeds) costs one bound per wait under a mutant: many minutes, not one. Once any wait in the process has run out its bound, `HangBoundTrip` gives later waits 1 s. A run with a hung core then ends in about one bound.
 
 ## Verification
 
@@ -50,4 +52,8 @@ The counts come from a grep at #719's head, then each site was read.
 - `scripts/lint-turns.sh`.
 - `scripts/lint-wall-clock-tests.sh` with no baseline raise.
 - The seed-79 mutant (drop the supersede's withdraw in `Turn.start`): the full `SwiftStateTurnsTests` run must end, failing.
-- One event-withholding mutant per converted suite.
+- Two event-withholding mutants, each touching every converted suite:
+  - `reply`: successful replies are withheld, while errors (a `.cancelsCall` caller's `CancellationError`) still go. Withholding the error too would leave the documented `.cancelsCall` calls with nothing to end them.
+  - `launch`: no effect is launched, so no gate event comes.
+
+  Each full run must end, failing. Before the fixes above, both ran past a 900 s timeout. Results are in the PR.
