@@ -10,7 +10,14 @@ The core uses a dozen ideas. Each one below builds on the ones before it, and ea
 
 An *input* is a message to the machine, such as "player 7 wants to join". A *step* is the machine handling one input. Steps run one at a time and can't `await`, so nothing changes the state while a step reads it.
 
-An input arrives in one of three ways. `send` delivers an input and returns without waiting for a reply; it returns once the input has stepped or queued (see Input policy). `sendAndWait` delivers it and waits for the machine's reply, which the step gives with `reply`. `query` puts a synchronous question to the machine, answered in a step, and returns the answer.
+A step gets two things: the machine's state (`self`) and a ``Turn``. The turn is the step's only way to act on the outside: to make a request, run work, arm a timer, emit an output, reply, or start and end a key. It only records. When the step ends, the actor flushes the outputs, publishes the replies and launches the effects, and each effect's result arrives in a later step. A step can lend its turn to a synchronous helper as an `inout` parameter. It can't make, copy, store or move away a turn, and a `Task` or an escaping closure can't capture one, so a turn exists only for the step that received it. `Turn<M>` is generic over the machine so that its methods take the machine's own types: `request` takes an `M.Effect`, `emit` an `M.Output`, `reply` an `M.Reply`, and `start` an `M.Key`. The word comes from the actor model. In E, a turn is one message handled to completion; in Orleans, a turn runs until the handler's next `await`. A step has no `await`, so each step is one whole turn.
+
+The machine acts only when an input arrives. It has no run loop and no task of its own. Inputs come from three places:
+- The I/O side, such as a connection's reader, calls `send`, `sendAndWait` or `query`.
+- The core delivers the results of effects and the fires of timers, and steps `handleAbandoned` when a request's deadline passes.
+- A step schedules the machine's own later inputs: with `timer`, with `request` (its result), with `queue(_:behind:)`, and with a request's deadline.
+
+An input arrives in one of three ways. `send` delivers an input and returns without waiting for a reply; it returns once the input has stepped, queued or been refused (see What a send waits for). `sendAndWait` delivers it and waits for the machine's reply, which the step gives with `reply`. `query` puts a synchronous question to the machine, answered in a step, and returns the answer.
 
 ```swift
 let connection = WithdrawToken()
@@ -31,7 +38,11 @@ There are two ways to ask. A *request* is work that a key owns and that the core
 turn.run(.log("joined \(player)"))
 ```
 
-API: ``TurnActor/perform(_:)``, ``Turn/request(_:for:holding:)``, ``Turn/run(_:)``.
+`perform` and `flush` are the actor's two ways out, and they differ. `perform` is a command: it runs async, off the actor, and its result comes back as an input. `flush` is an event: the actor calls it synchronously between steps, it returns nothing, and it gets the outputs in the order the steps emitted them. A database load is an effect; a server's sends to its clients go in `flush`.
+
+Effects are data so that a step's work can be checked and replaced. A test can check which effects a step asked for, and its `perform` can return made-up results with no database. The machine stays the same whether `perform` does the real work, a fake, a simulation or a replay of recorded results.
+
+API: ``TurnActor/perform(_:)``, ``TurnActor/flush(_:)``, ``Turn/request(_:for:holding:)``, ``Turn/run(_:)``, ``TurnCore/effectsByInput``.
 
 ## Key
 
@@ -98,6 +109,8 @@ case .chat(let player, _): .normal(waitsFor: .database, belongsTo: .player(playe
 case .saveStats: .normal(waitsFor: .database, belongsTo: nil)
 ```
 
+Only an input that waits behind a hold is queued. Every other input steps in the batch it arrives in (see What a send waits for).
+
 The queue has a limit, set when the core is made. An input over the limit is refused with `queueFull`, so a flood of inputs can't grow memory without bound. A `control` input is never gated: a disconnect or a stop always steps. A step's own follow-up can keep its place behind a hold with `queue`. Such a *pinned* input isn't withdrawn by a scope or refused by the limit.
 
 API: ``InputPolicy``, ``Turn/queue(_:behind:)``, ``TurnError``.
@@ -128,6 +141,8 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 
 `turn.now` reads the core's clock, once per batch. The clock is injected, with no default. A test passes a clock it moves by hand, so a one-minute timer fires when the test says so, not after a minute.
 
+A periodic game tick is a timer that re-arms itself, not a `while` loop. The tick's input carries the instant it was scheduled for. Its step does the tick's work and arms the next tick at `max(scheduled + period, turn.now)`, so a late fire skips the missed ticks instead of running a backlog. Each tick is an input like any other, a test moves the clock to fire it, and ending the key stops the ticks.
+
 API: ``Turn/timer(at:for:_:)``, ``Turn/now``, ``TurnClock``, ``TurnInstant``.
 
 ## Batch and `maxReleasesPerBatch`
@@ -141,6 +156,22 @@ clock: ContinuousTurnClock()
 ```
 
 API: ``TurnCore/init(_:queueLimit:maxReleasesPerBatch:clock:)``.
+
+## What a send waits for
+
+`send` itself is synchronous. The `await` in `await room.send(...)` is Swift's actor hop: the caller waits until the actor is free, that is, until the batches ahead of it end. Once inside, the input does one of four things before `send` returns:
+- It steps now, and its batch runs before `send` returns.
+- It is queued behind a hold.
+- It is deferred, when `send` is called while a batch runs (from `flush`, say). It is admitted later in that batch, by the same rules.
+- It is refused (closed, withdrawn, or over the queue limit): dropped, and counted in `droppedSends`.
+
+`send` waits for none of the input's results or replies. `sendAndWait` waits for the step's `reply`, and throws ``TurnError`` when the input is refused or withdrawn.
+
+So there are two queues. The actor's own queue, kept by the Swift runtime, holds callers waiting to enter. The core's queue holds inputs waiting behind a hold. The wait happens in the caller, before it enters, so no step is ever suspended. A caller that checked its own state before the `await` re-checks it after, as any actor code does.
+
+Swift doesn't order the calls of different tasks. Inputs from one connection keep their order only when one task sends them one after another, so give each connection one loop that awaits each `send` in turn, not a task per message.
+
+API: ``TurnActor/send(_:)``, ``TurnActor/sendAndWait(_:cancellation:)``, ``TurnStats`` (`droppedSends`).
 
 ## Incarnation
 
@@ -168,5 +199,6 @@ API: ``CallerCancellation``.
 | Withdraw token | Can the sender give up an input before it steps? | `WithdrawToken`, `revoke` |
 | Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
+| What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |
 | Caller cancellation | What happens when the caller's task is cancelled? | `CallerCancellation` |
