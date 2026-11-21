@@ -7,7 +7,8 @@
 //
 // Usage: DepthProbe --stage <make|full|json|pack|unpack|pack-unbounded|unpack-unbounded|
 //                           optional-any|optional-any-full|optional-array|
-//                           optional-any-unbounded|optional-array-unbounded|release>
+//                           optional-any-unbounded|optional-array-unbounded|optional-array-build|
+//                           optional-array-root-refused|any-array-root-refused|release>
 //                   --depth <n>
 //                   --context <pool|thread> [--stack-kib <n>]
 
@@ -63,6 +64,13 @@ func optionalAnyChain(_ depth: Int) -> Any {
 func optionalArrayChain(_ depth: Int) -> Any {
     var value: Any = ProbeLeaf()
     for _ in 0..<depth { value = [Optional<Any>.some(value) as Any] as [Any] }
+    return value
+}
+
+/// `depth` nested one-element `[Any]` around a `ProbeLeaf`.
+func nestedAnyArray(_ depth: Int) -> Any {
+    var value: Any = ProbeLeaf()
+    for _ in 0..<depth { value = [value] as [Any] }
     return value
 }
 
@@ -164,6 +172,21 @@ func runStage(_ o: Options) -> String? {
             let value = optionalArrayChain(o.depth)
             keepAlive.keep(value)
             keepAlive.keep(try SnapshotValue.make(from: value, budget: unboundedBudget))
+        case "optional-array-build":
+            // Only builds the value: a crash here is the probe's input, not a conversion.
+            keepAlive.keep(optionalArrayChain(o.depth))
+        case "optional-array-root-refused":
+            // Converts with no container left: every cast `make` runs before it recurses runs
+            // on the outermost value, then the first container is refused. A crash here is a
+            // cast that looks into the nested value.
+            let value = optionalArrayChain(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.make(from: value, budget: NestingBudget(containers: 0, hops: 0)))
+        case "any-array-root-refused":
+            // The same with plain nested `[Any]`, no `Optional`: whether the `Optional` matters.
+            let value = nestedAnyArray(o.depth)
+            keepAlive.keep(value)
+            keepAlive.keep(try SnapshotValue.make(from: value, budget: NestingBudget(containers: 0, hops: 0)))
         case "release":
             // The uniquely owned tree's deinit recurses once per level.
             var value: SnapshotValue? = nestedSnapshot(o.depth)
