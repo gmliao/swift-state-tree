@@ -725,8 +725,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard let req = requests else { return }
         // In-turn paths take their own requests; one left here runs as a sync-only turn (a
         // broadcast-only request runs the full phase, as in a turn). No live keeper sends a
-        // request through the legacy transport calls (#546 L2d), and a re-evaluation keeper
-        // has no transport.
+        // request through the legacy transport calls (#546 L2d); a re-evaluation keeper never
+        // did here (its replayed passes make their broadcast-only call where they run).
         if syncsInTurn, req.syncNow || req.syncBroadcastOnly {
             runSyncOnlyTurnIfInTurn()
         }
@@ -6085,9 +6085,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return
             }
             runSyncOnlyTurn(transport: transport)
+        } else if mode == .reevaluation {
+            // A re-evaluation keeper may hold a transport (`ReevaluationOutputMode.transportAndSink`;
+            // the attach check exempts it): its sync loop syncs through the legacy call until #612.
+            await transport?.syncNowFromTransport()
         }
-        // Otherwise there is no port to sync through: a live keeper's transport runs its sync
-        // phase in turn or is refused (#546 L2d), and a re-evaluation keeper has none.
+        // A live keeper without a port has nothing to sync through: its transport runs its sync
+        // phase in turn or is refused at the attach (#546 L2d).
     }
 
     /// The OnJoin resolvers of a join that already inserted its entry (`entryGeneration`). If
