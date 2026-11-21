@@ -283,7 +283,9 @@ extension TurnActor {
     /// at once if that holds already. Checked at the end of each of the actor's synchronous
     /// segments, so a step that retires a follow-up and arms its successor never shows a gap.
     /// `endAll` closes every request, follow-up and timer, so a waiter never outlives an ended
-    /// core's work. A cancelled waiting task returns false at once. The default counts
+    /// core's work. A cancelled waiting task returns false once its cancellation's hop to the
+    /// actor is serviced, unless a segment met the condition first (then true); a call already
+    /// satisfied when made returns true, even from a cancelled task. The default counts
     /// follow-ups only: a periodic timer is never quiet.
     @inlinable @discardableResult
     public func waitForQuiescence(_ kinds: TurnWork = .followUps, of key: M.Key? = nil, atMost: Int = 0) async -> Bool {
@@ -528,6 +530,7 @@ extension TurnActor {
         let incarnation = core.incarnation
         let effect = pending.effect
         guard let id = pending.request else { return }
+        core.gateLaunchesForTesting &+= 1
         // Held strongly, as an effect's task: a launched gate runs and its return is handled.
         Task {
             let input = await self.perform(effect)

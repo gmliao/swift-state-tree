@@ -74,11 +74,12 @@ A `Task.yield()` loop on a count (`while count < 2 { await Task.yield() }`) has 
 The fix gives the test target its own hang-bound helpers (`Tests/SwiftStateTurnsTests/Support/HangBound.swift`, 60 s like `testHangBound`, since that target doesn't link SwiftStateTreeTestSupport):
 
 - `Fixture.reach(_:)` for the test's own gate waits;
-- `settled(_:)`, which cancels the awaited task when the bound runs out or the test is cancelled;
-- `bounded { ... }` for a direct quiescence wait;
-- `yieldUntil(_:_:)` for a count the test can only read.
+- `settled(_:)` for an awaited task's answer;
+- `bounded { ... }` for a direct quiescence wait.
 
-Case 35's reply is now awaited with `.cancelsCall` under the bound. Each of these records an issue when the bound runs out, so the mutant fails the test instead of parking it. Effects and checks keep the plain `Fixture.wait`, because a test may end with one of them parked at a gate on purpose.
+A count the test could only read became an event it reaches: the registration hook opens "registered #n", a foreign completion opens "foreign #n".
+
+All three race the awaited work against the bound and **never await the loser**: a reader task and a timer resume one continuation, whichever comes first, and the work is cancelled and abandoned. Cancelling and then awaiting it would not be enough, because a regression in the wait's own cancellation path (its `onCancel` hop) parks it the same way. The first version did exactly that. Case 35's reply is now awaited with `.cancelsCall` under the bound. Each helper records an issue when the bound runs out (or the expectation on its fallback fails), so the mutant fails the test instead of parking it. Effects and checks keep the plain `Fixture.wait`, because a test may end with one of them parked at a gate on purpose.
 
 ## Stopping a mutation run
 

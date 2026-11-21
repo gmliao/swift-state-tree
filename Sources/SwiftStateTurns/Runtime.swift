@@ -177,7 +177,7 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var droppedParkedSends = 0
     /// Set by `endAll`: the core is terminal, and no key can be started again.
     @usableFromInline var ended = false
-    /// `start` and `queue` calls made after the end, and ignored.
+    /// `start`, `queue` and `followUp` calls made after the end, and ignored.
     @usableFromInline var ignoredAfterEnd = 0
     // Follow-ups: one pending per key and slot, owned by the key's generation.
     @usableFromInline var followUps: [FollowUpKey<M>: FollowUpRecord<M>] = [:]

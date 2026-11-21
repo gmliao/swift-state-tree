@@ -13,18 +13,15 @@ import Testing
 let turnTestHangBound: Duration = .seconds(60)
 
 /// `body`'s result, or nil when the bound runs out first or the test's task is cancelled (its
-/// time limit). `body` must return when its task is cancelled.
+/// time limit). `body` runs in a task of its own, cancelled then; it is never awaited after that,
+/// so a body that ignores cancellation is abandoned parked and the wait still ends.
 func withinTurnHangBound<T: Sendable>(_ body: @escaping @Sendable () async -> T) async -> T? {
-    await withTaskGroup(of: T?.self) { group in
-        group.addTask { await body() }
-        group.addTask {
-            try? await safeTaskSleep(for: turnTestHangBound)
-            return nil
-        }
-        let first = await group.next() ?? nil
-        group.cancelAll()
-        return first
+    let task = Task { await body() }
+    guard let result = await raceHangBound(task) else {
+        task.cancel()
+        return nil
     }
+    return result.get()
 }
 
 extension Fixture {
@@ -39,24 +36,92 @@ extension Fixture {
     }
 }
 
-/// `task`'s value. The task is cancelled when the hang bound runs out or the test is cancelled,
-/// so a quiescence wait a regression never wakes returns false (its cancellation answer) instead
-/// of parking the test. `task` must return when cancelled.
-func settled<T: Sendable>(_ task: Task<T, Never>) async -> T {
-    let timer = Task {
-        guard (try? await safeTaskSleep(for: turnTestHangBound)) != nil else { return }
+/// `task`'s value (a quiescence wait's answer), or false with an issue recorded when the hang
+/// bound runs out or the test is cancelled first. `task` is cancelled then, and never awaited
+/// after that: a wait whose own cancellation path is broken is abandoned parked, and the test
+/// fails instead of parking with it.
+func settled(_ task: Task<Bool, Never>, sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
+    guard let result = await raceHangBound(task) else {
         task.cancel()
+        Issue.record("a task the test awaits never ended", sourceLocation: sourceLocation)
+        return false
     }
-    defer { timer.cancel() }
-    return await withTaskCancellationHandler {
-        await task.value
-    } onCancel: {
-        task.cancel()
-    }
+    return result.get()
 }
 
 /// A wait that answers false when cancelled (a quiescence wait), under the hang bound: false when
 /// the bound runs out first.
 func bounded(_ wait: @escaping @Sendable () async -> Bool) async -> Bool {
     await withinTurnHangBound(wait) ?? false
+}
+
+/// `task`'s result, or nil when the hang bound runs out or the test's task is cancelled first. It
+/// neither cancels `task` nor waits for it to end: a reader task and a timer race to resume one
+/// continuation, and a task that never ends leaves its reader parked, never awaited.
+func raceHangBound<T: Sendable, E: Error>(_ task: Task<T, E>) async -> Result<T, E>? {
+    let race = FirstOf<Result<T, E>?>()
+    return await withTaskCancellationHandler {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Result<T, E>?, Never>) in
+            race.start(continuation)
+            race.add(Task { race.finish(await task.result) })
+            race.add(Task {
+                guard (try? await safeTaskSleep(for: turnTestHangBound)) != nil else { return }
+                race.finish(nil)
+            })
+        }
+    } onCancel: {
+        race.finish(nil)
+    }
+}
+
+/// The first of several racers resumes a continuation, once; later ones do nothing. A finish that
+/// lands before the continuation is set (a cancellation before the wait) is kept for it. The
+/// racers' tasks are cancelled once one has finished, so a bound's sleep doesn't outlive the wait.
+final class FirstOf<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    /// A finish that landed before `start`, kept for it.
+    private var early: [T] = []
+    private var done = false
+    private var racers: [Task<Void, Never>] = []
+
+    func start(_ continuation: CheckedContinuation<T, Never>) {
+        lock.lock()
+        if let value = early.first {
+            done = true
+            lock.unlock()
+            continuation.resume(returning: value)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func add(_ racer: Task<Void, Never>) {
+        lock.lock()
+        let cancelNow = done
+        if !done { racers.append(racer) }
+        lock.unlock()
+        if cancelNow { racer.cancel() }
+    }
+
+    func finish(_ value: T) {
+        lock.lock()
+        if done || !early.isEmpty {
+            lock.unlock()
+            return
+        }
+        guard let continuation else {
+            early = [value]
+            lock.unlock()
+            return
+        }
+        done = true
+        self.continuation = nil
+        let racers = self.racers
+        self.racers = []
+        lock.unlock()
+        for racer in racers { racer.cancel() }
+        continuation.resume(returning: value)
+    }
 }

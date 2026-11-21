@@ -289,7 +289,7 @@ API：`timer(at:for:_:)`、`now`、`TurnClock`、`TurnInstant`。
 
 ### Follow-up
 
-*follow-up* 是 key 替自己排定、之後只 step 一次的 input，例如「這一回合結束後公布分數」，不論這回合改了多少分數。它以 key 和 *slot*（machine 的 `FollowUpSlot` 型別）命名，每個 key 和 slot 最多一個待執行。已有一個待執行時再 arm 會 *join* 它，什麼都不改：第一次 arm 的 input 保留。
+*follow-up* 是 key 替自己排定、之後只 step 一次的 input，例如「這一回合結束後公布分數」，不論這回合改了多少分數。它以 key 和 *slot*（machine 的 `FollowUpSlot` 型別）命名，每個 key 和 slot 最多一個待執行。已有一個待執行時再 arm 會 *join* 它，什麼都不改：第一次 arm 的 input 和 trigger 保留。arm 回傳的 id 只在 `handleAbandoned` 裡指認這個 follow-up。它不是 request id：`cancel(id)` 對它不起作用，`reply(after: id)` 會立刻發布。
 
 ```swift
 case .round(let points):
@@ -302,7 +302,7 @@ case .publish:
     turn.emit(scores, for: .board)
 ```
 
-`.afterBatch` 在新的 batch 裡 step 它，作為目前這個之後 actor 自己的 job。`.afterWork(effect, deadline:)` 在 `perform(effect)` 回來時 step 它，例如「writer 清空後再 sync 一次」；deadline 先到則關閉它。兩者都以 control input step，且 slot 在 step 之前就釋出，所以它的 step 可以 arm 下一個。
+`.afterBatch` 在新的 batch 裡 step 它，作為目前這個之後 actor 自己的 job。`.afterWork(effect, deadline:)` 在 `perform(effect)` 回來時 step 它，例如「writer 清空後再 sync 一次」；deadline 先到則關閉它，並 step `handleAbandoned(id, .deadline)`。兩者都以 control input step，且 slot 在 step 之前就釋出，所以它的 step 可以 arm 下一個。
 
 follow-up 屬於它 key 的 generation。結束或取代該 key 會讓它不執行就關閉，並呼叫 `handleAbandoned(id, .keyEnded)`，所以舊 binding 下 arm 的 follow-up 不會在新 binding 下執行。自己就把工作做掉的 step 會把待執行的那個收回：
 
@@ -319,7 +319,7 @@ await board.send(.round(points: [3, 1, 4]))
 await board.waitForQuiescence()
 ```
 
-API：`followUp`、`consumeFollowUp`、`followUpPending`、`FollowUpTrigger`、`FollowUpArming`、`waitForQuiescence`、`TurnWork`。
+API：`followUp`、`consumeFollowUp`、`followUpPending`、`FollowUpTrigger`、`FollowUpArming`、`FollowUpSlot`、`waitForQuiescence`、`pendingWork`、`TurnWork`。
 
 ### Batch 與 `maxReleasesPerBatch`
 

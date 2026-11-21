@@ -26,6 +26,7 @@ struct FollowUpTests {
         let s = await a.snapshot()
         #expect(s.log == ["armed A", "consumed A", "armed B", "ran B"])
         #expect(s.abandoned == 0)
+        #expect(s.armedIDs.count == 2 && Set(s.armedIDs).count == 2)
     }
 
     @Test("3: arm, then end the key: closed unrun with keyEnded, and the wait wakes")
@@ -222,6 +223,7 @@ struct FollowUpTests {
         #expect(await settled(waiter))
         let s = await a.snapshot()
         #expect(s.log == ["armed A", "ran A", "armed B", "ran B"])
+        #expect(s.armedIDs.count == 2 && Set(s.armedIDs).count == 2)
     }
 
     @Test("17: a superseded binding's gate still waiting at endAll: the supersede closes A at once and uncounted; endAll closes B; A's late nil return steps nothing")
@@ -262,6 +264,8 @@ struct FollowUpTests {
         // A later gate starts: the earlier ones would have started before it.
         await a.send(.script([.arm("C", key: 2, .work(gate: "c"))]))
         await f.reach("at gate c")
+        // Only C's gate was launched: the launch filter, counted where it launches.
+        #expect(await a.gateLaunches() == 1)
         #expect(!f.isOpen("at gate a"))
         #expect(!f.isOpen("at gate b"))
         #expect(!f.isOpen("at gate d"))
@@ -387,7 +391,7 @@ struct FollowUpTests {
         await f.reach("stale follow-up #1")
     }
 
-    @Test("27: the release budget exhausted with follow-ups due: they still step in their job; parked inputs past the cap wait for the drain; a successor runs in the next job")
+    @Test("27: the release budget exhausted with follow-ups due: they still step in their job; parked inputs past the cap step in later batches, at most the cap each; a successor runs in the next job")
     func capWithFollowUpsDue() async {
         let f = Fixture()
         let a = FollowUpActor(fixture: f, maxReleasesPerBatch: 1)
@@ -397,15 +401,25 @@ struct FollowUpTests {
         // A's step ends key 1, which releases the hold: its segment hits the cap after P1.
         await a.send(.script([.arm("A", .slot(.a), key: 2, .batch, then: [.end(1), .arm("C", key: 2)]), .arm("B", key: 3)]))
         #expect(await bounded { await a.waitForQuiescence() })
+        // The quiescence wait counts follow-ups only: wait for the last parked step itself.
+        await f.reach("released #3")
         f.open("gate h")
         let log = await a.snapshot().log
         let parked = log.filter { $0.hasPrefix("parked") }
         #expect(parked == ["parked P1", "parked P2", "parked P3"])
-        let at = { (line: String) in log.firstIndex(of: line) ?? Int.max }
+        let at = { (line: String) -> Int in
+            guard let index = log.firstIndex(of: line) else {
+                Issue.record("no \"\(line)\" in the log")
+                return Int.max
+            }
+            return index
+        }
         #expect(at("ran A") < at("parked P1"))
         #expect(at("parked P1") < at("ran B"))
-        // B steps in A's job, before the job ends; P2 and P3 step in later batches, and C in a
-        // later follow-ups job. No order is asserted between those later jobs (plan §3.3).
+        // B steps in A's job, before the job ends; P2 and P3 step in later batches, at most the
+        // cap each (whichever entry runs a segment first releases them: the drain, or C's
+        // follow-ups job), and C in a later follow-ups job. No order is asserted between those
+        // later jobs (plan §3.3).
         #expect(at("ran B") < at("parked P2"))
         #expect(at("ran B") < at("ran C"))
         #expect(f.segments.allSatisfy { $0 <= 1 })
@@ -421,9 +435,16 @@ struct FollowUpTests {
         await f.reach("at gate a")
         f.open("gate a")
         #expect(await bounded { await a.waitForQuiescence() })
+        await f.reach("released #2")
         f.open("gate h")
         let log = await a.snapshot().log
-        let at = { (line: String) in log.firstIndex(of: line) ?? Int.max }
+        let at = { (line: String) -> Int in
+            guard let index = log.firstIndex(of: line) else {
+                Issue.record("no \"\(line)\" in the log")
+                return Int.max
+            }
+            return index
+        }
         #expect(at("gate result a") < at("parked P1"))
         #expect(at("parked P1") < at("ran A"))
         #expect(at("ran A") < at("parked P2"))
@@ -567,6 +588,25 @@ struct FollowUpTests {
         #expect(await a.effectsByInput()["script"] == 1)
     }
     #endif
+
+    @Test("40: an afterBatch arm joins a pending afterWork arm in its slot: the same id, the first input and trigger stand")
+    func joinAcrossTriggers() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
+        await f.reach("at gate a")
+        // C, an afterBatch arm in the other slot, is the fence: its job steps every due
+        // follow-up, so a join that made A due would step A there.
+        await a.send(.script([.arm("B"), .arm("C", .slot(.b))]))
+        #expect(await bounded { await a.waitForQuiescence(atMost: 1) })
+        #expect(await a.snapshot().log == ["armed A", "joined A", "armed C", "ran C"])
+        #expect(await a.pendingWork() == 1)
+        f.open("gate a")
+        #expect(await bounded { await a.waitForQuiescence() })
+        let s = await a.snapshot()
+        #expect(s.log == ["armed A", "joined A", "armed C", "ran C", "ran A"])
+        #expect(s.ran == 2)
+    }
 
     @Test("35: a follow-up id is a notification id: cancel does nothing, and reply(after:) publishes at once")
     func followUpIDIsNotARequest() async {

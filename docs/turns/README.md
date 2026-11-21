@@ -289,7 +289,7 @@ API: `timer(at:for:_:)`, `now`, `TurnClock`, `TurnInstant`.
 
 ### Follow-ups
 
-A *follow-up* is an input a key arms for itself, to step once later: "publish the scores after this round", however many scores the round changed. It is named by its key and a *slot* (the machine's `FollowUpSlot` type), and one is pending per key and slot. An arm while one is pending *joins* it and changes nothing: the first arm's input stands.
+A *follow-up* is an input a key arms for itself, to step once later: "publish the scores after this round", however many scores the round changed. It is named by its key and a *slot* (the machine's `FollowUpSlot` type), and one is pending per key and slot. An arm while one is pending *joins* it and changes nothing: the first arm's input and trigger stand. The id an arm returns names the follow-up in `handleAbandoned` only. It isn't a request id: `cancel(id)` does nothing for it, and `reply(after: id)` publishes at once.
 
 ```swift
 case .round(let points):
@@ -302,7 +302,7 @@ case .publish:
     turn.emit(scores, for: .board)
 ```
 
-`.afterBatch` steps it in a new batch, as the actor's own job after the current one. `.afterWork(effect, deadline:)` steps it when `perform(effect)` returns, such as "sync again once the writer has drained"; a deadline that passes first closes it. Either way it steps as a control input, and its slot is freed before it steps, so its step may arm the next one.
+`.afterBatch` steps it in a new batch, as the actor's own job after the current one. `.afterWork(effect, deadline:)` steps it when `perform(effect)` returns, such as "sync again once the writer has drained"; a deadline that passes first closes it, and `handleAbandoned(id, .deadline)` steps. Either way it steps as a control input, and its slot is freed before it steps, so its step may arm the next one.
 
 A follow-up belongs to its key's generation. Ending or superseding the key closes it unrun, with `handleAbandoned(id, .keyEnded)`, so one armed under an old binding never runs under the new one. A step that does the work itself retires the pending one:
 
@@ -319,7 +319,7 @@ await board.send(.round(points: [3, 1, 4]))
 await board.waitForQuiescence()
 ```
 
-API: `followUp`, `consumeFollowUp`, `followUpPending`, `FollowUpTrigger`, `FollowUpArming`, `waitForQuiescence`, `TurnWork`.
+API: `followUp`, `consumeFollowUp`, `followUpPending`, `FollowUpTrigger`, `FollowUpArming`, `FollowUpSlot`, `waitForQuiescence`, `pendingWork`, `TurnWork`.
 
 ### Batch and `maxReleasesPerBatch`
 

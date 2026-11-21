@@ -90,6 +90,8 @@ struct FollowUpMachine: TurnMachine {
 
     var log: [String] = []
     var labels: [RequestID: String] = [:]
+    /// Every id an arm returned as `.armed`, in order.
+    var armedIDs: [RequestID] = []
     var ran: Int = 0
     var abandoned: Int = 0
     var abandonScript: [Op] = []
@@ -149,6 +151,7 @@ struct FollowUpMachine: TurnMachine {
                 switch turn.followUp(.ran(label, then: then), slot, of: key, core) {
                 case .armed(let id):
                     labels[id] = label
+                    armedIDs.append(id)
                     log.append("armed \(label)")
                 case .joined(let id):
                     log.append("joined \(labels[id] ?? "?")")

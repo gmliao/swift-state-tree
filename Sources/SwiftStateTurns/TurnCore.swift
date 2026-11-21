@@ -11,7 +11,7 @@ public struct TurnStats: Sendable, Equatable {
     public var pendingWaiters = 0
     /// `emit`s under a key that wasn't live.
     public var droppedOutputs = 0
-    /// `start` and `queue` calls after `endAll`.
+    /// `start`, `queue` and `followUp` calls after `endAll`.
     public var ignoredAfterEnd = 0
     /// `send`s refused (closed, withdrawn or over the queue limit), or queued and then withdrawn
     /// or closed (`end`, a supersede, `revoke`, `close`, `endAll`), which had no caller to answer.
@@ -33,8 +33,8 @@ public enum TurnDiagnostic: Sendable, Equatable {
     case queued(total: Int)
     case batchEnded(released: Int)
     case foreignCompletion
-    /// A deadline woke (on time, or early because it was cancelled) for a request that had
-    /// already closed, and did nothing.
+    /// A deadline woke (on time, or early because it was cancelled) for a request or a
+    /// follow-up gate that had already closed, and did nothing.
     case staleDeadline
     /// A timer woke (on time, or early because it was cancelled) after it was replaced or
     /// dropped, and did nothing.
@@ -157,6 +157,11 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline var deadlineTasks: [RequestID: Task<Void, Never>] = [:]
     /// Tests: how many deadline tasks (requests' and follow-up gates') the core holds.
     package var deadlineTasksForTesting: Int { deadlineTasks.count }
+    /// Tests: how many follow-up gates the core has launched.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var gateLaunchesForTesting = 0
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif

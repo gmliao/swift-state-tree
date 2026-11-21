@@ -6,6 +6,7 @@ struct FollowUpSnapshot: Sendable {
     var ran: Int
     var abandoned: Int
     var stats: TurnStats
+    var armedIDs: [RequestID]
 }
 
 actor FollowUpActor: TurnActor {
@@ -48,8 +49,12 @@ actor FollowUpActor: TurnActor {
     func flush(_ outputs: consuming [Never]) {}
 
     func snapshot() -> FollowUpSnapshot {
-        let (log, ran, abandoned) = core.read { machine in (machine.log, machine.ran, machine.abandoned) }
-        return FollowUpSnapshot(log: log, ran: ran, abandoned: abandoned, stats: core.stats)
+        let (log, ran, abandoned, ids) = core.read { machine in (machine.log, machine.ran, machine.abandoned, machine.armedIDs) }
+        return FollowUpSnapshot(log: log, ran: ran, abandoned: abandoned, stats: core.stats, armedIDs: ids)
+    }
+
+    func gateLaunches() -> Int {
+        core.gateLaunchesForTesting
     }
 
     /// Debug builds: the core's effect counts by input case.

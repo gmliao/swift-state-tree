@@ -105,6 +105,7 @@ Rules:
   - it still steps the due follow-ups it holds, each re-checked, and their products drain after each step, before it ends (core rule 10's order: drain, abandoned, queued, then releases or follow-ups);
   - so the rest of an `.afterBatch` snapshot keeps its eligibility and finishes in its own job, under that job's clock read, and never waits for `continueDrain`.
   - `continueDrain` releases parked inputs only. It never steps a follow-up. An arm made after the snapshot (by a due step, by a released input, or in `continueDrain`'s batch) goes to `dueFollowUps` and runs in the next `continueFollowUps` job, under that job's clock read.
+  - The parked inputs past the cap aren't reserved for `continueDrain`: releases aren't gated on `drainScheduled`, so whichever entry runs a segment first (a control send, a completion, a timer, a dirty query, or the follow-ups job) releases up to the cap under a fresh budget. The rest step in later batches, at most the cap each.
   - **No order between the two jobs.** `continueDrain` and `continueFollowUps` are each an unstructured `Task { self.… }` on the actor, and nothing orders one before the other: when a capped segment schedules both, either may run first. The core promises what each job contains, not their order.
   - A gate's return is its own entry with its own clock read. Its arm steps in that segment, also when the result's step leaves the segment capped.
 
@@ -202,7 +203,7 @@ Then:
     - an `.afterBatch` job whose first due step releases more parked inputs than `maxReleasesPerBatch`, with a second due follow-up behind it and a successor armed after the snapshot;
     - a gate's result step that does the same.
 
-    Checked: the due follow-ups step in their own segment (the second one too); the parked inputs past the cap step in `continueDrain`'s batch, in order, and no batch releases more than the cap (core rule 7); the successor steps in the next `continueFollowUps` job; and each step's products drain before the next step (core rule 10). Each job's contents are checked on their own; no order is asserted between `continueDrain`'s batch and the next follow-ups job (§3.3).
+    Checked: the due follow-ups step in their own segment (the second one too); the parked inputs past the cap step in later batches, in order, at most the cap each (core rule 7), whichever entry runs those batches; the successor steps in the next `continueFollowUps` job; and each step's products drain before the next step (core rule 10). Each job's contents are checked on their own; no order is asserted between `continueDrain`'s batch and the next follow-ups job (§3.3), so a parked input may step in either.
 28. A gate's return cancels its deadline (the test clock reports the cancellation) and keeps a live request's deadline, which still fires.
 29. A's obsolete deadline leaves B pending in the same slot. A is consumed and B is armed with its own deadline; A's deadline wakes: B stays pending and steps when its gate returns.
 30. The registration tie and the races, with the waiter count as the registration event:

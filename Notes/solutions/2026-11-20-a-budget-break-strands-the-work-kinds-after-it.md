@@ -32,7 +32,7 @@ The `break` was written when releases were the last kind in the loop, so "the bu
 
 ## Fix
 
-A capped segment stops releasing (a `capped` flag skips the release branch) and goes on with the other kinds; the follow-ups it holds step, each one re-checked and its products drained first. The cap still bounds releases per batch (core rule 7), and the rest of the parked inputs wait for `continueDrain` as before. Cases 27 and 27b in `Tests/SwiftStateTurnsTests/FollowUpTests.swift` run with a cap of 1 on both entry paths.
+A capped segment stops releasing (a `capped` flag skips the release branch) and goes on with the other kinds; the follow-ups it holds step, each one re-checked and its products drained first. The cap still bounds releases per batch (core rule 7); the rest of the parked inputs step in later batches, at most the cap each. Those batches aren't only `continueDrain`'s: releases aren't gated on `drainScheduled`, so any entry that runs a segment first (a control send, a completion, a timer, a dirty query, the follow-ups job) releases under a fresh budget. Cases 27 and 27b in `Tests/SwiftStateTurnsTests/FollowUpTests.swift` run with a cap of 1 on both entry paths.
 
 ## Prevention
 
