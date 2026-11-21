@@ -421,6 +421,6 @@ It can land before or after #738. Whichever is second adapts the entry table (§
 
 ## 8. Questions for the maintainer
 
-1. **The issue's gate (open).** #621 says items 2–4 wait for an A/B showing that an adopter puts holds or requests on a hot path. No adopter on `main` uses `TurnCore` deadlines yet (#546 is moving the keeper and the transport). Main recommends: review now, implement after L2d-3, with step 0's attribution as the first act and its 2k instr/op floor as the stop rule.
+1. **The issue's gate (decided by the maintainer, 2026-11-21).** #621 says items 2–4 wait for an A/B showing that an adopter puts holds or requests on a hot path. No adopter on `main` uses `TurnCore` deadlines yet (#546 is moving the keeper and the transport). Decided: do it now as foundation work, right after L2d-3; step 0's attribution (`perf record` of `park` at base) comes first, and the `park` −2k instr/op floor is the stop rule.
 
 Decided in rev 2: Q2 (overturned: a fixed internal 64 per wake), Q3 (fire on `target`), Q4 (internal constants: half, with a floor of 64), Q5 (`park-64` recorded, its own commit), Q6 (keep the diagnostics, no new case), Q7 (timers in this PR, commit 3).
