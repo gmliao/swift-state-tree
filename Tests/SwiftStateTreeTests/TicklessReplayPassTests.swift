@@ -201,14 +201,16 @@ private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 private let p2 = PlayerID("p2"), c2 = ClientID("c2"), s2 = SessionID("s2")
 private let p3 = PlayerID("p3"), c3 = ClientID("c3"), s3 = SessionID("s3")
 
-private func makePassKeeper(inTurn: Bool, initializeWithResolver: Bool = false) async throws -> LandKeeper<PassOrderState> {
+/// `withPort`: a transport that runs the sync phase in turn, or none (a portless live keeper,
+/// which runs the same turns and delivers nothing).
+private func makePassKeeper(withPort: Bool, initializeWithResolver: Bool = false) async throws -> LandKeeper<PassOrderState> {
     let definition = makePassDefinition(initializeWithResolver: initializeWithResolver)
     let keeper = LandKeeper<PassOrderState>(
         definition: definition,
         initialState: PassOrderState(),
         enableLiveStateHashRecording: true,
         autoStartLoops: false,
-        transport: inTurn ? PassInTurnTransport() : nil
+        transport: withPort ? PassInTurnTransport() : nil
     )
     // One land ID per keeper: parallel tests must not share a recorder spool.
     let landID = "pass-order:\(UUID().uuidString)"
@@ -280,9 +282,9 @@ private func makePassReplayKeeper(_ path: String, sink: PassReplaySink) async th
 @Suite("Tickless replay in recorded apply order (#325, #321)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct TicklessReplayPassTests {
     @Test("An input overtaking a pending action replays in live order, across sessions and kinds", arguments: [false, true])
-    func overtakingInputsReplayInLiveOrder(inTurn: Bool) async throws {
+    func overtakingInputsReplayInLiveOrder(withPort: Bool) async throws {
         let key = PassGates.freshKey()
-        let keeper = try await makePassKeeper(inTurn: inTurn)
+        let keeper = try await makePassKeeper(withPort: withPort)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
 
@@ -314,7 +316,7 @@ struct TicklessReplayPassTests {
 
     @Test("A pass that applies several inputs restores its counter; replayed sequences equal live ones")
     func multiInputPassReplaysExactSequences() async throws {
-        let keeper = try await makePassKeeper(inTurn: true)
+        let keeper = try await makePassKeeper(withPort: true)
         // The join's drain must have ended before the hold goes in: a drain still in its loop
         // (past its `.inputDrain` hold, yielding between turns) would take x itself.
         let (drainEnds, drainEnded) = AsyncStream.makeStream(of: Void.self)
@@ -373,12 +375,14 @@ struct TicklessReplayPassTests {
         #expect(result.serverEventVerification == .passed)
     }
 
-    @Test("A pass held at its record and the pass queued meanwhile are recorded in apply order")
-    func legacyPassesRecordInApplyOrder() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+    @Test("A turn held at its record and a turn queued meanwhile are recorded in apply order")
+    func heldAndQueuedTurnsRecordInApplyOrder() async throws {
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        // Hold the first pass after its record is enqueued; the second runs to its end.
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
+        // Hold the first turn at its record; the second input is queued meanwhile.
         let gate = WatermarkGate()
         let held = ManagedFlag()
         await keeper.installHolds { point in
@@ -392,6 +396,8 @@ struct TicklessReplayPassTests {
         let second = Task {
             try await keeper.handleActionEnvelope(plainAction("second"), playerID: p2, clientID: c2, sessionID: s2)
         }
+        // Queued while the first is held (the first input was the first queued).
+        guard await signals.wait(for: "action-queued", count: 2) else { return }
         gate.release()
         _ = try await first.value
         _ = try await second.value
@@ -408,7 +414,7 @@ struct TicklessReplayPassTests {
 
     @Test("Replay runs each pass as an input turn: observable at the turn hold, nothing left over, tick 0")
     func replayRunsPassesAsTurns() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -452,6 +458,8 @@ struct TicklessReplayPassTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let base = transport.log.count
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         // Turn 1 requests a sync and is held at its record; turn 2 requests none.
         let gate = WatermarkGate()
         await keeper.installHolds { point in
@@ -469,6 +477,8 @@ struct TicklessReplayPassTests {
         let second = Task {
             try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
         }
+        // Turn 2's input is queued during turn 1's hold.
+        guard await signals.wait(for: "action-queued", count: 2) else { return }
         gate.release()
         _ = try await first.value
         _ = try await second.value
@@ -495,8 +505,8 @@ struct TicklessReplayPassTests {
     }
 
     @Test("OnInitialize with resolvers, a join and actions replay exactly; OnInitialize is outside the passes", arguments: [false, true])
-    func initializeWithResolverStaysOutsidePasses(inTurn: Bool) async throws {
-        let keeper = try await makePassKeeper(inTurn: inTurn, initializeWithResolver: true)
+    func initializeWithResolverStaysOutsidePasses(withPort: Bool) async throws {
+        let keeper = try await makePassKeeper(withPort: withPort, initializeWithResolver: true)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         _ = try await keeper.handleActionEnvelope(plainAction("a"), playerID: p1, clientID: c1, sessionID: s1)
         _ = try await keeper.handleActionEnvelope(plainAction("b"), playerID: p1, clientID: c1, sessionID: s1)
@@ -553,7 +563,7 @@ struct TicklessReplayPassTests {
     /// fingerprint (#521 D15).
     @Test("A 3.0 tickless record is read without passes, and refused at replay")
     func recordWithoutPassesIsReadAndRefused() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -574,7 +584,7 @@ struct TicklessReplayPassTests {
 
     @Test("The JSON view keeps a current record's passes and replays; a 2.x JSON tickless record is read and refused at replay")
     func jsonRecordsReplay() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b", "c"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -616,7 +626,7 @@ struct TicklessReplayPassTests {
         "missing", "unknown", "duplicate", "decreasing", "duplicate-input", "unready",
     ])
     func mismatchedPassesFailTheTick(kind: String) async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
@@ -680,7 +690,7 @@ struct TicklessReplayPassTests {
 
     @Test("Replaying a tickless frame of many one-input passes scans the queue a bounded number of times per input")
     func replayIsLinearInTheFrame() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let count = 2_000
         for index in 0..<count {
@@ -705,7 +715,7 @@ struct TicklessReplayPassTests {
 
     @Test("Replay doesn't apply an input that left the queue across a pass's await")
     func replayRereadsAChangedQueue() async throws {
-        let keeper = try await makePassKeeper(inTurn: false)
+        let keeper = try await makePassKeeper(withPort: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         for tag in ["a", "b"] {
             _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
