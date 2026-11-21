@@ -244,7 +244,7 @@ public extension SnapshotValue {
     /// one, so the first cast on a long chain would recurse through every level inside the
     /// runtime before a hop could refuse it. This cast succeeds at the first level, because
     /// `Optional` itself conforms, and the loop takes the levels one at a time.
-    static func unwrappingOptionals(_ value: Any, budget: NestingBudget) throws -> (Any, NestingBudget)? {
+    fileprivate static func unwrappingOptionals(_ value: Any, budget: NestingBudget) throws -> (Any, NestingBudget)? {
         var value = value
         var budget = budget
         while let optional = value as? any NestingOptionalPayload {
