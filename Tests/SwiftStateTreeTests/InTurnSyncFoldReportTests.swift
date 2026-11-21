@@ -242,6 +242,24 @@ struct InTurnSyncFoldReportTests {
         await keeper.forceShutdown()
     }
 
+    @Test("a fold whose tick turn runs without a port ends with it: a later attach doesn't report it")
+    func foldEndsWithAPortlessTickTurn() async throws {
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport)
+        let deadline = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(deadline)
+        await keeper.runSyncLoopIterationForTesting(at: deadline - .milliseconds(1))
+        #expect(await keeper.foldedSyncs == 1)
+        await keeper.setTransport(nil)
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(1))  // the folded tick, no port
+        #expect(await !keeper.inTurnSyncDueForTesting, "the due sync ended with its tick turn")
+        await keeper.setTransport(transport)
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(51))
+        #expect(transport.folds.isEmpty, "the stale fold was reported by the next turn: \(transport.folds)")
+        #expect(await keeper.lateFoldedSyncs == 0)
+        await keeper.forceShutdown()
+    }
+
     @Test("a fold is reported at the first tick turn after it, also when that turn's sync phase defers")
     func reportedAtFirstTurnWhenItsSyncDefers() async throws {
         let transport = FoldRecordingTransport(records: true)

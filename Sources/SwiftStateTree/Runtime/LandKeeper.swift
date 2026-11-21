@@ -4648,8 +4648,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: (any LandKeeperTransport)?
     ) -> TickTurnOutput {
         // No port: no fold to report and no sync phase; the tick's events and sync request are
-        // still taken below and recorded, so the collector is drained (#546 L2d).
-        if let transport { takePendingFold(transport: transport) }
+        // still taken below and recorded, so the collector is drained (#546 L2d). A sync folded
+        // into this tick ends with it: kept, it would be reported, and its due sync run, by the
+        // first tick turn after a later attach, as that turn's.
+        if let transport {
+            takePendingFold(transport: transport)
+        } else {
+            pendingFold = nil
+            inTurnSyncDue = false
+        }
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
