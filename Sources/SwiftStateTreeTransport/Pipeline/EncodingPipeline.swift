@@ -109,26 +109,39 @@ struct EncodingPipeline: Sendable {
     /// `failsPack`, a test's fault), the state frame alone, unless that would lose events
     /// (`refuseLosingMergedEvents`).
     func mergeEvents(into update: MergedBroadcastUpdate, eventBodies: [MessagePackValue], failsPack: Bool) throws -> Data {
+        var packError: (any Error)?
         switch update {
         case .array(let updateArray):
-            if !failsPack, let combined = buildStateUpdateWithEventBodies(
-                stateUpdateArray: updateArray,
-                eventBodies: eventBodies,
-                allowEmptyEvents: true
-            ) {
-                return combined
+            if !failsPack {
+                do {
+                    if let combined = try buildStateUpdateWithEventBodies(
+                        stateUpdateArray: updateArray,
+                        eventBodies: eventBodies,
+                        allowEmptyEvents: true
+                    ) {
+                        return combined
+                    }
+                } catch {
+                    packError = error
+                }
             }
-            try Self.refuseLosingMergedEvents(eventBodies)
+            try Self.refuseLosingMergedEvents(eventBodies, cause: packError)
             return try pack(.array(updateArray))
         case .data(let updateData):
-            if !failsPack, let combined = buildStateUpdateWithEventBodies(
-                stateUpdateData: updateData,
-                eventBodies: eventBodies,
-                allowEmptyEvents: true
-            ) {
-                return combined
+            if !failsPack {
+                do {
+                    if let combined = try buildStateUpdateWithEventBodies(
+                        stateUpdateData: updateData,
+                        eventBodies: eventBodies,
+                        allowEmptyEvents: true
+                    ) {
+                        return combined
+                    }
+                } catch {
+                    packError = error
+                }
             }
-            try Self.refuseLosingMergedEvents(eventBodies)
+            try Self.refuseLosingMergedEvents(eventBodies, cause: packError)
             return updateData
         }
     }
@@ -136,11 +149,11 @@ struct EncodingPipeline: Sendable {
     /// The merged frame didn't pack. Without events the state-only frame says the same; with
     /// events, the plan has already staged them, so sending the state alone would lose them: the
     /// land ends (#535 row 17).
-    static func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue]) throws {
+    static func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue], cause: (any Error)? = nil) throws {
         guard !eventBodies.isEmpty else { return }
         throw LandFailure(
             kind: .eventEncode,
-            detail: "the opcode 107 frame merging \(eventBodies.count) broadcast event(s) didn't pack",
+            detail: "the opcode 107 frame merging \(eventBodies.count) broadcast event(s) didn't pack" + (cause.map { ": \($0)" } ?? ""),
             position: LandFailurePosition(stage: .syncPhase)
         )
     }
@@ -187,35 +200,31 @@ struct EncodingPipeline: Sendable {
     /// Build MessagePack frame [107, stateUpdatePayload, eventsArray].
     ///
     /// This merges state update with pending events into a single MessagePack frame (opcode 107).
-    /// Returns nil on failure. With events, the caller ends the land rather than send the state
-    /// alone, which would lose them (#535 row 17).
+    /// Throws when the frame doesn't unpack or pack. With events, the caller ends the land rather
+    /// than send the state alone, which would lose them (#535 row 17).
     ///
     /// - Parameters:
     ///   - stateUpdateData: Encoded state update data
     ///   - eventBodies: Event bodies to merge
     ///   - allowEmptyEvents: Allow merging even if event array is empty
-    /// - Returns: Combined frame data, or nil if merging failed
+    /// - Returns: Combined frame data, or nil without events when `allowEmptyEvents` is false
     func buildStateUpdateWithEventBodies(
         stateUpdateData: Data,
         eventBodies: [MessagePackValue],
         allowEmptyEvents: Bool = false
-    ) -> Data? {
+    ) throws -> Data? {
         if eventBodies.isEmpty, !allowEmptyEvents {
             return nil
         }
-        do {
-            let stateUnpacked = try unpack(stateUpdateData)
-            guard case .array(let stateArr) = stateUnpacked else { return nil }
-
-            let combined: MessagePackValue = .array([
-                .int(MessageKindOpcode.stateUpdateWithEvents),
-                .array(stateArr),
-                .array(eventBodies)
-            ])
-            return try pack(combined)
-        } catch {
-            return nil
+        guard case .array(let stateArr) = try unpack(stateUpdateData) else {
+            throw MessagePackError.invalidData("the state update frame is not a MessagePack array")
         }
+        let combined: MessagePackValue = .array([
+            .int(MessageKindOpcode.stateUpdateWithEvents),
+            .array(stateArr),
+            .array(eventBodies)
+        ])
+        return try pack(combined)
     }
     
     /// Build MessagePack frame [107, stateUpdateArray, eventsArray] from pre-unpacked state array.
@@ -227,12 +236,12 @@ struct EncodingPipeline: Sendable {
     ///   - stateUpdateArray: State update as MessagePack array
     ///   - eventBodies: Event bodies to merge
     ///   - allowEmptyEvents: Allow merging even if event array is empty
-    /// - Returns: Combined frame data, or nil if packing failed
+    /// - Returns: Combined frame data, or nil without events when `allowEmptyEvents` is false
     func buildStateUpdateWithEventBodies(
         stateUpdateArray: [MessagePackValue],
         eventBodies: [MessagePackValue],
         allowEmptyEvents: Bool = false
-    ) -> Data? {
+    ) throws -> Data? {
         if eventBodies.isEmpty, !allowEmptyEvents {
             return nil
         }
@@ -241,7 +250,7 @@ struct EncodingPipeline: Sendable {
             .array(stateUpdateArray),
             .array(eventBodies)
         ])
-        return try? pack(combined)
+        return try pack(combined)
     }
     
     /// Encode a server event body without opcode (MessagePack array [direction, type, payload, ...]).

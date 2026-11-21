@@ -346,7 +346,7 @@ struct PayloadFrameGoldenTests {
             landID: "payload-frames"
         )
         let bodies = cases.compactMap(\.serverEvent).compactMap { pipeline.encodeServerEventBody($0) }
-        guard let frame = pipeline.buildStateUpdateWithEventBodies(
+        guard let frame = try? pipeline.buildStateUpdateWithEventBodies(
             stateUpdateArray: [.int(0), .string("payload-frames")], eventBodies: bodies
         ) else { return "error" }
         return frame.base64EncodedString()
