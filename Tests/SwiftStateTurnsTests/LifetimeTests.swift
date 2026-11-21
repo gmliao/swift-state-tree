@@ -17,8 +17,8 @@ struct LifetimeTests {
         }
         #expect(released == nil)
         // The core's deinit cancelled both sleeps; the woken tasks found no actor.
-        await f.wait("cancelled deadline 2")
-        await f.wait("cancelled deadline 30")
+        await f.reach("cancelled deadline 2")
+        await f.reach("cancelled deadline 30")
         #expect(f.count(of: "stale timer") == 0)
     }
 
@@ -41,6 +41,6 @@ struct LifetimeTests {
             await Task.yield() // wall-clock: not time: yields until the effect's task lets the actor go and the weak reference clears
         }
         #expect(released == nil)
-        await f.wait("cancelled deadline 9")
+        await f.reach("cancelled deadline 9")
     }
 }

@@ -85,14 +85,14 @@ struct OrderedChecksTests {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         let stepped = Task { try await a.sendAndWait(.transaction(4, "c4"), cancellation: .ignoresCancel) }
-        await f.wait("at c4")
+        await f.reach("at c4")
         let parked = Task { try await a.sendAndWait(.transaction(5, ""), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.shutdown)
-        let parkedResult = outcome(await parked.result)
-        let late = outcome(await Task { try await a.sendAndWait(.echo(1), cancellation: .ignoresCancel) }.result)
+        let parkedResult = outcome(await boundedResult(parked))
+        let late = outcome(await boundedResult(Task { try await a.sendAndWait(.echo(1), cancellation: .ignoresCancel) }))
         f.open("c4")
-        let steppedResult = outcome(await stepped.result)
+        let steppedResult = outcome(await boundedResult(stepped))
         let s = await a.snapshot()
         #expect(parkedResult == "closed")
         #expect(late == "closed")
@@ -139,27 +139,27 @@ struct OrderedChecksTests {
     func callReplyAndReplyAfter() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
-        let value = try? await a.sendAndWait(.echo(42), cancellation: .ignoresCancel)
+        let value = try? await boundedResult(Task { try await a.sendAndWait(.echo(42), cancellation: .ignoresCancel) }).get()
         #expect(value == 42)
 
         // Published after the request's completion step.
         let afterCompletion = Task {
             try await a.sendAndWait(.replyAfter(job: 9, gate: "r9", deadline: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("at r9")
+        await f.reach("at r9")
         let waiting = await a.snapshot()
         f.open("r9")
-        let completed = outcome(await afterCompletion.result)
+        let completed = outcome(await boundedResult(afterCompletion))
         let afterStep = await a.snapshot()
 
         // Published when the request is abandoned (here by its deadline).
         let afterAbandon = Task {
             try await a.sendAndWait(.replyAfter(job: 10, gate: "never", deadline: .seconds(5)), cancellation: .ignoresCancel)
         }
-        await f.wait("at never")
+        await f.reach("at never")
         let waitingAgain = await a.snapshot()
         f.open("deadline 5")
-        let abandoned = outcome(await afterAbandon.result)
+        let abandoned = outcome(await boundedResult(afterAbandon))
         let s = await a.snapshot()
 
         #expect(waiting.stats.pendingWaiters == 1)
@@ -176,7 +176,7 @@ struct OrderedChecksTests {
         let f = Fixture()
         let a = DemoActor(fixture: f)
         await a.send(.start(job: 3, gate: "c3"))
-        await f.wait("at c3")
+        await f.reach("at c3")
         await a.send(.cancelJob(3))
         let mid = await a.snapshot()
         f.open("c3")
@@ -193,11 +193,11 @@ struct OrderedChecksTests {
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "s1"))
         let scoped = Task { try await a.sendAndWait(.scoped(1, scope: 5), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.endJob(6))
         let afterOther = await a.snapshot()
         await a.send(.endJob(5))
-        let result = outcome(await scoped.result)
+        let result = outcome(await boundedResult(scoped))
         f.open("s1")
         await a.waitForLog(2)
         let s = await a.snapshot()
@@ -214,12 +214,12 @@ struct OrderedChecksTests {
         await a.send(.transaction(1, "l1"))
         let second = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .ignoresCancel) }
         let third = Task { try await a.sendAndWait(.transaction(3, ""), cancellation: .ignoresCancel) }
-        await f.wait("park #2")
-        let fourth = outcome(await Task { try await a.sendAndWait(.transaction(4, ""), cancellation: .ignoresCancel) }.result)
+        await f.reach("park #2")
+        let fourth = outcome(await boundedResult(Task { try await a.sendAndWait(.transaction(4, ""), cancellation: .ignoresCancel) }))
         await a.send(.transaction(5, ""))
         let full = await a.snapshot()
         f.open("l1")
-        let results = [outcome(await second.result), outcome(await third.result)].sorted()
+        let results = [outcome(await boundedResult(second)), outcome(await boundedResult(third))].sorted()
         let s = await a.snapshot()
         #expect(fourth == "queueFull")
         #expect(full.stats.droppedSends == 1)
@@ -253,7 +253,7 @@ struct OrderedChecksTests {
         await a.send(.start(job: 1, gate: "v1"))
         await a.replaceCore()
         f.open("v1")
-        await f.wait("foreign")
+        await f.reach("foreign")
         let state = await a.state()
         #expect(state.log.isEmpty)
         #expect(state.steps == 0)
@@ -268,26 +268,26 @@ struct OrderedChecksTests {
         // Marked before the input arrives: withdrawn before any step.
         let early = WithdrawToken()
         early.withdraw()
-        let first = outcome(await Task { try await a.sendAndWait(.guarded(1, token: early), cancellation: .ignoresCancel) }.result)
+        let first = outcome(await boundedResult(Task { try await a.sendAndWait(.guarded(1, token: early), cancellation: .ignoresCancel) }))
 
         // Marked upstream while queued: it keeps its place, and is withdrawn when released.
         await a.send(.transaction(1, "g1"))
         let late = WithdrawToken()
         let second = Task { try await a.sendAndWait(.guarded(2, token: late), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         late.withdraw()
         let stillParked = await a.snapshot().stats.queued
         f.open("g1")
-        let secondResult = outcome(await second.result)
+        let secondResult = outcome(await boundedResult(second))
 
         // Revoked by a step: withdrawn in that step.
         await a.send(.transaction(3, "g3"))
         let revoked = WithdrawToken()
         let third = Task { try await a.sendAndWait(.guarded(3, token: revoked), cancellation: .ignoresCancel) }
-        await f.wait("park #2")
+        await f.reach("park #2")
         await a.send(.revoke(revoked))
         let afterRevoke = await a.snapshot()
-        let thirdResult = outcome(await third.result)
+        let thirdResult = outcome(await boundedResult(third))
         f.open("g3")
         await a.waitForLog(5)
         let s = await a.snapshot()
@@ -307,16 +307,16 @@ struct OrderedChecksTests {
         let a = DemoActor(fixture: f, queueLimit: 2)
         await a.send(.transaction(1, "q1"))
         let parked = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.enqueue("a"))
         // The queued input counts as queued, so the limit is reached...
-        let overLimit = outcome(await Task { try await a.sendAndWait(.transaction(3, ""), cancellation: .ignoresCancel) }.result)
+        let overLimit = outcome(await boundedResult(Task { try await a.sendAndWait(.transaction(3, ""), cancellation: .ignoresCancel) }))
         // ...and doesn't apply to `queue` itself.
         await a.send(.enqueue("b"))
         await a.send(.endKey(.membership))
         let beforeClose = await a.snapshot()
         await a.send(.shutdown)
-        let parkedResult = outcome(await parked.result)
+        let parkedResult = outcome(await boundedResult(parked))
         let afterClose = await a.snapshot()
         f.open("q1")
         await a.waitForLog(8)
@@ -373,19 +373,19 @@ struct OrderedChecksTests {
         await a.send(.start(job: 1, gate: "x1"))
         await a.send(.transaction(2, "x2"))
         let scoped = Task { try await a.sendAndWait(.scoped(3, scope: 7), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         let unscoped = Task { try await a.sendAndWait(.transaction(4, ""), cancellation: .ignoresCancel) }
-        await f.wait("park #2")
+        await f.reach("park #2")
         await a.send(.enqueue("x"))
         await a.send(.teardown)
-        let scopedResult = outcome(await scoped.result)
-        let unscopedResult = outcome(await unscoped.result)
+        let scopedResult = outcome(await boundedResult(scoped))
+        let unscopedResult = outcome(await boundedResult(unscoped))
         let afterEnd = await a.snapshot()
         await a.send(.issueKey(9))
         await a.send(.enqueue("y"))
         await a.send(.runMark("after end"))
         let asked = await a.query(.bump)
-        let late = outcome(await Task { try await a.sendAndWait(.echo(1), cancellation: .ignoresCancel) }.result)
+        let late = outcome(await boundedResult(Task { try await a.sendAndWait(.echo(1), cancellation: .ignoresCancel) }))
         await a.waitForLog(8)
         let s = await a.snapshot()
         #expect(scopedResult == "withdrawn")
@@ -410,14 +410,14 @@ struct OrderedChecksTests {
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "w", deadline: .seconds(9), untilRetire: true))
         let parked = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.teardown)
-        let parkedResult = outcome(await parked.result)
+        let parkedResult = outcome(await boundedResult(parked))
         let mid = await a.snapshot()
         // The closed request's deadline task was cancelled: its sleep ended early, and the core's
         // re-check found the request closed.
-        await f.wait("cancelled deadline 9")
-        await f.wait("stale deadline #1")
+        await f.reach("cancelled deadline 9")
+        await f.reach("stale deadline #1")
         f.open("deadline 9")
         f.open("w")
         await a.waitForLog(4)
@@ -459,14 +459,14 @@ struct OrderedChecksTests {
         // behind it.
         await a.send(.transaction(1, "t1"))
         let scopedCall = Task { try await a.sendAndWait(.scoped(9, scope: 1), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         await a.send(.scoped(10, scope: 2))
-        await f.wait("park #2")
+        await f.reach("park #2")
         // The rebind: job 1's key is superseded, which withdraws the call queued under it. Job 2's
         // first issue isn't a supersede: its queued send stays.
         await a.send(.issueKey(1))
         await a.send(.issueKey(2))
-        let callResult = outcome(await scopedCall.result)
+        let callResult = outcome(await boundedResult(scopedCall))
         let mid = await a.snapshot()
         // The hold is released: only what stayed queued steps, under the new generation.
         f.open("t1")
@@ -522,7 +522,7 @@ struct OrderedChecksTests {
         await a.send(.endKey(.job(1)))
         // Sent while job 1's key isn't live: no generation to belong to.
         await a.send(.scoped(10, scope: 1))
-        await f.wait("park #1")
+        await f.reach("park #1")
         // Not a supersede (the key isn't live), so the queued input stays.
         await a.send(.issueKey(1))
         f.open("t1")
@@ -540,7 +540,7 @@ struct OrderedChecksTests {
         await a.send(.transaction(1, "never"))
         await a.send(.scoped(5, scope: 1))
         await a.send(.step(6))
-        await f.wait("park #2")
+        await f.reach("park #2")
         await a.send(.endKey(.job(1)))
         let afterEnd = await a.snapshot()
         await a.send(.shutdown)
@@ -562,7 +562,7 @@ struct OrderedChecksTests {
         f.open("f1")
         await a.waitForLog(4)
         await a.send(.emitAndWork(7))
-        await f.wait("performed 7")
+        await f.reach("performed 7")
         let s = await a.snapshot()
         // The two released steps ran in one batch, each flushed before the next stepped.
         #expect(s.log == ["begin 1", "end 1", "step 1", "step 2"])
@@ -576,12 +576,12 @@ struct OrderedChecksTests {
         let a = DemoActor(fixture: f)
         await a.send(.relay(1, first: "h1", second: "h2"))
         let parked = Task { try await a.sendAndWait(.transaction(7, ""), cancellation: .ignoresCancel) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         f.open("h1")
         await a.waitForLog(2)
         let mid = await a.snapshot()
         f.open("h2")
-        let result = outcome(await parked.result)
+        let result = outcome(await boundedResult(parked))
         let s = await a.snapshot()
         #expect(mid.log == ["relay 1", "relay 1 leg 1"])
         #expect(mid.stats.queued == 1)

@@ -179,7 +179,7 @@ struct ConceptsTests {
         // A publish-now in the same step as a round: the round's follow-up is consumed, so the
         // scores go out once.
         await board.send(.roundAndPublish(points: [1, 1, 1]))
-        await board.waitForQuiescence()
+        #expect(await bounded { await board.waitForQuiescence() })
         #expect(await board.published == [[3, 1, 4], [4, 2, 5]])
     }
 }

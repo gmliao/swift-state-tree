@@ -14,10 +14,10 @@ struct CancellationTests {
         let stepped = Task {
             try await a.sendAndWait(.replyAfter(job: 1, gate: "i1", deadline: nil), cancellation: .ignoresCancel)
         }
-        await f.wait("at i1")
+        await f.reach("at i1")
         stepped.cancel()
         f.open("i1")
-        let steppedResult = outcome(await stepped.result)
+        let steppedResult = outcome(await boundedResult(stepped))
 
         // Cancelled before it was submitted.
         let early = Task { () async throws -> Int in
@@ -26,7 +26,7 @@ struct CancellationTests {
         }
         early.cancel()
         f.open("go")
-        let earlyResult = outcome(await early.result)
+        let earlyResult = outcome(await boundedResult(early))
 
         let s = await a.snapshot()
         #expect(steppedResult == "success 1")
@@ -45,7 +45,7 @@ struct CancellationTests {
         }
         task.cancel()
         f.open("go")
-        let result = outcome(await task.result)
+        let result = outcome(await boundedResult(task))
         let s = await a.snapshot()
         #expect(result == "cancelled")
         #expect(s.log.isEmpty)
@@ -60,9 +60,9 @@ struct CancellationTests {
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "p1"))
         let parked = Task { try await a.sendAndWait(.transaction(2, ""), cancellation: .cancelsCall) }
-        await f.wait("park #1")
+        await f.reach("park #1")
         parked.cancel()
-        let result = outcome(await parked.result)
+        let result = outcome(await boundedResult(parked))
         let mid = await a.snapshot()
         f.open("p1")
         await a.waitForLog(2)
@@ -82,9 +82,9 @@ struct CancellationTests {
         let task = Task {
             try await a.sendAndWait(.replyAfter(job: 2, gate: "s2", deadline: nil), cancellation: .cancelsCall)
         }
-        await f.wait("at s2")
+        await f.reach("at s2")
         task.cancel()
-        let result = outcome(await task.result)
+        let result = outcome(await boundedResult(task))
         let mid = await a.snapshot()
         f.open("s2")
         await a.waitForLog(1)
@@ -108,7 +108,7 @@ struct CancellationTests {
         }
         task.cancel()
         f.open("go")
-        let result = outcome(await task.result)
+        let result = outcome(await boundedResult(task))
         let mid = await a.snapshot()
         // The machine still answers the caller it kept; the reply finds no waiter.
         await a.send(.answerHeld)
@@ -131,7 +131,7 @@ struct CancellationTests {
         }
         task.cancel()
         f.open("go")
-        let result = outcome(await task.result)
+        let result = outcome(await boundedResult(task))
         let s = await a.snapshot()
         // On an idle core the input steps at once and replies; the cancelled caller doesn't wait
         // for that reply, which finds no waiter.

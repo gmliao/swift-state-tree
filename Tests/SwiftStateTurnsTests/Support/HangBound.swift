@@ -125,3 +125,32 @@ final class FirstOf<T: Sendable>: @unchecked Sendable {
         continuation.resume(returning: value)
     }
 }
+
+/// `task`'s result, or nil with an issue recorded when the hang bound runs out or the test is
+/// cancelled first. Unlike `settled`, it doesn't cancel `task`: a task that ignores cancellation
+/// (an `.ignoresCancel` call whose reply a regression holds back) loses the race, is abandoned
+/// parked, and is never awaited, so the test fails instead of parking with it. Keep
+/// `.ignoresCancel` where the case checks it; this only bounds the test's own wait.
+func firstOrBound<T: Sendable, E: Error>(
+    _ task: Task<T, E>,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async -> Result<T, E>? {
+    let first = await raceHangBound(task)
+    if first == nil { Issue.record("a task the test awaits never ended", sourceLocation: sourceLocation) }
+    return first
+}
+
+/// A call task's result under `firstOrBound`: a task that never ends reads as a failure
+/// (`TurnHangBoundExceeded`), after the issue is recorded, so `outcome(_:)` and its expectation
+/// see it.
+func boundedResult(
+    _ task: Task<Int, any Error>,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async -> Result<Int, any Error> {
+    await firstOrBound(task, sourceLocation: sourceLocation) ?? .failure(TurnHangBoundExceeded())
+}
+
+/// What `boundedResult` answers for a task that never ended within the hang bound.
+struct TurnHangBoundExceeded: Error, CustomStringConvertible {
+    var description: String { "hang bound exceeded" }
+}

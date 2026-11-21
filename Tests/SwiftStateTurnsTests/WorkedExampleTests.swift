@@ -161,7 +161,8 @@ struct WorkedExampleTests {
         let count = try await lobby.sendAndWait(.join(player: 7), cancellation: .ignoresCancel)
         // count == 1, and the lobby flushed "welcome player 7".
         // docs:end
-        let second = try await lobby.sendAndWait(.join(player: 8), cancellation: .ignoresCancel)
+        // Outside the documented block, the test's own wait is bounded.
+        let second = try await boundedResult(Task { try await lobby.sendAndWait(.join(player: 8), cancellation: .ignoresCancel) }).get()
         #expect(count == 1)
         #expect(second == 2)
         #expect(await lobby.sent == ["welcome player 7", "welcome player 8"])

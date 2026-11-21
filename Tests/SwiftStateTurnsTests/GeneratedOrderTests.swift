@@ -40,6 +40,15 @@ final class Notes: @unchecked Sendable {
         lock.withLock { counts[name] ?? 0 }
     }
 
+    /// `wait(name)` under the hang bound: false when `name` isn't posted within it (the wait is
+    /// abandoned, never awaited), so a regression fails the seed instead of parking the run.
+    func reach(_ name: String) async -> Bool {
+        await withinTurnHangBound { () -> Bool in
+            await self.wait(name)
+            return true
+        } != nil
+    }
+
     /// Returns once `name` has been posted at least once.
     func wait(_ name: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -257,12 +266,12 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             guard let seq = view.pending.randomElement(using: &random) else { continue }
             op = "complete \(seq)"
             fixture.open("work \(seq)")
-            await notes.wait("done \(seq)")
+            if !(await notes.reach("done \(seq)")) { failures.append("after `\(op)`: done \(seq) never posted") }
         case 52 ..< 58:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "deadline \(seq)"
             fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
-            await notes.wait("abandoned \(seq)")
+            if !(await notes.reach("abandoned \(seq)")) { failures.append("after `\(op)`: abandoned \(seq) never posted") }
         case 58 ..< 63:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "cancel \(seq)"
@@ -313,7 +322,7 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             guard let (timerOwner, seq) = view.timers.randomElement(using: &random) else { continue }
             op = "fire \(seq) on \(timerOwner)"
             fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
-            await notes.wait("fired \(seq)")
+            if !(await notes.reach("fired \(seq)")) { failures.append("after `\(op)`: fired \(seq) never posted") }
         case 97, 98:
             op = "close"
             await actor.send(.close)
@@ -365,7 +374,10 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
         let rest = await actor.view()
         for seq in rest.pending {
             fixture.open("work \(seq)")
-            await notes.wait("done \(seq)")
+            guard await notes.reach("done \(seq)") else {
+                failures.append("done \(seq) never posted after its worker returned")
+                break
+            }
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
         // Invariant 20: the wait returns once every follow-up stepped or closed.
@@ -381,7 +393,16 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
     }
     // End everything (cancelling the deadline and timer tasks); every queued call is answered.
     if !(await actor.view()).ended { await actor.send(.endAll) }
-    for call in calls { await call.task.value }
+    // One bound for every call of the seed: a regression that never answers them costs one
+    // bound, not one per call.
+    let tasks = calls.map(\.task)
+    let ended = await withinTurnHangBound { () -> Bool in
+        for task in tasks { await task.value }
+        return true
+    }
+    if ended == nil {
+        failures.append("a call's task never ended within the hang bound")
+    }
     let final = await actor.view()
     // Invariant 10: each call answered once, and its answer matches whether it stepped.
     for call in calls {
