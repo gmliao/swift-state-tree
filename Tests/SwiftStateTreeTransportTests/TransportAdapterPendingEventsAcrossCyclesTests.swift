@@ -484,6 +484,37 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("tg-late", in: frames) == 1, "targeted event must arrive exactly once")
     }
 
+    @Test("4: events read by cycle N are not resent by cycle N+1 (exact frame counts)")
+    func noDuplicatesAcrossCycles() async throws {
+        let f = try await KeptEventsFixture.make(.periodicSync)
+
+        // Cycle N: a per-player change, and a targeted and a broadcast event queued before it.
+        try await f.set("score", 1)
+        await f.targetedEvent("tg-1", to: f.a)
+        await f.broadcastEvent("bc-1")
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await f.settle()
+        // Cycle N+1: nothing new but a broadcast event queued after N.
+        await f.broadcastEvent("bc-2")
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await f.settle()
+        // Cycle N+2: nothing at all.
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        await f.settle()
+
+        let frames = f.frames(f.a)
+        let kinds = opcodes(frames)
+        #expect(count("tg-1", in: frames) == 1)
+        #expect(count("bc-1", in: frames) == 1)
+        #expect(count("bc-2", in: frames) == 1)
+        #expect(kinds.filter { $0 == 103 }.count == 1, "one targeted event frame (N); kinds \(kinds)")
+        #expect(kinds.filter { $0 == 107 }.count == 2, "one merged frame each in N and N+1; kinds \(kinds)")
+        #expect(kinds.filter { (0...2).contains($0) }.count == 1, "one per-player state frame (N); kinds \(kinds)")
+    }
+
     @Test("5a: with every member in initial sync, queued events are dropped by both cycle types (#69)")
     func allInitialSyncingDropsEvents() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)

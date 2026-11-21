@@ -325,6 +325,22 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagSlowConsumerCloses == 0)
     }
 
+    @Test("The standalone firstSync's commit is the attempt's initialSyncCommitted, with no flip (#555)")
+    func standaloneFirstSyncCommitIsInitialSyncCommitted() async throws {
+        typealias Key = TransportAdapter<SyncLagTestState>.JoinAttemptKey
+        // Opt-in: without it the commit records nothing.
+        let plain = try await makeFixture()
+        #expect(try await plain.stateFrames().map(\.op) == [1])
+        #expect(await !plain.adapter.initialSyncCommittedForTesting(Key(sessionID: plain.sessionID, attempt: nil)), "not captured")
+
+        // The keeper has no transport here, so the join's first view is the standalone firstSync.
+        let f = try await makeFixture(captureJoinCommits: true)
+        #expect(try await f.stateFrames().map(\.op) == [1], "the firstSync was sent")
+        #expect(await f.adapter.initialSyncCommittedForTesting(Key(sessionID: f.sessionID, attempt: nil)))
+        #expect(await !f.adapter.joinFlippedForTesting(Key(sessionID: f.sessionID, attempt: nil)), "no in-turn flip")
+        #expect(await !f.adapter.initialSyncCommittedForTesting(Key(sessionID: SessionID("other"), attempt: nil)))
+    }
+
     @Test("Silent past 3 s: frames are withheld; acks resuming bring a resync")
     func silentReaderPending() async throws {
         let f = try await makeFixture()

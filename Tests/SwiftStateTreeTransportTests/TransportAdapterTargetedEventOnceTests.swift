@@ -161,23 +161,6 @@ private struct TargetedOnceFixture {
         #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 
-    /// Waits until a frame carrying `message` reached `sessionID` (the follow-up cycle runs in
-    /// its own task), then a little longer so a late duplicate is seen too.
-    func waitForEvent(_ message: String, at sessionID: SessionID) async throws {
-        let marker = Data(message.utf8)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await transport.frames(for: sessionID)).contains(where: { $0.range(of: marker) != nil }) {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("timed out waiting for \(message) at \(sessionID.rawValue)")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
-    }
-
     /// Indices (in send order) of frames that carry the targeted event with `message`.
     func eventFrameIndices(_ message: String = targetedOnceMarker) async -> [Int] {
         let marker = Data(message.utf8)
@@ -242,6 +225,56 @@ struct TransportAdapterTargetedEventOnceTests {
         let eventIndices = await f.eventFrameIndices()
         #expect(eventIndices.count == 1, "targeted event must arrive exactly once; event frames at \(eventIndices) of \(frames.count)")
         #expect(messagePackStateFrameIndices(frames).isEmpty, "no state frame expected without a state change")
+    }
+
+    @Test("opcode 107: two sessions, one served by the per-player batch and one by the flush, each get their own events once")
+    func twoSessionsEventsArriveOnceAtTheirOwnSession() async throws {
+        let f = try await TargetedOnceFixture.make(encoding: .messagepack)
+        let sessionB = SessionID("to-session-b")
+        let clientB = ClientID("to-client-b")
+        let playerB = PlayerID("to-player-b")
+        try await f.joinSecondSession(session: sessionB, client: clientB, player: playerB)
+
+        // A has a per-player change (served by the batch); B has none (served by the flush).
+        try await f.setScore(5)
+        await f.sendTargetedEvent("evt-a1-pre", to: f.player)
+        await f.sendTargetedEvent("evt-b1-pre", to: playerB)
+        await f.sendTargetedEvent("evt-a2-pre", to: f.player)
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        // Queued after that cycle: the next one sends them, after A's state frame.
+        await f.sendTargetedEvent("evt-a3-late", to: f.player)
+        await f.sendTargetedEvent("evt-b3-late", to: playerB)
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+
+        let aFrames = await f.transport.frames(for: f.session)
+        let bFrames = await f.transport.frames(for: sessionB)
+        let aEvents = ["evt-a1-pre", "evt-a2-pre", "evt-a3-late"]
+        let bEvents = ["evt-b1-pre", "evt-b3-late"]
+
+        for event in aEvents {
+            #expect(frameIndices(containing: event, in: aFrames).count == 1, "\(event) must reach A exactly once")
+            #expect(frameIndices(containing: event, in: bFrames).isEmpty, "\(event) must not reach B")
+        }
+        for event in bEvents {
+            #expect(frameIndices(containing: event, in: bFrames).count == 1, "\(event) must reach B exactly once")
+            #expect(frameIndices(containing: event, in: aFrames).isEmpty, "\(event) must not reach A")
+        }
+
+        let aState = messagePackStateFrameIndices(aFrames)
+        #expect(aState.count == 1, "expected one per-player state frame for A; got \(aState)")
+        #expect(messagePackStateFrameIndices(bFrames).isEmpty, "B has no state change in either cycle")
+        if let state = aState.first {
+            for event in ["evt-a1-pre", "evt-a2-pre"] {
+                if let index = frameIndices(containing: event, in: aFrames).first {
+                    #expect(index < state, "\(event) (\(index)) must precede A's state frame (\(state))")
+                }
+            }
+            if let index = frameIndices(containing: "evt-a3-late", in: aFrames).first {
+                #expect(index > state, "evt-a3-late (\(index)) is queued after the cycle and follows A's state frame (\(state))")
+            }
+        }
     }
 
     @Test(
