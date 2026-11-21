@@ -96,7 +96,8 @@ struct UntypedPayloadLand {
     static func make(
         _ definition: LandDefinition<UntypedPayloadState>,
         encoding: UntypedPayloadEncoding,
-        services: LandServices = LandServices()
+        services: LandServices = LandServices(),
+        waitsByEvent: Bool = false
     ) async throws -> UntypedPayloadLand {
         let transport = UntypedPayloadTransport()
         let keeper = LandKeeper<UntypedPayloadState>(
@@ -107,7 +108,8 @@ struct UntypedPayloadLand {
         await keeper.setTransport(adapter)
         let client = ClientID("c1")
         await adapter.onConnect(sessionID: session, clientID: client)
-        try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player)
+        try await simulateRouterJoin(
+            adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: player, waitsByEvent: waitsByEvent)
         return UntypedPayloadLand(keeper: keeper, adapter: adapter, transport: transport, encoding: encoding)
     }
 

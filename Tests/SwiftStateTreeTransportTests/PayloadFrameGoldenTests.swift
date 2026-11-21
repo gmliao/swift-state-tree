@@ -339,14 +339,15 @@ struct PayloadFrameGoldenTests {
 
     /// The merged opcode 107 frame of a fixed state array and every server event's body that
     /// encodes, in case order.
-    static func mergedFrame(_ cases: [PayloadFrameCase]) -> String {
+    static func mergedFrame(_ cases: [PayloadFrameCase]) throws -> String {
         let pipeline = EncodingPipeline(
             stateUpdateEncoder: OpcodeMessagePackStateUpdateEncoder(),
             messageEncoder: encoders.messagePack,
             landID: "payload-frames"
         )
         let bodies = cases.compactMap(\.serverEvent).compactMap { pipeline.encodeServerEventBody($0) }
-        guard let frame = try? pipeline.buildStateUpdateWithEventBodies(
+        // A plain `try`: a frame that doesn't build fails the fixture with its cause.
+        guard let frame = try pipeline.buildStateUpdateWithEventBodies(
             stateUpdateArray: [.int(0), .string("payload-frames")], eventBodies: bodies
         ) else { return "error" }
         return frame.base64EncodedString()
@@ -368,7 +369,7 @@ struct PayloadFrameGoldenTests {
             "eventHashes": AnyCodable(PayloadFrameCases.eventHashes.mapValues { AnyCodable($0) }),
             "clientEventHashes": AnyCodable(PayloadFrameCases.clientEventHashes.mapValues { AnyCodable($0) }),
             "cases": AnyCodable(records),
-            "merged107": AnyCodable(mergedFrame(cases)),
+            "merged107": AnyCodable(try mergedFrame(cases)),
         ]
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

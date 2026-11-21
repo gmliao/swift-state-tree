@@ -141,9 +141,57 @@ private struct DeepStateLand {
         let session = SessionID("s1")
         let client = ClientID("c1")
         await adapter.onConnect(sessionID: session, clientID: client)
-        try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: PlayerID("p1"))
+        try await simulateRouterJoin(
+            adapter: adapter, keeper: keeper, sessionID: session, clientID: client, playerID: PlayerID("p1"), waitsByEvent: true)
         return DeepStateLand(keeper: keeper, adapter: adapter, transport: transport)
     }
+}
+
+/// The deepest nesting of arrays and maps in `value`, counted as the unpacker counts it (a map's
+/// keys included). Recursive: only for the shallow values these tests measure.
+private func nestingDepth(_ value: MessagePackValue) -> Int {
+    switch value {
+    case .array(let elements):
+        return 1 + (elements.map(nestingDepth).max() ?? 0)
+    case .map(let pairs):
+        return 1 + (pairs.map { max(nestingDepth($0.key), nestingDepth($0.value)) }.max() ?? 0)
+    default:
+        return 0
+    }
+}
+
+@Payload
+struct PackDepthAction: ActionPayload {
+    typealias Response = PackDepthReply
+    let depth: Int
+}
+
+@Payload
+struct PackDepthReply: ResponsePayload {
+    let leaf: NestedObjectsLeaf
+}
+
+/// A land whose action answers with a leaf of `action.depth` nested objects.
+private func makeDeepResponseLand() -> LandDefinition<UntypedPayloadState> {
+    Land("pack-depth-response", using: UntypedPayloadState.self) {
+        Rules {
+            HandleAction(PackDepthAction.self) {
+                (_: inout UntypedPayloadState, action: PackDepthAction, _: LandContext) in
+                PackDepthReply(leaf: NestedObjectsLeaf(depth: action.depth))
+            }
+        }
+    }
+}
+
+/// Sends one `PackDepthAction` from the land's session, as a client frame; returns once the
+/// adapter has handled it (answered it or ended the land).
+private func sendDeepAction(_ land: UntypedPayloadLand, depth: Int) async throws {
+    let envelope = ActionEnvelope(
+        typeIdentifier: String(describing: PackDepthAction.self),
+        payload: AnyCodable(PackDepthAction(depth: depth))
+    )
+    let frame = try land.encoding.config.makeCodec().encode(TransportMessage.action(requestID: "r1", action: envelope))
+    await land.adapter.onMessage(frame, from: UntypedPayloadLand.session)
 }
 
 /// The frames `transport` received after the first `before`.
@@ -190,8 +238,24 @@ struct PackDepthTests {
         let error = #expect(throws: MessagePackError.self) {
             _ = try pack(PackDepthShape.arrays.value(depth: messagePackMaxNestingDepth + 1))
         }
-        guard case .invalidData(let reason)? = error else { return }
+        guard case .invalidData(let reason)? = error else {
+            Issue.record("expected invalidData, got \(String(describing: error))")
+            return
+        }
         #expect(reason == "Nesting deeper than \(messagePackMaxNestingDepth)")
+    }
+
+    @Test("Siblings each nested to the limit pack: the depth goes back down after each container")
+    func siblingsAtTheLimit() throws {
+        let limit = messagePackMaxNestingDepth
+        // In one array: two siblings 63 deep, and a map whose value is 62 deep. Each path is 64
+        // levels, so the whole value is as deep as one of them.
+        let inner = PackDepthShape.arrays.value(depth: limit - 1)
+        let mapped = MessagePackValue.map([.string("k"): PackDepthShape.arrays.value(depth: limit - 2)])
+        let siblings = MessagePackValue.array([inner, inner, mapped])
+        let packed = try pack(siblings)
+        #expect(try unpack(packed) == siblings)
+        #expect(nestingDepth(siblings) == limit)
     }
 
     // MARK: Leaf writer
@@ -203,7 +267,10 @@ struct PackDepthTests {
         #expect(atLimit == PackDepthShape.maps.value(depth: limit))
         var writer = MessagePackPayloadFieldWriter()
         let error = #expect(throws: EncodingError.self) { try writer.leaf(NestedObjectsLeaf(depth: limit + 1)) }
-        guard case let .invalidValue(_, context)? = error else { return }
+        guard case let .invalidValue(_, context)? = error else {
+            Issue.record("expected invalidValue, got \(String(describing: error))")
+            return
+        }
         #expect(context.debugDescription.contains("nested deeper than \(limit)"), "\(context.debugDescription)")
     }
 
@@ -243,7 +310,8 @@ struct PackDepthTests {
 
     @Test("A leaf deeper than any frame is refused when its body is written: the event is lost and the land ends with .eventEncode")
     func leafPastTheWriterBound() async throws {
-        let land = try await UntypedPayloadLand.make(makeNestedLeafLand(depth: messagePackMaxNestingDepth + 1, target: .all), encoding: .messagepack)
+        let land = try await UntypedPayloadLand.make(
+            makeNestedLeafLand(depth: messagePackMaxNestingDepth + 1, target: .all), encoding: .messagepack, waitsByEvent: true)
         await land.adapter.waitForOutboundIdleForTesting()
         let before = await land.transport.sends
         await land.tick()
@@ -258,29 +326,114 @@ struct PackDepthTests {
 
     // MARK: State frames
 
-    /// The state frame's own levels sit around the patch value, so the deepest value that fits is
-    /// found, not assumed: every depth up to it encodes and unpacks, and every depth past it is
-    /// refused by the packer. The value is built iteratively, so nothing recurses before the
-    /// encoder does.
-    @Test("A state frame deeper than 64 is refused by the packer; every shallower one encodes and unpacks")
+    /// The state frame's own levels sit around the patch value. They are measured on a shallow
+    /// frame, so the deepest value that fits is exact: it encodes to a frame exactly 64 deep, and
+    /// one level more is refused by the packer. The value is built iteratively, so nothing
+    /// recurses before the encoder does.
+    @Test("A state frame deeper than 64 is refused by the packer; the deepest one that fits is exactly 64 deep")
     func stateFrameBound() throws {
         let encoder = OpcodeMessagePackStateUpdateEncoder()
-        var firstRefused: Int?
-        for depth in 50...(messagePackMaxNestingDepth + 2) {
+        func frame(_ depth: Int) throws -> Data {
             let value = (0..<depth).reduce(SnapshotValue.int(1)) { inner, _ in .object(["n": inner]) }
             let update = StateUpdate.diff([StatePatch(path: "/tree", operation: .set(value))])
-            do {
-                let frame = try encoder.encode(update: update, landID: "pack-depth-state", playerID: PlayerID("p1"))
-                #expect(firstRefused == nil, "depth \(depth) encodes after \(firstRefused ?? 0) was refused")
-                #expect(throws: Never.self, "depth \(depth): the frame unpacks") { _ = try unpack(frame) }
-            } catch let MessagePackError.invalidData(reason) {
-                #expect(reason == "Nesting deeper than \(messagePackMaxNestingDepth)", "depth \(depth)")
-                if firstRefused == nil { firstRefused = depth }
-            }
+            return try encoder.encode(update: update, landID: "pack-depth-state", playerID: PlayerID("p1"))
         }
-        let refused = try #require(firstRefused, "some depth up to the limit + 2 is refused")
-        // The frame adds at least one level of its own, so the refusal starts at or below the limit.
-        #expect(refused <= messagePackMaxNestingDepth)
+        let limit = messagePackMaxNestingDepth
+        let overhead = nestingDepth(try unpack(frame(2))) - 2
+        #expect(overhead >= 1, "the frame has levels of its own")
+        let deepest = limit - overhead
+        for depth in (deepest - 2)...deepest {
+            let fits = try frame(depth)
+            #expect(nestingDepth(try unpack(fits)) == depth + overhead, "depth \(depth)")
+        }
+        #expect(nestingDepth(try unpack(frame(deepest))) == limit)
+        for depth in (deepest + 1)...(deepest + 2) {
+            let error = #expect(throws: MessagePackError.self, "depth \(depth)") { _ = try frame(depth) }
+            guard case .invalidData(let reason)? = error else {
+                Issue.record("depth \(depth): expected invalidData, got \(String(describing: error))")
+                continue
+            }
+            #expect(reason == "Nesting deeper than \(limit)", "depth \(depth)")
+        }
+    }
+
+    // MARK: Merged state frames (opcode 107)
+
+    /// A state array whose own frame nests `frameDepth` containers: the frame and an array chain.
+    private func stateArray(frameDepth: Int) -> [MessagePackValue] {
+        [.int(0), PackDepthShape.arrays.value(depth: frameDepth - 1)]
+    }
+
+    /// In `[107, state, events]` the state sits one level deeper than in its own frame. A state
+    /// whose own frame doesn't pack is the state's failure (a plain pack error, which the adapter
+    /// reports as `.syncEncode`), with or without events. One whose own frame packs but not merged
+    /// ends the land with `.eventEncode` only when events are pending, and says the state alone
+    /// packs; without events the state frame goes alone.
+    @Test("A merged frame that doesn't pack blames the state when the state alone doesn't pack, and the events otherwise",
+          arguments: [(63, true), (63, false), (64, true), (64, false), (65, true), (65, false)])
+    func mergedStateDepth(frameDepth: Int, withEvent: Bool) throws {
+        let pipeline = EncodingPipeline(
+            stateUpdateEncoder: OpcodeMessagePackStateUpdateEncoder(),
+            messageEncoder: MessagePackTransportMessageEncoder(),
+            landID: "pack-depth-merge"
+        )
+        let state = stateArray(frameDepth: frameDepth)
+        let events: [MessagePackValue] = withEvent ? [.array([.int(1), .int(2)])] : []
+        let label = "state frame \(frameDepth), \(withEvent ? "one event" : "no event")"
+        let limit = messagePackMaxNestingDepth
+        do {
+            let data = try pipeline.mergeEvents(into: .array(state), eventBodies: events, failsPack: false)
+            let frame = try unpack(data)
+            if frameDepth + 1 <= limit {
+                #expect(opcode(frame) == Int64(MessageKindOpcode.stateUpdateWithEvents), "\(label): merged")
+            } else {
+                #expect(frameDepth <= limit && !withEvent, "\(label): sent although it can't be")
+                #expect(opcode(frame) == 0 && nestingDepth(frame) == frameDepth, "\(label): the state frame alone")
+            }
+        } catch let failure as LandFailure {
+            #expect(frameDepth == limit && withEvent, "\(label): \(failure)")
+            #expect(failure.kind == .eventEncode, "\(label)")
+            #expect(failure.detail.contains("Nesting deeper than \(limit)"), "\(label): \(failure.detail)")
+            #expect(failure.detail.contains("the state frame alone packs, but it nests \(limit) deep"), "\(label): \(failure.detail)")
+        } catch let error as MessagePackError {
+            #expect(frameDepth > limit, "\(label): \(error)")
+            guard case .invalidData(let reason) = error else {
+                Issue.record("\(label): expected invalidData, got \(error)")
+                return
+            }
+            #expect(reason == "Nesting deeper than \(limit)", "\(label)")
+        }
+    }
+
+    // MARK: Responses
+
+    // A typed response doesn't go through the state snapshot, so a land-level case can pass the
+    // limit. The leaf stays under the writer's own 64, so the refusal is the packer's.
+    @Test("A response that nests past 64 ends the land with .responseEncode and sends nothing; a shallower one is answered",
+          arguments: [(40, true), (63, false)])
+    func responseDepth(leafDepth: Int, fits: Bool) async throws {
+        let land = try await UntypedPayloadLand.make(makeDeepResponseLand(), encoding: .messagepack, waitsByEvent: true)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let before = await land.transport.sends
+        try await sendDeepAction(land, depth: leafDepth)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let label = "leaf \(leafDepth)"
+        if fits {
+            await land.keeper.waitUntilDrained()
+            await land.adapter.waitForOutboundIdleForTesting()
+            #expect(land.keeper.failure == nil, "\(label): \(String(describing: land.keeper.failure))")
+            let frames = try await framesSent(land.transport, after: before).map { try unpack($0) }
+            #expect(frames.contains { nestingDepth($0) >= leafDepth }, "\(label): the answer carries the leaf")
+        } else {
+            try #require(await land.keeper.waitForFailureForTesting(), "\(label): the land failed")
+            await land.keeper.waitUntilDrained()
+            #expect(land.keeper.failure?.kind == .responseEncode, "\(label): \(String(describing: land.keeper.failure))")
+            #expect(land.keeper.failure?.detail.contains("Nesting deeper than \(messagePackMaxNestingDepth)") == true,
+                    "\(label): the packer's refusal, not the writer's: \(String(describing: land.keeper.failure))")
+            await land.adapter.waitForOutboundIdleForTesting()
+            #expect(await land.transport.sends == before, "\(label): no answer was sent")
+            #expect(await land.transport.closes == [SessionClose.Code.landFailed], "\(label)")
+        }
     }
 
     /// A land's state reaches the packer through its snapshot, which recurses once per level of
@@ -300,10 +453,14 @@ struct PackDepthTests {
         let frames = await framesSent(land.transport, after: before)
         #expect(!frames.isEmpty, "the sync sent a frame")
         for frame in frames { #expect(throws: Never.self) { _ = try unpack(frame) } }
+        // 20 levels of nodes, 2 containers each: some frame carries the whole tree.
+        let depths = try frames.map { nestingDepth(try unpack($0)) }
+        #expect((depths.max() ?? 0) >= 2 * 20, "the tree is in a frame: \(depths)")
     }
 
     private func expectEventDepth(leafDepth: Int, fits: Bool, target: SwiftStateTree.EventTarget, opcode expected: Int64) async throws {
-        let land = try await UntypedPayloadLand.make(makeNestedLeafLand(depth: leafDepth, target: target), encoding: .messagepack)
+        let land = try await UntypedPayloadLand.make(
+            makeNestedLeafLand(depth: leafDepth, target: target), encoding: .messagepack, waitsByEvent: true)
         await land.adapter.waitForOutboundIdleForTesting()
         let before = await land.transport.sends
         await land.tick()
@@ -321,6 +478,8 @@ struct PackDepthTests {
             #expect(land.keeper.failure?.kind == .eventEncode, "\(label): \(String(describing: land.keeper.failure))")
             #expect(land.keeper.failure?.detail.contains("Nesting deeper than \(messagePackMaxNestingDepth)") == true,
                     "\(label): the detail names the cause: \(String(describing: land.keeper.failure))")
+            #expect(land.keeper.failure?.detail.contains("the state frame alone packs") == false,
+                    "\(label): the state isn't blamed: \(String(describing: land.keeper.failure))")
             await land.adapter.waitForOutboundIdleForTesting()
             #expect(await land.transport.sends == before, "\(label): the failing tick sends nothing")
             #expect(await land.transport.closes == [SessionClose.Code.landFailed], "\(label)")

@@ -108,6 +108,11 @@ struct EncodingPipeline: Sendable {
     /// The merged frame: `update` with `eventBodies` (opcode 107). When it doesn't pack (or
     /// `failsPack`, a test's fault), the state frame alone, unless that would lose events
     /// (`refuseLosingMergedEvents`).
+    ///
+    /// The merged frame nests the state one level deeper than its own frame. So when it doesn't
+    /// pack and events are pending, the state frame is packed alone first: if that throws, the
+    /// failure is the state's (the caller reports a plain error as `.syncEncode`), not the
+    /// events'. That extra pack runs only on the failure path.
     func mergeEvents(into update: MergedBroadcastUpdate, eventBodies: [MessagePackValue], failsPack: Bool) throws -> Data {
         var packError: (any Error)?
         switch update {
@@ -125,7 +130,12 @@ struct EncodingPipeline: Sendable {
                     packError = error
                 }
             }
-            try Self.refuseLosingMergedEvents(eventBodies, cause: packError)
+            var stateFillsItsFrame = false
+            if packError != nil, !eventBodies.isEmpty {
+                _ = try pack(.array(updateArray))
+                stateFillsItsFrame = (try? pack(.array(updateArray), maxDepth: PayloadNesting.serverFrameMaxDepth - 1)) == nil
+            }
+            try Self.refuseLosingMergedEvents(eventBodies, cause: packError, stateFillsItsFrame: stateFillsItsFrame)
             return try pack(.array(updateArray))
         case .data(let updateData):
             if !failsPack {
@@ -141,21 +151,26 @@ struct EncodingPipeline: Sendable {
                     packError = error
                 }
             }
-            try Self.refuseLosingMergedEvents(eventBodies, cause: packError)
+            // `updateData` is the state frame, already packed, so only the merge can be too deep for it.
+            let stateFillsItsFrame = packError != nil && !eventBodies.isEmpty
+                && (try? unpack(updateData, maxDepth: PayloadNesting.serverFrameMaxDepth - 1)) == nil
+            try Self.refuseLosingMergedEvents(eventBodies, cause: packError, stateFillsItsFrame: stateFillsItsFrame)
             return updateData
         }
     }
 
     /// The merged frame didn't pack. Without events the state-only frame says the same; with
     /// events, the plan has already staged them, so sending the state alone would lose them: the
-    /// land ends (#535 row 17).
-    static func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue], cause: (any Error)? = nil) throws {
+    /// land ends (#535 row 17). `stateFillsItsFrame`: the state frame packs alone but nests the
+    /// full depth, so the merge, one level deeper, is what doesn't fit; the detail says so.
+    static func refuseLosingMergedEvents(_ eventBodies: [MessagePackValue], cause: (any Error)? = nil, stateFillsItsFrame: Bool = false) throws {
         guard !eventBodies.isEmpty else { return }
-        throw LandFailure(
-            kind: .eventEncode,
-            detail: "the opcode 107 frame merging \(eventBodies.count) broadcast event(s) didn't pack" + (cause.map { ": \($0)" } ?? ""),
-            position: LandFailurePosition(stage: .syncPhase)
-        )
+        var detail = "the opcode 107 frame merging \(eventBodies.count) broadcast event(s) didn't pack"
+        if let cause { detail += ": \(cause)" }
+        if stateFillsItsFrame {
+            detail += "; the state frame alone packs, but it nests \(PayloadNesting.serverFrameMaxDepth) deep and the merged frame nests it one level deeper"
+        }
+        throw LandFailure(kind: .eventEncode, detail: detail, position: LandFailurePosition(stage: .syncPhase))
     }
 
     /// An event frame (opcode 103) for one event body, or nil for a body that isn't an array.
