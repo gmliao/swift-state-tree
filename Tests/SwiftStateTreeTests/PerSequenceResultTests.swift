@@ -293,9 +293,7 @@ struct PerSequenceResultTests {
 
         // Y takes its number, then holds in its resolver; T, numbered after Y, throws.
         let y = Task { try await send(keeper, PerSequenceGatedAction(amount: gateKey), from: p2) }
-        guard try await withinDeadline("Y's resolver holds", {
-            await DeliveryGates.gate(gateKey).waitUntilEntered()
-        }) != nil else { return }
+        guard await DeliveryGates.gate(gateKey).waitUntilEntered("Y's resolver holds") else { return }
         #expect(await outcome(keeper, PerSequenceThrowingAction(amount: 7, tag: t)) == "threw \(t)")
 
         DeliveryGates.gate(gateKey).release()
@@ -442,9 +440,7 @@ struct PerSequenceResultTests {
         let recordGate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.turnRecord) { await recordGate.enterAndWait() })
         let failing = Task { await outcome(keeper, PerSequenceThrowingAction(amount: 1, tag: "w")) }
-        guard try await withinDeadline("P's pass holds before its record", {
-            await recordGate.waitUntilEntered()
-        }) != nil else { return }
+        guard await recordGate.waitUntilEntered("P's pass holds before its record") else { return }
 
         // The shutdown applies once P's turn has ended (in-turn: after its record); an input
         // after the shutdown is rejected (#382).

@@ -303,7 +303,7 @@ struct TicklessReplayPassTests {
         let actionA = Task {
             try await keeper.handleActionEnvelope(gatedAction(key: key, tag: "A"), playerID: p1, clientID: c1, sessionID: s1)
         }
-        await PassGates.gate(key).waitUntilEntered()
+        guard await PassGates.gate(key).waitUntilEntered() else { return }
         // A client event, an action and a join overtake it.
         try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "E")), playerID: p2, clientID: c2, sessionID: s2)
         _ = try await keeper.handleActionEnvelope(plainAction("B"), playerID: p2, clientID: c2, sessionID: s2)
@@ -357,7 +357,7 @@ struct TicklessReplayPassTests {
         }
         let x = send("x")
         _ = await queuedIterator.next()
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         let y = send("y")
         _ = await queuedIterator.next()
         let z = send("z")
@@ -400,7 +400,7 @@ struct TicklessReplayPassTests {
         let first = Task {
             try await keeper.handleActionEnvelope(plainAction("first"), playerID: p1, clientID: c1, sessionID: s1)
         }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         _ = try await keeper.handleActionEnvelope(plainAction("second"), playerID: p2, clientID: c2, sessionID: s2)
         gate.release()
         _ = try await first.value
@@ -473,7 +473,7 @@ struct TicklessReplayPassTests {
                 playerID: p1, clientID: c1, sessionID: s1
             )
         }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
         _ = try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
         #expect(await transport.syncNowCount == before, "pass 2 ran pass 1's sync request")
         gate.release()
@@ -512,11 +512,11 @@ struct TicklessReplayPassTests {
             }
         }
         let leave = Task { try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1) }
-        await firstDelivery.waitUntilEntered()
+        guard await firstDelivery.waitUntilEntered() else { return }
         let action = Task {
             try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
         }
-        await secondFrame.waitUntilEntered()
+        guard await secondFrame.waitUntilEntered() else { return }
         #expect(await keeper.currentState().log.suffix(2) == ["leave:p1", "plain"])
         #expect(await transport.log.count == base, "a pass delivered while the earlier pass's delivery was held")
         firstDelivery.release()

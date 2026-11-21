@@ -295,7 +295,7 @@ struct ShutdownTurnTests {
         let gate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.shutdownTurnApplied) { await gate.enterAndWait() })
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown turn applies", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown turn applies") else { return }
 
         #expect(await keeper.playerCount() == 0, "the players are cleared in the turn")
         #expect(await keeper.pendingItemSequencesForTesting().isEmpty, "nothing is left queued")
@@ -353,7 +353,7 @@ struct ShutdownTurnTests {
         let signals = KeeperProbeSignals()
         await keeper.setInTurnProbeForTesting(signals.probe)
         let tickInFlight = Task { await keeper.stepTickOnce() }
-        guard try await withinDeadline("the tick holds at its record", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the tick holds at its record") else { return }
 
         let shutdown = Task { await keeper.forceShutdown() }
         guard await signals.wait(for: "shutdown-stop-gate") else { return }
@@ -384,7 +384,7 @@ struct ShutdownTurnTests {
         let second = Task { await keeper.forceShutdown() }
         // Both calls have joined the flight, and the shutdown's drain holds.
         guard await signals.wait(for: "force-shutdown-joined", count: 2) else { return }
-        guard try await withinDeadline("the shutdown's input drain holds", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown's input drain holds") else { return }
         #expect(await keeper.pendingItemSequencesForTesting().count == 1)
 
         await keeper.installHolds(nil)
@@ -417,7 +417,7 @@ struct ShutdownTurnTests {
         let gate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.legacyShutdownPass) { await gate.enterAndWait() })
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown's own pass holds", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown's own pass holds") else { return }
 
         // This caller's pass applies every ready input: the shutdown, then the batch ends.
         do {
@@ -461,7 +461,7 @@ struct ShutdownTurnTests {
         await keeper.installHolds(HoldRegistry.at(.shutdownTurnApplied) { await gate.enterAndWait() })
         let before = transport.outputs
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown turn applies", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown turn applies") else { return }
         #expect(transport.outputs == before)
         gate.release()
         await shutdown.value
@@ -483,7 +483,7 @@ struct ShutdownTurnTests {
         let shutdown = Task { await keeper.forceShutdown() }
         // The shutdown input is queued, and the drain it scheduled holds.
         guard await signals.wait(for: "shutdown-queued") else { return }
-        guard try await withinDeadline("the shutdown's input drain holds", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown's input drain holds") else { return }
 
         await keeper.runEmptyRoomShutdownForTesting()
         guard try await withinDeadline("forceShutdown returns after that drain", { await shutdown.value }) != nil else { return }
