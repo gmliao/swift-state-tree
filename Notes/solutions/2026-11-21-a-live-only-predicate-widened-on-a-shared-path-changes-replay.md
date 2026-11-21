@@ -39,3 +39,10 @@ Keep the mode in the condition: `!batch.isEmpty, routesThroughTurn` (`mode == .l
 - When you split or rename a predicate that combines a mode with something else (`usesInTurnSync` = live ∧ transport opts in), check every function both keeper modes run. A condition that loses its `mode == .live` half changes replay, even when the change is about live keepers.
 - A replay test that compares the replayed sink with the record pins it. "Replay runs each pass as an input turn: observable at the turn hold, nothing left over, tick 0" (TicklessReplayPassTests) asserts the replayed sequences equal the recorded ones. The mutant (drop `routesThroughTurn` from the condition) fails it and 13 other replay tests by name.
 - Read a failure's arms before guessing: an arm the change shouldn't touch failing (here `inTurn: true`) means the cause is on a path both arms share, often the replay.
+
+## Recurrence (#739 review)
+
+The same PR then deleted the sync loop's trailing `syncNowFromTransport` "because a re-evaluation keeper has no transport". One can: `ReevaluationOutputMode.transportAndSink` is public, and the attach check exempts re-evaluation keepers. Such a keeper kept its broadcast-only syncs and silently lost its periodic `syncNow`. The tail is back for `.reevaluation` until #612, and a test drives one sync loop iteration of such a keeper.
+
+- A premise like "mode X never has Y" needs a check against the public API, not against the callers in this repository. Here a public option made the premise false.
+- Deleting a call is the widest change a predicate can make: the call is gone for every mode. List the modes that reach the function before you delete it.
