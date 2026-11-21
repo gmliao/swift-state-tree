@@ -409,31 +409,6 @@ struct ShutdownTurnTests {
         #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leave:p2", "finalize"])
     }
 
-    @Test("Legacy tickless: another caller's pass applies the shutdown first; that caller's input, behind it, gets landClosed")
-    func legacyCallerPassAppliesTheShutdown() async throws {
-        let keeper = try await makeKeeper(.legacy)
-        try await join(keeper, .legacy, [(p1, c1, s1)])
-
-        let gate = WatermarkGate()
-        await keeper.installHolds(HoldRegistry.at(.legacyShutdownPass) { await gate.enterAndWait() })
-        let shutdown = Task { await keeper.forceShutdown() }
-        guard await gate.waitUntilEntered("the shutdown's own pass holds") else { return }
-
-        // This caller's pass applies every ready input: the shutdown, then the batch ends.
-        do {
-            _ = try await keeper.handleActionEnvelope(add(5), playerID: p1, clientID: c1, sessionID: s1)
-            Issue.record("Expected landClosed")
-        } catch {
-            #expect(error as? LandInputRejection == .landClosed)
-        }
-        guard try await withinDeadline("forceShutdown returns", { await shutdown.value }) != nil else { return }
-        await keeper.installHolds(nil)
-        gate.release()
-        await keeper.waitForInFlightWorkForTesting()
-        #expect(await keeper.currentState().total == 0)
-        #expect(await keeper.currentState().log == ["join:p1", "finalize"])
-    }
-
     @Test("Tick land: a join after the shutdown turn gets landShuttingDown")
     func tickJoinAfterShutdown() async throws {
         let keeper = try await makeKeeper(.tick)

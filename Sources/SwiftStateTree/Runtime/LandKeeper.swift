@@ -5930,9 +5930,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The land failed in this turn: no events and no sync (§3.2 step 4).
             _ = takeEmittedEvents(forTick: executingTickId)
             _ = takeSyncRequest(forTick: executingTickId, applied: applied)
-        } else if !batch.isEmpty {
-            // Taken whatever the delivery, so the turn record holds them and the collector is
-            // drained; delivered only through a port (#546 L2d).
+        } else if !batch.isEmpty, routesThroughTurn {
+            // A live turn takes them whatever the delivery, so the turn record holds them and the
+            // collector is drained; delivered only through a port (#546 L2d). A replayed pass
+            // leaves them for the replay's flush to the sink.
             emitted = takeEmittedEvents(forTick: executingTickId)
             let wantsSync = takeSyncRequest(forTick: executingTickId, applied: applied)
             if syncsInTurn, let transport {
