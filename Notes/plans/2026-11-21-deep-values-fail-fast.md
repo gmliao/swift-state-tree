@@ -1,6 +1,6 @@
 # Deep or cyclic values fail fast instead of overflowing the stack (#716)
 
-Rev 5, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main a7ed4d2b. #720 (af666b40) and #724 moved none of the cited lines, except a few in `TransportAdapter.swift`, which are updated here.
+Rev 6, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 7170a8e3, the current code; no source file changed since a7ed4d2b. Where the plan describes the code after L2d-3, it says so: that shape is projected, not current.
 
 Rev 3 answered the parts of Review's NOT GO on rev 2 that don't depend on where the full check runs (the public API facts, prebuilt trees, the hop counter, the typed refusal's path, and the shoulds). Rev 4 adds what the maintainer's order d-716 decided: **one depth preflight per turn, at the end of the apply segment** (§3.1a). That closes rev 2's must-fixes 1 (the fields the check covers), 6 (how replay detects a refusal) and 7 (the hash sites). d-716 also asked for the preflight's cost to be compared across three designs. §3.1a compares them and picks one.
 
@@ -16,7 +16,16 @@ Rev 5 also folds in two other inputs:
 - The roadmap fit: S1 is split into S1a, which can land any time, and S1b, which lands after L2d-3 (§4). It also states the rule #700 must keep (§4).
 - Two items from Review's verdict on the #696/#704 plan: the end-of-apply function runs the noted transport failure first, and one rule covers the callers of a turn that ends after its apply (§3.1a, Q5).
 
-Q1–Q4 and d-716 are maintainer orders, all decided 2026-11-21. Q5 is open (§5).
+Review on rev 5 returned NOT GO, with 5 must-fixes. Rev 6 answers them:
+- An initialize refusal still records a replayable initialize (§3.1a).
+- In `runInputTurn`, `finishApply()` runs after the pass ordinal is taken, so a refusal's position names its pass (§3.1a).
+- Replay stops inside the keeper, and each runner checks at its own points; `finishApply()` returns an enum (§3.1a, §3.6).
+- The nesting limits get a record minor of their own; the oldest replayable record stays 3.6 (§3.6).
+- The callers of a turn that ends get `landClosed`, as the maintainer decided (§3.1a, §5 Q5).
+
+It also takes the shoulds and nits of that verdict, which are listed where they apply.
+
+Q1–Q5 and d-716 are maintainer orders, all decided 2026-11-21 (§5).
 
 **Baseline.** #697's packer bound, which this plan keeps as the last check, merged as af666b40 (#720). S0 can run now. S1a and S2 build on main any time. S1b builds on main after L2d-3 (#546) has merged. Each PR names the main commit it starts from.
 
@@ -89,13 +98,13 @@ Rev 4 then selected the fields by their dirty flag, which misses more (§3.1a). 
 
 ### 3.1a The per-turn preflight (d-716)
 
-**One keeper function at the end of apply.** `finishApply() -> Bool` runs once, right after each apply segment returns. That is before anything of the turn goes out: its events, its sync phase, and its record entry with the hash. It does two things, in this order, and returns true when the turn must end:
+**One keeper function at the end of apply.** `finishApply() -> ApplyEnd` runs once, right after each apply segment returns. That is before anything of the turn goes out: its events, its sync phase, and its record entry with the hash. `ApplyEnd` has two cases, `.proceed` and `.ended`, and the #696/#704 plan uses the same signature. It runs only when the apply hasn't already failed the land: a land that failed at an input takes today's failure branch. It does two things, in this order, and returns `.ended` when the turn must end:
 1. `applyPendingTransportFailure()`, from the #696/#704 plan (`2026-11-21-closed-gate-replies-and-pending-failure.md`). A failure that an adapter noted outside the turn ends the land first.
 2. `preflightNesting()`, the depth check described below.
 
 The first `failLand` wins (`drainFlag.setFailed`), so when both apply, the noted transport failure stays the cause. Whichever of the two plans lands first adds the function, and the other adds its step to it.
 
-Live, a refusal ends the land through `failLand`, with `syncConversion`, the field and the depth reason (§3.4, §3.6). In re-evaluation, `failLand` logs and returns (`LandKeeper.swift:5610`). So the preflight keeps its refusal on the keeper (`replayDepthRefusal`), and the function returns true there too. The callers branch on the value it returns, not on `failure`, so live and replay take the same branch.
+Live, a refusal ends the land through `failLand`, with `syncConversion`, the field and the depth reason (§3.4, §3.6). In re-evaluation, `failLand` logs and returns (`LandKeeper.swift:5610`). So the preflight keeps its refusal on the keeper (`replayDepthRefusal`), and the function returns `.ended` there too. The callers branch on the value it returns, not on `failure`, so live and replay take the same branch.
 
 The check runs whether or not:
 - a sync is due;
@@ -105,18 +114,25 @@ The check runs whether or not:
 
 So recording on and off fail in the same turn by construction.
 
-**The apply segments.** These are at a7374355, as they stand once L2d-3 (#546) has deleted the live legacy paths: live `runTick`, `processPendingActions` and `finishTicklessLegacyPass`. Each segment calls `finishApply()` unconditionally, whatever the transport, the mode or the recording. Each has its own test (§3.7).
+**The apply segments.** The line numbers are current (7170a8e3). The set of segments is projected: it is the set left once L2d-3 (#546) has deleted the live legacy paths, live `runTick`, `processPendingActions` and `finishTicklessLegacyPass`. Each segment calls `finishApply()` unconditionally, whatever the transport, the mode or the recording. Each has its own test (§3.7).
 
-| Segment | The call | When it returns true |
+**The off mode stays uncovered until L2d-3 deletes it.** S1b lands after L2d-3, so it adds no call to code that L2d-3 removes. Until then, a land in the off mode has no preflight.
+
+| Segment | The call | When it returns `.ended` |
 |---|---|---|
-| Live initialize (LK:1193–1320) | After OnInitialize (:1255). The call moves out of `if mode == .live, let handler = onInitialize`, so a land without OnInitialize is checked too | No initialize record (`makeInitializeRecord`, :1265, which hashes); only the terminal entry. No `runTurnOutputs` (:1279) and no loops started (`autoStartLoops`, :1325) |
-| Replay initialize (`replayInitializeBeforeTickZero`, LK:1120) | On every path, also when the land has no OnInitialize or the record has no initialize record (today's `guard` returns early, :1121–1127) | No `flushOutputs` (:1148) |
+| Live initialize (LK:1193–1320) | After OnInitialize (:1255). The call moves out of `if mode == .live, let handler = onInitialize`, so a land without OnInitialize is checked too | The replayable part of the initialize is still recorded (below), with no events and no hash, then the terminal entry. No `runTurnOutputs` (:1279) and no loops started (`autoStartLoops`, :1325) |
+| Replay initialize (`replayInitializeBeforeTickZero`, LK:1120) | After OnInitialize, which it runs from the recorded initialize as today. Also on the paths where today's `guard` returns early (:1121–1127): a land without OnInitialize, or a record without an initialize | No `flushOutputs` (:1148), and the replay stops (§3.6) |
 | Tick turn (`runTickTurn`, LK:4827) | After `handler(&state, ctx); lastCommittedTickId = tickId` (:4858–4859), before the hash (:4864) | As the input-failure branch (:4837–4847): the events and the sync request are taken and dropped; the record keeps the inputs and both watermarks, and has no hash |
-| Replay tick (`runTick`, LK:4359, which L2d keeps for replay) | After the tick handler (:4657–4663), before the hash (:4671) | As its failure branch (:4630–4638) |
-| Input turn (`runInputTurn`, LK:5779) | Right after `applyInputs` (:5787), before `if failure != nil` (:5795) | That branch: no events and no sync. This also covers replay passes (`replayRecordedPasses` calls `runInputTurn`, LK:4218) and headless keepers, which today skip the output call under `let transport, usesInTurnSync` |
-| Replay initialize items (`replayRecordedPasses`, LK:4194) | After its `applyInputs(initializeItems, …)` | The tick's passes don't run |
+| Replay tick (`runTick`, LK:4359, which L2d keeps for replay) | After the tick handler (:4657–4663), before the hash (:4671) | As its failure branch (:4630–4638). That branch's guard (:4631) gains `replayDepthRefusal != nil`, for a tickless land too, since a refusal in a pass must also end the tick that holds it |
+| Input turn (`runInputTurn`, LK:5779) | After `takePassOrdinal` (:5790), before `if failure != nil` (:5795). Called earlier, `failLand` would see no pass in progress and use the last pass (`lastPass`, LK:5596), so the position wouldn't name the refusing pass | That branch: no events and no sync. This also covers replay passes (`replayRecordedPasses` calls `runInputTurn`, LK:4218) and headless keepers, which today skip the output call under `let transport, usesInTurnSync` |
+| Replay initialize items (`replayRecordedPasses`, LK:4194) | After its `applyInputs(initializeItems, …)` | The tick's passes don't run, and the replay stops (§3.6) |
+| Sync-only turn (`runSyncOnlyTurn`, LK:5162) | No apply, so no `finishApply()`. It reads the noted transport failure first (#696/#704 plan) | Its phase doesn't run |
 
-S1b lists the segments again from the code at its base. It also confirms that, after L2d-3, join and leave handlers and server inputs apply only through `runInputTurn`; any that doesn't gets a row of its own. The shutdown turn (:2840) changes no land state (#382), so it needs no call.
+S1b lists the segments again from the code at its base. It also confirms two things there, and gives a row of its own to any path that doesn't hold:
+- after L2d-3, join and leave handlers and server inputs apply only through `runInputTurn`;
+- L2d-2 has moved a headless tick land onto `runTickTurn`.
+
+The shutdown turn (:2840) changes no land state (#382), so it needs no call. `OnDestroyWhenEmpty` and `OnFinalize` run after the land's last output and aren't followed by a sync, so they are outside the guarantee. S0 decides whether either can still reach a recursive stage (the final hash), and so whether it needs a call.
 
 **What a turn that ends here records:**
 - its inputs, with their resolver outputs and its watermarks;
@@ -124,10 +140,22 @@ S1b lists the segments again from the code at its base. It also confirms that, a
 
 It records no events, no sync output and no state hash. That is what the input-failure branches record today, so replay can apply exactly that turn again.
 
-**The callers of such a turn.** One rule covers every turn that ends after its apply, whether through a noted transport failure or a depth refusal. The consumed inputs' callers keep their handler outcomes, as they do today when an input fails in the turn (:5803–5806). Their client frames are dropped by the closed gate (#696).
-- Turning those outcomes into `landClosed` would make what a caller saw differ from the record, where those inputs applied.
-- The #696/#704 plan states the same rule.
-- Q5 (§5) asks the maintainer to confirm it.
+**An initialize that ends here** still records what replay needs to run OnInitialize again. Replay runs OnInitialize only when the record holds an initialize record and an `.initialize` lifecycle entry (`replayInitializeBeforeTickZero`, LK:1121-1127). So a refused initialize records:
+- the `.initialize` lifecycle entry, with its sequence and resolver outputs (as LK:1282-1300 records it today);
+- an initialize record with that sequence, no server events and no state hash;
+- the terminal entry, with stage `initialStateCheck`.
+
+Replay then runs OnInitialize and calls `finishApply()`, which refuses as live did. Tests cover an OnInitialize that writes the deep value, and one that writes it and then throws (the keeper logs the throw and keeps the write, LK:1257-1261).
+
+**The callers of a turn that ends** (maintainer decision, 2026-11-21). A turn ends the land when `finishApply()` returns `.ended` (a noted transport failure or a depth refusal), or when its in-turn sync phase fails the land. Then every caller whose input is in that turn's consumed batch gets `landClosed`, not its handler's outcome, and that includes a caller whose handler threw. No output of that turn is sent, replies included.
+- **Where.** On `.ended`, the turn sets every consumed item's result to `landClosed` before `resumeInputTurnWaiters` (LK:5818-5826) resumes the callers. That covers the three places that resume them: the input drain (:5750), the replay passes (:4238), and the turn's own outcome store (:5803-5806). A tickless action job's slot (`ticklessJobTurns`, `fillActionSlot`) is filled from the same result.
+- **Today's in-turn sync failure follows the rule.** A turn whose `runTurnOutputs` (:5802) fails the land keeps its outcomes today (:5806). From this change on, its callers get `landClosed` too, with a test.
+- **Scope limit.**
+  - A tick land acknowledges an action at submit (LK:2339). That reply belongs to the admission, not to the turn that later applies the action, so it stays.
+  - A tick land's waiting join gets `landClosed` through the drain (LK:5701).
+  - A turn that fails at an input (`.input`, #535) keeps today's rule: the failing input's caller gets its error, and the rest of the consumed batch keep their outcomes. That turn doesn't return `.ended` from `finishApply()`; it takes the existing failure branch.
+- **The record.** It keeps those inputs as applied, with the rejected list. A recorded input has no outcome field (`ReevaluationRecordedAction`, `ActionRecorder.swift:741-750`), so replay has no caller outcome to compare, and no mismatch can arise.
+- **The test.** An input whose handler returned success, in a turn that ends, answers `landClosed`, and no frame of that turn reaches the transport.
 
 **Which fields it walks: a check bit, not the dirty flag.** The dirty flag doesn't show every new value:
 - A handler gets `inout State`, and can replace a node, or the whole root, with a new value. Its `Sync`s start clean (`SyncPolicy.swift:174`).
@@ -135,15 +163,17 @@ It records no events, no sync output and no state hash. That is what the input-f
 
 So `Sync` gains a second bit, "needs a depth check":
 - it is set by `Sync.init`, the setter, `_modify` and `updateValueWithoutMarkingDirty`;
-- it is cleared only by the preflight, never by `clearDirty`.
+- it is cleared only by the preflight, never by `clearDirty`;
+- it shares one `UInt8` with the dirty flag, so `Sync` grows by no byte, and each write sets both in one store.
 
-The preflight reads and clears the bits of the root's fields. Nodes are structs, so any write below a root field goes through that field's setter or `_modify`, which sets the root's bit too. A bit set in a nested `Sync` is never read.
+The preflight reads and clears the bits of the root's fields. In release builds it skips an exempt field (design 1) without touching its bit. Nodes are structs, so any write below a root field goes through that field's setter or `_modify`, which sets the root's bit too. A bit set in a nested `Sync` is never read.
 - The bit `Sync.init` sets covers the initial values and a replaced subtree, so initialize needs no "every field" case.
 - The macro's dirty-clearing code calls `updateValueWithoutMarkingDirty` to store a nested node back after clearing its flags (`StateNodeBuilderMacro.swift:878`). That would set the bit on every node field after every sync. So S1b gives the generated code an underscored public `_storeAfterClearingDirty(_:)`, which leaves the bit as it was, and the macro calls it instead. The value it stores is the same one, with its flags cleared.
+- `_storeAfterClearingDirty` is a trust boundary. A caller that stored a different, deeper value through it would skip the check. It is documented as for generated code only, with that consequence.
 
-**It counts, and never builds.** The preflight walks the value with the same counters as the conversion (containers and hops, §3.1), and builds no `SnapshotValue`. It is one more generated member per node and per `@SnapshotConvertible` type, `_checkNesting(budget:)`, which mirrors the conversion's walk. A fixture pins that the two agree: for each test shape, the preflight refuses exactly when the budgeted conversion refuses. Two places can't avoid building:
-- a hand-written `toSnapshotValue()` or `snapshot(for:dirtyFields:)`, whose output is the only thing to count: the preflight calls it and walks the result iteratively;
-- a prebuilt `SnapshotValue` field, which is walked iteratively as it is.
+**It counts, and builds only where it must.** The preflight walks the value with the same counters as the conversion (containers and hops, §3.1), and builds no `SnapshotValue` for generated types. It is one more generated member per node and per `@SnapshotConvertible` type, `_checkNesting(budget:)`, which mirrors the conversion's walk. A fixture pins that the two agree: for each test shape, the preflight refuses exactly when the budgeted conversion refuses. Two cases differ:
+- **A hand-written type.** Its output is the only thing to count, so the preflight builds it and walks the result iteratively. It builds the full conversion, the one the hash runs: `fullStateSnapshot(budget:)` for a node, `toFullSnapshotValue(budget:)` for a convertible type, falling back to `toSnapshotValue(budget:)` as `makeFull` does. It doesn't use `snapshot(for:)`, which is a player's view.
+- **A prebuilt `SnapshotValue` field.** It is already built, so it is walked iteratively as it is.
 
 **Cost: three designs compared.** The preflight walks each field whose check bit is set, every turn, on the hot path. A per-player map is dirty every tick in most games. So d-716 asked which of three designs keeps that walk small.
 
@@ -152,12 +182,14 @@ The preflight reads and clears the bits of the root's fields. Nodes are structs,
    - It holds for the policy replacements too: `.perPlayer`, `.masked` and `.custom` must return the same `Value` type (`SyncPolicy.swift:21-39`), so a replacement has the stored value's bound.
 
    What can be known statically:
-   - scalars, `String`, and enums without associated values (0 containers);
+   - scalars and `String` (0 containers);
    - `Optional<T>` (as `T`, plus its hop);
    - `Array<T>`, `Set<T>` and `Dictionary<K, T>` (one more container than `T`);
    - a `@StateNodeBuilder` node and a `@SnapshotConvertible` type (one more than its deepest field), when the type isn't recursive and its conversions are generated.
 
    What can't:
+   - an enum, unless it conforms by hand: even one without associated values converts through its own conformance (a raw value, or `Codable`), which the macro doesn't see;
+   - a stored property declared without a type annotation, whose type the macro can't read: its bound is `nil`;
    - a recursive type, an `indirect` enum, or a type that contains itself through a collection;
    - an enum with associated values, whose case isn't known until runtime;
    - an existential: `Any`, `AnyCodable`, `SnapshotValue`, `any P`;
@@ -168,12 +200,13 @@ The preflight reads and clears the bits of the root's fields. Nodes are structs,
 
    Class references are refused at registration already (#464). The bound has to come from the type system, not from a default instance's `Mirror`: through `Mirror`, an existential field looks like the type of its default value, so a bound read that way would be unsound. So the macros generate the bound:
    - **The protocol.** The public, underscored `_StaticNestingBound` has one requirement, `static func _nestingBound(_ context: inout _NestingBoundContext) -> _NestingBound?`. `_NestingBound` holds the containers and the hops. `nil` means unbounded or unknown.
+   - **How a type gets it.** `StateNodeProtocol` refines `_StaticNestingBound`, with a default that returns `nil`, so a hand-written node is unknown without any work. `@StateNodeBuilder` generates the member that overrides it. `@SnapshotConvertible` already attaches an extension that adds its conformance, and adds `_StaticNestingBound` to it in the same way.
    - **Recursion and shared types.** `_NestingBoundContext` holds the current path and a memo. A type is inserted into the path before its fields are bounded and removed after. A type met on its own path is recursive and gives `nil`. A type met twice on different branches is not recursive: `Position2` appears twice in `PlayerState`, and the graph of field types there is a DAG. The memo keeps each type's result, so a deep DAG is bounded in linear time.
    - **The bound follows the conversion that runs.** `make` and `makeFull` check `StateNodeProtocol` first (`SnapshotValue.swift:238`, :516), then the convertible protocols, and `makeFull` prefers `fullStateSnapshot` and `toFullSnapshotValue`. A type whose live or full conversion is written by hand is unknown, even when its stored fields are bounded. So a macro that finds a hand-written conversion requirement in the type's body generates `nil`. A requirement that the macro leaves to a protocol default can still be overridden in an extension, which the macro can't see. The DEBUG walk below catches that case. The docs say that such an override must also override `_nestingBound` to return `nil`.
    - **One macro owns the members.** `PlayerState` carries both `@StateNodeBuilder` and `@SnapshotConvertible` (`Examples/GameDemo/Sources/GameContent/States/PlayerState.swift:8-9`). If both macros generated the members, the conformance would be declared twice. So `@StateNodeBuilder` owns `_StaticNestingBound` and `_checkNesting(budget:)` whenever it is present. `@SnapshotConvertible` generates them only on a type without `@StateNodeBuilder`, which it sees among the declaration's attributes. On a type with both, `make` runs the node conversion, but a typed table may convert the type through `toSnapshotValue`. So that type's bound is taken over every stored property, which covers the fields of both conversions.
-   - **Hand-written conformers get explicit bounds.** `IVec2` and `IVec3` conform to `SnapshotValueConvertible` by hand (`Core/IVec2.swift:645`, `Core/IVec3.swift:247`). Without a bound of their own, `Position2` (`@SnapshotConvertible(atomic: true)` over `IVec2`) would be unknown, and so would every map that holds it, so they would be walked each tick. S1a adds explicit `_StaticNestingBound` conformances to `IVec2`, `IVec3` and the ID types (`PlayerID`, `ClientID`, `SessionID`). A test checks each against its conversion.
+   - **Hand-written conformers get explicit bounds.** `IVec2` and `IVec3` conform to `SnapshotValueConvertible` by hand (`Core/IVec2.swift:645`, `Core/IVec3.swift:247`). Without a bound of their own, `Position2` (`@SnapshotConvertible(atomic: true)` over `IVec2`) would be unknown, and so would every map that holds it, so they would be walked each tick. S1a adds explicit `_StaticNestingBound` conformances to `IVec2`, `IVec3` and the ID types (`PlayerID`, `ClientID`, `SessionID`, `LandID`). A test checks each against its conversion.
    - **The standard library.** `Optional`, `Array`, `Set` and `Dictionary` get conditional conformances. A field type that doesn't conform resolves, through an overload, to unknown. A generic or existential field therefore falls to the runtime walk.
-   - **A hand-written bound is a trust boundary.** In DEBUG builds the preflight also walks every exempt field whose check bit is set, and asserts that the walk stays within the claimed bound, naming the type. Tests run in debug, so a wrong bound in the repository fails them. Release builds trust the bound.
+   - **A hand-written bound is a trust boundary.** In DEBUG builds the preflight also checks every exempt field whose check bit is set. It runs the conversion that really runs, with its budget: the budgeted `makeFull`, and the typed tables' conversion for a field they convert. It then asserts that what that conversion counted stays within the claimed bound, naming the type. Tests run in debug, so a wrong bound in the repository fails them. Release builds trust the bound.
 2. **Depth stored at assignment.** Compute a new value's depth when the field is set, and let the preflight read the stored number. Rejected:
    - `Sync`'s `_modify` accessor yields the stored value for an in-place write (`items[k].hp -= 1`), so each such write would walk the whole field afterwards. A field written n times in a turn costs n walks instead of one, and the per-player map is the case it is worst for.
    - A write deep inside a nested node goes through every ancestor's accessor, so each ancestor would walk its subtree again.
@@ -189,7 +222,7 @@ The preflight reads and clears the bits of the root's fields. Nodes are structs,
   - the game land as it is;
   - the worst case: a variant with a per-player map of an unbounded type that is dirty every tick.
 
-  It reports the keeper's turn time, not only the end-to-end numbers.
+  It reports the keeper's turn time, not only the end-to-end numbers, and counts the check-bit writes per turn.
 - **A host A/B** (the 7600X, `ws-loadtest`), when the Mac A/B moves beyond its noise.
 
 Both sides are built with the same toolchain, as CLAUDE.md requires.
@@ -244,7 +277,7 @@ Benchmark: S1a measures the budget on the hot path. The tier is the EncodingBenc
 - **The adapter's generic catches**: the in-turn sync phase (`TransportAdapter.swift:2911-2922`) and the joiner's first sync (:5256-5267) map any error that isn't a `LandFailure` to `syncPlan`. S1a maps `SyncError.nestingTooDeep` to `syncConversion` with its field and reason in both, through one helper.
 - **`planFirstSync`** (:5274) is a separate entry point. It goes through the same helper, with a test that a joiner whose first view is too deep ends the land with `syncConversion`.
 - **The bulk `try?`**: `SyncEngine` tries `snapshotForSync` in one pass first (`SyncEngine.swift:1611`) and falls back to the separate methods. A custom `snapshotForSync` can throw where the separate methods succeed, and the `try?` erases that error. S1a keeps a `nestingTooDeep` from the bulk pass: it fails the land, as the separate methods would have done at the same budget.
-- **The cached-value conversions.** `lastSentSnapshot` uses `try?` in both typed table kinds (`SyncTables.swift:1262`, :1321). They convert the value last sent, which passed the same budget when it was sent. S1a gives them their slot's start budget, and notes a `nestingTooDeep` into `drops`, as `viewPatches` does. Other errors keep today's nil.
+- **The cached-value conversions.** `lastSentSnapshot` uses `try?` in both typed table kinds (`SyncTables.swift:1262`, :1321). They convert the value last sent, which passed the same budget when it was sent. S1a gives them their slot's start budget. `lastSentSnapshot` has no `drops` of its own, so a `nestingTooDeep` there takes the slot's drop path: the slot's path is dropped from the view and its field is noted, as `viewPatches` does. Other errors keep today's nil.
 - **The debug freeze settle's catch** (`TransportAdapter.swift:6257-6262`) maps any error that isn't a `LandFailure` to `syncPlan`. L2d-1 replaces that path with a sync-only turn, whose phase goes through the in-turn catch above. If S1a lands before L2d-1, the settle's catch maps through the same helper.
 
 **The error names its root field.** The error is `SyncError.nestingTooDeep(counter:limit:field:)`, where `field` is optional. A conversion below a root field throws with `field: nil`. The root-field boundary rethrows the error with its field filled in. There are three such boundaries:
@@ -281,7 +314,7 @@ They are new cases of a public enum (§6).
   - When a container or a `superEncoder` is created. A `superEncoder` chain never enters a throwing `encode`, so past the limit the new encoder starts refused, and its `encode` calls return at once.
 
   In both cases the deferred error is thrown at the end (:350).
-- **Event digests (R6):** both use `try?` today. The sync-stream canonical form (`SyncStreamCanonical.swift:12`) drops the event's entry. The output verifier (`SyncOutputVerifier.swift:300`) leaves its canonical payload nil. With the count, a `nestingTooDeep` there is the event's failure: on the live side the land ends with `eventEncode`, the event named; in the verifier it is a mismatch. Other conversion errors keep today's handling.
+- **Event digests (R6):** both use `try?` today. The sync-stream canonical form (`SyncStreamCanonical.swift:12`) drops the event's entry. The output verifier (`SyncOutputVerifier.swift:300`) leaves its canonical payload nil. The digests run only when the land records, so a refusal there must not be what ends the land: then recording on and off would fail differently. The live failure comes from the encoders' count (S2), which runs whether or not the land records, and ends the land with `eventEncode`, the event named. A `nestingTooDeep` in a digest is for verification only: the digest notes it, and the verifier reports a mismatch. Other conversion errors keep today's handling.
 - **The terminal entry survives a payload that fails framing.** `failLand` submits the terminal entry as its own record submission (`LandKeeper.swift:5632-5635`), apart from the turn's events. S2 makes the recorder refuse the offending payload as an error of its own, without losing the frame's other entries or the terminal one. A test reads the record back and finds the terminal entry. S2 confirms how the record log merges a frame's submissions (`ReevaluationRecordLog.swift:163`) before relying on it.
 - **What stays the adopter's:** a hand-written `encode(to:)` that walks a cycle, and JSON payloads (`JSONEncoder` can't be bounded from outside; for them registration is the guard). The docs say so, narrowing rev 1's stated guarantee.
 - The value trees (`SnapshotValue`, `MessagePackValue`) are enums, so they can't hold a cycle.
@@ -299,20 +332,23 @@ Facts any design must handle (Review, checked against the code):
 - **How a refusal is recorded.** `failLand` submits the terminal entry, `ReevaluationTickRecord(landFailure:)` (`LandKeeper.swift:5632-5635`), into the failing tick's frame (frame 0 on a tickless land), with kind, field and position. That doesn't depend on hash recording.
   - An initialize refusal sits in tick 0 with `tickId: nil`, and has its own replay test.
   - The refusal is before commit, so that turn has no committed sync output. What the failing turn records is in §3.1a: its inputs, resolver outputs, watermarks and the terminal entry, with no events and no hash.
-- **How the runners stop.** Both runners read `replayDepthRefusal` right after the keeper returns, before anything else of that step:
-  - `ReevaluationEngine`: after `stepTickOnce()` (:348) and before its hash (:356);
-  - `ReevaluationRunnerImpl`: after `awaitInitialization()` (:320), and after `stepTickOnce()` and before its hash (:391).
+- **Inside the keeper, the replay stops at the refusal.** The keeper's own replay loop would otherwise go on past it:
+  - `replayRecordedPasses` stops right after the `runInputTurn` that returned `.ended`, and right after its initialize items' apply when that ends. It doesn't flush the pass's outputs (:4241), doesn't call the pass observer (:4242), and runs no later pass. The refusing pass keeps its ordinal.
+  - `runTick`'s early exit (:4631) takes the refusal too (§3.1a's table).
+- **How the runners stop.** Each runner reads `replayDepthRefusal` at its own points, before anything else of that step:
+  - `ReevaluationEngine.run`: right after `awaitInitialization()` (:274), before `verifyInitialize`, the sync-output driver's `begin` and the tick loop; then after each `stepTickOnce()` (:348), before its hash (:356).
+  - `ReevaluationRunnerImpl`: after `awaitInitialization()` (:320); then in `step()`, after `stepTickOnce()` and before its hash (:391).
 
   With a refusal, the step doesn't hash, doesn't flush, doesn't call the pass observer and doesn't step again. The run compares the refusal with the record (below) and ends.
-- **A refusing pass.** `replayRecordedPasses` stops at the pass whose `runInputTurn` refused. No later pass runs, and that pass keeps its ordinal.
-- **An initialize refusal.** It is recorded in frame 0 with stage `initialStateCheck` and no tick. Today `lastTickId = min(maxTickId, landFailure.tickId)` (`ReevaluationEngine.swift:326`) would still step tick 0. With that stage, the run steps no tick, and `prepare` reads the refusal after initialize.
+- **`step()` latches the refusal.** The first `step()` that finds it returns a result that carries the comparison's verdict (a new optional `depthRefusal` on `ReevaluationStepResult`). Every later `step()` returns nil, so the run ends there. A test calls `step()` twice.
+- **An initialize refusal.** It is recorded in frame 0 with stage `initialStateCheck` and no tick, next to the replayable initialize (§3.1a). Today `lastTickId = min(maxTickId, landFailure.tickId)` (`ReevaluationEngine.swift:326`) would still step tick 0. With that stage, the run steps no tick: both runners find the refusal right after `awaitInitialization()`.
 - **A structured reason.** `LandFailure` today has only `kind` and a free-text `detail`, so replay can't tell a depth refusal from colliding keys. S1b adds an optional `reason: LandFailure.Reason?` with the case `nestingTooDeep(counter:limit:where:)`. The counter is containers, hops or payload. The `where` is the preflight or a view (§3.1a), so a view refusal can be told apart. `LandFailure`'s `Codable` is synthesized, so an older record decodes with `reason == nil`.
 - **How it is compared, with equal limits.** When the recorded failure has a depth reason from the preflight, the runner compares counter, field and position (stage, and tick or pass) with replay's refusal. A match verifies. Replay refusing where the record has no failure, or not refusing where it has one, is a mismatch. A recorded view refusal is reported as not reproducible (§3.1a).
 - **A record from another limit.** The record's metadata gains the effective limits: `stateMaxDepth`, `stateMaxHops` and `payloadMaxDepth`. The not-comparable report sits alongside `hashIncomparability`.
   - A different limit can move the first refusal to another field or another turn. So when the recorded limits differ from this build's, replay compares only the prefix before the earlier of the two refusals. It reports the rest as not comparable, not as a mismatch, and names the direction: the record's limit looser or tighter than this build's.
   - A record without limits (before 3.7) has an unknown limit. A depth refusal on replay is then not comparable, and the prefix before it is compared.
 - **Versions.** There are two contracts. The record metadata is `3.6` (`ActionRecorder.swift:235`, `current = "3.\(fingerprintMinor)"`), and `isReadable` (:360) rejects a newer minor. The binary log preamble is `3.5` on its own (`ReevaluationRecordLog.swift:27`). The plan:
-  - The metadata moves 3.6 → 3.7 for the limits field and the terminal reason.
+  - The metadata moves 3.6 → 3.7 for the limits field and the terminal reason. The limits get a minor of their own, `nestingLimitsMinor = 7`, and `current` becomes `"3.\(nestingLimitsMinor)"` (`ActionRecorder.swift:235-246`). `minimumReplayable` stays `"3.\(fingerprintMinor)"`, 3.6: a 3.6 record has no limits, which reads as an unknown limit (above), and it replays as today. A test replays a real 3.6 record through both runners.
   - `stampedWithCurrentVersion` (:118) stamps the limits.
   - The binary preamble stays 3.5. The reason is an optional key inside an existing entry, so the log's framing doesn't change. S1b checks that with a 3.5 log holding a 3.7 entry, read by today's reader. That test checks the framing reader only: a 3.6 build still rejects 3.7 metadata (`isReadable`, :360), as for any newer minor.
 - **The record codec's 128** (R9) covers more than the state tree. The envelope, the payloads and the patch lists add levels around it. A fixture pins that the deepest recorded entry stays within 128, around a state at `stateMaxDepth` and around a payload at `payloadMaxDepth`. The codec's recursive tree build gets its own in-build check (S2).
@@ -333,9 +369,10 @@ Facts any design must handle (Review, checked against the code):
     - a deep initial value, also on a land without OnInitialize;
     - a whole node replaced with a new deep value, and the root replaced;
     - a deep value written with `updateValueWithoutMarkingDirty`;
-    - a deep write followed by `clearDirty`, which must not clear the check.
+    - a deep write followed by `clearDirty`, which must not clear the check;
+    - an OnInitialize that writes the deep value, and one that writes it and then throws; each records a replayable initialize, and its replay refuses again.
 
-    Every apply segment in §3.1a's table has its own test. In the failing turn, no output is sent and no hash is recorded, and its record holds its inputs. A noted transport failure and a depth refusal in the same turn: the transport failure is the cause. The preflight and the budgeted conversion refuse the same shapes. A statically bounded field is never walked: S1b counts the walks in a debug probe, as `FullStateConversionProbe` does for full conversions. A wrong hand-written bound fails the DEBUG assert.
+    Every apply segment in §3.1a's table has its own test. In an input turn, the refusal's position names the refusing pass. In the failing turn, no output is sent and no hash is recorded, and its record holds its inputs. A noted transport failure and a depth refusal in the same turn: the transport failure is the cause. The preflight and the budgeted conversion refuse the same shapes. A statically bounded field is never walked: S1b counts the walks in a debug probe, as `FullStateConversionProbe` does for full conversions. A wrong hand-written bound fails the DEBUG assert.
   - Static bounds (S1a):
     - each "can" type gets its pair and each "can't" type gets nil;
     - a recursive node gives nil, and a DAG (`Position2` twice in one type) is bounded;
@@ -352,7 +389,10 @@ Facts any design must handle (Review, checked against the code):
     - a refusing pass, which keeps its ordinal while no later pass runs;
     - an initialize refusal, after which no tick runs;
     - a record from a looser limit, one from a tighter limit, and one without limits, each with its prefix compared;
-    - a view refusal, reported as not reproducible.
+    - a view refusal, reported as not reproducible;
+    - a repeated `step()` after a refusal, which returns nil;
+    - a real 3.6 record, replayed through both runners.
+  - The callers (S1b): in a turn that ends, an input whose handler returned success answers `landClosed`, and no frame of that turn reaches the transport. A turn whose in-turn sync phase fails the land answers `landClosed` the same way.
 - Frame shapes: one fixture per shape (§3.2).
 - Run on macOS debug and release locally, and on Linux in CI.
 - Mutants:
@@ -403,6 +443,8 @@ Each step ends with an exit condition and a revert check: the test that fails wh
   - The check bit, and the macro's `_storeAfterClearingDirty(_:)`.
   - The DEBUG walk of exempt fields.
   - `LandFailure.Reason`, the two stages, the record limits at 3.7, and the replay stop and comparison (§3.6).
+  - The callers' rule (§3.1a), today's in-turn sync failure included.
+  - At its base: confirm the segment list, and that L2d-2 moved headless tick lands onto `runTickTurn` (§3.1a).
   - The tests in §3.7 marked S1b, and the `ServerLoadTest` A/B with its precondition (§3.1a).
   - Exit: every S1b test green on macOS debug and release, and on Linux CI; the A/B within the noise, or its cost accepted by the maintainer.
   - Revert checks:
@@ -426,7 +468,7 @@ S1a, S1b and S2 are separate PRs. S1b needs S1a and L2d-3. S2 consumes S1a's `pa
 
 ## 5. Decisions (maintainer orders q1-716 to q4-716)
 
-Q1–Q4 were decided 2026-11-21, as Review recommended. Q5 is open.
+Q1–Q4 were decided 2026-11-21, as Review recommended, and Q5 by the maintainer the same day.
 
 - **Q1, the limit (decided 2026-11-21):** measured, not taken from the wire. S0 prototypes the thin dispatcher: `SnapshotValue.make` with its slow paths moved out (`@inline(never)`), so each level's frame is small. The limit is then the largest value that leaves about 2× measured headroom on the smallest stack in the worst path, capped at `serverFrameMaxDepth` minus the deepest frame shape's overhead (§3.2). If S0 leaves it between two values, take the lower one: loosening later never breaks an adopter, and tightening does. 32 containers is a reasonable measured candidate.
 - **Q2, the kind (decided 2026-11-21):** `syncConversion` (§3.4). The docs row says that the wire's 64 is why the state limit exists.
@@ -435,7 +477,7 @@ Q1–Q4 were decided 2026-11-21, as Review recommended. Q5 is open.
 
 - **d-716, where the full value is checked (decided 2026-11-21):** one preflight per turn at the end of the apply segment (Review's D), with the cost to be compared across three designs. The comparison picks static exemption at registration plus the count-only walk for the rest (§3.1a).
 
-- **Q5, the callers of a turn that ends after its apply (open).** Such a turn ends through a noted transport failure or a depth refusal. *Recommended:* its consumed inputs' callers keep their handler outcomes, as they do today when an input fails in its turn. Their client frames are dropped by the closed gate. The alternative is to turn those outcomes into `landClosed`, which would make what a caller saw differ from the record. The #696/#704 plan asks the same question, and the answer covers both.
+- **Q5, the callers of a turn that ends (decided 2026-11-21):** `landClosed` for every caller in that turn's consumed batch, handler errors included; no output of that turn is sent, replies included (§3.1a). The #696/#704 plan states the same rule in the same words.
 
 **Phase fit.** The count runs in conversion (sync phase and recording) and in the preflight. No mutation is refused. A conversion's refusal ends the land through the existing path where a throw in the sync plan happens before commit; the preflight's goes through `failLand` before the turn's outputs. The preflight (§3.1a) sits at the end of the apply segment: still in the synchronous turn, before any output, and it only reads state.
 
@@ -449,6 +491,7 @@ Additions:
 - Overloads, the old signatures kept: `SnapshotValue.make(from:for:budget:)`, `makeFull(from:budget:)`, `broadcastView(of:budget:)`, and the four `SyncTableField.make` overloads with a budget-taking `convert`.
 - `SyncError.nestingTooDeep(counter:limit:field:)`. A new case of a public enum: an adopter's exhaustive `switch` over `SyncError` no longer compiles without a `default`. Listed as source-breaking.
 - `LandFailurePosition.Stage.stateCheck` and `.initialStateCheck`. New cases of a public enum, source-breaking in the same way.
+- `ReevaluationStepResult.depthRefusal` (optional) and `ReevaluationRecordVersion.nestingLimitsMinor`.
 - `LandFailure.reason` and `LandFailure.Reason` (optional; older records decode with nil).
 - `PayloadNesting.stateMaxDepth`, `stateMaxHops`, `payloadMaxDepth`.
 - The record metadata's limits field, at version 3.7.
@@ -458,5 +501,6 @@ Additions:
 
 Behavior:
 - A state past the limit ends the land with `syncConversion` instead of overflowing.
+- The callers of a turn that ends, and of a turn whose in-turn sync phase fails the land, get `landClosed` instead of their handler's outcome.
 - A land whose event, action, response or server-input type has a class-typed field no longer registers.
 - A payload past `payloadMaxDepth` ends the land with `eventEncode` / `responseEncode` from the encoders, before the wire.
