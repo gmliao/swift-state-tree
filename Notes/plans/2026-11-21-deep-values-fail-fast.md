@@ -2,7 +2,7 @@
 
 Rev 2, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 05c429b5.
 
-Rev 2 answers Review's NOT GO on rev 1 (5 must-fix, 4 should). It defines the counted tree (§3.1), gives frame overhead per frame shape (§3.2), specifies the protocol migration (§3.3), decides the hash path's failure semantics (§3.4) and the replay contract (§3.6), and widens the stage table (§2). Q1–Q4 are maintainer orders. Q1–Q3 were **decided 2026-11-21** as Review recommended; Q4 follows Review's recommendation, **pending maintainer** (§5). Where a decision rests on one of them, the text says so.
+Rev 2 answers Review's NOT GO on rev 1 (5 must-fix, 4 should). It defines the counted tree (§3.1), gives frame overhead per frame shape (§3.2), specifies the protocol migration (§3.3), decides the hash path's failure semantics (§3.4) and the replay contract (§3.6), and widens the stage table (§2). Q1–Q4 are maintainer orders, all **decided 2026-11-21** as Review recommended (§5). Where a decision rests on one of them, the text says so.
 
 **Baseline.** The packer bound this plan keeps as the last check is #697's, in PR #720, not merged at 05c429b5. S0 can run before it. S1 and S2 build on main after #720 merges, and each PR names the main commit it starts from.
 
@@ -63,7 +63,7 @@ The limit is set by the deepest of these shapes. The packer's guard (#697) stays
 
 A payload gets the same treatment, with its own budget: `serverFrameMaxDepth` minus the deepest event or response frame's levels (4 in the merged 107 frame, 2 in an event's own frame, per #720's tests). The recording digest (R6) and the encoders (R5) use that budget.
 
-### 3.3 How the budget is carried (Q4: an explicit budget, pending maintainer)
+### 3.3 How the budget is carried (Q4: an explicit budget, decided 2026-11-21)
 
 A protocol requirement can't take a default argument, and an extension-only overload doesn't dispatch through `any StateNodeProtocol`. So each entry point keeps its current requirement, and gains a budget-aware requirement whose extension default keeps old conformers correct:
 
@@ -145,11 +145,11 @@ S1 and S2 are independent PRs. Each touches `Sources/`, so each goes through a P
 
 ## 5. Decisions (maintainer orders q1-716 to q4-716)
 
-Q1–Q3 were decided 2026-11-21, as Review recommended. Q4 is Review's recommendation, pending maintainer.
+All four were decided 2026-11-21, as Review recommended.
 
 - **Q1, the limit (decided 2026-11-21):** measured, not taken from the wire. S0 prototypes the thin dispatcher: `SnapshotValue.make` with its slow paths moved out (`@inline(never)`), so each level's frame is small. The limit is then the largest value that leaves about 2× measured headroom on the smallest stack in the worst path, capped at `serverFrameMaxDepth` minus the deepest frame shape's overhead (§3.2). If S0 leaves it between two values, take the lower one: loosening later never breaks an adopter, and tightening does. 32 containers is a reasonable measured candidate.
 - **Q2, the kind (decided 2026-11-21):** `syncConversion` (§3.4). The docs row says that the wire's 64 is why the state limit exists.
 - **Q3, class payload fields (decided 2026-11-21):** refused at registration, paired with the runtime bound in the framework's own traversals (§3.5). A hand-written `encode(to:)` and JSON payloads are documented as the adopter's.
-- **Q4, the carrier (pending maintainer):** an explicit budget in the compatible shape of §3.3, not a per-thread counter. A budget is auditable: every row, fallback and custom conversion visibly gets the budget left at its path. A throw unwinds it for free, and there is no hidden thread state. A per-thread counter needs a lookup and a write per container, a `defer` on every level and a rule for synchronous re-entry, and still can't see recursion inside a hand-written hook.
+- **Q4, the carrier (decided 2026-11-21):** an explicit budget in the compatible shape of §3.3, not a per-thread counter. A budget is auditable: every row, fallback and custom conversion visibly gets the budget left at its path. A throw unwinds it for free, and there is no hidden thread state. A per-thread counter needs a lookup and a write per container, a `defer` on every level and a rule for synchronous re-entry, and still can't see recursion inside a hand-written hook.
 
 **Phase fit.** The count runs in the sync phase (conversion) and in recording. Nothing moves into apply, and the failure ends the land through the existing path where a throw in the sync plan happens before commit. Refusing at mutation time would be earlier, but it would cost a walk per mutation.
