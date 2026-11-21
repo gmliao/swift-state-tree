@@ -615,26 +615,47 @@ struct ReplayRunLengthTests {
 
     @Test("A limit below 1 stops the process at each public entry point that takes one (#728)")
     func limitBelowOneIsRejected() async {
-        await #expect(processExitsWith: .failure) { _ = try JSONReevaluationSource(data: oneTickJSON(), maxReplayTicks: 0) }
-        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordLogSource(bytes: oneTickLog(), maxReplayTicks: -1) }
-        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordFile.openSource(data: oneTickJSON(), maxReplayTicks: 0) }
-        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordFile.openSource(filePath: "/unused", maxReplayTicks: 0) }
-        await #expect(processExitsWith: .failure) { _ = try JSONReevaluationSource(filePath: "/unused", maxReplayTicks: 0) }
-        await #expect(processExitsWith: .failure) { _ = try ReevaluationRecordLogSource(filePath: "/unused", maxReplayTicks: 0) }
+        // An error thrown out of an exit test's body also exits with failure, so each child catches its
+        // own errors and returns normally: only the precondition's trap can fail it. A case whose
+        // precondition is removed then exits cleanly, and the test fails.
         await #expect(processExitsWith: .failure) {
-            _ = try await ReevaluationEngine.run(
-                definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: "/unused", maxReplayTicks: 0
-            )
+            do { _ = try JSONReevaluationSource(data: oneTickJSON(), maxReplayTicks: 0) } catch {}
         }
         await #expect(processExitsWith: .failure) {
-            _ = try await ConcreteReevaluationRunner(
-                definition: makeRangeTestLand(), recordFilePath: "/unused", maxReplayTicks: 0
-            )
+            do { _ = try ReevaluationRecordLogSource(bytes: oneTickLog(), maxReplayTicks: -1) } catch {}
         }
         await #expect(processExitsWith: .failure) {
-            _ = try await ConcreteReevaluationRunner(
-                definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: "/unused", maxReplayTicks: 0
-            )
+            do { _ = try ReevaluationRecordFile.openSource(data: oneTickJSON(), maxReplayTicks: 0) } catch {}
+        }
+        await #expect(processExitsWith: .failure) {
+            do { _ = try ReevaluationRecordFile.openSource(filePath: "/unused", maxReplayTicks: 0) } catch {}
+        }
+        await #expect(processExitsWith: .failure) {
+            do { _ = try JSONReevaluationSource(filePath: "/unused", maxReplayTicks: 0) } catch {}
+        }
+        await #expect(processExitsWith: .failure) {
+            do { _ = try ReevaluationRecordLogSource(filePath: "/unused", maxReplayTicks: 0) } catch {}
+        }
+        await #expect(processExitsWith: .failure) {
+            do {
+                _ = try await ReevaluationEngine.run(
+                    definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: "/unused", maxReplayTicks: 0
+                )
+            } catch {}
+        }
+        await #expect(processExitsWith: .failure) {
+            do {
+                _ = try await ConcreteReevaluationRunner(
+                    definition: makeRangeTestLand(), recordFilePath: "/unused", maxReplayTicks: 0
+                )
+            } catch {}
+        }
+        await #expect(processExitsWith: .failure) {
+            do {
+                _ = try await ConcreteReevaluationRunner(
+                    definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: "/unused", maxReplayTicks: 0
+                )
+            } catch {}
         }
         await #expect(processExitsWith: .failure) {
             _ = ReevaluationRunnerService(factory: NeverRunLengthFactory(), maxReplayTicks: 0)

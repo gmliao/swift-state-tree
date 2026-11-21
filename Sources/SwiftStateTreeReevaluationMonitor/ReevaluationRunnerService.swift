@@ -28,6 +28,10 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// reports a last tick + 1 past it, and when the runner steps more often than that. The host
     /// that registers this service for a replay (`NIOLandHost.registerWithGenericReplay`) uses
     /// the same number for the admin start's record check.
+    ///
+    /// The step count can only be checked after a step: a run ends when `step()` returns `nil`, so
+    /// a runner that reports less than it steps runs at most one step past this number (the result
+    /// of that step is dropped) before the run fails.
     public let maxReplayTicks: Int64
 
     /// - Parameter maxReplayTicks: at least 1. A run whose runner's last tick + 1 is past this
@@ -203,12 +207,13 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
                     if let result = try await newRunner.step() {
                         steps += 1
                         if steps > self.maxReplayTicks {
-                            let error = ReevaluationRecordContentError.replayTooLong(
-                                lastTick: steps - 1, limit: self.maxReplayTicks
-                            )
+                            // The count of results measured, not a record tick: a runner's tick ids
+                            // may differ from its steps. The result that tripped it was stepped
+                            // already, and is dropped here, not queued.
+                            let message = Self.tooManyResultsMessage(limit: self.maxReplayTicks)
                             self.updateStatus(ticket: ticket) { s in
                                 s.phase = .failed
-                                s.errorMessage = error.description
+                                s.errorMessage = message
                             }
                             break
                         }
@@ -287,6 +292,11 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         _status.phase = .verifying
         _status.totalTicks = totalTicks
         return true
+    }
+
+    /// The failure message of a run whose runner stepped more often than the limit.
+    static func tooManyResultsMessage(limit: Int64) -> String {
+        "the runner produced more than \(limit) results, and a replay may take at most \(limit) steps"
     }
 
     private func updateStatus(ticket: UInt64, _ block: (inout ReevaluationStatus) -> Void) {
