@@ -332,14 +332,19 @@ struct TransportAdapterSyncLagTests {
         // Opt-in: without it the commit records nothing.
         let plain = try await makeFixture()
         #expect(try await plain.stateFrames().map(\.op) == [1])
+        #if DEBUG
         #expect(await !plain.adapter.initialSyncCommittedForTesting(Key(sessionID: plain.sessionID, attempt: nil)), "not captured")
+        #endif
 
         // The keeper has no transport here, so the join's first view is the standalone firstSync.
         let f = try await makeFixture(captureJoinCommits: true)
         #expect(try await f.stateFrames().map(\.op) == [1], "the firstSync was sent")
+        // The capture is DEBUG-only: outside DEBUG the hooks answer `false`.
+        #if DEBUG
         #expect(await f.adapter.initialSyncCommittedForTesting(Key(sessionID: f.sessionID, attempt: nil)))
         #expect(await !f.adapter.joinFlippedForTesting(Key(sessionID: f.sessionID, attempt: nil)), "no in-turn flip")
         #expect(await !f.adapter.initialSyncCommittedForTesting(Key(sessionID: SessionID("other"), attempt: nil)))
+        #endif
     }
 
     @Test("Silent past 3 s: frames are withheld; acks resuming bring a resync")
