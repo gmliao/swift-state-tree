@@ -1,126 +1,180 @@
 # Turn core: a nonisolated post lane that the next step takes first (#725)
 
-**Status:** rev 1, plan only, for review. No code until Review's GO.
+**Status:** rev 2, plan only, for review. No code until Review's GO. Main approves the additive associated type (`LaneReport`) once this revision holds.
+
+**Rev 2** (Review's NOT GO on rev 1: 5 must-fix, 10 should, 2 nit):
+- §3.2, §3.6: the lane lives on the core. The driver's take and a step's `turn.takeReports()` see one ordered queue, so FIFO holds across a mid-step take. A mid-step take is an environment read, like `turn.now`, with a replay source (§3.9) (MF 1, way (b)).
+- §3.4: every direct entry is listed, `stepStale` and `deadlineFired` included. The take comes before each entry's eligibility checks. One helper, called from `beginEntry()`, marks the core in-segment and drains after each report, so a send or a query from `flush` doesn't recurse (MF 2; Q2 = direct, decided).
+- §4: each keeper turn kind maps to explicit checkpoints, with what each suppresses. Callers get `landClosed` before `Turn.reply` publishes (MF 3).
+- §4.2: the record shape after migration changes. A pre-step report fails the land before inputs that were queued earlier, where today's awaited submit queues `.landFailure` behind them. #696's enqueue gate, the census and the first cause across a rebind stay (MF 4).
+- §3.2: the nil `lane` default is only in `extension TurnActor where M.LaneReport == Never`. A `post` with a nil lane traps. lint-turns gets a `[let-lane]` rule (MF 5).
+- Shoulds:
+  - Q1's reason is now the static fold;
+  - the associated type is `LaneReport`, so a machine's nested `Report` type can't opt in by accident;
+  - `TurnStats` gains fields;
+  - a per-check snapshot plus a per-segment budget prevent a livelock;
+  - there is no `wakePending` flag (it is derived from the lane being non-empty), and capacity < 1 is rejected;
+  - quiescence doesn't count reports;
+  - the unlocked fallback is dropped (`ManagedAtomic` if needed);
+  - lane-on vs lane-off is measured;
+  - a package hook on `TurnLane`, and a post during apply in the carried-over tests.
+- Nit: `handleReport(_:_:)`. Q3 = no incarnation, decided.
 
 ## 1. The problem
 
-`TurnActor`'s entries (`send`, `sendAndWait`, an effect's result, a timer) are actor-isolated. A collaborator on another actor that has to tell the machine something hops onto the turn actor and awaits. Until the hop lands, the turn actor can run a step that should already have seen the report: the step's isolation is free to run whatever job comes first.
+`TurnActor`'s entries (`send`, `sendAndWait`, an effect's result, a timer) are actor-isolated. A collaborator on another actor that has to tell the machine something hops onto the turn actor and awaits. Until the hop lands, the turn actor can run a step that should already have seen the report.
 
-#696/#704's plan (`2026-11-21-closed-gate-replies-and-pending-failure.md` §2.2–2.3) meets this on the keeper. The transport adapter closes the land's output gate on a failure outside a turn. Before the queued `.landFailure` input arrives, the keeper can still run a sync phase, either behind the hop or behind a queued item. #732 closes the window with a keeper-specific box, `LandFailureMailbox`. It is set-once, lock-protected and `nonisolated`, and the keeper reads it at each step boundary (`applyPendingTransportFailure`, from `finishApply`, `runSyncOnlyTurn` and `runTurnOutputs`). The awaited `submitLandFailure` stays only to wake a keeper that has no turn due.
+#696/#704's plan (`2026-11-21-closed-gate-replies-and-pending-failure.md` §2.2–2.3) meets this on the keeper. The transport adapter closes the land's output gate on a failure outside a turn. Before the queued `.landFailure` input arrives, the keeper can still run a sync phase, either behind the hop or behind a queued item. #732 closes the window with a keeper-specific box, `LandFailureMailbox`. It is set-once, lock-protected and `nonisolated`. The keeper reads it in `finishApply` (after each apply segment), at the start of `runSyncOnlyTurn`, and in `runTurnOutputs`. The awaited `submitLandFailure` stays to wake a keeper that has no turn due.
 
-When LandKeeper moves onto `TurnCore` (#700), that box should be a capability of the core rather than a side channel next to it. This plan specifies that capability.
+When LandKeeper moves onto `TurnCore` (#700), that box should be a capability of the core rather than a side channel next to it. This plan specifies the capability.
 
 ## 2. Prior art
 
-- **Akka (classic) mailboxes** keep system messages (supervision, termination, watch) in a separate queue next to the user mailbox. `Mailbox.run` processes all system messages first, then user messages, and checks the system queue again after each user message, so a stop or a failure is seen before the next user message. An enqueue sets a "scheduled" flag with a compare-and-set, and only the enqueue that sets it schedules the mailbox, which avoids both a lost wakeup and a double run. This is the shape proposed here: a second lane, taken before each step, with a scheduled flag cleared in the same critical section as the take.
-- **Erlang/OTP 28 priority messages ([EEP 76](https://www.erlang.org/eeps/eep-0076), [OTP 28 highlights](https://www.erlang.org/blog/highlights-otp-28/))**: a receiver opts in with `alias([priority])`, and messages a sender marks `priority` through that alias go ahead of ordinary messages in the queue. Selected exit and monitor signals can be priority messages too. Two points carry over: the receiver opts in per alias, and the lane is meant for a few control messages, not for traffic.
-- **Swift actors** have no second lane. Task priority changes scheduling order but promises nothing about which job runs first, so an awaited call can't promise "before your next step".
+- **Akka (classic) mailboxes** keep system messages (supervision, termination, watch) in a separate queue next to the user mailbox.
+  - `Mailbox.run` processes all system messages first, then user messages, and checks the system queue again after each user message. So a stop or a failure is seen before the next user message.
+  - An enqueue that finds the mailbox idle schedules it with a compare-and-set on its status, which avoids both a lost wakeup and a double run.
+  - The shape proposed here is the same: a second queue, taken before each step, and scheduled by the post that finds it empty.
+- **Erlang/OTP 28 priority messages ([EEP 76](https://www.erlang.org/eeps/eep-0076), [OTP 28 highlights](https://www.erlang.org/blog/highlights-otp-28/)).** A receiver opts in with `alias([priority])`, and messages a sender marks `priority` through that alias go ahead of ordinary ones. Selected exit and monitor signals can be priority messages too. Two points carry over: the receiver opts in, and the lane is for a few control messages, not for traffic.
+- **Swift actors** have no second lane. Task priority changes scheduling but promises nothing about which job runs first, so an awaited call can't promise "before your next step".
 - **The repository's own precedents:**
-  - the keeper's `isDraining`, and #732's `LandFailureMailbox`: a lock-protected box any isolation reads without an await;
-  - #719's waiter registration (`2026-11-21-a-closure-that-captures-only-actor-state-runs-off-the-actor.md`): a check-then-register against state another segment settles must happen in one isolated segment;
-  - the budget-break lesson (`2026-11-20-a-budget-break-strands-the-work-kinds-after-it.md`): a new work kind in the driver's loop has to say where it sits against every budget and exit;
-  - the feature-path cost lesson (`2026-11-21-a-feature-path-in-the-driver-costs-machines-that-do-not-use-it.md`): a feature keyed on an associated type with a `Never` default gets a static gate, and machines that don't use it pay nothing.
+  - the keeper's `isDraining`, and #732's `LandFailureMailbox`;
+  - `2026-11-21-a-closure-that-captures-only-actor-state-runs-off-the-actor.md`: a check-then-register against state another segment settles happens in one isolated segment;
+  - `2026-11-20-a-budget-break-strands-the-work-kinds-after-it.md`: a new work kind in the driver's loop says where it sits against every budget and exit;
+  - `2026-11-21-a-feature-path-in-the-driver-costs-machines-that-do-not-use-it.md`: a feature keyed on an associated type with a `Never` default gets a static gate.
 
 ## 3. Design
 
-### 3.1 What the lane carries: a `Report`, not any input
+### 3.1 What the lane carries: a `LaneReport`, not any input
 
-A machine opts in with a new associated type, `associatedtype Report: Sendable = Never`, and a handler, `mutating func handle(report: Report, turn: inout Turn<Self>)`. Its default is unreachable for `Never`.
+A machine opts in with a new associated type, `associatedtype LaneReport: Sendable = Never`, and a handler, `mutating func handleReport(_ report: LaneReport, _ turn: inout Turn<Self>)`. Its default implementation is in `extension TurnMachine where LaneReport == Never`, and it is unreachable there.
+- **The name.** A machine that already has a nested `Report` type would satisfy an associated type named `Report` without meaning to, and so opt in to the lane by accident. One test harness already has `struct Report` (`DifferentialHarnessTests.swift:33`, not a machine). `LaneReport` makes that unlikely.
+- **Why not `M.Input` (Q1, decided).** The reason is cost. A lane of `M.Input` would be open to every machine, so the driver would need a per-step load (`lane != nil`) on every machine. A separate type with a `Never` default gives a static gate, `TurnCore<M>.usesLane = M.LaneReport.self != Never.self`, which folds every lane path away on a machine that doesn't use it, as `usesFollowUps` does.
+- **The other differences follow.** A report steps as a control input: holds, `close`, the queue limit and withdrawal don't apply. It has no caller, so no reply and no `TurnError`.
 
-A report is not an `M.Input`, for three reasons:
-- **It steps as a control input.** Holds, `close`, the queue limit and withdrawal don't apply, as for a timer's input or a follow-up. A terminal report must reach a closed core, which an `M.Input` with a `.normal` policy wouldn't.
-- **It has no caller.** A post doesn't wait, so there is no reply and no `TurnError`. A general input lane would be a second, unordered submit path beside `send`, and the "inputs from one connection keep their order" rule (the order section of `docs/turns/README.md`) would have to name both.
-- **It stays small.** The lane is for the few things a collaborator must report before the machine's next step: a failure found outside a turn, or a stop from a supervisor. A type of its own keeps it that way, and it lets the lint and the docs tell lane traffic from ordinary inputs.
+### 3.2 Where the lane lives: on the core, posted through the actor
 
-**Rejected: a set-once box only.** It covers #732, but a second report kind (a supervisor's stop beside a transport failure) would need a second box and a second read point. The lane is a bounded FIFO instead, and set-once is what it does at capacity 1 (§3.5).
+`TurnLane<Report>` is a `final class`, `Sendable`, lock-protected (`NSLock`), with the posted reports in post order, a capacity, and a refusal count.
+- `init(capacity:)` rejects `capacity < 1` with a precondition.
+- **One instance, two holders.**
+  - The core holds it as `let lane: TurnLane<M.LaneReport>?`, passed to `TurnCore.init(…, lane:)`. The driver and `Turn` reach it through the core, so `turn.takeReports()` can read it: `Turn` holds only the core (`Turn.swift:8`).
+  - The adopter's actor also stores it, as `nonisolated let lane`, because `post` is nonisolated and can't read `core`.
+  - The actor's init makes the lane first and passes it to the core. `laneWoke()` checks `lane === core.lane` with a debug precondition, at its first run.
+- **The protocol.** `TurnActor` gains `nonisolated var lane: TurnLane<M.LaneReport>? { get }`.
+  - The `nil` default is only in `extension TurnActor where M.LaneReport == Never`.
+  - A machine with reports has no default, so its actor doesn't compile without a `lane`.
+  - `post` on an actor whose `lane` is nil traps (`preconditionFailure`). That can only be a machine with reports whose actor returns nil explicitly.
+- **lint-turns `[let-lane]`.** As `[let-core]` does for `core`, the rule checks that a `TurnActor`'s `lane` is a stored `nonisolated let`, never a `var` or a computed property. Its negative controls go in the lint's self-test.
 
-### 3.2 Where the lane lives
+### 3.3 Posting and the wakeup: no separate flag
 
-`TurnLane<Report>` is a `final class`, `Sendable`, lock-protected, with:
-- the posted reports, in post order;
-- a `wakePending` flag;
-- a capacity.
+`nonisolated func post(_ report: M.LaneReport) -> Bool` on `TurnActor`:
+1. Under the lane's lock:
+   - if the lane is at capacity, it counts a refusal and returns `false`;
+   - otherwise it appends the report and notes whether the lane was empty before.
+2. Outside the lock, if the lane was empty, it schedules one wake: `Task { await self.laneWoke() }`.
 
-The adopter's actor declares it as a stored `nonisolated let lane = TurnLane<M.Report>(capacity: …)`. `TurnActor` gains `nonisolated var lane: TurnLane<M.Report>? { get }`, with a default of `nil` in an extension, so a machine with `Report == Never` declares nothing. The lint that checks `core` is a stored `let` checks `lane` the same way.
+**Who schedules a wake.** The post that makes the lane non-empty schedules it. "A wake is due" is derived from the lane holding reports, so there is no `wakePending` flag to keep in step with the queue.
 
-`TurnCore<M>.usesLane` is `M.Report.self != Never.self`, a constant once the core is specialized, as `usesFollowUps` is. Every lane path in the driver checks it first, so on a machine without reports it folds away.
+**The take.** A take detaches reports from the head of the lane in one critical section. Two rules keep wakes from being lost:
+- **The lane is left empty.** A later post then finds it empty and schedules a new wake.
+- **The lane is left non-empty** (only after a budgeted take, §3.4). Then the take's caller schedules a wake itself, as a capped segment schedules its continuation. Otherwise the reports left behind would wait for an entry that might never come.
 
-### 3.3 Posting and the wakeup
+**No lost wakeup.** Every post lands either before a take, which then steps it or leaves it behind with a wake scheduled, or after a take. A post after a take finds the lane empty, and schedules a wake, unless the take left reports behind, in which case that take scheduled one. Detaching the reports and reading "was empty" happen under the same lock, so no post can see the lane as non-empty because of reports a take has already detached.
 
-`nonisolated func post(_ report: M.Report) -> Bool` on `TurnActor`:
-1. Under the lane's lock, it appends the report; a lane at capacity refuses it (§3.5). If `wakePending` is false, it sets it and remembers to schedule.
-2. Outside the lock, if it set the flag, it schedules one wake job: `Task { await self.laneWoke() }`.
+**Other wakes.** `laneWoke()` is an ordinary entry. If an entry took the lane first, the wake finds it empty, does nothing, and counts `emptyLaneWakes`.
 
-`laneWoke()` is an ordinary entry: `beginEntry()`, then a segment if the lane holds reports.
+**A post from inside a step** goes to the lane. The driver's next check takes it in this segment, after this step's products drain, subject to the budget (§3.4).
 
-**The take.** The driver takes the lane in one critical section: it moves every posted report out and clears `wakePending`.
-
-**No lost wakeup.** Every post is in one of two cases:
-- It lands before a take. That take steps it.
-- It lands after a take. The take cleared `wakePending`, so this post sets the flag again and schedules a new wake.
-
-The flag and the reports change under one lock, so no post can find the flag set by a wake that has already taken. A wake job that finds the lane empty (an entry took it first) does nothing and counts `counters.emptyLaneWakes`.
-
-**A post from inside a step.** The machine, or a collaborator it calls synchronously, may post. The report goes to the lane, and the driver's next check takes it in this segment, after this step's products drain. The wake it schedules then finds the lane empty.
-
-**Rejected: wakeup by the poster's awaited submit.** That is #732's current fallback. It makes every poster await, and the lane would still depend on a second path for liveness. The lane wakes itself, and #700 drops the awaited submit (§4).
+**Rejected: the poster's awaited submit as the wakeup.** That is #732's current fallback. Every poster would await, and the lane would depend on a second path for liveness.
 
 ### 3.4 Order: the lane is taken before every step
 
-**The rule.** Before each step the driver makes, it takes the lane and steps the reports first, in post order, each one's products drained before the next. That covers:
-- each step of a segment's loop;
-- the direct step of an entry: `submit`'s `admit`, `query`'s answer, an effect's result, a timer's input, a gate's return.
+**The rule.** Before each step the driver makes, it takes the lane and steps the reports first, in post order, draining each one's products before the next. A post that lands at any point is seen before the next step that starts after it. That is Akka's "system messages before each message".
 
-This is Akka's "system messages before each message": a post that lands at any point is seen before the next step that starts after it.
+**One helper, `takeLaneBeforeStep()`.** It does nothing unless `usesLane` holds and the lane isn't empty.
+1. It saves `inSegment` and sets it.
+2. It takes a snapshot of the lane.
+3. It steps each report, calling `drainProducts()` after each.
+4. It restores `inSegment`.
 
-- **In `runSegment`.** The take sits right after `drainProducts()`, before abandonments, queued inputs, releases and follow-ups. So the order is: products, lane, abandoned, queued, releases (capped), follow-ups.
-  - Reports aren't parked inputs, so `maxReleasesPerBatch` doesn't bound them. They are bounded by the lane's capacity, as follow-ups are bounded by their arms.
-  - A capped segment still takes the lane: the budget-break lesson's rule.
-- **At an entry that steps directly.** If `usesLane`, the entry checks the lane before its own step. With reports posted, it steps them first, then its own input; then it goes on as today.
-  - The common case, an empty lane, costs one locked read of a count per step on a machine with reports, and nothing on one without (§3.8).
-  - With reports posted, `submit` could instead queue its own input and run a segment. That moves a non-control input behind the reports, as the rule requires, but it also changes where `admit` runs. The direct form is simpler to reason about. Q2.
-- **Against the queued batch.** Reports go ahead of everything not yet stepped when the take runs: queued sends, parked releases, due follow-ups. They never interrupt a step. Two reports keep their post order. A report and an ordinary input from two different tasks have no order beyond "taken before the next step that starts after the post", the same as Swift's order between calls from different tasks.
+Setting `inSegment` is the point. While a report's products flush, `flush` may call the actor:
+- a `send` from `flush` sees `inSegment` and queues, as it does from inside a segment today, instead of stepping at once;
+- a `query` from `flush` answers in place, as a query from inside a batch does, instead of starting an entry and recursing into the helper.
+
+**Where it runs.**
+- **In `runSegment`'s loop**, right after `drainProducts()`, before abandonments, queued inputs, releases and follow-ups. The order is: products, lane, abandoned, queued, releases (capped), follow-ups. A capped segment still takes the lane, which is the budget-break lesson's rule.
+- **At every entry, from `beginEntry()`**, after the incarnation check and before the entry's own eligibility checks. A report's step can change exactly what those checks read, so they have to read the state after it:
+
+  | Entry | Its eligibility check, which now comes after the take |
+  |---|---|
+  | `submit` (also behind `sendAndWait`) | `admit`'s `close`, withdrawal, scope and hold checks |
+  | `query` (outside a batch) | none; the answer step follows the take |
+  | `complete` | `rt.open[id]`; a closed request takes the `stepStale` path |
+  | `deadlineFired` | `rt.open[id]` and `gateDeadlineLive(id)`. Today its stale path returns before `beginEntry()`. The take moves ahead of both checks, so a report that closed the request makes the deadline stale. |
+  | `timerFired` | `rt.timers[key] == generation`. The take moves ahead of it, for the same reason. |
+  | `gateReturned` | `followUpIDs[id]` and the arm's `waiting` |
+  | `continueDrain`, `continueFollowUps` (#723: `continueBatch`), `laneWoke` | none; their segment follows |
+  | `callerCancelled` | none, and no take: it steps nothing (a withdraw and a resume) |
+
+  An entry with a foreign incarnation returns before the take, as it returns before touching the core today. The lane's wake covers whatever it leaves.
+- **The direct form is kept (Q2, decided).** An entry steps the reports, then goes on as today: its own checks, then its own step. With MF 2's helper, the alternative of queuing the entry's input and running a segment isn't needed.
+
+**Per-check snapshot and per-segment budget.**
+- Each take steps only the reports posted before it. A report that a report's step posts goes to the next check.
+- A segment steps at most `capacity` reports in all. When the budget is spent and the lane still holds reports, the take schedules a wake (§3.3), and the rest step in a new batch.
+- So a report whose handler posts its successor can't hold a segment forever: it becomes a chain of batches, as a self-re-arming `.afterBatch` follow-up does.
+- The price: a flood beyond `capacity` in one segment is seen in the next batch, not before the next step. A lane is meant for a few reports, and capacity bounds it in any case.
+
+**Against queued work.** Reports go ahead of everything not yet stepped when the take runs: queued sends, parked releases, due follow-ups. They never interrupt a step, except through a step's own `takeReports()` (§3.6). Two reports keep their post order. A report and an ordinary input from two different tasks have no order beyond "taken before the next step that starts after the post", the same as Swift's order between calls from different tasks.
 
 ### 3.5 Capacity and set-once
 
-`TurnLane(capacity: n)`. A post to a full lane returns `false` and isn't stored. The lane counts the refusal under its lock, because a nonisolated post can't touch the core, and the next take adds it to `counters.refusedReports`.
-- **Capacity 1 is set-once.** The first report wins until a step takes it, which is #732's rule.
-- **First wins, not last.** For terminal reports the first cause matters, and a later one is a consequence.
-- **Default capacity: 8.** It is small on purpose. A machine that needs more says so.
-
-A report that a step has taken is gone, so after a take a lane with capacity 1 accepts a new post. A machine that must keep the first report for its lifetime (the keeper's `failLand` keeps the first cause) does that in its own state. The lane doesn't need to.
+- **Capacity 1 is set-once.** The first report wins until something takes it, which is #732's rule.
+- **First wins.** A post to a full lane returns `false` and isn't stored: for terminal reports the first cause matters. The lane counts the refusal under its lock, and the next take adds it to `TurnStats.refusedReports`.
+- **Default capacity: 8.**
+- **A taken report is gone.** A machine that must keep the first report for its lifetime (the keeper's `failLand` keeps the first cause) does that in its own state.
 
 ### 3.6 Taking the lane inside a step: `turn.takeReports()`
 
-#732 reads its box in the middle of a turn: after the apply, before anything of the turn goes out. A report posted on another thread while the step runs must still stop that step's outputs. The pre-step take of §3.4 can't do that, because the step has already begun.
+#732 reads its box in the middle of a turn: after the apply, before anything of the turn goes out. A report posted on another thread while the step runs must still stop that step's outputs. The pre-step take can't do that, because the step has already begun.
 
-So a step may take the lane itself. `turn.takeReports() -> [M.Report]` takes the lane in the same critical section as the driver's take, and returns the reports in post order. The step then handles them before it emits anything. They are not stepped again.
+`turn.takeReports() -> [M.LaneReport]` takes the lane through `core.lane`. It is the same detach as the driver's, from the same queue, so:
+- **FIFO holds.** A mid-step take detaches a prefix of the queue, and the driver's next take detaches the next prefix. No report is seen twice or out of order.
+- **It is an environment read.** Like `turn.now`, the step's result now depends on something outside its input. The read is recorded, and replay serves it from the record (§3.9), so a replayed step sees the same reports at the same point.
+- **It isn't counted against the per-segment budget.** A step takes what is there once, or a few times at fixed points, so it can't loop on its own posts.
 
-This is the keeper's `finishApply` → `applyPendingTransportFailure` in core terms (§4). Without the call, a report that lands during a step is taken before the next step, which is enough for any machine that doesn't need the mid-step read.
+A machine that never calls `takeReports()` gets the pre-step take only, which is enough for any machine that doesn't need the mid-step read.
 
-### 3.7 `close`, `endAll`, a replaced core, re-evaluation
+### 3.7 `close`, `endAll`, a replaced core, quiescence
 
 - **`close` and `endAll`.** Reports step as control inputs through `close`, and after `endAll`, as a timer's input does. A machine that wants to ignore reports once ended does so in its handler.
-- **A replaced core.** The lane belongs to the actor, not to the core. A report taken after a core is replaced steps into the new core. Whether a report should carry the poster's incarnation, and be dropped as `.foreignCompletion` by a core that didn't exist when it was posted, is Q3. The keeper doesn't replace its core, so #700 doesn't need it.
-- **Re-evaluation.** Replay has no transport and no poster. A recorded report reaches the machine from the record, not from the lane (§3.9).
+- **A replaced core (Q3, decided: no incarnation).** The lane is passed to each core the actor makes. A report taken after a replacement steps into the new core. Posts carry no incarnation. The keeper doesn't replace its core.
+- **Quiescence.** `waitForQuiescence` doesn't count lane reports. They come from outside, as sends do, which it doesn't count either. No `TurnWork` kind is added.
 
 ### 3.8 Cost
 
-- **Without reports (`Report == Never`).** Every lane path is behind `usesLane`, so `runSegment`, the entries and the wake fold away. The §10 cells of the follow-ups plan (`2026-11-20-turn-core-follow-ups.md`: `emit`, `call`, `idle`, on the bench's machine, which declares neither follow-ups nor reports) must not move. They are measured with that plan's procedure (`perf stat -e instructions:u`, n minus n = 0, five runs per side, threshold max(0.5 %, 3 × spread)), while holding the measurement lock.
-- **With reports, on an empty lane.** One lane read per step.
-  - `Synchronization.Atomic` would make that read a plain load, but it needs macOS 15, and the package targets macOS 14 (#711 met the same limit with `Mutex`).
-  - So the read is `NSLock` around an `isEmpty`. A new `TurnsBench` cell, `report-idle`, records its cost on a lane machine: `emit` on a machine with a `Report` type and an empty lane. It isn't compared against base; it only records the figure.
-  - If the lock shows up, the fallback is a second flag on the lane that a step reads without the lock, safe only because a missed flag is caught by the wake. Q4.
-- **With reports, on a post.** One lock round trip per post, and one `Task` per wake. Wakes coalesce through `wakePending`.
+- **Without reports (`LaneReport == Never`).** Every lane path is behind `usesLane`, so `runSegment`, the entries and the wake fold away.
+  - The follow-ups plan's §10 cells (`2026-11-20-turn-core-follow-ups.md`: `emit`, `call`, `idle`, on the bench's machine) must not move.
+  - They are measured with that plan's procedure: `perf stat -e instructions:u`, n minus the n = 0 run, five runs per side, alternating, threshold max(0.5 %, 3 × spread), while holding the measurement lock.
+- **With reports, on an empty lane.** A dirty `emit` takes the lock twice: once at the entry, once at the loop's first check.
+  - The measure is lane-on against lane-off. Two new `TurnsBench` cells run the same machine with an empty lane: `report-emit` and `report-call`. Their baseline is that machine built with `LaneReport == Never`, so the figure is the lane's own cost.
+  - The cells are recorded, not gated.
+  - If the second lock shows, the loop's first check is skipped when the entry has just taken the lane and nothing has stepped since. That is one `Bool` in the segment.
+- **Atomics.** `Synchronization.Atomic` needs macOS 15, and the package targets macOS 14. If the locked read is too dear, `ManagedAtomic` from swift-atomics is the option, and adding that dependency would be its own decision. No unlocked flag is used.
+- **With reports, on a post.** One lock round trip per post, and one `Task` per wake; wakes coalesce, because only the post that makes the lane non-empty schedules one.
+- **`TurnStats`.** It gains `emptyLaneWakes` and `refusedReports`. `TurnStats` is `Equatable`, so a test that compares whole stats values sees two new fields at 0. The PR checks the suites for such comparisons.
 
 ### 3.9 Replay and recording
 
-The core records nothing; the adopter records its inputs. A report gets no special path. It is recorded where the machine sees it:
-- **A report the driver steps** goes through `handle(report:turn:)`. That handler records it, as the keeper records a server-originated input (#387): one record entry, at its position in the tick.
-- **A report a step takes** (`turn.takeReports()`) is recorded inside that step's entry, at the take. For #732's case, the step's record then holds the failure that ended its inputs, which is what replay does at a failure that ended a tick's inputs (#732's `finishApply`, `endsInputs: true`).
-- **Replay feeds the recorded report** to the machine at the same position, through the record source. Nothing is posted. A live post's position depends on timing, and the record fixes it.
+The core records nothing; the adopter records its inputs. A report is recorded where the machine sees it:
+- **A report the driver steps** goes through `handleReport`. That handler records it as one record entry at its position, as the keeper records a server-originated input (#387).
+- **A report a step takes** (`turn.takeReports()`) is recorded inside that step's entry, at the take, with what the take returned (possibly nothing, when a position matters).
+- **Replay.** The core gets a report source: `.live(lane)` or `.replay`.
+  - A recorded driver-stepped report is fed through a package entry, `replayReport(_:)`, which steps it as the live driver would.
+  - In `.replay`, `turn.takeReports()` returns what the adopter staged for the step with `stageReplayTakes(_:)` before submitting the step's input: one array per take, in order. Nothing is posted.
+  - A live post's position depends on timing; the record fixes it.
 
-The generated-orders harness gains a `post` operation from a task off the actor, with a hold point between the post and the wake, so seeds cover "posted during a step", "posted between steps" and "posted while the wake is in flight".
+The generated-orders harness gains a `post` operation from a task off the actor, through a package async hook on `TurnLane`, with hold points between the append and the wake, and between the detach and the empty check. Its seeds cover "posted during a step", "posted between steps" and "posted while a wake is in flight", the budget-2 seeds included.
 
 ### 3.10 The reentrancy rule in CLAUDE.md
 
@@ -130,52 +184,94 @@ The "Outside turns" bullet gains one line, in the PR that adds the lane:
 
 Until #700 moves the keeper, the line names #732's `LandFailureMailbox` as the keeper's stand-in.
 
-## 4. How #732's mailbox maps onto the lane (at #700)
+## 4. #732's mailbox on the lane (at #700)
+
+### 4.1 Checkpoints per keeper turn
+
+On the core, each keeper turn is one step. A tick turn's apply, handler, hash and outputs are one step, so the pre-step take alone can't replace #732's reads inside the turn. Each turn kind gets explicit checkpoints. A checkpoint is a `turn.takeReports()` call, and a report it returns calls `failLand` in that step. Its reports are then handled exactly as #732's noted failure is today.
+
+| Turn kind | Checkpoint (today's #732 read) | What a report taken there suppresses |
+|---|---|---|
+| any | the driver's pre-step take (no read today; the awaited submit's turn) | the whole step: it steps the report first, and the land has failed before the turn starts |
+| initialize | after the apply (`finishApply`) | the turn's events, its sync phase and its record hash |
+| tick turn | after the apply and the handler (`finishApply`), and before the sync phase (`runTurnOutputs`) | after the apply: events, sync and hash. Before the sync phase: the phase and what follows |
+| tickless input turn | after `takePassOrdinal`, before `if failure != nil` (`finishApply`) | events and sync. Every consumed caller's result becomes `landClosed`, written to `inputTurnResults` in the step, before `Turn.reply` publishes in the drain after the step |
+| sync-only turn | the start of the step (`runSyncOnlyTurn`) | the phase |
+| freeze settle (L2d-1, a sync-only turn) | the start of the step | the phase; the settle returns `.failed(f)`, not `.skipped` |
+
+The awaited `submitLandFailure` and its hold point `.failureSubmit` go. `.failureSubmit` becomes the lane's hook between the append and the wake (§3.9).
+
+### 4.2 What changes, and what stays
+
+**The record's shape changes.**
+- **Today.** `submitLandFailure` appends `.landFailure` to `pendingItems` behind every item queued before it (`LandKeeper.swift:5541`). The record shows the failure after those items, and they are applied first (#732's box can end the inputs earlier, at a boundary it reaches first).
+- **On the lane.** A report taken before a step fails the land before any input still queued at the take. Those inputs aren't applied, and their callers get `landClosed`. The record shows the failure at the take's position, before them.
+- **Replay** reproduces either shape, because the record fixes the position. A record made before the migration replays as before.
+- **For the #700 PR body.** It states the change, and a test pins it: two inputs queued, a post, then the turn. The record holds the failure first, and both inputs are refused.
+
+**What stays.**
+- **#696's enqueue gate.** The output gate is read where each frame is enqueued, and that read stays. The lane stops the keeper's next turn. The gate stops frames already on their way.
+- **The census.** `scripts/gate-close-census.sh` is unchanged: the closers still go through `failOutsideTurn`, which now posts.
+- **The first cause, across a rebind.** The report is posted to the keeper's lane, not to an adapter, so a rebind doesn't lose it. `failLand` keeps the first cause.
+- **Re-evaluation.** Replay has no poster. A recorded failure comes from the record (§3.9).
 
 | #732 (keeper, today) | The core's lane (#700) |
 |---|---|
-| `LandFailureMailbox`, set-once, `nonisolated let` on the keeper | `nonisolated let lane = TurnLane<LandReport>(capacity: 1)` on the keeper's actor |
-| `notePendingFailure(_:)`, called by the adapter's `failOutsideTurn` in the segment that closes the gate | `keeper.post(.transportFailure(f))`, from the same place |
-| `applyPendingTransportFailure()` from `finishApply`, after the apply and before the turn's outputs | `turn.takeReports()` in the step's end-of-apply, before any `turn.emit` (#716's rule) |
-| the read at the start of `runSyncOnlyTurn` and `runTurnOutputs` | the driver's pre-step take (§3.4): a sync-only turn is a step |
-| the awaited `submitLandFailure`, which wakes a keeper with no turn due | dropped: the lane's wake (§3.3). The hold point `.failureSubmit` becomes a hold between the post and the wake |
-| first failure wins (`note` keeps the first; `failLand` keeps the first cause) | capacity 1, first wins (§3.5); `failLand` unchanged |
-| empty in re-evaluation | the same: no poster in replay (§3.7, §3.9) |
-| `scripts/gate-close-census.sh` | unchanged: the closers still go through `failOutsideTurn`, which now posts |
+| `LandFailureMailbox`, set-once, `nonisolated let` on the keeper | `TurnLane<LandReport>(capacity: 1)`, on the core and the keeper's actor |
+| `notePendingFailure(_:)`, from `failOutsideTurn` in the segment that closes the gate | `keeper.post(.transportFailure(f))`, from the same place |
+| `applyPendingTransportFailure()` in `finishApply`, `runSyncOnlyTurn`, `runTurnOutputs` | the checkpoints of §4.1 |
+| awaited `submitLandFailure` | dropped: the lane's wake |
+| first failure wins | capacity 1, first wins; `failLand` unchanged |
 
-#732's tests carry over as lane tests on the keeper: the window tests (`ClosedGatePendingFailureTests`) keep their holds, with `.failureSubmit` moved to the post-to-wake hold.
+#732's tests carry over as lane tests on the keeper (`ClosedGatePendingFailureTests`). They keep their holds: a post during the apply (a hold inside the apply segment), a post during the handler, and a post with no turn due. `.failureSubmit` moves to the lane's hook.
 
-## 5. Tests (SwiftStateTurnsTests; holds, never timing; each must fail with the feature removed)
+## 5. Tests (SwiftStateTurnsTests; holds, never timing; each must fail with its feature removed)
 
-1. A report posted between two queued sends steps before the second: the queue holds A and B, the post lands after A's step, and the log reads A, report, B.
+1. A report posted after A's step, with B still queued, steps before B: the log reads A, report, B.
 2. A post during a step (from a collaborator the step calls) is taken after that step's products drain, before the next step in the segment.
 3. A post from another executor, held after the append and before the wake is scheduled: the next entry takes it, and the wake later finds the lane empty (`emptyLaneWakes == 1`).
-4. No lost wakeup: a post while a wake is in flight but after its take is stepped by a second wake. A hold sits between the wake job's take and its segment's end, a post lands there, and a `bounded` wait sees the report stepped.
-5. A capped segment (`maxReleasesPerBatch: 1`) still takes the lane before each step it makes.
-6. Capacity 1: a second post before the take returns `false`, and the first is the one stepped; `refusedReports == 1`.
-7. `turn.takeReports()` in a step returns a report posted, under a hold, during that step. The step emits nothing, and the report isn't stepped again.
-8. Through `close` and after `endAll`, a report still steps (a control input).
-9. Order of two reports, and of reports against a direct entry: an effect's result with reports posted steps after them.
-10. A machine with `Report == Never` compiles with no `lane` declaration, and its `TurnsBench` cells are unchanged (§3.8).
-11. Generated orders: the `post` operation in every seed family, including the budget-2 seeds.
+4. No lost wakeup. The lane's hook holds a take between the detach and its empty check, and a post lands there. A `bounded` wait sees the report stepped.
+5. A capped segment (`maxReleasesPerBatch: 1`) still takes the lane before each step it makes. A post lands during a step through the hook.
+6. Capacity 1: a second post before the take returns `false`, and the first is the one stepped; `refusedReports == 1`. (`capacity < 1` is a precondition with no test: Q5.)
+7. `turn.takeReports()` in a step returns a report posted, under a hold, during that step. The step emits nothing, and the report isn't stepped again. A later post is stepped by the driver after it, in FIFO order.
+8. Through `close` and after `endAll`, a report still steps.
+9. Each direct entry with a report posted steps the report first, then runs its own eligibility check against the state after it:
+   - `complete` of a request the report closes takes the stale path;
+   - `timerFired` of a timer the report cancels is stale;
+   - `deadlineFired` of a request the report closes is stale;
+   - `gateReturned` of a follow-up the report consumes is stale;
+   - `submit`'s input is refused when the report closes the core.
+10. Reentrancy: a report whose output's `flush` sends an input and asks a query. The send queues and steps after the report, and the query answers in place. Nothing recurses (a recursion guard counter stays at 1).
+11. Livelock: a report whose handler posts its successor, with capacity 2. One segment steps two reports, then a wake runs the next batch, and the chain ends where its script ends.
+12. A machine with `LaneReport == Never` compiles with no `lane`, and its `TurnsBench` cells are unchanged (§3.8).
+13. Replay: a step that takes reports at two points, run live and then replayed with the staged takes, gives the same outputs.
+14. Generated orders: the `post` operation in every seed family, the budget-2 seeds included.
 
-Mutants, each to fail a named test above:
-- the pre-step take removed from the loop (1, 5);
-- the take at a direct entry removed (9);
-- `wakePending` cleared outside the take's lock (4);
+Mutants, each to fail a named test:
+- the loop's take removed (1, 5);
+- the entry take moved after the eligibility checks (9);
+- the take's detach and its empty check split across two critical sections, with the hook between them (4);
 - the capacity check inverted (6);
-- `takeReports` returning `[]` (7).
+- `takeReports` returning `[]` (7);
+- `inSegment` not set by the helper (10);
+- the per-segment budget removed (11, which then ends only by the hang bound).
 
 ## 6. Steps
 
-1. **One SwiftStateTurns PR** (core path): `Report`, `TurnLane`, `post`, `laneWoke`, the pre-step take, `turn.takeReports()`, counters, the tests and mutants above, the bench cell, and the docs (`docs/turns/README.md` and `.zh-TW.md`, the DocC CoreConcepts page). The CLAUDE.md line (§3.10) goes in the same PR. No keeper change.
-2. **#700** maps #732's mailbox onto the lane (§4) when LandKeeper moves onto `TurnCore`. #700's plan names this plan.
+1. **One SwiftStateTurns PR** (core path). It adds:
+   - `LaneReport`, `TurnLane`, `post`, `laneWoke`, the helper, `turn.takeReports()`, the report source with its replay entries, and the counters;
+   - lint-turns `[let-lane]`;
+   - the tests and mutants above, and the bench cells;
+   - the docs: `docs/turns/README.md` and `.zh-TW.md`, and the DocC CoreConcepts page;
+   - the CLAUDE.md line (§3.10).
+
+   No keeper change.
+2. **#700** maps #732's mailbox onto the lane (§4) when LandKeeper moves onto `TurnCore`. Its plan names this plan and states the record change (§4.2).
 
 #696/#704 (#732) ships the keeper box now and isn't blocked by this plan.
 
-## 7. Questions for Review
+## 7. Questions
 
-- **Q1.** Is a separate `Report` type right, against a lane of `M.Input` that steps with the input's own policy? Recommended: `Report` (§3.1).
-- **Q2.** At a direct entry with reports posted: step the reports and then the entry's own input directly, or queue the input and run a segment? Recommended: direct (§3.4).
-- **Q3.** Should a report carry the poster's incarnation, so a replaced core drops one posted before it existed? Recommended: no, until a user needs it (§3.7).
-- **Q4.** On a machine with reports, is a locked read per step acceptable until the package can use `Atomic` (macOS 15)? Recommended: yes, with the `report-idle` cell recording the figure (§3.8).
+Decided: Q1 = `LaneReport` (§3.1), Q2 = the direct form with the helper (§3.4), Q3 = no incarnation (§3.7). Q4 (the unlocked fallback) is dropped.
+
+- **Q5.** `TurnLane(capacity: 0)`: a precondition with no test, or a throwing init? Recommended: the precondition, as `TurnCore`'s other configuration checks are.
