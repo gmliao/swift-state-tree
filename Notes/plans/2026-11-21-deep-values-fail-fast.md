@@ -147,15 +147,15 @@ It records no events, no sync output and no state hash. That is what the input-f
 
 Replay then runs OnInitialize and calls `finishApply()`, which refuses as live did. Tests cover an OnInitialize that writes the deep value, and one that writes it and then throws (the keeper logs the throw and keeps the write, LK:1257-1261).
 
-**The callers of a turn that ends** (maintainer decision, 2026-11-21). A turn ends the land when `finishApply()` returns `.ended` (a noted transport failure or a depth refusal), or when its in-turn sync phase fails the land. Then every caller whose input is in that turn's consumed batch gets `landClosed`, not its handler's outcome, and that includes a caller whose handler threw. No output of that turn is sent, replies included.
+**The callers of a turn that ends** (maintainer decision, 2026-11-21). A turn ends the land when `finishApply()` returns `.ended` (a noted transport failure or a depth refusal), when its in-turn sync phase fails the land, or when one of its inputs fails it (`.input`, #535). Then every caller whose input is in that turn's consumed batch gets `landClosed`, not its handler's outcome, and that includes a caller whose handler threw. The one exception is the input that failed the land: its caller gets that input's own error. No output of that turn is sent, replies included.
 - **Where.** On `.ended`, the turn sets every consumed item's result to `landClosed` before `resumeInputTurnWaiters` (LK:5818-5826) resumes the callers. That covers the three places that resume them: the input drain (:5750), the replay passes (:4238), and the turn's own outcome store (:5803-5806). A tickless action job's slot (`ticklessJobTurns`, `fillActionSlot`) is filled from the same result.
 - **Today's in-turn sync failure follows the rule.** A turn whose `runTurnOutputs` (:5802) fails the land keeps its outcomes today (:5806). From this change on, its callers get `landClosed` too, with a test.
 - **Scope limit.**
   - A tick land acknowledges an action at submit (LK:2339). That reply belongs to the admission, not to the turn that later applies the action, so it stays.
   - A tick land's waiting join gets `landClosed` through the drain (LK:5701).
-  - A turn that fails at an input (`.input`, #535) keeps today's rule: the failing input's caller gets its error, and the rest of the consumed batch keep their outcomes. That turn doesn't return `.ended` from `finishApply()`; it takes the existing failure branch.
+  - A turn that fails at an input (`.input`, #535) is under the rule too (Main's call, 2026-11-21, for the maintainer to confirm). Today the rest of its consumed batch keep their outcomes (:5806); from this change on they get `landClosed`, as in a turn that ends after its apply. That turn doesn't call `finishApply()`; it takes the existing failure branch, which sets the results the same way.
 - **The record.** It keeps those inputs as applied, with the rejected list. A recorded input has no outcome field (`ReevaluationRecordedAction`, `ActionRecorder.swift:741-750`), so replay has no caller outcome to compare, and no mismatch can arise.
-- **The test.** An input whose handler returned success, in a turn that ends, answers `landClosed`, and no frame of that turn reaches the transport.
+- **The test.** An input whose handler returned success, in a turn that ends, answers `landClosed`, and no frame of that turn reaches the transport. In a turn that fails at an input, that input's caller gets its error, and an earlier input of the same batch whose handler returned success answers `landClosed`.
 
 **Which fields it walks: a check bit, not the dirty flag.** The dirty flag doesn't show every new value:
 - A handler gets `inout State`, and can replace a node, or the whole root, with a new value. Its `Sync`s start clean (`SyncPolicy.swift:174`).
@@ -501,6 +501,6 @@ Additions:
 
 Behavior:
 - A state past the limit ends the land with `syncConversion` instead of overflowing.
-- The callers of a turn that ends, and of a turn whose in-turn sync phase fails the land, get `landClosed` instead of their handler's outcome.
+- The callers of a turn that ends the land get `landClosed` instead of their handler's outcome: a turn that ends after its apply, one whose in-turn sync phase fails the land, and one that fails at an input (except that input's own caller, who gets its error).
 - A land whose event, action, response or server-input type has a class-typed field no longer registers.
 - A payload past `payloadMaxDepth` ends the land with `eventEncode` / `responseEncode` from the encoders, before the wire.
