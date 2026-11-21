@@ -17,10 +17,14 @@ tags:
   - darwin
   - cooperative-pool
   - json
+  - snapshot
+  - outbound
 related:
   - "#362"
   - "#528"
   - "#595"
+  - "#697"
+  - "#716"
   - "2026-11-18-a-fuzz-harness-is-only-as-good-as-the-mutants-it-kills"
 ---
 
@@ -58,3 +62,9 @@ The parser's limit was sized for the parser, not for the stages after it. Their 
 - **Measure the edge on the smallest stack, then keep headroom:** one process per depth, since an overflow ends the process. A cap at a round number that "seems small" (64 here) was under 2× from the edge.
 - **Test past the limit, up to and beyond the parser's own:** the depth tests run every decoder at the limit, one past it, and at 512 and 513, and require a refusal rather than an overflow.
 - **Run deep-recursion tests on Darwin as well as Linux,** in debug and release. A pass on Linux says little about a 544 KiB stack.
+
+## The same class on the outbound path (#697)
+
+The server-frame limit of 64 above was kept because the frames carry the developer's own state. When #697 bounded the packer at 64, the land-level test of a state frame past 64 killed the test process with SIGBUS ("Thread stack size exceeded"). The overflow wasn't in the packer: it was in `SnapshotValue.make`, which recurses through each nested `@StateNodeBuilder` node while the sync differ builds the broadcast view. In a debug build on macOS, a chain of nested nodes (2 containers per level) synced at 26 levels and overflowed at 28. The frame only passes 64 at about 31 levels, so no nested-node state could reach the packer's refusal. The snapshot stage has no bound yet (#716).
+
+- **A bound at the last stage can't be tested end to end when an earlier stage overflows first.** Before writing the over-the-limit case through the whole pipeline, measure where each earlier recursive stage overflows (one process per depth). If one overflows before the limit, test the bound at its own stage with a value built iteratively (here: the state encoder, `PackDepthTests.stateFrameBound`), keep the end-to-end test at a depth that fits, and file the earlier stage.

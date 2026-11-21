@@ -109,7 +109,7 @@ Client must send Join with `landID: "landType:instanceId"`. See [Deploy & LB](..
 
 ### Atomic values
 
-A type that adopts `AtomicSnapshotValue` (`IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle`, a user struct declared with `@SnapshotConvertible(atomic: true)`) is one value in the diff, never diffed per leaf. Only the declaration makes a type atomic; a struct that merely has an `{x, y}` shape is diffed field by field.
+A type that adopts `AtomicSnapshotValue` (`IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle`, a user struct declared with `@SnapshotConvertible(atomic: true)`) is one value in the diff, never diffed per leaf. Only the declaration makes a type atomic; a struct that merely has an `{x, y}` shape is diffed field by field. An array or a `Set` is never diffed per element (see [What a Patch Covers](../core/sync.md#what-a-patch-covers)).
 
 - **Opcode state updates** (`opcodeJsonArray`, `opcodeMessagePack`) send an atomic value as the array of its leaves, in the schema's `leafOrder`: a `Position2` is `[x, y]`, an `Angle` is `[degrees]`, with fixed-point integers. This holds wherever the value sits: a field, an element of an array, a map value, an optional, a struct inside any of these, and inside an added object or a firstSync snapshot. In MessagePack a `Position2` patch value is 11 B instead of 18 B, an `Angle` 6 B instead of 14 B.
 - **`jsonObject` state updates and server events stay keyed** (`{"v": {"x": ..., "y": ...}}`).
@@ -262,7 +262,7 @@ With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per in
 | `syncCycles` | sync cycles that committed their plan (both paths): the denominator for the others |
 | `syncSkipsBacklog` | cycles skipped for writer back-pressure |
 | `syncDeferredTurns` | of `syncSkipsBacklog`: in-turn sync phases deferred by back-pressure |
-| `syncSkipsBusy` | requests rejected because another cycle was in flight (legacy path) |
+| `syncSkipsBusy` | always `0`: an in-turn sync request is a turn and is never rejected. Kept so the profile format doesn't change |
 | `syncFolds` | in-turn sync cycles folded into the next tick turn (coincident sync), at most one per cycle |
 | `syncOverdueFolds` | of `syncFolds`: folds whose tick was already overdue, so the frame waited for a late tick |
 | `syncFailedPlans` | sync plans that threw and committed nothing |

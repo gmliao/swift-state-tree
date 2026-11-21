@@ -173,7 +173,6 @@ private struct RowAddressingRun {
         encoding: RowAddressingEncoding,
         rowAddressing: Bool,
         joinsThroughRouter: Bool = true,
-        inTurnSync: Bool = true,
         tables: Bool = true,
         perPlayerTables: Bool = true,
         dirtyTracking: Bool = true,
@@ -196,7 +195,6 @@ private struct RowAddressingRun {
             encodingConfig: encoding.config.withSyncSequence(true).withRowAddressing(rowAddressing),
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true,
-            inTurnSync: inTurnSync,
             logger: logger,
             joinsThroughRouter: joinsThroughRouter
         )
@@ -410,7 +408,7 @@ struct RowAddressingAdapterTests {
         #expect(!TransportEncodingConfig.rowAddressingFromEnvironment(environment: ["ROW_ADDRESSING": "false"]), "the opt-out")
     }
 
-    @Test("In effect only with in-turn sync and joins through the router; it turns the sync tables on")
+    @Test("In effect only with joins through the router; it turns the sync tables on")
     func whereInEffect() async throws {
         let inEffect = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: true)
         #expect(inEffect.adapter.rowAddressing)
@@ -418,8 +416,6 @@ struct RowAddressingAdapterTests {
         let delegate = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: true, joinsThroughRouter: false)
         #expect(!delegate.adapter.rowAddressing, "the adapter's own (delegate) join sends a standalone firstSync")
         #expect(!delegate.adapter.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing))
-        let legacy = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: true, inTurnSync: false)
-        #expect(!legacy.adapter.rowAddressing, "in-turn sync off: joins don't complete in a turn")
         let off = try await RowAddressingRun.make(encoding: .messagepack, rowAddressing: false)
         #expect(!off.adapter.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing))
         // USE_SYNC_TABLES off: the feature turns the tables on; without it they stay off.
@@ -434,63 +430,24 @@ struct RowAddressingAdapterTests {
     /// `ROW_ADDRESSING=false` because json has no opcode state updates, so the raw flag can't
     /// change anything the server does. This pins that where the server could tell the two apart:
     /// everything the adapter decides, and every line it logs about it.
-    @Test("json: the raw row flag on and off configure the same adapter, with in-turn sync on or off and the tables on or off")
+    @Test("json: the raw row flag on and off configure the same adapter, with the tables on or off")
     func jsonIgnoresTheRawRowFlag() async throws {
         let pathHashes = try rowAddressingPathHashes()
-        func configured(rowAddressing: Bool, inTurnSync: Bool, tables: Bool) async -> RowAddressingConfigured {
+        func configured(rowAddressing: Bool, tables: Bool) async -> RowAddressingConfigured {
             await configuredAdapter(
                 TransportEncodingConfig.json.withSyncSequence(true).withRowAddressing(rowAddressing),
-                inTurnSync: inTurnSync, tables: tables, pathHashes: pathHashes
+                tables: tables, pathHashes: pathHashes
             )
         }
-        for inTurnSync in [true, false] {
-            for tables in [true, false] {
-                let cell = "inTurnSync \(inTurnSync), tables \(tables)"
-                let requested = await configured(rowAddressing: true, inTurnSync: inTurnSync, tables: tables)
-                let optedOut = await configured(rowAddressing: false, inTurnSync: inTurnSync, tables: tables)
-                #expect(requested == optedOut, "\(cell)")
-                #expect(!requested.rowAddressing, "\(cell)")
-                #expect(!requested.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing), "\(cell)")
-                #expect(requested.usesSyncTables == tables, "\(cell): the tables follow USE_SYNC_TABLES alone")
-                #expect(requested.logged.contains { $0.hasPrefix("Transport encoding configured") }, "\(cell): the configuration line is compared")
-            }
-        }
-    }
-
-    /// The in-turn-off legs of the E2E matrix (audit plan V2): the push runs leave out the leg
-    /// with in-turn sync off and `ROW_ADDRESSING=false`, because with in-turn sync off joins
-    /// don't complete in a turn and row addressing can't take effect whatever the raw flag says.
-    /// This pins that in every encoding the E2E runs (and `.opcode`), with the sync sequence on or
-    /// off and the tables on or off. The one difference allowed is the info line that names a
-    /// request the land can't honour, logged only when the effective config still holds one.
-    @Test("In-turn sync off: the raw row flag on and off configure the same adapter in every encoding, apart from the info line naming the request")
-    func inTurnOffIgnoresTheRawRowFlag() async throws {
-        let pathHashes = try rowAddressingPathHashes()
-        let notInEffect = "Row addressing requested but not in effect"
-        let encodings: [(name: String, config: TransportEncodingConfig, opcode: Bool)] = [
-            ("json", .json, false), ("jsonOpcode", .jsonOpcode, true), ("messagepack", .messagepack, true), ("opcode", .opcode, true),
-        ]
-        for encoding in encodings {
-            for syncSequence in [true, false] {
-                for tables in [true, false] {
-                    let cell = "\(encoding.name), syncSequence \(syncSequence), tables \(tables)"
-                    let base = encoding.config.withSyncSequence(syncSequence)
-                    let requested = await configuredAdapter(
-                        base.withRowAddressing(true), inTurnSync: false, tables: tables, pathHashes: pathHashes
-                    )
-                    let optedOut = await configuredAdapter(
-                        base.withRowAddressing(false), inTurnSync: false, tables: tables, pathHashes: pathHashes
-                    )
-                    #expect(requested.removingLines(startingWith: notInEffect) == optedOut, "\(cell)")
-                    #expect(!requested.rowAddressing, "\(cell)")
-                    #expect(!requested.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing), "\(cell)")
-                    #expect(requested.usesSyncTables == tables, "\(cell): the tables follow USE_SYNC_TABLES alone")
-                    let requestLines = requested.logged.filter { $0.hasPrefix(notInEffect) }
-                    #expect(requestLines.count == (encoding.opcode && syncSequence ? 1 : 0), "\(cell): \(requestLines)")
-                    #expect(!optedOut.logged.contains { $0.hasPrefix(notInEffect) }, "\(cell)")
-                    #expect(requested.logged.contains { $0.hasPrefix("Transport encoding configured") }, "\(cell): the configuration line is compared")
-                }
-            }
+        for tables in [true, false] {
+            let cell = "tables \(tables)"
+            let requested = await configured(rowAddressing: true, tables: tables)
+            let optedOut = await configured(rowAddressing: false, tables: tables)
+            #expect(requested == optedOut, "\(cell)")
+            #expect(!requested.rowAddressing, "\(cell)")
+            #expect(!requested.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing), "\(cell)")
+            #expect(requested.usesSyncTables == tables, "\(cell): the tables follow USE_SYNC_TABLES alone")
+            #expect(requested.logged.contains { $0.hasPrefix("Transport encoding configured") }, "\(cell): the configuration line is compared")
         }
     }
 
@@ -498,22 +455,21 @@ struct RowAddressingAdapterTests {
     /// tables follow the broadcast tables however those were turned on.
     @Test("The per-player tables are in effect where the broadcast tables are, unless PER_PLAYER_SYNC_TABLES is off (#514)")
     func perPlayerTablesFollowTheBroadcastTables() async throws {
-        let rows: [(tables: Bool, rowAddressing: Bool, router: Bool, inTurn: Bool, perPlayer: Bool, inEffect: Bool, label: String)] = [
-            (true, false, true, true, true, true, "both switches on"),
-            (true, false, true, true, false, false, "PER_PLAYER_SYNC_TABLES off"),
-            (false, false, true, true, true, false, "the broadcast tables off"),
-            (false, true, true, true, true, true, "the broadcast tables forced on by row addressing"),
-            (true, true, true, true, true, true, "USE_SYNC_TABLES on, with row addressing in effect"),
-            (false, true, true, true, false, false, "forced on by row addressing, PER_PLAYER_SYNC_TABLES off"),
-            (false, true, false, true, true, false, "row addressing requested, not in effect (a direct join)"),
-            (false, true, true, false, true, false, "row addressing requested, not in effect (in-turn sync off)"),
+        let rows: [(tables: Bool, rowAddressing: Bool, router: Bool, perPlayer: Bool, inEffect: Bool, label: String)] = [
+            (true, false, true, true, true, "both switches on"),
+            (true, false, true, false, false, "PER_PLAYER_SYNC_TABLES off"),
+            (false, false, true, true, false, "the broadcast tables off"),
+            (false, true, true, true, true, "the broadcast tables forced on by row addressing"),
+            (true, true, true, true, true, "USE_SYNC_TABLES on, with row addressing in effect"),
+            (false, true, true, false, false, "forced on by row addressing, PER_PLAYER_SYNC_TABLES off"),
+            (false, true, false, true, false, "row addressing requested, not in effect (a direct join)"),
         ]
         for row in rows {
             let run = try await RowAddressingRun.make(
                 encoding: .messagepack, rowAddressing: row.rowAddressing, joinsThroughRouter: row.router,
-                inTurnSync: row.inTurn, tables: row.tables, perPlayerTables: row.perPlayer
+                tables: row.tables, perPlayerTables: row.perPlayer
             )
-            #expect(run.adapter.rowAddressing == (row.rowAddressing && row.router && row.inTurn), "\(row.label): rows")
+            #expect(run.adapter.rowAddressing == (row.rowAddressing && row.router), "\(row.label): rows")
             #expect(await run.adapter.perPlayerSyncTablesInEffect() == row.inEffect, "\(row.label)")
             #expect(await run.adapter.syncEngineForTesting().perPlayerCacheRetired == row.inEffect, "\(row.label): the cache is retired")
         }
@@ -541,19 +497,17 @@ struct RowAddressingAdapterTests {
         #expect(!direct.tables)
     }
 
-    @Test("Row addressing requested by default but not in effect (a replay keeper's in-turn sync off, a direct join) logs at info, not as a warning")
+    @Test("Row addressing requested by default but not in effect (a direct join) logs at info, not as a warning")
     func notInEffectIsInfo() async throws {
-        for (inTurnSync, joinsThroughRouter) in [(false, true), (true, false)] {
-            let records = RowAddressingLogRecords()
-            let logger = Logger(label: "row-addressing-test") { _ in RowAddressingRecordingLogHandler(records: records) }
-            let run = try await RowAddressingRun.make(
-                encoding: .messagepack, rowAddressing: true, joinsThroughRouter: joinsThroughRouter, inTurnSync: inTurnSync, logger: logger
-            )
-            #expect(!run.adapter.rowAddressing)
-            let notInEffect = records.all.filter { $0.message.contains("Row addressing requested but not in effect") }
-            #expect(notInEffect.map(\.level) == [.info], "inTurnSync \(inTurnSync), router \(joinsThroughRouter)")
-            #expect(records.warnings.isEmpty, "inTurnSync \(inTurnSync), router \(joinsThroughRouter): \(records.warnings)")
-        }
+        let records = RowAddressingLogRecords()
+        let logger = Logger(label: "row-addressing-test") { _ in RowAddressingRecordingLogHandler(records: records) }
+        let run = try await RowAddressingRun.make(
+            encoding: .messagepack, rowAddressing: true, joinsThroughRouter: false, logger: logger
+        )
+        #expect(!run.adapter.rowAddressing)
+        let notInEffect = records.all.filter { $0.message.contains("Row addressing requested but not in effect") }
+        #expect(notInEffect.map(\.level) == [.info])
+        #expect(records.warnings.isEmpty, "\(records.warnings)")
     }
 
     @Test("The oracle: each sync decodes to the feature-off run's patches, every client reaches the live state, slots match the server's", arguments: RowAddressingEncoding.allCases)
@@ -858,8 +812,8 @@ private struct RowAddressingRecordingLogHandler: LogHandler {
     }
 }
 
-/// What an adapter decided, for the tests that compare the raw row flag on and off
-/// (`jsonIgnoresTheRawRowFlag`, `inTurnOffIgnoresTheRawRowFlag`).
+/// What an adapter decided, for the test that compares the raw row flag on and off
+/// (`jsonIgnoresTheRawRowFlag`).
 private struct RowAddressingConfigured: Equatable {
     let rowAddressing: Bool
     let stateUpdateFeatures: [String]
@@ -867,18 +821,11 @@ private struct RowAddressingConfigured: Equatable {
     let messageEncoding: String
     /// Every line logged at info and above, with its metadata.
     let logged: [String]
-
-    func removingLines(startingWith prefix: String) -> RowAddressingConfigured {
-        RowAddressingConfigured(
-            rowAddressing: rowAddressing, stateUpdateFeatures: stateUpdateFeatures, usesSyncTables: usesSyncTables,
-            messageEncoding: messageEncoding, logged: logged.filter { !$0.hasPrefix(prefix) }
-        )
-    }
 }
 
 /// An adapter built from `config` (joins through the router), and what it decided and logged.
 private func configuredAdapter(
-    _ config: TransportEncodingConfig, inTurnSync: Bool, tables: Bool, pathHashes: [String: UInt32]
+    _ config: TransportEncodingConfig, tables: Bool, pathHashes: [String: UInt32]
 ) async -> RowAddressingConfigured {
     let lines = RowAddressingLoggedLines()
     let logger = Logger(label: "row-addressing-raw-flag") { _ in RowAddressingLineHandler(lines: lines) }
@@ -894,7 +841,6 @@ private func configuredAdapter(
         encodingConfig: config,
         pathHashes: pathHashes,
         suppressMissingPathHashesWarning: true,
-        inTurnSync: inTurnSync,
         logger: logger,
         joinsThroughRouter: true
     )

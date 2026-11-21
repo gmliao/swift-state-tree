@@ -115,7 +115,7 @@ class 檢查涵蓋 `.serverOnly` 欄位，key 與 existential 檢查只涵蓋會
 - **註冊時，** typealias 讓語法看不到、但欄位清單看得到時。同步欄位回報為 `.decimalField`。event、action、其 response 或 server input 的欄位在 `LandRegistrationError.decimalFields` 中回報，每個欄位一條路徑，例如 `server event PriceEvent.amount`。
 - **第一次送出時，** 前兩者都看不到的：未註冊就送出的 event、執行時放進 `Decimal` 的 `AnyCodable`，以及一般 `Codable` 型別（不列出欄位）裡的 `Decimal`。JSON 編碼與 MessagePack encoder 都拒絕它，land 結束（`.eventEncode` 或 `.responseEncode`）。限制：在 JSON 編碼中，這個拒絕是編碼前另外走的一遍，所以手寫的 `encode(to:)` 若攔下這個錯誤、改寫成別的形式，就會通過檢查，之後實際編碼寫出的是那個替代形式。
 
-`.serverOnly` 或 `@Internal` 欄位可以放 `Decimal`。resolver output 也可以，它不會上 wire；它的 replay 紀錄由 #707 處理。
+`.serverOnly` 或 `@Internal` 欄位可以放 `Decimal`。resolver output 也可以，它不會上 wire；replay 時以錄製檔自己的 codec 讀回（[Replay 中的 resolver output](reevaluation.zh-TW.md#replay-中的-resolver-output)）。
 
 **編譯期。** `@StateNodeBuilder`（針對 `@Sync` 欄位）與 `@SnapshotConvertible`（針對每個 stored property）會拒絕宣告型別中寫出 `any P`、`Any`、`AnyObject` 或 protocol 組合（`P & Q`）的欄位，不論位於哪一層（`[String: Any]`、`(any P)?`、`Box<any P>`），`AnyHashable` 與 `AnyCodable` 則依名稱拒絕。這類欄位的內容無法檢查，同步也可能無法轉換。`@Internal` 欄位不同步，可以放任何東西。
 
@@ -134,6 +134,20 @@ SyncEngine 會維護：
 
 - broadcast 快取：所有玩家共用
 - per-player 快取：每個玩家獨立
+
+### Patch 涵蓋的範圍
+
+一個 patch 會取代某個 path 上的值。diff 往下走多深才寫出 patch，取決於值的形狀：
+
+- **state node、一般 struct 或字典會逐欄位或逐 key diff。** 每個變動的欄位或項目各自有一個 patch，位於自己的 path。新增的項目是該 key 上的 set；移除的項目是 delete。
+- **array 或 `Set` 是單一值。** 它有任何變動（某個元素改變、新增、移除或移動），都會在它的 path 上重送整個集合。`Set` 會以固定順序（依每個元素編碼後的形式排序）的 array 送出。
+- **atomic 值是單一值**（見 [Atomic 值](../transport/README.zh-TW.md#atomic-值)），純量也是：數字、字串或 `Bool`。
+
+無論執行的是哪一種 diff 都是如此：typed sync diff（下一節說明）寫出的 patch 與 snapshot diff 相同。
+
+舉例來說，一個有 100 名玩家的 land，每名玩家有一個帶 `score` 欄位的 `PlayerScore` struct，現在改了一名玩家的分數。如果 `scores` 是 `[PlayerScore]` array，patch 會帶上全部 100 個項目。如果 `scores` 是 `[PlayerID: PlayerScore]` 字典，它只帶變動的那個欄位，位於 `/scores/<player ID>/score`。
+
+**建議。** 經常變動的大型集合，請放在以穩定 ID（`String`、`PlayerID` 或其他支援的 key 型別）為 key 的字典中，不要放在 array 裡。這樣每次變動只花一個項目中變動部分的成本。字典沒有順序。如果順序重要，就把順序存在值裡（`rank` 或 `order` 欄位），或另外保留一個小的 ID array，它只在順序改變時才整個重送。array 適合小型集合，或很少變動、或一次全部改變的集合。
 
 ### 同步值型別的規則
 

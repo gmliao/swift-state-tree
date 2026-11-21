@@ -94,7 +94,7 @@ struct InitialSyncBehindCommitTests {
         let transport = BehindCommitTransport()
         let keeper = LandKeeper(definition: definition, initialState: BehindCommitState(), autoStartLoops: periodic)
         let adapter = TransportAdapter<BehindCommitState>(
-            keeper: keeper, transport: transport, landID: "behind-commit", inTurnSync: false
+            keeper: keeper, transport: transport, landID: "behind-commit"
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -154,12 +154,17 @@ struct InitialSyncBehindCommitTests {
             // The next periodic cycle.
             await adapter.syncNow()
         } else {
-            // No periodic sync: the follow-up runs the next cycle.
+            // No periodic sync: the follow-up runs the next cycle, one requested sync-only turn
+            // (#546 L2a).
             #expect(await followUps.waitForArrivals(1), "no follow-up cycle started")
             followUps.open()
         }
+
         // The follow-up is a background sync, which this wait covers, with the writer's drain.
         #expect(await adapter.waitForSyncQuiescenceForTesting())
+        if !periodic {
+            #expect(await keeper.requestedSyncTurnsForTesting[.behindCommitRepair, default: 0] == 1)
+        }
         let joinerTotals = await transport.totals(for: joiner.session)
         #expect(joinerTotals == ["firstSync 7"], "the joiner received \(joinerTotals)")
         // The cycle's full view for the unsynced joiner is its initial sync.

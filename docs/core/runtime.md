@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot Sync Mode
 
-> This section and [Sync Flow](#sync-flow) describe the legacy path, the `beginSync` / `endSync` cycle. On a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default).
+> This section and [Sync Flow](#sync-flow) describe the keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it: on a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default). Re-evaluation keepers and tests still reach the cycle until it is removed.
 
 `LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
 
@@ -422,7 +422,7 @@ A land without periodic sync has no next cycle to fall back on, so the runtime r
 With in-turn sync, a land's `TransportAdapter` runs on its keeper's serial executor, and the keeper runs the sync phase synchronously inside its own turns, with no suspension point between the state changes and the frames they produce. The turn kinds are:
 
 - tick turn: the ready inputs, the tick handler, the emitted events, and the sync phase when a handler requested one or the sync loop folded into it. A sync due within min(5 ms, tick / 4, sync / 4) of the next tick runs in that tick turn (coincident sync), so a sync coinciding with a tick sees the tick's result;
-- sync-only turn: the sync loop's own interval, so the sync cadence is kept;
+- sync-only turn: the sync loop's own interval, so the sync cadence is kept; or a requested sync. A requested sync is the adapter's `syncNow()`, the sync the lag timer asks for, the repair after a joiner's firstSync that read a state a commit had already passed, or the freeze's resume. It runs as one sync-only turn before the request returns. On a land without periodic sync, a commit that leaves events queued gets one more sync-only turn right after its own;
 - input turn (lands without a tick): at most 64 ready inputs, their events, and the sync phase when requested. Inputs that arrive during a turn go to a later one.
 
 The sync phase plans every frame of the cycle from the state at that point of the turn, then commits: it enqueues the frames to the adapter's outbound writer and clears the dirty flags. Nothing runs between the plan and the commit, so no change is cleared unsent. A plan that fails commits nothing, and its dirty flags stay for the next cycle.
@@ -431,7 +431,7 @@ A join completes in the sync phase of the turn it flips in (#69, #194). The join
 
 Stated limits:
 
-- The debug freeze settle still runs a `beginSync` / `endSync` cycle.
+- The debug freeze's settle is not a turn. It is one keeper job: it checks that the same freeze is still in effect, that the land hasn't failed and that the settle's deadline hasn't passed, then plans and commits a sync phase from the frozen state, all in that job. The resume then makes two requests. First, the sync deferred while frozen runs as a sync-only turn. Second, joins that are ready but haven't flipped get a sync-only turn of their own. The second request is skipped when the first was deferred by writer back-pressure (the retry, or the next periodic phase, flips them), when the land failed, or when the land was frozen again in between (that freeze's resume makes it).
 - An input whose `validate` throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
@@ -439,11 +439,11 @@ In-turn sync can't be turned off. The `IN_TURN_SYNC` environment variable was it
 
 ### Writer Back-Pressure
 
-Each adapter sends through one ordered outbound writer. While the writer still holds a sync cycle's frames from an earlier cycle, a new cycle is skipped before it takes its copy: nothing is planned, the dirty flags and queued events stay, and the next cycle diffs against the last state sent, so it carries every change. On a land with periodic sync that is its next periodic cycle; a land without one gets one retry once the writer has drained. Overload thus turns into skipped cycles instead of a growing queue. Event and action-response frames are not held back. With in-turn sync a skipped phase is counted as a deferred turn; the transport profiler reports both (see [Transport](../transport/README.md#profiling)).
+Each adapter sends through one ordered outbound writer. While the writer still holds a sync cycle's frames from an earlier cycle, a new cycle is skipped before it takes its copy: nothing is planned, the dirty flags and queued events stay, and the next cycle diffs against the last state sent, so it carries every change. On a land with periodic sync that is its next periodic cycle; a land without one gets one retry once the writer has drained. Overload thus turns into skipped cycles instead of a growing queue. Event and action-response frames are not held back. A skipped phase is counted as a skip and as a deferred turn; the transport profiler reports both (see [Transport](../transport/README.md#profiling)).
 
 ### Sync Flow
 
-> The legacy path, the `beginSync` / `endSync` cycle.
+> The keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it.
 
 Synchronization uses snapshot mode, doesn't block state changes:
 
@@ -467,9 +467,11 @@ public func endSync() {
 }
 ```
 
-Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `TransportAdapter` passes `clearDirtyFlags: false` for broadcast-only cycles (they do not diff per-player fields) and when dirty tracking is disabled. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
+Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
 
 ### Sync Deduplication
+
+> The legacy path. With in-turn sync a sync request is a turn, and it is not skipped ([In-Turn Sync](#in-turn-sync-default)).
 
 `isSyncing` flag is used for deduplication, not for blocking:
 

@@ -166,7 +166,7 @@ await client.sendAction("resumeVerification", {});
 
 ### Pass 序號與 land 失敗（3.4）
 
-錄製格式 3.4（#563、#535）新增三個選填 key。沒有 tick 的 land 從 1 開始為 pass 編號（`ReevaluationRecordedPass.ordinal`），每個 sync output 與 sync marker 錄製它是在哪個 pass 之後讀取的（`afterPass`；0 表示在任何 pass 之前）。序號在套用該 pass 的 turn 片段中取得，早於 sync phase 讀取，因此在 turn 外 commit 的 output（debug freeze 的 settle、之後的 resume）也會標出它讀到的是哪個 pass 的 state。讀取時的 sequence 無法定位 output：一個沒有送出 event 的 pass，其 output 讀到的 sequence 就是該 pass 開始時的值，同一個值同時代表該 pass 之前與之後。Replay 檢查序號是否無缺口地接續它自己的計數（不符時該 tick 失敗，與其他 pass 不符相同），並依 `afterPass` 定位每個沒有 tick 的 output 與 seed，因此沒有 tick 的 land 的 sync output 也會被驗證。早於 3.4 的沒有 tick 的錄製沒有序號：其 sync-output 判定為 `skipped`，並附上原因。有 tick 的 land 一如既往依 tick 定位 output。
+錄製格式 3.4（#563、#535）新增三個選填 key。沒有 tick 的 land 從 1 開始為 pass 編號（`ReevaluationRecordedPass.ordinal`），每個 sync output 與 sync marker 錄製它是在哪個 pass 之後讀取的（`afterPass`；0 表示在任何 pass 之前）。序號在套用該 pass 的 turn 片段中取得，早於 sync phase 讀取，因此在 turn 外 commit 的 output（debug freeze 的 settle）也會標出它讀到的是哪個 pass 的 state。讀取時的 sequence 無法定位 output：一個沒有送出 event 的 pass，其 output 讀到的 sequence 就是該 pass 開始時的值，同一個值同時代表該 pass 之前與之後。Replay 檢查序號是否無缺口地接續它自己的計數（不符時該 tick 失敗，與其他 pass 不符相同），並依 `afterPass` 定位每個沒有 tick 的 output 與 seed，因此沒有 tick 的 land 的 sync output 也會被驗證。早於 3.4 的沒有 tick 的錄製沒有序號：其 sync-output 判定為 `skipped`，並附上原因。有 tick 的 land 一如既往依 tick 定位 output。
 
 因失敗而結束的 land（#535）會把失敗錄在其 tick 的 frame 中（`ReevaluationTickFrame.landFailure`，型別為 `LandFailure`：kind、field、detail，以及位置：tick、pass、sequence 與 stage）。它只錄一次，就在結束 land 的同一個 turn 片段中。Sync stream 也在此結束：失敗之後不再錄製任何 sync output、seed 或 clear，包括失敗的拆除所關閉的 session 的 clear，以及讀取 state 期間 land 已失敗的 firstSync。失敗的 turn 在失敗之前的條目照常保留。transport 回報的失敗會當作輸入套用，並在該處結束其 turn 的批次；它的位置會標明這點（`LandFailurePosition.endsInputs`），replay 也以同樣方式結束該 tick：不執行 tick handler，也不送出該 turn 的任何 event（沒有 tick 的 land 則是該 pass 的 event）。Replay 與 live 執行一樣停在該 tick，並回報該失敗（`RunResult.liveFailure`、`ReevaluationSource.getLandFailure()`）；在它之前的部分照常驗證。3.3 版本會拒絕 3.4 錄製（minor 較新）。
 
@@ -210,6 +210,12 @@ replay land 以有型別的方式顯示每個錄製的 server event（#521、#53
 
 內建 runner 的每一步都會重建 state 並解碼該 tick 的每個 server event，monitor 的驗證也一樣：monitor run 每個 tick 要付出一次 state 重建與 event 解碼的成本。
 
+### Replay 中的 resolver output
+
+replay 時，handler 讀取錄製的 resolver output（`ctx.productInfo`）的方式，和 replay land 讀取錄製的 server event 相同：用錄製檔自己的 codec（#707）。action 的 resolver、`OnJoin` 與 `OnLeave`、`OnInitialize` 都是如此。`Date`、`Data`、`URL` 或 `Decimal` 欄位讀回的值與 live handler 看到的相同，`Decimal` NaN 也一樣。儲存的錄製檔嚴格解碼。在 JSON 檢視中，整數若能精確轉換，會解碼成 `Double` 或 `Float`。上面的值域限制同樣適用：帶小數秒的 `Date` replay 時會被截斷。無法解碼成所要型別的 output 讀成 `nil`，land 的 logger 會記一則警告，指出該 output、錄製的型別與要求的型別，以及錯誤。
+
+限制：錄製的 action 本身的 payload 仍以 JSON 來回轉換解碼，所以 payload 含 `Date`、`Data` 或 `URL` 欄位的 action 在 replay 時會被丟棄（#709）。
+
 ### 錄製所含的 Hash
 
 | 錄製格式 | State 與 initialize hash | 驗證方式 |
@@ -235,6 +241,8 @@ replay land 以有型別的方式顯示每個錄製的 server event（#521、#53
 ### Server Event 驗證
 
 當 `enableLiveStateHashRecording: true` 時，伺服器也會記錄每 tick 的 server events（`ctx.emitEvent()`）。在帶 `--verify` 的 reevaluation 中，runner 會比對錄製與發送的 server events。若 mismatch 表示 event 發送有非決定性（例如順序或 payload 差異）。
+
+錄製的 payload 是錄製檔的形式，發送的 payload 則是 replay 的有型別值，所以 verifier 會先把發送的 payload 轉成錄製檔的形式（`CanonicalMessagePack`，與 recorder 寫入的方式相同），再比對兩者（#633）。`Date`、`Data`、`URL` 或 `Float` 欄位在兩種錄製形式都會相符；帶小數秒的 `Date` 也會相符，因為兩邊都只保留整秒。限制：JSON 檢視已失去 `-0.0` 的正負號（[Replay 中的 server event](#replay-中的-server-event)），所以在 JSON 檢視中，event payload 裡的 `-0.0` 會讓該 tick 被回報；儲存的錄製檔則相符。
 
 Action、client event、lifecycle event 與 server event 共用同一個 `sequence` 計數器。有 tick 的 Land 在 live 模式下，每個 tick 會在 tick frame 記下該計數器的兩個 watermark（`sequenceBeforeInputs`、`sequenceBeforeTickHandler`）；reevaluation 時把計數器往前推到這兩個值，因此重播的 server event 會拿到與錄製相同的 `sequence`。從錄製格式 3.1 起，沒有 tick 的 land 的 frame 若帶有錄到的 passes，也算帶有 watermark（`watermarkedTicks`）：replay 會在每一次處理前還原計數器。比對以 tick 為單位判定：frame 帶有 watermark 的 tick 必須完全一致（包含 `sequence`），且即使錄製的事件清單為空也會比對，因此重播多出的 event 會被回報。沒有 watermark 的舊格式錄製維持原規則：只有錄到事件時才比對，僅 `sequence` 不同時回報為警告而非失敗（`ReevaluationEngine.RunResult.serverEventVerification`）。
 

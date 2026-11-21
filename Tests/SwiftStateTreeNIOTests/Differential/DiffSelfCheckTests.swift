@@ -19,8 +19,7 @@ extension DifferentialHarness {
         /// One real run, the transforms' base: two players, so frames, events and a close exist.
         private func baseRun() async throws -> DiffRunResult {
             let scenario = try #require(diffScenarios.first { $0.name == "two-players" })
-            // A legacy cell: the adapter's package-only off mode, until #546 L2.
-            return try await runChecked(scenario, DiffCell(sync: .legacy, encoding: .json, land: .tickless))
+            return try await runChecked(scenario, DiffCell(sync: .inTurn, encoding: .json, land: .tickless))
         }
 
         @Test("The comparator reports a dropped frame, a swap, a changed close, a dropped record entry")
@@ -53,7 +52,7 @@ extension DifferentialHarness {
             #expect(swappedFrames.allSatisfy { $0.digests?.hasPrefix("fnv64:") == true })
             if let first = swappedFrames.first {
                 let entry = DiffExpectedDifference(
-                    scenario: "two-players", cell: DiffCell(sync: .legacy, encoding: .json, land: .tickless),
+                    scenario: "two-players", cell: DiffCell(sync: .inTurn, encoding: .json, land: .tickless),
                     checkpoint: first.checkpoint, channel: first.channel, place: first.place,
                     detail: first.detail, digests: first.digests, reason: "self-check"
                 )
@@ -128,6 +127,48 @@ extension DifferentialHarness {
             #expect(DiffGolden.corruption(of: record) != nil, "an edited record view")
         }
 
+        @Test("A cell that throws is reported, and the sweep still compares and reports every later cell")
+        func sweepGoesOnAfterAThrow() async throws {
+            let base = try await baseRun()
+            let throwing = try #require(diffScenarios.first { $0.name == "join-act-leave" })
+            let differing = try #require(diffScenarios.first { $0.name == "two-players" })
+            // The later scenario's golden misses a frame its run has.
+            var golden = base
+            let connection = try #require(golden.terminal.connections.keys.sorted().first)
+            var frames = try #require(golden.terminal.connections[connection]).frames
+            try #require(!frames.isEmpty)
+            frames.removeLast()
+            golden.terminal.connections[connection]?.frames = frames
+            let report = await DiffSweep.run(
+                scenarios: [throwing, differing],
+                retired: [],
+                expected: [],
+                toolchain: "self-check",
+                execute: { scenario, _ in
+                    if scenario.name == throwing.name { throw DiffRunFailure("forced") }
+                    return base
+                },
+                readGolden: { name in
+                    DiffGoldenFile(
+                        scenario: name, cell: "",
+                        recordedWith: DiffRecordedWith(commit: "self-check", toolchain: "self-check"),
+                        result: golden
+                    )
+                }
+            )
+            let thrown = throwing.cells.cells.count
+            let compared = differing.cells.cells.count
+            #expect(report.ran == thrown + compared, "every cell ran: \(report.ran)")
+            #expect(report.threw.count == thrown)
+            #expect(report.threw.allSatisfy { $0.hasPrefix("\(throwing.name) ") })
+            // Each thrown cell is an issue of its own: the suite records issues, so this is what
+            // makes a thrown cell fail the harness.
+            #expect(report.issues.filter { $0.hasPrefix("\(throwing.name) ") }.count == thrown)
+            #expect(report.compared == compared)
+            let reported = report.issues.filter { $0.hasPrefix("\(differing.name).") }
+            #expect(reported.count == compared, "every later cell's difference is reported: \(report.issues)")
+        }
+
         @Test("An update under the verify key is refused")
         func updateUnderVerify() {
             #expect(DiffGolden.updateRefusal(environment: [DiffGoldenKeys.update: "1", DiffGoldenKeys.verify: "1"]) != nil)
@@ -137,7 +178,7 @@ extension DifferentialHarness {
 
         @Test("The branch lists: exact, one use, stale and overlap fail, retired keys exact")
         func branchListRules() {
-            let cell = DiffCell(sync: .legacy, encoding: .json, land: .tickless)
+            let cell = DiffCell(sync: .inTurn, encoding: .json, land: .tickless)
             let index = ["two-players.\(cell).json", "join-act-leave.\(cell).json"]
             let difference = DiffDifference(checkpoint: "terminal", channel: .frames, place: "A", detail: "frame 3 differs")
             func entry(_ detail: String = "frame 3 differs", scenario: String = "two-players") -> DiffExpectedDifference {

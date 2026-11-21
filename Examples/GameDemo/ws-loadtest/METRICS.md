@@ -130,10 +130,10 @@ This file defines each metric ws-loadtest reports: what it measures, where and o
 
 ### Sync cycles and skips (`serverSync`)
 The fields come from `TransportProfilerCounters` (`Sources/SwiftStateTreeTransport/Diagnostics/TransportProfilingActor.swift`), incremented in `TransportAdapter`.
-- **`syncCycles`:** sync cycles that committed their plan (both sync paths). It is the denominator of the rates below.
+- **`syncCycles`:** sync cycles that committed their plan. It is the denominator of the rates below.
 - **`syncSkipsBacklog`:** cycles skipped because the outbound writer still held an earlier cycle's element (writer back-pressure).
-- **`syncDeferredTurns`:** in-turn sync phases deferred by writer back-pressure. They are a subset of `syncSkipsBacklog`, not a separate cause.
-- **`syncSkipsBusy`:** cycles skipped because another cycle was in flight (legacy, not in-turn, path).
+- **`syncDeferredTurns`:** sync phases deferred by writer back-pressure. They are a subset of `syncSkipsBacklog`, not a separate cause.
+- **`syncSkipsBusy`:** always 0 since #546 L2c removed the legacy adapter cycle; an in-turn sync request is a turn and is never skipped as busy. The field stays so old and new profiles parse alike.
 - **Report:** totals over the counted windows, the largest single-window value, and the windows counted.
 
 ### Sync folds (`syncFolds`, `syncOverdueFolds`, `syncLateFolds`, `syncFoldTickLatenessMaxUs`)

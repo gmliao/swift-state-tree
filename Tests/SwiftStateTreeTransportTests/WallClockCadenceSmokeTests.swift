@@ -10,8 +10,7 @@ import Testing
 ///
 ///     WALL_CLOCK_TESTS=1 swift test --no-parallel --filter WallClockCadenceSmokeTests
 ///
-/// CI runs that as its own step. The test sets the sync path on the adapter itself (`inTurn`), so
-/// it checks both paths.
+/// CI runs that as its own step.
 @Suite(
     "Wall-clock cadence smoke",
     .serialized,
@@ -22,9 +21,9 @@ import Testing
     )
 )
 struct WallClockCadenceSmokeTests {
-    @Test("cadence smoke (wall clock): with running loops, state frames come near the sync interval (ON and OFF)", arguments: [true, false])
-    func cadenceSmokeWallClock(inTurn: Bool) async throws {
-        let report = try await TransportAdapterInTurnSyncTests.measureCadence(inTurn: inTurn, duration: .milliseconds(1200))
+    @Test("cadence smoke (wall clock): with running loops, state frames come near the sync interval")
+    func cadenceSmokeWallClock() async throws {
+        let report = try await TransportAdapterInTurnSyncTests.measureCadence(duration: .milliseconds(1200))
         if ProcessInfo.processInfo.environment["CADENCE_REPORT"] == "1" {
             print("CADENCE \(report.summary)")
         }

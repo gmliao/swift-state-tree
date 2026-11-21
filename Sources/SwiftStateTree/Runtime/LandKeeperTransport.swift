@@ -234,17 +234,40 @@ public struct SyncStreamDraft: Sendable {
 public struct InTurnSyncOutput: Sendable {
     public let result: InTurnSyncResult
     package let syncStream: [SyncStreamDraft]
+    /// Events are still queued after a committed phase (kept by it, or queued after it): on a
+    /// land without periodic sync the keeper then requests one sync-only turn (#546 L2a).
+    package let keepsEvents: Bool
 
     /// A phase that made no sync-stream entries.
     public init(_ result: InTurnSyncResult) {
         self.result = result
         self.syncStream = []
+        self.keepsEvents = false
     }
 
-    package init(_ result: InTurnSyncResult, syncStream: [SyncStreamDraft]) {
+    package init(_ result: InTurnSyncResult, syncStream: [SyncStreamDraft], keepsEvents: Bool = false) {
         self.result = result
         self.syncStream = syncStream
+        self.keepsEvents = keepsEvents
     }
+}
+
+/// Why a sync-only turn was requested (`LandKeeper.syncTurnNow(via:reason:ticket:)`): for
+/// diagnostics and tests; no handling depends on it.
+package enum SyncTurnReason: Hashable, Sendable {
+    /// An explicit `syncNow()`.
+    case syncNow
+    /// Events still queued after a committed phase, on a land without periodic sync.
+    case keptEvents
+    /// The sync-lag timer found a pending mark or a resync due.
+    case lagTimer
+    /// The repair after a standalone firstSync found its commit behind.
+    case behindCommitRepair
+    /// The freeze's resume, for the syncs it deferred.
+    case resume
+    /// The keeper's broadcast-only bridge (`syncBroadcastOnlyFromTransport`) on an in-turn
+    /// adapter: a full sync-only phase covers broadcast-only changes (#546 L2b).
+    case broadcastOnly
 }
 
 /// What `LandKeeperTransport.runSyncPhaseInTurn` did.

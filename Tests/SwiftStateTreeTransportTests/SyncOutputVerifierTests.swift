@@ -228,8 +228,7 @@ struct VerifierFixture {
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-output-verifier-test",
-                stateUpdateEncoder: encoder,
-                inTurnSync: true
+                stateUpdateEncoder: encoder
             )
         } else {
             adapter = TransportAdapter<VerifierState>(
@@ -237,8 +236,7 @@ struct VerifierFixture {
                 transport: transport,
                 landID: "sync-output-verifier-test",
                 encodingConfig: encoding.config.withPathIndex(pathIndex).withFieldMerge(fieldMerge).withSyncSequence(syncSequence),
-                pathHashes: encoding == .json ? nil : pathHashes ?? (pathIndex ? verifierSchemaPathHashes : verifierPathHashes),
-                inTurnSync: true
+                pathHashes: encoding == .json ? nil : pathHashes ?? (pathIndex ? verifierSchemaPathHashes : verifierPathHashes)
             )
         }
         await transport.setDelegate(adapter)
@@ -274,7 +272,6 @@ struct VerifierFixture {
             encodingConfig: encoding.config.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(rowAddressing),
             pathHashes: verifierSchemaPathHashes,
             suppressMissingPathHashesWarning: true,
-            inTurnSync: true,
             joinsThroughRouter: true
         )
         await transport.setDelegate(adapter)

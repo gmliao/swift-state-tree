@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot 同步模式
 
-> 本節與[同步流程](#同步流程)描述的是 legacy 路徑，也就是 `beginSync` / `endSync` cycle。在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。
+> 本節與[同步流程](#同步流程)描述的是 keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑：在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。在移除之前，re-evaluation 的 keeper 與測試仍會用到這個 cycle。
 
 `LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
 
@@ -422,7 +422,7 @@ Land 以三種方式之一同步（前兩種的 `LandKeeper.hasPeriodicSync` 為
 開啟 in-turn sync 時，land 的 `TransportAdapter` 在其 keeper 的 serial executor 上執行，keeper 在自己的 turn 內同步執行 sync phase，狀態變更與其產生的 frame 之間沒有任何 suspension point。Turn 的種類：
 
 - tick turn：就緒的 input、tick handler、送出的 event，以及 handler 請求或 sync loop 併入（fold）時的 sync phase。距下一個 tick 不到 min(5 ms, tick / 4, sync / 4) 的 sync 會在該 tick turn 執行（coincident sync），因此與 tick 重合的 sync 會看到該 tick 的結果；
-- sync-only turn：sync loop 自己的間隔，維持同步節奏；
+- sync-only turn：sync loop 自己的間隔，維持同步節奏；或一次被請求的同步。被請求的同步包括 adapter 的 `syncNow()`、lag timer 要求的同步、joiner 的 firstSync 讀到已被 commit 超前的 state 後的補發，以及 freeze 的 resume。它在請求返回前以一個 sync-only turn 執行。沒有週期同步的 land 上，一次 commit 後若仍有事件留在佇列，緊接著會再跑一個 sync-only turn；
 - input turn（沒有 tick 的 land）：最多 64 個就緒的 input、它們的 event，以及有請求時的 sync phase。Turn 進行中到達的 input 會留到之後的 turn。
 
 Sync phase 以 turn 中該時點的狀態規劃（plan）本次 cycle 的所有 frame，然後 commit：把 frame 放進 adapter 的 outbound writer，並清除 dirty flag。Plan 與 commit 之間沒有任何其他工作執行，因此不會有尚未送出的變更被清除。Plan 失敗時什麼都不 commit，dirty flag 保留到下一個 cycle。
@@ -431,7 +431,7 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 
 已知限制：
 
-- Debug freeze 的 settle 仍執行一次 `beginSync` / `endSync` cycle。
+- Debug freeze 的 settle 不是 turn，而是 keeper 上的一個 job：它先確認仍是同一次 freeze、land 沒有失敗、settle 的期限還沒過，再從凍結的 state 規劃並 commit 一次 sync phase，全部在這個 job 內完成。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
 - `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - Re-evaluation 的 keeper 一律走 legacy 路徑。
 
@@ -439,11 +439,11 @@ In-turn sync 無法關閉。`IN_TURN_SYNC` 環境變數原本是它的開關，�
 
 ### Writer Back-Pressure
 
-每個 adapter 都透過一個有序的 outbound writer 送出。當 writer 仍持有先前 cycle 的 sync frame 時，新的 cycle 會在取得 copy 之前被略過：不做任何 plan，dirty flag 與排隊中的 event 保留，下一個 cycle 會與最後送出的狀態做 diff，因此包含所有變更。有週期同步的 land 靠它的下一個週期 cycle；沒有的 land 會在 writer 清空後重試一次。過載因此變成略過的 cycle，而不是不斷增長的佇列。Event 與 action response 的 frame 不會被擋下。開啟 in-turn sync 時，被略過的 phase 記為 deferred turn；transport profiler 會回報兩者（見 [Transport](../transport/README.zh-TW.md#profiling)）。
+每個 adapter 都透過一個有序的 outbound writer 送出。當 writer 仍持有先前 cycle 的 sync frame 時，新的 cycle 會在取得 copy 之前被略過：不做任何 plan，dirty flag 與排隊中的 event 保留，下一個 cycle 會與最後送出的狀態做 diff，因此包含所有變更。有週期同步的 land 靠它的下一個週期 cycle；沒有的 land 會在 writer 清空後重試一次。過載因此變成略過的 cycle，而不是不斷增長的佇列。Event 與 action response 的 frame 不會被擋下。被略過的 phase 同時記為一次略過與一個 deferred turn；transport profiler 會回報兩者（見 [Transport](../transport/README.zh-TW.md#profiling)）。
 
 ### 同步流程
 
-> Legacy 路徑，也就是 `beginSync` / `endSync` cycle。
+> Keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑。
 
 同步使用 snapshot 模式，不阻塞狀態變更：
 
@@ -467,9 +467,11 @@ public func endSync() {
 }
 ```
 
-Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`TransportAdapter` 在 broadcast-only 週期（不比對 per-player 欄位）以及停用 dirty tracking 時傳入 `clearDirtyFlags: false`。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
+Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
 
 ### 同步去重
+
+> 這是 legacy 路徑。In-turn sync 下，同步請求是一個 turn，不會被跳過（[In-Turn Sync](#in-turn-sync預設)）。
 
 `isSyncing` 標記用於去重，不是用於阻塞：
 

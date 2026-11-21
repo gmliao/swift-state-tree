@@ -28,9 +28,16 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// An action's answer (its response or its error reply) that didn't encode, after the
     /// output gate closed and before the failure is submitted to the keeper.
     case answerFailureSubmit
-    /// A sync cycle after its frames were enqueued and before its `endSync` hop, while the cycle
-    /// still owns the keeper's sync flag: holds a cycle in flight.
-    case cycleBeforeEndSync
+    /// An in-turn freeze settle after its writer wait, before its keeper job
+    /// (`debugSettleTurn`): a release, refreeze, shutdown or expiry here is caught by the job's
+    /// fence (#546 L2b).
+    case settleBeforeCommit
+    /// An in-turn freeze settle after its keeper job committed, before it checks its generation
+    /// and publishes: work that arrives here comes after the settle's copy (#546 L2b).
+    case settleBeforePublish
+    /// An in-turn resume after its deferred sync's request returned, before it checks for a
+    /// refreeze and decides on the join-sync request (#546 L2b).
+    case resumeAfterSync
     /// Before the initial sync reads the state.
     case initialSync
     /// After the initial sync read the state, before it checks its ticket and commits: the
@@ -44,12 +51,6 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case syncLagClose
     /// A terminal lag close's Task (#332), after the transport's close returned.
     case syncLagClosed
-    /// A busy skip's deferred retry, before its delay: the cycle in flight hasn't ended yet, and
-    /// the retry hasn't asked for a sync again.
-    case busyRetry
-    /// A follow-up cycle (`startFollowUpSync`) after its `syncNow()` returned: a test waits here
-    /// for the follow-up to have run before it lets other background syncs go.
-    case followUpSynced
     /// A public `registerSession` (#531), after it read the keeper's entry and before it acts
     /// on what it read.
     case registrationAfterKeeperRead
@@ -90,12 +91,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
 
-    /// Whether in-turn sync is on for this adapter: its `inTurnSync` init argument, decided once
-    /// at init. The off mode is reachable only through `package` API (the differential harness's
-    /// legacy cells and tests) until the adapter's own cycle is removed (#546 L2). This is the
-    /// single source of truth: the keeper follows it through `runsSyncPhaseInTurn(of:)`.
-    public nonisolated let inTurnSyncEnabled: Bool
-
     /// How this adapter plans its syncs, for the record header (`ReevaluationSyncConfig`).
     public nonisolated var syncConfigForRecord: ReevaluationSyncConfig {
         ReevaluationSyncConfig(
@@ -104,15 +99,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    /// With in-turn sync off: a private actor whose default executor this adapter uses, so it
-    /// keeps an executor of its own, separate from the keeper's (the legacy behaviour).
-    private nonisolated let ownExecutorHost: AdapterExecutorHost?
-
-    /// With in-turn sync on, the keeper's serial executor: the keeper can then call
-    /// `runSyncPhaseInTurn` synchronously inside its own turn (`assumeIsolated`). With it off,
-    /// an executor of the adapter's own.
+    /// The keeper's serial executor: the keeper can then call `runSyncPhaseInTurn` synchronously
+    /// inside its own turn (`assumeIsolated`).
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
-        ownExecutorHost?.unownedExecutor ?? keeper.unownedExecutor
+        keeper.unownedExecutor
     }
 
     /// Whether `keeper` is this adapter's keeper (identity).
@@ -147,8 +137,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         writerBackPressureOverrideForTesting?() ?? false
     }
 
-    /// The back-pressure rule of `withSyncState` for in-turn sync phases: the writer still holds
-    /// a sync cycle element from an earlier phase (`hasPendingStateElement`). Event elements are
+    /// The back-pressure rule for in-turn sync phases: the writer still holds a sync cycle
+    /// element from an earlier phase (`hasPendingStateElement`). Event elements are
     /// not counted, so the turn's own event frames never trigger it.
     private func writerHoldsEarlierElementForInTurnSync() -> Bool {
         hasPendingStateElement || (writerBackPressureOverrideForTesting?() ?? false)
@@ -186,15 +176,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     var outboundCeilingDisconnects = 0
     /// The no-op-`closeSession` warning was logged (once per adapter).
     var warnedNoCloseSession = false
-    /// Sync cycles skipped before `beginSync` (see `SyncSkipCounts`).
+    /// Sync phases skipped before they plan (see `SyncSkipCounts`).
     var syncSkips = SyncSkipCounts()
-    /// Syncs skipped for writer back-pressure on a land without periodic sync, to run once the
-    /// writer drained its sync cycle elements (see `deferSyncForOutboundBacklog`).
-    var backlogDeferredSyncNow = false
-    var backlogDeferredBroadcastOnly = false
-    var backlogRetryScheduled = false
-    /// Sync Tasks this adapter started in the background (deferred retry, follow-ups), by id,
-    /// until they finish: `waitForSyncQuiescenceForTesting` awaits them.
+    /// Sync Tasks this adapter started in the background (the delayed repair, the lag timer's
+    /// request), by id, until they finish: `waitForBackgroundSyncsForTesting` awaits them.
     var backgroundSyncTasks: [UInt64: Task<Void, Never>] = [:]
     var nextBackgroundSyncTaskID: UInt64 = 0
     /// `landID` for the outbound extension's logs.
@@ -366,8 +351,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncLagPolicy: SyncLagPolicy = .fromEnvironment()
     /// Each tracked session's lag state, from its firstSync's commit until the session ends.
     private var syncLag: [SessionID: SyncLagSession] = [:]
-    /// A resync was due in a plan that wasn't full: the next cycle runs full.
-    private var syncLagFullPlanRequested = false
     /// The lag clock; tests replace it.
     package var syncLagNowForTesting: (@Sendable () -> ContinuousClock.Instant)?
     /// Counters (#332).
@@ -385,8 +368,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// and requests a sync on a land without periodic sync; the plan does the rest.
     private var syncLagTimer: Task<Void, Never>?
     private var syncLagTimerEpoch: UInt64 = 0
-    /// A sync the timer requested hasn't run yet (one at a time).
-    private var syncLagTimerSyncRequested = false
+    /// The epoch of the timer pass whose requested sync hasn't run yet (one per epoch).
+    private var syncLagTimerSyncRequestedEpoch: UInt64?
     package private(set) var syncLagTimerSyncRequests = 0
     /// The timer's period; tests shorten it.
     package var syncLagTimerInterval: Duration = .milliseconds(250)
@@ -707,8 +690,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// the encoders reset the scope's key table and the client clears its key map for that scope,
     /// then the frame defines every key it uses. Its patches are the plan's normal diff against
     /// the cache (dirty-only with dirty tracking); clients apply a firstSync's patches onto their
-    /// view like a diff. Cleared by that commit (one with at least one recipient). While it is
-    /// set, a broadcast-only cycle runs as a full cycle.
+    /// view like a diff. Cleared by that commit (one with at least one recipient).
     ///
     /// Limit: the reset covers the plan's recipients only. A player in initial sync
     /// (`initialSyncingPlayers`) is not one, so its broadcast key map is not reset by that commit;
@@ -722,10 +704,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// requests a reset anyway.
     private var broadcastKeysMayBeDefined = false
 
-    /// Dirty fields of full plans that failed: their `beginSync` cleared the flags, but nothing
-    /// was committed. Merged into every plan's dirty fields (`planDirtyFields(of:)`) until a full
-    /// plan commits, so a failed plan loses no change. While non-empty, a broadcast-only cycle runs
-    /// as a full cycle.
+    /// Dirty fields of full plans that failed: their phase cleared the flags, but nothing was
+    /// committed. Merged into every plan's dirty fields (`planDirtyFields(of:)`) until a full
+    /// plan commits, so a failed plan loses no change.
     private var carriedDirtyFields: Set<String> = []
 
     /// Where the plan being run read its state, set for one plan + commit (`runSyncPhase`) when
@@ -750,10 +731,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncStreamUnmergedEvents = ReevaluationUnmergedEvents()
     /// Tests only: plans that filled a `SyncOutputDigestInput`.
     private(set) var syncOutputDigestCountForTesting = 0
-
-    /// Sync cycles that requested `beginSync`, counted in the turn that starts the hop (tests:
-    /// once the count is readable, that cycle is suspended in or past its `beginSync` hop).
-    private(set) var beginSyncRequests = 0
 
     /// Delay of the follow-up after a dropped initial sync (#564) on a land without periodic sync.
     static var syncFailedPlanFollowUpDelay: Duration { .milliseconds(100) }
@@ -930,7 +907,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
-        inTurnSync: Bool = true,
         logger: Logger? = nil
     ) {
         self.init(
@@ -941,7 +917,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             transportEnvConfig: transportEnvConfig, expectedSchemaHash: expectedSchemaHash, codec: codec,
             stateUpdateEncoder: stateUpdateEncoder, encodingConfig: encodingConfig, pathHashes: pathHashes,
             eventHashes: eventHashes, clientEventHashes: clientEventHashes,
-            suppressMissingPathHashesWarning: suppressMissingPathHashesWarning, inTurnSync: inTurnSync,
+            suppressMissingPathHashesWarning: suppressMissingPathHashesWarning,
             logger: logger, joinsThroughRouter: false
         )
     }
@@ -970,7 +946,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
-        inTurnSync: Bool = true,
         logger: Logger? = nil,
         joinsThroughRouter: Bool,
         eventEncodeCountsForTesting: EventEncodeCountsForTesting? = nil
@@ -979,9 +954,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         precondition(keeper.isLive, "TransportAdapter binds only a live LandKeeper")
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
-        let inTurnSyncEnabled = inTurnSync
-        self.inTurnSyncEnabled = inTurnSyncEnabled
-        self.ownExecutorHost = inTurnSyncEnabled ? nil : AdapterExecutorHost()
         self.transport = transport
         _ = transportSendQueue
         self.landID = landID
@@ -1004,12 +976,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             enableDirtyTrackingDefault: enableDirtyTracking,
             syncStrategyDefault: syncStrategy
         )
-        // `rowAddressing` takes effect only where every join completes in a turn: in-turn sync
-        // and joins through the router. Its
-        // rows are the sync tables' slots, so it turns the tables on (their frames are today's,
-        // byte for byte), which needs the delta strategy.
+        // `rowAddressing` takes effect only where every join completes in a turn: joins through
+        // the router. Its rows are the sync tables' slots, so it turns the tables on (their
+        // frames are today's, byte for byte), which needs the delta strategy.
         let rowAddressingRequested = encodingConfig?.effective(pathHashes: pathHashes).rowAddressing ?? false
-        let rowAddressing = rowAddressingRequested && inTurnSyncEnabled && joinsThroughRouter
+        let rowAddressing = rowAddressingRequested && joinsThroughRouter
             && envConfig.syncStrategy == .delta
         let usesSyncTables = (envConfig.useSyncTables || rowAddressing) && envConfig.syncStrategy == .delta
         self.rowAddressing = rowAddressing
@@ -1203,9 +1174,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Info, not a warning: the request is the default, so a land that can't have rows by
         // design (`fullSnapshot`, or a join that doesn't go through the router) logs this too.
         if rowAddressingRequested && !rowAddressing {
-            self.logger.info("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
+            self.logger.info("Row addressing requested but not in effect: it needs joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
                 "landID": .string(landID),
-                "inTurnSync": .string(inTurnSyncEnabled ? "on" : "off"),
                 "joinsThroughRouter": .string(joinsThroughRouter ? "yes" : "no"),
                 "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             ])
@@ -1328,7 +1298,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             membershipCoordinator.invalidateMembership(sessionID: sessionID, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: sessionID)
 
-            // Now call keeper.leave() which will trigger syncBroadcastOnly()
+            // Now call keeper.leave(), which triggers the leave's sync
             do {
                 try await keeper.leave(playerID: playerID, clientID: clientID, sessionID: sessionID)
                 if logger.logLevel <= .debug {
@@ -1669,7 +1639,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Execute a block while marking player as initial syncing.
     /// Automatically removes the player from initialSyncingPlayers when done (even on error).
-    /// This ensures syncNow() and syncBroadcastOnly() skip this player during initial sync.
+    /// This ensures syncNow() and the broadcast-only sync skip this player during initial sync.
     ///
     /// `sessionID`'s `.joining` mark (`joiningSessions`) is handed over to the initial-sync
     /// mark here, in one synchronous segment, so the session is excluded throughout. The
@@ -2868,7 +2838,11 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let result = runSyncPhaseInTurnResult(state: state, events: events, includeSync: includeSync, recording: recording)
         let drafts = inTurnSyncStreamDrafts
         inTurnSyncStreamDrafts = []
-        return InTurnSyncOutput(result, syncStream: drafts)
+        // Events still queued after a commit (kept by it, or queued after it): the keeper asks
+        // for one more sync-only turn on a land without periodic sync.
+        var keepsEvents = false
+        if case .committed = result { keepsEvents = pendingEventManager.hasAnyEvents }
+        return InTurnSyncOutput(result, syncStream: drafts, keepsEvents: keepsEvents)
     }
 
     private func runSyncPhaseInTurnResult<S: StateNodeProtocol>(
@@ -2904,13 +2878,15 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard includeSync else { return .notRequested }
         // After teardown nothing is sent any more.
         guard !outboundWriter.isFinished else { return .skipped }
+        // The freeze first (#546 L2a): a frozen phase always leaves its sync to the resume, also
+        // while the writer still holds the settle's frames.
+        if debugDeferSyncIfFrozen() { return .skipped }
         if writerHoldsEarlierElementForInTurnSync() {
             syncSkips.outboundBacklog += 1
             profilerCounters?.incrementSyncSkipsBacklog()
             profilerCounters?.incrementSyncDeferredTurns()
             return .deferredBackPressure
         }
-        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
         profilerCounters?.setSessionCounts(
             connected: membershipCoordinator.connectedSessions.count,
             joined: membershipCoordinator.joinedCount()
@@ -3140,37 +3116,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// - Cache per-player snapshots if state hasn't changed
     /// - Consider incremental sync for large state trees
     func _syncNowImpl() async {
-        // While frozen, the settle cycle is the only sync; defer this one to resume.
-        if debugDeferSyncIfFrozen(broadcastOnly: false) { return }
-        profilerCounters?.setSessionCounts(
-            connected: membershipCoordinator.connectedSessions.count,
-            joined: membershipCoordinator.joinedCount()
-        )
-        guard !membershipCoordinator.isEmpty else {
-            return
-        }
-
-        // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
-        // here, once: `setDirtyTrackingEnabled` may change `enableDirtyTracking` meanwhile.
-        let needsFollowUp = await withSyncState(
-            clearDirtyFlags: enableDirtyTracking,
-            broadcastOnly: false,
-            skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
-            errorLogMessage: "❌ Failed to extract broadcast snapshot"
-        ) { state in
-            try runFullSyncPhase(state: state, read: legacyCycleRead)
-        }
-        if needsFollowUp {
-            startFollowUpSync()
-        }
-    }
-
-    /// Starts the follow-up cycle that `withSyncState` asked for, without making the caller of
-    /// the current cycle wait for it (on tickless lands that caller is an action's response).
-    /// If `beginSync` rejects it, another cycle is in flight: that cycle reads the kept events at
-    /// the front of the queue, and its own check after `endSync()` covers anything queued later.
-    private func startFollowUpSync() {
-        startBackgroundSync { await $0.runFollowUpSync() }
+        // One sync-only turn on the keeper, now (#546 L2a).
+        _ = await keeper.syncTurnNow(via: self, reason: .syncNow)
     }
 
     /// Starts `body` as a background sync Task and keeps its handle until it finishes.
@@ -3184,75 +3131,66 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Tests: returns once no background sync task is left: a deferred retry, or a follow-up
-    /// that started another. The differential harness runs with its loops off and awaits this
-    /// after each sync it asks for, so a skipped cycle's retry is part of that step.
+    /// Tests: returns once no background sync task is left (a deferred retry, or a follow-up
+    /// that started another) and the keeper has no requested sync work pending (a writer-drain
+    /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
+    /// differential harness runs with its loops off and awaits this after each sync it asks for,
+    /// so a skipped or deferred phase's retry is part of that step. Also returns when its task is
+    /// cancelled (a test bounds it with `withinHangBound`).
     package func waitForBackgroundSyncsForTesting() async {
-        while let task = backgroundSyncTasks.values.first {
-            await task.value
+        while !Task.isCancelled {
+            if let task = backgroundSyncTasks.values.first {
+                await waitCancellablyForTesting(task)
+                continue
+            }
+            if await keeper.hasRequestedSyncWorkForTesting {
+                await keeper.waitForRequestedSyncTurnsForTesting()
+                continue
+            }
+            return
         }
+    }
+
+    /// Tests: awaits `task`, or returns early when the caller's task is cancelled (awaiting an
+    /// unstructured task's value alone doesn't end on cancellation).
+    private func waitCancellablyForTesting(_ task: Task<Void, Never>) async {
+        let once = TestingResumeOnce()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                once.install(continuation)
+                Task {
+                    await task.value
+                    once.resume()
+                }
+            }
+        } onCancel: {
+            once.resume()
+        }
+    }
+
+    /// One requested sync-only turn on the keeper, through this adapter (in-turn only).
+    func requestSyncTurn(reason: SyncTurnReason) async -> InTurnSyncResult {
+        await keeper.syncTurnNow(via: self, reason: reason)
+    }
+
+    /// Tests: the keeper's requested sync work (`LandKeeper.waitForRequestedSyncTurnsForTesting`).
+    func keeperHasRequestedSyncWorkForTesting() async -> Bool {
+        await keeper.hasRequestedSyncWorkForTesting
+    }
+
+    func waitForKeeperRequestedSyncWorkForTesting() async {
+        await keeper.waitForRequestedSyncTurnsForTesting()
     }
 
     private func startDelayedFollowUpSync() {
         startBackgroundSync { adapter in
+            // The ticket is taken before the delay, so a repair armed under an older binding
+            // retires without a turn.
+            let ticket = await adapter.keeper.syncTurnTicket(via: adapter)
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
             await adapter.holds.at(.failedPlanFollowUp)
-            await adapter.syncNow()
-        }
-    }
-
-    /// After a back-pressure skip, or a request rejected because a cycle was in flight: a land
-    /// with periodic sync gets its next periodic cycle, which covers broadcast-only changes too.
-    /// Without periodic sync nothing else would run the skipped cycle, so run it once the
-    /// writer has drained its sync cycle elements (coalesced: one pending retry, a full cycle
-    /// when any skipped request was full).
-    private func deferSyncForOutboundBacklog(broadcastOnly: Bool, afterBusy: Bool = false) {
-        // After teardown nothing is sent any more: do not schedule a retry.
-        guard !keeper.hasPeriodicSync, !outboundWriter.isFinished else { return }
-        if broadcastOnly {
-            backlogDeferredBroadcastOnly = true
-        } else {
-            backlogDeferredSyncNow = true
-        }
-        guard !backlogRetryScheduled else { return }
-        backlogRetryScheduled = true
-        let writer = outboundWriter
-        startBackgroundSync { adapter in
-            // After a busy rejection, let the cycle in flight reach `endSync` first.
-            if afterBusy {
-                await adapter.atBusyRetryHold()
-                try? await safeTaskSleep(for: .milliseconds(1))
-            }
-            await writer.waitForSyncCycleDrain()
-            await adapter.runBacklogDeferredSync()
-        }
-    }
-
-    /// A follow-up cycle, then its hold point; one isolated call.
-    private func runFollowUpSync() async {
-        await syncNow()
-        await holds.at(.followUpSynced)
-    }
-
-    /// The busy retry's hold point, on the adapter (its holds are actor state).
-    private func atBusyRetryHold() async {
-        await holds.at(.busyRetry)
-    }
-
-    /// Number of deferred retries started so far (tests).
-    private(set) var backlogRetryRuns = 0
-
-    private func runBacklogDeferredSync() async {
-        backlogRetryRuns += 1
-        let runSyncNow = backlogDeferredSyncNow
-        let runBroadcastOnly = backlogDeferredBroadcastOnly && !runSyncNow
-        backlogDeferredSyncNow = false
-        backlogDeferredBroadcastOnly = false
-        backlogRetryScheduled = false
-        if runSyncNow {
-            await syncNow()
-        } else if runBroadcastOnly {
-            await syncBroadcastOnly()
+            guard let ticket else { return }
+            _ = await adapter.keeper.syncTurnNow(via: adapter, reason: .behindCommitRepair, ticket: ticket)
         }
     }
 
@@ -3279,91 +3217,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return FramePrefixCacheCounts(resumes: cache.resumes, reusedSplits: cache.reusedSplits)
     }
 
-    /// Runs `phase` (a sync phase: plan + commit) on a state copy taken by
-    /// `LandKeeper.beginSync(clearDirtyFlags:)`.
-    ///
-    /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
-    /// the copy, so mutations made after it stay dirty for the next cycle (#68). The commit owns
-    /// the decision: a committed plan leaves them cleared; a full plan that throws merges them
-    /// into the next plan's (`carriedDirtyFields`).
-    ///
-    /// Returns `true` when the caller must start a follow-up `syncNow` cycle, decided after
-    /// `endSync()` returned: a sync request made before that is rejected by `beginSync`, so events
-    /// queued up to then (including during the `endSync()` hop) have no other cycle to deliver them.
-    /// A follow-up is needed when all of these hold:
-    /// - `phase` completed: a cycle that throws every time must not retry forever;
-    /// - events are queued now (kept by this cycle or queued after its commit);
-    /// - the land has no periodic sync (`LandKeeper.hasPeriodicSync`) whose next cycle delivers them.
-    ///
-    /// A failed `phase` on a land without periodic sync schedules a delayed follow-up instead
-    /// (`startDelayedFollowUpSync`).
-    ///
-    /// Back-pressure: while the writer still holds a sync cycle element from an earlier cycle,
-    /// the cycle is skipped before `beginSync`, so dirty flags and queued events stay for the
-    /// next cycle, which diffs against the last state sent. Overload then turns into skipped
-    /// cycles instead of a growing writer queue that every later frame waits behind. Event and
-    /// action-response frames are not held back. A joiner's firstSync and the debug settle do
-    /// not run through here.
-    private func withSyncState(
-        clearDirtyFlags: Bool,
-        broadcastOnly: Bool,
-        skipLogMessage: String,
-        errorLogMessage: String,
-        phase: (State) throws -> Void
-    ) async -> Bool {
-        if hasPendingStateElement {
-            syncSkips.outboundBacklog += 1
-            profilerCounters?.incrementSyncSkipsBacklog()
-            deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
-            return false
-        }
-        beginSyncRequests += 1
-        guard let (state, read) = await beginSyncLocatedIfRecording(clearDirtyFlags: clearDirtyFlags) else {
-            syncSkips.busy += 1
-            profilerCounters?.incrementSyncSkipsBusy()
-            // On a land without periodic sync this request may be the only one for changes
-            // made after the cycle in flight took its copy (deferred cycles now run in the
-            // background, so requests overlap): run it once more after that cycle.
-            deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly, afterBusy: true)
-            if logger.logLevel <= .debug {
-                logger.debug("Sync skipped", metadata: ["message": .string(skipLogMessage)])
-            }
-            return false
-        }
-
-        var completed = false
-        var planFailure: LandFailure?
-        do {
-            legacyCycleRead = read
-            defer { legacyCycleRead = nil }
-            try phase(state)
-            completed = true
-        } catch {
-            logger.error("Sync operation failed: the land ends", metadata: [
-                "message": .string(errorLogMessage),
-                "error": .string("\(error)")
-            ])
-            // Row 15 (#535, D11 (d)): a plan's first throw ends the land, with no follow-up.
-            let failure = error as? LandFailure ?? LandFailure(
-                kind: .syncPlan,
-                detail: String(describing: error),
-                position: LandFailurePosition(stage: .syncPhase)
-            )
-            // Stop this adapter's output now, before the keeper's turn applies the failure.
-            outputGate.close(failure)
-            planFailure = failure
-        }
-
-        await holds.at(.cycleBeforeEndSync)
-        // The keeper's sync bookkeeping is closed whatever the outcome.
-        await keeper.endSync()
-        if let planFailure {
-            // Applied in a keeper turn of its own (`submitLandFailure`), not here.
-            await keeper.submitLandFailure(planFailure)
-        }
-        return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
-    }
-
     // MARK: - Sync lag (#332)
 
     /// Replaces the lag clock (tests).
@@ -3388,20 +3241,16 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The plan's first step (D1): classifies each recipient with its lag state and returns the
     /// recipients the plan sends to. A pending session, newly or still, and one with a close due
-    /// are left out (no frames, no events). A resync due is planned in a full plan (the player as
-    /// an unsynced recipient, its view typed a resync, every session of the player with it). A
-    /// broadcast-only cycle never meets one: it checks `syncLagResyncDue(at:)` first, at the same
-    /// `now`, and runs a full plan instead, so the decision and its frame are one plan. Only the
-    /// commit writes what it decided.
+    /// are left out (no frames, no events). A resync due is planned in the full plan (the player
+    /// as an unsynced recipient, its view typed a resync, every session of the player with it).
+    /// Only the commit writes what it decided.
     private func classifySyncLag(
         _ recipients: [SyncPhaseRecipient],
-        fullPlan: Bool,
-        now: TurnInstant? = nil,
         events: PendingEventManager,
         into plan: inout SyncPhasePlan
     ) -> [SyncPhaseRecipient] {
         guard tracksSyncLag, !syncLag.isEmpty else { return recipients }
-        let now = now ?? syncLagNow()
+        let now = syncLagNow()
         var kept: [SyncPhaseRecipient] = []
         kept.reserveCapacity(recipients.count)
         var resyncPlayers = Set<PlayerID>()
@@ -3416,16 +3265,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             case .markPending:
                 plan.syncLag.markPending.append(recipient.sessionID)
             case .resync:
-                if fullPlan {
-                    plan.syncLag.resyncs[recipient.sessionID] = true
-                    resyncPlayers.insert(recipient.playerID)
-                    kept.append(recipient)
-                } else {
-                    // Unreachable: the broadcast-only cycle checked at this `now`. Kept as a
-                    // fallback that leaves the session out and asks for a full plan.
-                    assertionFailure("a resync due in a broadcast-only plan")
-                    plan.syncLag.wantsFullPlan = true
-                }
+                plan.syncLag.resyncs[recipient.sessionID] = true
+                resyncPlayers.insert(recipient.playerID)
+                kept.append(recipient)
             case .close(let code):
                 plan.syncLag.closes.append((recipient.sessionID, code))
             }
@@ -3560,10 +3402,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return !registered && joiningSessions[sessionID]?.inTurn?.transportRegistered == false
     }
 
-    /// Tests: sync requests that met a cycle in flight and were deferred to run after it
-    /// (`syncSkips.busy`; in-turn sync off).
-    package var syncDeferredByCycleCountForTesting: Int { syncSkips.busy }
-
     /// Tests: an opaque token for the session's current membership ticket, nil when it has none.
     package func sessionTicketForTesting(_ sessionID: SessionID) -> Ticket<SessionID>? {
         sessionTickets.ticket(for: sessionID)
@@ -3612,11 +3450,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 wantsSync = true
             }
         }
-        if wantsSync, !keeper.hasPeriodicSync, !syncLagTimerSyncRequested {
-            syncLagTimerSyncRequested = true
+        // The mark is the epoch of the pass that set it: a pass of a newer epoch requests even
+        // while an older callback is held, and a stale callback clears only its own mark.
+        if wantsSync, !keeper.hasPeriodicSync, syncLagTimerSyncRequestedEpoch != epoch {
+            syncLagTimerSyncRequestedEpoch = epoch
             syncLagTimerSyncRequests += 1
             startBackgroundSync { adapter in
-                await adapter.runSyncLagTimerSync()
+                await adapter.runSyncLagTimerSync(epoch: epoch)
             }
         }
         return true
@@ -3629,10 +3469,63 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLagTimerPass(epoch: syncLagTimerEpoch)
     }
 
-    private func runSyncLagTimerSync() async {
+    private func runSyncLagTimerSync(epoch: UInt64) async {
+        syncLagTimerSyncsInFlight[epoch, default: 0] += 1
+        defer {
+            if syncLagTimerSyncRequestedEpoch == epoch { syncLagTimerSyncRequestedEpoch = nil }
+            endSyncLagTimerSync(epoch: epoch)
+        }
+        // A stale callback (the timer restarted since it was armed) takes no ticket, so it can't
+        // bind a requester on a keeper never attached.
+        guard epoch == syncLagTimerEpoch else { return }
+        let ticket = await keeper.syncTurnTicket(via: self)
         await holds.at(.syncLagTimerSync)
-        syncLagTimerSyncRequested = false
-        await syncNow()
+        // The timer restarted meanwhile (a new epoch): this callback is stale.
+        guard epoch == syncLagTimerEpoch else { return }
+        guard let ticket else { return }
+        _ = await keeper.syncTurnNow(via: self, reason: .lagTimer, ticket: ticket)
+    }
+
+    /// Lag timer callbacks running, by the epoch that armed them (an entry is removed at 0).
+    private var syncLagTimerSyncsInFlight: [UInt64: Int] = [:]
+    /// Test waiters, by id, for the callbacks of one epoch to return.
+    private var syncLagTimerSyncWaitersForTesting: [Int: (epoch: UInt64, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextSyncLagTimerSyncWaiterForTesting = 0
+
+    private func endSyncLagTimerSync(epoch: UInt64) {
+        let left = (syncLagTimerSyncsInFlight[epoch] ?? 1) - 1
+        syncLagTimerSyncsInFlight[epoch] = left > 0 ? left : nil
+        guard left <= 0, !syncLagTimerSyncWaitersForTesting.isEmpty else { return }
+        for (id, waiter) in syncLagTimerSyncWaitersForTesting where waiter.epoch == epoch {
+            syncLagTimerSyncWaitersForTesting.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
+    }
+
+    /// Tests: the lag timer's current epoch (a callback armed now carries it).
+    package var syncLagTimerEpochForTesting: UInt64 { syncLagTimerEpoch }
+
+    /// Tests: returns once no lag timer callback of `epoch` is running (at once if none is), or
+    /// when its task is cancelled (a test bounds it with `withinHangBound`).
+    package func waitForSyncLagTimerSyncsForTesting(epoch: UInt64) async {
+        guard syncLagTimerSyncsInFlight[epoch] != nil else { return }
+        let id = nextSyncLagTimerSyncWaiterForTesting
+        nextSyncLagTimerSyncWaiterForTesting += 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || syncLagTimerSyncsInFlight[epoch] == nil {
+                    continuation.resume()
+                    return
+                }
+                syncLagTimerSyncWaitersForTesting[id] = (epoch, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelSyncLagTimerSyncWaiterForTesting(id) }
+        }
+    }
+
+    private func cancelSyncLagTimerSyncWaiterForTesting(_ id: Int) {
+        syncLagTimerSyncWaitersForTesting.removeValue(forKey: id)?.continuation.resume()
     }
 
     /// Sessions with lag state (tests).
@@ -3713,25 +3606,8 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if profiled != TransportProfilerCounters.SyncLagWindow() {
             syncLagProfilerCounters?.addSyncLag(profiled)
         }
-        if plan.isFullCycle {
-            syncLagFullPlanRequested = false
-        }
-        if planned.wantsFullPlan {
-            syncLagFullPlanRequested = true
-        }
         for close in planned.closes {
             closeLaggingSession(close.sessionID, code: close.code)
-        }
-    }
-
-    /// Whether a tracked session has a resync due at `now`: read-only, the same decision the
-    /// plan's classification makes.
-    private func syncLagResyncDue(at now: TurnInstant) -> Bool {
-        guard tracksSyncLag else { return false }
-        return syncLag.contains { sessionID, session in
-            guard !endedSessions.contains(sessionID) else { return false }
-            if case .resync = session.decide(now: now, policy: syncLagPolicy) { return true }
-            return false
         }
     }
 
@@ -3887,7 +3763,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// One full sync cycle on `state`: plan, then commit. If the plan throws, the dirty fields
-    /// this cycle's `beginSync` cleared are carried into the next plan.
+    /// cleared when this phase's copy was taken are carried into the next plan.
     private func runFullSyncPhase(state: State, read: SyncOutputRead? = nil, joiners: [SyncPhaseJoiner] = []) throws {
         do {
             try runSyncPhase(read: read) {
@@ -3909,28 +3785,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Sync stream (record format 2.1)
 
-    /// The read of the legacy cycle running its phase (`withSyncState`), for its plan.
-    private var legacyCycleRead: SyncOutputRead?
-
     /// The sync-stream drafts the running in-turn phase made, returned with its output (#553).
     private var inTurnSyncStreamDrafts: [SyncStreamDraft] = []
 
-    /// Whether the keeper records its sync stream. Only asked with in-turn sync on, where this
-    /// adapter runs on the keeper's executor; with it off nothing is recorded.
+    /// Whether the keeper records its sync stream. This adapter runs on the keeper's executor.
     private func keeperRecordsSyncStream() -> Bool {
-        guard inTurnSyncEnabled else { return false }
-        return keeper.assumeIsolated { $0.recordsSyncStream }
-    }
-
-    /// `keeper.beginSync`, located in the same keeper job when the sync stream is recorded; the
-    /// keeper says whether it is in that job too, not after the `await` (#553).
-    private func beginSyncLocatedIfRecording(clearDirtyFlags: Bool) async -> (State, SyncOutputRead?)? {
-        guard inTurnSyncEnabled else {
-            return await keeper.beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, nil) }
-        }
-        guard let located = await keeper.beginSyncLocated(clearDirtyFlags: clearDirtyFlags) else { return nil }
-        let read = located.recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
-        return (located.state, read)
+        keeper.assumeIsolated { $0.recordsSyncStream }
     }
 
     /// A plan with a digest when its sync output is recorded.
@@ -4272,7 +4132,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// Writes the staged caches and firstSync marks, removes the events the plan consumed, and
     /// enqueues the frames as one writer element. Dirty
-    /// flags were cleared by the keeper when `beginSync` took the copy (#68); a committed full plan
+    /// flags were cleared by the keeper when it took the phase's copy (#68); a committed full plan
     /// ends the carry of failed plans' dirty fields, and one that reset the key scopes ends a
     /// pending reset.
     private func commitSyncPhase(_ plan: SyncPhasePlan, isSyncCycle: Bool) {
@@ -4392,15 +4252,12 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for sessionID in overflowed {
             failInTurnJoin(sessionID: sessionID, reason: .eventOverflow)
         }
-        if let log = plan.broadcastOnlyLog {
-            logBroadcastSync(patchCount: log.patchCount, bytes: log.bytes, mode: log.mode)
-        }
     }
 
     /// Plan of one full sync cycle (`syncNow`).
     ///
     /// Synchronous: nothing else runs on this adapter between reading its inputs and the commit.
-    /// Reads `state` (the copy taken by `beginSync`), `recipients` and `events`; stages the cache
+    /// Reads `state` (the phase's copy), `recipients` and `events`; stages the cache
     /// updates in the plan; encodes every frame. `fullSnapshot` (the full-snapshot strategy)
     /// extracts `.all` and diffs against the `.empty` baseline. `resetsKeyScopes` types every
     /// recipient's updates `.firstSync`, sent even when empty (see `keyScopeResetPending`).
@@ -4424,7 +4281,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var plan = makePlan()
         plan.isFullCycle = true
         let requestedKeyScopeReset = resetsKeyScopes
-        let recipients = classifySyncLag(recipients, fullPlan: true, events: events, into: &plan)
+        let recipients = classifySyncLag(recipients, events: events, into: &plan)
         // Opcode 107: what this plan's targeted events hold for each joining session (#69). A
         // joiner they would take over the held-event bound is not flipped by this plan: the
         // commit fails it with `eventOverflow` instead, so it never flips a join it also fails.
@@ -5224,180 +5081,13 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         (pendingEventManager.targetedEventCount, pendingEventManager.broadcastEventCount)
     }
 
-    /// Sync only broadcast changes to all connected players.
-    ///
-    /// Used when state changes only affect broadcast fields (e.g., player leaving).
-    /// This is more efficient than `syncNow()` because:
-    /// - Uses dirty tracking to only compare changed broadcast fields
-    /// - Only computes broadcast diff once (updates shared broadcast cache)
-    /// - Sends same update to all players (no per-player diff needed)
-    /// - Per-player cache for leaving player is cleared separately (in onDisconnect)
-    ///
-    /// - Note: This method assumes the state has been modified and marked as dirty.
-    ///   The caller (e.g., OnLeave handler) should have already removed the player's data
-    ///   from broadcast fields, which will trigger `isDirty()`.
-    ///
-    /// TODO: Future optimizations:
-    /// - Batch multiple broadcast-only syncs into a single operation
-    /// - Debounce rapid broadcast changes to reduce sync frequency
-    /// - Consider allowing concurrent broadcast-only syncs (read-only operation)
+    /// The keeper's broadcast-only request (`syncBroadcastOnlyFromTransport`): one sync-only turn
+    /// on the keeper, now, as `_syncNowImpl` (#546 L2b). A full phase covers broadcast-only
+    /// changes. A frozen land's turn leaves its sync to the resume, so the request defers once,
+    /// through the keeper. Like any requested turn, it can still run between an output gate's
+    /// close and its failure submit and flip a waiting join there (pre-existing, #704).
     func _syncBroadcastOnlyImpl() async {
-        // While frozen, the settle cycle is the only sync; defer this one to resume.
-        if debugDeferSyncIfFrozen(broadcastOnly: true) { return }
-
-        // Never clears dirty flags: this cycle does not diff per-player fields. The next syncNow
-        // re-diffs broadcast fields against the updated cache (extra work, no extra patches).
-        // syncNow skips empty lands before beginSync, so in an empty land flags (including removed
-        // dictionary keys) accumulate until a syncNow runs with members: memory and work, not correctness.
-        let needsFollowUp = await withSyncState(
-            clearDirtyFlags: false,
-            broadcastOnly: true,
-            skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
-            errorLogMessage: "❌ Failed to sync broadcast-only"
-        ) { state in
-            // A pending key scope reset or carried dirty fields need every recipient and every
-            // field: run a full cycle (it keeps the flags, so the next cycle re-diffs them: extra
-            // work, no extra patches).
-            // A resync due needs a full plan too (#332): decided here, once, at the same `now`
-            // the broadcast-only plan would classify with.
-            // Row addressing drops rows and orders views in the full plan only.
-            let lagNow = syncLagNow()
-            if (rowAddressing || keyScopeResetPending || !carriedDirtyFields.isEmpty || syncLagFullPlanRequested || syncLagResyncDue(at: lagNow)) && !membershipCoordinator.isEmpty {
-                try runFullSyncPhase(state: state, read: legacyCycleRead)
-                return
-            }
-            try runSyncPhase(read: legacyCycleRead) {
-                try planBroadcastOnlySyncPhase(
-                    state: state,
-                    recipients: syncPhaseRecipients(),
-                    lagNow: lagNow,
-                    hasMembers: !membershipCoordinator.isEmpty,
-                    events: pendingEventManager,
-                    fullSnapshot: syncStrategy == .fullSnapshot
-                )
-            }
-        }
-        if needsFollowUp {
-            startFollowUpSync()
-        }
-    }
-
-    /// Plan of a broadcast-only cycle: the broadcast diff for every recipient and, with opcode
-    /// 107, the queued events. Synchronous, like `planSyncPhase`.
-    ///
-    /// Even without members the diff runs, so the broadcast cache reflects the current state when
-    /// players reconnect. Without members or without changes nothing is sent and queued events
-    /// stay queued.
-    private func planBroadcastOnlySyncPhase(
-        state: State,
-        recipients: [SyncPhaseRecipient],
-        lagNow: TurnInstant,
-        hasMembers: Bool,
-        events: PendingEventManager,
-        fullSnapshot: Bool
-    ) throws -> SyncPhasePlan {
-        var plan = makePlan()
-        let recipients = classifySyncLag(recipients, fullPlan: false, now: lagNow, events: events, into: &plan)
-        var drops = ExtractionDrops()
-        let (broadcastDiff, broadcastMode) = extractAndComputeBroadcastDiff(
-            state: state,
-            fullSnapshot: fullSnapshot,
-            staged: &plan.staged,
-            stagedTables: &plan.stagedTables,
-            drops: &drops
-        )
-        try plan.noteExtractionDrops(drops)
-        plan.digest?.broadcastPatches = broadcastTables?.liveDigestForm(of: broadcastDiff, staged: plan.stagedTables) ?? broadcastDiff
-        plan.digest?.noteDrops(drops)
-
-        guard hasMembers && !broadcastDiff.isEmpty else {
-            logBroadcastCacheUpdate(patchCount: broadcastDiff.count, mode: broadcastMode, hasPlayers: hasMembers)
-            try syncPlanFaultForTesting?()
-            return plan
-        }
-
-        let update = StateUpdate.diff(broadcastDiff)
-        let updateSize: Int?
-        if useStateUpdateWithEvents {
-            updateSize = try planBroadcastOnlyMergedFrame(update: update, recipients: recipients, events: events, into: &plan)
-            plan.consumedEvents.targeted = events.targetedEventCount
-            // The joining sessions' held events are packed here, where a failure ends the land
-            // (#535 row 17), never in the commit.
-            plan.heldEvents = try heldEventFrames(events: events, endingBefore: events.targetedEventCount)
-            plan.heldEventsEnd = events.targetedEventCount
-            if events.hasTargetedEvents {
-                for recipient in recipients {
-                    let eventBodies = pendingTargetedEventBodies(
-                        events: events,
-                        for: recipient.sessionID,
-                        playerID: recipient.playerID,
-                        endingBefore: plan.consumedEvents.targeted
-                    )
-                    try appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
-                }
-            }
-        } else {
-            updateSize = try planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
-        }
-        plan.broadcastOnlyLog = SyncPhaseBroadcastLog(patchCount: broadcastDiff.count, bytes: updateSize, mode: broadcastMode)
-
-        try syncPlanFaultForTesting?()
-        return plan
-    }
-
-    /// Extract broadcast snapshot and compute diff.
-    ///
-    /// Determines snapshot mode based on dirty tracking, extracts broadcast snapshot,
-    /// and computes diff against cached broadcast state.
-    ///
-    /// - Parameters:
-    ///   - state: Current state to extract from
-    ///   - fullSnapshot: Extract `.all` and diff against the `.empty` baseline.
-    ///   - staged: Receives the broadcast cache update.
-    /// - Returns: Tuple of (diff patches, snapshot mode used)
-    private func extractAndComputeBroadcastDiff(
-        state: State,
-        fullSnapshot: Bool,
-        staged: inout SyncEngine.StagedCaches,
-        stagedTables: inout SyncTableStaged,
-        drops: inout ExtractionDrops
-    ) -> (diff: [StatePatch], mode: SnapshotMode) {
-        // Determine snapshot mode based on dirty tracking
-        let broadcastMode: SnapshotMode
-        if !fullSnapshot, enableDirtyTracking && planIsDirty(state) {
-            let dirtyFields = planDirtyFields(of: state)
-            let syncFields = state.getSyncFields()
-            let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
-            let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
-
-            // Only extract and compare dirty broadcast fields
-            broadcastMode = broadcastFields.isEmpty ? .all : .dirtyTracking(broadcastFields)
-        } else {
-            // Full-snapshot strategy, dirty tracking disabled, or state not dirty: always use .all mode
-            broadcastMode = .all
-        }
-
-        if let broadcastTables {
-            return (broadcastTables.planDiff(state, fields: broadcastMode.fields, drops: &drops, into: &stagedTables), broadcastMode)
-        }
-
-        // Extract broadcast snapshot (only dirty fields if using dirty tracking)
-        let broadcastSnapshot = syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode, drops: &drops)
-
-        // Compute broadcast diff (only compares dirty fields); under the full-snapshot strategy
-        // without the dropped fields (`withoutDroppedFields`).
-        // This updates the shared broadcast cache
-        // IMPORTANT: We always compute the diff to update the cache, even if no players are connected
-        // This ensures the cache reflects the current state when players reconnect
-        let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
-            currentBroadcast: broadcastSnapshot,
-            onlyPaths: nil,
-            mode: broadcastMode,
-            baseline: fullSnapshot ? .empty : .cached,
-            staged: &staged
-        )
-
-        return (SyncPlanning.withoutDroppedFields(broadcastDiff, dropped: drops.broadcastFields, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
+        _ = await keeper.syncTurnNow(via: self, reason: .broadcastOnly)
     }
 
     /// `withoutDroppedFields` for every pending update, each filtered by the per-player fields
@@ -5426,110 +5116,6 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 update = .diff(kept)
             }
             return makePendingSyncUpdate(sessionID: pending.sessionID, playerID: pending.playerID, update: update)
-        }
-    }
-
-    /// opcode 107, broadcast-only: the update merged with the queued broadcast events, one frame
-    /// for every recipient. Without a recipient the queued events are dropped, as before (#69).
-    /// Returns the frame size (for logging).
-    private func planBroadcastOnlyMergedFrame(
-        update: StateUpdate,
-        recipients: [SyncPhaseRecipient],
-        events: PendingEventManager,
-        into plan: inout SyncPhasePlan
-    ) throws -> Int? {
-        guard let first = recipients.first else {
-            plan.consumedEvents = SyncPhaseConsumedEvents(
-                targeted: events.targetedEventCount,
-                broadcast: events.broadcastEventCount
-            )
-            return nil
-        }
-        let eventBodies = events.pendingBroadcastBodies()
-        plan.consumedEvents.broadcast = events.broadcastEventCount
-        let data = try encodeMergedBroadcastFrameOrFail(
-            update,
-            playerID: first.playerID,
-            eventBodies: eventBodies,
-            into: &plan
-        )
-        for recipient in recipients {
-            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
-        }
-        plan.stateUpdateCount += recipients.count
-        return data.count
-    }
-
-    /// json / opcodeJsonArray, broadcast-only: the update encoded per player (no event merging),
-    /// the same frame for each of its sessions. If it fails to encode for a player, the plan
-    /// throws and the land ends (#535 row 12). Returns the size of the last encoded frame (for
-    /// logging).
-    private func planBroadcastOnlySeparateFrames(
-        update: StateUpdate,
-        recipients: [SyncPhaseRecipient],
-        into plan: inout SyncPhasePlan
-    ) throws -> Int? {
-        var lastUpdateSize: Int?
-        var dataByPlayer: [PlayerID: Data?] = [:]
-        for recipient in recipients {
-            let updateData: Data?
-            if let cached = dataByPlayer[recipient.playerID] {
-                updateData = cached
-            } else {
-                let playerID = recipient.playerID
-                let playerSlot = getPlayerSlot(for: playerID)
-                do {
-                    updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
-                } catch {
-                    // Row 12 (#535): a broadcast-only frame that doesn't encode ends the land; it
-                    // is never re-encoded with patches dropped.
-                    throw LandFailure(
-                        kind: .syncEncode,
-                        detail: "broadcast-only frame for player \(playerID.rawValue): \(error)",
-                        position: LandFailurePosition(stage: .syncPhase)
-                    )
-                }
-                dataByPlayer[playerID] = updateData
-            }
-            guard let updateData else { continue }
-            lastUpdateSize = updateData.count
-
-            // Debug: Log first few bytes to verify encoding format
-            if logger.logLevel <= .trace,
-               let preview = String(data: updateData.prefix(100), encoding: .utf8)
-            {
-                logger.trace("📤 Encoded update preview", metadata: [
-                    "playerID": .string(recipient.playerID.rawValue),
-                    "bytes": .string("\(updateData.count)"),
-                    "preview": .string(preview)
-                ])
-            }
-
-            plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID, isStateUpdate: true))
-            plan.stateUpdateCount += 1
-        }
-        return lastUpdateSize
-    }
-
-    /// Log broadcast cache update (when no players or no changes).
-    private func logBroadcastCacheUpdate(patchCount: Int, mode: SnapshotMode, hasPlayers: Bool) {
-        if !hasPlayers && logger.logLevel <= .debug {
-            logger.debug("📤 Broadcast cache updated (no players connected)", metadata: [
-                "patches": .string("\(patchCount)"),
-                "mode": .string("\(mode)")
-            ])
-        }
-    }
-    
-    /// Log successful broadcast sync.
-    private func logBroadcastSync(patchCount: Int, bytes: Int?, mode: SnapshotMode) {
-        if logger.logLevel <= .debug {
-            logger.debug("📤 Broadcast-only sync", metadata: [
-                "players": .string("\(membershipCoordinator.joinedCount())"),
-                "patches": .string("\(patchCount)"),
-                "bytes": .string("\(bytes ?? 0)"),
-                "mode": .string("\(mode)")
-            ])
         }
     }
 
@@ -5613,16 +5199,10 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         await holds.at(.initialSync)
         let commitsBeforeRead = syncPhaseCommits
-        let state: State
-        var read: SyncOutputRead?
-        if inTurnSyncEnabled {
-            // One keeper job for the state and where it was read (`currentStateLocated`).
-            let located = await keeper.currentStateLocated()
-            state = located.state
-            read = located.recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
-        } else {
-            state = await keeper.currentState()
-        }
+        // One keeper job for the state and where it was read (`currentStateLocated`).
+        let located = await keeper.currentStateLocated()
+        let state = located.state
+        let read = located.recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: located.position) : nil
         await holds.at(.initialSyncAfterRead)
         // The session's ticket, and its membership as `playerID`, are checked after the state
         // read, in the same synchronous segment as the commit: a disconnect, supersede or rebind
@@ -6477,7 +6057,7 @@ extension TransportAdapter {
     ///
     /// - Throws: `DebugFreezeError.settleTimedOut` when drain and settle miss their deadline (the
     ///   freeze is released), `DebugFreezeError.released` when the freeze was released (e.g. by
-    ///   auto-resume) before its settle finished.
+    ///   auto-resume) before its settle finished, or the land failed or is closing.
     public func debugFreeze() async throws -> DebugFreezeResponse {
         if debugFreezeState.count == 0 {
             debugFreezeState.generation &+= 1
@@ -6576,13 +6156,9 @@ extension TransportAdapter {
     }
 
     /// While frozen, record the request and return true so the caller skips this sync.
-    func debugDeferSyncIfFrozen(broadcastOnly: Bool) -> Bool {
+    func debugDeferSyncIfFrozen() -> Bool {
         guard debugFreezeState.count > 0 else { return false }
-        if broadcastOnly {
-            debugFreezeState.deferredBroadcastOnly = true
-        } else {
-            debugFreezeState.deferredSyncNow = true
-        }
+        debugFreezeState.deferredSyncNow = true
         return true
     }
 
@@ -6590,73 +6166,105 @@ extension TransportAdapter {
         debugFreezeState.generation == generation && debugFreezeState.count > 0
     }
 
-    /// Pause and drain the keeper, then run one full sync cycle that `beginSync` accepted.
-    /// One deadline covers the drain and the wait for `beginSync`.
+    /// What the settle's commit did, in the keeper's job.
+    private enum DebugSettleCommit: Sendable {
+        case committed(State, membershipEpoch: UInt64)
+        case failed(LandFailure)
+    }
+
+    /// Pause and drain the keeper, then settle (#546 L2b, plan §3.4): wait for the writer, then
+    /// one keeper job that checks the fence and commits, then publish. No `beginSync`: nothing to
+    /// retry, and nothing latches behind it. One deadline covers the drain, the writer wait and
+    /// the keeper job.
     private func debugSettle(generation: UInt64) async throws -> DebugFreezeState<State>.Settled {
         let deadline = ContinuousClock.now + debugFreezeState.settleDeadline
         let drained = await keeper.debugFreeze(generation: generation, timeout: debugFreezeState.settleDeadline)
         guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
         guard drained else { throw DebugFreezeError.settleTimedOut }
-
-        // A sync cycle may still be running (started before the freeze); `beginSync` rejects
-        // concurrent cycles, so retry until it accepts.
-        while true {
-            // Not skipped for back-pressure: wait until earlier cycles' frames left the writer,
-            // so the settle frames are not queued behind them.
-            if hasPendingStateElement {
-                guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
-                try await safeTaskSleep(for: .milliseconds(2))
-                guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
-                continue
-            }
-            // Read before the copy is taken: a join or leave from here on is not in the copy
-            // and must show up as `membershipChanged`.
-            let membershipEpoch = membershipCoordinator.membershipEpoch
-            // An empty land has nothing to diff: take the copy without clearing dirty flags.
-            let hasMembers = !membershipCoordinator.isEmpty
-            if let (state, read) = await beginSyncLocatedIfRecording(clearDirtyFlags: enableDirtyTracking && hasMembers) {
-                do {
-                    if hasMembers {
-                        try runFullSyncPhase(state: state, read: read)
-                    }
-                } catch {
-                    // As in `withSyncState`: a plan's first throw ends the land (#535). Close the
-                    // output in this segment, then hand the failure to the keeper.
-                    let failure = error as? LandFailure ?? LandFailure(
-                        kind: .syncPlan,
-                        detail: String(describing: error),
-                        position: LandFailurePosition(stage: .syncPhase)
-                    )
-                    logger.error("Debug freeze settle sync failed: the land ends", metadata: [
-                        "error": .string("\(error)")
-                    ])
-                    outputGate.close(failure)
-                    await keeper.endSync()
-                    await keeper.submitLandFailure(failure)
-                    throw error
-                }
-                await holds.at(.cycleBeforeEndSync)
-                await keeper.endSync()
-                let tickId = await keeper.debugLastCommittedTickId()
-                // Checked after the last await, so a release during the cycle is never published.
-                guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
-                // As in `withSyncState`: events kept by this cycle need a follow-up when no
-                // periodic sync will deliver them. Syncs are frozen, so it runs on resume.
-                if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
-                    debugFreezeState.deferredSyncNow = true
-                }
-                return DebugFreezeState<State>.Settled(
-                    state: state,
-                    tickId: tickId,
-                    membershipEpoch: membershipEpoch
-                )
-            }
-            guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
-            guard ContinuousClock.now < deadline else {
-                throw DebugFreezeError.settleTimedOut
-            }
+        // Wait until earlier phases' frames left the writer, so the settle frames are not queued
+        // behind them. Not skipped for back-pressure, and bounded by the settle's deadline.
+        while hasPendingStateElement {
+            guard ContinuousClock.now < deadline else { throw DebugFreezeError.settleTimedOut }
             try await safeTaskSleep(for: .milliseconds(2))
+            guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
         }
+        await holds.at(.settleBeforeCommit)
+        let outcome = await keeper.debugSettleTurn(
+            generation: generation,
+            deadline: deadline,
+            admit: { [self] in
+                assumeIsolated { adapter in adapter.debugSettleAdmitIsolated(generation) }
+            },
+            commit: { [self] state, position, records in
+                assumeIsolated { adapter in
+                    adapter.debugSettleCommitIsolated(state: state, position: position, recordsSyncStream: records)
+                }
+            }
+        )
+        let state: State
+        let membershipEpoch: UInt64
+        let tickId: Int64
+        switch outcome {
+        case let .ran(.committed(copy, epoch), committedTick):
+            (state, membershipEpoch, tickId) = (copy, epoch, committedTick)
+        case let .ran(.failed(failure), _):
+            // The output closed in the job; the failure reaches the keeper as an input.
+            await keeper.submitLandFailure(failure)
+            throw failure
+        case .timedOut:
+            throw DebugFreezeError.settleTimedOut
+        case .released, .closed, .refused:
+            // A closed land (failed, draining, its output closed) has nothing to settle; the
+            // freeze ends as released.
+            throw DebugFreezeError.released
+        }
+        await holds.at(.settleBeforePublish)
+        // Checked after the last await, so a release meanwhile is never published.
+        guard debugIsCurrent(generation) else { throw DebugFreezeError.released }
+        // Events still queued (kept by the settle's phase, or queued since): on a land without
+        // periodic sync nothing else delivers them, and syncs are frozen, so the resume does.
+        // After the hold, so an event queued there is seen.
+        if pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync {
+            debugFreezeState.deferredSyncNow = true
+        }
+        return DebugFreezeState<State>.Settled(state: state, tickId: tickId, membershipEpoch: membershipEpoch)
+    }
+
+    /// The settle job's admission, in the keeper's job: nil refuses (the generation was released
+    /// or the output closed); otherwise whether to clear dirty flags. An empty land takes the
+    /// copy without clearing them, as before.
+    private func debugSettleAdmitIsolated(_ generation: UInt64) -> Bool? {
+        guard debugIsCurrent(generation), !outputGate.isClosed else { return nil }
+        return enableDirtyTracking && !membershipCoordinator.isEmpty
+    }
+
+    /// The settle's commit, in the keeper's job: the membership epoch (a join or leave from here
+    /// on is not in the copy and shows up as `membershipChanged`), then the full phase, with no
+    /// joiners. A plan's first throw ends the land (#535): the output closes in this segment,
+    /// and the caller submits the failure.
+    private func debugSettleCommitIsolated(
+        state: State,
+        position: SyncReadPosition,
+        recordsSyncStream: Bool
+    ) -> DebugSettleCommit {
+        let membershipEpoch = membershipCoordinator.membershipEpoch
+        guard !membershipCoordinator.isEmpty else { return .committed(state, membershipEpoch: membershipEpoch) }
+        let read = recordsSyncStream ? SyncOutputRead(turnKind: .legacyCycle, position: position) : nil
+        do {
+            try runFullSyncPhase(state: state, read: read)
+        } catch {
+            let failure = error as? LandFailure ?? LandFailure(
+                kind: .syncPlan,
+                detail: String(describing: error),
+                position: LandFailurePosition(stage: .syncPhase)
+            )
+            logger.error("Debug freeze settle sync failed: the land ends", metadata: [
+                "error": .string("\(error)")
+            ])
+            outputGate.close(failure)
+            return .failed(failure)
+        }
+        return .committed(state, membershipEpoch: membershipEpoch)
     }
 
     /// Release the current freeze generation. Does not wait for an unfinished settle: it sees
@@ -6671,26 +6279,44 @@ extension TransportAdapter {
         debugFreezeState.settleTask = nil
         debugFreezeState.settled = nil
         let runSyncNow = debugFreezeState.deferredSyncNow
-        let runBroadcastOnly = debugFreezeState.deferredBroadcastOnly
         debugFreezeState.deferredSyncNow = false
-        debugFreezeState.deferredBroadcastOnly = false
 
         await keeper.debugResume(generation: generation)
 
         // Frozen again meanwhile: that freeze defers syncs itself; keep these for its resume.
         guard debugFreezeState.count == 0 else {
             debugFreezeState.deferredSyncNow = debugFreezeState.deferredSyncNow || runSyncNow
-            debugFreezeState.deferredBroadcastOnly = debugFreezeState.deferredBroadcastOnly || runBroadcastOnly
             return
         }
-        // A full cycle also covers broadcast-only changes.
-        if runSyncNow {
-            await _syncNowImpl()
-        } else if runBroadcastOnly {
-            await _syncBroadcastOnlyImpl()
+        await debugResumeInTurn(runDeferredSync: runSyncNow)
+    }
+
+    /// The resume (#546 L2b, plan §3.4): step 1, the deferred sync as one outside request,
+    /// awaited (a full phase also covers broadcast-only changes); step 2, the join-sync
+    /// request, which branches on step 1's outcome.
+    private func debugResumeInTurn(runDeferredSync: Bool) async {
+        var deferredSync: InTurnSyncResult?
+        if runDeferredSync {
+            deferredSync = await keeper.syncTurnNow(via: self, reason: .resume)
         }
-        // That cycle runs without joiners: a tickless land's join that became ready during the
-        // freeze (its sync-only turn was skipped) needs its own turn to flip (#69).
+        await holds.at(.resumeAfterSync)
+        // Frozen again across step 1: that freeze's resume requests the joins' turn. (A step 1
+        // that met the new freeze was skipped, and its phase deferred its sync again.)
+        guard debugFreezeState.count == 0 else { return }
+        switch deferredSync {
+        case .deferredBackPressure:
+            // The writer still holds an earlier phase: the writer-drain retry (no periodic
+            // sync) or the next periodic phase delivers the deferred work and flips the ready
+            // joins. A second phase now would only defer again.
+            return
+        case .failed, .landFailed:
+            // The land ends; nothing more to flip.
+            return
+        case nil, .committed, .skipped, .notRequested, .unsupported:
+            break
+        }
+        // Step 1 ran without joiners past the budget, or didn't run: a tickless land's join that
+        // became ready during the freeze (its sync-only turn was skipped) needs its own turn (#69).
         if hasJoinsAwaitingSyncIsolated() {
             await keeper.requestJoinSyncTurn()
         }
@@ -6726,6 +6352,30 @@ extension TransportAdapter {
     }
 }
 
-/// The executor of a `TransportAdapter` with in-turn sync off: an empty actor whose default
-/// serial executor the adapter uses as its own.
-private actor AdapterExecutorHost {}
+/// Tests: resumes a continuation once, from whichever comes first. A `resume()` before
+/// `install` resumes the continuation as soon as it is installed.
+private final class TestingResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var resumed = false
+
+    func install(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if resumed {
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func resume() {
+        lock.lock()
+        resumed = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}

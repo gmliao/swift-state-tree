@@ -72,19 +72,22 @@ func simulateRouterJoin<State: StateNodeProtocol>(
     }
 }
 
-/// Holds one sync cycle in flight at `TransportAdapter.debugCycleHoldBeforeEndSync`: after the
-/// cycle enqueued its frames, before its `endSync` hop (the cycle still owns the sync flag).
+/// Holds one sync in flight at an adapter hold point, such as an in-turn settle's
+/// `.settleBeforePublish` (after its keeper job, before it publishes).
 ///
 /// Replaces holding the transport's `sendBatch`: with the outbound writer (#60) the cycle no
 /// longer awaits the transport, so a blocked transport does not keep a cycle in flight.
-final class SyncCycleHold: @unchecked Sendable {
+final class SyncHold: @unchecked Sendable {
     private let lock = NSLock()
     private var armed = false
     private var held: CheckedContinuation<Void, Never>?
 
-    /// Installs the hold on `adapter`; it only acts once armed.
-    func install<State: StateNodeProtocol>(on adapter: TransportAdapter<State>) async {
-        await adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { [self] in await self.holdIfArmed() })
+    /// Installs the hold on `adapter` at `point`; it only acts once armed.
+    func install<State: StateNodeProtocol>(
+        on adapter: TransportAdapter<State>,
+        at point: TransportAdapterHoldPoint
+    ) async {
+        await adapter.installHolds(HoldRegistry.at(point) { [self] in await self.holdIfArmed() })
     }
 
     /// The next cycle that reaches the hold point waits there until `release()`.

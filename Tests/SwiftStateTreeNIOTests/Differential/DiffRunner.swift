@@ -181,8 +181,6 @@ final class DiffRun: @unchecked Sendable {
         )
         // Past any correct run: a stop that reaches it fails the run.
         configuration.landStopTimeout = diffWaitBound
-        // The legacy cells reach the adapter's package-only off mode (#546 L2 removes it).
-        configuration.inTurnSync = cell.sync.inTurnSync
         let transport = WebSocketTransport()
         let server = try NIOLandServer<DiffState>(
             landType: diffLandType,
@@ -215,9 +213,9 @@ final class DiffRun: @unchecked Sendable {
         // its own) or after it (and flips in the OnJoin turn), and the record names the turn
         // kind. So every join waits at `keeperJoinReturned` until the keeper's input drain is
         // idle: its OnJoin turn runs before its registration, in every process. A tick land's
-        // OnJoin waits for the tick; without in-turn sync the hold isn't reached. Registered
-        // first, so it runs before a scenario's own hold there.
-        if cell.sync == .inTurn, cell.land == .tickless {
+        // OnJoin waits for the tick. Registered first, so it runs before a scenario's own hold
+        // there.
+        if cell.land == .tickless {
             run.holds.adapter.on(.keeperJoinReturned) { [keeper = container.keeper] in
                 await keeper.waitForInputDrainIdleForTesting()
             }
@@ -301,14 +299,6 @@ final class DiffRun: @unchecked Sendable {
             try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
             try await awaitIngress(name)
             try await applyInputs()
-
-        case .bumpUnderCycle(let name, let requestID, let amount):
-            try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
-            try await awaitIngress(name)
-            if cell.land == .tick { await keeper.stepTickOnce() } else {
-                try await bounded("the keeper's input drain") { [keeper] in await keeper.waitForInputDrainIdleForTesting() }
-            }
-            await adapter.syncNow()
 
         case .bumpUnsynced(let name, let requestID, let amount):
             try send(name, try action(requestID: requestID, DiffBumpAction(amount: amount)))
@@ -479,7 +469,6 @@ final class DiffRun: @unchecked Sendable {
         case .awaitJoin(let name): return "await join \(name)"
         case .awaitIngress(let name): return "await ingress \(name)"
         case .bump(let name, let requestID, _): return "bump \(name) \(requestID)"
-        case .bumpUnderCycle(let name, let requestID, _): return "bump under cycle \(name) \(requestID)"
         case .bumpUnsynced(let name, let requestID, _): return "bump unsynced \(name) \(requestID)"
         case .held(let name, let requestID, _): return "held action \(name) \(requestID)"
         case .openGate(let key): return "open gate \(key)"

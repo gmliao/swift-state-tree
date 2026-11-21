@@ -101,7 +101,7 @@ PlayerSession 欄位優先序：
 
 ### Atomic 值
 
-採用 `AtomicSnapshotValue` 的型別（`IVec2`、`IVec3`、`Position2`、`Velocity2`、`Acceleration2`、`Angle`，以及用 `@SnapshotConvertible(atomic: true)` 宣告的使用者 struct）在 diff 中是單一值，不會逐 leaf 比對。只有宣告會讓型別成為 atomic；只是長得像 `{x, y}` 的 struct 仍逐欄位 diff。
+採用 `AtomicSnapshotValue` 的型別（`IVec2`、`IVec3`、`Position2`、`Velocity2`、`Acceleration2`、`Angle`，以及用 `@SnapshotConvertible(atomic: true)` 宣告的使用者 struct）在 diff 中是單一值，不會逐 leaf 比對。只有宣告會讓型別成為 atomic；只是長得像 `{x, y}` 的 struct 仍逐欄位 diff。array 或 `Set` 則一律不逐元素 diff（見 [Patch 涵蓋的範圍](../core/sync.zh-TW.md#patch-涵蓋的範圍)）。
 
 - **Opcode state update**（`opcodeJsonArray`、`opcodeMessagePack`）把 atomic 值送成其 leaf 的陣列，順序為 schema 的 `leafOrder`：`Position2` 是 `[x, y]`，`Angle` 是 `[degrees]`，皆為定點整數。不論值位在何處都一樣：欄位、陣列元素、map 的值、optional、以上任一處裡的 struct，以及新增物件或 firstSync snapshot 之內。MessagePack 中一個 `Position2` patch 值為 11 B（原本 18 B），`Angle` 為 6 B（原本 14 B）。
 - **`jsonObject` state update 與 server event 維持 keyed**（`{"v": {"x": ..., "y": ...}}`）。
@@ -254,7 +254,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `syncCycles` | commit 了 plan 的 sync cycle（兩種路徑皆計）：其他計數器的分母 |
 | `syncSkipsBacklog` | 因 writer back-pressure 而略過的 cycle |
 | `syncDeferredTurns` | `syncSkipsBacklog` 中：因 back-pressure 而延後的 in-turn sync phase |
-| `syncSkipsBusy` | 因已有 cycle 進行中而被拒的請求（legacy 路徑） |
+| `syncSkipsBusy` | 恆為 `0`：in-turn 的同步請求是一個 turn，不會被拒。保留此欄位是為了不改變 profile 格式 |
 | `syncFolds` | 併入下一個 tick turn 的 in-turn sync cycle（coincident sync），每個 cycle 最多一次 |
 | `syncOverdueFolds` | `syncFolds` 中：其 tick 已逾時、frame 須等待遲到 tick 的併入 |
 | `syncFailedPlans` | 拋出錯誤、什麼都沒 commit 的 sync plan |

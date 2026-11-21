@@ -74,14 +74,21 @@ if missing:
 print(f"differential-gate: every declared test passed ({len(passed)} in the results)")
 PY
 
-[[ $(grep -cE "^Differential harness: [0-9]+ cell\(s\) compared" "$LOG") == "1" ]] \
+# The harness's summary: "<run> cell(s) run, <compared> compared, <threw> threw, <replaced>
+# replaced, <listed> listed". A cell that threw is run but not compared.
+COUNTS_RE='^Differential harness: ([0-9]+) cell\(s\) run, ([0-9]+) compared, ([0-9]+) threw, ([0-9]+) replaced, ([0-9]+) listed$'
+[[ $(grep -cE "$COUNTS_RE" "$LOG") == "1" ]] \
     || { echo "differential-gate: expected exactly one counts line from the harness" >&2; exit 1; }
-COUNTS=$(grep -E "^Differential harness: [0-9]+ cell\(s\) compared" "$LOG")
-RAN=$(sed -E 's/^Differential harness: ([0-9]+) cell.*/\1/' <<< "$COUNTS")
-REPLACED=$(sed -E 's/.* ([0-9]+) replaced.*/\1/' <<< "$COUNTS")
-echo "differential-gate: $RAN compared, $REPLACED replaced (retired rows), $LISTED listed"
+COUNTS=$(grep -E "$COUNTS_RE" "$LOG")
+RAN=$(sed -E "s/$COUNTS_RE/\1/" <<< "$COUNTS")
+COMPARED=$(sed -E "s/$COUNTS_RE/\2/" <<< "$COUNTS")
+THREW=$(sed -E "s/$COUNTS_RE/\3/" <<< "$COUNTS")
+REPLACED=$(sed -E "s/$COUNTS_RE/\4/" <<< "$COUNTS")
+echo "differential-gate: $RAN run, $COMPARED compared, $THREW threw, $REPLACED replaced (retired rows), $LISTED listed"
 [[ "$RAN" -gt 0 && $((RAN + REPLACED)) == "$LISTED" ]] \
     || { echo "differential-gate: the counts don't cover the index" >&2; exit 1; }
+[[ "$THREW" == "0" && "$COMPARED" == "$RAN" ]] \
+    || { echo "differential-gate: $THREW cell(s) threw; $COMPARED of $RAN run were compared" >&2; exit 1; }
 if grep -q "decoded views only" "$LOG"; then
     echo "differential-gate: the goldens weren't recorded with this toolchain; bytes weren't compared" >&2
     exit 1

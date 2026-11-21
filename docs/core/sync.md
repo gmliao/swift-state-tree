@@ -115,7 +115,7 @@ The walk covers `.serverOnly` fields for the class check and only sent fields fo
 - **At registration,** where a typealias hides it from the syntax but the field list shows it. A synced field is `.decimalField`. A field of an event, an action, its response or a server input is reported in `LandRegistrationError.decimalFields`, one path per field, such as `server event PriceEvent.amount`.
 - **At the first send,** for what neither sees: an event emitted without being registered, an `AnyCodable` filled with a `Decimal` at runtime, and a `Decimal` in a plain `Codable` type, which lists no fields. The JSON encodings and the MessagePack encoders refuse it, and the land ends (`.eventEncode` or `.responseEncode`). Limit: on a JSON encoding the refusal is a separate walk before the encode, so a hand-written `encode(to:)` that catches it and falls back to another form passes it, and the encode then writes what the fallback writes.
 
-A `.serverOnly` or `@Internal` field may hold a `Decimal`. So may a resolver output, which never reaches the wire; its replay record is #707.
+A `.serverOnly` or `@Internal` field may hold a `Decimal`. So may a resolver output, which never reaches the wire; replay reads it back with the record's own codec ([Resolver Outputs in Replay](reevaluation.md#resolver-outputs-in-replay)).
 
 **At compile time.** `@StateNodeBuilder` (for `@Sync` fields) and `@SnapshotConvertible` (for every stored property) refuse a field whose declared type spells `any P`, `Any`, `AnyObject` or a protocol composition (`P & Q`), at any depth (`[String: Any]`, `(any P)?`, `Box<any P>`), and `AnyHashable` and `AnyCodable` by name. What it holds can't be checked, and the sync may fail to convert it. `@Internal` fields aren't synced and may hold anything.
 
@@ -134,6 +134,20 @@ SyncEngine maintains:
 
 - broadcast cache: Shared by all players
 - per-player cache: Independent for each player
+
+### What a Patch Covers
+
+A patch replaces the value at one path. How far the diff descends before it writes a patch depends on the value's shape:
+
+- **A state node, a plain struct or a dictionary is diffed per field or per key.** Each changed field or entry gets its own patch at its own path. An added entry is a set at its key; a removed one is a delete.
+- **An array or a `Set` is one value.** Any change to it (an element changed, appended, removed or moved) sends the whole collection again at its path. A `Set` is sent as an array in a fixed order (sorted by each element's encoded form).
+- **An atomic value is one value** (see [Atomic values](../transport/README.md#atomic-values)), and so is a scalar: a number, a string or a `Bool`.
+
+This holds whichever diff runs: the typed sync diff (described in the next section) writes the same patches as the snapshot diff.
+
+For example, take a land with 100 players, each with a `PlayerScore` struct that has a `score` field, and change one player's score. If `scores` is a `[PlayerScore]` array, the patch carries all 100 entries. If `scores` is a `[PlayerID: PlayerScore]` dictionary, it carries only the changed field, at `/scores/<player ID>/score`.
+
+**Guidance.** Keep a large collection that changes often in a dictionary keyed by a stable ID (a `String`, a `PlayerID` or another supported key type), not in an array. Each change then costs only what changed in one entry. A dictionary has no order. If the order matters, store it in the value (a `rank` or `order` field), or keep a small separate array of IDs, which is sent whole only when the order changes. An array suits a small collection, or one that changes rarely or all at once.
 
 ### Rules for Synced Value Types
 

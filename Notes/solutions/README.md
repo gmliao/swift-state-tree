@@ -99,12 +99,12 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [Wire-fed integer conversions must be exact and throwing](2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md) | codec, messagepack, security, decoding, crash |
 | 2026-11-09 | [A child inherits the worker thread's blocked signals](2026-11-09-a-child-inherits-the-worker-threads-blocked-signals.md) | signals, linux, cross-platform, process, testing |
 | 2026-11-09 | [An ID a client can build is not an authorization](2026-11-09-an-id-a-client-can-build-is-not-an-authorization.md) | security, authorization, replay, auto-create |
-| 2026-11-09 | [A test on a ticking land awaits a join's effect without stepping the turn that applies it](2026-11-09-a-ticking-land-applies-a-join-in-its-next-turn.md) | testing, keeper, tick, lifecycle-input, hang, time-limit |
+| 2026-11-09 | [A test on a ticking land awaits a join's effect without stepping the turn that applies it](2026-11-09-a-ticking-land-applies-a-join-in-its-next-turn.md) | testing, keeper, tick, lifecycle-input, hang, time-limit, tickless, join-flip, input-drain |
 | 2026-11-09 | [An XCTest assertion is silent inside a Swift Testing test](2026-11-09-xctest-assertion-is-silent-under-swift-testing.md) | testing, macros, swift-testing, xctest, swift-syntax |
 | 2026-11-09 | [The default SwiftPM build system hides frontend dump output and moves the build directory](2026-11-09-default-build-system-hides-frontend-dump-output.md) | swiftpm, toolchain, build, macros, measurement |
 | 2026-11-09 | [A tickless keeper built without a transport only tests the legacy path](2026-11-09-a-tickless-keeper-without-a-transport-tests-only-the-legacy-path.md) | testing, keeper, tickless, in-turn-sync, mutants |
 | 2026-11-09 | [Compare event times on one clock](2026-11-09-compare-event-times-on-one-clock.md) | deep-research, measurement, clocks, slow-reader, sync-lag, testing |
-| 2026-11-10 | [A returned send is not a delivered frame](2026-11-10-a-returned-send-is-not-a-delivered-frame.md) | testing, send, send-queue, linux, ordering |
+| 2026-11-10 | [A returned send is not a delivered frame](2026-11-10-a-returned-send-is-not-a-delivered-frame.md) | testing, send, send-queue, linux, ordering, frame-count-wait |
 | 2026-11-10 | [A hold at a loop's start misses work a running loop picks up](2026-11-10-a-hold-at-a-loops-start-misses-a-running-loop.md) | testing, hold-points, keeper, input-drain, flaky |
 | 2026-11-10 | [A rewritten extraction must keep the old path's empty-result rule](2026-11-10-a-rewritten-extraction-must-keep-the-empty-result-rule.md) | sync, extraction, per-player, byte-identity, equivalence-tests, testing |
 | 2026-11-10 | [Per-connection work started once stops at the first reconnect](2026-11-10-per-connection-work-started-once-stops-at-reconnect.md) | ws-loadtest, measurement, reconnect, timers, testing |
@@ -143,7 +143,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-18 | [A cache keyed by a name serves a changed definition the old value](2026-11-18-a-cache-keyed-by-a-name-serves-a-changed-definition.md) | caching, fingerprint, replay, testing |
 | 2026-11-18 | [Synthesized `Decodable` ignores `var` defaults, so a `{}` sample fails](2026-11-18-synthesized-decodable-ignores-var-defaults.md) | codable, schemagen, fingerprint, swift |
 | 2026-11-18 | [A macro that names a property from `identifier.text` keeps its backticks](2026-11-18-macro-names-from-identifier-text-keep-backticks.md) | macros, swift-syntax, codable, schemagen, fingerprint |
-| 2026-11-18 | [A parser's depth limit isn't the pipeline's: every recursive stage after it needs the bound](2026-11-18-a-parsers-depth-limit-isnt-the-pipelines.md) | decoding, nesting, stack-overflow, darwin, cooperative-pool, json |
+| 2026-11-18 | [A parser's depth limit isn't the pipeline's: every recursive stage after it needs the bound](2026-11-18-a-parsers-depth-limit-isnt-the-pipelines.md) | decoding, nesting, stack-overflow, darwin, cooperative-pool, json, snapshot, outbound |
 | 2026-11-19 | [A cache key is evaluated again in the post step, after the build filled the workspace](2026-11-19-a-cache-key-is-evaluated-again-in-the-post-step.md) | ci, github-actions, cache, swiftpm, container |
 | 2026-11-19 | [A Docker tag isn't a pin: the same tag pulled two images a day apart](2026-11-19-a-docker-tag-is-not-a-pin.md) | ci, docker, toolchain, measurement, methodology |
 | 2026-11-19 | [A checker's trigger must cover every path it reads, not its own directory](2026-11-19-a-checkers-trigger-must-cover-what-it-reads.md) | pre-push, ci, deep-research, shell, pipefail |
@@ -154,7 +154,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-20 | [A thrown sweep cell hides the cells after it](2026-11-20-a-thrown-sweep-cell-hides-the-cells-after-it.md) | test-harness, differential, golden, fail-closed, reporting |
 | 2026-11-19 | [`Bundle.allBundles` crashes a Linux test process (null dereference in CFBundleGetAllBundles)](2026-11-19-bundle-allbundles-crashes-on-linux.md) | linux, foundation, bundle, test-support, cross-platform |
 | 2026-11-19 | [A typed decoder that replaces a JSON round trip misses the round trip's coercions](2026-11-19-a-typed-decoder-misses-the-round-trips-coercions.md) | testing, differential, decode, messagepack, decimal, float, anycodable |
-| 2026-11-19 | [Decode a record with the codec that wrote it](2026-11-19-decode-a-record-with-the-codec-that-wrote-it.md) | replay, record-format, decode, canonical-messagepack, anycodable, date, json, resolver-output |
+| 2026-11-19 | [Decode a record with the codec that wrote it](2026-11-19-decode-a-record-with-the-codec-that-wrote-it.md) | replay, record-format, decode, canonical-messagepack, anycodable, date, json, resolver-output, verifier |
 | 2026-11-19 | [A stale example build crashes after a library struct changes its layout](2026-11-19-a-stale-example-build-crashes-after-a-library-layout-change.md) | build, swiftpm, incremental, examples, crash, linux |
 | 2026-11-19 | [An explicit config still reads the environment through its stored defaults](2026-11-19-an-explicit-config-still-reads-the-environment.md) | testing, environment, transport-env-config, sync-tables, ci, test-selection |
 | 2026-11-19 | [A harness with its loops off must order the work it starts](2026-11-19-a-harness-with-its-loops-off-must-order-the-work-it-starts.md) | testing, differential, determinism, golden, sync, hold-points |

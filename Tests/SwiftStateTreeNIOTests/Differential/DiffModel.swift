@@ -11,12 +11,11 @@ import SwiftStateTreeMessagePack
 
 // MARK: - Cells
 
-/// In-turn sync on or off for the land's manager.
+/// The land's sync mode. One case since the adapter's off mode was removed (#546 L2c); it stays
+/// so the golden file names (`inturn.<encoding>.<land>`) stay stable.
 enum DiffSyncMode: String, CaseIterable, Codable, Sendable, Comparable {
     case inTurn = "inturn"
-    case legacy
 
-    var inTurnSync: Bool { self == .inTurn }
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
@@ -55,8 +54,6 @@ struct DiffCellRule: Sendable {
     let landKinds: [DiffLandKind]
 
     static let all = DiffCellRule(syncModes: DiffSyncMode.allCases, landKinds: DiffLandKind.allCases)
-    static let inTurnOnly = DiffCellRule(syncModes: [.inTurn], landKinds: DiffLandKind.allCases)
-    static let legacyOnly = DiffCellRule(syncModes: [.legacy], landKinds: DiffLandKind.allCases)
 
     /// Every cell of the rule, before any mask.
     var cells: [DiffCell] {
@@ -112,10 +109,6 @@ enum DiffStep: Sendable {
     /// As `bump`, but its change is applied and not synced: the keeper's drain on a tickless
     /// land, one tick on a tick land, with no sync cycle asked for.
     case bumpUnsynced(String, requestID: String, amount: Int)
-    /// As `bump`, under a held sync cycle: its sync request is skipped as busy, and the retry
-    /// that skip schedules waits for the held cycle, so it isn't awaited here (`settleSpawned`
-    /// awaits it).
-    case bumpUnderCycle(String, requestID: String, amount: Int)
     /// `name` sends a `DiffHeldAction` whose resolver waits on gate `key`; the runner waits for
     /// the resolver's arrival.
     case held(String, requestID: String, key: Int)
@@ -128,8 +121,8 @@ enum DiffStep: Sendable {
     case settleJobs
     /// `settleJobs` without waiting for the answers: for a scenario that holds an answer at
     /// `heldAt` across the sync, so the sync goes first. It first reaches `heldAt`: the answer's
-    /// slot is filled, so the pass that applied the job has run (on a legacy tickless land a task
-    /// of its own, which the jobs wait doesn't cover), and the sync carries its state change.
+    /// slot is filled, so the pass that applied the job has run, and the sync carries its state
+    /// change.
     case settleJobsBeforeAnswers(heldAt: DiffHold)
     /// Waits for every spawned task and the background syncs, then applies the inputs they
     /// queued.
