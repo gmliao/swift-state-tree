@@ -235,7 +235,8 @@ struct TransportAdapterSyncLagTests {
         await adapter.onConnect(sessionID: fixture.sessionID, clientID: fixture.clientID)
         try await simulateRouterJoin(
             adapter: adapter, keeper: keeper,
-            sessionID: fixture.sessionID, clientID: fixture.clientID, playerID: fixture.playerID
+            sessionID: fixture.sessionID, clientID: fixture.clientID, playerID: fixture.playerID,
+            waitsByEvent: true
         )
         return fixture
     }
@@ -323,6 +324,27 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagPendingMarks == 0)
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
         #expect(await f.adapter.syncLagSlowConsumerCloses == 0)
+    }
+
+    @Test("The standalone firstSync's commit is the attempt's initialSyncCommitted, with no flip (#555)")
+    func standaloneFirstSyncCommitIsInitialSyncCommitted() async throws {
+        typealias Key = TransportAdapter<SyncLagTestState>.JoinAttemptKey
+        // Opt-in: without it the commit records nothing.
+        let plain = try await makeFixture()
+        #expect(try await plain.stateFrames().map(\.op) == [1])
+        #if DEBUG
+        #expect(await !plain.adapter.initialSyncCommittedForTesting(Key(sessionID: plain.sessionID, attempt: nil)), "not captured")
+        #endif
+
+        // The keeper has no transport here, so the join's first view is the standalone firstSync.
+        let f = try await makeFixture(captureJoinCommits: true)
+        #expect(try await f.stateFrames().map(\.op) == [1], "the firstSync was sent")
+        // The capture is DEBUG-only: outside DEBUG the hooks answer `false`.
+        #if DEBUG
+        #expect(await f.adapter.initialSyncCommittedForTesting(Key(sessionID: f.sessionID, attempt: nil)))
+        #expect(await !f.adapter.joinFlippedForTesting(Key(sessionID: f.sessionID, attempt: nil)), "no in-turn flip")
+        #expect(await !f.adapter.initialSyncCommittedForTesting(Key(sessionID: SessionID("other"), attempt: nil)))
+        #endif
     }
 
     @Test("Silent past 3 s: frames are withheld; acks resuming bring a resync")
@@ -651,7 +673,7 @@ struct TransportAdapterSyncLagTests {
         gate.open()
     }
 
-    @Test("Legacy join whose first view doesn't encode ends the land: 4016, never 4012, no retry (#535 row 13)", arguments: [true, false])
+    @Test("A join whose first view doesn't encode ends the land: 4016, never 4012, no retry (#535 row 13)", arguments: [true, false])
     func unencodableFirstViewEndsTheLand(syncSequence: Bool) async throws {
         let f = try await makeFixture(
             syncSequence: syncSequence, failViewEncode: true, keeperTransport: true

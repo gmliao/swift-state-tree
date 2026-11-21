@@ -181,14 +181,14 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await fixture.adapter.sessionIDs(for: .broadcast) == [])
     }
 
-    @Test("The in-turn keeper admits inside its join; otherwise the adapter does; exactly once")
+    @Test("The in-turn keeper admits inside its join, exactly once")
     func admissionPointAndExactlyOnce() async throws {
         let fixture = await makeFixture(tick: true)
         let adapter = fixture.adapter
         let s1 = SessionID("s1")
         let result = try await join(fixture, session: s1, client: ClientID("c1"), player: PlayerID("p1"))
-        let keeperAdmits = adapter.runsSyncPhaseInTurn(of: fixture.keeper)
-        #expect(await adapter.inTurnAdmissionCountForTesting == (keeperAdmits ? 1 : 0))
+        try #require(adapter.runsSyncPhaseInTurn(of: fixture.keeper))
+        #expect(await adapter.inTurnAdmissionCountForTesting == 1)
         #expect(await adapter.isJoining(s1))
         #expect(await adapter.getPlayerSlot(for: PlayerID("p1")) == result.playerSlot)
         #expect(await adapter.membershipSessionIDs(for: PlayerID("p1")) == [s1])
@@ -205,7 +205,8 @@ struct TransportAdapterJoiningAdmissionTests {
 
         let s1 = SessionID("s1"), p1 = PlayerID("p1")
         _ = try await join(fixture, session: s1, client: ClientID("c1"), player: p1)
-        #expect(await adapter.inTurnAdmissionCountForTesting == (adapter.runsSyncPhaseInTurn(of: fixture.keeper) ? 2 : 0))
+        try #require(adapter.runsSyncPhaseInTurn(of: fixture.keeper))
+        #expect(await adapter.inTurnAdmissionCountForTesting == 2)
         // An input turn syncs only on request; a sync while the joiner is joining reaches the
         // earlier player (the OnJoin's change) and not the joiner.
         await adapter.syncNow()

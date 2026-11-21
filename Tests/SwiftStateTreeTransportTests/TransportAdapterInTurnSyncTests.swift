@@ -691,7 +691,7 @@ struct TransportAdapterInTurnSyncTests {
     }
 
     @Test("cadence: with tick ≠ sync interval, state frames keep the sync loop's interval (stepped)")
-    func cadenceMatchesLegacy() async throws {
+    func cadenceKeepsSyncLoopInterval() async throws {
         // A simulated 1 s with ticks every 20 ms and syncs every 50 ms, stepped by hand: the
         // loops run hourly (so the keeper has both tasks) and never fire. At an instant with
         // both, the sync runs first, with the tick due now: it folds into that tick turn.

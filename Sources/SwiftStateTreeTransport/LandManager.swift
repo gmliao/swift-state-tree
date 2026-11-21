@@ -656,7 +656,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
         
         // Configure record metadata (deterministic re-evaluation). After the adapter exists: the
-        // sync stream is recorded only with in-turn sync on, which the adapter decides.
+        // sync stream is recorded only when the keeper's transport runs the phase in turn.
         if let recorder = await keeper.getReevaluationRecorder() {
             // Extract RNG seed from LandKeeper's services for deterministic re-evaluation
             // RNG seed is critical when RNG is used in game logic (e.g., monster spawning, player positioning)

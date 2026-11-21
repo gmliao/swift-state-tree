@@ -588,7 +588,7 @@ struct LandKeeperInputTurnTests {
     }
 
     @Test("a throwing input fails alone: its caller's error, nothing pending, the inputs around it applied")
-    func throwSemanticsMatchLegacy() async throws {
+    func throwingInputFailsAlone() async throws {
         let f = try await InputTurnFixture.make()
         var errors = 0
         try await f.add(1)

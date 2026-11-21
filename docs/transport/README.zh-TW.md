@@ -43,7 +43,7 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - session 仍在加入中時送給它的 targeted event（指定 session、client 或 player）會先保留，在它的 firstSync 之後依送出順序立即送達。broadcast event 不保留：firstSync 已經反映了它們。
   - 每個加入中的 session 最多保留 256 個 event／256 KiB（`JOIN_HELD_EVENTS_MAX`、`JOIN_HELD_EVENTS_MAX_BYTES`）。超過時 join 以 `JOIN_EVENT_OVERFLOW` 失敗，session 會被關閉；client 重新連線後取得全新的狀態。
   - 保留的 event 所描述的效果已經包含在 firstSync 裡。server event 是通知，同步的狀態才是真實來源：把 event 當成增量套用到自身狀態的 client 會重複計算。
-- client 在 join 完成期間送出的 frame（action、client event），不論在 JoinResponse 之前或剛收到之後，都會在 OnJoin 之後依送出順序套用。in-turn sync 開啟時，它們會等到 JoinResponse 與 firstSync 送出後，再逐一執行；之後的 frame 排在它們後面。
+- client 在 join 完成期間送出的 frame（action、client event），不論在 JoinResponse 之前或剛收到之後，都會在 OnJoin 之後依送出順序套用。它們會等到 JoinResponse 與 firstSync 排入送出佇列後，再逐一執行；之後的 frame 排在它們後面。
   - 每個 session 最多等待 256 個 frame／256 KiB（`JOIN_DEFERRED_INBOUND_MAX`、`JOIN_DEFERRED_INBOUND_MAX_BYTES`）。join 完成前超過時，join 以 `JOIN_INBOUND_OVERFLOW` 失敗；完成後、先前的 frame 仍在套用時超過，session 會收到 `INBOUND_OVERFLOW`。兩種情況 session 都會被關閉，因為 client 遺失了自己送出的 frame：它需重新連線並再次 join。
 - 會關閉 session 的 join 錯誤（`JOIN_INBOUND_OVERFLOW`、`INBOUND_OVERFLOW`、`JOIN_EVENT_OVERFLOW`，以及逾時或失敗的 join 的 `JOIN_DENIED`）會先寫入連線再關閉，最多等待 `FINAL_FRAME_CLOSE_TIMEOUT_MS`（預設 1000）。這保證的是交付順序：已停止讀取的 client 仍可能收不到該錯誤。沒有實作 `closeSessionAfterQueuedFrames` 的自訂 `Transport` 會立即關閉，可能遺失該錯誤。
 
@@ -152,9 +152,9 @@ PlayerSession 欄位優先序：
   - **tableId** 是 row pattern（`units.*`）的 path id，**leafPathId** 是 leaf（`units.*.hp`）的 path id。其他 patch 在同一 frame 中維持現有形式。
 - **Slot 與 generation：** 釋出的 slot 之後會被新的 create 再次使用，generation 加一。client 會拒絕：指向未綁定 slot 的 entry、在已綁定 slot 上的 create、generation 沒有大於該 slot 上一次的 create，以及任何不是範圍內精確整數的 slot、op 或 generation。
 - **第一份 view**（joiner 的或 resync 的）把每個 slot-addressed table 送成 `{}` 加上每個 row 一個 create，讓 client 得知所有綁定。
-- **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
+- **無法編碼的 row**（opcode JSON 中的非有限數）會以 `syncEncode` 結束 land：失敗的 cycle 不送出任何東西，與其他編碼無法承載的 patch 相同（見[失敗處理](../core/failure-handling.zh-TW.md)）。
 - **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
-- **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync 以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉，adapter 以 info 層級記錄原因（請求為預設值，因此無法使用它的 land，例如使用直接 join 的 land，也會記錄）。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。
+- **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy 以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉，adapter 以 info 層級記錄原因（請求為預設值，因此無法使用它的 land，例如使用直接 join 的 land，也會記錄）。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。
 - **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 除非加上 `--row-addressing off`，否則會宣告它。
 - **量測（`EncodingBenchmark`）。** row entry 只對經由 router 的 join 生效，所以 benchmark 的預設路徑（adapter 直接 join）不會有 row entry。`--join-through-router on` 讓 hero-defense multi-room 的房間成為 `LandRouter` 與 `WebSocketTransport` 後面的 land，每個玩家是一條假連線，以 `StateUpdateFeature.joinMetadata` join，並在每次量測的 sync 之後、計時區間之外，ack 它最後的 sync 序號。`--row-addressing` 跟隨 library 的預設：未指定時，在 `--join-through-router on` 且為 `-pathhash` 格式下為 on，其他情況為 off；`off` 關閉它；明確指定 `on` 時，沒有 router 或不是 `-pathhash` 格式會被拒絕，且 row entry 未生效時整次執行失敗。`--join-through-router` 預設 off，因此預設路徑的數字不變。router 路徑的位元組按連線計算，broadcast frame 依線上實際傳送的方式每個 session 各算一次，因此它的 `bytesPerSync` 與不加這個 flag 的執行**不可比較**。每筆結果的 `routerJoin` 記錄 `bytesCounted: perConnection`、land 實際生效的 features 與 row entry 是否生效；結果的 `config` 記錄指定的 `rowAddressing`（未指定時為 null）與 `rowAddressingResolved`。
 - **違反規則會關閉連線（TypeScript SDK）。** client 拒絕的 row entry（見上），或未協商 `rowAddressing` 就收到的 row entry，表示 client 的 view 已不可信。SDK 不會丟掉該 frame 繼續，而是以 **4013**（`invalidRowEntry`，由 client 送出，reason 為 `row entry: <rule>`，最多 123 個 UTF-8 位元組）關閉連線：
@@ -185,7 +185,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 |------|------|------|------|
 | `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；預設開啟（`fromEnvironment`）。關閉是否更快取決於 land（見 [FAQ](../FAQ.zh-TW.md)） |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | 使用單次 snapshot 擷取；設為 `false` 使用舊版 broadcast + per-player 路徑 |
-| `USE_SYNC_TABLES` | Bool | true | broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略），為預設路徑。兩種方式送出的 frame 位元組相同。設為 `false` 可退回 snapshot diff，此 fallback 之後會移除。在 row addressing 實際生效之處（預設情況下，即有 path hash 的 opcode encoding、in-turn sync 與經由 router 的 join），`USE_SYNC_TABLES=false` 沒有作用，每個這樣的 land 啟動時會記錄一次警告；要在那裡跑 snapshot diff fallback，須同時設 `ROW_ADDRESSING=false`。其他情況（json、直接 join）`false` 仍會選用 fallback。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
+| `USE_SYNC_TABLES` | Bool | true | broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略），為預設路徑。兩種方式送出的 frame 位元組相同。設為 `false` 可退回 snapshot diff，此 fallback 之後會移除。在 row addressing 實際生效之處（預設情況下，即有 path hash 的 opcode encoding 與經由 router 的 join），`USE_SYNC_TABLES=false` 沒有作用，每個這樣的 land 啟動時會記錄一次警告；要在那裡跑 snapshot diff fallback，須同時設 `ROW_ADDRESSING=false`。其他情況（json、直接 join）`false` 仍會選用 fallback。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
 | `PER_PLAYER_SYNC_TABLES` | Bool | true | per-player 欄位（`.broadcast` 與 `.serverOnly` 以外的任何 policy）改在 typed per-player tables 上做 diff（每位玩家一組），不再於每次 sync 擷取 per-player snapshot。只要 typed sync tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。只要 policy 只依欄位的值與玩家而定，且該 land 從未有 sync 轉換 throw、也未有 frame 編碼失敗，兩種方式送出的 frame 位元組相同。設為 `false` 可退回 per-player snapshot diff |
 | `TYPED_LEAF_VALUES` | Bool | true | 在 typed sync tables 上，內建 leaf 型別（數值、`Bool`、`String`、各 ID 型別、DeterministicMath 的 atomic 型別及其 optional）的欄位變更時，改以型別專屬的轉換取代通用轉換。只要 tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。兩種方式送出的 frame 位元組相同。設為 `false` 可關閉 |
 | `SYNC_STRATEGY` | String | `delta` | `delta` 只送變更欄位；`full-snapshot` 每次同步送每個接收者的完整視圖（量測用基線，非正式模式） |
@@ -215,7 +215,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `HANDSHAKE_FRAME_MAX_BYTES`（Int，預設 8192；0 停用；負數或非整數使用預設值；對應 `NIOLandServerConfiguration.maxHandshakeFrameBytes`，`nil` 表示不限制）：session 在 join 被接受（admitted）之前可送出的最大 frame。在那之前，不論 land 用哪種編碼，每個 frame 都以 JSON 解碼，而 JSON 物件 frame 的解碼成本遠高於它的大小所顯示的（#594）；一個 join 只有數百 bytes。超過上限的 frame 在解析之前就被拒絕：session 收到 `INVALID_MESSAGE_FORMAT` 作為最後一個 frame，接著以 1009（Message Too Big）關閉，拒絕之後它送出的 frame 一律丟棄。land 已經在處理中的 join（CanJoin、admission）不會被中斷：它會完成，接著玩家離開，與 client 在那個時間點斷線相同（#241）。join 之前的空 frame，或在上限內的非 JSON frame，只回錯誤、不關閉 session，但會計入 `HANDSHAKE_REFUSED_FRAME_BUDGET`。admission 之後的 frame 不受此限制。
 - `HANDSHAKE_REFUSED_FRAME_BUDGET`（Int，預設 8；0 停用；負數或非整數使用預設值；對應 `NIOLandServerConfiguration.maxRefusedHandshakeFrames`，`nil` 表示不限制）：session 在 join 被接受（admitted）之前，最多可以有幾個 frame 被拒絕。admission 之前每個收到錯誤的 frame 都會計入：空的、非 JSON 或無法解碼的 frame，join 以外的訊息，以及被拒絕的 join（`JOIN_IN_PROGRESS`、房間不存在或已滿、CanJoin 拒絕）。超過之後再被拒絕的那個 frame，會先收到它的錯誤作為最後一個 frame，接著以 1008（Policy Violation）關閉。大小上限限制單一 frame 的解碼成本；這個上限限制一條連線能送幾個這樣的 frame。client 只送一個 join，只有在同一條連線上另一個 view 的 join 還在進行時才會多送幾個，遠低於這個上限。**要重試被拒絕的 join，app 應該重新連線**，不要在同一條連線上反覆送 join：超過上限連線就會被關閉。限制建立連線的速率仍然是 server 前面 proxy 的工作。
 - `JOIN_TIMEOUT_MS`（Int，預設 12000；0 停用；負數或非整數使用預設值）：join 的端到端時限（#104）。從 join 請求起算，涵蓋 land 查找或建立，以及在 land membership 佇列中的等待，直到 keeper 的 join 開始為止；在 turn 內完成的 join，其 flip 之後等待的是剩下的時限。超過時限的 join 會收到 `JOIN_DENIED` "Join timed out"，後接所在階段（`during land lookup`、`waiting for admission` 或 `waiting for the flip`），作為最後一個 frame，session 隨後關閉；重試要用新連線。客戶端的 join 逾時要大於它（CLI 為 15 秒，`CLI_JOIN_TIMEOUT_MS`），客戶端才會先收到錯誤。不經 router 的 join（benchmark handle 的 `performJoin`），從 admission 起算時限，用於 flip 的等待。
-  - **已開始的 keeper join 不受此時限限制**（#241）。逾時只作用於尚未開始的 admission。已在 keeper join 中的會讓它完成，因為中斷它會破壞 membership 佇列的順序。它自己的上限是 resolver 時限：CanJoin、同一玩家被取代之 session 的 OnLeave，以及 OnJoin，每組最多 `RESOLVER_TIMEOUT_MS`（5 秒），合計最多 15 秒。land 的第一個 join 中，keeper 的 join 還要等 land 初始化，最多 `RESOLVER_INIT_TIMEOUT_MS`（30 秒）。因此最壞情況是 keeper join 開始前花掉的時間（小於時限），加 15 秒，第一個 join 再加 30 秒，超過 CLI 的 15 秒。已開始的 join 之後，turn 內的 flip 等待剩下的時限，可能已經是零；legacy 路徑沒有 flip 等待。
+  - **已開始的 keeper join 不受此時限限制**（#241）。逾時只作用於尚未開始的 admission。已在 keeper join 中的會讓它完成，因為中斷它會破壞 membership 佇列的順序。它自己的上限是 resolver 時限：CanJoin、同一玩家被取代之 session 的 OnLeave，以及 OnJoin，每組最多 `RESOLVER_TIMEOUT_MS`（5 秒），合計最多 15 秒。land 的第一個 join 中，keeper 的 join 還要等 land 初始化，最多 `RESOLVER_INIT_TIMEOUT_MS`（30 秒）。因此最壞情況是 keeper join 開始前花掉的時間（小於時限），加 15 秒，第一個 join 再加 30 秒，超過 CLI 的 15 秒。已開始的 join 之後，turn 內的 flip 等待剩下的時限，可能已經是零。
   - **flip 自己的逾時是下限。** 它經過 land 的 membership 佇列，排在前面的工作可能延後它。
   - **其他關閉可能先到。** join 被 admit 之後，session 也可能在 flip 等待結束前就被結束：客戶端在等待期間送出超過 join 的 inbound 上限時的 `JOIN_INBOUND_OVERFLOW`，或 keepalive 的 pong 逾時（`WS_PONG_TIMEOUT_MS`，close code 1001），後者不送錯誤 frame。因此未完成的 join，客戶端不一定會看到 `JOIN_DENIED`。
 - `JOIN_FLIP_TIMEOUT_MS`（已棄用，將移除）：請改設 `JOIN_TIMEOUT_MS`。若有設定，它仍會在時限內限制 flip 的等待，router 並記錄棄用警告。
@@ -251,7 +251,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 | 計數器 | 意義 |
 |---|---|
-| `syncCycles` | commit 了 plan 的 sync cycle（兩種路徑皆計）：其他計數器的分母 |
+| `syncCycles` | commit 了 plan 的 sync cycle：其他計數器的分母 |
 | `syncSkipsBacklog` | 因 writer back-pressure 而略過的 cycle |
 | `syncDeferredTurns` | `syncSkipsBacklog` 中：因 back-pressure 而延後的 in-turn sync phase |
 | `syncSkipsBusy` | 恆為 `0`：in-turn 的同步請求是一個 turn，不會被拒。保留此欄位是為了不改變 profile 格式 |
