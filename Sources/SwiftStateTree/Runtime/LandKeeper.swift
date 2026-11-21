@@ -828,6 +828,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         outputCollector.syncRequestsByTick.keys.sorted()
     }
 
+    /// Tests only: the ticks of the events still in the output collector, one entry per event.
+    func emittedEventTicksForTesting() -> [Int64] {
+        outputCollector.emittedEvents.map(\.tickId).sorted()
+    }
+
     /// Inputs `applyPendingItem` skipped because the destroy handlers had started (tests read it;
     /// every append path checks `isDraining`, so it stays 0).
     private(set) var inputsSkippedAfterDestroy = 0
