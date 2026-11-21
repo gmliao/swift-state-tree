@@ -15,13 +15,40 @@ actor FollowUpActor: TurnActor {
     nonisolated let clock: TestClock
 
     let maxReleases: Int
+    /// Where each continuation job started, as a count of the machine's log lines.
+    nonisolated let jobs = JobLog()
 
     init(fixture: Fixture = Fixture(), maxReleasesPerBatch: Int = 64) {
         let clock = TestClock(fixture: fixture)
         self.fixture = fixture
         self.clock = clock
         self.maxReleases = maxReleasesPerBatch
-        self.core = Self.makeCore(fixture, clock, maxReleasesPerBatch)
+        let core = Self.makeCore(fixture, clock, maxReleasesPerBatch)
+        let jobs = self.jobs
+        // Between steps (the job starts before its segment), so the read is allowed. It opens
+        // "job #n" too, so a test can wait for a job without polling.
+        core.onContinuationJobForTesting = { [unowned core] in
+            jobs.mark(core.read { $0.log.count })
+            fixture.openCounted("job")
+        }
+        self.core = core
+    }
+
+    /// Two entries in one actor turn, so no job runs between them.
+    func sendBoth(_ first: FollowUpMachine.Input, _ second: FollowUpMachine.Input) {
+        send(first)
+        send(second)
+    }
+
+    /// The machine's log, cut where each continuation job started: element 0 is what came
+    /// before the first job, element n what job n logged (up to the next job, or the end).
+    func logByJob() -> [[String]] {
+        let log = core.read { $0.log }
+        var cuts = jobs.marks
+        cuts.append(log.count)
+        var parts = [Array(log[0 ..< cuts[0]])]
+        for index in 0 ..< cuts.count - 1 { parts.append(Array(log[cuts[index] ..< cuts[index + 1]])) }
+        return parts
     }
 
     static func makeCore(_ fixture: Fixture, _ clock: TestClock, _ maxReleases: Int) -> TurnCore<FollowUpMachine> {
@@ -171,5 +198,23 @@ final class RegistrationLog: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries
+    }
+}
+
+/// Where each continuation job started, written by the core's job hook.
+final class JobLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var starts: [Int] = []
+
+    func mark(_ logCount: Int) {
+        lock.lock()
+        starts.append(logCount)
+        lock.unlock()
+    }
+
+    var marks: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return starts
     }
 }

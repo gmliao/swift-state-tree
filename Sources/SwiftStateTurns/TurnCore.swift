@@ -18,8 +18,10 @@ public struct TurnStats: Sendable, Equatable {
     public var droppedSends = 0
     /// Completions and deadlines from another core (a replaced one), dropped.
     public var foreignCompletions = 0
-    /// Batches whose released inputs were left for a later batch by the budget.
-    public var drainContinuations = 0
+    /// Continuation jobs scheduled: by a batch whose released inputs were left for a later batch
+    /// by the budget, by one that left `.afterBatch` follow-ups due, or by one that did both.
+    /// At most one is pending at a time.
+    public var continuationJobs = 0
     /// Calls answered with `CancellationError` under `.cancelsCall`.
     public var cancelledCalls = 0
     /// Follow-ups armed and not yet stepped, consumed or closed.
@@ -138,10 +140,12 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var nextInput: UInt64 = 0
+    /// A continuation job (`continueBatch`) is scheduled: one for the drain's capped releases
+    /// and the due `.afterBatch` follow-ups both.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
-    @usableFromInline var drainScheduled = false
+    @usableFromInline var continuationScheduled = false
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
@@ -166,12 +170,7 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var timerTasks: [M.Key: (generation: UInt64, task: Task<Void, Never>)] = [:]
-    /// A job is scheduled to step the due `.afterBatch` follow-ups.
-    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
-    @exclusivity(unchecked)
-    #endif
-    @usableFromInline var followUpJobScheduled = false
-    /// Follow-ups taken by the current follow-up job, to step in this batch.
+    /// Follow-ups taken by the current continuation job at its start, to step in this batch.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
@@ -194,6 +193,15 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onQuiescenceRegistrationForTesting: (() -> Void)?
+    /// Tests: called once at the start of each continuation job, before it takes the due
+    /// follow-ups, in every build configuration; a test sees the job boundaries with it.
+    /// It runs on the actor, between steps, after the job's flag clears and before the job takes
+    /// the due follow-ups. Observe-only: a hook that called `send` or `query` would run a nested
+    /// segment there, ahead of the capture. It costs one nil check per job, not per segment.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onContinuationJobForTesting: (() -> Void)?
     // Debug builds fill these (`effectsByInput`). Stored in every build, because inlined code
     // in a client compiled in another configuration may name them.
     /// The case name of the input stepping now.

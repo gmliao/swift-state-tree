@@ -241,7 +241,7 @@ struct OrderedChecksTests {
         #expect(Array(s.log.prefix(3)) == ["begin 1", "abort 1", "abandoned 1 keyEnded"])
         #expect(Array(s.log.dropFirst(3)) == (0..<40).map { "step \($0)" } + ["step 999"])
         #expect(s.flushed == Array(0..<40) + [999])
-        #expect(s.stats.drainContinuations >= 4)
+        #expect(s.stats.continuationJobs >= 4)
         #expect(segments.allSatisfy { $0 <= 8 })
         #expect(segments.reduce(0, +) == 41)
     }

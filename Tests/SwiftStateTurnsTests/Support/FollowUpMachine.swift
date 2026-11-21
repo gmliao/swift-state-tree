@@ -15,6 +15,8 @@ indirect enum Op: Sendable {
     case readNow
     /// A request under `key` that holds key 99 until its gate opens.
     case hold(gate: String, key: Int = 1, deadlineSeconds: Int64 = 3600)
+    /// A request under `key` that holds nothing; it closes when its gate opens.
+    case request(gate: String, key: Int = 1)
     case timer(key: Int = 1, seconds: Int64)
     /// The next `handleAbandoned` for a follow-up runs this script (once).
     case onAbandoned([Op])
@@ -68,6 +70,8 @@ struct FollowUpMachine: TurnMachine {
         case gateResult(String)
         /// A normal input that waits behind key 99 (held by a `.hold` request).
         case parked(String)
+        /// `parked`, which runs a script when it steps.
+        case parkedScript(String, [Op])
         case released(String)
     }
 
@@ -104,7 +108,7 @@ struct FollowUpMachine: TurnMachine {
         // A follow-up's input asks to wait behind key 99: the core steps it as a control input anyway.
         case .ran: return .normal(waitsFor: 99, belongsTo: nil)
         case .script: return .normal(waitsFor: nil, belongsTo: nil)
-        case .parked: return .normal(waitsFor: 99, belongsTo: nil)
+        case .parked, .parkedScript: return .normal(waitsFor: 99, belongsTo: nil)
         case .gateResult, .released, .controlScript: return .control
         }
     }
@@ -126,6 +130,9 @@ struct FollowUpMachine: TurnMachine {
             break
         case .parked(let label):
             log.append("parked \(label)")
+        case .parkedScript(let label, let ops):
+            log.append("parked \(label)")
+            run(ops, &turn)
         }
     }
 
@@ -171,6 +178,8 @@ struct FollowUpMachine: TurnMachine {
                 log.append("now")
             case .hold(let gate, let key, let deadline):
                 turn.request(.work(gate), for: key, holding: .untilRequestCloses(99, deadline: .seconds(deadline)))
+            case .request(let gate, let key):
+                turn.request(.work(gate), for: key)
             case .timer(let key, let seconds):
                 turn.timer(at: .seconds(seconds), for: key, .released("timer"))
             case .onAbandoned(let then):

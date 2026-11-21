@@ -9,7 +9,7 @@
 // its batch; a call is waited for until it has stepped, queued or been answered; a completion,
 // a deadline or a timer is waited for by the `notify` its step starts. With the large batch
 // budget a seed gives one order, run after run. Every third seed runs with a budget of 2, so a
-// drain continues in a job of its own and interleaves with the operations that follow; those
+// drain continues in the core's continuation job and interleaves with the operations that follow; those
 // seeds keep the invariants but not one fixed schedule.
 
 import Foundation
