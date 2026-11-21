@@ -725,7 +725,7 @@ After L2d-2 a live keeper whose transport doesn't opt in would silently receive 
 - **`ReleasedLandTransport`:** the keeper installs it itself, bypassing `setTransport`'s check. Under (r) it is exempt by construction; under (c1) it needs the two methods; under (c2) nothing changes.
 - **Replay transports:** none in production. The test fake on `.reevaluation` keepers (`LandKeeperReevaluationOutputModeTests:41`) is exempt by mode under (r), untouched under (c2), and needs the two methods under (c1).
 
-**Decided (the maintainer, 2026-11-21): (r) in L2d-2 and (c1) in L2d-3.** (r): `preconditionFailure` at `init(transport:)` and `setTransport` on a live keeper when `runsSyncPhaseInTurn(of: self)` is false, in release too, with a message that says why; `nil`, `ReleasedLandTransport` and `.reevaluation` keepers are exempt, and the check applies only while `!destructionFinished`. (c1): with the legacy deletions, L2d-3 removes the defaults of `runsSyncPhaseInTurn(of:)` and `runSyncPhaseInTurn(…)`, so a conformer without the in-turn path doesn't compile; the fakes are fixed from the compile errors. Both go under "Public API" and "Behavior" in their PR bodies.
+**Decided (the maintainer, 2026-11-21): (r) in L2d-2 and (c1) in L2d-3.** (r): `preconditionFailure` at `init(transport:)` and `setTransport` on a live keeper when `runsSyncPhaseInTurn(of: self)` is false, in release too, with a message that says why; `nil`, `ReleasedLandTransport` and `.reevaluation` keepers are exempt, and the check applies only while `!destructionFinished`. **Superseded in L2d-2: `fatalError`, not `preconditionFailure`.** In `-O` builds `preconditionFailure` stops without printing its message, so it can't say why in release; `fatalError` prints in every build, as the turn core's runtime stops do (`RuntimeStopTests`). The message names the land and the transport type. (c1): with the legacy deletions, L2d-3 removes the defaults of `runsSyncPhaseInTurn(of:)` and `runSyncPhaseInTurn(…)`, so a conformer without the in-turn path doesn't compile; the fakes are fixed from the compile errors. Both go under "Public API" and "Behavior" in their PR bodies.
 
 **Recommendation (rev 8): (r) in L2d-2.** It is the only option that closes the case that can't be typed: the attach to a wrong keeper or executor. It costs no signature, and it fails fast at the attach rather than at the first silent turn.
 - (c1) adds boilerplate and closes nothing.
@@ -805,6 +805,15 @@ The bookkeeping sentence becomes "…the freeze accounting in `debugEndWork` and
 AGENTS.md:156's "on a tickless land with in-turn sync" becomes "on a tickless land".
 
 The freeze drain was checked: LK:1531–1559 loops on `debugInFlightWork > 0, debugActiveGeneration == generation`, and writes `debugDrainWaiters` and re-tests after each await. L2d doesn't touch it.
+
+#### 3.8.12 Corrections found while implementing L2d-2
+
+- **Line numbers.** §3.8.4's table is 38 lines low from LK:1262 on, because L2d-1 grew the file, and §3.5's older table is further off. Read both as historical; the code is the reference.
+- **`runSyncRequests` (§3.8.4's table).** The row says "`.reevaluation`: today's call". The base's fallback was `else if mode == .live`, so a re-evaluation keeper made no call there. L2d-2 deletes the fallback, and the sync loop's trailing `syncNowFromTransport`, instead of narrowing them to `.reevaluation`: no live keeper reaches them, and a re-evaluation keeper has no transport. A request left for the flush still runs as a sync-only turn.
+- **No `.inputDrain` hold on a tick land.** §3.8.8 gives `DrainTurnTests`' tick-land tests a hold at `.inputDrain`, which is the tickless drain's start. Tick-land tests hold at `.turnRecord`, inside the tick turn's record step; `LandKeeperDebugFreezeTests` and `ResolverDeliveryTests` do too.
+- **No fake "only observes state".** §3.8.8 lets a fake switch to `transport: nil` where it only observes state. Every live non-opting fake observed something `nil` loses (at least `onLandDestroyed`). Fates: 9 opt in, 6 are deleted and their holds move to keeper hold points, 1 is kept (`.reevaluation`).
+- **Actor fakes can't opt in as actors.** The in-turn requirements are synchronous; on an actor they would be `nonisolated` and couldn't record. Each converted fake becomes a `final class` that is `@unchecked Sendable` and guards its state with a lock, and its reads lose their `await`.
+- **The settle fence.** L2d-1's settle required the attached transport, so a keeper never attached was refused as released although its requested turns sync through the adapter that asked. L2d-2 gives the settle the requested turns' rule (`acceptsSyncTurn`): the port runs in turn for this keeper and is its sync port, which a settle binds when none is.
 
 #### 3.8.11 Lessons consulted
 
