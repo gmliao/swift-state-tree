@@ -401,6 +401,22 @@ struct ClosedGatePendingFailureTests {
         await land.keeper.waitUntilDrained()
     }
 
+    @Test("a freeze's settle after a noted failure ends the land with it before its phase (#704, #546 L2d-1)")
+    func settleAfterTheNoteEndsTheLand() async throws {
+        let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let (submit, failing) = try await holdAtFailureSubmit(land, "settle") {
+            try await land.sendAction(requestID: "a")
+        }
+        // The settle's keeper turn reads the mailbox first: the land ends with A's failure while
+        // A's submit is still held, and the settle doesn't freeze.
+        let froze = (try? await land.adapter.debugFreeze()) != nil
+        #expect(!froze, "the settle doesn't freeze a land that ended")
+        #expect(land.keeper.failure?.kind == .responseEncode,
+                "the noted failure, in the settle's turn: \(String(describing: land.keeper.failure))")
+        try await releaseAndDrain(land, submit, failing)
+    }
+
     @Test("a batch [A, a failure item, B]: A applied but gets landClosed, B is dropped with landClosed (#704)")
     func failureItemInTheBatchClosesEveryCaller() async throws {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)

@@ -20,7 +20,8 @@ import Testing
 final class Notes: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
-    private var waiting: [String: [(Int, CheckedContinuation<Void, Never>)]] = [:]
+    private var waiting: [String: [(count: Int, id: UInt64, continuation: CheckedContinuation<Void, Never>)]] = [:]
+    private var nextWaiter: UInt64 = 0
 
     func post(_ name: String) {
         let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
@@ -28,7 +29,7 @@ final class Notes: @unchecked Sendable {
             counts[name] = count
             var ready: [CheckedContinuation<Void, Never>] = []
             waiting[name]?.removeAll { entry in
-                if entry.0 <= count { ready.append(entry.1); return true }
+                if entry.count <= count { ready.append(entry.continuation); return true }
                 return false
             }
             return ready
@@ -40,15 +41,37 @@ final class Notes: @unchecked Sendable {
         lock.withLock { counts[name] ?? 0 }
     }
 
-    /// Returns once `name` has been posted at least once.
+    /// `wait(name)` under the hang bound: false when `name` isn't posted within it, so a
+    /// regression fails the seed instead of parking the run. The bound cancels the wait, which
+    /// then resumes, so nothing stays parked after it.
+    func reach(_ name: String) async -> Bool {
+        await withinTurnHangBound { () -> Bool in
+            await self.wait(name)
+            return true
+        } != nil
+    }
+
+    /// Returns once `name` has been posted at least once, or once its task is cancelled.
     func wait(_ name: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let posted = lock.withLock { () -> Bool in
-                if (counts[name] ?? 0) >= 1 { return true }
-                waiting[name, default: []].append((1, continuation))
-                return false
+        let id = lock.withLock { () -> UInt64 in
+            nextWaiter += 1
+            return nextWaiter
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock { () -> Bool in
+                    if (counts[name] ?? 0) >= 1 || Task.isCancelled { return true }
+                    waiting[name, default: []].append((count: 1, id: id, continuation: continuation))
+                    return false
+                }
+                if resumeNow { continuation.resume() }
             }
-            if posted { continuation.resume() }
+        } onCancel: {
+            let cancelled = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                guard let index = waiting[name]?.firstIndex(where: { $0.id == id }) else { return nil }
+                return waiting[name]?.remove(at: index).continuation
+            }
+            cancelled?.resume()
         }
     }
 }
@@ -257,12 +280,12 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             guard let seq = view.pending.randomElement(using: &random) else { continue }
             op = "complete \(seq)"
             fixture.open("work \(seq)")
-            await notes.wait("done \(seq)")
+            if !(await notes.reach("done \(seq)")) { failures.append("after `\(op)`: done \(seq) never posted") }
         case 52 ..< 58:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "deadline \(seq)"
             fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
-            await notes.wait("abandoned \(seq)")
+            if !(await notes.reach("abandoned \(seq)")) { failures.append("after `\(op)`: abandoned \(seq) never posted") }
         case 58 ..< 63:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "cancel \(seq)"
@@ -313,7 +336,7 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             guard let (timerOwner, seq) = view.timers.randomElement(using: &random) else { continue }
             op = "fire \(seq) on \(timerOwner)"
             fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
-            await notes.wait("fired \(seq)")
+            if !(await notes.reach("fired \(seq)")) { failures.append("after `\(op)`: fired \(seq) never posted") }
         case 97, 98:
             op = "close"
             await actor.send(.close)
@@ -365,7 +388,10 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
         let rest = await actor.view()
         for seq in rest.pending {
             fixture.open("work \(seq)")
-            await notes.wait("done \(seq)")
+            guard await notes.reach("done \(seq)") else {
+                failures.append("done \(seq) never posted after its worker returned")
+                break
+            }
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
         // Invariant 20: the wait returns once every follow-up stepped or closed.
@@ -381,7 +407,16 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
     }
     // End everything (cancelling the deadline and timer tasks); every queued call is answered.
     if !(await actor.view()).ended { await actor.send(.endAll) }
-    for call in calls { await call.task.value }
+    // One bound for every call of the seed: a regression that never answers them costs one
+    // bound, not one per call.
+    let tasks = calls.map(\.task)
+    let ended = await withinTurnHangBound { () -> Bool in
+        for task in tasks { await task.value }
+        return true
+    }
+    if ended == nil {
+        failures.append("a call's task never ended within the hang bound")
+    }
     let final = await actor.view()
     // Invariant 10: each call answered once, and its answer matches whether it stepped.
     for call in calls {

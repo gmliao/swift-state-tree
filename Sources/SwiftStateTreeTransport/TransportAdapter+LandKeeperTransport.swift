@@ -5,7 +5,7 @@ import SwiftStateTree
 
 // MARK: - LandKeeperTransport Protocol Conformance
 
-extension TransportAdapter: LandKeeperTransport {
+extension TransportAdapter: LandKeeperTransport, LandKeeperSettlePort {
     public func sendEventToTransport(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
         // TransportAdapter.sendEvent already accepts SwiftStateTree.EventTarget
         // and handles the conversion internally
@@ -89,6 +89,18 @@ extension TransportAdapter: LandKeeperTransport {
         }
     }
     
+    /// Called by the keeper inside its settle turn (#546 L2d-1), on the shared executor.
+    /// `assumeIsolated` traps off that executor.
+    package nonisolated func runSettlePhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        settle: InTurnSettle,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        assumeIsolated { adapter in
+            adapter.runSettlePhaseInTurnIsolated(state: state, settle: settle, recording: recording)
+        }
+    }
+
     /// The land failed (#535): the output gate closes, in the failing segment.
     public nonisolated func closeOutputs(for failure: LandFailure) {
         outputGate.close(failure)

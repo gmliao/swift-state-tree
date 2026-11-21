@@ -237,19 +237,80 @@ public struct InTurnSyncOutput: Sendable {
     /// Events are still queued after a committed phase (kept by it, or queued after it): on a
     /// land without periodic sync the keeper then requests one sync-only turn (#546 L2a).
     package let keepsEvents: Bool
+    /// What a settle phase (`LandKeeperSettlePort.runSettlePhaseInTurn`) did; nil for any other
+    /// phase.
+    package let settle: InTurnSettleCommit?
 
     /// A phase that made no sync-stream entries.
     public init(_ result: InTurnSyncResult) {
         self.result = result
         self.syncStream = []
         self.keepsEvents = false
+        self.settle = nil
     }
 
-    package init(_ result: InTurnSyncResult, syncStream: [SyncStreamDraft], keepsEvents: Bool = false) {
+    package init(
+        _ result: InTurnSyncResult,
+        syncStream: [SyncStreamDraft],
+        keepsEvents: Bool = false,
+        settle: InTurnSettleCommit? = nil
+    ) {
         self.result = result
         self.syncStream = syncStream
         self.keepsEvents = keepsEvents
+        self.settle = settle
     }
+}
+
+/// The debug freeze settle a keeper's settle turn runs (#546 L2d-1): the freeze generation it
+/// settles, passed only to that turn's phase call, so no other phase sees it.
+package struct InTurnSettle: Sendable, Equatable {
+    package let generation: UInt64
+
+    package init(generation: UInt64) {
+        self.generation = generation
+    }
+}
+
+/// What the transport's settle phase did, in the keeper's settle turn.
+package enum InTurnSettleCommit: Sendable, Equatable {
+    /// The phase planned and committed the copy. `clearDirtyFlags`: as
+    /// `InTurnSyncResult.committed`'s. `membershipEpoch`: read in the same segment, so a join or
+    /// leave after it isn't in the copy.
+    case committed(membershipEpoch: UInt64, clearDirtyFlags: Bool)
+    /// No members: the copy is the settle's, nothing was planned and the dirty flags stay.
+    case empty(membershipEpoch: UInt64)
+    /// The transport refused the settle; nothing was planned.
+    case refused(InTurnSettleRefusal)
+    /// The plan threw; nothing of it was committed or sent. The keeper ends the land in the turn.
+    case failed(LandFailure)
+}
+
+/// Why a settle turn ran no settle phase.
+package enum InTurnSettleRefusal: Sendable, Equatable {
+    /// The port isn't this keeper's in-turn settle port, or the freeze generation isn't the
+    /// transport's current one.
+    case notCurrent
+    /// The transport's output is closed (its land failed, or it was torn down).
+    case outputClosed
+    /// The writer holds a sync cycle's element again: the settle waits for it and retries.
+    case writerBusy
+    /// A direct `beginSync` holds the keeper's sync flag: the settle retries.
+    case syncInFlight
+}
+
+/// A transport that runs the debug freeze settle in its keeper's turn (#546 L2d-1). A package
+/// refinement, so `LandKeeperTransport` gains no public requirement; only `TransportAdapter`
+/// conforms.
+package protocol LandKeeperSettlePort: LandKeeperTransport {
+    /// The settle's sync phase, called by the keeper inside its settle turn, on the shared
+    /// executor: no frozen defer, no back-pressure deferral and no joiners. `output.settle`
+    /// says what it did.
+    func runSettlePhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        settle: InTurnSettle,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput
 }
 
 /// Why a sync-only turn was requested (`LandKeeper.syncTurnNow(via:reason:ticket:)`): for
@@ -268,6 +329,8 @@ package enum SyncTurnReason: Hashable, Sendable {
     /// The keeper's broadcast-only bridge (`syncBroadcastOnlyFromTransport`) on an in-turn
     /// adapter: a full sync-only phase covers broadcast-only changes (#546 L2b).
     case broadcastOnly
+    /// The debug freeze settle (`LandKeeper.settleTurn(via:fence:)`, #546 L2d-1).
+    case settle
 }
 
 /// What `LandKeeperTransport.runSyncPhaseInTurn` did.

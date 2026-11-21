@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTurns
+import Testing
 
 /// A model of the transport's side of a session: its connections, each with a generation, the
 /// player map, and the sessions it was asked to close. Slice 1 repeats these scenarios against
@@ -239,8 +240,11 @@ actor MembershipActor: TurnActor {
     }
 
     /// Returns once the machine's log has `count` lines (a control call).
-    func waitForLog(_ count: Int) async {
-        _ = try? await sendAndWait(.awaitLog(count), cancellation: .ignoresCancel)
+    /// Under the hang bound: a log that never gets there records an issue instead of parking
+    /// the test (the call is `.ignoresCancel`, so it is abandoned, not awaited).
+    func waitForLog(_ count: Int, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let call = Task { try await self.sendAndWait(.awaitLog(count), cancellation: .ignoresCancel) }
+        _ = await firstOrBound(call, sourceLocation: sourceLocation)
     }
 
     /// The keeper's segment at its insert when the join has no OnJoin input: it asks the

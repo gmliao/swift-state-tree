@@ -775,8 +775,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// neither blocks the current binding's nor clears its mark.
     private var inTurnDrainRetryBinding: SyncTurnTicket?
 
-    /// A turn wanted a sync phase while a legacy cycle (`beginSync` ... `endSync`: the debug
-    /// settle, a joiner's path) held the sync flag: `endSync` then runs a sync-only turn through
+    /// A turn wanted a sync phase while a legacy cycle (`beginSync` ... `endSync`, called
+    /// directly) held the sync flag: `endSync` then runs a sync-only turn through
     /// the port of the turn that set it, so the request is not lost. A latch that coalesces
     /// requests, not a counter.
     private var syncOnlyTurnAfterLegacyCycle: SyncTurnFollowUp?
@@ -1604,52 +1604,97 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         lastCommittedTickId
     }
 
-    /// What `debugSettleTurn` did.
-    package enum DebugSettleTurnOutcome<R: Sendable>: Sendable {
-        /// The copy was taken and `commit` ran, with the last committed tick read in the same job.
-        case ran(R, tickId: Int64)
+    /// The fence of a settle turn: the freeze generation it settles and its deadline.
+    package struct SettleFence: Sendable {
+        package let generation: UInt64
+        package let deadline: ContinuousClock.Instant
+
+        package init(generation: UInt64, deadline: ContinuousClock.Instant) {
+            self.generation = generation
+            self.deadline = deadline
+        }
+    }
+
+    /// What `settleTurn(via:fence:)` did.
+    package enum SettleTurnOutcome: Sendable {
+        /// The settle phase ran on `state`, the copy taken in the turn, with the last committed
+        /// tick and the transport's membership epoch read in the same segment. `planned`: false
+        /// for a land with no members (nothing was planned and the dirty flags stay).
+        case settled(state: State, tickId: Int64, membershipEpoch: UInt64, planned: Bool)
         /// The settle's deadline passed.
         case timedOut
         /// `generation` is no longer the active freeze, or the land isn't frozen.
         case released
-        /// The land failed or is draining (shutdown drains).
-        case closed
-        /// The adapter's `admit` refused.
-        case refused
+        /// The land isn't live, failed (its failure) or is draining (nil).
+        case closed(LandFailure?)
+        /// The transport refused the settle; nothing was planned.
+        case refused(InTurnSettleRefusal)
+        /// The settle's plan threw; the land ended in this turn on this failure.
+        case failed(LandFailure)
     }
 
-    /// An in-turn adapter's freeze settle as one synchronous keeper job (#546 L2b): the fence,
-    /// then the copy and its commit, with no `beginSync`, so the keeper's sync flag isn't taken
-    /// and no requested turn can latch behind it. The fence checks the deadline, that
-    /// `generation` is the active, frozen one, and that the land neither failed nor drains; then
-    /// `admit` (the adapter's checks, run in this job) returns whether to clear dirty flags, or
-    /// nil to refuse. The copy is taken, the flags cleared as `beginSync(clearDirtyFlags:)` would,
-    /// and `commit` runs with the copy, where it was read, and whether the sync stream is
-    /// recorded. Both closures run synchronously on this job (the adapter shares the keeper's
-    /// executor in-turn and enters through `assumeIsolated`; the keeper doesn't check that, so
-    /// only an in-turn adapter calls this).
+    /// The debug freeze settle as a sync-only turn (#546 L2d-1): the fence, then the settle
+    /// phase through `port`, in one synchronous segment.
     ///
-    /// Not a turn: no input is consumed and no turn kind is recorded (the settle's output is
-    /// recorded as `.legacyCycle`). It is one synchronous keeper job, so nothing interleaves
-    /// between the fence and the commit.
-    package func debugSettleTurn<R: Sendable>(
-        generation: UInt64,
-        deadline: ContinuousClock.Instant,
-        admit: @Sendable () -> Bool?,
-        commit: @Sendable (State, SyncReadPosition, Bool) -> R
-    ) -> DebugSettleTurnOutcome<R> {
-        guard ContinuousClock.now < deadline else { return .timedOut }
-        guard debugFrozen, debugActiveGeneration == generation else { return .released }
-        guard failure == nil, !isDraining else { return .closed }
-        guard let clearDirtyFlags = admit() else { return .refused }
-        let position = syncReadPosition()
-        let records = recordsSyncStream
-        let copy = state
-        if clearDirtyFlags {
-            state.clearDirty()
+    /// The fence, in order; a failing check returns without a phase or a state change: the land
+    /// is live and neither failed nor drains (`.closed`), the deadline (`.timedOut`), the
+    /// frozen generation (`.released`), `port` is the attached transport, runs in-turn here and
+    /// is a settle port (`.refused(.notCurrent)`), and no direct `beginSync` holds the sync flag
+    /// (`.refused(.syncInFlight)`; it never latches).
+    ///
+    /// The settle's own bookkeeping, not a requested turn's: it doesn't consume the pending
+    /// sync-only turn (which runs later, skips as frozen and leaves its sync to the resume),
+    /// doesn't reset the sync cadence or the join state, and arms no follow-up (the resume and
+    /// the adapter's kept-events check own those). A plan that throws ends the land in this turn.
+    package func settleTurn(via port: any LandKeeperTransport, fence: SettleFence) -> SettleTurnOutcome {
+        requestedSyncTurnsForTesting[.settle, default: 0] += 1
+        guard mode == .live, failure == nil, !isDraining else { return .closed(failure) }
+        // A failure a transport noted outside a turn ends the land first (#704): no phase runs,
+        // and a tickless land's turn still ends its record, as after a failed phase.
+        let markBeforeNote = recorderSubmissionCount
+        if applyPendingTransportFailure(), let failure {
+            enqueueTicklessTurnEnd(since: markBeforeNote)
+            return .failed(failure)
         }
-        let result = commit(copy, position, records)
-        return .ran(result, tickId: lastCommittedTickId)
+        guard ContinuousClock.now < fence.deadline else { return .timedOut }
+        guard debugFrozen, debugActiveGeneration == fence.generation else { return .released }
+        guard let transport,
+              ObjectIdentifier(transport as AnyObject) == ObjectIdentifier(port as AnyObject),
+              port.runsSyncPhaseInTurn(of: self),
+              let settlePort = port as? any LandKeeperSettlePort else {
+            return .refused(.notCurrent)
+        }
+        guard !isSyncing else { return .refused(.syncInFlight) }
+        inTurnProbeForTesting?("turn-begin")
+        inTurnSyncTurnKind = .syncOnly
+        defer { inTurnSyncTurnKind = .tick }
+        let mark = recorderSubmissionCount
+        let copy = state
+        let tickId = lastCommittedTickId
+        let output = settlePort.runSettlePhaseInTurn(
+            state: copy,
+            settle: InTurnSettle(generation: fence.generation),
+            recording: inTurnSyncRecording()
+        )
+        submitSyncStream(output.syncStream)
+        let outcome: SettleTurnOutcome
+        switch output.settle ?? .refused(.notCurrent) {
+        case let .committed(membershipEpoch, clearDirtyFlags):
+            if clearDirtyFlags { state.clearDirty() }
+            outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: true)
+        case let .empty(membershipEpoch):
+            outcome = .settled(state: copy, tickId: tickId, membershipEpoch: membershipEpoch, planned: false)
+        case let .refused(refusal):
+            outcome = .refused(refusal)
+        case let .failed(reported):
+            failLand(reported)
+            outcome = .failed(failure ?? reported)
+        }
+        // A tickless land's sync-only turn is its own turn record (#327); a tick land's settle
+        // output stays with the last committed tick's.
+        enqueueTicklessTurnEnd(since: mark)
+        inTurnProbeForTesting?("turn-end")
+        return outcome
     }
 
     /// Holds tickless intake while frozen. Returns when the freeze is released or the drain

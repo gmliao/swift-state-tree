@@ -505,11 +505,12 @@ struct TransportAdapterDebugFreezeTests {
         #expect(await f.keeper.isDebugFrozen() == false)
     }
 
-    @Test("A land that fails before the settle's keeper job ends the freeze as released and plans nothing")
+    @Test("A land that fails before the settle's keeper turn ends the freeze with that failure and plans nothing")
     func settleOfAFailedLandPlansNothing() async throws {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -522,10 +523,9 @@ struct TransportAdapterDebugFreezeTests {
         #expect(await f.keeper.waitForFailureForTesting())
         settle.open()
 
-        await #expect(throws: DebugFreezeError.released) {
-            try await freeze.value
-        }
-        #expect(await f.isStillDirty(), "the job's fence planned nothing")
+        // The turn's fence names the cause (#546 L2d-1), not `released`.
+        await expectLandFailure(.syncEncode) { try await freeze.value }
+        #expect(await f.isStillDirty(), "the turn's fence planned nothing")
         await f.adapter.installHolds(nil)
     }
 
@@ -575,11 +575,12 @@ struct TransportAdapterDebugFreezeTests {
         _ = await f.adapter.debugResume(freezeToken: response.freezeToken)
     }
 
-    @Test("A land shut down before the settle's keeper job ends the freeze as released and plans nothing")
+    @Test("A land shut down before the settle's keeper turn ends the freeze as closed and plans nothing")
     func settleOfAShutDownLandPlansNothing() async throws {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
         let settle = TestGate()
+        defer { settle.open() }
         await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
         try await f.makeDirty()
 
@@ -593,7 +594,8 @@ struct TransportAdapterDebugFreezeTests {
         try #require(f.keeper.isDraining)
         settle.open()
 
-        await #expect(throws: DebugFreezeError.released) {
+        // A draining land is closed (#546 L2d-1), not released.
+        await #expect(throws: LandInputRejection.landClosed) {
             try await freeze.value
         }
         #expect(await f.isStillDirty(), "the job's fence planned nothing")
@@ -614,5 +616,258 @@ struct TransportAdapterDebugFreezeTests {
         #expect(await f.keeper.currentState().getDirtyFields().contains("headline"), "settle cleared dirty flags without a diff")
         #expect(try await f.adapter.debugProjection(playerID: nil).state["headline"] == .string("dirty-while-empty"))
         _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
+    }
+
+    // MARK: The settle turn (#546 L2d-1)
+
+    @Test("While a settle is held before its keeper turn, an ordinary sync phase still defers to the resume and plans nothing")
+    func ordinaryPhaseKeepsTheFrozenDefer() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let settle = TestGate()
+        defer { settle.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        try await f.makeDirty()
+        await f.transport.clear()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await settle.waitForArrivals(1), "the settle didn't reach its keeper turn")
+        // The settle's context rides only in its own phase call: the ordinary phase keeps the
+        // frozen defer, so it skips, leaves its sync to the resume and plans nothing.
+        let result = await f.keeper.syncTurnNow(via: f.adapter, reason: .syncNow)
+        #expect(result == .skipped)
+        #expect(await f.adapter.debugFreezeState.deferredSyncNow, "the skipped phase left its sync to the resume")
+        #expect(await f.isStillDirty(), "the ordinary phase planned nothing")
+        #expect(patchCount(await f.aliceFrames()) == 0, "nothing was sent while the settle was held")
+        settle.open()
+
+        let response = try await freeze.value
+        #expect(await !f.isStillDirty(), "the settle committed")
+        #expect(patchCount(await f.aliceFrames()) > 0, "the settle sent its frames")
+        await f.adapter.installHolds(nil)
+        _ = await f.adapter.debugResume(freezeToken: response.freezeToken)
+    }
+
+    @Test("A released and refrozen freeze, the old settle held before its keeper turn: it is refused and publishes nothing over the new one's result")
+    func oldSettleWritesNothingAfterRefreeze() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let firstSettle = TestGate(), fired = TestGate()
+        defer { firstSettle.open(); fired.open() }
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.settleBeforeCommit, arrival: 1) { await firstSettle.arrive() }
+            .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
+            .hook)
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let first = Task { try await adapter.debugFreeze() }
+        try #require(await firstSettle.waitForArrivals(1), "the first settle didn't reach its keeper turn")
+        #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
+        let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
+        fired.open()
+        await timer.value
+
+        // The second freeze settles while the first is still held.
+        try await f.update(headline: "second-freeze", score: 9)
+        let second = try await f.adapter.debugFreeze()
+        let published = try #require(await f.adapter.debugFreezeState.settled)
+        #expect(published.state.headline == "second-freeze")
+
+        firstSettle.open()
+        await #expect(throws: DebugFreezeError.released) {
+            try await first.value
+        }
+        let after = try #require(await f.adapter.debugFreezeState.settled, "the old settle cleared the new result")
+        #expect(after.state.headline == "second-freeze", "the old settle wrote over the new result")
+        #expect(try await f.adapter.debugProjection(playerID: nil).state["headline"] == .string("second-freeze"))
+        await f.adapter.installHolds(nil)
+        _ = await f.adapter.debugResume(freezeToken: second.freezeToken)
+    }
+
+    @Test("A released and refrozen freeze, the old settle held before its publish: it committed, and its publish ticket keeps it off the new one's result")
+    func oldSettleHeldAtPublishWritesNothingAfterRefreeze() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let firstPublish = TestGate(), fired = TestGate()
+        defer { firstPublish.open(); fired.open() }
+        // The auto-resume is held where it fired, so the release lands only after the first
+        // settle's keeper turn committed and the settle waits at its publish.
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.settleBeforePublish, arrival: 1) { await firstPublish.arrive() }
+            .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
+            .hook)
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let first = Task { try await adapter.debugFreeze() }
+        try #require(await firstPublish.waitForArrivals(1), "the first settle didn't reach its publish")
+        #expect(await !f.isStillDirty(), "the first settle's keeper turn committed")
+        #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
+        let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
+        await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
+        fired.open()
+        await timer.value
+        #expect(await f.adapter.isDebugFrozen() == false, "the auto-resume released the first freeze")
+
+        // The second freeze settles while the first waits at its publish.
+        try await f.update(headline: "second-freeze", score: 9)
+        let second = try await f.adapter.debugFreeze()
+        let published = try #require(await f.adapter.debugFreezeState.settled)
+        #expect(published.state.headline == "second-freeze")
+
+        // Only the publish's ticket check keeps the first settle's copy out.
+        firstPublish.open()
+        await #expect(throws: DebugFreezeError.released) {
+            try await first.value
+        }
+        let after = try #require(await f.adapter.debugFreezeState.settled, "the old settle cleared the new result")
+        #expect(after.state.headline == "second-freeze", "the old settle wrote over the new result")
+        #expect(try await f.adapter.debugProjection(playerID: nil).state["headline"] == .string("second-freeze"))
+        await f.adapter.installHolds(nil)
+        _ = await f.adapter.debugResume(freezeToken: second.freezeToken)
+    }
+
+    @Test("A settle whose transport output closed before its keeper turn throws the closing failure and plans nothing")
+    func closedOutputSurfacesItsCause() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let settle = TestGate()
+        defer { settle.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await settle.waitForArrivals(1), "the settle didn't reach its keeper turn")
+        // Only the adapter's gate closes (as a standalone firstSync's failure does before the
+        // keeper applies it): the keeper hasn't failed, so only the settle phase can refuse.
+        f.adapter.outputGate.close(LandFailure(
+            kind: .syncEncode, detail: "closed by the test", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        settle.open()
+
+        await expectLandFailure(.syncEncode) { try await freeze.value }
+        #expect(await f.isStillDirty(), "the refused settle planned nothing")
+        await f.adapter.installHolds(nil)
+    }
+
+    @Test("A settle through a transport the keeper no longer has attached is refused as released and plans nothing")
+    func detachedTransportIsRefused() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let settle = TestGate()
+        defer { settle.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await settle.waitForArrivals(1), "the settle didn't reach its keeper turn")
+        await f.keeper.setTransport(nil)
+        settle.open()
+
+        await #expect(throws: DebugFreezeError.released) {
+            try await freeze.value
+        }
+        #expect(await f.isStillDirty(), "the refused settle planned nothing")
+        await f.adapter.installHolds(nil)
+    }
+
+    @Test("A settle that meets a direct beginSync retries after its endSync, then settles")
+    func directBeginSyncIsRetried() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let firstTry = TestGate(), retry = TestGate()
+        defer { firstTry.open(); retry.open() }
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
+            .on(.settleBeforeCommit, arrival: 1) { await firstTry.arrive() }
+            .on(.settleBeforeCommit, arrival: 2) { await retry.arrive() }
+            .hook)
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await firstTry.waitForArrivals(1), "the settle didn't reach its keeper turn")
+        _ = try #require(await f.keeper.beginSync(clearDirtyFlags: false), "the test holds the sync flag")
+        firstTry.open()
+        // Refused while the flag is held: the settle comes back to its keeper turn.
+        try #require(await retry.waitForArrivals(1), "the settle didn't retry")
+        #expect(await f.isStillDirty(), "the refused try planned nothing")
+        await f.keeper.endSync()
+        retry.open()
+
+        let response = try await freeze.value
+        #expect(await !f.isStillDirty(), "the retry settled")
+        await f.adapter.installHolds(nil)
+        _ = await f.adapter.debugResume(freezeToken: response.freezeToken)
+    }
+
+    @Test("The fence checks a failed land before the freeze generation: a failed and released land names its failure")
+    func fenceChecksClosedBeforeReleased() async throws {
+        let f = try await Fixture()
+        await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
+        let settle = TestGate()
+        defer { settle.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await settle.waitForArrivals(1), "the settle didn't reach its keeper turn")
+        await f.keeper.debugResume(generation: await f.adapter.debugFreezeState.generation)
+        await f.keeper.submitLandFailure(LandFailure(
+            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
+        ))
+        #expect(await f.keeper.waitForFailureForTesting())
+        settle.open()
+
+        await expectLandFailure(.syncEncode) { try await freeze.value }
+        #expect(await f.isStillDirty(), "the turn's fence planned nothing")
+        await f.adapter.installHolds(nil)
+    }
+
+    @Test("The fence checks the deadline before the freeze generation: an expired and released settle times out")
+    func fenceChecksDeadlineBeforeReleased() async throws {
+        let f = try await Fixture()
+        // Nothing is in flight and the writer is idle, so the drain and the writer wait pass at
+        // once; the turn's fence then finds the zero deadline passed.
+        await f.adapter.setDebugFreezeSettleDeadline(.zero)
+        let settle = TestGate()
+        defer { settle.open() }
+        await f.adapter.installHolds(HoldRegistry.at(.settleBeforeCommit) { await settle.arrive() })
+        try await f.makeDirty()
+
+        let adapter = f.adapter
+        let freeze = Task { try await adapter.debugFreeze() }
+        try #require(await settle.waitForArrivals(1), "the settle didn't reach its keeper turn")
+        await f.keeper.debugResume(generation: await f.adapter.debugFreezeState.generation)
+        settle.open()
+
+        await #expect(throws: DebugFreezeError.settleTimedOut) {
+            try await freeze.value
+        }
+        #expect(await f.isStillDirty(), "the turn's fence planned nothing")
+        await f.adapter.installHolds(nil)
+    }
+}
+
+/// Expects `body` to throw a `LandFailure` of `kind`.
+private func expectLandFailure(
+    _ kind: LandFailure.Kind,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ body: () async throws -> some Any
+) async {
+    do {
+        _ = try await body()
+        Issue.record("expected a land failure of kind \(kind)", sourceLocation: sourceLocation)
+    } catch let failure as LandFailure {
+        #expect(failure.kind == kind, sourceLocation: sourceLocation)
+    } catch {
+        Issue.record("expected a land failure of kind \(kind), got \(error)", sourceLocation: sourceLocation)
     }
 }

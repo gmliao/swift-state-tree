@@ -652,6 +652,8 @@ struct TransportAdapterKeptEventsDebugFreezeTests {
     @Test("An event queued after the settle's commit arrives once after resume")
     func eventKeptBySettleArrivesAfterResume() async throws {
         let f = try await KeptEventsFixture.make(.tickless)
+        // The settle runs only through the keeper's attached transport (#546 L2d-1).
+        await f.keeper.setTransport(f.adapter)
         try await f.set("score", 2)
 
         // The settle is the held one: the event is queued after its frame was built.
@@ -676,6 +678,8 @@ struct TransportAdapterKeptEventsDebugFreezeTests {
     @Test("A leave after the settle's commit sets membershipChanged")
     func leaveDuringSettleSendsFlagsMembership() async throws {
         let f = try await KeptEventsFixture.make(.tickless, members: ["a", "b"])
+        // The settle runs only through the keeper's attached transport (#546 L2d-1).
+        await f.keeper.setTransport(f.adapter)
         try await f.set("score", 3)
 
         // Hold the settle after its commit: its state copy is already taken.

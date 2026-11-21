@@ -603,6 +603,28 @@ struct TransportAdapterJoinFlipTests {
         #expect(await f.sent.kinds(for: ready.session) == ["joinResponse", "firstSync"])
     }
 
+    @Test("Tickless land: a freeze's settle plans no joiner; a ready join stays unflipped until the resume flips it (#546 L2d-1)")
+    func settlePlansNoJoiner() async throws {
+        let f = await makeFixture(tick: false)
+        // A joined member, so the land isn't empty and the settle's phase runs.
+        let member = SessionID("s0")
+        _ = try await joinInTurn(f, session: member, player: PlayerID("p0"))
+        let ready = try await readyUnflippedJoin(f, session: SessionID("s1"), player: PlayerID("p1"))
+        let freeze = try await f.adapter.debugFreeze()
+        let outbound = f.adapter
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
+        // The settle passes no joiners to its phase: the join is still joining, and its session
+        // got neither a JoinResponse nor a firstSync.
+        #expect(await f.adapter.isJoiningInTurn(ready.session), "the settle flipped the ready join")
+        #expect(await f.sent.kinds(for: ready.session).isEmpty, "the settle sent frames to the joiner")
+
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
+        try #require(await !f.adapter.isJoiningInTurn(ready.session), "the resume didn't flip the join")
+        #expect(try await ready.finish(f))
+        #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
+        #expect(await f.sent.kinds(for: ready.session) == ["joinResponse", "firstSync"])
+    }
+
     @Test("Resume, writer held, no periodic sync: step 2 is skipped; the writer-drain retry flips the join")
     func resumeLeavesJoinToTheDrainRetry() async throws {
         let f = await makeFixture(tick: false)

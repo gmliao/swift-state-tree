@@ -78,6 +78,13 @@ actor FollowUpActor: TurnActor {
         core.quiescenceWaitersForTesting
     }
 
+    /// Cancels `task` and consumes the pending follow-up of `slot` and `key` in one segment, so
+    /// the cancellation's hop to the actor runs after the settle that answers the waiter.
+    func cancelThenConsume(_ task: Task<Bool, Never>, _ slot: Slot = .a, key: Int = 1) {
+        task.cancel()
+        send(.script([.consume(slot, key: key)]))
+    }
+
     func deadlineTaskCount() -> Int {
         core.deadlineTasksForTesting
     }

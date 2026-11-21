@@ -30,8 +30,9 @@ extension Fixture {
     /// `waitUnlessCancelled`: a test may end with one of them parked at a gate on purpose.
     @discardableResult
     func reach(_ name: String, sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
+        let note = HangBoundTrip.issueNote
         let opened = await withinTurnHangBound { await self.waitUnlessCancelled(name) } ?? false
-        if !opened { Issue.record("\"\(name)\" never opened", sourceLocation: sourceLocation) }
+        if !opened { Issue.record(Comment(rawValue: "\"\(name)\" never opened" + note), sourceLocation: sourceLocation) }
         return opened
     }
 }
@@ -41,9 +42,10 @@ extension Fixture {
 /// after that: a wait whose own cancellation path is broken is abandoned parked, and the test
 /// fails instead of parking with it.
 func settled(_ task: Task<Bool, Never>, sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
+    let note = HangBoundTrip.issueNote
     guard let result = await raceHangBound(task) else {
         task.cancel()
-        Issue.record("a task the test awaits never ended", sourceLocation: sourceLocation)
+        Issue.record(Comment(rawValue: "a task the test awaits never ended" + note), sourceLocation: sourceLocation)
         return false
     }
     return result.get()
@@ -57,7 +59,9 @@ func bounded(_ wait: @escaping @Sendable () async -> Bool) async -> Bool {
 
 /// `task`'s result, or nil when the hang bound runs out or the test's task is cancelled first. It
 /// neither cancels `task` nor waits for it to end: a reader task and a timer race to resume one
-/// continuation, and a task that never ends leaves its reader parked, never awaited.
+/// continuation, and a task that never ends leaves its reader parked, never awaited. Once any
+/// wait in the process has run out its bound, later ones get `HangBoundTrip.tripped`'s short
+/// bound (see there).
 func raceHangBound<T: Sendable, E: Error>(_ task: Task<T, E>) async -> Result<T, E>? {
     let race = FirstOf<Result<T, E>?>()
     return await withTaskCancellationHandler {
@@ -65,8 +69,9 @@ func raceHangBound<T: Sendable, E: Error>(_ task: Task<T, E>) async -> Result<T,
             race.start(continuation)
             race.add(Task { race.finish(await task.result) })
             race.add(Task {
-                guard (try? await safeTaskSleep(for: turnTestHangBound)) != nil else { return }
-                race.finish(nil)
+                guard (try? await safeTaskSleep(for: HangBoundTrip.bound)) != nil else { return }
+                // Trip only when the timer won: a result that landed first leaves the bound as is.
+                if race.finish(nil) { HangBoundTrip.trip() }
             })
         }
     } onCancel: {
@@ -105,16 +110,18 @@ final class FirstOf<T: Sendable>: @unchecked Sendable {
         if cancelNow { racer.cancel() }
     }
 
-    func finish(_ value: T) {
+    /// True when this finish won: it resumed the continuation, or was kept for `start`.
+    @discardableResult
+    func finish(_ value: T) -> Bool {
         lock.lock()
         if done || !early.isEmpty {
             lock.unlock()
-            return
+            return false
         }
         guard let continuation else {
             early = [value]
             lock.unlock()
-            return
+            return true
         }
         done = true
         self.continuation = nil
@@ -123,5 +130,95 @@ final class FirstOf<T: Sendable>: @unchecked Sendable {
         lock.unlock()
         for racer in racers { racer.cancel() }
         continuation.resume(returning: value)
+        return true
     }
+}
+
+/// `task`'s result, or nil with an issue recorded when the hang bound runs out or the test is
+/// cancelled first. Unlike `settled`, it doesn't cancel `task`: a task that ignores cancellation
+/// (an `.ignoresCancel` call whose reply a regression holds back) loses the race, is abandoned
+/// parked, and is never awaited, so the test fails instead of parking with it. Keep
+/// `.ignoresCancel` where the case checks it; this only bounds the test's own wait.
+func firstOrBound<T: Sendable, E: Error>(
+    _ task: Task<T, E>,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async -> Result<T, E>? {
+    let note = HangBoundTrip.issueNote
+    let first = await raceHangBound(task)
+    if first == nil { Issue.record(Comment(rawValue: "a task the test awaits never ended" + note), sourceLocation: sourceLocation) }
+    return first
+}
+
+/// A call task's result under `firstOrBound`: a task that never ends reads as a failure
+/// (`TurnHangBoundExceeded`), after the issue is recorded, so `outcome(_:)` and its expectation
+/// see it.
+func boundedResult(
+    _ task: Task<Int, any Error>,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async -> Result<Int, any Error> {
+    await firstOrBound(task, sourceLocation: sourceLocation) ?? .failure(TurnHangBoundExceeded())
+}
+
+/// `call` run in a task of its own, under `firstOrBound`: for a file that makes no tasks itself
+/// (a machine's file, by the turns lint's machine-file rule).
+func firstOrBound<T: Sendable>(
+    sourceLocation: SourceLocation = #_sourceLocation,
+    call: @escaping @Sendable () async throws -> T
+) async -> Result<T, any Error>? {
+    await firstOrBound(Task { try await call() }, sourceLocation: sourceLocation)
+}
+
+/// `call` run in a task of its own, under `boundedResult`; see `firstOrBound(call:)`.
+func boundedResult(
+    sourceLocation: SourceLocation = #_sourceLocation,
+    call: @escaping @Sendable () async throws -> Int
+) async -> Result<Int, any Error> {
+    await boundedResult(Task { try await call() }, sourceLocation: sourceLocation)
+}
+
+/// What `boundedResult` answers for a task that never ended within the hang bound.
+struct TurnHangBoundExceeded: Error, CustomStringConvertible {
+    var description: String { "hang bound exceeded" }
+}
+
+/// Once one wait has run out the hang bound, the core under test is known to hang, so later
+/// waits in the process get 1 s instead of 60 s: a run whose tests make many waits one after
+/// another (orders in a loop, generated seeds) ends in about one bound, not one per wait. The
+/// first wait that ran out has recorded its issue; the later ones record theirs too.
+enum HangBoundTrip {
+    private static let lock = NSLock()
+    /// Guarded by `lock`.
+    nonisolated(unsafe) private static var wasTripped = false
+    static let tripped: Duration = .seconds(1)
+
+    static var bound: Duration {
+        lock.withLock { wasTripped } ? tripped : turnTestHangBound
+    }
+
+    /// Appended to an issue a wait records. Read before the wait starts, so it names the short
+    /// bound only for a wait that got it.
+    static var issueNote: String {
+        lock.withLock { wasTripped } ? " (within the 1 s bound left after an earlier wait ran out its bound)" : ""
+    }
+
+    static func trip() {
+        lock.withLock { wasTripped = true }
+    }
+}
+
+/// Runs a test's whole body in a task of its own under the hang bound: for a test whose waits
+/// can't go through the helpers above (lines inside a `// docs:` block stay as documented). A
+/// body that never ends records an issue, is cancelled and is abandoned, never awaited.
+func withinTestHangBound(
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ body: @escaping @Sendable () async throws -> Void
+) async throws {
+    let note = HangBoundTrip.issueNote
+    let task = Task { try await body() }
+    guard let result = await raceHangBound(task) else {
+        task.cancel()
+        Issue.record(Comment(rawValue: "the test's body never ended within the hang bound" + note), sourceLocation: sourceLocation)
+        return
+    }
+    try result.get()
 }

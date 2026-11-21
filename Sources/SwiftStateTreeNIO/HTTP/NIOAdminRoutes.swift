@@ -548,13 +548,17 @@ extension NIOAdminRoutes {
         }
 
         @Sendable func debugErrorResponse(_ error: Error, landID: String) throws -> NIOHTTPResponse {
+            // A settle of a land that failed (also by its own plan) or is closing names the cause.
+            if error is LandFailure || error as? LandInputRejection == .landClosed {
+                return try errorResponse(.invalidRequest, "The land failed or is closing: \(error)", status: .conflict, landID: landID)
+            }
             switch error as? DebugFreezeError {
             case .notFrozen:
                 return try errorResponse(.invalidRequest, "Land is not frozen", status: .conflict, landID: landID)
             case .settleTimedOut:
                 return try errorResponse(.internalError, "Drain or settle sync missed the deadline; the freeze was released", status: .serviceUnavailable, landID: landID)
             case .released:
-                return try errorResponse(.invalidRequest, "The freeze was released before its settle finished, or the land failed or is closing", status: .conflict, landID: landID)
+                return try errorResponse(.invalidRequest, "The freeze was released before its settle finished", status: .conflict, landID: landID)
             case nil:
                 return try errorResponse(.internalError, "Debug state operation failed: \(error)", status: .internalServerError, landID: landID)
             }
