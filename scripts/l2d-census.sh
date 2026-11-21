@@ -61,30 +61,28 @@ for entry in "${symbols[@]}"; do
   printf '%s' "$report"
 done
 
-# The listings below read with early-exit filters (`grep -q`, `awk … exit`): a writer cut off by
-# SIGPIPE must not end the script.
-set +e +o pipefail
-
 printf '\nMigration list: keepers built outside the core tests\n'
 { git grep -n -E 'LandKeeper(<[A-Za-z0-9_.]+>)?\($' "$ref" -- Sources Examples Tools 2>/dev/null || true
   git grep -n -E 'LandKeeper(<[A-Za-z0-9_.]+>)?\([a-z]' "$ref" -- Sources Examples Tools 2>/dev/null || true; } |
   sed -E "s#^$ref:##" | awk -F: '!seen[$1 FS $2]++' | sort -t: -k1,1 -k2,2n |
   while IFS=: read -r path line _; do
-    # The builder's argument list: up to the line that closes it (a line that is only `)`).
-    # A call on one line ends there; otherwise at the first line that starts with `)`.
-    args=$(git show "$ref:$path" </dev/null | sed -n "${line},\$p" |
-      awk 'NR == 1 { print; if ($0 ~ /\)[[:space:]]*$/) exit; next } { print } /^[[:space:]]*\)/ { exit }')
+    content=$(git show "$ref:$path" </dev/null)
+    # The builder's argument list: a call on one line ends there; otherwise at the first line
+    # that starts with `)`.
+    args=$(sed -n "${line},\$p" <<<"$content" |
+      awk 'done { next } NR == 1 { print; if ($0 ~ /\)[[:space:]]*$/) done = 1; next } { print } /^[[:space:]]*\)/ { done = 1 }')
     if grep -q -E 'transport:[[:space:]]*nil' <<<"$args"; then port="transport: nil"
     elif grep -q -E 'transport:' <<<"$args"; then port="transport: argument"
     else port="no transport:"; fi
-    if git show "$ref:$path" </dev/null | grep -q -E 'setTransport\('; then later="setTransport in file"; else later="never attached"; fi
+    if grep -q -E 'setTransport\(' <<<"$content"; then later="setTransport in file"; else later="never attached"; fi
     printf '  %s:%s  %s, %s\n' "$path" "$line" "$port" "$later"
   done
 
 printf '\nCore tests: keepers built per file (no setTransport in the file = portless)\n'
 { git grep -c -E 'LandKeeper(<[A-Za-z0-9_.]+>)?\(' "$ref" -- Tests 2>/dev/null || true; } | sed -E "s#^$ref:##" |
   while IFS=: read -r path count; do
-    if git show "$ref:$path" </dev/null | grep -q -E 'setTransport\(|transport:[[:space:]]*[A-Za-z(]'; then kind="attaches"; else kind="portless"; fi
+    content=$(git show "$ref:$path" </dev/null)
+    if grep -q -E 'setTransport\(|transport:[[:space:]]*[A-Za-z(]' <<<"$content"; then kind="attaches"; else kind="portless"; fi
     printf '  %-80s %3d  %s\n' "$path" "$count" "$kind"
   done | sort -k3,3 -k1,1
 
