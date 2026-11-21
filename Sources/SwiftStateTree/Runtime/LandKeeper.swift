@@ -473,10 +473,32 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// after it (a land whose initialization failed before it was wired) would never be
     /// released (#346).
     public func setTransport(_ transport: LandKeeperTransport?) {
+        if !destructionFinished {
+            Self.refuseTransportWithoutInTurnPhase(transport, mode: mode, landID: actualLandID ?? definition.id, keeper: self)
+        }
         let attached = destructionFinished ? releasedTransport : transport
         self.transport = attached
         transportRecordsFolds = attached?.recordsInTurnSyncFolds ?? false
         if transport != nil, !destructionFinished { noteTransportBound() }
+    }
+
+    /// Stops the process if a live keeper is handed a transport that can't run its sync phase in
+    /// turn for it (#546 L2d): every live keeper syncs through its turns, so such a transport would
+    /// get no output at all. Exempt: no transport, the released placeholder, a re-evaluation keeper.
+    /// A `fatalError`, not a `precondition`: it must stop, with its message, in every build.
+    private nonisolated static func refuseTransportWithoutInTurnPhase(
+        _ transport: LandKeeperTransport?,
+        mode: LandMode,
+        landID: String,
+        keeper: AnyObject
+    ) {
+        guard mode == .live, let transport, !(transport is ReleasedLandTransport) else { return }
+        guard !transport.runsSyncPhaseInTurn(of: keeper) else { return }
+        fatalError(
+            "LandKeeper(\(landID)): a live keeper's transport must run its sync phase in turn for this keeper; "
+                + "\(type(of: transport)).runsSyncPhaseInTurn(of:) returned false. Attach the TransportAdapter "
+                + "built for this keeper, or no transport (#546 L2d)"
+        )
     }
 
     /// The destruction made its last call to the transport (`notifyTransportDestroyedAndRelease`).
@@ -1066,6 +1088,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute OnInitialize handler and then start tick/sync loops.
         // Initialization is performed lazily (first entry point call) to avoid escaping self in init.
+
+        // Before OnInitialize can run: a refused transport stops the process here (#546 L2d).
+        Self.refuseTransportWithoutInTurnPhase(transport, mode: mode, landID: landID ?? definition.id, keeper: self)
 
         // Kick off initialization eagerly to preserve existing semantics:
         // - OnInitialize runs when Land is created
