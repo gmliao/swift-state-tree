@@ -466,13 +466,13 @@ struct SyncStreamProducerDropTests {
         #expect(tick.encodeDropScopes == ["events"])
     }
 
-    @Test("A freeze settle records a legacy-cycle output, located at its tick; stream indices increase across kinds")
-    func legacyCycleAndStreamOrder() async throws {
+    @Test("A freeze settle records a sync-only output, located at its tick; stream indices increase across kinds")
+    func settleAndStreamOrder() async throws {
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: .json)
         try await f.join()                 // seed
         await f.tick()                     // tick output, observed 0
         await f.tick()                     // tick output, observed 1
-        let frozen = try await f.adapter.debugFreeze()  // legacy-cycle output (settle)
+        let frozen = try await f.adapter.debugFreeze()  // the settle's sync-only output
         _ = await f.adapter.debugResume(freezeToken: frozen.freezeToken)
         await f.adapter.onDisconnect(sessionID: f.session, clientID: f.client)  // clear
         let stream = try await f.stream()
@@ -483,10 +483,12 @@ struct SyncStreamProducerDropTests {
             case .marker(let marker): return marker.kind.rawValue
             }
         }
-        #expect(kinds == ["seed", "tick", "tick", "legacyCycle", "clear"])
-        let legacy = try #require(outputs(stream).first { $0.turnKind == .legacyCycle })
-        #expect(legacy.observedTickId == frozen.tickId)
-        #expect(legacy.observedTickId == 1)
+        #expect(kinds == ["seed", "tick", "tick", "syncOnly", "clear"])
+        // Matched by the settle's stream index: the entry after the two ticks.
+        let settle = try #require(outputs(stream).first { $0.streamIndex == 3 })
+        #expect(settle.turnKind == .syncOnly)
+        #expect(settle.observedTickId == frozen.tickId)
+        #expect(settle.observedTickId == 1)
         let sequences = stream.map {
             switch $0 {
             case .output(let output): return output.sequence

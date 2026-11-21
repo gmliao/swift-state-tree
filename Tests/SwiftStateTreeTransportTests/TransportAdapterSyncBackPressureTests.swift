@@ -218,6 +218,8 @@ struct TransportAdapterSyncBackPressureTests {
     @Test("the debug settle is not skipped: it waits for the writer to drain, then syncs")
     func settleWaitsForDrain() async throws {
         let f = try await BPFixture.make("bp-settle", encoding: .json)
+        // The settle runs only through the keeper's attached transport (#546 L2d-1).
+        await f.keeper.setTransport(f.adapter)
         try await f.blockWithCycleInWriter(stamp: 1)
         try await f.set(2)
 
