@@ -472,6 +472,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// destruction has finished keeps its released placeholder instead: a transport attached
     /// after it (a land whose initialization failed before it was wired) would never be
     /// released (#346).
+    ///
+    /// On a live keeper, a transport whose `runsSyncPhaseInTurn(of:)` is `false` for this keeper
+    /// stops the process (`fatalError`, every build): a live keeper syncs only in its turns, so it
+    /// would get no output (#546 L2d). An adapter built for another keeper is refused the same
+    /// way. `nil` and re-evaluation keepers are exempt.
     public func setTransport(_ transport: LandKeeperTransport?) {
         if !destructionFinished {
             Self.refuseTransportWithoutInTurnPhase(transport, mode: mode, landID: actualLandID ?? definition.id, keeper: self)
@@ -1004,7 +1009,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///     and the loop phase offset all use the instance ID instead of the land type. Without
     ///     it, `setLandID(_:)` sets the ID later, racing with that initialization.
     ///   - transport: Optional transport interface for sending events and syncing state.
-    ///                If not provided, operations will be no-ops (useful for testing).
+    ///                If not provided, a live keeper still runs its turns and records their
+    ///                outputs, but delivers none. On a live keeper a transport that can't run the
+    ///                sync phase in turn for it stops the process, as `setTransport(_:)` does; a
+    ///                `TransportAdapter` needs the keeper first, so attach it with
+    ///                `setTransport(_:)`.
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
     public init(
         definition: LandDefinition<State>,

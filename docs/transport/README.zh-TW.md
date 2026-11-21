@@ -69,9 +69,9 @@ PlayerSession 欄位優先序：
 
 ### 掛載 transport
 
-Keeper 透過掛載在它身上的 transport 送出 frame，掛載方式是 `init(transport:)` 或 `setTransport(_:)`。在 live land 上，keeper 在自己的 turn 內執行 sync phase，因此 transport 必須能為這個 keeper 在 turn 內執行該 phase。`TransportAdapter` 對它所建立時對應的 keeper 可以做到。
+Keeper 透過掛載在它身上的 transport 送出 frame。Live keeper 建立時不帶 transport，因為 `TransportAdapter` 需要先有 keeper；之後再用 `setTransport(_:)` 掛上 adapter。在 live land 上，keeper 在自己的 turn 內執行 sync phase，因此 transport 必須能為這個 keeper 在 turn 內執行該 phase。`TransportAdapter` 對它所建立時對應的 keeper 可以做到。
 
-Live keeper 在掛載時檢查這一點。回答 `runsSyncPhaseInTurn(of:) == false` 的 transport 會讓 process 停止，訊息中寫明 land 與 transport 的型別。Release build 也一樣。為其他 keeper 建立的 adapter 也會以同樣方式被拒絕。
+Live keeper 在掛載時檢查這一點；若在 `init(transport:)` 傳入 transport，也會在那裡檢查。回答 `runsSyncPhaseInTurn(of:) == false` 的 transport 會讓 process 停止，訊息中寫明 land 與 transport 的型別。Release build 也一樣。為其他 keeper 建立的 adapter 也會以同樣方式被拒絕。
 
 限制：可以不掛 transport（`nil`），此時 keeper 會記錄輸出，但不送出任何東西。Re-evaluation keeper 不受檢查，land 銷毀後的掛載也不受檢查。
 
