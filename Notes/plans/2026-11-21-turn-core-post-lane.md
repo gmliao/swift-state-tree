@@ -14,6 +14,7 @@
   - `.cancelsCall`'s policy read: the control or normal choice must depend on the input alone (§3.4);
   - Q5 = `fatalError` (§3.5).
 - Nit: "set-once" is now "the first pending report wins".
+- Prior art (the maintainer): Unix signal delivery at a safe point, receive livelock and NAPI's budget, check-then-sleep, and FIFO across two takes, each tied to the section it shapes.
 
 **Rev 2** (Review's NOT GO on rev 1: 5 must-fix, 10 should, 2 nit):
 - §3.2, §3.6: the lane lives on the core. The driver's take and a step's `turn.takeReports()` see one ordered queue, so FIFO holds across a mid-step take. A mid-step take is an environment read, like `turn.now`, with a replay source (§3.9) (MF 1, way (b)).
@@ -48,6 +49,21 @@ When LandKeeper moves onto `TurnCore` (#700), that box should be a capability of
   - An enqueue that finds the mailbox idle schedules it with a compare-and-set on its status, which avoids both a lost wakeup and a double run.
   - The shape proposed here is the same: a second queue, taken before each step, and scheduled by the post that finds it empty.
 - **Erlang/OTP 28 priority messages ([EEP 76](https://www.erlang.org/eeps/eep-0076), [OTP 28 highlights](https://www.erlang.org/blog/highlights-otp-28/)).** A receiver opts in with `alias([priority])`, and messages a sender marks `priority` through that alias go ahead of ordinary ones. Selected exit and monitor signals can be priority messages too. Two points carry over: the receiver opts in, and the lane is for a few control messages, not for traffic.
+- **Unix signals: delivery at a safe point.**
+  - The kernel never delivers a signal in the middle of an instruction. It checks the pending flag (`TIF_SIGPENDING`) on the way back to user mode (`exit_to_user_mode_loop`), where the task's state is consistent.
+  - The lane's safe point is the step boundary: `takeLaneBeforeStep()`, before each step (§3.4).
+  - A step's own `turn.takeReports()` is the exception, a delivery inside the unit of work, and it needs its own justification. Here that is #732's case: a failure that lands during a turn must stop the turn's outputs, which go out after the step. The read is made only at checkpoints the machine names (§3.6, §4.1), and it is recorded as an environment read for replay (§3.9).
+- **Receive livelock, and NAPI's budget.**
+  - Mogul and Ramakrishnan ("[Eliminating Receive Livelock in an Interrupt-driven Kernel](https://www.usenix.org/conference/usenix-1996-annual-technical-conference/eliminating-receive-livelock-interrupt-driven)", USENIX 1996) showed that work run at a fixed higher priority than everything else (there, interrupt-driven packet input) starves the rest under load: the system spends all its time accepting work it never completes.
+  - Reports step ahead of everything (§3.4), so a stream of reports, or a report whose handler posts its successor, is the same hazard.
+  - The fix follows [Linux NAPI](https://docs.kernel.org/next/networking/napi.html): a poll has a budget, and work left when the budget runs out is rescheduled, not looped over. The lane's budget is NAPI's: one budget per entry, the poll, spent by the helper and by every check in that entry's segment. The epilogue is its single owner: when reports remain at the budget's end, it reschedules them with a wake, including when the budget was already zero (§3.3, §3.4).
+  - Test 11 pins the split: a self-reposting report splits exactly at the budget.
+- **Lost wakeup: check-then-sleep.**
+  - The classic race is a sleeper that checks a condition, then sleeps, while the waker sets the condition and wakes between the two, so the wake is lost. The check and the act have to be atomic:
+    - xv6's `sleep` holds the condition's lock until the sleeper is on the wait channel;
+    - Linux's `prepare_to_wait` registers the waiter first, and the waiter re-checks the condition after.
+  - The lane's version is on the producer's side. `post`'s "was the lane empty" check and its append are one critical section (§3.3). The mutant splits them with a hook between (§5, test 4).
+- **FIFO across two takes.** A consumer that detaches a batch and steps it from a private copy lets a nested consumer (a step's `takeReports()`) take later reports ahead of the batch's rest. So a check dequeues one head at a time, bounded by the watermark read at the check (§3.4), and never holds a detached batch.
 - **Swift actors** have no second lane. Task priority changes scheduling but promises nothing about which job runs first, so an awaited call can't promise "before your next step".
 - **The repository's own precedents:**
   - the keeper's `isDraining`, and #732's `LandFailureMailbox`;
@@ -295,7 +311,7 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
    - `gateReturned` of a follow-up the report consumes is stale;
    - `submit`'s input is refused when the report closes the core.
 10. Reentrancy and exception 1: a report whose output's `flush` sends an input and asks a query, with another report posted before the query. The send queues and steps after the report. The query answers in place with no check, and the other report steps at the next check. A recursion counter stays at 1.
-11. A finite self-reposting script (each report's handler posts the next, five in all), with capacity 2. Each batch steps two, a wake runs the next, and the chain ends where its script ends, in three batches.
+11. NAPI's split: a finite self-reposting script (each report's handler posts the next, five in all), with capacity 2. Each batch steps exactly two, which is the budget. The epilogue's wake runs the next batch, and the chain ends where its script ends, in three batches (2, 2, 1). The job hook and `TurnStats` witness the batch boundaries.
 12. A machine with `LaneReport == Never` compiles with no `lane`, and its `TurnsBench` cells are unchanged (§3.8).
 13. Replay with the same outputs, live then replayed with the recorded takes:
     - a mid-step take in an input's step;
