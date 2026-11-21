@@ -191,6 +191,12 @@ let package = Package(
             path: "Tests/SwiftStateTurnsMacrosTests"
         ),
         // The turn core's cost against a direct baseline (release only)
+        // #716 S0 scratch only: the depth probe (Tools/DepthProbe). Never merged.
+        .executableTarget(
+            name: "DepthProbe",
+            dependencies: ["SwiftStateTree", "SwiftStateTreeMessagePack"],
+            path: "Tools/DepthProbe"
+        ),
         .executableTarget(
             name: "TurnsBench",
             dependencies: ["SwiftStateTurns"],
