@@ -18,7 +18,7 @@ Tests/SwiftStateTreeTests/DebugProjectionWireShapeTests.swift helper-poll 1
 Tests/SwiftStateTreeTests/InitializeResolverFailureTests.swift yield-poll 2
 Tests/SwiftStateTreeTests/LandDSLTests.swift helper-poll 1
 Tests/SwiftStateTreeTests/LandDSLTests.swift sleep-poll 1
-Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift helper-poll 4
+Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift helper-poll 3
 Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift yield-poll 1
 Tests/SwiftStateTreeTests/LandKeeperLoopPhaseOffsetTests.swift clock-poll 1

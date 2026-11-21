@@ -34,8 +34,8 @@ public struct InTurnSyncFold: Sendable, Equatable {
 /// Transport layer, while Transport layer depends on Core.
 ///
 /// The keeper awaits `sendEventToTransport` and `syncBroadcastOnlyFromTransport` in ordered
-/// delivery: with in-turn sync off, a tickless land's passes deliver one after another, in apply
-/// order. An implementation must not await a keeper input (a join, a leave, an action or a
+/// delivery: on a re-evaluation keeper's legacy path (no live keeper takes it since #546 L2d), a
+/// tickless land's passes deliver one after another, in apply order. An implementation must not await a keeper input (a join, a leave, an action or a
 /// client event) from those two calls: that input's pass delivers behind the call's own
 /// delivery, which waits for it, so both hang. Start the input in a task of its own instead,
 /// without awaiting it there. `syncNowFromTransport` isn't ordered this way.
@@ -94,10 +94,13 @@ public protocol LandKeeperTransport: Sendable {
 
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
-    /// `true` only when in-turn sync is on for this transport and it is attached to that keeper
-    /// (identity) and runs on its serial executor. A keeper asks this once per
-    /// turn; a transport attached to another keeper, or with in-turn sync off, answers `false`, so
-    /// no keeper ever reaches an `assumeIsolated` that would trap.
+    /// `true` only when this transport is attached to that keeper (identity) and runs on its
+    /// serial executor. A keeper asks this once per turn; a transport attached to another keeper
+    /// answers `false`, so no keeper ever reaches an `assumeIsolated` that would trap.
+    ///
+    /// A live keeper also asks it at the attach (`init(transport:)`, `setTransport(_:)`): `false`
+    /// there stops the process, because a live keeper syncs only in its turns (#546 L2d). The
+    /// default answers `false`, so a live keeper's transport must implement it.
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool
 
     /// Admits `sessionID` as joining `playerID`, in the keeper's join (#69).

@@ -67,6 +67,14 @@ PlayerSession field priority:
 - diff: Only send changes (path-based patches)
 - firstSync: Sent once after player's cache is first established
 
+### Attaching a transport
+
+A keeper sends its frames through the transport attached to it. A live keeper is created with no transport, because `TransportAdapter` needs the keeper first, and the adapter is then attached with `setTransport(_:)`. On a live land the keeper runs the sync phase inside its own turns, so the transport must run that phase there for this keeper. `TransportAdapter` does, for the keeper it was built for.
+
+A live keeper checks this at the attach, and at `init(transport:)` when a transport is passed there. A transport that answers `runsSyncPhaseInTurn(of:) == false` stops the process with a message that names the land and the transport type. This happens in release builds too. An adapter built for another keeper is refused the same way.
+
+Limit: no transport (`nil`) is allowed; the keeper then records its outputs and delivers none. A re-evaluation keeper isn't checked, and neither is an attach after the land was destroyed.
+
 ### Broadcast vs Per-Player Updates
 
 Frames per session and sync cycle, in this order (the outbound writer keeps it):

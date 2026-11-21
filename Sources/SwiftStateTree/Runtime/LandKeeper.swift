@@ -407,12 +407,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private final class OutputCollector: @unchecked Sendable {
         var nextSequence: Int64 = 0
+        /// Re-evaluation only: a take past `Int64.max` stops the replay instead of the process (#741).
+        /// A live counter starts at 0 and traps first, so the live path keeps the plain increment.
+        var checksOverflow = false
+        /// Set by the first take that found no number left; read at the run's step boundaries.
+        var sequenceExhausted = false
         var emittedEvents: [EmittedEvent] = []
         var syncRequestsByTick: [Int64: SyncRequests] = [:]
 
         func takeNextSequence() -> Int64 {
             let s = nextSequence
-            nextSequence += 1
+            guard checksOverflow else {
+                nextSequence += 1
+                return s
+            }
+            let (next, overflow) = s.addingReportingOverflow(1)
+            if overflow {
+                // The counter stays at Int64.max and the number repeats: the run ends at its next
+                // step boundary (`replaySequenceExhausted()`), and what it computed meanwhile is dropped.
+                sequenceExhausted = true
+            } else {
+                nextSequence = next
+            }
             return s
         }
 
@@ -472,11 +488,38 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// destruction has finished keeps its released placeholder instead: a transport attached
     /// after it (a land whose initialization failed before it was wired) would never be
     /// released (#346).
+    ///
+    /// On a live keeper, a transport whose `runsSyncPhaseInTurn(of:)` is `false` for this keeper
+    /// stops the process (`fatalError`, every build): a live keeper syncs only in its turns, so it
+    /// would get no output (#546 L2d). An adapter built for another keeper is refused the same
+    /// way. `nil` and re-evaluation keepers are exempt.
     public func setTransport(_ transport: LandKeeperTransport?) {
+        if !destructionFinished {
+            Self.refuseTransportWithoutInTurnPhase(transport, mode: mode, landID: actualLandID ?? definition.id, keeper: self)
+        }
         let attached = destructionFinished ? releasedTransport : transport
         self.transport = attached
         transportRecordsFolds = attached?.recordsInTurnSyncFolds ?? false
         if transport != nil, !destructionFinished { noteTransportBound() }
+    }
+
+    /// Stops the process if a live keeper is handed a transport that can't run its sync phase in
+    /// turn for it (#546 L2d): every live keeper syncs through its turns, so such a transport would
+    /// get no output at all. Exempt: no transport, the released placeholder, a re-evaluation keeper.
+    /// A `fatalError`, not a `precondition`: it must stop, with its message, in every build.
+    private nonisolated static func refuseTransportWithoutInTurnPhase(
+        _ transport: LandKeeperTransport?,
+        mode: LandMode,
+        landID: String,
+        keeper: AnyObject
+    ) {
+        guard mode == .live, let transport, !(transport is ReleasedLandTransport) else { return }
+        guard !transport.runsSyncPhaseInTurn(of: keeper) else { return }
+        fatalError(
+            "LandKeeper(\(landID)): a live keeper's transport must run its sync phase in turn for this keeper; "
+                + "\(type(of: transport)).runsSyncPhaseInTurn(of:) returned false. Attach the TransportAdapter "
+                + "built for this keeper, or no transport (#546 L2d)"
+        )
     }
 
     /// The destruction made its last call to the transport (`notifyTransportDestroyedAndRelease`).
@@ -701,16 +744,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// taken from `outputCollector.syncRequestsByTick` by the caller.
     private func runSyncRequests(_ requests: SyncRequests?) async {
         guard let req = requests else { return }
-        if usesInTurnSync, req.syncNow || req.syncBroadcastOnly {
-            // In-turn paths take their own requests; one left here runs as a sync-only turn
-            // (a broadcast-only request runs the full phase, as in a turn).
+        // In-turn paths take their own requests; one left here runs as a sync-only turn (a
+        // broadcast-only request runs the full phase, as in a turn). No live keeper sends a
+        // request through the legacy transport calls (#546 L2d); a re-evaluation keeper never
+        // did here (its replayed passes make their broadcast-only call where they run).
+        if syncsInTurn, req.syncNow || req.syncBroadcastOnly {
             runSyncOnlyTurnIfInTurn()
-        } else if mode == .live {
-            if req.syncNow {
-                await transport?.syncNowFromTransport()
-            } else if req.syncBroadcastOnly {
-                await transport?.syncBroadcastOnlyFromTransport()
-            }
         }
     }
 
@@ -731,12 +770,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: In-turn sync state (see `docs/core/runtime.md`, In-Turn Sync)
 
-    /// Whether this keeper's turns run the sync phase inside the turn: live mode, and the
-    /// transport runs it for this keeper (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`, which
-    /// follows the adapter's switch). Never true for a transport attached to another keeper, so
-    /// no turn reaches an `assumeIsolated` that would trap. The switch is fixed once the
-    /// transport is set.
-    private var usesInTurnSync: Bool {
+    /// Whether this keeper's inputs, ticks and initialization run as turns: every live keeper,
+    /// whatever its transport (#546 L2d). Fixed at init. Re-evaluation keepers replay recorded
+    /// passes instead.
+    private var routesThroughTurn: Bool { mode == .live }
+
+    /// Whether this keeper's turns run the sync phase, through the attached transport: live, and
+    /// the transport runs it for this keeper (`LandKeeperTransport.runsSyncPhaseInTurn(of:)`).
+    /// Never true for a transport attached to another keeper, so no turn reaches an
+    /// `assumeIsolated` that would trap. False with no transport: the turns then record their
+    /// outputs and deliver them nowhere.
+    private var syncsInTurn: Bool {
         mode == .live && (transport?.runsSyncPhaseInTurn(of: self) ?? false)
     }
 
@@ -848,6 +892,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         outputCollector.syncRequestsByTick.keys.sorted()
     }
 
+    /// Tests only: the ticks of the events still in the output collector, one entry per event.
+    func emittedEventTicksForTesting() -> [Int64] {
+        outputCollector.emittedEvents.map(\.tickId).sorted()
+    }
+
     /// Inputs `applyPendingItem` skipped because the destroy handlers had started (tests read it;
     /// every append path checks `isDraining`, so it stays 0).
     private(set) var inputsSkippedAfterDestroy = 0
@@ -934,7 +983,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Whether this keeper runs its sync phases in its turns (tests and diagnostics).
     public func isUsingInTurnSync() -> Bool {
-        usesInTurnSync
+        syncsInTurn
     }
 
     // MARK: Debug freeze state (see `debugFreeze(generation:timeout:)`)
@@ -976,7 +1025,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///     and the loop phase offset all use the instance ID instead of the land type. Without
     ///     it, `setLandID(_:)` sets the ID later, racing with that initialization.
     ///   - transport: Optional transport interface for sending events and syncing state.
-    ///                If not provided, operations will be no-ops (useful for testing).
+    ///                If not provided, a live keeper still runs its turns and records their
+    ///                outputs, but delivers none. On a live keeper a transport that can't run the
+    ///                sync phase in turn for it stops the process, as `setTransport(_:)` does; a
+    ///                `TransportAdapter` needs the keeper first, so attach it with
+    ///                `setTransport(_:)`.
     ///   - logger: Optional logger instance. If not provided, a default logger will be created.
     public init(
         definition: LandDefinition<State>,
@@ -997,6 +1050,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.actualLandID = landID
         state = initialState
         self.mode = mode
+        outputCollector.checksOverflow = mode == .reevaluation
         self.reevaluationSink = reevaluationSink
         self.reevaluationOutputMode = reevaluationOutputMode
 
@@ -1060,6 +1114,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute OnInitialize handler and then start tick/sync loops.
         // Initialization is performed lazily (first entry point call) to avoid escaping self in init.
+
+        // Before OnInitialize can run: a refused transport stops the process here (#546 L2d).
+        Self.refuseTransportWithoutInTurnPhase(transport, mode: mode, landID: landID ?? definition.id, keeper: self)
 
         // Kick off initialization eagerly to preserve existing semantics:
         // - OnInitialize runs when Land is created
@@ -1279,24 +1336,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     "error": .string(String(describing: error)),
                 ])
             }
-            let initializeIsTurn = usesInTurnSync
             // Recorded in the same synchronous segment as the state write: sync outputs before
             // this point read the state before OnInitialize, outputs after it the state after.
             let initializeRecord = reevaluationRecorder == nil ? nil : makeInitializeRecord(
                 sequence: sequence,
                 tickId: ctx.tickId ?? lastCommittedTickId
             )
-            let initializeMarker = initializeIsTurn && reevaluationRecorder != nil
+            let initializeMarker = recordsSyncStream
                 ? ReevaluationRecordedSyncMarker(
                     kind: .initialize, streamIndex: takeSyncStreamIndex(), sequence: sequence,
                     afterPass: isTickless ? passOrdinal : nil
                 )
                 : nil
-            // In-turn sync: OnInitialize is a turn; its events and sync request go out in it.
-            if initializeIsTurn, let transport {
+            // OnInitialize is a turn on every live keeper: its events and sync request are taken
+            // here, after its record read them. With a port they go out in this turn; without one
+            // (not attached yet) they are delivered nowhere (#546 L2d).
+            if routesThroughTurn {
                 let emitted = takeEmittedEvents(forTick: ctx.tickId ?? lastCommittedTickId)
                 let wantsSync = takeSyncRequest(forTick: ctx.tickId ?? lastCommittedTickId, applied: nil)
-                runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+                if syncsInTurn, let transport {
+                    runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+                }
             }
 
             if let recorder = reevaluationRecorder {
@@ -1319,7 +1379,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolverOutputs: resolverOutputsDict,
                     resolvedAtTick: lastCommittedTickId
                 )
-                if initializeIsTurn {
+                if routesThroughTurn {
                     // OnInitialize's server events belong to tick -1, which no frame's
                     // `serverEvents` records; the initialize record keeps them for verification.
                     await submitTurnRecord(ReevaluationTickRecord(
@@ -1638,8 +1698,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// The fence, in order; a failing check returns without a phase or a state change: the land
     /// is live and neither failed nor drains (`.closed`), the deadline (`.timedOut`), the
-    /// frozen generation (`.released`), `port` is the attached transport, runs in-turn here and
-    /// is a settle port (`.refused(.notCurrent)`), and no direct `beginSync` holds the sync flag
+    /// frozen generation (`.released`), `port` runs in-turn here, is this keeper's sync port (the
+    /// attached transport or, never attached, its bound requester, as `acceptsSyncTurn`) and is a
+    /// settle port (`.refused(.notCurrent)`), and no direct `beginSync` holds the sync flag
     /// (`.refused(.syncInFlight)`; it never latches).
     ///
     /// The settle's own bookkeeping, not a requested turn's: it doesn't consume the pending
@@ -1658,13 +1719,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         guard ContinuousClock.now < fence.deadline else { return .timedOut }
         guard debugFrozen, debugActiveGeneration == fence.generation else { return .released }
-        guard let transport,
-              ObjectIdentifier(transport as AnyObject) == ObjectIdentifier(port as AnyObject),
-              port.runsSyncPhaseInTurn(of: self),
-              let settlePort = port as? any LandKeeperSettlePort else {
+        // The requested turns' rule (`acceptsSyncTurn`): the attached transport or, on a keeper
+        // never attached, its sync requester (#546 L2d). Checked without binding; a settle binds
+        // the requester only once every check has passed, so a refused one changes nothing.
+        guard port.runsSyncPhaseInTurn(of: self), let settlePort = port as? any LandKeeperSettlePort,
+              isSyncPort(port) else {
             return .refused(.notCurrent)
         }
         guard !isSyncing else { return .refused(.syncInFlight) }
+        _ = bindSyncRequester(port)
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
@@ -1833,7 +1896,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
-            if usesInTurnSync {
+            if routesThroughTurn {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
                 _ = try await runLegacyPass(for: sequence)
@@ -1882,7 +1945,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// `join(session:clientID:sessionID:services:)`, and, when `admitThroughTransport` and this
-    /// keeper's turns run the sync phase in the turn (`usesInTurnSync`), the transport's
+    /// keeper's turns run the sync phase in the turn (`syncsInTurn`), the transport's
     /// `admitJoiningSession` in the same synchronous segment as the player's insert (or as its
     /// OnJoin input's append, for a first join with OnJoin). Off that path, or for a non-live
     /// keeper, nothing is admitted here (`admitted == false`).
@@ -2071,7 +2134,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // the input (`noteJoinInputsConsumed`) and a sync phase commits for it. Nobody
                 // awaits the input turn here, so it is scheduled in this segment.
                 scheduleInputDrain()
-            } else if usesInTurnSync {
+            } else if routesThroughTurn {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
                 _ = try await runLegacyPass(for: sequence)
@@ -2085,7 +2148,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// shares this keeper's executor, so its synchronous call can't trap). Synchronous: called in
     /// the segment of the state change it belongs to.
     private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
-        guard usesInTurnSync, let transport else { return .notAdmitted }
+        guard syncsInTurn, let transport else { return .notAdmitted }
         return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: joinSequence)
     }
 
@@ -2093,20 +2156,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// as `admitJoiningInTurn`. Off that path the transport keeps its check by the requested
     /// player alone.
     private func refusesResolvedJoinInTurn(playerID: PlayerID, sessionID: SessionID) -> Bool {
-        guard usesInTurnSync, let transport else { return false }
+        guard syncsInTurn, let transport else { return false }
         return transport.refusesResolvedJoin(playerID: playerID, sessionID: sessionID)
     }
 
     /// Reports the join inputs a turn applied to an in-turn transport (`noteJoinInputsConsumed`),
     /// in the segment that applied them. Live keepers only: re-evaluation feeds recorded joins.
     private func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
-        guard !results.isEmpty, usesInTurnSync, mode == .live, let transport else { return }
+        guard !results.isEmpty, syncsInTurn, mode == .live, let transport else { return }
         transport.noteJoinInputsConsumed(results)
     }
 
     /// Whether the transport has joins that wait for a committed sync phase, read in a turn.
     private var transportHasJoinsAwaitingSync: Bool {
-        guard usesInTurnSync, mode == .live, let transport else { return false }
+        guard syncsInTurn, mode == .live, let transport else { return false }
         return transport.hasJoinsAwaitingSync
     }
 
@@ -2390,7 +2453,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Tickless: the turn or pass that applies it answers, after its record.
                     // Delivered, it is out of the job table's cancellations (`completed`).
                     ticklessJobTurns.insert(sequence)
-                    if usesInTurnSync {
+                    if routesThroughTurn {
                         scheduleInputDrain()
                     } else {
                         // Only a trigger: it guarantees a pass runs. It's usually empty or
@@ -2410,8 +2473,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         fillActionSlot(sequence, with: outcome)
     }
 
+    /// Test hooks for `LegacyEntryStopTests`: the legacy pass entries, which a live keeper never
+    /// reaches (#546 L2d-2). On a live keeper each stops the process.
+    func runTicklessJobPassForTesting() async { await runTicklessJobPass() }
+    func runLegacyPassForTesting(sequence: Int64) async throws { _ = try await runLegacyPass(for: sequence) }
+
     /// The trigger pass of a tickless job's completion (in-turn sync off).
     private func runTicklessJobPass() async {
+        precondition(mode == .reevaluation, "LandKeeper.runTicklessJobPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
         await holds.at(.ticklessJobPass)
         await processPendingActions()
     }
@@ -2773,7 +2842,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
-            if usesInTurnSync {
+            if routesThroughTurn {
                 _ = try await awaitInputTurn(sequence: sequence)
             } else {
                 _ = try await runLegacyPass(for: sequence)
@@ -2845,7 +2914,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let sequence = outputCollector.takeNextSequence()
             pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: lastCommittedTickId)))
             inTurnProbeForTesting?("shutdown-queued")
-            if usesInTurnSync {
+            if routesThroughTurn {
                 scheduleInputDrain()
             } else {
                 // A pass of its own; its delivery job waits behind earlier passes' deliveries,
@@ -3097,7 +3166,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // If there's no tick handler, process pending actions immediately and return response
         // This maintains backward compatibility for tests and simple use cases
         if definition.lifetimeHandlers.tickHandler == nil {
-            if usesInTurnSync {
+            if routesThroughTurn {
                 // An input turn applies it (with the other ready inputs) and returns its response.
                 return .completed(try await awaitInputTurn(sequence: sequence))
             }
@@ -3234,7 +3303,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if definition.lifetimeHandlers.tickHandler == nil {
             // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
             debugBeginWork()
-            if usesInTurnSync {
+            if routesThroughTurn {
                 // An input turn applies it, and the caller waits for that turn as an action's
                 // caller does (#55): it returns once the event is applied, or throws the handler's
                 // error. The waiter is registered in this segment, the append's, so a drain
@@ -3341,7 +3410,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// applies them.
     private func kickServerInputTurn(upTo sequence: Int64) {
         guard definition.lifetimeHandlers.tickHandler == nil else { return }
-        let inTurn = usesInTurnSync
+        let inTurn = routesThroughTurn
         debugBeginWork()
         Task { [weak self] in
             guard let self else { return }
@@ -4023,6 +4092,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         passOrdinal: Int64?,
         executingTickId: Int64
     ) async {
+        precondition(mode == .reevaluation, "LandKeeper.finishTicklessLegacyPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
         // All tickless passes share one tick id, so the events and sync requests are taken
         // here: a later pass can't flush this pass's, nor this pass a later one's.
         // The land failed in this pass (a `landFailure` item ended its batch, #535): no events and
@@ -4087,6 +4157,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The pass applies the input synchronously (a tickless input is always ready), so its
     /// outcome is set before the pass's first `await`.
     private func runLegacyPass(for sequence: Int64) async throws -> AnyCodable {
+        precondition(mode == .reevaluation, "LandKeeper.runLegacyPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
         legacyPassCallers.insert(sequence)
         defer {
             legacyPassCallers.remove(sequence)
@@ -4391,6 +4462,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         replayFailureEnd = (tickId, pass)
     }
 
+    /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
+    /// throws `ReevaluationRecordContentError.sequenceExhausted` at its next step boundary.
+    package func replaySequenceExhausted() -> Bool {
+        outputCollector.sequenceExhausted
+    }
+
     /// Installs `replayPassObserver` (re-evaluation only).
     package func setReplayPassObserver(_ observer: (@Sendable (Int64, State) async -> Void)?) {
         replayPassObserver = observer
@@ -4442,17 +4519,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // applies that tick's recorded inputs and flushes their events under it (#268).
         let tickHandler = definition.lifetimeHandlers.tickHandler
         if tickHandler == nil, mode == .live {
-            if usesInTurnSync {
-                // Tickless: the ready inputs run as input turns (or join the drain in progress).
-                if !inputDrainScheduled {
-                    inputDrainScheduled = true
-                    await runInputDrain()
-                }
-                return
+            // Tickless: the ready inputs run as input turns (or join the drain in progress).
+            if !inputDrainScheduled {
+                inputDrainScheduled = true
+                await runInputDrain()
             }
-            // Even if there's no tick handler, we still need to process pending actions
-            // processPendingActions() will automatically advance tick counter if needed
-            await processPendingActions(flushOutputsImmediately: true)
             return
         }
 
@@ -4490,16 +4561,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        // In-turn sync (live only): the whole turn (inputs, tick handler, events, sync plan and
-        // commit, writer enqueue) runs without a suspension point; the recorder follows the turn.
-        if usesInTurnSync, let transport, let handler = tickHandler {
+        // Every live tick is a turn (inputs, tick handler, events, and with a port the sync plan,
+        // commit and writer enqueue), with no suspension point; the recorder follows the turn.
+        if routesThroughTurn, let handler = tickHandler {
             inTurnProbeForTesting?("turn-begin")
             if inTurnYieldForTesting {
                 // Negative control (tests only): a suspension point inside the turn, which the
                 // reentrancy probe must detect.
                 await Task.yield()
             }
-            let output = runTickTurn(handler: handler, tickId: tickId, transport: transport)
+            // The slot is read once, in this segment (#546 L2d).
+            let output = runTickTurn(handler: handler, tickId: tickId, transport: syncsInTurn ? transport : nil)
             await finishTickTurn(output)
             return
         }
@@ -4899,9 +4971,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runTickTurn(
         handler: (inout State, LandContext) -> Void,
         tickId: Int64,
-        transport: any LandKeeperTransport
+        transport: (any LandKeeperTransport)?
     ) -> TickTurnOutput {
-        takePendingFold(transport: transport)
+        // No port: no fold to report and no sync phase; the tick's events and sync request are
+        // still taken below and recorded, so the collector is drained (#546 L2d).
+        if let transport { takePendingFold(transport: transport) }
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
@@ -4958,9 +5032,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Tick and sync work in one turn that is not a fold: counted apart, so turn timing
             // can tell these turns from folded ones.
             joinSyncTicks += 1
-            if transportRecordsFolds { transport.noteInTurnJoinSyncTick() }
+            if transportRecordsFolds { transport?.noteInTurnJoinSyncTick() }
         }
-        runTurnOutputs(transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
+        if let transport {
+            runTurnOutputs(transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
+        }
         inTurnProbeForTesting?("turn-end")
 
         var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: emitted)
@@ -5076,7 +5152,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Whether this keeper records its sync stream: live, with a recorder, and in-turn sync on.
     /// The adapter asks it (through `assumeIsolated`, on the shared executor) before planning.
     package var recordsSyncStream: Bool {
-        mode == .live && reevaluationRecorder != nil && usesInTurnSync
+        mode == .live && reevaluationRecorder != nil && syncsInTurn
     }
 
     /// Where a plan reading the state now reads it.
@@ -5294,7 +5370,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// A sync-only turn, if this keeper still runs in-turn sync (scheduled turns).
     private func runSyncOnlyTurnIfInTurn() {
-        guard usesInTurnSync, let transport else { return }
+        guard syncsInTurn, let transport else { return }
         runSyncOnlyTurn(transport: transport)
     }
 
@@ -5421,6 +5497,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         boundSyncRequesterObject = port as AnyObject
         syncBinding.rebind()
         return true
+    }
+
+    /// `bindSyncRequester`'s answer without its binding: whether `port` is, or would become, the
+    /// port this keeper syncs through.
+    private func isSyncPort(_ port: any LandKeeperTransport) -> Bool {
+        let identity = ObjectIdentifier(port as AnyObject)
+        if let transport { return ObjectIdentifier(transport as AnyObject) == identity }
+        guard !hasHeldTransport else { return false }
+        guard let bound = boundSyncRequesterObject else { return true }
+        return ObjectIdentifier(bound) == identity
     }
 
     /// The checks every requested turn and follow-up makes in its synchronous job: a live land,
@@ -5915,10 +6001,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // The land failed in this turn: no events and no sync (§3.2 step 4).
             _ = takeEmittedEvents(forTick: executingTickId)
             _ = takeSyncRequest(forTick: executingTickId, applied: applied)
-        } else if !batch.isEmpty, let transport, usesInTurnSync {
+        } else if !batch.isEmpty, routesThroughTurn {
+            // A live turn takes them whatever the delivery, so the turn record holds them and the
+            // collector is drained; delivered only through a port (#546 L2d). A replayed pass
+            // leaves them for the replay's flush to the sink.
             emitted = takeEmittedEvents(forTick: executingTickId)
             let wantsSync = takeSyncRequest(forTick: executingTickId, applied: applied)
-            runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+            if syncsInTurn, let transport {
+                runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+            }
         }
         inTurnProbeForTesting?("turn-end")
         // A turn that ended the land answers every consumed caller with `landClosed`, a caller
@@ -6018,7 +6109,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // never overtakes a tick due at the same instant. An overdue tick (deadline already
         // past, the tick loop late) counts as due: the frame then waits for that late tick,
         // where the legacy path would send it now with the pre-tick state. Kept by design.
-        if usesInTurnSync, let transport {
+        if syncsInTurn, let transport {
             let now = syncClockForTesting ?? ContinuousClock.now
             if tickTask != nil, let deadline = nextTickDeadline,
                deadline - now <= coincidentSyncWindow
@@ -6038,12 +6129,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return
             }
             runSyncOnlyTurn(transport: transport)
-            return
+        } else if mode == .reevaluation {
+            // A re-evaluation keeper may hold a transport (`ReevaluationOutputMode.transportAndSink`;
+            // the attach check exempts it): its sync loop syncs through the legacy call until #612.
+            await transport?.syncNowFromTransport()
         }
-
-        // Sync is read-only: only triggers synchronization mechanism
-        // It does not modify state
-        await transport?.syncNowFromTransport()
+        // A live keeper without a port has nothing to sync through: its transport runs its sync
+        // phase in turn or is refused at the attach (#546 L2d).
     }
 
     /// The OnJoin resolvers of a join that already inserted its entry (`entryGeneration`). If

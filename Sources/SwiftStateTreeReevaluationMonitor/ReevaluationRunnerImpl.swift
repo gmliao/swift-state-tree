@@ -154,6 +154,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     private var passEvents: [ReevaluationRecordedServerEvent] = []
     private var initialize: ReevaluationEngine.InitializeVerification = .notRecorded
     private var prepared = false
+    /// The error `prepare()` ended with: a later call throws it again, as it would otherwise return
+    /// early and let `step()` run without the initialize check (#741).
+    private var prepareFailure: (any Error)?
 
     public init(
         definition: LandDefinition<State>,
@@ -303,8 +306,18 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     /// Runs OnInitialize (from the record's initialize record, when it has one) and checks it.
     /// `step()` calls it if the caller did not.
     public func prepare() async throws {
+        if let prepareFailure { throw prepareFailure }
         guard !prepared else { return }
         prepared = true
+        do {
+            try await runPrepare()
+        } catch {
+            prepareFailure = error
+            throw error
+        }
+    }
+
+    private func runPrepare() async throws {
         await keeper.setReplayRecordsPassOrdinals(recordsPassOrdinals)
         await keeper.setReplayRecordsRejected(recordsRejected)
         // Where the recorded failure ended its turn among its inputs, replay ends that tick or
@@ -318,10 +331,13 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             }
         }
         await keeper.awaitInitialization()
+        if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
+        let initializeRecord = try await source.getInitializeRecord()
+        try ReevaluationEngine.checkTargets(of: initializeRecord?.serverEvents ?? [])
         initialize = ReevaluationEngine.verifyInitialize(
-            record: try await source.getInitializeRecord(),
+            record: initializeRecord,
             emitted: initializeEvents,
             state: stateAfterInitialize,
             hashDefinition: hashDefinition,
@@ -364,6 +380,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
         try await prepare()
         await keeper.stepTickOnce()
+        if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
         // We need to know which tick just executed.
         // keeper.tickId is the current tick ID.
         // stepTickOnce increments tick, then runs.
