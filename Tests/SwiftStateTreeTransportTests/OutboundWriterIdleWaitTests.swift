@@ -69,21 +69,48 @@ struct OutboundWriterIdleWaitTests {
         #expect(writer.idleWaitEntriesForTesting == 0)
     }
 
+    /// Starts a wait on `writer` and returns once it registered (the writer's registration hook
+    /// opens the gate), or `nil` when it never did.
+    private func registeredWait(_ writer: OutboundWriter) async -> Task<Void, Never>? {
+        let registered = TestGate()
+        writer.setOnIdleWaitRegisteredForTesting { registered.open() }
+        let wait = Task { await writer.waitForIdle() }
+        guard await withinHangBound({ await registered.arrive() }) else {
+            wait.cancel()
+            return nil
+        }
+        return wait
+    }
+
     @Test("a writer whose transport never returns: a registered wait returns when cancelled and leaves nothing")
-    func cancelledAfterRegistration() async {
+    func cancelledAfterRegistration() async throws {
         let transport = BlockingTransport()
         transport.block()
         defer { transport.release() }
         let writer = OutboundWriter(transport: transport, maxBytes: 1 << 20, logger: Self.logger)
         writer.enqueue([frame("stuck")])
-        let wait = Task { await writer.waitForIdle() }
-        let registered = await withinHangBound {
-            // wall-clock: nothing reports the registration; the loop yields, it doesn't sleep
-            while writer.idleWaitEntriesForTesting == 0, !Task.isCancelled { await Task.yield() }
-        }
-        #expect(registered, "the wait never registered")
+        let wait = try #require(await registeredWait(writer), "the wait never registered")
         wait.cancel()
         #expect(await returnsWithinBound(releasing: transport) { await wait.value }, "the cancelled wait never returned")
         #expect(writer.idleWaitEntriesForTesting == 0)
+    }
+
+    @Test("a registered wait that isn't cancelled returns when the transport is released and the last element sends")
+    func registeredWaitReturnsWhenIdle() async throws {
+        let transport = BlockingTransport()
+        transport.block()
+        let writer = OutboundWriter(transport: transport, maxBytes: 1 << 20, logger: Self.logger)
+        writer.enqueue([frame("first")])
+        writer.enqueue([frame("last")])
+        let wait = try #require(await registeredWait(writer), "the wait never registered")
+        #expect(writer.idleWaitEntriesForTesting == 1)
+        transport.release()
+        // When the bound runs out, cancelling the wait ends it, so a missed wake fails by name.
+        let returned = await withinHangBound {
+            await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
+        }
+        #expect(returned, "the wait never returned after the writer went idle")
+        #expect(writer.idleWaitEntriesForTesting == 0)
+        #expect(writer.backlog.elements == 0)
     }
 }

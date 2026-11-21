@@ -91,6 +91,8 @@ private final class OutboundWriterCounters: @unchecked Sendable {
     /// cancelled wait removes its own.
     var idleWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     var nextIdleWaiterID = 0
+    /// Tests only: called after an idle wait registered, outside the lock.
+    var onIdleWaitRegisteredForTesting: (@Sendable () -> Void)?
     /// Set when the consumer task ended; later waits return at once.
     var consumerEnded = false
 
@@ -299,12 +301,20 @@ final class OutboundWriter: @unchecked Sendable {
                     return
                 }
                 counters.idleWaiters[id] = waiter
+                let onRegistered = counters.onIdleWaitRegisteredForTesting
                 counters.lock.unlock()
+                onRegistered?()
             }
         } onCancel: {
             let waiter = counters.lock.withLock { counters.idleWaiters.removeValue(forKey: id) }
             waiter?.resume()
         }
+    }
+
+    /// Tests only: `hook` runs each time an idle wait registers, after the lock is released, so a
+    /// test can wait for the registration instead of polling for it.
+    func setOnIdleWaitRegisteredForTesting(_ hook: (@Sendable () -> Void)?) {
+        counters.lock.withLock { counters.onIdleWaitRegisteredForTesting = hook }
     }
 
     /// Tests only: the idle waits' bookkeeping entries the writer still holds.
