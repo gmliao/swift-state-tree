@@ -176,11 +176,13 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     // passing the budget to every field's conversion, and makes the requirements above forward
     // with a root field's budget.
     //
-    // The defaults call the requirement above and check the returned fields against the budget,
-    // after the conversion ran. So a hand-written node, or an override that ignores `budget`, is
-    // bounded only by that check at its caller: the count restarts at the root for everything
-    // beneath it. A hand-written node that nests its own type implements these and passes the
-    // budget on.
+    // Two cases for a hand-written node:
+    // - It implements only the requirements above: the defaults call them and check the returned
+    //   fields against the budget, after the conversion ran. The conversion inside them counts
+    //   from the root, so a node that nests its own type is bounded only by that late check.
+    // - It implements these: it must pass `budget` on to every field's conversion. Nothing
+    //   checks its result (`make`, `makeFull`, `broadcastView` and the typed maps trust it), so
+    //   an override that ignores `budget` is not bounded at all.
 
     /// `snapshot(for:dirtyFields:)`, its fields converted within `budget`.
     func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot

@@ -340,17 +340,19 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             )
         }
 
+        // Through `self.`: a property named like the generated `budget` or `inner` would otherwise
+        // read the local instead (#716).
+        let conversions = properties.map {
+            generatePropertyConversionCode(for: $0.typeName, propertyName: "self.\($0.name)")
+        }
         var codeLines: [String] = []
-        codeLines.append("let inner = try budget.enteringContainer()")
+        // The object is a container either way; `inner` only when a property converts inside it,
+        // so an all-primitive type gets no unused local (and no warning in its adopter's build).
+        let usesInner = conversions.contains { $0.contains("budget: inner") }
+        codeLines.append(usesInner ? "let inner = try budget.enteringContainer()" : "_ = try budget.enteringContainer()")
         codeLines.append("return .object([")
 
-        // Generate code for each property
-        for (index, property) in properties.enumerated() {
-            let propertyName = property.name
-            // Through `self.`: a property named like the generated `budget` or `inner` would
-            // otherwise read the local instead (#716).
-            let conversionCode = generatePropertyConversionCode(for: property.typeName, propertyName: "self.\(propertyName)")
-
+        for (index, (property, conversionCode)) in zip(properties, conversions).enumerated() {
             let comma = index < properties.count - 1 ? "," : ""
             codeLines.append("    \"\(property.wireName)\": \(conversionCode)\(comma)")
         }

@@ -668,19 +668,11 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
                 let isOptional = normalizedType.hasSuffix("?") || (normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">"))
                 if isOptional {
-                    codeLines.append("    if let unwrapped = \(storageName).wrappedValue {")
-                    codeLines.append("        if let node = (unwrapped as Any) as? any StateNodeProtocol {")
-                    codeLines.append("            // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
-                    codeLines.append("            // which do not match nested field names (e.g. \"position\").")
-                    codeLines.append("            // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("            // The view without a player (masked children; refused if player-dependent, #179).")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.broadcastView(of: node, budget: budget)")
-                    codeLines.append("        } else {")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any, budget: budget)")
-                    codeLines.append("        }")
-                    codeLines.append("    } else {")
-                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .null")
-                    codeLines.append("    }")
+                    // Through `make`, as the other members convert it: each `Optional` layer spends
+                    // a hop (`Child??` too), nil is `.null`, and a node is the view without a
+                    // player, as `broadcastView` makes it (masked children; refused if
+                    // player-dependent, #179) (#716).
+                    codeLines.append("    broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any, budget: budget)")
                 } else {
                     codeLines.append("    if let node = (self.\(storageName).wrappedValue as Any) as? any StateNodeProtocol {")
                     codeLines.append("        // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
@@ -893,12 +885,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 if isOptional {
                     // For optional types, unwrap first then attempt StateNodeProtocol cast via Any
                     // Use Any to avoid compile-time always-true/always-succeed warnings
-                    codeLines.append("if let unwrapped = \(storageName).wrappedValue, var nestedState = (unwrapped as Any) as? any StateNodeProtocol {")
+                    codeLines.append("if let unwrapped = self.\(storageName).wrappedValue, var nestedState = (unwrapped as Any) as? any StateNodeProtocol {")
                 } else {
                     // For non-optional types, directly check if it's a StateNodeProtocol
                     // Note: Not all non-primitive types conform to StateNodeProtocol (e.g., DeterministicMath types, collections)
                     // Use Any to avoid compile-time always-true/always-succeed warnings
-                    codeLines.append("if var nestedState = (\(storageName).wrappedValue as Any) as? any StateNodeProtocol {")
+                    codeLines.append("if var nestedState = (self.\(storageName).wrappedValue as Any) as? any StateNodeProtocol {")
                 }
                 codeLines.append("    nestedState.clearDirty()")
                 codeLines.append("    // Update value without marking as dirty (using internal method)")

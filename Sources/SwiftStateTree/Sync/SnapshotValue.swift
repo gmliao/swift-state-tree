@@ -172,10 +172,11 @@ public protocol SnapshotValueConvertible {
     /// `toSnapshotValue()` with the budget at this value (#716). `@SnapshotConvertible`
     /// generates it, spending the value's object and converting each property within the rest.
     ///
-    /// The default checks what `toSnapshotValue()` returned, after it ran. So a hand-written
-    /// conversion, or an override that ignores `budget`, is bounded only by that check at its
-    /// caller: a conversion that recurses into its own type implements this one and passes the
-    /// budget on, so the count reaches its recursion.
+    /// A type that implements only `toSnapshotValue()` gets the default, which checks what it
+    /// returned, after it ran: the conversion inside it counts from the root. A type that
+    /// implements this one must pass `budget` on: nothing checks its result (`make` and the
+    /// typed maps trust it), so an override that ignores `budget` is not bounded. A conversion
+    /// that recurses into its own type implements this one, so the count reaches its recursion.
     func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue
 }
 
@@ -249,10 +250,20 @@ public extension SnapshotValue {
     /// one, so the first cast on a long chain would recurse through every level inside the
     /// runtime before a hop could refuse it. This cast succeeds at the first level, because
     /// `Optional` itself conforms, and the loop takes the levels one at a time.
+    ///
+    /// An `AnyHashable` is taken out of its box here too, by its exact type, so its value converts
+    /// as itself: otherwise the scalar casts below see the box (`AnyHashable(1)` casts to `Bool`
+    /// on Darwin), and so does an `[Any]` holding it. The box spends no hop: `AnyHashable` never
+    /// holds another one, and an `Optional` inside it spends its own.
     fileprivate static func unwrappingOptionals(_ value: Any, budget: NestingBudget) throws -> (Any, NestingBudget)? {
         var value = value
         var budget = budget
-        while let optional = value as? any NestingOptionalPayload {
+        while true {
+            if Swift.type(of: value) == AnyHashable.self, let box = value as? AnyHashable {
+                value = box.base
+                continue
+            }
+            guard let optional = value as? any NestingOptionalPayload else { break }
             guard let payload = optional.nestingPayload else { return nil }
             budget = try budget.hop()
             value = payload
@@ -549,7 +560,8 @@ public extension SnapshotValue {
 public protocol FullSnapshotValueConvertible {
     func toFullSnapshotValue() throws -> SnapshotValue
     /// `toFullSnapshotValue()` with the budget at this value (#716), generated and defaulted as
-    /// `toSnapshotValue(budget:)` is, with the same bound on a hand-written override.
+    /// `toSnapshotValue(budget:)` is: the default checks the result of `toFullSnapshotValue()`,
+    /// and an override of this one must pass `budget` on, since `makeFull` trusts its result.
     func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue
 }
 

@@ -61,6 +61,76 @@ private struct PerPlayerNode: StateNodeProtocol {
     init() {}
 }
 
+/// A single node field: `snapshotForSync`'s node branch.
+@StateNodeBuilder
+private struct OneChildNode: StateNodeProtocol {
+    @Sync(.broadcast) var child: ChainNode = ChainNode()
+    init() {}
+}
+
+/// An optional single node field: `snapshotForSync`'s optional branch.
+@StateNodeBuilder
+private struct MaybeChildNode: StateNodeProtocol {
+    @Sync(.broadcast) var child: ChainNode? = nil
+    init() {}
+}
+
+/// A tree inside a convertible: one container for the box, then the tree. Hand-written, passing
+/// the budget on (`@SnapshotConvertible` can't decode a `SnapshotValue` property).
+private struct TreeBox: SnapshotValueConvertible, Equatable, Sendable {
+    var tree: SnapshotValue = .null
+    func toSnapshotValue() throws -> SnapshotValue { try toSnapshotValue(budget: NestingBudget()) }
+    func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
+        try budget.enteringContainer().check(tree)
+        return .object(["tree": tree])
+    }
+}
+
+/// A single field the macro takes for a node by its name, holding a convertible:
+/// `snapshotForSync`'s fallback to `make`.
+@StateNodeBuilder
+private struct BoxHolderNode: StateNodeProtocol {
+    @Sync(.broadcast) var box: TreeBox = TreeBox()
+    init() {}
+}
+
+/// A per-player field holding nodes: the per-player loop's conversion.
+@StateNodeBuilder
+private struct MineNode: StateNodeProtocol {
+    @Sync(.perPlayerSlice()) var mine: [PlayerID: ChainNode] = [:]
+    init() {}
+}
+
+/// `depth` nested `SnapshotValue` arrays around an `.int`.
+private func nestedSnapshot(_ depth: Int) -> SnapshotValue {
+    var value = SnapshotValue.int(1)
+    for _ in 0..<depth { value = .array([value]) }
+    return value
+}
+
+/// Equal, with object keys compared by their UTF-8 bytes: `String` equality is canonical, so
+/// `==` holds an NFC and an NFD key as one.
+private func identical(_ lhs: SnapshotValue, _ rhs: SnapshotValue) -> Bool {
+    switch (lhs, rhs) {
+    case let (.object(a), .object(b)):
+        func sorted(_ object: [String: SnapshotValue]) -> [([UInt8], SnapshotValue)] {
+            object.map { (Array($0.key.utf8), $0.value) }.sorted { $0.0.lexicographicallyPrecedes($1.0) }
+        }
+        let left = sorted(a), right = sorted(b)
+        return left.count == right.count && zip(left, right).allSatisfy { $0.0 == $1.0 && identical($0.1, $1.1) }
+    case let (.array(a), .array(b)):
+        return a.count == b.count && zip(a, b).allSatisfy { identical($0, $1) }
+    default:
+        return lhs == rhs
+    }
+}
+
+/// The #179 refusal: a player-dependent node in the view without a player.
+private func isPlayerDependentRefusal(_ error: any Error) -> Bool {
+    guard case let SyncError.unsupportedValue(message) = error else { return false }
+    return message.contains("#179")
+}
+
 /// A struct that converts through `Mirror`: one container.
 private struct MirrorLeaf { var hp = 1 }
 
@@ -107,7 +177,7 @@ private func oldTypedMap(_ value: Any, for playerID: PlayerID?) throws -> Snapsh
         var object: [String: SnapshotValue] = [:]
         for (key, val) in map {
             if playerID == nil, type(of: val).hasPlayerDependentSyncFields {
-                throw SyncError.unsupportedValue("player-dependent")
+                throw SyncError.unsupportedValue("player-dependent (#179)")
             }
             object[key.rawValue] = .object(try val.snapshot(for: playerID, dirtyFields: nil).values)
         }
@@ -158,6 +228,56 @@ struct GeneratedNestingBudgetTests {
         expectRefusal(.containers, limit: limit) { _ = try node.fullStateSnapshot(budget: pastLimit) }
     }
 
+    @Test("snapshotForSync carries the budget through a single node field, optional or not, a convertible field and a per-player field")
+    func snapshotForSyncBranchesCarryTheBudget() throws {
+        let levels = 5
+        let player = PlayerID("p")
+        var one = OneChildNode()
+        one.child = chain(levels)
+        var maybe = MaybeChildNode()
+        maybe.child = chain(levels)
+        var holder = BoxHolderNode()
+        holder.box = TreeBox(tree: nestedSnapshot(levels))
+        var mine = MineNode()
+        mine.mine = [player: chain(levels)]
+        // Containers below each node's object: the child's object and its fields (2 + 2 · levels);
+        // the box's object and the tree (1 + levels); the player's slice, its row and the row's
+        // fields (3 + 2 · levels).
+        let cases: [(name: String, count: Int, sync: (NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]), other: (NestingBudget) throws -> Void)] = [
+            ("node", 2 + 2 * levels, { try one.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: $0) }, { _ = try one.snapshot(for: nil, dirtyFields: nil, budget: $0) }),
+            ("optional node", 2 + 2 * levels, { try maybe.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: $0) }, { _ = try maybe.snapshot(for: nil, dirtyFields: nil, budget: $0) }),
+            ("convertible", 1 + levels, { try holder.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: $0) }, { _ = try holder.snapshot(for: nil, dirtyFields: nil, budget: $0) }),
+            ("per-player", 3 + 2 * levels, { try mine.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: $0) }, { _ = try mine.snapshot(for: player, dirtyFields: nil, budget: $0) }),
+        ]
+        for (name, count, sync, other) in cases {
+            let result = try sync(containers(count))
+            let field = name == "per-player" ? result.perPlayer[player]?.values["mine"] : result.broadcast.values.values.first
+            #expect(field.map { $0 != .null } == true, "\(name): the field is in the result")
+            expectRefusal(.containers, limit: count - 1) { _ = try sync(containers(count - 1)) }
+            // The member with the same view counts the same.
+            _ = try other(containers(count))
+            expectRefusal(.containers, limit: count - 1) { try other(containers(count - 1)) }
+        }
+    }
+
+    @Test("an optional node field spends a hop in snapshotForSync, as in the other members")
+    func optionalFieldSpendsAHopEverywhere() throws {
+        let noHops = NestingBudget(containers: NestingBudget.containerLimit, hops: 0)
+        let player = PlayerID("p")
+        var maybe = MaybeChildNode()
+        // Absent: nothing is unwrapped, so every member converts it.
+        _ = try maybe.snapshot(for: nil, dirtyFields: nil, budget: noHops)
+        _ = try maybe.broadcastSnapshot(dirtyFields: nil, budget: noHops)
+        _ = try maybe.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: noHops)
+        _ = try maybe.fullStateSnapshot(budget: noHops)
+        // Present: one hop, refused by every member.
+        maybe.child = chain(0)
+        expectRefusal(.hops, limit: 0) { _ = try maybe.snapshot(for: nil, dirtyFields: nil, budget: noHops) }
+        expectRefusal(.hops, limit: 0) { _ = try maybe.broadcastSnapshot(dirtyFields: nil, budget: noHops) }
+        expectRefusal(.hops, limit: 0) { _ = try maybe.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: noHops) }
+        expectRefusal(.hops, limit: 0) { _ = try maybe.fullStateSnapshot(budget: noHops) }
+    }
+
     @Test("make, makeFull and a convertible's budget-aware form spend the value's own object")
     func generatedConvertibleCarriesTheBudget() throws {
         // `BudgetNamed`'s object, then its `leaf`'s object: two containers.
@@ -184,6 +304,22 @@ struct GeneratedNestingBudgetTests {
             _ = try node.fullStateSnapshot(budget: containers(21))
             _ = try SnapshotValue.make(from: BudgetNamed())
             expectRefusal(.containers, limit: 20) { _ = try node.snapshot(for: nil, dirtyFields: nil, budget: containers(20)) }
+            // snapshotForSync's other branches, each refused in the conversion too.
+            let player = PlayerID("p")
+            var one = OneChildNode()
+            one.child = chain(3)
+            var maybe = MaybeChildNode()
+            maybe.child = chain(3)
+            var holder = BoxHolderNode()
+            holder.box = TreeBox(tree: nestedSnapshot(3))
+            var mine = MineNode()
+            mine.mine = [player: chain(3)]
+            for budget in [containers(9), containers(4)] {
+                _ = try? one.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: budget)
+                _ = try? maybe.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: budget)
+                _ = try? holder.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: budget)
+                _ = try? mine.snapshotForSync(playerIDs: [player], dirtyFields: nil, budget: budget)
+            }
         }
         #expect(probe.count(.resultCheck) == 0)
         #expect(probe.count(.nodeMap) > 0, "the chain's maps take the node-map conformance")
@@ -212,6 +348,12 @@ struct GeneratedNestingBudgetTests {
         let a = PlayerID("a"), b = PlayerID("b")
         // A key whose NFC form differs: written as the wire spells it.
         let decomposed = "e\u{0301}"
+        // Two spellings of one key: canonically equal, so the map holds one entry, under the
+        // spelling that went in first. A typed map's keys can't collide on the wire.
+        var merged: [String: ConvertibleLeaf] = [:]
+        merged[decomposed] = ConvertibleLeaf()
+        merged["\u{00E9}"] = ConvertibleLeaf(hp: 4)
+        #expect(merged.count == 1)
         let cases: [(name: String, value: Any)] = [
             ("[PlayerID: convertible]", [a: ConvertibleLeaf(), b: ConvertibleLeaf(hp: 4)]),
             ("[String: convertible]", ["x": ConvertibleLeaf(), decomposed: ConvertibleLeaf(hp: 4)]),
@@ -220,6 +362,8 @@ struct GeneratedNestingBudgetTests {
             ("[PlayerID: node and convertible]", [a: BothNode(), b: BothNode()]),
             ("[String: node and convertible]", ["x": BothNode()]),
             ("[PlayerID: player-dependent node]", [a: PerPlayerNode()]),
+            ("[String: player-dependent node]", ["x": PerPlayerNode()]),
+            ("[String: convertible] with merged spellings", merged),
             ("empty [PlayerID: node]", [PlayerID: ChainNode]()),
         ]
         for (name, value) in cases {
@@ -228,10 +372,12 @@ struct GeneratedNestingBudgetTests {
                 let new = Result { try SnapshotValue.make(from: value, for: player) }
                 switch (old, new) {
                 case let (.success(expected), .success(actual)):
-                    #expect(expected == actual, "\(name), player \(String(describing: player))")
-                case (.failure, .failure):
+                    // Keys by their bytes: `==` alone holds an NFD and an NFC key as one.
+                    #expect(expected.map { identical($0, actual) } == true, "\(name), player \(String(describing: player)): \(expected) vs \(actual)")
+                case let (.failure(oldError), .failure(newError)):
                     // Both refuse a player-dependent node without a player (#179).
                     #expect(player == nil && name.contains("player-dependent"), "\(name)")
+                    #expect(isPlayerDependentRefusal(oldError) && isPlayerDependentRefusal(newError), "\(name): old \(oldError), new \(newError)")
                 default:
                     Issue.record("\(name), player \(String(describing: player)): old \(old), new \(new)")
                 }
@@ -246,7 +392,8 @@ struct GeneratedNestingBudgetTests {
         let decomposed = "e\u{0301}"
         let composed = "\u{00E9}"
         #expect(try SnapshotValue.make(from: [SnapshotValue.int(1)]) == .array([.int(1)]))
-        #expect(try SnapshotValue.make(from: [decomposed: SnapshotValue.int(1)]) == .object([composed: .int(1)]))
+        #expect(identical(try SnapshotValue.make(from: [decomposed: SnapshotValue.int(1)]), .object([composed: .int(1)])), "the key in NFC, by its bytes")
+        #expect(!identical(.object([decomposed: .int(1)]), .object([composed: .int(1)])), "the comparison sees the spelling")
         #expect(try SnapshotValue.make(from: [PlayerID("a"): SnapshotValue.int(1)]) == .object(["a": .int(1)]))
         #expect(try SnapshotValue.make(from: ["x", "y"]) == .array([.string("x"), .string("y")]))
         #expect(try SnapshotValue.make(from: [1, 2]) == .array([.int(1), .int(2)]))
@@ -271,47 +418,47 @@ struct GeneratedNestingBudgetTests {
         }
     }
 
-    @Test("an AnyHashable around NSNull is refused as an unsupported value, no longer converted to null")
-    func anyHashableAroundNSNullIsUnsupported() {
-        // Since #735 the NSNull check matches the exact type, so the box isn't looked through;
-        // `@Sync` refuses `AnyHashable`, so only a hand-written conversion can pass one.
+    @Test("an AnyHashable converts as the value it holds, alone or inside an [Any]")
+    func anyHashableConvertsAsItsValue() throws {
+        // Before, the scalar casts saw the box: `AnyHashable(1)` cast to `Bool` on Darwin, so it
+        // and an `[Any]` holding it gave `true`; `AnyHashable(NSNull())` was unsupported in `make`. `@Sync`
+        // refuses `AnyHashable`, so only a hand-written conversion can pass one.
         for full in [false, true] {
-            let error = #expect(throws: SyncError.self) {
-                _ = try full ? SnapshotValue.makeFull(from: AnyHashable(NSNull())) : SnapshotValue.make(from: AnyHashable(NSNull()))
+            func convert(_ value: Any) throws -> SnapshotValue {
+                try full ? SnapshotValue.makeFull(from: value) : SnapshotValue.make(from: value)
             }
-            guard case .unsupportedValue(_)? = error else {
-                Issue.record("expected unsupportedValue, got \(String(describing: error))")
-                continue
+            #expect(try convert(AnyHashable(1)) == .int(1), "full \(full)")
+            #expect(try convert(AnyHashable(true)) == .bool(true), "full \(full)")
+            #expect(try convert(AnyHashable("x")) == .string("x"), "full \(full)")
+            #expect(try convert([AnyHashable(1), AnyHashable("x")] as [Any]) == .array([.int(1), .string("x")]), "full \(full)")
+            // As a bare `NSNull`: null through `make`; `makeFull` has no `NSNull` case, so it refuses
+            // both as a class.
+            if full {
+                #expect(throws: SyncError.self) { _ = try convert(NSNull()) }
+                #expect(throws: SyncError.self) { _ = try convert(AnyHashable(NSNull())) }
+            } else {
+                #expect(try convert(AnyHashable(NSNull())) == .null)
             }
         }
     }
 
-    @Test("a node chain far past the limit is refused before the conversion recurses deep (exit test)")
-    func farPastTheLimitThroughNodesIsRefused() async {
-        // With the generated members restarting the count (the budget not passed on), this
-        // overflows the child's stack: a mutant for the Linux host.
-        await #expect(processExitsWith: .success) {
-            let deep = chain(100_000)
-            // `deep` must outlive the process: its release recurses once per level, and a release
-            // build would otherwise release it after its last use, before `exit`.
-            withExtendedLifetime(deep) {
-                let player = PlayerID("p")
-                let attempts: [() throws -> Void] = [
-                    { _ = try SnapshotValue.make(from: deep) },
-                    { _ = try SnapshotValue.makeFull(from: deep) },
-                    { _ = try deep.snapshotForSync(playerIDs: [player], dirtyFields: nil) },
-                ]
-                for attempt in attempts {
-                    do {
-                        try attempt()
-                        exit(1)
-                    } catch let error {
-                        guard isNestingRefusal(error, .containers, limit: NestingBudget.containerLimit) else { exit(2) }
-                    }
-                }
-                exit(0)
-            }
-        }
+    // A node chain far past the limit, one child process per member, so a crash in one says
+    // nothing about the others. With the generated members restarting the count (the budget not
+    // passed on), each overflows its child's stack: mutants for the Linux host.
+
+    @Test("a node chain far past the limit is refused by make before it recurses deep (exit test)")
+    func farPastTheLimitThroughMakeIsRefused() async {
+        await #expect(processExitsWith: .success) { refuseDeepChain(through: 0) }
+    }
+
+    @Test("a node chain far past the limit is refused by makeFull before it recurses deep (exit test)")
+    func farPastTheLimitThroughMakeFullIsRefused() async {
+        await #expect(processExitsWith: .success) { refuseDeepChain(through: 1) }
+    }
+
+    @Test("a node chain far past the limit is refused by snapshotForSync before it recurses deep (exit test)")
+    func farPastTheLimitThroughSnapshotForSyncIsRefused() async {
+        await #expect(processExitsWith: .success) { refuseDeepChain(through: 2) }
     }
 
     @Test("an Optional chain far past the hop limit inside collections is refused before a cast unwraps it (exit test)")
@@ -337,4 +484,25 @@ struct GeneratedNestingBudgetTests {
             }
         }
     }
+}
+
+/// Converts a 100 000-node chain through `make` (0), `makeFull` (1) or `snapshotForSync` (2), and
+/// exits 0 when it is refused at the container limit: an exit test's body.
+private func refuseDeepChain(through member: Int) -> Never {
+    let deep = chain(100_000)
+    // `deep` must outlive the process: its release recurses once per level, and a release build
+    // would otherwise release it after its last use, before `exit`.
+    withExtendedLifetime(deep) {
+        do {
+            switch member {
+            case 0: _ = try SnapshotValue.make(from: deep)
+            case 1: _ = try SnapshotValue.makeFull(from: deep)
+            default: _ = try deep.snapshotForSync(playerIDs: [PlayerID("p")], dirtyFields: nil)
+            }
+            exit(1)
+        } catch let error {
+            exit(isNestingRefusal(error, .containers, limit: NestingBudget.containerLimit) ? 0 : 2)
+        }
+    }
+    exit(3)
 }

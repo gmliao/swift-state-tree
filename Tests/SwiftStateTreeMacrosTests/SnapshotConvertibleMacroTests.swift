@@ -29,7 +29,7 @@ final class SnapshotConvertibleMacroTests {
 
             extension PlayerState: SnapshotValueConvertible, FullSnapshotValueConvertible {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
-                    let inner = try budget.enteringContainer()
+                    _ = try budget.enteringContainer()
                 return .object([
                     "name": .string(self.name),
                     "hpCurrent": .int(self.hpCurrent),
@@ -357,7 +357,7 @@ final class SnapshotConvertibleMacroTests {
 
             extension PlayerState: SnapshotValueConvertible, FullSnapshotValueConvertible {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
-                    let inner = try budget.enteringContainer()
+                    _ = try budget.enteringContainer()
                 return .object([
                     "name": .string(self.name),
                     "hpCurrent": .int(self.hpCurrent),
