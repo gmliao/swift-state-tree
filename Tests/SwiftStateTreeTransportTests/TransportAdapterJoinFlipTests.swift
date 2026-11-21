@@ -738,13 +738,19 @@ private func readyUnflippedJoin(
 
 // MARK: - A failure noted outside a turn (#704)
 
-/// A join on a tick land, completed by the tick that consumes its OnJoin input.
+/// A join on a tick land, held once it registered, and flipped by the tick that consumes its
+/// OnJoin input.
 private func joinOnTickLand(_ f: Fixture, session: SessionID, player: PlayerID) async throws {
+    let registered = TestGate()
+    await f.adapter.installHolds(HoldRegistry.at(.joinSyncRequested) { await registered.arrive() })
     let join = Task { try await joinInTurn(f, session: session, player: player) }
-    await eventually("\(session.rawValue) registered") { await f.adapter.isInTurnJoinRegisteredForTesting(session) }
+    try #require(await registered.waitForArrivals(1), "\(session.rawValue) registered")
     await f.keeper.stepTickOnce()
-    _ = try await join.value
-    #expect(await f.adapter.waitForOutboundDrain())
+    registered.open()
+    await f.adapter.installHolds(nil)
+    #expect(try await join.value.completedInTurn, "the tick flipped the join")
+    let outbound = f.adapter
+    #expect(await withinHangBound { await outbound.waitForOutboundIdleForTesting() })
 }
 
 

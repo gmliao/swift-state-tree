@@ -21,6 +21,7 @@ census() { # dir
   local dir="$1" status=0 found=0
   # One awk over every file: a process substitution per file runs out of descriptors in the
   # bash 3.2 macOS ships, after about 250 files.
+  # shellcheck disable=SC2016 # the single-quoted text is an awk program
   while IFS=$'\t' read -r file line fn; do
     found=$((found + 1))
     if [[ "$fn" =~ ^($allowed)$ ]]; then
