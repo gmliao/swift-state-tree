@@ -94,8 +94,6 @@ private final class DirtyFlagsPhaseSpy: LandKeeperTransport, @unchecked Sendable
     var dirtyFieldsSeen: [Set<String>] { lock.withLock { seen } }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
-    func syncNowFromTransport() async {}
-    func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
