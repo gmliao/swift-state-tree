@@ -1,10 +1,19 @@
 # Deep or cyclic values fail fast instead of overflowing the stack (#716)
 
-Rev 2, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 05c429b5.
+Rev 3, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 63f3db18 (none of the cited files changed since 05c429b5).
 
-Rev 2 answers Review's NOT GO on rev 1 (5 must-fix, 4 should). It defines the counted tree (§3.1), gives frame overhead per frame shape (§3.2), specifies the protocol migration (§3.3), decides the hash path's failure semantics (§3.4) and the replay contract (§3.6), and widens the stage table (§2). Q1–Q4 are maintainer orders, all **decided 2026-11-21** as Review recommended (§5). Where a decision rests on one of them, the text says so.
+Rev 3 answers the parts of Review's NOT GO on rev 2 (7 must-fix, 7 should, 1 nit) that don't depend on where the full check runs:
+- the public API facts and the full Public API list (§3.3, §6);
+- the prebuilt-tree short-circuits (§3.1);
+- a separate counter for hops that add no container (§3.1);
+- the typed refusal kept on every path to the failure (§3.4);
+- the shoulds: record versions, frame shapes, slot budgets, payloads, hand-written nodes, S0 on the Linux host, and step exits.
 
-**Baseline.** The packer bound this plan keeps as the last check is #697's, in PR #720, not merged at 05c429b5. S0 can run before it. S1 and S2 build on main after #720 merges, and each PR names the main commit it starts from.
+**Open until the maintainer answers order d-716:** where the full value is checked each turn. Review proposes one depth preflight per turn at the end of the apply segment (its "D"). That choice decides three must-fixes: the fields the full check covers (1), how replay detects a refusal (6), and the hash sites (7). The sections it touches say "open (d-716)" and list the facts any answer must handle. They don't design it yet.
+
+Q1–Q4 are maintainer orders, all decided 2026-11-21 as Review recommended (§5).
+
+**Baseline.** The packer bound this plan keeps as the last check is #697's, in PR #720, not merged yet. S0 can run before it. S1 and S2 build on main after #720 merges, and each PR names the main commit it starts from.
 
 ## 1. Problem
 
@@ -18,20 +27,20 @@ Each stage is either bounded by the count (§3.1: its input is a value the count
 
 | # | Stage | Where | Runs on | Bound after this plan |
 |---|---|---|---|---|
-| R1 | Client view of state | `SnapshotValue.make(from:for:)` (`SnapshotValue.swift:227`), `broadcastView(of:)` (:455), the macro's `snapshot(for:dirtyFields:)`, `broadcastSnapshot`, `snapshotForSync` | keeper, sync phase (also a joiner's first sync and a resync) | the count |
-| R2 | Typed sync diff | `SyncNodeDiffer`, `SyncOptionalNodeDiffer`, `SyncNodeMapDiffer.diffRows`, the row and fallback paths of `SyncTables` (their `convert` closures), `SyncTables.viewPatches` (:1755) | keeper, sync phase | the count |
-| R3 | Full state | `SnapshotValue.makeFull` (:509), `fullStateSnapshot()`, `toFullSnapshotValue()` (`@SnapshotConvertible`); the hash in `LandKeeper.liveStateHash` (:4977) and `ReevaluationEngine.calculateStateHashAndSnapshot` (:534) | keeper (recording), replay, the monitor runner | the count |
+| R1 | Client view of state | `SnapshotValue.make(from:for:)` (public, `SnapshotValue.swift:227`), `broadcastView(of:)` (public, :455), the macro's `snapshot(for:dirtyFields:)`, `broadcastSnapshot`, `snapshotForSync` | keeper, sync phase (also a joiner's first sync and a resync) | the count |
+| R2 | Typed sync diff | `SyncNodeDiffer`, `SyncOptionalNodeDiffer`, `SyncNodeMapDiffer.diffRows`, the row and fallback paths of `SyncTables` (the `convert` closures that `SyncTableField.make` takes), `SyncTables.viewPatches` (:1755) | keeper, sync phase | the count |
+| R3 | Full state | `SnapshotValue.makeFull` (public, :509), `fullStateSnapshot()`, `toFullSnapshotValue()` (`@SnapshotConvertible`); the hash in `LandKeeper.liveStateHash` (:4977) and `ReevaluationEngine.calculateStateHashAndSnapshot` (:534) | keeper (recording), replay, the monitor runner | the count |
 | R3a | Set ordering inside `makeFull` (:562) | JSON-encodes each converted element to sort | as R3 | the count (it encodes the converted `SnapshotValue`, which the count accepted) |
-| R4 | Hand-written `toSnapshotValue()` / `snapshot(for:dirtyFields:)` | the adopter's code | as R1 | its returned tree is checked by an iterative walk (§3.3); recursion inside the adopter's code is the adopter's, documented |
+| R4 | Hand-written `toSnapshotValue()` / `snapshot(for:dirtyFields:)` | the adopter's code | as R1 | its returned tree is checked by an iterative walk (§3.3); recursion inside the adopter's code is the adopter's, documented (§3.3) |
 | R5 | Payload fallback encode | `MessagePackDirectEncoder`, `MessagePackValueEncoder` boxing (re-enters the direct encoder), `AnyCodable.encode(to:)` | keeper / adapter | a depth count through both encoders, carried across the re-entry (§3.5) |
 | R5j | JSON payload encode | `JSONEncoder` (`TransportCodec.swift:58`) | adapter | registration only (§3.5); a cycle hidden from registration is out of scope, documented |
-| R6 | Event digest when recording | `SnapshotValue.make` on an event payload, before the wire encoder | keeper (recording) | the count, with the payload's budget (§3.2) |
-| R7 | Value walks after conversion | `SnapshotValue` → `MessagePackValue` (and the atomic positional conversion), the JSON state encoders through `SnapshotValue.encode(to:)`, the sync-digest hash walk, the replay `SnapshotPatchApplier` | adapter, keeper, replay | the count (inputs are counted values; the patch applier's tree is the full tree, §3.1) |
+| R6 | Event digests | `SnapshotValue.make` on an event payload: the sync-stream canonical form (`SyncStreamCanonical.swift:12`) and the output verifier (`SyncOutputVerifier.swift:300`), both `try?` today | keeper (recording), replay | the count, with the payload budget (§3.2, §3.5) |
+| R7 | Value walks after conversion | `SnapshotValue` → `MessagePackValue` (and the atomic positional conversion), the JSON state encoders through `SnapshotValue.encode(to:)`, the sync-digest hash walk, the replay `SnapshotPatchApplier` | adapter, keeper, replay | the count (inputs are counted values) |
 | R8 | Wire | the packer and unpackers | adapter | 64 (#697), 32 for client frames (#595) |
-| R9 | Record codec | `CanonicalMessagePack` (`Support/CanonicalMessagePack.swift`, `maxDepth` 128) | recorder, replay | today it builds its tree recursively before its own 128 check; S2 makes the check run while it builds, and S0 measures its stack at 128 |
+| R9 | Record codec | `CanonicalMessagePack` (`Support/CanonicalMessagePack.swift`, `maxDepth` 128) | recorder, replay | today it builds its tree recursively before its own 128 check; S2 makes the check run while it builds (§3.5), and S0 measures its stack at 128 |
 | R10 | Client decode | `AnyCodable` decode of client input | adapter | the unpacker's 32 (#595) runs first |
 | — | Schema extraction | type metadata, not values | build/registration | out of scope (types, not values); S0 confirms it ends on a recursive type |
-| — | TS SDK | its recursive value decode and resync reconcile | browser / Node | out of scope for the Swift change. The client tree is the full tree, so the count bounds it too (§3.1); S3 adds an SDK test at the limit |
+| — | TS SDK | its recursive value decode and resync reconcile | browser / Node | out of scope for the Swift change; S3 adds an SDK test at the limit |
 
 S0 still places two more before S1: how a land's save encodes state, and the SDK's own patch apply.
 
@@ -39,109 +48,182 @@ S0 still places two more before S1: how a land's save encodes state, and the SDK
 
 ### 3.1 The counted tree
 
-**The limit is on the full value of each `@Sync` field, regardless of its policy.** Every view (broadcast, per player, a diff's patch, a typed-table row) is a part of that value at the same path. No view is deeper than the full value at the same path. So a refusal anywhere means the full value is too deep, and a full value within the limit passes every view. The client's tree is built from patches at paths, so it too is never deeper than the full value. That includes a short patch at a long path.
+**The limit is on the full value of each `@Sync` field, regardless of its policy, and on every value a conversion produces.** Rev 2 claimed that no view is deeper than the full value. That is false. `.custom((PlayerID, Value) -> Value?)` (`SyncPolicy.swift:39`), `.perPlayer` and `.masked` return a replacement value, and it can be deeper than the stored one. So the guarantee rests on two rules:
+- every conversion counts what it walks, the view's replacement value included, and refuses past the limit;
+- a full check covers what no view walks (where it runs: open, d-716 below).
 
 Definitions:
-- A field's depth is the number of containers (objects and arrays of the converted value, as the unpacker counts them) on the deepest path of its full value, counting the field's own value as level 1 when it is a container. A scalar field has depth 0.
+- A field's depth is the number of containers (objects and arrays of the converted value, as the unpacker counts them) on the deepest path of its value. The field's own value counts as level 1 when it is a container. A scalar field has depth 0.
 - **The synthetic root** (the snapshot object holding the fields) is not counted. It belongs to every frame shape's overhead (§3.2). So a whole-snapshot pass and `SyncEngine`'s single-field retry (`extractDroppingThrowingFields`, `SyncEngine.swift:1526`) start each field at the same budget and refuse the same values.
-- A conversion that starts below the field (a row, a patch at a path, an optional node) starts with the budget left at its path: the limit minus the containers above it.
-- **Recursion that adds no container** is bounded too. An optional unwrap, a property wrapper or a `Mirror` hop through `Any` costs no container but costs a stack frame. The carrier (§3.3) counts calls as well as containers, and a path with more than `4 × stateMaxDepth` calls is refused with the same error. A prebuilt multi-level `SnapshotValue` returned by a conversion the count didn't walk (a hand-written hook, a `@SnapshotConvertible` type's own code) is checked by an iterative walk with an explicit stack, against the budget left at its path (§3.3).
+- A conversion that starts below the field starts with the budget left at its value: the limit minus the containers above that value. Which containers those are is fixed per slot kind, not read from the path's component count:
+  - A root fallback slot (`SyncSnapshotRootSlot`, `SyncTables.swift:1482`, path `/field`) converts the field's value itself, so it starts at the full limit.
+  - A row of a root node map (`viewPatches`' row loop, `SyncTables.swift:1389-1397`, path `/field/key`) converts a value inside the map object, so it starts at limit − 1.
+  - Both paths have one component above the value, so "the slot's path depth" would be off by one for one of them. S1 gives each slot kind its start as a constant, with a fixture each.
 
-**Where the full value is checked.** A conversion refuses only what it walks. For a field whose sync view is its full value (broadcast policy), the sync phase's conversion is the check. That leaves two cases where no view walks the deep part: a server-only field, and a branch that a per-player or custom policy filters out. Without a further check, such a field would end the land only when recording hashes it. A land would then behave differently with recording on and off. So in each turn's sync phase, before any view is built, every dirty field whose policy isn't plain broadcast gets a budgeted full conversion (`makeFull` with the budget, result discarded). S1 confirms that a server-only field's dirty bit is tracked like any other `@Sync` field's. If it isn't, that field is checked on every sync. When recording already converted the same turn's full state for the hash, the check reuses that result and doesn't convert again. The S1 benchmark covers this cost.
+**Hops that add no container** get their own counter. Some recursion costs a stack frame but no container:
+- an optional unwrap through `Mirror`;
+- a property wrapper;
+- a hop through `Any`;
+- a node's `snapshot` calling `make` on the node's own value.
+
+A chain of `Optional<ChildNode>` costs about four calls per container level: node `snapshot` → `make(Optional)` → Mirror unwrap → `make(Child)` → child `snapshot`. So a single call count would refuse a legal tree at the limit. The carrier (§3.3) therefore counts:
+- containers, against `stateMaxDepth`;
+- separately, the hops that add no container, against `stateMaxHops`.
+
+S0 sizes `stateMaxHops` from its wrapper-only stack measurement. A value past it is refused with the same error, `SyncError.nestingTooDeep`, whose reason says which counter ran out (§3.4). A fixture with `Optional<Node>` at every level up to `stateMaxDepth` must pass.
+
+**Prebuilt trees.** `make` and `makeFull` return early when the value is already a `SnapshotValue`, a `StateSnapshot`, a `[SnapshotValue]`, or a `[String: SnapshotValue]` / `[PlayerID: SnapshotValue]`. The branches are at `SnapshotValue.swift:229-234`, :260-281 and :510-515. A `@Sync` field of such a type never reaches a protocol default, so those branches run the same iterative check (an explicit stack, against the budget left) before they return. Limit, documented: when the last reference to a very deep indirect tree goes away, releasing it recurses in its deinit. A prebuilt tree deep enough to overflow on release is outside what the count can save. A child-process test pins the release of a tree just past the limit, after its refusal.
+
+**A non-depth error in a full conversion** (colliding keys, for example) can stop `makeFull` before it reaches a deep branch. It fails the land as today, with `syncConversion`, through the same path (§3.4). A refused value stays refused whichever error comes first, so the outcome is deterministic. The reason in the failure names the first error.
+
+**Where the full value is checked: open (d-716).** Rev 2's rule is withdrawn: a budgeted full conversion in the sync phase of every dirty field whose policy isn't plain broadcast. It misses two cases:
+- a `.broadcast` root node holding a nested `.serverOnly`, per-player or masked sub-field, whose broadcast view leaves out the deep part;
+- an initial value, because `Sync.init` starts clean (`SyncPolicy.swift:174`, `_isDirty = false`), so it is never dirty.
+
+Any answer to d-716 has to check every field at initialize and every dirty field after, whether or not a sync is due or recording is on, and say how recording reuses that conversion for the hash.
 
 ### 3.2 The limit, per frame shape
 
-`PayloadNesting.stateMaxDepth` is the wire's limit minus the deepest state frame's own levels, capped by the measured stack (Q1, §5). Overhead differs by frame shape, so each shape gets a fixture. The fixture builds the frame around a shallow field value and measures its nesting the way the unpacker counts it (as `PackDepthTests.stateFrameBound` does in #720). Then a test pins `stateMaxDepth + overhead(shape) ≤ serverFrameMaxDepth` for every shape. The shapes:
+`PayloadNesting.stateMaxDepth` is the wire's limit minus the deepest state frame's own levels, capped by the measured stack (Q1, §5).
 
-- a patch in an opcode 103 state update (diff), on the broadcast and the per-player path;
-- a row-column value from a typed table (one more level: the values array);
+**Convention.** A frame shape's overhead is the number of containers above the value's root. A fixture measures it with a scalar sentinel in place of the value (overhead = the frame's nesting depth with the sentinel), and counts the value's own containers separately. A state frame then fits when `overhead + depth(value) ≤ serverFrameMaxDepth`. The payload overheads #720's tests use (2 in an event's own frame, 4 in a merged frame) count the payload's root as one of the payload's own levels. In this convention they are 1 and 3, so the fixtures restate them.
+
+**The shapes**, each with a fixture and a test that pins `stateMaxDepth + overhead(shape) ≤ serverFrameMaxDepth`:
+- a state update frame, `[StateUpdateOpcode, …]` (`StateUpdateEncoderProtocol.swift:15`: `noChange` 0, `firstSync` 1, `diff` 2), with a diff patch on the broadcast path and on the per-player path. Opcode 103 is `event` (`TransportMessageEncoder.swift:10`), not a state update; rev 2's list had that wrong;
+- a row-column value from a typed table (one more level, the values array);
 - a joiner's first sync (full snapshot), and a resync;
-- the opcode 107 merged frame `[107, state, events]`, which nests the state one level deeper than its own frame. That is #720's must-fix: there a state frame exactly 64 deep ends the land with `eventEncode` when an event rides along. With the state limit derived from this shape, that case no longer arises from converted state;
-- JSON object framing (`json`, `opcodeJsonArray`). JSON has no wire limit (#715), so this shape doesn't set the limit. Its fixture pins that a state at the limit encodes and decodes in both JSON encodings.
+- the opcode 107 merged frame `[107, state, events]` (`MessageKindOpcode.stateUpdateWithEvents`), which nests the state one level deeper than its own frame (#720's must-fix);
+- **a row-column value inside a 107 merged frame with a real event**, which is likely the deepest state shape. Its fixture is the one expected to set the limit;
+- JSON object framing (`json`, `opcodeJsonArray`). JSON has no wire limit (#715), so this shape doesn't set the limit; its fixture pins that a state at the limit encodes and decodes in both JSON encodings.
 
-The limit is set by the deepest of these shapes. The packer's guard (#697) stays as the last check, for frames built from other sources.
+The limit is set by the deepest shape. The packer's guard (#697) stays as the last check, for frames built from other sources.
 
-A payload gets the same treatment, with its own budget: `serverFrameMaxDepth` minus the deepest event or response frame's levels (4 in the merged 107 frame, 2 in an event's own frame, per #720's tests). The recording digest (R6) and the encoders (R5) use that budget.
+**Payloads** get the same treatment, with their own budget: `PayloadNesting.payloadMaxDepth` is `serverFrameMaxDepth` minus the deepest event or response frame's overhead, in the convention above. S1 defines the constant and its fixtures, since the event digests (R6) use it. S2 makes the encoders (R5) consume it.
 
 ### 3.3 How the budget is carried (Q4: an explicit budget, decided 2026-11-21)
 
-A protocol requirement can't take a default argument, and an extension-only overload doesn't dispatch through `any StateNodeProtocol`. So each entry point keeps its current requirement, and gains a budget-aware requirement whose extension default keeps old conformers correct:
+A protocol requirement can't take a default argument, and an extension-only overload doesn't dispatch through `any StateNodeProtocol`. Several entry points are public, so the macro expansions in an adopter's module can call them. So every public entry point keeps its current signature, and gains a budget-aware form:
 
-- **`StateNodeProtocol`** (`StateNodeProtocol.swift:115-170`): new requirements `snapshot(for:dirtyFields:budget:)`, `broadcastSnapshot(dirtyFields:budget:)`, `snapshotForSync(playerIDs:dirtyFields:budget:)`, `fullStateSnapshot(budget:)`. Each extension default calls the old requirement, then walks the returned tree iteratively against the budget. A hand-written node in a chain therefore doesn't restart the count: its output is checked against the budget left at its path. The macro generates the budget-aware requirements and makes the old ones forward with the root budget.
-- **`@SnapshotConvertible`** (`SnapshotConvertibleMacro.swift`; `SnapshotValue.swift:171`, :498): `toSnapshotValue(budget:)` and `toFullSnapshotValue(budget:)`, live and full. The same pattern: generated, with defaults that check the old method's output.
-- **`SnapshotValue.make` / `makeFull` / `broadcastView`**: internal, so they take the budget directly.
-- **Typed tables**: the `convert` closures (`SyncTables.swift:78`, :117) become `(V, NestingBudget) throws -> SnapshotValue`. They are package-internal, so nothing breaks outside. The differs take the budget from `SyncDiffPosition`. The row and fallback paths have no position today, so they take it from the slot's path depth.
-- `NestingBudget` is a public struct (the generated code in an adopter's module uses it) with no public initializer beyond the root. It holds the containers and calls left. Its descend operation throws `SyncError.nestingTooDeep(limit:)` (a new case).
+- **`StateNodeProtocol`** (`StateNodeProtocol.swift:115-170`): new requirements `snapshot(for:dirtyFields:budget:)`, `broadcastSnapshot(dirtyFields:budget:)`, `snapshotForSync(playerIDs:dirtyFields:budget:)`, `fullStateSnapshot(budget:)`. Each extension default calls the old requirement, then walks the returned tree iteratively against the budget. The macro generates the budget-aware requirements and makes the old ones forward with the root budget.
+- **`@SnapshotConvertible`** (`SnapshotConvertibleMacro.swift`; `SnapshotValue.swift:171`, :498): `toSnapshotValue(budget:)` and `toFullSnapshotValue(budget:)`, live and full, in the same pattern: generated, with defaults that check the old method's output.
+- **`SnapshotValue.make(from:for:)`, `makeFull(from:)`, `broadcastView(of:)`**: these are public (`public extension SnapshotValue`, `SnapshotValue.swift:182`, :501), not internal as rev 2 said. Each gains a `budget:` overload. The old signature stays and forwards the root budget.
+- **`SyncTableField.make`**: the four overloads (`SyncTables.swift:73`, :112, :127, :142) are `public static`, because macro expansions in adopter modules call them. Each gains an overload whose `convert` closure takes the budget: `(V, NestingBudget) throws -> SnapshotValue`. The old overloads stay. They wrap the old closure so that its result goes through the iterative check against the budget left at the slot (§3.1). The differs take the budget from `SyncDiffPosition`. The row and fallback paths have no position today, so they take their slot kind's start.
+- `NestingBudget` is a public struct, used by the generated code in an adopter's module. It holds the containers and hops left. Its only public initializer is the root budget. Its descend operations throw `SyncError.nestingTooDeep`.
 
-**The typed error survives the retry paths.** `extractDroppingThrowingFields` retries a throwing pass field by field and notes each field that throws again (`drops.note`). A depth refusal is deterministic, and the single-field retry starts at the same budget (§3.1). So the deep field throws again, keeps the typed error, and `noteExtractionDrops` (`SwiftStateTreeTransport/SyncPhaseTypes.swift:171`) ends the land, although the fallback has a cached value. A test covers that: a one-pass throw, then a fallback, then the land still ends with `syncConversion` and the field named.
+**Hand-written nodes.** A hand-written conformer implements only the old requirements. Its default budget-aware form forwards to them, so the count restarts at the root for everything beneath that node. The returned-tree check catches the depth, but only after the hand-written recursion ran. So a recursive hand-written node type is unbounded on the stack. That is the adopter's, documented with R4: a hand-written node that nests its own type implements the budget-aware requirement.
 
-**`viewPatches`** (`SyncTables.swift:1755`) uses `try?` and leaves out a field whose rows don't convert. With a shared count that fallback would refuse too, but the error would be lost. S1 changes it to rethrow `nestingTooDeep` and keep the fallback for other errors. Then a depth refusal from a row-addressed full view reaches the terminal failure before commit, on a first sync and on a resync. Both get a test.
-
-Benchmark: S1 measures the budget on the hot path (EncodingBenchmark A/B on the Mac; a host A/B if beyond noise), as rev 1 said.
+Benchmark: S1 measures the budget on the hot path. The tier is the EncodingBenchmark A/B on the Mac, then a host A/B if the Mac A/B moves beyond its noise.
 
 ### 3.4 How a too-deep state fails (Q2: `syncConversion`, decided 2026-11-21)
 
-- **Sync phase (R1, R2, and §3.1's full check):** `nestingTooDeep` is a conversion failure. It ends the land through `ExtractionDrops` and `noteExtractionDrops` with `LandFailure.Kind.syncConversion`, before commit. The field is named, and the detail gives the limit. `syncEncode` stays for a frame that doesn't encode.
-- **Hash (R3), decided:** today `liveStateHash` absorbs a conversion error: it records `unavailableHash`, counts it and goes on (`liveStateHash`, `LandKeeper.swift:4977`, documented at :4974; by design since #180). Under this plan `nestingTooDeep` found by the hash **ends the land** with `syncConversion` and the field, at its first occurrence. That covers every live recording site of `liveStateHash`: initialize (`makeInitializeRecord`, :4966), the legacy tick (`runTick`, :4671), the in-turn tick (`runTickTurn`, :4864) and a tick land's shutdown turn (:2840). S1 lists whether a tickless pass records a hash anywhere else; §3.1's sync-phase check covers a tickless land either way. A keeper with no transport attached has no sync phase, so its state is first converted at a joiner's first sync or by the hash, and the land ends at whichever comes first: a later turn than with a transport, but the same outcome, and replay compares against the turn recorded. `calculateStateHashAndSnapshot` gains a throwing sibling that the live sites use. **Every other hash error keeps today's unavailable-hash semantics**, unless the maintainer extends the change.
-- With §3.1's full check in the sync phase, the hash and the sync refuse in the same turn. Which one reports depends on their order in that turn. The failure's kind, field and tick are the same either way; its stage says which. `LandFailurePosition.Stage` gains `stateHash` for the hash site, a public addition listed under Public API.
-- **Replay and the monitor runner:** a depth refusal found while replaying fails the run (§3.6). It is not an unverifiable tick.
+`nestingTooDeep` is a conversion failure and ends the land with `LandFailure.Kind.syncConversion`, before commit. The failure names the field and carries a structured reason (§3.6), not only a detail string. `syncEncode` stays for a frame that doesn't encode.
+
+**The typed refusal reaches the failure on every path.** Today it can be lost or renamed in five places. Each gets a mapping:
+- **`ExtractionDrops`** keeps only `firstError: String?` and `firstField` (`SyncEngine.swift:1474-1511`). S1 makes it keep the first error itself (`firstFailure: (any Error)?`, kept with the string for logs), so `noteExtractionDrops` (`SwiftStateTreeTransport/SyncPhaseTypes.swift:171`) can map a `SyncError.nestingTooDeep` to `syncConversion` with its reason. The single-field retry starts at the same budget (§3.1), so the deep field throws again and is noted although the fallback has a cached value. A test covers it: one-pass throw, fallback, the land still ends with `syncConversion` and the field named.
+- **`SyncTables.viewPatches`** (:1755) uses `try?` and leaves out a field whose rows don't convert. S1 makes it note the slot's field and error into `drops`, so its callers don't have to throw. That covers `planFullViewUpdate` (`TransportAdapter.swift:4557-4595`), which doesn't throw, and its callers at :4448 and :4468. Other errors keep today's fallback. That holds on a first sync and on a resync, each with a test.
+- **The adapter's generic catches**: the in-turn sync phase (`TransportAdapter.swift:2911-2922`) and the joiner's first sync (:5255-5266) map any error that isn't a `LandFailure` to `syncPlan`. S1 maps `SyncError.nestingTooDeep` to `syncConversion` with its field and reason in both, through one helper.
+- **`planFirstSync`** (:5273) is a separate entry point. It goes through the same helper, with a test that a joiner whose first view is too deep ends the land with `syncConversion`.
+- **The bulk `try?`**: `SyncEngine` tries `snapshotForSync` in one pass first (`SyncEngine.swift:1611`) and falls back to the separate methods. A custom `snapshotForSync` can throw where the separate methods succeed, and the `try?` erases that error. S1 keeps a `nestingTooDeep` from the bulk pass: it fails the land, as the separate methods would have done at the same budget.
+
+**The first failure stays.** If a later encode fault follows in the same turn, the depth refusal stays the land's failure. `failLand`'s first cause already wins (`drainFlag.setFailed`), so S1 only has to make sure the refusal is reported first.
+
+**The hash sites: open (d-716).** Whatever the answer, it has to handle what Review found at the four `liveStateHash` sites (:2840, :4671, :4864, :4966):
+- at the shutdown turn (:2840) the drain flag is already set, so a `failLand` there is dropped;
+- in `runTick` and `runTickTurn` the hash runs before the turn's outputs, so ending the land there must also stop them;
+- `fullStateSnapshot()` doesn't name the root field.
+
+Every other hash error keeps today's unavailable-hash semantics.
 
 ### 3.5 Cycles and class fields in payloads (Q3: refuse at registration, decided 2026-11-21)
 
-- **Registration:** refuse a class-typed field at every level of an event's, action's or response's declared type, as #464 does for synced state (`SyncValueSemantics`). One validator for both. Its reach is what the metadata describes. `@Payload` exposes each type's immediate field metatypes, and the validator descends through those. A payload has no general default instance, so there is no Mirror descent as for state nodes. The check stops at an existential (`Any`, `AnyCodable`, a protocol type), a type-erased generic, and a field hidden by a hand-written `encode(to:)`. A grep of `Examples/` and `Tests/` finds no statically class-typed `@Payload` field, so today's in-repo break is none. Behavior change: a land with such a payload no longer registers. It goes under Public API with a docs line, in en and zh-TW.
-- **Runtime bound** for what registration can't see: the direct encoder and `MessagePackValueEncoder` (both directions), and the record codec (R9), count depth against the payload budget (§3.2). The count is carried across the value encoder's re-entry into the direct encoder, so a boxed value doesn't restart it. That also stops a cycle.
+- **Registration:** refuse a class-typed field at every level of the declared type of an event, an action, a response and a **server input** (`serverInputHandlers`, which are recorded; `LandRegistration.swift:201-203` already walks them for decimal fields). It is the same rule #464 applies to synced state (`SyncValueSemantics`), in one validator for both.
+  - Its reach is what the metadata describes. `@Payload` exposes each type's immediate field metatypes, and the validator descends through those. A payload has no general default instance, so there is no Mirror descent as for state nodes.
+  - The check stops at: an existential (`Any`, `AnyCodable`, a protocol type); a type-erased generic; a field hidden by a hand-written `encode(to:)`; and **a nested plain `Codable` struct without `@Payload`**, which exposes no field metatypes.
+  - A grep of `Examples/` and `Tests/` finds no statically class-typed `@Payload` field, so today's in-repo break is none.
+  - Behavior change: a land with such a payload no longer registers. Listed in §6, with a docs line in en and zh-TW.
+- **Runtime bound** for what registration can't see: the direct encoder and `MessagePackValueEncoder` (both directions), and the record codec (R9), count depth against `payloadMaxDepth` (§3.2). The count is carried across the value encoder's re-entry into the direct encoder, so a boxed value doesn't restart it. That also stops a cycle.
+  - The canonical encoder's `container(keyedBy:)` (`CanonicalMessagePack.swift:380`), `unkeyedContainer()` (:385), `nestedContainer` and `superEncoder` (:457, :462, :515) can't throw. Setting `deferredError` (:336, :413) records the refusal but doesn't stop the recursion. So the check also stops on entry to the throwing `encode` calls: past the limit, an `encode` returns at once without descending, and the deferred error is thrown at the end (:350).
+- **Event digests (R6):** both use `try?` today. The sync-stream canonical form (`SyncStreamCanonical.swift:12`) drops the event's entry. The output verifier (`SyncOutputVerifier.swift:300`) leaves its canonical payload nil. With the count, a `nestingTooDeep` there is the event's failure: on the live side the land ends with `eventEncode`, the event named; in the verifier it is a mismatch. Other conversion errors keep today's handling.
+- **The terminal entry survives a payload that fails framing.** `failLand` submits the terminal entry as its own record submission (`LandKeeper.swift:5632-5635`), apart from the turn's events. S2 makes the recorder refuse the offending payload as an error of its own, without losing the frame's other entries or the terminal one. A test reads the record back and finds the terminal entry. S2 confirms how the record log merges a frame's submissions (`ReevaluationRecordLog.swift:163`) before relying on it.
 - **What stays the adopter's:** a hand-written `encode(to:)` that walks a cycle, and JSON payloads (`JSONEncoder` can't be bounded from outside; for them registration is the guard). The docs say so, narrowing rev 1's stated guarantee.
 - The value trees (`SnapshotValue`, `MessagePackValue`) are enums, so they can't hold a cycle.
 
 ### 3.6 Replay and the record (#612)
 
-Today's replay verifier runs full R1 extraction in a shadow `SyncEngine`, never the adapter's typed-table R2 path, and doesn't run the final frame encoder. #612 still gates R3 on recorded hashes. The count is in the conversion entry points, which the shadow engine and the hash both use, so replay refuses at the same input as live. What this plan adds to the record contract:
+Facts any design must handle (Review, checked against the code):
+- The replay keeper has no transport and no recorder.
+- `failLand` in re-evaluation logs and returns (`LandKeeper.swift:5610`).
+- The replay runners catch every hash error as an unavailable hash: `ReevaluationEngine.stateHashAndSnapshot` and `verifyInitialize` (`ReevaluationEngine.swift:110`), and `ReevaluationRunnerImpl`'s initialize and `step` (`ReevaluationRunnerImpl.swift:360`).
+- `SyncOutputReplayDriver` (`ReevaluationEngine.swift:296`) runs only on committed outputs, and the failing turn has none.
 
-- **How a refusal is recorded.** It already has a place: `failLand` submits the terminal entry, `ReevaluationTickRecord(landFailure:)` (`LandKeeper.swift:5632-5635`), into the failing tick's frame (frame 0 on a tickless land), with kind, field and position. That entry doesn't depend on hash recording, so a refusal is recorded with hash recording off too. The refusal is before commit, so that turn has no committed sync output. Replay already stops there (`setReplayFailureEnd`, `ReevaluationEngine.swift:321-326`).
-- **How it is compared.** Today replay reports the recorded failure (`result.liveFailure`) but doesn't check that replay fails the same way. With this plan, when the recorded failure is a depth refusal, replay records its own refusal at that tick (in re-evaluation mode `failLand` logs and returns, `LandKeeper.swift:5610`; S1 keeps the first one for the result). Replay then compares kind, field and tick/pass with the recorded one. A match verifies. Replay refusing where the record has no failure, or not refusing where it has one, is a mismatch, except in the next case.
-- **A record from another limit.** The record's metadata gains `stateMaxDepth` (a record minor version, with the bump rules in `ActionRecorder.swift`). Suppose a record was made under another limit, or before the field existed, and replay refuses where it recorded no failure. Replay then reports the run as not comparable because the limits differ (alongside `hashIncomparability`), not as a state mismatch.
-- **The record codec's 128** (R9) covers more than the state tree. The envelope, the payloads and the patch lists add levels around it. So the claim is narrowed: a fixture pins that the deepest recorded entry around a state at `stateMaxDepth`, and around a payload at its budget, stays within 128. The codec's recursive tree build gets its own in-build check (R9).
+**Where replay detects a refusal: open (d-716).** Whatever runs the live check has to run in replay too, at the same point of the same turn, in both runners. The decided parts of the contract:
+
+- **How a refusal is recorded.** `failLand` submits the terminal entry, `ReevaluationTickRecord(landFailure:)` (`LandKeeper.swift:5632-5635`), into the failing tick's frame (frame 0 on a tickless land), with kind, field and position. That doesn't depend on hash recording.
+  - An initialize refusal sits in tick 0 with `tickId: nil`, and has its own replay test.
+  - The refusal is before commit, so that turn has no committed sync output. Replay already stops at the recorded failure (`setReplayFailureEnd`, `ReevaluationEngine.swift:321-326`).
+- **A structured reason.** `LandFailure` today has only `kind` and a free-text `detail`, so replay can't tell a depth refusal from colliding keys. S1 adds an optional `reason: LandFailure.Reason?` with the case `nestingTooDeep(counter:limit:)`, the counter being containers, hops or payload. `LandFailure`'s `Codable` is synthesized, so an older record decodes with `reason == nil`.
+- **How it is compared.** When the recorded failure has a depth reason, replay records its own refusal at that turn and compares counter, field and tick/pass with the recorded one. A match verifies. Replay refusing where the record has no failure, or not refusing where it has one, is a mismatch, except in the next case.
+- **A record from another limit, both ways.** The record's metadata gains the effective limits: `stateMaxDepth`, `stateMaxHops` and `payloadMaxDepth`. The not-comparable report sits alongside `hashIncomparability`. Replay reports a run as not comparable, not as a mismatch, when the recorded limits differ from this build's and either:
+  - replay refuses where the record has no failure (the record was made under a looser limit, or before the field existed); or
+  - the record has a depth refusal that replay, under a looser limit, doesn't reproduce.
+- **Versions.** There are two contracts. The record metadata is `3.6` (`ActionRecorder.swift:235`, `current = "3.\(fingerprintMinor)"`), and `isReadable` (:360) rejects a newer minor. The binary log preamble is `3.5` on its own (`ReevaluationRecordLog.swift:27`). The plan:
+  - The metadata moves 3.6 → 3.7 for the limits field and the terminal reason.
+  - `stampedWithCurrentVersion` (:118) stamps the limits.
+  - The binary preamble stays 3.5. The reason is an optional key inside an existing entry, so the log's framing doesn't change. S1 checks that with a 3.5 log holding a 3.7 entry, read by today's reader.
+- **The record codec's 128** (R9) covers more than the state tree. The envelope, the payloads and the patch lists add levels around it. A fixture pins that the deepest recorded entry stays within 128, around a state at `stateMaxDepth` and around a payload at `payloadMaxDepth`. The codec's recursive tree build gets its own in-build check (S2).
 - #612's rev 5 picks this contract up. It is a contract change there, not a pointer.
 
 ### 3.7 Tests that can't overflow the runner
 
 - Every over-the-limit value is built iteratively (a reduce, as `PackDepthTests.stateFrameBound` does), so the test itself never recurses.
-- Every case that would overflow if its guard regressed runs as an exit test (a child process, as the 100,000-level leaf test in #697 does). A regression then fails one test instead of killing the test bundle and hiding the rest.
+- Every case that would overflow if its guard regressed runs as an exit test (a child process). A regression then fails one test instead of killing the test bundle. Those that overflow on purpose run on the Linux host, not the Mac (§4 S0).
 - In-process cases stay shallow: at the limit and one past it, refused by the count before the recursion is deep.
 - Per stage:
-  - R1: `make`, `broadcastView`, a land's sync. Expect `syncConversion` with the field, on a first sync and a resync.
-  - R2: a row replaced at depth, and the row-addressed full view.
-  - §3.1's full check: a server-only field and a filtered branch, recording off. The land ends in the same turn as with recording on.
-  - R3: each recording site.
-  - The retry path: one-pass throw, fallback, the land still ends.
-  - Zero-container recursion: nested optionals through `Any`, and a prebuilt tree from a hand-written hook.
-  - R5: a class field refused at registration; a cycle in an `AnyCodable` refused by the encoder, also through a boxed value.
-  - R9: a record nested past 128.
-  - Replay: a match, a mismatch, and a record from another limit.
+  - R1: `make`, `broadcastView`, a land's sync, a joiner's first sync and a resync, each ending with `syncConversion` and the field. A `.custom` view deeper than the stored value is refused.
+  - R2: a row replaced at depth, the row-addressed full view, and each slot kind's start budget.
+  - Prebuilt trees: each short-circuit type at the limit and one past it; release of a refused deep tree in a child process.
+  - Hops: `Optional<Node>` at every level up to `stateMaxDepth` passes; wrapper-only recursion past `stateMaxHops` is refused.
+  - The refusal's path: `ExtractionDrops`, `viewPatches`, both adapter catches, `planFirstSync`, the bulk pass, and a later encode fault in the same turn.
+  - Payloads (S2): a class field refused at registration, a server input included; a cycle in an `AnyCodable` refused by the encoder, also through a boxed value and through the canonical encoder's containers; an event digest past the payload budget.
+  - R9 (S2): a record nested past 128.
+  - Replay (S1): a match, a mismatch, a record from a looser and from a tighter limit, and an initialize refusal.
 - Frame shapes: one fixture per shape (§3.2).
 - Run on macOS debug and release locally, and on Linux in CI.
-- Mutants: each guard removed and each off by one, the full check skipped, and the retry path dropping the typed error.
+- Mutants: each guard removed and each off by one, each slot kind's start off by one, the hop counter merged into the container count, the typed error replaced by its string, and the prebuilt check skipped.
 
 ## 4. Steps
 
-- **S0, measure (slot, no library change).** A stack-budget matrix with one child process per depth, run on the real keeper, adapter and recorder contexts, on the smallest stack.
-  - Record per run: platform, toolchain, optimization mode, usable stack, and the bytes from entry to peak per level.
-  - Cover: nodes and containers alternating, row updates and full-row seeds, prebuilt trees, wrapper-only recursion (§3.1), and the exact-limit and one-over cases through the throw and the unwind.
-  - Count a clean refusal and stack exhaustion as different outcomes.
-  - Run it once on main and once with a prototype of the thin dispatcher (§5 Q1) in a scratch branch.
-  - Place the save path, the SDK patch apply and schema extraction (§2).
-  - Output: a table in this plan and the limit for Q1.
-- **S1:**
-  - the budget through R1–R3, R6 and the typed tables (§3.3);
-  - `SyncError.nestingTooDeep`, the full check (§3.1) and the failure mapping (§3.4), with `Stage.stateHash`;
-  - the replay comparison and the record field (§3.6);
-  - the thin dispatcher, if S0 supports it;
-  - the frame-shape fixtures (§3.2), and the tests per §3.7;
-  - EncodingBenchmark A/B.
-- **S2:** the payload validator at registration, the encoders' count (§3.5) and the record codec's in-build check (R9), with docs.
-- **S3:** docs: the state limit in `docs/core/failure-handling.md` and `sync.md` (en and zh-TW), replacing the #697 Limit sentence; the narrowed payload guarantee; the TS SDK test at the limit; the solutions entry updated.
+Each step ends with an exit condition and a revert check: the test that fails when that step's guard is reverted.
 
-S1 and S2 are independent PRs. Each touches `Sources/`, so each goes through a PR and Review.
+- **S0, measure (no library change).**
+  - On the Mac (slot): bytes per level by instrumentation, without overflowing. The stack address at the deepest frame is compared with the entry, per stage and per shape: nodes and containers alternating, row updates and full-row seeds, prebuilt trees, wrapper-only recursion. Measure on main and with a prototype of the thin dispatcher (§5 Q1) in a scratch branch. Overflow runs crash a child process, and every crash raises a macOS crash-reporter dialog, so S0 doesn't overflow on the Mac.
+  - On the Linux host: the runs that find each overflow point, one child process per depth, on the real keeper, adapter and recorder contexts. The exact-limit and one-over cases run through the throw and the unwind. A clean refusal and stack exhaustion count as different outcomes. The 544 KiB Darwin pool figure comes from the Mac's measured bytes per level.
+  - Record per run: platform, toolchain, optimization mode, usable stack, bytes per level.
+  - Place the save path, the SDK patch apply and schema extraction (§2).
+  - Exit: a table in this plan and values for `stateMaxDepth` and `stateMaxHops`. No revert check (no guard).
+- **S1, the state count.**
+  - The budget through R1–R3, the typed tables and the public overloads (§3.3), with `SyncError.nestingTooDeep`.
+  - The prebuilt check and the hop counter (§3.1), and the failure mapping (§3.4).
+  - The full check, as d-716 decides.
+  - `payloadMaxDepth` and its fixtures, and the event digests (R6).
+  - `LandFailure.Reason`, the record limits and the replay comparison (§3.6).
+  - The thin dispatcher, if S0 supports it.
+  - The frame-shape fixtures (§3.2), the tests per §3.7 that S1 owns, and the EncodingBenchmark A/B.
+  - Exit: every S1 test green on macOS debug and release, and on Linux CI; the A/B within the noise, or its cost accepted by the maintainer.
+  - Revert checks: removing the container guard fails the R1 exit test; removing the prebuilt check fails the short-circuit test; dropping the typed error fails the `ExtractionDrops` test.
+- **S2, payloads.**
+  - The payload validator at registration, server inputs included.
+  - The encoders' count against `payloadMaxDepth`, the canonical encoder's entry check and the record codec's in-build check (§3.5).
+  - The terminal entry surviving a payload refusal. Docs.
+  - Exit: every S2 test green as above.
+  - Revert checks: removing the validator fails the registration test; removing the encoder count fails the `AnyCodable` cycle exit test; removing the codec's in-build check fails the 128 test.
+- **S3, docs.**
+  - The state limit in `docs/core/failure-handling.md` and `sync.md` (en and zh-TW), replacing the #697 Limit sentence.
+  - The narrowed payload guarantee; the hand-written-node and prebuilt-release limits.
+  - The TS SDK test at the limit; the solutions entry updated.
+  - Exit: the docs rot checks pass and the SDK test is green.
+
+S1 and S2 are independent PRs, except that S2 consumes S1's `payloadMaxDepth`. Each touches `Sources/`, so each goes through a PR and Review.
 
 ## 5. Decisions (maintainer orders q1-716 to q4-716)
 
@@ -150,6 +232,27 @@ All four were decided 2026-11-21, as Review recommended.
 - **Q1, the limit (decided 2026-11-21):** measured, not taken from the wire. S0 prototypes the thin dispatcher: `SnapshotValue.make` with its slow paths moved out (`@inline(never)`), so each level's frame is small. The limit is then the largest value that leaves about 2× measured headroom on the smallest stack in the worst path, capped at `serverFrameMaxDepth` minus the deepest frame shape's overhead (§3.2). If S0 leaves it between two values, take the lower one: loosening later never breaks an adopter, and tightening does. 32 containers is a reasonable measured candidate.
 - **Q2, the kind (decided 2026-11-21):** `syncConversion` (§3.4). The docs row says that the wire's 64 is why the state limit exists.
 - **Q3, class payload fields (decided 2026-11-21):** refused at registration, paired with the runtime bound in the framework's own traversals (§3.5). A hand-written `encode(to:)` and JSON payloads are documented as the adopter's.
-- **Q4, the carrier (decided 2026-11-21):** an explicit budget in the compatible shape of §3.3, not a per-thread counter. A budget is auditable: every row, fallback and custom conversion visibly gets the budget left at its path. A throw unwinds it for free, and there is no hidden thread state. A per-thread counter needs a lookup and a write per container, a `defer` on every level and a rule for synchronous re-entry, and still can't see recursion inside a hand-written hook.
+- **Q4, the carrier (decided 2026-11-21):** an explicit budget in the compatible shape of §3.3, not a per-thread counter. Its cost is measured in S1.
 
-**Phase fit.** The count runs in the sync phase (conversion) and in recording. Nothing moves into apply, and the failure ends the land through the existing path where a throw in the sync plan happens before commit. Refusing at mutation time would be earlier, but it would cost a walk per mutation.
+**Open: d-716**, where the full value is checked each turn (§3.1, §3.4, §3.6).
+
+**Phase fit.** The count runs in conversion (sync phase and recording). Nothing moves into apply, and the failure ends the land through the existing path where a throw in the sync plan happens before commit. d-716 may move the full check to the end of the apply segment; it would still be in the synchronous turn and before any output.
+
+## 6. Public API
+
+Additions:
+- `NestingBudget` (public struct; root initializer only).
+- New requirements with extension defaults:
+  - on `StateNodeProtocol`: `snapshot(for:dirtyFields:budget:)`, `broadcastSnapshot(dirtyFields:budget:)`, `snapshotForSync(playerIDs:dirtyFields:budget:)`, `fullStateSnapshot(budget:)`;
+  - on the `@SnapshotConvertible` protocols: `toSnapshotValue(budget:)`, `toFullSnapshotValue(budget:)`.
+- Overloads, the old signatures kept: `SnapshotValue.make(from:for:budget:)`, `makeFull(from:budget:)`, `broadcastView(of:budget:)`, and the four `SyncTableField.make` overloads with a budget-taking `convert`.
+- `SyncError.nestingTooDeep(counter:limit:)`. A new case of a public enum: an adopter's exhaustive `switch` over `SyncError` no longer compiles without a `default`. Listed as source-breaking.
+- `LandFailure.reason` and `LandFailure.Reason` (optional; older records decode with nil).
+- `PayloadNesting.stateMaxDepth`, `stateMaxHops`, `payloadMaxDepth`.
+- The record metadata's limits field, at version 3.7.
+- `LandFailurePosition.Stage.stateHash`, only if d-716 keeps a hash-site failure. A new case of a public enum, source-breaking for an exhaustive `switch` in the same way.
+
+Behavior:
+- A state past the limit ends the land with `syncConversion` instead of overflowing.
+- A land whose event, action, response or server-input type has a class-typed field no longer registers.
+- A payload past `payloadMaxDepth` ends the land with `eventEncode` / `responseEncode` from the encoders, before the wire.
