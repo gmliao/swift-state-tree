@@ -8,7 +8,7 @@
 - §2.3: the settlement point lost between today's two jobs is accepted, with a test.
 - §4: case 27's expected log is derived from §2.2, with its `armed` lines. P2 and C share a segment.
 - The cap's wording: a withdrawn parked input spends a release slot.
-- Decided: Q1 = releases first; Q3 = no 50-run case. Q2 = a plain rename of `TurnStats.drainContinuations` to `continuationJobs`, with no alias. That is a public rename, and Main is asking the maintainer. This revision assumes the plain rename.
+- Decided: Q1 = releases first; Q3 = no 50-run case; Q2 = a plain rename of `TurnStats.drainContinuations` to `continuationJobs`, with no alias (the maintainer's decision).
 
 ## 1. Today
 
@@ -76,7 +76,7 @@ Today, when the two jobs run one after the other, each segment's epilogue settle
 ### 2.4 Counters
 
 `TurnStats.drainContinuations` becomes `TurnStats.continuationJobs`, a plain rename, with no alias. It counts every `continueBatch` scheduled, for either reason.
-- The rename is public, so Main is asking the maintainer. If an alias is wanted instead, it is one deprecated computed property.
+- The rename is public and was decided by the maintainer. The PR body lists it under "Public API".
 - `OrderedChecksTests.swift:244` (`drainContinuations >= 4`) keeps its bound under the new name.
 
 ## 3. Cost (#621)
@@ -145,8 +145,8 @@ One SwiftStateTurns PR (core path), in two commits:
 1. the merged job, the flag, the counter rename, the job hook and the tests;
 2. the docs.
 
-The PR body carries the bench table (§3) with both SHAs and `swift --version`, and names the public rename. It can land before or after #725. Whichever is second adds the lane's take to the same loop, and that loop is unchanged here.
+The PR body carries the bench table (§3) with both SHAs and `swift --version`, and lists the rename under "Public API". It can land before or after #725. Whichever is second adds the lane's take to the same loop, and that loop is unchanged here.
 
 ## 7. Questions
 
-Decided: Q1 = releases first (§2.1), Q3 = no 50-run case. Q2, the plain rename (§2.4), is with the maintainer.
+Decided: Q1 = releases first (§2.1), Q2 = the plain rename with no alias (§2.4, the maintainer), Q3 = no 50-run case. None open.
