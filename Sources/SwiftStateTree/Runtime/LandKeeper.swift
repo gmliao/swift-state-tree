@@ -562,14 +562,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The first failure noted wins. A keeper in re-evaluation never gets one: replay has no
     /// transport.
     package nonisolated func notePendingFailure(_ failure: LandFailure) {
+        guard mode == .live else { return }
         pendingTransportFailure.note(failure)
     }
 
     /// Tests: the failure noted by `notePendingFailure(_:)`, if any.
     package nonisolated var pendingFailureForTesting: LandFailure? { pendingTransportFailure.failure }
-
-    /// Tests: how many inputs wait in the queue.
-    package var pendingItemCountForTesting: Int { pendingItems.count }
 
     /// Waits until this keeper's destruction has finished, handlers and the transport's
     /// `onLandDestroyed` included. Returns at once when no destruction started.
@@ -4137,7 +4135,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if removingFromQueue { removePendingItems(Array(items.prefix(consumed))) }
         noteJoinInputsConsumed(joinResults)
         if appliedShutdown { completeShutdownTurn() }
-        if let appliedFailure { failLand(appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty) }
+        // A failure noted on the mailbox came first, even when another closer's submit queued its
+        // item ahead of the noted one's (#704): the noted failure stays the cause.
+        if let appliedFailure {
+            failLand(pendingTransportFailure.failure ?? appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty)
+        }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount, consumed: consumed)
     }
 
@@ -5220,8 +5222,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A failed land sends nothing more (#535): a scheduled repair, writer-drain retry or
         // join-sync turn that runs after the failure returns here.
         guard failure == nil else { return .skipped }
-        // A failure a transport noted outside a turn ends the land first (#704): no phase runs.
+        let markBeforeNote = recorderSubmissionCount
+        // A failure a transport noted outside a turn ends the land first (#704): no phase runs. A
+        // tickless land's turn still ends its record, as after a failed phase.
         if applyPendingTransportFailure(), let failure {
+            enqueueTicklessTurnEnd(since: markBeforeNote)
             return .landFailed(failure)
         }
         guard !isSyncing else {

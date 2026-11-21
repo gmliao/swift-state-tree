@@ -13,6 +13,48 @@ import SwiftStateTreeTestSupport
 
 // MARK: - Fixtures
 
+/// Counts one label of the keeper's in-turn probe, so a test waits for that point instead of
+/// polling state. The probe runs synchronously on the keeper at the point it names.
+final class ClosedGateProbeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let label: String
+    private var count = 0
+    private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    init(label: String) { self.label = label }
+
+    var probe: @Sendable (String) -> Void { { [self] seen in if seen == label { signal() } } }
+
+    private func signal() {
+        let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            count += 1
+            let ready = waiters.filter { $0.0 <= count }.map(\.1)
+            waiters.removeAll { $0.0 <= count }
+            return ready
+        }
+        ready.forEach { $0.resume() }
+    }
+
+    /// Returns once the label was seen `count` times. Bound it with `withinHangBound`.
+    func wait(count target: Int) async {
+        await withCheckedContinuation { continuation in
+            let now = lock.withLock { () -> Bool in
+                if count >= target { return true }
+                waiters.append((target, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+}
+
+/// Lets only the first arrival at a hold wait for `gate`; later arrivals pass.
+final class FirstArrivalOnly: @unchecked Sendable {
+    private let lock = NSLock()
+    private var arrived = 0
+    func isFirst() -> Bool { lock.withLock { arrived += 1; return arrived == 1 } }
+}
+
 /// Thrown by a sync plan that a test expects never to run.
 struct ClosedGatePhaseRan: Error {}
 
@@ -49,6 +91,26 @@ func makeClosedGateLand() -> LandDefinition<UntypedPayloadState> {
                 ctx.requestSyncNow()
                 return ClosedGateOkReply(ok: true)
             }
+        }
+    }
+}
+
+/// The failure another closer notes in a test.
+let notedFailure = LandFailure(
+    kind: .responseEncode, detail: "another closer", position: LandFailurePosition(stage: .actionResponse))
+
+/// A tick land (hourly) with `HooksPingAction`, whose resolver makes each ping a pending job:
+/// the adapter answers it from a response task, through `.actionResponse`.
+func makeClosedGatePendingLand() -> LandDefinition<UntypedPayloadState> {
+    Land("closed-gate-pending", using: UntypedPayloadState.self) {
+        Rules {
+            HandleAction(HooksPingAction.self, resolvers: HooksPingResolver.self) {
+                (_: inout UntypedPayloadState, action: HooksPingAction, _: LandContext) in
+                HooksPingResponse(tag: action.tag)
+            }
+        }
+        Lifetime {
+            Tick(every: .seconds(3600)) { (_: inout UntypedPayloadState, _: LandContext) in }
         }
     }
 }
@@ -242,10 +304,109 @@ struct ClosedGatePendingFailureTests {
         #expect(mailbox.failure?.detail == "first")
     }
 
+    @Test("with the gate closed, a join gets no reply, and a router frame through the adapter is dropped (#696, plan test 3)")
+    func joinAndRouterFramesAfterTheClose() async throws {
+        let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let (submit, failing) = try await holdAtFailureSubmit(land, "join") {
+            try await land.sendAction(requestID: "a")
+        }
+        let sentBefore = await land.transport.sends
+        let droppedBefore = await land.adapter.framesDroppedLandFailed
+        // The router reaches a joined session through `enqueueOutbound` (its JoinResponse, its
+        // later errors).
+        await land.adapter.enqueueOutbound(Data("router frame".utf8), to: UntypedPayloadLand.session)
+        // A second session's join: its turn ends the land with the noted failure, so neither a
+        // JoinResponse nor a join error goes out.
+        let s2 = SessionID("s2"), c2 = ClientID("c2")
+        await land.adapter.onConnect(sessionID: s2, clientID: c2)
+        _ = try? await land.adapter.performJoin(
+            playerSession: PlayerSession(playerID: "p2", deviceID: "dev", metadata: [:]),
+            clientID: c2, sessionID: s2, authInfo: nil,
+            joinResponse: { _, _ in Data("join response".utf8) }
+        )
+        await land.adapter.waitForOutboundIdleForTesting()
+        #expect(await land.transport.sends == sentBefore, "no router frame, JoinResponse or join error goes out")
+        #expect(await land.adapter.framesDroppedLandFailed > droppedBefore, "the gate counted the drops")
+        try await releaseAndDrain(land, submit, failing)
+    }
+
+    @Test("with the gate closed, a session's final frame and its close still go out (#696, plan test 4)")
+    func finalFrameStillGoesOut() async throws {
+        let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let (submit, failing) = try await holdAtFailureSubmit(land, "final frame") {
+            try await land.sendAction(requestID: "a")
+        }
+        let sentBefore = await land.transport.sends
+        // The door a join ended before its admission, an inbound overflow after the join and the
+        // router's join failure use (`endJoinBeforeAdmission`, TA:1789 and :2390, LR:1420).
+        await land.adapter.sendFinalFrameAndClose(Data("final".utf8), to: UntypedPayloadLand.session)
+        await land.adapter.waitForOutboundIdleForTesting()
+        #expect(await land.transport.sends == sentBefore + 1, "the final frame goes out")
+        #expect(await land.transport.plainCloses == [UntypedPayloadLand.session], "the close behind it goes out")
+        try await releaseAndDrain(land, submit, failing)
+    }
+
+    @Test("a second closer's submit that reaches the keeper first doesn't replace the noted first cause (#704)")
+    func laterSubmitKeepsTheNotedFirstCause() async throws {
+        let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
+        await land.adapter.waitForOutboundIdleForTesting()
+        // A notes and holds before its submit; B, the second closer, notes (the mailbox keeps A)
+        // and submits at once, so B's failure item reaches the keeper first.
+        let submit = TestGate(), first = FirstArrivalOnly()
+        await land.adapter.installHolds(HoldRegistry.at(.failureSubmit) { if first.isFirst() { await submit.arrive() } })
+        let a = Task { try await land.sendAction(requestID: "a") }
+        try #require(await submit.waitForArrivals(1), "A holds before its submit")
+        let b = LandFailure(kind: .eventEncode, detail: "the second closer", position: LandFailurePosition(stage: .eventFlush))
+        await land.adapter.failOutsideTurn(b)
+        _ = await land.keeper.waitForFailureForTesting()
+        #expect(land.keeper.failure?.kind == .responseEncode, "A's noted failure stays the cause: \(String(describing: land.keeper.failure))")
+        submit.open()
+        try await a.value
+        await land.adapter.installHolds(nil)
+        await land.keeper.waitUntilDrained()
+        #expect(land.keeper.failure?.kind == .responseEncode)
+    }
+
+    @Test("a response completed before the gate closed but enqueued after it doesn't go out (#696)")
+    func completedResponseMeetsTheClosedGate() async throws {
+        let land = try await UntypedPayloadLand.make(makeClosedGatePendingLand(), encoding: .messagepack)
+        await land.adapter.waitForOutboundIdleForTesting()
+        // B, a pending job (its action has a resolver, on a tick land): its answer holds after
+        // its turn, before its ticket check and enqueue.
+        let answer = TestGate()
+        await land.adapter.installHolds(HoldRegistry.at(.actionResponse) { await answer.arrive() })
+        let envelope = ActionEnvelope(
+            typeIdentifier: String(describing: HooksPingAction.self),
+            payload: AnyCodable(HooksPingAction(tag: "b"))
+        )
+        let frame = try land.encoding.config.makeCodec().encode(TransportMessage.action(requestID: "b", action: envelope))
+        await land.adapter.onMessage(frame, from: UntypedPayloadLand.session)
+        await land.keeper.stepTickOnce()
+        try #require(await answer.waitForArrivals(1), "B's answer holds before its enqueue")
+        // Another closer closes the gate.
+        await land.adapter.failOutsideTurn(notedFailure)
+        await land.adapter.waitForOutboundIdleForTesting()
+        let sentBefore = await land.transport.sends
+        let droppedBefore = await land.adapter.framesDroppedLandFailed
+        answer.open()
+        await land.adapter.installHolds(nil)
+        #expect(await withinHangBound { await land.adapter.waitForActionResponsesFinishedForTesting(1) }, "B's answer finished")
+        await land.adapter.waitForOutboundIdleForTesting()
+        #expect(await land.transport.sends == sentBefore, "B's completed response doesn't go out")
+        #expect(await land.adapter.framesDroppedLandFailed > droppedBefore, "the gate counted it")
+        await land.keeper.stepTickOnce()
+        #expect(land.keeper.failure?.kind == .responseEncode)
+        await land.keeper.waitUntilDrained()
+    }
+
     @Test("a batch [A, a failure item, B]: A applied but gets landClosed, B is dropped with landClosed (#704)")
     func failureItemInTheBatchClosesEveryCaller() async throws {
         let land = try await UntypedPayloadLand.make(makeClosedGateLand(), encoding: .messagepack)
         await land.adapter.waitForOutboundIdleForTesting()
+        let queued = ClosedGateProbeCounter(label: "action-queued")
+        await land.keeper.setInTurnProbeForTesting(queued.probe)
         let drain = TestGate()
         await land.keeper.installHolds(HoldRegistry.at(.inputDrain) { await drain.arrive() })
         let a = Task { try await land.okActionThroughKeeper(amount: 1) }
@@ -254,9 +415,7 @@ struct ClosedGatePendingFailureTests {
             kind: .responseEncode, detail: "test", position: LandFailurePosition(stage: .actionResponse)))
         let b = Task { try await land.okActionThroughKeeper(amount: 2) }
         // B is queued behind the failure item before the drain goes on.
-        while await land.keeper.pendingItemCountForTesting < 3 {
-            await Task.yield() // wall-clock: not time: no event marks an action's enqueue; yields until the keeper's queue holds B
-        }
+        try #require(await withinHangBound { await queued.wait(count: 2) }, "B was queued")
         let sentBefore = await land.transport.sends
         drain.open()
         await land.keeper.installHolds(nil)

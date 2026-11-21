@@ -82,6 +82,10 @@ actor UntypedPayloadTransport: Transport {
     func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
         closes.append(close.code)
     }
+    /// Closes without a code: the writer's close behind a session's final frame
+    /// (`closeSessionAfterQueuedFrames`, whose default closes at once).
+    private(set) var plainCloses: [SessionID] = []
+    func closeSession(_ sessionID: SessionID) async { plainCloses.append(sessionID) }
 }
 
 /// One land on its own keeper and adapter, with one joined session.
@@ -199,6 +203,7 @@ func expectGateClosedBeforeTheFailureTurn(
     #expect(await submit.waitForArrivals(1), "\(label): the failure is held before the keeper")
     #expect(land.keeper.failure == nil, "\(label): the keeper hasn't applied the failure yet")
     #expect(land.adapter.outputGate.isClosed, "\(label): the gate closed in the failing segment")
+    #expect(land.keeper.pendingFailureForTesting != nil, "\(label): the failure is noted on the keeper (#704)")
     await land.adapter.sendEventToTransport(AnyServerEvent(UntypedPayloadTypedEvent(hp: 1)), to: .all)
     await land.adapter.waitForOutboundIdleForTesting()
     // On messagepack, events merge: the event only queues a body, which this window doesn't

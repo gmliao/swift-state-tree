@@ -6230,8 +6230,8 @@ extension TransportAdapter {
         case let .ran(.committed(copy, epoch), committedTick):
             (state, membershipEpoch, tickId) = (copy, epoch, committedTick)
         case let .ran(.failed(failure), _):
-            // The output closed in the job; the failure reaches the keeper as an input.
-            await keeper.submitLandFailure(failure)
+            // The output closed and the failure was noted in the job; the submit wakes the keeper.
+            await submitNotedFailure(failure)
             throw failure
         case .timedOut:
             throw DebugFreezeError.settleTimedOut
