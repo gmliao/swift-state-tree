@@ -283,6 +283,72 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "recordedLandType") == "counter")
     }
 
+    private static let startURIs = ["/admin/reevaluation/replay/start", "/admin/reevaluation/start"]
+
+    @Test("Both start routes refuse a record past the default run length limit, naming the last tick and the limit (#728)")
+    func startRefusesARecordPastTheDefaultLimit() async throws {
+        let limit = ReevaluationRecordFile.defaultMaxReplayTicks
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense", landDefinitionID: "hero-defense",
+            version: ReevaluationRecordVersion.current, tickIds: [0, limit]
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let router = try await makeRouter()
+        let body = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense", "recordFilePath": recordFileURL.path,
+        ])
+        for uri in Self.startURIs {
+            let response = try await sendReplayStartRequest(body: body, on: router, uri: uri)
+            #expect(response.status == .badRequest, "\(uri)")
+            let decoded = try decodeAdminResponse(from: response)
+            #expect(!decoded.success)
+            let message = try #require(decoded.error?.message, "\(uri)")
+            #expect(message.contains("last tick is \(limit)"), "\(uri): \(message)")
+            #expect(message.contains("limit of \(limit)"), "\(uri): \(message)")
+        }
+    }
+
+    @Test("Both start routes accept a record at the default limit (#728)")
+    func startAcceptsARecordAtTheDefaultLimit() async throws {
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense", landDefinitionID: "hero-defense",
+            version: ReevaluationRecordVersion.current, tickIds: [0, ReevaluationRecordFile.defaultMaxReplayTicks - 1]
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let router = try await makeRouter()
+        let body = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense", "recordFilePath": recordFileURL.path,
+        ])
+        for uri in Self.startURIs {
+            #expect(try await sendReplayStartRequest(body: body, on: router, uri: uri).status == .ok, "\(uri)")
+        }
+    }
+
+    @Test("Both start routes accept the same record when the host raised the limit, and use the limit of the land type asked for (#728)")
+    func startUsesTheHostsLimit() async throws {
+        let limit = ReevaluationRecordFile.defaultMaxReplayTicks
+        let recordFileURL = try writeRecordFile(
+            landType: "hero-defense", landDefinitionID: "hero-defense",
+            version: ReevaluationRecordVersion.current, tickIds: [0, limit]
+        )
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let body = try JSONSerialization.data(withJSONObject: [
+            "landType": "hero-defense", "recordFilePath": recordFileURL.path,
+        ])
+        let raised = try await makeRouter(maxReplayTicksByLandType: ["hero-defense": limit + 1])
+        for uri in Self.startURIs {
+            #expect(try await sendReplayStartRequest(body: body, on: raised, uri: uri).status == .ok, "\(uri)")
+        }
+        // The limit is per land type: another land type's raised limit doesn't apply here, and a
+        // lowered limit is honored.
+        let other = try await makeRouter(maxReplayTicksByLandType: ["other-land": limit + 1])
+        let lowered = try await makeRouter(maxReplayTicksByLandType: ["hero-defense": 1])
+        for uri in Self.startURIs {
+            #expect(try await sendReplayStartRequest(body: body, on: other, uri: uri).status == .badRequest, "\(uri)")
+            #expect(try await sendReplayStartRequest(body: body, on: lowered, uri: uri).status == .badRequest, "\(uri)")
+        }
+    }
+
     @Test("Monitor start: the body is required, a path outside the records directory is refused, and the ID is a monitor ticket binding the record")
     func monitorStart() async throws {
         let router = try await makeRouter()
@@ -427,7 +493,10 @@ private enum LiveLand {
     case unregistered
 }
 
-private func makeRouter(live: LiveLand = .fingerprint(testRecordFingerprint)) async throws -> NIOHTTPRouter {
+private func makeRouter(
+    live: LiveLand = .fingerprint(testRecordFingerprint),
+    maxReplayTicksByLandType: [String: Int64] = [:]
+) async throws -> NIOHTTPRouter {
     let landRealm = LandRealm()
     switch live {
     case .fingerprint(let fingerprint):
@@ -443,7 +512,9 @@ private func makeRouter(live: LiveLand = .fingerprint(testRecordFingerprint)) as
     try await landRealm.register(landType: "reevaluation-monitor", server: MockReplayLandServer())
 
     let adminAuth = NIOAdminAuth(apiKey: "test-admin-key")
-    let routes = NIOAdminRoutes(landRealm: landRealm, adminAuth: adminAuth)
+    let routes = NIOAdminRoutes(
+        landRealm: landRealm, adminAuth: adminAuth, maxReplayTicksByLandType: maxReplayTicksByLandType
+    )
     let router = NIOHTTPRouter()
     await routes.registerRoutes(on: router)
     return router
@@ -504,7 +575,8 @@ private func writeRecordFile(
     landType: String,
     landDefinitionID: String?,
     version: String,
-    schemaFingerprint: String? = testRecordFingerprint
+    schemaFingerprint: String? = testRecordFingerprint,
+    tickIds: [Int64] = []
 ) throws -> URL {
     let recordsDirectory = URL(
         fileURLWithPath: FileManager.default.currentDirectoryPath,
@@ -535,7 +607,8 @@ private func writeRecordFile(
         schemaFingerprint: schemaFingerprint
     )
 
-    let payload = ReplayRecordFile(recordMetadata: metadata, tickFrames: [])
+    let frames = tickIds.map { ReevaluationTickFrame(tickId: $0, actions: [], clientEvents: [], lifecycleEvents: []) }
+    let payload = ReplayRecordFile(recordMetadata: metadata, tickFrames: frames)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     let data = try encoder.encode(payload)

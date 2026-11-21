@@ -20,6 +20,7 @@ struct ReevaluationRunnerMain {
         var inputFile: String?
         var verify = false
         var exportJsonlPath: String?
+        var maxReplayTicks = ReevaluationRecordFile.defaultMaxReplayTicks
         
         var i = 1
         while i < args.count {
@@ -32,6 +33,13 @@ struct ReevaluationRunnerMain {
                 i += 1
             case "--export-jsonl":
                 exportJsonlPath = (i + 1 < args.count) ? args[i + 1] : nil
+                i += 2
+            case "--max-replay-ticks":
+                guard i + 1 < args.count, let value = Int64(args[i + 1]), value >= 1 else {
+                    print("Error: --max-replay-ticks needs a whole number of at least 1")
+                    printHelpAndExit(exitCode: 1)
+                }
+                maxReplayTicks = value
                 i += 2
             case "--help", "-h":
                 printHelpAndExit()
@@ -46,7 +54,13 @@ struct ReevaluationRunnerMain {
             printHelpAndExit(exitCode: 1)
         }
         
-        let source = try ReevaluationRecordFile.openSource(filePath: inputFile)
+        let source: any ReevaluationSource
+        do {
+            source = try ReevaluationRecordFile.openSource(filePath: inputFile, maxReplayTicks: maxReplayTicks)
+        } catch let error as ReevaluationRecordContentError where error.isReplayTooLong {
+            print("❌ \(error); raise the limit with --max-replay-ticks")
+            exit(14)
+        }
         let metadata = try await source.getMetadata()
         let landType = metadata.landType
         
@@ -89,6 +103,7 @@ struct ReevaluationRunnerMain {
                 recordFilePath: inputFile,
                 verify: verify,
                 exportJsonlPath: exportJsonlPath,
+                maxReplayTicks: maxReplayTicks,
                 metadata: metadata,
                 currentHardware: currentHardware
             )
@@ -102,6 +117,7 @@ struct ReevaluationRunnerMain {
                 recordFilePath: inputFile,
                 verify: verify,
                 exportJsonlPath: exportJsonlPath,
+                maxReplayTicks: maxReplayTicks,
                 metadata: metadata,
                 currentHardware: currentHardware
             )
@@ -115,6 +131,7 @@ struct ReevaluationRunnerMain {
                 recordFilePath: inputFile,
                 verify: verify,
                 exportJsonlPath: exportJsonlPath,
+                maxReplayTicks: maxReplayTicks,
                 metadata: metadata,
                 currentHardware: currentHardware
             )
@@ -131,6 +148,7 @@ struct ReevaluationRunnerMain {
         recordFilePath: String,
         verify: Bool,
         exportJsonlPath: String?,
+        maxReplayTicks: Int64,
         metadata: ReevaluationRecordMetadata,
         currentHardware: HardwareInfo
     ) async throws {
@@ -143,7 +161,8 @@ struct ReevaluationRunnerMain {
                 initialState: initialState,
                 recordFilePath: recordFilePath,
                 sink: sink,
-                exportJsonlPath: exportJsonlPath
+                exportJsonlPath: exportJsonlPath,
+                maxReplayTicks: maxReplayTicks
             )
         } catch let error as ReevaluationExportWriteError {
             // The export is incomplete: the run must not report success (#263).
@@ -215,7 +234,8 @@ struct ReevaluationRunnerMain {
         let second = try await ReevaluationEngine.run(
             definition: definition,
             initialState: initialState,
-            recordFilePath: recordFilePath
+            recordFilePath: recordFilePath,
+            maxReplayTicks: maxReplayTicks
         )
         
         let mismatches = diffHashes(a: first.tickHashes, b: second.tickHashes)
@@ -281,13 +301,15 @@ struct ReevaluationRunnerMain {
         ReevaluationRunner (Demo)
         
         Usage:
-          swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>]
+          swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--max-replay-ticks <n>]
         
         Options:
           --input, -i <path>   Path to re-evaluation record JSON file (required)
           --verify, -v         Run twice and compare per-tick hashes
           --export-jsonl <path>  Export JSONL stream (snapshot + events per tick); a failed
                                  write (a full disk) ends the run with exit 12
+          --max-replay-ticks <n>  Longest run to replay: a record whose last tick + 1 is past n is
+                                 refused (exit 14). Default 1,000,000 (13.9 h at 50 ms ticks)
           --help, -h           Show this help message
 
         Sync Output (records with a sync stream, format 2.2):
