@@ -55,48 +55,9 @@ func expect(_ condition: Bool, _ what: @autoclosure () -> String) throws {
     guard condition else { throw DiffRunFailure(what()) }
 }
 
-/// A join while a sync cycle is in flight: a legacy cycle (the adapter's own `syncNow`) is
-/// held before its `endSync`; A's change applies under it and isn't sent; B's join starts under
-/// the same hold (`underHold`). After the release, the deferred sync and B's join run, and A
-/// converges.
 /// MessagePack cells, for `.only`: a named function keeps the scenario literals cheap to
 /// type-check.
 @Sendable func isMessagePackCell(_ cell: DiffCell) -> Bool { cell.encoding == .messagepack }
-
-func syncCycleRow(
-    _ name: String, cells: DiffCellRule, beforeBump: [DiffStep] = [], bump: DiffStep,
-    underHold: [DiffStep], afterRelease: [DiffStep]
-) -> DiffScenario {
-    // Built step by step: one concatenated literal is too slow for the type checker.
-    var steps: [DiffStep] = [
-        .connect("A", session: "s-a"),
-        .join("A", player: "pa"),
-        // The writer has no backlog, so the cycle's `syncNow` doesn't take the backlog branch.
-        .flushOutbound,
-        .arm(.adapter(.cycleBeforeEndSync), arrival: nil),
-        .spawn("a legacy cycle") { run in await run.adapter.syncNow() },
-        .reach(.adapter(.cycleBeforeEndSync)),
-    ]
-    steps += beforeBump
-    steps.append(bump)
-    steps.append(.check("the change applied") { run in
-        let counter = await run.keeper.currentState().counter
-        try expect(counter == 1, "the change didn't apply: counter \(counter)")
-    })
-    steps.append(.connect("B", session: "s-b"))
-    steps += underHold
-    steps.append(.release(.adapter(.cycleBeforeEndSync)))
-    steps += afterRelease
-    let tail: [DiffStep] = [.awaitJoin("B"), .liveCheckpoint, .disconnect("B"), .disconnect("A")]
-    steps += tail
-    return DiffScenario(
-        name: name,
-        cells: cells,
-        steps: steps,
-        outcomes: ["join-A": .reply, "join-B": .reply, "bump-a": .reply],
-        lifecycle: ["pa": [.join, .leave], "pb": [.join, .leave]]
-    )
-}
 
 let diffScenarios: [DiffScenario] = [
     DiffScenario(
@@ -177,11 +138,7 @@ let diffScenarios: [DiffScenario] = [
     // admission has flipped the join and sent its reply before the router reaches the hold; on
     // a tick land the flip waits for the tick that applies OnJoin.
     routerRow("disconnect-after-admit", hold: .afterAdmit, cells: .all, joinReply: .none,
-              joinReplyIn: { $0.sync == .inTurn && $0.land == .tickless ? .reply : nil }, admitted: true),
-    // Only on the path without the in-turn flip: the reply goes to a removed session.
-    routerRow("disconnect-sending-join-response", hold: .sendingJoinResponse, cells: .legacyOnly, joinReply: .none, admitted: true),
-    // The reply was sent; the initial sync is for a player the leave removed.
-    routerRow("disconnect-sending-initial-sync", hold: .sendingInitialSync, cells: .legacyOnly, joinReply: .reply, admitted: true),
+              joinReplyIn: { $0.land == .tickless ? .reply : nil }, admitted: true),
     // The pre-admission case: the disconnect ends the attempt before it is queued, so the
     // queued join is refused as stale; neither OnJoin nor OnLeave runs.
     DiffScenario(
@@ -248,7 +205,7 @@ let diffScenarios: [DiffScenario] = [
     // OnJoin there), so OnJoin's turn can't run after the registration and flip the join first.
     DiffScenario(
         name: "disconnect-at-registration",
-        cells: .inTurnOnly,
+        cells: .all,
         steps: witnessJoins + [
             .connect("A", session: "s-a"),
             .arm(.adapter(.keeperJoinReturned)),
@@ -340,43 +297,6 @@ let diffScenarios: [DiffScenario] = [
         lifecycle: ["pb": [.join, .leave]],
         recordedLifecycle: ["pa": "#548"]
     ),
-    // In-turn off: the bump's sync request meets the held cycle (`syncSkips.busy` rises), and
-    // B's join reaches the adapter under the hold. B stays held there until the cycle and its
-    // retry are done, so its OnJoin doesn't race the retry.
-    // The busy skip's retry is held before its delay, so it can't meet the held cycle again
-    // (that would count a second skip) and doesn't retry while the hold lasts.
-    syncCycleRow("join-during-sync-cycle", cells: .legacyOnly, beforeBump: [
-        .arm(.adapter(.busyRetry)),
-    ], bump: .bumpUnderCycle("A", requestID: "bump-a", amount: 1), underHold: [
-        .reach(.adapter(.busyRetry)),
-        .only("messagepack", isMessagePackCell, [.arm(.adapter(.followUpSynced))]),
-        .check("syncDeferredByCycle") { run in
-            let busy = await run.adapter.syncDeferredByCycleCountForTesting
-            try expect(busy == 1, "syncSkips.busy is \(busy)")
-        },
-        .arm(.adapter(.admitJoinEntry)),
-        .startJoin("B", player: "pb"),
-        .reach(.adapter(.admitJoinEntry)),
-    ], afterRelease: [
-        // The cycle's end, then the retry its busy skip scheduled, before B goes on:
-        // otherwise they race B's first sync, and its sequence number varies.
-        .awaitSpawned,
-        // With MessagePack the cycle's end starts a follow-up (`withSyncState` asks for one
-        // while the adapter's pending events aren't empty, and only this encoding's bump event
-        // is held there): it runs before the retry is let go, so the two don't race. In every
-        // cell, nothing but the held retry is left to run.
-        .only("messagepack", isMessagePackCell, [
-            .reach(.adapter(.followUpSynced)),
-            .release(.adapter(.followUpSynced)),
-        ]),
-        .release(.adapter(.busyRetry)),
-        .settleSpawned,
-        .check("one busy skip") { run in
-            let busy = await run.adapter.syncDeferredByCycleCountForTesting
-            try expect(busy == 1, "syncSkips.busy is \(busy)")
-        },
-        .release(.adapter(.admitJoinEntry)),
-    ]),
     // In-turn: a phase the writer's backlog defers completes a ready join through the
     // writer-drain retry (#546 L2a), and only through it. B's join is made ready and held at
     // `joinSyncRequested`, before its own sync request; on a tick land the tick that applies
@@ -387,7 +307,7 @@ let diffScenarios: [DiffScenario] = [
     // Mutant: drop the writer-drain retry's turn; B's frames never come.
     DiffScenario(
         name: "join-during-writer-backlog",
-        cells: .inTurnOnly,
+        cells: .all,
         steps: [
             .connect("A", session: "s-a"),
             .join("A", player: "pa"),

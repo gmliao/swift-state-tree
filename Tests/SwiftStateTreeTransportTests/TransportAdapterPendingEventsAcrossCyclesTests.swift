@@ -46,39 +46,6 @@ struct KeptEventsEvent: ServerEventPayload {
     }
 }
 
-// MARK: - Keeper blocker
-
-/// Blocks the keeper actor from inside an action handler (the "block" action of the test land),
-/// so a hop onto the keeper, such as `endSync()`, waits until the test releases it.
-private final class KeptEventsKeeperBlocker: @unchecked Sendable {
-    static let shared = KeptEventsKeeperBlocker()
-    private let condition = NSCondition()
-    private var entered = false
-    private var released = false
-
-    func block() {
-        condition.lock()
-        entered = true
-        released = false
-        condition.broadcast()
-        while !released { condition.wait() }
-        entered = false
-        condition.unlock()
-    }
-
-    var isBlocking: Bool {
-        condition.lock(); defer { condition.unlock() }
-        return entered
-    }
-
-    func release() {
-        condition.lock()
-        released = true
-        condition.broadcast()
-        condition.unlock()
-    }
-}
-
 // MARK: - Gated transport
 
 /// Serial executor whose jobs run on a private queue. While closed, jobs are held until the test
@@ -293,10 +260,9 @@ private struct KeptEventsFixture {
     let adapter: TransportAdapter<KeptEventsTestState>
     let transport: KeptEventsTransport
     let members: [KeptEventsMember]
-    /// Holds a sync cycle in flight; see `SyncCycleHold`. At `.cycleBeforeEndSync` only the off
-    /// adapter's own cycle reaches it (`inTurnSync: false`, until #546 L2c): in-turn, `syncNow()`
-    /// is a keeper turn. The in-turn settle tests install it at `.settleBeforePublish`.
-    let hold = SyncCycleHold()
+    /// Holds an in-turn settle in flight; see `SyncHold`. The settle tests install it at
+    /// `.settleBeforePublish`.
+    let hold = SyncHold()
 
     var a: KeptEventsMember { members[0] }
     var b: KeptEventsMember { members[1] }
@@ -306,8 +272,7 @@ private struct KeptEventsFixture {
     static func make(
         _ land: KeptEventsLand,
         members names: [String] = ["a"],
-        autoStartLoops: Bool = true,
-        inTurnSync: Bool = true
+        autoStartLoops: Bool = true
     ) async throws -> KeptEventsFixture {
         let definition: LandDefinition<KeptEventsTestState>
         switch land {
@@ -321,8 +286,6 @@ private struct KeptEventsFixture {
                     HandleAction(KeptEventsSetAction.self) { (state: inout KeptEventsTestState, action: KeptEventsSetAction, ctx: LandContext) in
                         if action.field == "tick" {
                             state.tick = action.value
-                        } else if action.field == "block" {
-                            KeptEventsKeeperBlocker.shared.block()
                         } else {
                             state.scores[ctx.playerID] = action.value
                         }
@@ -343,8 +306,6 @@ private struct KeptEventsFixture {
                     HandleAction(KeptEventsSetAction.self) { (state: inout KeptEventsTestState, action: KeptEventsSetAction, ctx: LandContext) in
                         if action.field == "tick" {
                             state.tick = action.value
-                        } else if action.field == "block" {
-                            KeptEventsKeeperBlocker.shared.block()
                         } else {
                             state.scores[ctx.playerID] = action.value
                         }
@@ -370,8 +331,7 @@ private struct KeptEventsFixture {
                 syncStrategy: .delta,
                 profilingConfig: nil
             ),
-            encodingConfig: .messagepack,
-            inTurnSync: inTurnSync
+            encodingConfig: .messagepack
         )
         await transport.setDelegate(adapter)
         let members = names.map(KeptEventsMember.init)
@@ -390,7 +350,6 @@ private struct KeptEventsFixture {
         await settle(transport)
         transport.recorder.clear()
         let fixture = KeptEventsFixture(keeper: keeper, adapter: adapter, transport: transport, members: members)
-        await fixture.hold.install(on: adapter)
         return fixture
     }
 
@@ -418,26 +377,6 @@ private struct KeptEventsFixture {
         // opcodeMessagePack queues events for the next cycle; nothing to drain here (and some
         // tests call this with the transport gated).
         await adapter.sendEvent(AnyServerEvent(KeptEventsEvent(message: message)), to: .player(member.player))
-    }
-
-    /// Runs `syncNow` held in flight, runs `duringBatch`, then lets the cycle finish. Before
-    /// #60 the cycle was held inside the transport's `sendBatch`; it no longer awaits the
-    /// transport, so it is held after it enqueued its frames, before `endSync` (the event queue
-    /// was read at the same points either way).
-    func syncNowHoldingBatch(_ duringBatch: () async throws -> Void) async throws {
-        hold.arm()
-        let adapter = self.adapter
-        let cycle = Task { await adapter.syncNow() }
-        do {
-            try await hold.waitUntilHeld()
-            try await duringBatch()
-        } catch {
-            hold.release()
-            await cycle.value
-            throw error
-        }
-        hold.release()
-        await cycle.value
     }
 
     /// Frames for `member`, after in-flight sends landed (see `settle`).
@@ -477,30 +416,8 @@ private struct KeptEventsFixture {
 
 // MARK: - Tests
 
-// Serialized: two tests block the keeper through the process-wide `KeptEventsKeeperBlocker`.
 @Suite("TransportAdapter keeps late-queued events for the next sync cycle (#77)", .serialized, .timeLimit(.minutes(1)))
 struct TransportAdapterPendingEventsAcrossCyclesTests {
-
-    @Test("1: a broadcast event queued during the batch send arrives once, in the next cycle's merged frame")
-    func broadcastEventQueuedDuringBatchArrivesNextCycle() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
-        #expect(f.keeper.hasPeriodicSync == true)
-
-        try await f.set("score", 1)
-        try await f.syncNowHoldingBatch {
-            await f.broadcastEvent("bc-held")
-        }
-        await f.settle()
-        #expect(count("bc-held", in: f.frames(f.a)) == 0, "kept for the next cycle, not sent by this one")
-
-        f.recorder.clear()
-        await f.adapter.syncNow()  // the next periodic cycle
-        try await f.waitForCount("bc-held", f.a)
-        let frames = f.frames(f.a)
-        #expect(count("bc-held", in: frames) == 1, "kept broadcast event must arrive exactly once next cycle")
-        let carrier = frames.first { $0.range(of: Data("bc-held".utf8)) != nil }
-        #expect(carrier.map { opcodes([$0]) } == [107], "it rides in the next cycle's merged frame")
-    }
 
     // Since #60 the flush only enqueues on the outbound writer and never suspends between
     // sessions; the gate now holds the writer's delivery instead. The test still checks that
@@ -567,39 +484,6 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("tg-late", in: frames) == 1, "targeted event must arrive exactly once")
     }
 
-    @Test("4: events read by cycle N are not resent by cycle N+1 (exact frame counts)")
-    func noDuplicatesAcrossCycles() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
-
-        // Cycle N: a per-player change, a targeted and a broadcast event queued before it,
-        // and a broadcast event queued during its batch send (kept for N+1).
-        try await f.set("score", 1)
-        await f.targetedEvent("tg-1", to: f.a)
-        await f.broadcastEvent("bc-1")
-        try await f.syncNowHoldingBatch {
-            await f.broadcastEvent("bc-2")
-        }
-        await f.settle()
-        // Cycle N+1: nothing new, only the kept event.
-        await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.settle()
-        try await f.waitForCount("bc-2", f.a)
-        // Cycle N+2: nothing at all.
-        await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        await f.settle()
-
-        let frames = f.frames(f.a)
-        let kinds = opcodes(frames)
-        #expect(count("tg-1", in: frames) == 1)
-        #expect(count("bc-1", in: frames) == 1)
-        #expect(count("bc-2", in: frames) == 1)
-        #expect(kinds.filter { $0 == 103 }.count == 1, "one targeted event frame (N); kinds \(kinds)")
-        #expect(kinds.filter { $0 == 107 }.count == 2, "one merged frame each in N and N+1; kinds \(kinds)")
-        #expect(kinds.filter { (0...2).contains($0) }.count == 1, "one per-player state frame (N); kinds \(kinds)")
-    }
-
     @Test("5a: with every member in initial sync, queued events are dropped by both cycle types (#69)")
     func allInitialSyncingDropsEvents() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)
@@ -641,195 +525,11 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed both; left \(counts)")
     }
 
-    // Since #60 the cycle has no suspension point between reading the event queue and its
-    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
-    // stay covered by the PendingEventManager unit tests. This test queues its event while the
-    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
-    @Test("7: without periodic sync, an event queued after a cycle's cleanup arrives through the post-endSync follow-up")
-    func followUpDeliversKeptEventsWithoutPeriodicSync() async throws {
-        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
-        #expect(f.keeper.hasPeriodicSync == false)
-
-        try await f.set("score", 1)
-        try await f.syncNowHoldingBatch {
-            await f.broadcastEvent("bc-follow-up")
-        }
-        // No further sync request from the test.
-        try await f.waitForCount("bc-follow-up", f.a)
-        #expect(count("bc-follow-up", in: f.frames(f.a)) == 1, "the follow-up cycle must deliver the kept event once")
-        #expect(f.recorder.batchCount == 1, "the follow-up has no per-player change, so no batch")
-        let counts = await f.adapter.pendingEventCounts()
-        #expect(counts.targeted == 0 && counts.broadcast == 0)
-    }
-
-    @Test("7b: with periodic sync, a kept event waits for the next periodic cycle (no follow-up)")
-    func noFollowUpWithPeriodicSync() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
-        #expect(f.keeper.hasPeriodicSync == true)
-
-        // Every cycle gets an event during its batch send; only the test-driven (periodic) cycles run.
-        for tick in 1...3 {
-            try await f.set("score", tick)
-            try await f.syncNowHoldingBatch {
-                await f.broadcastEvent("bc-tick-\(tick)")
-            }
-            await f.settle()
-        }
-        try await f.waitForCount("bc-tick-2", f.a)
-        #expect(f.recorder.batchCount == 3, "one cycle per periodic sync, no follow-ups")
-        let frames = f.frames(f.a)
-        #expect(count("bc-tick-1", in: frames) == 1 && count("bc-tick-2", in: frames) == 1)
-        #expect(count("bc-tick-3", in: frames) == 0, "the last kept event waits for the next periodic cycle")
-    }
-
-    // Since #60 the cycle has no suspension point between reading the event queue and its
-    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
-    // stay covered by the PendingEventManager unit tests. This test queues its event while the
-    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
-    @Test("7c: without periodic sync, an event queued after every cycle's cleanup gives events + 1 cycles, and syncNow returns after one")
-    func followUpsAreBoundedAndDoNotBlockTheCaller() async throws {
-        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
-        let events = 3
-
-        // Each cycle's batch is held; the test then queues one broadcast event (kept, since the
-        // merged frame was already built) and a per-player change, so the follow-up has a batch.
-        try await f.set("score", 100)
-        f.hold.arm()
-        let adapter = f.adapter
-        let returned = KeptEventsFlag()
-        let cycle = Task {
-            await adapter.syncNow()
-            #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
-            returned.set()
-        }
-        for index in 1...events {
-            try await f.hold.waitUntilHeld()
-            await f.broadcastEvent("bc-source-\(index)")
-            try await f.set("score", 100 + index)
-            if index < events { f.hold.arm() }
-            f.hold.release()
-            if index == 1 {
-                // The follow-up's batch gets held, yet the caller's syncNow returns: it waits for
-                // one cycle, not for the chain.
-                try await waitUntil("the first syncNow to return while the follow-up runs") { returned.isSet }
-            }
-        }
-        await cycle.value
-        try await f.waitForCount("bc-source-\(events)", f.a)
-
-        #expect(f.recorder.batchCount == events + 1, "cycles must be events + 1; got \(f.recorder.batchCount)")
-        let frames = f.frames(f.a)
-        for index in 1...events {
-            #expect(count("bc-source-\(index)", in: frames) == 1, "bc-source-\(index) must arrive exactly once")
-        }
-    }
-
-    // 7e and 8 block the keeper's thread inside a handler to hold a cycle in its endSync or
-    // beginSync hop. With in-turn sync the adapter shares the keeper's executor, so that block
-    // would hold the adapter too and the hop window does not exist: they run with in-turn sync
-    // off. Their in-turn replacements (7e-in-turn, 8-in-turn) check the outcomes.
-    @Test("7e: an event queued during the endSync hop (after cleanup) still gets a follow-up")
-    func eventQueuedDuringEndSyncHopIsDelivered() async throws {
-        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
-        let blocker = KeptEventsKeeperBlocker.shared
-
-        // tg-pre goes out in the batch and is removed at cleanup: the queue goes 1 -> 0 there.
-        try await f.set("score", 1)
-        await f.targetedEvent("tg-pre", to: f.a)
-        f.hold.arm()
-        let adapter = f.adapter
-        let cycle = Task { await adapter.syncNow() }
-        try await f.hold.waitUntilHeld()
-
-        // Block the keeper so the cycle's endSync() hop waits there.
-        let keeper = f.keeper
-        let a = f.a
-        let blockingAction = Task {
-            let envelope = ActionEnvelope(
-                typeIdentifier: String(describing: KeptEventsSetAction.self),
-                payload: AnyCodable(KeptEventsSetAction(field: "block", value: 0))
-            )
-            _ = try await keeper.handleActionEnvelope(
-                envelope, playerID: a.player, clientID: a.client, sessionID: a.session
-            )
-        }
-        try await waitUntil("the keeper to be blocked") { blocker.isBlocking }
-        f.hold.release()
-
-        // Cleanup is done once the queue is empty; the cycle's next step is the endSync() hop.
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await adapter.pendingEventCounts() != (0, 0) {
-            guard ContinuousClock.now < deadline else {
-                blocker.release()
-                Issue.record("the cycle never reached its cleanup")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        await f.broadcastEvent("bc-hop")
-        blocker.release()
-        _ = try await blockingAction.value
-        await cycle.value
-
-        // No further sync request from the test: the post-endSync check must start the follow-up.
-        try await f.waitForCount("bc-hop", f.a)
-        #expect(count("bc-hop", in: f.frames(f.a)) == 1)
-        #expect(count("tg-pre", in: f.frames(f.a)) == 1)
-    }
-
-    // The plan reads the event queue after the `beginSync` hop, in the same actor turn as its
-    // commit. An event queued while the cycle waits in that hop is therefore this cycle's.
-    @Test("8: an event queued during the beginSync hop is delivered by that cycle")
-    func eventQueuedDuringBeginSyncHopIsInThatCycle() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
-        let blocker = KeptEventsKeeperBlocker.shared
-
-        // Block the keeper so the cycle's beginSync hop waits there.
-        let keeper = f.keeper
-        let a = f.a
-        let blockingAction = Task {
-            let envelope = ActionEnvelope(
-                typeIdentifier: String(describing: KeptEventsSetAction.self),
-                payload: AnyCodable(KeptEventsSetAction(field: "block", value: 0))
-            )
-            _ = try await keeper.handleActionEnvelope(
-                envelope, playerID: a.player, clientID: a.client, sessionID: a.session
-            )
-        }
-        try await waitUntil("the keeper to be blocked") { blocker.isBlocking }
-        let adapter = f.adapter
-        let requestsBefore = await adapter.beginSyncRequests
-        let cycle = Task { await adapter.syncNow() }
-        // Barrier: the cycle counted its request in the turn that starts the hop, so once the
-        // count is readable the cycle is suspended at `beginSync`; the blocked keeper cannot have
-        // run it yet.
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await adapter.beginSyncRequests == requestsBefore {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("timed out waiting for the cycle to reach beginSync")
-                throw CancellationError()
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        #expect(blocker.isBlocking, "precondition: the keeper is still blocked, so beginSync has not run")
-        await f.broadcastEvent("bc-begin-hop")
-        blocker.release()
-        _ = try await blockingAction.value
-        await cycle.value
-
-        // Periodic sync: no follow-up cycle, so only the cycle above can have delivered it.
-        try await f.waitForCount("bc-begin-hop", f.a)
-        #expect(count("bc-begin-hop", in: f.frames(f.a)) == 1)
-        let counts = await adapter.pendingEventCounts()
-        #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
-    }
-
     @Test(
         "8-in-turn: an event queued before a cycle is delivered by that cycle, once"
     )
     func inTurnEventQueuedBeforeCycleIsInThatCycle() async throws {
         let f = try await KeptEventsFixture.make(.periodicSync)
-        #expect(f.adapter.inTurnSyncEnabled)
         await f.broadcastEvent("bc-begin")
         await f.adapter.syncNow()
         // Periodic sync (hourly): no follow-up cycle, so only the cycle above can deliver it.
@@ -837,23 +537,6 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("bc-begin", in: f.frames(f.a)) == 1)
         let counts = await f.adapter.pendingEventCounts()
         #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
-    }
-
-    // Since #60 the cycle has no suspension point between reading the event queue and its
-    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
-    // stay covered by the PendingEventManager unit tests. This test queues its event while the
-    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
-    @Test("7d: a sync loop that does not auto-start is not periodic sync; the post-endSync follow-up delivers an event queued after cleanup")
-    func followUpWhenLoopsDoNotAutoStart() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync, autoStartLoops: false, inTurnSync: false)
-        #expect(f.keeper.hasPeriodicSync == false)
-
-        try await f.set("score", 1)
-        try await f.syncNowHoldingBatch {
-            await f.broadcastEvent("bc-no-loops")
-        }
-        try await f.waitForCount("bc-no-loops", f.a)
-        #expect(count("bc-no-loops", in: f.frames(f.a)) == 1, "the follow-up cycle must deliver the kept event once")
     }
 }
 
@@ -958,41 +641,6 @@ struct LandKeeperHasPeriodicSyncTests {
 
 @Suite("Kept events and follow-up cycles under a debug freeze (#79)", .timeLimit(.minutes(1)))
 struct TransportAdapterKeptEventsDebugFreezeTests {
-    // Since #60 the cycle has no suspension point between reading the event queue and its
-    // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
-    // stay covered by the PendingEventManager unit tests. This test queues its event while the
-    // cycle is held after cleanup, before endSync, and checks the post-endSync follow-up.
-    @Test("A post-endSync follow-up requested while frozen is deferred, then runs on resume")
-    func followUpDeferredWhileFrozen() async throws {
-        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
-        #expect(f.keeper.hasPeriodicSync == false)
-
-        try await f.set("score", 1)
-        var freeze: Task<DebugFreezeResponse, Error>?
-        try await f.syncNowHoldingBatch {
-            // Kept by this cycle, so its end requests a follow-up; the freeze is already in effect.
-            await f.broadcastEvent("bc-frozen-follow-up")
-            let adapter = f.adapter
-            freeze = Task { try await adapter.debugFreeze() }
-            for _ in 0..<5000 where await adapter.isDebugFrozen() == false {
-                try await Task.sleep(for: .milliseconds(1))
-            }
-            #expect(await adapter.isDebugFrozen(), "freeze did not take effect")
-        }
-        let token = try #require(try await freeze?.value).freezeToken
-
-        // The settle cycle delivered the kept event; the follow-up hit the freeze gate instead
-        // of running.
-        try await f.waitForCount("bc-frozen-follow-up", f.a)
-        #expect(await f.adapter.debugFreezeState.deferredSyncNow, "follow-up was not deferred by the freeze")
-        #expect(count("bc-frozen-follow-up", in: f.frames(f.a)) == 1)
-
-        _ = await f.adapter.debugResume(freezeToken: token)
-        await f.settle()
-        #expect(await f.adapter.debugFreezeState.deferredSyncNow == false, "deferred follow-up did not run on resume")
-        #expect(count("bc-frozen-follow-up", in: f.frames(f.a)) == 1, "the event was resent after resume")
-    }
-
     // The in-turn settle commits in one keeper job (#546 L2b), so its read→cleanup window can't
     // be reached from outside; the marks stay covered by the PendingEventManager unit tests.
     // This test queues its event while the settle is held after its commit, before it publishes,

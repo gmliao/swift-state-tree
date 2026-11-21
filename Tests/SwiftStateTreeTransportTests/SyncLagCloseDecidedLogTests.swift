@@ -103,8 +103,7 @@ struct SyncLagCloseDecidedLogTests {
             keeper: keeper,
             transport: transport,
             landID: "sync-lag-test",
-            encodingConfig: TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true),
-            inTurnSync: true
+            encodingConfig: TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true)
         )
         let lines = LifecycleLines()
         await adapter.attachLifecycleLog(lines.log, instance: 1)

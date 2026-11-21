@@ -86,7 +86,7 @@ private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: Str
     await keeper.setLandID(leaveReplayLandID)
     let transport = VerifierTransport()
     let adapter = TransportAdapter<TurnBoundaryState>(
-        keeper: keeper, transport: transport, landID: leaveReplayLandID, inTurnSync: true
+        keeper: keeper, transport: transport, landID: leaveReplayLandID
     )
     await transport.setDelegate(adapter)
     await keeper.awaitInitialization()

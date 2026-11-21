@@ -56,8 +56,6 @@ public struct TransportAdapterBenchmarkHandle<State: StateNodeProtocol>: Sendabl
     /// The adapter as the transport's delegate (`setDelegate`).
     public var transportDelegate: any TransportDelegate { adapter }
 
-    public var inTurnSyncEnabled: Bool { adapter.inTurnSyncEnabled }
-
     public var syncConfigForRecord: ReevaluationSyncConfig { adapter.syncConfigForRecord }
 
     @_spi(Diagnostics) public var effectiveStateUpdateFeatures: [String] { adapter.effectiveStateUpdateFeatures }

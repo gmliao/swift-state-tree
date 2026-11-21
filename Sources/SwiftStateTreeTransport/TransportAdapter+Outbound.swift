@@ -170,13 +170,14 @@ extension TransportAdapter {
     }
 
     /// Tests only: waits until no background sync work is left: every Task the adapter started
-    /// for a deferred retry or a follow-up (`backgroundSyncTasks`) has finished, including any
-    /// it started in turn, and the outbound writer has handed every frame to the transport.
+    /// (`backgroundSyncTasks`: the delayed repair, the lag timer's request) has finished,
+    /// including any it started in turn, the keeper's requested sync work is done, and the
+    /// outbound writer has handed every frame to the transport.
     /// Every round awaits a real completion (a Task, the writer's sync-cycle drain, the outbound
-    /// drain); `timeout` is only a backstop and returns `false`. Cycles the caller started itself
+    /// drain); `timeout` is only a backstop and returns `false`. Syncs the caller started itself
     /// are the caller's to await. Use it instead of `waitForOutboundDrain` before comparing a
-    /// client's view with the server's: a request rejected while a cycle was in flight is run by
-    /// a deferred retry that may not have enqueued anything yet (#142).
+    /// client's view with the server's: a deferred phase is run by a retry that may not have
+    /// enqueued anything yet (#142).
     func waitForSyncQuiescenceForTesting(timeout: Duration = .seconds(5)) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while true {
@@ -193,7 +194,7 @@ extension TransportAdapter {
             let writer = outboundWriter
             guard await Self.completes(by: deadline, { await writer.waitForSyncCycleDrain() }) else { return false }
             guard await waitForOutboundDrain(timeout: max(.zero, deadline - ContinuousClock.now)) else { return false }
-            if backgroundSyncTasks.isEmpty && !backlogRetryScheduled, !(await keeperHasRequestedSyncWorkForTesting()) { return true }
+            if backgroundSyncTasks.isEmpty, !(await keeperHasRequestedSyncWorkForTesting()) { return true }
         }
     }
 
@@ -238,16 +239,13 @@ extension TransportAdapter {
     }
 }
 
-/// Sync cycles an adapter skipped before `beginSync`.
+/// Sync phases an adapter skipped before they planned.
 @PlainData
 public struct SyncSkipCounts: Sendable, Equatable {
-    /// Another cycle was in flight (`LandKeeper.beginSync` rejected the request).
-    public var busy: Int = 0
-    /// The writer still held a sync cycle element from an earlier cycle (back-pressure).
+    /// The writer still held a sync cycle element from an earlier phase (back-pressure).
     public var outboundBacklog: Int = 0
 
-    public init(busy: Int = 0, outboundBacklog: Int = 0) {
-        self.busy = busy
+    public init(outboundBacklog: Int = 0) {
         self.outboundBacklog = outboundBacklog
     }
 }

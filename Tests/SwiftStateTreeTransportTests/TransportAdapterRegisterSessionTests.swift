@@ -55,7 +55,7 @@ private struct RegisterSessionFixture {
     let adapter: TransportAdapter<RegisterSessionTestState>
     let transport: RegisterSessionTransport
 
-    init(inTurn: Bool = false) async {
+    init() async {
         let definition = Land("register-session", using: RegisterSessionTestState.self) {
             Rules {
                 OnJoin { (state: inout RegisterSessionTestState, _: LandContext) in
@@ -74,7 +74,7 @@ private struct RegisterSessionFixture {
         transport = RegisterSessionTransport()
         keeper = LandKeeper(definition: definition, initialState: RegisterSessionTestState(), autoStartLoops: false)
         adapter = TransportAdapter<RegisterSessionTestState>(
-            keeper: keeper, transport: transport, landID: "register-session", inTurnSync: inTurn
+            keeper: keeper, transport: transport, landID: "register-session"
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -148,9 +148,9 @@ struct TransportAdapterRegisterSessionTests {
     let s2 = SessionID("s2"), c2 = ClientID("c2")
     let s3 = SessionID("s3"), c3 = ClientID("c3")
 
-    @Test("A host's second keeper join and registration supersede the first session: one member, OnJoin twice, OnLeave once", arguments: [true, false])
-    func secondRegistrationSupersedes(inTurn: Bool) async throws {
-        let f = await RegisterSessionFixture(inTurn: inTurn)
+    @Test("A host's second keeper join and registration supersede the first session: one member, OnJoin twice, OnLeave once")
+    func secondRegistrationSupersedes() async throws {
+        let f = await RegisterSessionFixture()
         try await f.keeperJoin(s1, c1, as: player)
         await f.register(s1, c1, as: player)
         try await f.keeperJoin(s2, c2, as: player)
@@ -181,9 +181,9 @@ struct TransportAdapterRegisterSessionTests {
         #expect(state.joins == 1 && state.leaves == 0)
     }
 
-    @Test("A host registration that lost to a library join is refused: the adapter and the keeper both keep the newer session", arguments: [true, false])
-    func hostRegistrationLosingToLibraryJoinRefused(inTurn: Bool) async throws {
-        let f = await RegisterSessionFixture(inTurn: inTurn)
+    @Test("A host registration that lost to a library join is refused: the adapter and the keeper both keep the newer session")
+    func hostRegistrationLosingToLibraryJoinRefused() async throws {
+        let f = await RegisterSessionFixture()
         // 1. The host joins S2 in the keeper and hasn't registered it yet.
         try await f.keeperJoin(s2, c2, as: player)
         // 2. The library joins S3 through the queue: the keeper and the adapter name S3.

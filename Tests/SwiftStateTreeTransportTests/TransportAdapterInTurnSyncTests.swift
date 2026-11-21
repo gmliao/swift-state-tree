@@ -355,7 +355,6 @@ private struct InTurnSyncFixture {
 
     static func make(
         encoding: InTurnEncoding,
-        inTurn: Bool = true,
         recording: Bool = false,
         pathIndex: Bool = false
     ) async throws -> InTurnSyncFixture {
@@ -372,8 +371,7 @@ private struct InTurnSyncFixture {
             transport: transport,
             landID: "in-turn-sync-test",
             encodingConfig: pathIndex ? encoding.config.withPathIndex(true) : encoding.config,
-            pathHashes: encoding == .json ? nil : pathHashes,
-            inTurnSync: inTurn
+            pathHashes: encoding == .json ? nil : pathHashes
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -416,22 +414,6 @@ private struct InTurnSyncFixture {
         #expect(await adapter.waitForOutboundDrain())
         return await transport.messages(for: session).dropFirst(before).map { decodeItems($0, encoding: encoding, ids: ids) }
     }
-}
-
-/// Sorted-key JSON of the recorded tick frames.
-private func recordedFramesJSON(
-    _ keeper: LandKeeper<InTurnSyncTestState>,
-    withoutSyncStream: Bool = false
-) async throws -> Data {
-    let recorder = try #require(await keeper.getReevaluationRecorder())
-    var frames = await recorder.getAllFrames()
-    if withoutSyncStream {
-        frames = frames.map { $0.replacing(syncOutputs: [], syncMarkers: []) }
-    }
-    #expect(!frames.isEmpty)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    return try encoder.encode(frames)
 }
 
 // MARK: - Tests
@@ -621,32 +603,12 @@ struct TransportAdapterInTurnSyncTests {
         #expect(items.contains(.event("tick-event-2")))
     }
 
-    @Test("replay parity: in-turn and legacy paths record identical frames (sequences, ticks, watermarks, hashes)")
-    func replayParity() async throws {
-        // Only the in-turn path records a sync stream (record format 2.1); everything else matches.
-        var recorded: [Data] = []
-        for inTurn in [true, false] {
-            let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: inTurn, recording: true)
-            await f.keeper.stepTickOnce()
-            for tick in 0..<4 {
-                for n in 0..<(tick % 2 + 1) {
-                    try await f.act(tick * 10 + n)
-                }
-                await f.keeper.stepTickOnce()
-            }
-            await f.keeper.waitForRecorderSubmissionsForTesting()
-            recorded.append(try await recordedFramesJSON(f.keeper, withoutSyncStream: true))
-        }
-        #expect(recorded[0] == recorded[1], "in-turn \(String(decoding: recorded[0], as: UTF8.self)) vs legacy \(String(decoding: recorded[1], as: UTF8.self))")
-    }
-
     // MARK: - Coincident-sync rule and cadence (A.2)
 
     /// A land with running loops: `ticks` changes every tick, the sync loop runs at `sync`.
     private static func makeTimedFixture(
         tick: Duration,
         sync: Duration,
-        inTurn: Bool,
         firstTickSleep: FirstTickSleepSignal? = nil
     ) async throws -> (keeper: LandKeeper<InTurnSyncTestState>, adapter: TransportAdapter<InTurnSyncTestState>, transport: InTurnSyncTransport, session: SessionID) {
         let definition = Land("in-turn-timed-test", using: InTurnSyncTestState.self) {
@@ -668,8 +630,7 @@ struct TransportAdapterInTurnSyncTests {
         let adapter = TransportAdapter<InTurnSyncTestState>(
             keeper: keeper,
             transport: transport,
-            landID: "in-turn-timed-test",
-            inTurnSync: inTurn
+            landID: "in-turn-timed-test"
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -690,7 +651,7 @@ struct TransportAdapterInTurnSyncTests {
         // Loops run (hourly), so the keeper has a tick task and a sync task; the test sets the
         // next tick deadline and runs one sync loop iteration by hand.
         let firstTickSleep = FirstTickSleepSignal()
-        let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: true, firstTickSleep: firstTickSleep)
+        let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), firstTickSleep: firstTickSleep)
         // The tick loop has written its first deadline: the test's own deadlines stay.
         await firstTickSleep.waitUntilReached()
         try #require(await f.keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
@@ -729,19 +690,17 @@ struct TransportAdapterInTurnSyncTests {
         await f.keeper.forceShutdown()
     }
 
-    @Test("cadence: with tick ≠ sync interval, state frames keep the sync loop's interval (ON vs OFF, stepped)")
+    @Test("cadence: with tick ≠ sync interval, state frames keep the sync loop's interval (stepped)")
     func cadenceMatchesLegacy() async throws {
         // A simulated 1 s with ticks every 20 ms and syncs every 50 ms, stepped by hand: the
         // loops run hourly (so the keeper has both tasks) and never fire. At an instant with
-        // both, the sync runs first, with the tick due now (ON: it folds into that tick turn).
+        // both, the sync runs first, with the tick due now: it folds into that tick turn.
         // Counted on simulated time, so the result doesn't depend on the runner's scheduler
         // (#164); the wall-clock comparison belongs to the perf A/B. The sync loop reads a fixed
         // `now` as its clock, so "due in 1 ms" stays 1 ms however slow the runner is (#335).
-        var frameTimes: [Bool: [Int]] = [:]
-        var foldedSyncs: [Bool: Int] = [:]
-        for inTurn in [true, false] {
+        do {
             let firstTickSleep = FirstTickSleepSignal()
-            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn, firstTickSleep: firstTickSleep)
+            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), firstTickSleep: firstTickSleep)
             // The tick loop has written its first deadline: the test's own deadlines stay.
             await firstTickSleep.waitUntilReached()
             try #require(await f.keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
@@ -765,31 +724,26 @@ struct TransportAdapterInTurnSyncTests {
                 seen = messages.count
                 times += Array(repeating: t, count: stateFrames.count)
             }
-            foldedSyncs[inTurn] = await f.keeper.foldedSyncs
+            let foldedSyncs = await f.keeper.foldedSyncs
             // The coincident tick is due 1 ms after each fold, never overdue.
             #expect(await f.keeper.overdueFoldedSyncs == 0)
-            // The control: a fold whose tick is already 1 ms late counts as overdue (ON; the
-            // legacy path has no fold).
+            // The control: a fold whose tick is already 1 ms late counts as overdue.
             let late = ContinuousClock.now
             await f.keeper.setNextTickDeadlineForTesting(late - .milliseconds(1))
             await f.keeper.runSyncLoopIterationForTesting(at: late)
-            #expect(await f.keeper.overdueFoldedSyncs == (await f.keeper.isUsingInTurnSync() ? 1 : 0))
+            #expect(await f.keeper.overdueFoldedSyncs == 1)
             await f.keeper.forceShutdown()
-            frameTimes[inTurn] = times
+            let every50 = Array(stride(from: 50, through: 1000, by: 50))
+            #expect(times == every50, "one state frame per sync, at its instant: \(times)")
+            // 100, 200, ... 1000: the syncs coincident with a tick folded into it.
+            #expect(foldedSyncs == 10)
         }
-        let every50 = Array(stride(from: 50, through: 1000, by: 50))
-        #expect(frameTimes[true] == every50, "ON: one state frame per sync, at its instant: \(frameTimes[true] ?? [])")
-        #expect(frameTimes[false] == every50, "OFF: \(frameTimes[false] ?? [])")
-        // 100, 200, ... 1000: the syncs coincident with a tick folded into it.
-        #expect(foldedSyncs[true] == 10)
-        #expect(foldedSyncs[false] == 0, "the legacy path has no coincident fold")
     }
 
     /// Counters sampled while a cadence run goes.
     struct CadenceSample {
         var at: ContinuousClock.Instant
         var backlogSkips: Int
-        var busySkips: Int
         var deferredTurns: Int
         var foldedSyncs: Int
         var overdueFolds: Int
@@ -799,7 +753,6 @@ struct TransportAdapterInTurnSyncTests {
     /// A cadence run: the gaps between state frames, and each long one (over 1.5 sync intervals)
     /// with the counters that moved inside it.
     struct CadenceReport {
-        var inTurn: Bool
         var gaps: [Duration]
         var longGaps: [String]
         var totals: String
@@ -808,17 +761,17 @@ struct TransportAdapterInTurnSyncTests {
             let sorted = gaps.sorted()
             let p90 = sorted.isEmpty ? .zero : sorted[sorted.count * 9 / 10]
             let median = sorted.isEmpty ? .zero : sorted[sorted.count / 2]
-            return "\(inTurn ? "ON" : "OFF") frames=\(gaps.count + 1) median=\(median) p90=\(p90) \(totals) long=[\(longGaps.joined(separator: "; "))]"
+            return "frames=\(gaps.count + 1) median=\(median) p90=\(p90) \(totals) long=[\(longGaps.joined(separator: "; "))]"
         }
     }
 
     /// Runs the land (tick 20 ms, sync 50 ms) for `duration` with its loops, sampling the skip,
     /// deferral and fold counters and the tick count every few milliseconds, and attributes
     /// each long gap between state frames to the counters that moved inside it.
-    static func measureCadence(inTurn: Bool, duration: Duration) async throws -> CadenceReport {
-        let f = try await makeTimedFixture(tick: .milliseconds(20), sync: .milliseconds(50), inTurn: inTurn)
+    static func measureCadence(duration: Duration) async throws -> CadenceReport {
+        let f = try await makeTimedFixture(tick: .milliseconds(20), sync: .milliseconds(50))
         let keeper = f.keeper, adapter = f.adapter
-        // The probe runs on the measured executors (ON: the keeper's, shared with the adapter),
+        // The probe runs on the measured executors (the keeper's, shared with the adapter),
         // so it is kept small: two calls per sample (the adapter's skip counts; the keeper's
         // counters in one call, no state copy), every 10 ms, about 200 calls/s. 10 ms still puts
         // several samples inside any gap over 75 ms, the only ones labelled.
@@ -830,7 +783,6 @@ struct TransportAdapterInTurnSyncTests {
                 samples.append(CadenceSample(
                     at: .now,
                     backlogSkips: skips.outboundBacklog,
-                    busySkips: skips.busy,
                     deferredTurns: counters.deferredTurns,
                     foldedSyncs: counters.foldedSyncs,
                     overdueFolds: counters.overdueFoldedSyncs,
@@ -861,7 +813,6 @@ struct TransportAdapterInTurnSyncTests {
             guard let a = at(from), let b = at(to) else { continue }
             var causes: [String] = []
             if b.backlogSkips > a.backlogSkips { causes.append("backlogSkip×\(b.backlogSkips - a.backlogSkips)") }
-            if b.busySkips > a.busySkips { causes.append("busySkip×\(b.busySkips - a.busySkips)") }
             if b.deferredTurns > a.deferredTurns { causes.append("deferredTurn×\(b.deferredTurns - a.deferredTurns)") }
             let overdue = b.overdueFolds - a.overdueFolds
             let coincident = b.foldedSyncs - a.foldedSyncs - overdue
@@ -874,9 +825,8 @@ struct TransportAdapterInTurnSyncTests {
             longGaps.append("@\(ms(from - start))ms \(ms(to - from))ms \(label)")
         }
         let last = samples.last
-        let totals = "backlogSkips=\(last?.backlogSkips ?? 0) busySkips=\(last?.busySkips ?? 0) deferredTurns=\(last?.deferredTurns ?? 0) folded=\(last?.foldedSyncs ?? 0) overdueFolds=\(last?.overdueFolds ?? 0) ticks=\(last?.ticks ?? 0)"
+        let totals = "backlogSkips=\(last?.backlogSkips ?? 0) deferredTurns=\(last?.deferredTurns ?? 0) folded=\(last?.foldedSyncs ?? 0) overdueFolds=\(last?.overdueFolds ?? 0) ticks=\(last?.ticks ?? 0)"
         return CadenceReport(
-            inTurn: inTurn,
             gaps: zip(times.dropFirst(), times).map { $0 - $1 },
             longGaps: longGaps,
             totals: totals
@@ -884,22 +834,6 @@ struct TransportAdapterInTurnSyncTests {
     }
 
     // MARK: - No lost requests (A.4)
-
-    @Test("In-turn off: a sync request that meets a cycle in flight is deferred and counted (syncDeferredByCycle, #555)")
-    func syncDeferredByCycleCountsWithInTurnOff() async throws {
-        let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)
-        let gate = TestGate()
-        await f.adapter.installHolds(HoldRegistry.at(.cycleBeforeEndSync) { await gate.arrive() })
-        let legacy = Task { await f.adapter.syncNow() }
-        #expect(await gate.waitForArrivals(1), "the cycle is held before its endSync")
-        await f.adapter.installHolds(nil)
-        let before = await f.adapter.syncDeferredByCycleCountForTesting
-        await f.adapter.waitForOutboundIdleForTesting()
-        await f.adapter.syncNow()  // a real request, with the writer idle: it meets the cycle
-        #expect(await f.adapter.syncDeferredByCycleCountForTesting == before + 1)
-        gate.open()
-        await legacy.value
-    }
 
     // MARK: - Events (A.7)
 
@@ -938,22 +872,5 @@ struct TransportAdapterInTurnSyncTests {
         #expect(ticks == Array(Set(ticks)).sorted(), "unique, ascending: \(ticks)")
         let frames = await recorder.getAllFrames()
         #expect(frames.flatMap(\.actions).count == 1, "the input once")
-    }
-}
-
-/// The switch itself; runs whatever the environment says.
-@Suite("In-turn sync: the switch", .timeLimit(.minutes(1)))
-struct InTurnSyncSwitchTests {
-    @Test("the switch: an adapter with in-turn sync off keeps the legacy path for its own keeper")
-    func switchOffKeepsLegacyPath() async throws {
-        let f = try await InTurnSyncFixture.make(encoding: .json, inTurn: false)
-        #expect(f.adapter.inTurnSyncEnabled == false)
-        #expect(f.adapter.runsSyncPhaseInTurn(of: f.keeper) == false)
-        #expect(await f.keeper.isUsingInTurnSync() == false)
-        // The tick's sync request still syncs, through the legacy cycle.
-        try await f.act(5)
-        let items = await f.tick().flatMap { $0 }
-        #expect(items.contains(.state("ticks", 1)), "items: \(items)")
-        #expect(items.contains(.state("total", 5)), "items: \(items)")
     }
 }

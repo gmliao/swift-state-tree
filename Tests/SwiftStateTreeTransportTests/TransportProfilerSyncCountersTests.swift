@@ -24,7 +24,6 @@ struct TransportProfilerSyncCountersTests {
         for _ in 0..<5 { counters.incrementSyncCycles() }
         counters.incrementSyncSkipsBacklog()
         counters.incrementSyncSkipsBacklog()
-        counters.incrementSyncSkipsBusy()
         counters.incrementSyncDeferredTurns()
         counters.recordSyncFold(fold(overdue: false, lateness: .milliseconds(-1)))
         counters.recordSyncFold(fold(overdue: true, lateness: .microseconds(800)))
@@ -35,7 +34,6 @@ struct TransportProfilerSyncCountersTests {
         let window = counters.takeAndResetSync()
         #expect(window.cycles == 5)
         #expect(window.skipsBacklog == 2)
-        #expect(window.skipsBusy == 1)
         #expect(window.deferredTurns == 1)
         #expect(window.folds == 4, "every fold, overdue and late ones included")
         #expect(window.overdueFolds == 2)
@@ -44,7 +42,7 @@ struct TransportProfilerSyncCountersTests {
         #expect(window.joinTicks == 1, "join sync ticks are not folds")
 
         let next = counters.takeAndResetSync()
-        #expect(next.cycles == 0 && next.skipsBacklog == 0 && next.skipsBusy == 0)
+        #expect(next.cycles == 0 && next.skipsBacklog == 0)
         #expect(next.deferredTurns == 0 && next.folds == 0 && next.overdueFolds == 0 && next.joinTicks == 0)
         #expect(next.lateFolds == 0 && next.foldTickLatenessMaxUs == 0)
     }

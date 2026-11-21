@@ -84,7 +84,7 @@ private struct StaleReadFixture {
     }
 }
 
-private func makeFixture(inTurn: Bool) async -> StaleReadFixture {
+private func makeFixture() async -> StaleReadFixture {
     let definition = Land("stale-read", using: StaleReadTestState.self) {
         Rules {
             HandleAction(StaleReadSetScoreAction.self) { (state: inout StaleReadTestState, action: StaleReadSetScoreAction, _: LandContext) in
@@ -96,7 +96,7 @@ private func makeFixture(inTurn: Bool) async -> StaleReadFixture {
     let transport = StaleReadTransport()
     let keeper = LandKeeper(definition: definition, initialState: StaleReadTestState(), autoStartLoops: false)
     let adapter = TransportAdapter<StaleReadTestState>(
-        keeper: keeper, transport: transport, landID: "stale-read", inTurnSync: inTurn
+        keeper: keeper, transport: transport, landID: "stale-read"
     )
     await transport.setDelegate(adapter)
     await keeper.setTransport(adapter)
@@ -106,9 +106,9 @@ private func makeFixture(inTurn: Bool) async -> StaleReadFixture {
 @Suite("Initial sync with a stale state read (#98)")
 struct TransportAdapterInitialSyncStaleReadTests {
 
-    @Test("A disconnect and rejoin while the old initial sync holds its read: the old one commits nothing, the new baseline stands", arguments: [true, false])
-    func staleReadAfterRejoin(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn)
+    @Test("A disconnect and rejoin while the old initial sync holds its read: the old one commits nothing, the new baseline stands")
+    func staleReadAfterRejoin() async throws {
+        let f = await makeFixture()
         let player = PlayerID("p1"), observer = PlayerID("observer")
         let s0 = SessionID("s0"), s1 = SessionID("s1"), s2 = SessionID("s2")
         try await f.join(s0, ClientID("c0"), as: observer)

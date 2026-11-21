@@ -106,9 +106,7 @@ private struct AttemptHarness {
     var adapter: TransportAdapter<JoinAttemptState> { container.transportAdapter }
     var keeper: LandKeeper<JoinAttemptState> { container.keeper }
 
-    /// `inTurnSync: false` reaches the adapter's package-only off mode, for the off-path tests
-    /// until that mode is removed (#546 L2).
-    static func make(inTurnSync: Bool = true) async throws -> AttemptHarness {
+    static func make() async throws -> AttemptHarness {
         let definition = Land("join-attempt", using: JoinAttemptState.self) {
             Rules {
                 CanJoin { (_: JoinAttemptState, session: PlayerSession, _: LandContext) in
@@ -136,7 +134,6 @@ private struct AttemptHarness {
             landFactory: { _ in definition },
             initialStateFactory: { _ in JoinAttemptState() },
             transport: transport,
-            inTurnSync: inTurnSync,
             syncLagPolicy: nil
         )
         let router = LandRouter<JoinAttemptState>(
@@ -441,23 +438,6 @@ struct LandRouterJoinAttemptTests {
         #expect(registry.arrivalCount(at: .sendingInitialSync) == 0)
     }
 
-    /// Pinned to the off mode: the in-turn router sends no JoinResponse.
-    @Test("Off mode, a disconnect while the JoinResponse is sent: no `.joined`, no initial sync")
-    func disconnectWhileJoinResponseSent() async throws {
-        let h = try await AttemptHarness.make(inTurnSync: false)
-        let session = SessionID("s-response")
-        _ = await h.connect(session)
-        let (gate, registry) = await h.holdCounting(at: .joinResponseSent)
-        let join = try h.startJoin(session, requestID: "join-1", player: "p1")
-        #expect(await gate.waitForArrivals(1))
-        await h.transport.handleDisconnection(sessionID: session)
-        gate.open()
-        await join.value
-        #expect(!(await h.router.hasHandshakePhase(session)), "the stale attempt sets no `.joined`")
-        #expect(registry.arrivalCount(at: .sendingInitialSync) == 0, "no initial sync to the gone session")
-        #expect(await attemptPoll { await h.keeper.playerCount() == 0 })
-    }
-
     @Test("A stale attempt on its way into admitJoin while the player rejoins: the newer session survives")
     func rejoinWhileAdmissionOnItsWay() async throws {
         let h = try await AttemptHarness.make()
@@ -550,16 +530,5 @@ struct LandRouterJoinAttemptTests {
         #expect(!(await newerConnection.closed))
         #expect(await h.players == ["p1"])
         #expect(await h.keeper.playerCount() == 1)
-    }
-
-    /// Pinned to the off mode: the in-turn path refuses it (`mappedOlderAttemptAfterNewerAdmission`).
-    @Test("Off mode keeps the requested-player check: a mapped older attempt supersedes the newer session (#234's documented limit)")
-    func mappedOlderAttemptLegacyLimit() async throws {
-        let h = try await AttemptHarness.make(inTurnSync: false)
-        let r = try await h.olderAttemptAfterNewer(firstPlayer: "alias-p1", secondPlayer: "p1", tag: "legacy")
-        #expect(await h.adapter.staleJoinAttemptsRefused == 0)
-        #expect(await h.adapter.isJoined(sessionID: r.first), "the older attempt is admitted")
-        #expect(await h.adapter.isJoined(sessionID: r.second) == false, "and supersedes the newer session")
-        #expect(await h.leaves == 1, "the keeper kicked the newer session")
     }
 }

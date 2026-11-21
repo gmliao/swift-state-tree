@@ -104,7 +104,6 @@ private struct PPRowsRun {
             encodingConfig: encoding.config.withSyncSequence(true).withRowAddressing(true),
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true,
-            inTurnSync: true,
             joinsThroughRouter: true
         )
         await frames.setDelegate(adapter)

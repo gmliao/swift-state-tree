@@ -139,9 +139,7 @@ private struct Fixture {
     let alice = (session: SessionID("s-alice"), client: ClientID("c-alice"), player: PlayerID("alice"))
     let bob = (session: SessionID("s-bob"), client: ClientID("c-bob"), player: PlayerID("bob"))
 
-    /// `inTurnSync: false`: the adapter's package-only off mode, whose settle still takes the
-    /// keeper's sync flag (until #546 L2c).
-    init(inTurnSync: Bool = true) async throws {
+    init() async throws {
         keeper = LandKeeper<DebugFreezeAdapterState>(
             definition: makeDefinition(),
             initialState: DebugFreezeAdapterState()
@@ -155,8 +153,7 @@ private struct Fixture {
                 useSnapshotForSync: true,
                 syncStrategy: .delta,
                 profilingConfig: nil
-            ),
-            inTurnSync: inTurnSync
+            )
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -221,11 +218,6 @@ private func patchCount(_ frames: [Data]) -> Int {
 private func drainSends() async {
     for _ in 0..<20 { await Task.yield() }
     try? await Task.sleep(for: .milliseconds(20))
-}
-
-private actor DoneFlag {
-    private(set) var isDone = false
-    func set() { isDone = true }
 }
 
 /// Wait (bounded) until `condition` holds.
@@ -308,32 +300,6 @@ struct TransportAdapterDebugFreezeTests {
         await #expect(throws: DebugFreezeError.notFrozen) {
             try await f.adapter.debugProjection(playerID: f.alice.player)
         }
-    }
-
-    @Test("Off adapter: settle waits for a sync cycle already in flight, then runs its own")
-    func settleRetriesUntilBeginSyncAccepts() async throws {
-        // In-turn, the settle takes no sync flag (#546 L2b): this is the off settle's, until L2c.
-        let f = try await Fixture(inTurnSync: false)
-        try await f.update(headline: "retry-marker-7d0e", score: 1)
-
-        // Hold the keeper's sync flag, as a running cycle would.
-        let held = await f.keeper.beginSync(clearDirtyFlags: false)
-        #expect(held != nil)
-
-        let done = DoneFlag()
-        let freeze = Task {
-            let response = try await f.adapter.debugFreeze()
-            await done.set()
-            return response
-        }
-        await drainSends()
-        #expect(await done.isDone == false, "freeze returned while beginSync was rejecting")
-
-        await f.keeper.endSync()
-        let token = try await freeze.value.freezeToken
-        await drainSends()
-        #expect(frames(await f.aliceFrames(), contain: "retry-marker-7d0e"))
-        _ = await f.adapter.debugResume(freezeToken: token)
     }
 
     @Test("While frozen, syncNow and a leave's sync send nothing; they run on resume")
@@ -568,16 +534,18 @@ struct TransportAdapterDebugFreezeTests {
         let f = try await Fixture()
         await f.adapter.setDebugFreezeAutoResumeTimeout(.zero)
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
-        let settle = TestGate(), fired = TestGate()
+        // One gate per settle, so each job's outcome is checked on its own.
+        let firstSettle = TestGate(), secondSettle = TestGate(), fired = TestGate()
         await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
-            .on(.settleBeforeCommit) { await settle.arrive() }
+            .on(.settleBeforeCommit, arrival: 1) { await firstSettle.arrive() }
+            .on(.settleBeforeCommit, arrival: 2) { await secondSettle.arrive() }
             .on(.debugFreezeAutoResumeFired) { await fired.arrive() }
             .hook)
         try await f.makeDirty()
 
         let adapter = f.adapter
         let first = Task { try await adapter.debugFreeze() }
-        #expect(await settle.waitForArrivals(1), "the first settle didn't reach its commit")
+        try #require(await firstSettle.waitForArrivals(1), "the first settle didn't reach its commit")
         #expect(await fired.waitForArrivals(1), "the auto-resume didn't fire")
         let timer = try #require(await f.adapter.debugFreezeState.autoResumeTask)
         await f.adapter.setDebugFreezeAutoResumeTimeout(.seconds(3600))
@@ -585,14 +553,19 @@ struct TransportAdapterDebugFreezeTests {
         await timer.value
         #expect(await f.keeper.isDebugFrozen() == false, "the auto-resume released the first freeze")
 
-        // The second freeze, a new generation, reaches the same point; then both go on.
+        // The second freeze, a new generation, reaches the same point and waits there.
         let second = Task { try await adapter.debugFreeze() }
-        #expect(await settle.waitForArrivals(2), "the second settle didn't reach its commit")
-        settle.open()
+        try #require(await secondSettle.waitForArrivals(1), "the second settle didn't reach its commit")
 
+        // The first job alone: its fence refuses the old generation and plans nothing.
+        firstSettle.open()
         await #expect(throws: DebugFreezeError.released) {
             try await first.value
         }
+        #expect(await f.isStillDirty(), "the first settle planned nothing")
+
+        // Then the second job settles the new freeze.
+        secondSettle.open()
         let response = try await second.value
         #expect(response.reused == false)
         #expect(await f.adapter.isDebugFrozen())

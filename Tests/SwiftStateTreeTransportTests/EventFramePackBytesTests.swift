@@ -90,8 +90,7 @@ private func makePinFixture() async -> PinFixture {
         keeper: keeper,
         transport: sent,
         landID: "event-frame-pin",
-        encodingConfig: .messagepack,
-        inTurnSync: true
+        encodingConfig: .messagepack
     )
     await sent.setDelegate(adapter)
     await keeper.setTransport(adapter)

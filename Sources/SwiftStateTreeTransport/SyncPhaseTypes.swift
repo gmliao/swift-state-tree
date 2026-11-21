@@ -25,8 +25,6 @@ struct SyncLagPlanned: Sendable {
     var closes: [(sessionID: SessionID, code: UInt16)] = []
     /// The players whose full view this plan types as a resync.
     var resyncPlayers: Set<PlayerID> = []
-    /// A resync was due but this plan isn't a full one: the next cycle runs full.
-    var wantsFullPlan = false
     /// The session whose join firstSync this plan is (`planFirstSync`): tracking starts at it.
     var firstSyncSession: SessionID?
     /// This plan's resyncs made it reset the broadcast key scope (#90), and that frame's bytes
@@ -88,17 +86,10 @@ extension StateUpdate {
     }
 }
 
-/// The broadcast-only cycle's log line, written by the commit.
-struct SyncPhaseBroadcastLog {
-    let patchCount: Int
-    let bytes: Int?
-    let mode: SnapshotMode
-}
-
 /// Everything one sync phase sends and consumes.
 ///
 /// The sync phase of a room turn has two synchronous steps, run in the same actor turn:
-/// - **plan** (`planSyncPhase`, `planBroadcastOnlySyncPhase`, `planFirstSync`): reads the state
+/// - **plan** (`planSyncPhase`, `planFirstSync`): reads the state
 ///   copy, the recipients and the event queue, passed as parameters; computes the diffs, staging
 ///   the cache updates in `staged` instead of writing them; encodes every frame. It changes
 ///   nothing else, except the encoders' dynamic key tables (see `keyScopeResetPending`). It also reads the adapter's
@@ -172,7 +163,6 @@ struct SyncPhasePlan {
     /// the commit reads them again if the plan consumed a different count.
     var heldEvents: [SessionID: [Data]]?
     var heldEventsEnd = 0
-    var broadcastOnlyLog: SyncPhaseBroadcastLog?
     /// What the plan intends to send, per scope, for the sync stream; nil unless the land records
     /// it (`TransportAdapter.digestsPlans`).
     var digest: SyncOutputDigestInput?
@@ -214,7 +204,7 @@ struct SyncOutputDigestInput {
     /// Opcode 107: the largest keeper sequence among the consumed events that have one.
     var eventsThroughSequence: Int64?
     /// A full plan: it commits the per-player scope of its recipients (`recipients`). False for
-    /// a broadcast-only cycle and a firstSync.
+    /// a firstSync.
     var commitsPerPlayer = false
     /// The plan reset its recipients' key scopes (`keyScopeResetPending`).
     var resetsKeyScopes = false
