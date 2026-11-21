@@ -254,7 +254,9 @@ struct ClosedGatePendingFailureTests {
             kind: .responseEncode, detail: "test", position: LandFailurePosition(stage: .actionResponse)))
         let b = Task { try await land.okActionThroughKeeper(amount: 2) }
         // B is queued behind the failure item before the drain goes on.
-        while await land.keeper.pendingItemCountForTesting < 3 { await Task.yield() }
+        while await land.keeper.pendingItemCountForTesting < 3 {
+            await Task.yield() // wall-clock: not time: no event marks an action's enqueue; yields until the keeper's queue holds B
+        }
         let sentBefore = await land.transport.sends
         drain.open()
         await land.keeper.installHolds(nil)
