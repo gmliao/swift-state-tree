@@ -50,7 +50,7 @@ for entry in "${symbols[@]}"; do
   if [[ -n "$kept" ]]; then
     # A kept symbol still has protocol and test references, so its count alone proves nothing:
     # the adapter's own forward must be declared at HEAD.
-    if git grep -q -E "func ${pattern}\(" HEAD -- "$forwards_file"; then
+    if git grep -q -E "^[[:space:]]*(public |package |internal )?func ${pattern}\(" HEAD -- "$forwards_file"; then
       verdict="kept until L2d"
     else
       verdict="FORWARD MISSING"

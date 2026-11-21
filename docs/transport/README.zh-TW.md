@@ -43,7 +43,7 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - session 仍在加入中時送給它的 targeted event（指定 session、client 或 player）會先保留，在它的 firstSync 之後依送出順序立即送達。broadcast event 不保留：firstSync 已經反映了它們。
   - 每個加入中的 session 最多保留 256 個 event／256 KiB（`JOIN_HELD_EVENTS_MAX`、`JOIN_HELD_EVENTS_MAX_BYTES`）。超過時 join 以 `JOIN_EVENT_OVERFLOW` 失敗，session 會被關閉；client 重新連線後取得全新的狀態。
   - 保留的 event 所描述的效果已經包含在 firstSync 裡。server event 是通知，同步的狀態才是真實來源：把 event 當成增量套用到自身狀態的 client 會重複計算。
-- client 在 join 完成期間送出的 frame（action、client event），不論在 JoinResponse 之前或剛收到之後，都會在 OnJoin 之後依送出順序套用。它們會等到 JoinResponse 與 firstSync 送出後，再逐一執行；之後的 frame 排在它們後面。
+- client 在 join 完成期間送出的 frame（action、client event），不論在 JoinResponse 之前或剛收到之後，都會在 OnJoin 之後依送出順序套用。它們會等到 JoinResponse 與 firstSync 排入送出佇列後，再逐一執行；之後的 frame 排在它們後面。
   - 每個 session 最多等待 256 個 frame／256 KiB（`JOIN_DEFERRED_INBOUND_MAX`、`JOIN_DEFERRED_INBOUND_MAX_BYTES`）。join 完成前超過時，join 以 `JOIN_INBOUND_OVERFLOW` 失敗；完成後、先前的 frame 仍在套用時超過，session 會收到 `INBOUND_OVERFLOW`。兩種情況 session 都會被關閉，因為 client 遺失了自己送出的 frame：它需重新連線並再次 join。
 - 會關閉 session 的 join 錯誤（`JOIN_INBOUND_OVERFLOW`、`INBOUND_OVERFLOW`、`JOIN_EVENT_OVERFLOW`，以及逾時或失敗的 join 的 `JOIN_DENIED`）會先寫入連線再關閉，最多等待 `FINAL_FRAME_CLOSE_TIMEOUT_MS`（預設 1000）。這保證的是交付順序：已停止讀取的 client 仍可能收不到該錯誤。沒有實作 `closeSessionAfterQueuedFrames` 的自訂 `Transport` 會立即關閉，可能遺失該錯誤。
 
@@ -152,7 +152,7 @@ PlayerSession 欄位優先序：
   - **tableId** 是 row pattern（`units.*`）的 path id，**leafPathId** 是 leaf（`units.*.hp`）的 path id。其他 patch 在同一 frame 中維持現有形式。
 - **Slot 與 generation：** 釋出的 slot 之後會被新的 create 再次使用，generation 加一。client 會拒絕：指向未綁定 slot 的 entry、在已綁定 slot 上的 create、generation 沒有大於該 slot 上一次的 create，以及任何不是範圍內精確整數的 slot、op 或 generation。
 - **第一份 view**（joiner 的或 resync 的）把每個 slot-addressed table 送成 `{}` 加上每個 row 一個 create，讓 client 得知所有綁定。
-- **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
+- **無法編碼的 row**（opcode JSON 中的非有限數）會以 `syncEncode` 結束 land：失敗的 cycle 不送出任何東西，與其他編碼無法承載的 patch 相同（見[失敗處理](../core/failure-handling.zh-TW.md)）。
 - **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
 - **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy 以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉，adapter 以 info 層級記錄原因（請求為預設值，因此無法使用它的 land，例如使用直接 join 的 land，也會記錄）。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。
 - **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 除非加上 `--row-addressing off`，否則會宣告它。
