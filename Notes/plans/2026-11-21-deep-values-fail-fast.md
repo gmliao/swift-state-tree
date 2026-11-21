@@ -1,17 +1,10 @@
 # Deep or cyclic values fail fast instead of overflowing the stack (#716)
 
-Rev 3, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 63f3db18 (none of the cited files changed since 05c429b5).
+Rev 4, 2026-11-21. Plan only: no code until Review's GO. Code pointers are at main 8e200729 (none of the cited source files changed since 05c429b5).
 
-Rev 3 answers the parts of Review's NOT GO on rev 2 (7 must-fix, 7 should, 1 nit) that don't depend on where the full check runs:
-- the public API facts and the full Public API list (§3.3, §6);
-- the prebuilt-tree short-circuits (§3.1);
-- a separate counter for hops that add no container (§3.1);
-- the typed refusal kept on every path to the failure (§3.4);
-- the shoulds: record versions, frame shapes, slot budgets, payloads, hand-written nodes, S0 on the Linux host, and step exits.
+Rev 3 answered the parts of Review's NOT GO on rev 2 that don't depend on where the full check runs (the public API facts, prebuilt trees, the hop counter, the typed refusal's path, and the shoulds). Rev 4 adds what the maintainer's order d-716 decided: **one depth preflight per turn, at the end of the apply segment** (§3.1a). That closes rev 2's must-fixes 1 (the fields the check covers), 6 (how replay detects a refusal) and 7 (the hash sites). d-716 also asked for the preflight's cost to be compared across three designs. §3.1a compares them and picks one.
 
-**Open until the maintainer answers order d-716:** where the full value is checked each turn. Review proposes one depth preflight per turn at the end of the apply segment (its "D"). That choice decides three must-fixes: the fields the full check covers (1), how replay detects a refusal (6), and the hash sites (7). The sections it touches say "open (d-716)" and list the facts any answer must handle. They don't design it yet.
-
-Q1–Q4 are maintainer orders, all decided 2026-11-21 as Review recommended (§5).
+Q1–Q4 and d-716 are maintainer orders, all decided 2026-11-21 (§5).
 
 **Baseline.** The packer bound this plan keeps as the last check is #697's, in PR #720, not merged yet. S0 can run before it. S1 and S2 build on main after #720 merges, and each PR names the main commit it starts from.
 
@@ -50,7 +43,7 @@ S0 still places two more before S1: how a land's save encodes state, and the SDK
 
 **The limit is on the full value of each `@Sync` field, regardless of its policy, and on every value a conversion produces.** Rev 2 claimed that no view is deeper than the full value. That is false. `.custom((PlayerID, Value) -> Value?)` (`SyncPolicy.swift:39`), `.perPlayer` and `.masked` return a replacement value, and it can be deeper than the stored one. So the guarantee rests on two rules:
 - every conversion counts what it walks, the view's replacement value included, and refuses past the limit;
-- a full check covers what no view walks (where it runs: open, d-716 below).
+- a full check covers what no view walks (the per-turn preflight, §3.1a).
 
 Definitions:
 - A field's depth is the number of containers (objects and arrays of the converted value, as the unpacker counts them) on the deepest path of its value. The field's own value counts as level 1 when it is a container. A scalar field has depth 0.
@@ -76,11 +69,74 @@ S0 sizes `stateMaxHops` from its wrapper-only stack measurement. A value past it
 
 **A non-depth error in a full conversion** (colliding keys, for example) can stop `makeFull` before it reaches a deep branch. It fails the land as today, with `syncConversion`, through the same path (§3.4). A refused value stays refused whichever error comes first, so the outcome is deterministic. The reason in the failure names the first error.
 
-**Where the full value is checked: open (d-716).** Rev 2's rule is withdrawn: a budgeted full conversion in the sync phase of every dirty field whose policy isn't plain broadcast. It misses two cases:
+**Where the full value is checked:** the per-turn preflight (§3.1a). Rev 2's rule is withdrawn: a budgeted full conversion in the sync phase of every dirty field whose policy isn't plain broadcast. It missed two cases:
 - a `.broadcast` root node holding a nested `.serverOnly`, per-player or masked sub-field, whose broadcast view leaves out the deep part;
 - an initial value, because `Sync.init` starts clean (`SyncPolicy.swift:174`, `_isDirty = false`), so it is never dirty.
 
-Any answer to d-716 has to check every field at initialize and every dirty field after, whether or not a sync is due or recording is on, and say how recording reuses that conversion for the hash.
+### 3.1a The per-turn preflight (d-716)
+
+**What it does.** At the end of each turn's apply segment, after the handlers ran, the keeper checks the depth of:
+- the full value of every dirty `@Sync` field, regardless of policy;
+- every `@Sync` field after OnInitialize, since an initial value is never dirty.
+
+The check comes before the turn's outputs (`runTurnOutputs`, `flushOutputs`) and before `liveStateHash`. A refusal ends the land through `failLand`, with `syncConversion`, the field and the depth reason (§3.4, §3.6), before that turn sends or records anything else.
+
+It runs whether or not:
+- a sync is due;
+- the land has members;
+- the writer has back-pressure;
+- recording is on.
+
+So recording on and off fail in the same turn by construction. The turn sites are:
+- in-turn sync: OnInitialize (`LandKeeper.swift:1279`), a tick (`runTickTurn`, :4887) and an input turn (`runInputTurn`, :5802);
+- legacy, with in-turn sync off: before each `flushOutputs(forTick:)` that follows an apply (:1148, :3938, :4241, :4679).
+
+S1 lists every apply segment again from the code and gives each a test. It also confirms that join and leave handlers and server inputs run as input turns (`runInputTurn`); any that doesn't gets a site of its own.
+
+The shutdown turn (:2840) changes no land state (#382). So the last preflight still holds there, and its hash needs no stop logic.
+
+**It counts, and never builds.** The preflight walks the value with the same counters as the conversion (containers and hops, §3.1), and builds no `SnapshotValue`. It is one more generated member per node and per `@SnapshotConvertible` type, `_checkNesting(budget:)`, which mirrors the conversion's walk. A fixture pins that the two agree: for each test shape, the preflight refuses exactly when the budgeted conversion refuses. Two places can't avoid building:
+- a hand-written `toSnapshotValue()` or `snapshot(for:dirtyFields:)`, whose output is the only thing to count: the preflight calls it and walks the result iteratively;
+- a prebuilt `SnapshotValue` field, which is walked iteratively as it is.
+
+**Cost: three designs compared.** The preflight is a walk of each dirty field per turn, on the hot path. A per-player map is dirty every tick in most games. So d-716 asked which of three designs keeps that walk small.
+
+1. **Static exemption at registration.** For each `@Sync` field type, compute at registration the most containers any value of that type can have. A field whose bound fits within its budget is never walked at runtime. This is sound for the policy replacements too: `.perPlayer`, `.masked` and `.custom` must return the same `Value` type (`SyncPolicy.swift:21-39`), so a replacement has the same static bound as the stored value.
+
+   What can be known statically:
+   - scalars, `String`, and enums without associated values (0 containers);
+   - `Optional<T>` (as `T`);
+   - `Array<T>`, `Set<T>` and `Dictionary<K, T>` (one more than `T`);
+   - a `@StateNodeBuilder` node and a `@SnapshotConvertible` type (one more than its deepest field), when the type isn't recursive.
+
+   What can't:
+   - a recursive type, an `indirect` enum, or a type that contains itself through a collection;
+   - an enum with associated values, whose case isn't known until runtime;
+   - an existential: `Any`, `AnyCodable`, `SnapshotValue`, `any P`;
+   - a generic parameter at the macro's expansion site;
+   - a plain struct with neither macro;
+   - a hand-written `toSnapshotValue()` or `snapshot(for:dirtyFields:)`;
+   - a type that converts through its `Codable` conformance.
+
+   Class references are refused at registration already (#464). The bound has to come from the type system, not from a default instance's `Mirror`: through `Mirror`, an existential field looks like the type of its default value, so a bound read that way would be unsound. So the macros generate the bound. A public, underscored protocol `_StaticNestingBound` has a requirement `static func _nestingBound(visiting:) -> Int?`. A `nil` result means "unbounded or unknown", and the `visiting` set ends the recursion of a recursive type with `nil`. The standard library's `Optional`, `Array`, `Set` and `Dictionary` get conditional conformances. A field type that doesn't conform resolves, through an overload, to "unknown". A generic or existential field therefore falls to the runtime walk, which keeps the bound conservative. An adopter who conforms a type by hand is responsible for its bound (documented, as for R4).
+2. **Depth stored at assignment.** Compute a new value's depth when the field is set, and let the preflight read the stored number. Rejected:
+   - `Sync`'s `_modify` accessor yields the stored value for an in-place write (`items[k].hp -= 1`), so each such write would walk the whole field afterwards. A field written n times in a turn costs n walks instead of one, and the per-player map is the case it is worst for.
+   - A write deep inside a nested node goes through every ancestor's accessor, so each ancestor would walk its subtree again.
+   - `updateValueWithoutMarkingDirty` and `Sync.init` (clean, `SyncPolicy.swift:174`) bypass the setter, so the stored number would be missing or stale exactly where the check is needed.
+   - The setter can't throw, so it could only store, not refuse.
+3. **Depth returned by the sync conversion.** Let the conversion that sync already does return its height, `max(children) + 1`, so a field sync converts needs no second walk. Rejected as the design: the preflight runs before the sync phase, and a sync doesn't run every turn (not due, no members, back-pressure). A field checked only by sync would leave the gap that d-716 closes. The conversion keeps its own budget as a second line (§3.3). That is what stops an overflow inside the conversion, because a returned height arrives only after the recursion ran.
+
+**Choice: design 1, with the runtime walk for the rest.** Fields whose type is statically bounded within their budget are exempt: no walk, at initialize or after. In-repo game state is mostly per-player maps of plain `@SnapshotConvertible` structs and node trees without recursion, which are bounded. The remaining fields, the "can't" list above, get the count-only walk each turn they are dirty, and every field at initialize. A registration diagnostic lists the fields left to the runtime walk, so an adopter can see the cost and bound a type. In all three designs the descending budget (Q4) stays in every conversion, since it is what prevents the overflow.
+
+**A/B tier.** The preflight is keeper work per turn, so EncodingBenchmark doesn't measure it. S1 runs:
+- `ServerLoadTest` (`Examples/GameDemo`), release, on the Mac, A/B against the S1 base. Two scenarios: the game land as it is, where every field is expected to be exempt and the cost should be zero; and a variant added for this A/B with a per-player map of an unbounded type that is dirty every tick, the worst case.
+- A host A/B (the 7600X, `ws-loadtest`) when the Mac A/B moves beyond its noise.
+
+Both sides are built with the same toolchain, as CLAUDE.md requires.
+
+**Replay.** The keeper is shared by live and re-evaluation, so replay runs the same preflight at the same point of the same turn. That covers both runners (`ReevaluationEngine` and `ReevaluationRunnerImpl`), and it is the one shared verifier. In re-evaluation mode, `failLand` logs and returns (`LandKeeper.swift:5610`). So the preflight's refusal is kept on the keeper for the runner to read (`replayDepthRefusal`), and compared as in §3.6. The hash and the sync-output driver never see a too-deep state: the preflight refused it first.
+
+**A view's replacement.** For a field whose type isn't statically bounded, a `.perPlayer`, `.masked` or `.custom` replacement can be deeper than the stored value. The preflight doesn't run the policy closures, since that is per-player sync work. So the sync conversion's budget refuses such a replacement in the sync phase, before commit. The hash never sees views, so recording on and off still agree. Replay's shadow extraction runs only on committed outputs (`SyncOutputReplayDriver`), and the failing turn has none. So a recorded view refusal (reason `view`) is reported as not reproducible, which is not a mismatch. Statically bounded types can't hit this case.
 
 ### 3.2 The limit, per frame shape
 
@@ -127,12 +183,7 @@ Benchmark: S1 measures the budget on the hot path. The tier is the EncodingBench
 
 **The first failure stays.** If a later encode fault follows in the same turn, the depth refusal stays the land's failure. `failLand`'s first cause already wins (`drainFlag.setFailed`), so S1 only has to make sure the refusal is reported first.
 
-**The hash sites: open (d-716).** Whatever the answer, it has to handle what Review found at the four `liveStateHash` sites (:2840, :4671, :4864, :4966):
-- at the shutdown turn (:2840) the drain flag is already set, so a `failLand` there is dropped;
-- in `runTick` and `runTickTurn` the hash runs before the turn's outputs, so ending the land there must also stop them;
-- `fullStateSnapshot()` doesn't name the root field.
-
-Every other hash error keeps today's unavailable-hash semantics.
+**The hash sites.** The preflight (§3.1a) runs before `liveStateHash` in every turn, so the hash never finds a too-deep state. Its four sites (:2840, :4671, :4864, :4966) need no new stop logic. Every hash error keeps today's unavailable-hash semantics. Review's three cases are covered that way: the shutdown turn changes no state after the last preflight; in `runTick` and `runTickTurn` the preflight ends the land before the turn's outputs; and the preflight names the field, which `fullStateSnapshot()` doesn't. `LandFailurePosition.Stage.stateHash` is not needed and is dropped.
 
 ### 3.5 Cycles and class fields in payloads (Q3: refuse at registration, decided 2026-11-21)
 
@@ -156,13 +207,13 @@ Facts any design must handle (Review, checked against the code):
 - The replay runners catch every hash error as an unavailable hash: `ReevaluationEngine.stateHashAndSnapshot` and `verifyInitialize` (`ReevaluationEngine.swift:110`), and `ReevaluationRunnerImpl`'s initialize and `step` (`ReevaluationRunnerImpl.swift:360`).
 - `SyncOutputReplayDriver` (`ReevaluationEngine.swift:296`) runs only on committed outputs, and the failing turn has none.
 
-**Where replay detects a refusal: open (d-716).** Whatever runs the live check has to run in replay too, at the same point of the same turn, in both runners. The decided parts of the contract:
+**Where replay detects a refusal:** in the keeper's preflight, at the same point of the same turn as live, in both runners (§3.1a). The contract:
 
 - **How a refusal is recorded.** `failLand` submits the terminal entry, `ReevaluationTickRecord(landFailure:)` (`LandKeeper.swift:5632-5635`), into the failing tick's frame (frame 0 on a tickless land), with kind, field and position. That doesn't depend on hash recording.
   - An initialize refusal sits in tick 0 with `tickId: nil`, and has its own replay test.
   - The refusal is before commit, so that turn has no committed sync output. Replay already stops at the recorded failure (`setReplayFailureEnd`, `ReevaluationEngine.swift:321-326`).
-- **A structured reason.** `LandFailure` today has only `kind` and a free-text `detail`, so replay can't tell a depth refusal from colliding keys. S1 adds an optional `reason: LandFailure.Reason?` with the case `nestingTooDeep(counter:limit:)`, the counter being containers, hops or payload. `LandFailure`'s `Codable` is synthesized, so an older record decodes with `reason == nil`.
-- **How it is compared.** When the recorded failure has a depth reason, replay records its own refusal at that turn and compares counter, field and tick/pass with the recorded one. A match verifies. Replay refusing where the record has no failure, or not refusing where it has one, is a mismatch, except in the next case.
+- **A structured reason.** `LandFailure` today has only `kind` and a free-text `detail`, so replay can't tell a depth refusal from colliding keys. S1 adds an optional `reason: LandFailure.Reason?` with the case `nestingTooDeep(counter:limit:where:)`. The counter is containers, hops or payload. The `where` is the preflight or a view (§3.1a), so a view refusal can be told apart. `LandFailure`'s `Codable` is synthesized, so an older record decodes with `reason == nil`.
+- **How it is compared.** When the recorded failure has a depth reason from the preflight, replay's preflight refuses at that turn, and the runner compares counter, field and tick/pass with the recorded one. A recorded view refusal is reported as not reproducible (§3.1a). A match verifies. Replay refusing where the record has no failure, or not refusing where it has one, is a mismatch, except in the next case.
 - **A record from another limit, both ways.** The record's metadata gains the effective limits: `stateMaxDepth`, `stateMaxHops` and `payloadMaxDepth`. The not-comparable report sits alongside `hashIncomparability`. Replay reports a run as not comparable, not as a mismatch, when the recorded limits differ from this build's and either:
   - replay refuses where the record has no failure (the record was made under a looser limit, or before the field existed); or
   - the record has a depth refusal that replay, under a looser limit, doesn't reproduce.
@@ -183,13 +234,15 @@ Facts any design must handle (Review, checked against the code):
   - R2: a row replaced at depth, the row-addressed full view, and each slot kind's start budget.
   - Prebuilt trees: each short-circuit type at the limit and one past it; release of a refused deep tree in a child process.
   - Hops: `Optional<Node>` at every level up to `stateMaxDepth` passes; wrapper-only recursion past `stateMaxHops` is refused.
+  - The preflight: a deep value in a nested `.serverOnly` sub-field of a `.broadcast` node, and a deep initial value, each ending the land in that turn with recording on and off. Every turn site is covered (initialize, tick, input turn, legacy tick). No output is sent and no hash is recorded in the failing turn. The preflight and the budgeted conversion refuse the same shapes. A statically bounded field is never walked; S1 counts the walks in a debug probe, as `FullStateConversionProbe` does for full conversions.
+  - Static bounds: each "can" type gets its bound, each "can't" type gets nil, and a recursive node ends with nil.
   - The refusal's path: `ExtractionDrops`, `viewPatches`, both adapter catches, `planFirstSync`, the bulk pass, and a later encode fault in the same turn.
   - Payloads (S2): a class field refused at registration, a server input included; a cycle in an `AnyCodable` refused by the encoder, also through a boxed value and through the canonical encoder's containers; an event digest past the payload budget.
   - R9 (S2): a record nested past 128.
-  - Replay (S1): a match, a mismatch, a record from a looser and from a tighter limit, and an initialize refusal.
+  - Replay (S1): a match, a mismatch, a record from a looser and from a tighter limit, an initialize refusal, and a view refusal reported as not reproducible.
 - Frame shapes: one fixture per shape (§3.2).
 - Run on macOS debug and release locally, and on Linux in CI.
-- Mutants: each guard removed and each off by one, each slot kind's start off by one, the hop counter merged into the container count, the typed error replaced by its string, and the prebuilt check skipped.
+- Mutants: the preflight skipped at one turn site, a static bound raised by one, each guard removed and each off by one, each slot kind's start off by one, the hop counter merged into the container count, the typed error replaced by its string, and the prebuilt check skipped.
 
 ## 4. Steps
 
@@ -204,13 +257,17 @@ Each step ends with an exit condition and a revert check: the test that fails wh
 - **S1, the state count.**
   - The budget through R1–R3, the typed tables and the public overloads (§3.3), with `SyncError.nestingTooDeep`.
   - The prebuilt check and the hop counter (§3.1), and the failure mapping (§3.4).
-  - The full check, as d-716 decides.
+  - The per-turn preflight (§3.1a), at every turn site, with `_checkNesting(budget:)` generated; the static bounds (`_StaticNestingBound`, generated, with the standard library's conformances) and the registration diagnostic for the fields left to the runtime walk.
   - `payloadMaxDepth` and its fixtures, and the event digests (R6).
   - `LandFailure.Reason`, the record limits and the replay comparison (§3.6).
   - The thin dispatcher, if S0 supports it.
-  - The frame-shape fixtures (§3.2), the tests per §3.7 that S1 owns, and the EncodingBenchmark A/B.
-  - Exit: every S1 test green on macOS debug and release, and on Linux CI; the A/B within the noise, or its cost accepted by the maintainer.
-  - Revert checks: removing the container guard fails the R1 exit test; removing the prebuilt check fails the short-circuit test; dropping the typed error fails the `ExtractionDrops` test.
+  - Three nits carried from #720's review (GO at 8a066991, merged without them):
+    - the failure-handling row, en and zh-TW: "at the first broadcast event" becomes "when the deep state update and the events share one opcode 107 frame";
+    - `EncodingPipeline.mergeEvents`' `.data` branch: `try? unpack(…, maxDepth: 63) == nil` treats bytes that don't decode as a state exactly 64 deep; it should note the state only when the unpack fails on depth;
+    - `CoreConcepts.md` and both turns READMEs: "steps later in that batch" becomes "is admitted later in that batch, by the same rules".
+  - The frame-shape fixtures (§3.2), the tests per §3.7 that S1 owns, the EncodingBenchmark A/B (the budget in the conversion), and the `ServerLoadTest` A/B (the preflight, §3.1a).
+  - Exit: every S1 test green on macOS debug and release, and on Linux CI; both A/Bs within the noise, or their cost accepted by the maintainer.
+  - Revert checks: skipping the preflight fails the nested `.serverOnly` test with recording off; removing the container guard fails the R1 exit test; removing the prebuilt check fails the short-circuit test; dropping the typed error fails the `ExtractionDrops` test.
 - **S2, payloads.**
   - The payload validator at registration, server inputs included.
   - The encoders' count against `payloadMaxDepth`, the canonical encoder's entry check and the record codec's in-build check (§3.5).
@@ -234,9 +291,9 @@ All four were decided 2026-11-21, as Review recommended.
 - **Q3, class payload fields (decided 2026-11-21):** refused at registration, paired with the runtime bound in the framework's own traversals (§3.5). A hand-written `encode(to:)` and JSON payloads are documented as the adopter's.
 - **Q4, the carrier (decided 2026-11-21):** an explicit budget in the compatible shape of §3.3, not a per-thread counter. Its cost is measured in S1.
 
-**Open: d-716**, where the full value is checked each turn (§3.1, §3.4, §3.6).
+- **d-716, where the full value is checked (decided 2026-11-21):** one preflight per turn at the end of the apply segment (Review's D), with the cost to be compared across three designs. The comparison picks static exemption at registration plus the count-only walk for the rest (§3.1a).
 
-**Phase fit.** The count runs in conversion (sync phase and recording). Nothing moves into apply, and the failure ends the land through the existing path where a throw in the sync plan happens before commit. d-716 may move the full check to the end of the apply segment; it would still be in the synchronous turn and before any output.
+**Phase fit.** The count runs in conversion (sync phase and recording) and in the preflight. No mutation is refused. A conversion's refusal ends the land through the existing path where a throw in the sync plan happens before commit; the preflight's goes through `failLand` before the turn's outputs. The preflight (§3.1a) sits at the end of the apply segment: still in the synchronous turn, before any output, and it only reads state.
 
 ## 6. Public API
 
@@ -250,7 +307,8 @@ Additions:
 - `LandFailure.reason` and `LandFailure.Reason` (optional; older records decode with nil).
 - `PayloadNesting.stateMaxDepth`, `stateMaxHops`, `payloadMaxDepth`.
 - The record metadata's limits field, at version 3.7.
-- `LandFailurePosition.Stage.stateHash`, only if d-716 keeps a hash-site failure. A new case of a public enum, source-breaking for an exhaustive `switch` in the same way.
+- `_StaticNestingBound` (public, underscored, for generated code) and its conformances on `Optional`, `Array`, `Set` and `Dictionary`; the generated `_nestingBound(visiting:)` and `_checkNesting(budget:)` members.
+- A registration diagnostic (log, not an error) listing the fields the preflight walks at runtime.
 
 Behavior:
 - A state past the limit ends the land with `syncConversion` instead of overflowing.
