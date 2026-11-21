@@ -38,7 +38,7 @@ struct FollowUpTests {
         await a.send(.script([.start(2), .arm("B", key: 2, .work(gate: "b"))]))
         await f.reach("at gate b")
         let waiter = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #1")
         await a.send(.script([.end(2)]))
         #expect(await settled(waiter))
         f.open("gate b")
@@ -124,7 +124,7 @@ struct FollowUpTests {
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
         await f.reach("at gate a")
         let first = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #1")
         await a.send(.script([.consume()]))
         #expect(await settled(first))
         f.open("gate a")
@@ -133,7 +133,7 @@ struct FollowUpTests {
         await a.send(.script([.arm("B", .work(gate: "b"))]))
         await f.reach("at gate b")
         let second = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #2")
         await a.send(.script([.end(1)]))
         #expect(await settled(second))
         f.open("gate b")
@@ -183,7 +183,7 @@ struct FollowUpTests {
         #expect(await a.pendingWork(of: 1) == 1)
         let keyTwo = Task { await a.waitForQuiescence(of: 2) }
         let atMostOne = Task { await a.waitForQuiescence(atMost: 1) }
-        await yieldUntil("2 quiescence waiter(s)") { await a.waiterCount() >= 2 }
+        await f.reach("registered #2")
         f.open("gate b")
         #expect(await settled(keyTwo))
         #expect(await settled(atMostOne))
@@ -196,7 +196,7 @@ struct FollowUpTests {
         #expect(await a.pendingWork([.followUps, .requests, .timers]) == 3)
 
         let cancelled = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #3")
         cancelled.cancel()
         #expect(await settled(cancelled) == false)
         #expect(await a.waiterCount() == 0)
@@ -213,7 +213,7 @@ struct FollowUpTests {
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"), then: [.arm("B", .work(gate: "b"))])]))
         await f.reach("at gate a")
         let waiter = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #1")
         f.open("gate a")
         await f.reach("at gate b")
         // A stepped and armed B: the waiter is still waiting.
@@ -380,7 +380,7 @@ struct FollowUpTests {
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
         await f.reach("at gate a")
         let waiter = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #1")
         await a.send(.script([.endAll]))
         #expect(await settled(waiter))
         f.open("gate a")
@@ -476,7 +476,7 @@ struct FollowUpTests {
         f.open("deadline 5")
         await f.reach("foreign")
         f.open("g")
-        await yieldUntil("two foreign returns") { f.count(of: "foreign") >= 2 }
+        await f.reach("foreign #2")
         let state = await a.state()
         #expect(state.log.isEmpty)
         #expect(state.steps == 0)
@@ -486,35 +486,35 @@ struct FollowUpTests {
     func registrationTie() async {
         let f = Fixture()
         let a = FollowUpActor(fixture: f)
-        // A task already cancelled when it calls: true with nothing pending, false otherwise.
+        // A task already cancelled when it calls (it cancels itself first): true with nothing
+        // pending, false otherwise.
         let quiet = Task { () -> Bool in
-            while !Task.isCancelled { await Task.yield() }
+            withUnsafeCurrentTask { $0?.cancel() }
             return await a.waitForQuiescence()
         }
-        quiet.cancel()
         #expect(await settled(quiet) == true)
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
         await f.reach("at gate a")
         let busy = Task { () -> Bool in
-            while !Task.isCancelled { await Task.yield() }
+            withUnsafeCurrentTask { $0?.cancel() }
             return await a.waitForQuiescence()
         }
-        busy.cancel()
         #expect(await settled(busy) == false)
         #expect(await a.waiterCount() == 0)
 
         // Registered, then cancelled, then satisfied: false.
         let cancelledFirst = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #1")
         cancelledFirst.cancel()
         #expect(await settled(cancelledFirst) == false)
         #expect(await a.waiterCount() == 0)
 
-        // Registered, then satisfied, then cancelled: true.
+        // Registered, then satisfied, then cancelled: true. The second wait's return shows the
+        // settling segment ran, so the cancel reaches a waiter already answered.
         let satisfiedFirst = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #1")
         f.open("gate a")
-        #expect(await settled(satisfiedFirst) == true)
+        #expect(await bounded { await a.waitForQuiescence() })
         satisfiedFirst.cancel()
     }
 
@@ -525,7 +525,8 @@ struct FollowUpTests {
         await a.send(.script([.start(1), .arm("A", .work(gate: "a"))]))
         await f.reach("at gate a")
         let waiter = Task { await a.waitForQuiescence() }
-        await yieldUntil("1 quiescence waiter(s)") { await a.waiterCount() >= 1 }
+        await f.reach("registered #2")
+        #expect(await settled(satisfiedFirst) == true)
         #expect(await a.query(.consume(.a, key: 1)))
         #expect(await settled(waiter))
         f.open("gate a")

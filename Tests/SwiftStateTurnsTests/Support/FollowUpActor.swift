@@ -26,6 +26,9 @@ actor FollowUpActor: TurnActor {
     static func makeCore(_ fixture: Fixture, _ clock: TestClock, _ maxReleases: Int) -> TurnCore<FollowUpMachine> {
         let core = TurnCore(FollowUpMachine(), queueLimit: 64, maxReleasesPerBatch: maxReleases, clock: clock)
         core.onDiagnostic = { event in fixture.observe(event) }
+        // A quiescence wait opens "registered #n" when it stores its waiter, in the segment that
+        // stores it, so a later call into the actor sees the waiter registered.
+        core.onQuiescenceRegistrationForTesting = { fixture.openCounted("registered") }
         return core
     }
 

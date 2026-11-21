@@ -55,25 +55,6 @@ func settled<T: Sendable>(_ task: Task<T, Never>) async -> T {
     }
 }
 
-/// Yields until `condition` holds: true then; false, with an issue recorded, when the hang bound
-/// runs out or the test is cancelled first. For a count the test can only read, not await.
-@discardableResult
-func yieldUntil(
-    _ what: String,
-    sourceLocation: SourceLocation = #_sourceLocation,
-    _ condition: () async -> Bool
-) async -> Bool {
-    let end = ContinuousClock.now.advanced(by: turnTestHangBound)
-    while !(await condition()) {
-        if Task.isCancelled || ContinuousClock.now >= end {
-            Issue.record("never reached: \(what)", sourceLocation: sourceLocation)
-            return false
-        }
-        await Task.yield()
-    }
-    return true
-}
-
 /// A wait that answers false when cancelled (a quiescence wait), under the hang bound: false when
 /// the bound runs out first.
 func bounded(_ wait: @escaping @Sendable () async -> Bool) async -> Bool {

@@ -117,6 +117,3 @@ Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift helper-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTestHelpers.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/TransportTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/WallClockCadenceSmokeTests.swift helper-poll 1
-Tests/SwiftStateTurnsTests/FollowUpTests.swift yield-poll 2
-Tests/SwiftStateTurnsTests/Support/HangBound.swift clock-poll 1
-Tests/SwiftStateTurnsTests/Support/HangBound.swift yield-poll 1
