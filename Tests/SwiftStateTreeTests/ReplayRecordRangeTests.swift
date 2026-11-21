@@ -21,12 +21,29 @@ struct RangeTestEvent: ServerEventPayload {
     let value: Int
 }
 
+@Payload
+struct RangeTestAction: ActionPayload {
+    typealias Response = RangeTestAck
+}
+
+@Payload
+struct RangeTestAck: ResponsePayload {
+    let ok: Bool
+}
+
 private let rangeLandID = "range-test:local"
 
-private func makeRangeTestLand() -> LandDefinition<RangeTestState> {
+/// `quiet`: OnInitialize emits once and nothing else does, so a record near the top of the range replays.
+private func makeRangeTestLand(quiet: Bool = false) -> LandDefinition<RangeTestState> {
     Land("range-test", using: RangeTestState.self) {
         ServerEvents {
             Register(RangeTestEvent.self)
+        }
+        Rules {
+            HandleAction(RangeTestAction.self) { (_: inout RangeTestState, _: RangeTestAction, ctx: LandContext) in
+                if !quiet { ctx.emitEvent(RangeTestEvent(value: -1), to: .all) }
+                return RangeTestAck(ok: true)
+            }
         }
         Lifetime {
             OnInitialize { (_: inout RangeTestState, ctx: LandContext) in
@@ -34,7 +51,10 @@ private func makeRangeTestLand() -> LandDefinition<RangeTestState> {
             }
             Tick(every: .seconds(3600)) { (state: inout RangeTestState, ctx: LandContext) in
                 state.ticks += 1
-                ctx.emitEvent(RangeTestEvent(value: state.ticks), to: .all)
+                if !quiet {
+                    ctx.emitEvent(RangeTestEvent(value: state.ticks), to: .all)
+                    ctx.emitEvent(RangeTestEvent(value: state.ticks), to: .all)
+                }
             }
         }
     }
@@ -46,8 +66,8 @@ private struct RangeTestFailure: Error, CustomStringConvertible {
 }
 
 /// A live run of the land, recorded, as the 2.6 JSON view a record file holds.
-private func recordedRun() async throws -> [String: Any] {
-    let definition = makeRangeTestLand()
+private func recordedRun(quiet: Bool = false) async throws -> [String: Any] {
+    let definition = makeRangeTestLand(quiet: quiet)
     let keeper = LandKeeper<RangeTestState>(
         definition: definition,
         initialState: RangeTestState(),
@@ -63,15 +83,21 @@ private func recordedRun() async throws -> [String: Any] {
         version: ReevaluationRecordVersion.current,
         schemaFingerprint: try ReevaluationSchemaFingerprint.compute(for: definition)
     ))
+    // Tick 0 has no input; tick 1 applies an action that emits, before its tick handler emits twice.
+    try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
     await keeper.stepTickOnce()
+    _ = try await keeper.handleActionEnvelope(
+        ActionEnvelope(typeIdentifier: String(describing: RangeTestAction.self), payload: AnyCodable(RangeTestAction())),
+        playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
+    )
     await keeper.stepTickOnce()
     let data = try await recorder.encodeJSONViewForTesting()
     return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
 /// The recorded run as a JSON record file, after `mutate` changed its frames. The caller removes it.
-private func mutatedRecordPath(mutating mutate: (inout [[String: Any]]) throws -> Void) async throws -> String {
-    var record = try await recordedRun()
+private func mutatedRecordPath(quiet: Bool = false, mutating mutate: (inout [[String: Any]]) throws -> Void) async throws -> String {
+    var record = try await recordedRun(quiet: quiet)
     var frames = try #require(record["tickFrames"] as? [[String: Any]])
     try mutate(&frames)
     record["tickFrames"] = frames
@@ -139,6 +165,16 @@ private func syncOutput(afterPass: Int64?) -> ReevaluationRecordedSyncOutput {
         index: 0, turnKind: .tick, observedTickId: 0, streamIndex: 0, sequence: 0,
         afterPass: afterPass, broadcastHash: 1
     )
+}
+
+/// One frame builder per recorded sequence field, each putting the value in that field alone.
+private func sequenceFieldCases() -> [(name: String, frame: (Int64) -> ReevaluationTickFrame)] {
+    [
+        ("initialize sequence", { frame(initializeSequence: $0) }),
+        ("sequenceBeforeInputs", { frame(sequenceBeforeInputs: $0) }),
+        ("sequenceBeforeTickHandler", { frame(sequenceBeforeTickHandler: $0) }),
+        ("pass sequenceBefore", { frame(passSequenceBefore: $0) }),
+    ]
 }
 
 /// A 2.6 JSON record of `frames`.
@@ -223,6 +259,41 @@ struct ReplayRecordRangeTests {
         }
     }
 
+    // MARK: A value inside the range can still leave too little room (#741 review)
+
+    @Test("An initialize sequence of Int64.max - 1 ends the replay with a typed error at OnInitialize's first event, not a trap")
+    func initializeSequenceNearMaxIsExhausted() async {
+        await #expect(processExitsWith: .success) {
+            try await expectRefusal(.sequenceExhausted) { frames in
+                var initialize = try #require(frames[0]["initialize"] as? [String: Any], "the run recorded no initialize record")
+                initialize["sequence"] = Int64.max - 1
+                frames[0]["initialize"] = initialize
+            }
+        }
+    }
+
+    @Test("A watermark of Int64.max - 1 before a tick handler that emits twice ends the replay with a typed error, not a trap")
+    func watermarkNearMaxIsExhaustedByTwoEmits() async {
+        await #expect(processExitsWith: .success) {
+            try await expectRefusal(.sequenceExhausted) { frames in
+                try #require(frames[0]["sequenceBeforeTickHandler"] != nil, "the run recorded no watermark")
+                frames[0]["sequenceBeforeTickHandler"] = Int64.max - 1
+            }
+        }
+    }
+
+    @Test("One emission in each of two phases after watermarks of Int64.max - 1 ends the replay with a typed error, not a trap")
+    func watermarksNearMaxAreExhaustedByOneEmitPerPhase() async {
+        await #expect(processExitsWith: .success) {
+            try await expectRefusal(.sequenceExhausted) { frames in
+                // The restore never moves the counter back: the action's emission takes the last number
+                // below the bound, and the tick handler's watermark of the same value doesn't give it back.
+                frames[1]["sequenceBeforeInputs"] = Int64.max - 1
+                frames[1]["sequenceBeforeTickHandler"] = Int64.max - 1
+            }
+        }
+    }
+
     // MARK: The binary source refuses a tick outside 0 ..< Int64.max (#727 left this unpinned)
 
     @Test("A 3.x record with a tick outside 0 ..< Int64.max is refused at open, naming the tick (#729)")
@@ -249,12 +320,7 @@ struct ReplayRecordRangeTests {
 
     @Test("Each recorded sequence outside 0 ..< Int64.max is refused at open, in a JSON and a 3.x record (#729)")
     func sequencesOutOfRangeAreRefused() throws {
-        let cases: [(name: String, frame: (Int64) -> ReevaluationTickFrame)] = [
-            ("initialize sequence", { frame(initializeSequence: $0) }),
-            ("sequenceBeforeInputs", { frame(sequenceBeforeInputs: $0) }),
-            ("sequenceBeforeTickHandler", { frame(sequenceBeforeTickHandler: $0) }),
-            ("pass sequenceBefore", { frame(passSequenceBefore: $0) }),
-        ]
+        let cases = sequenceFieldCases()
         for (name, make) in cases {
             for value in [Int64.max, -1, Int64.min] {
                 #expect(throws: ReevaluationRecordContentError.sequenceOutOfRange(value), "\(name) \(value)") {
@@ -289,21 +355,66 @@ struct ReplayRecordRangeTests {
         }
     }
 
-    @Test("The values a live run writes at the edges of the ranges still open (#729)")
-    func valuesAtTheEdgesOpen() async throws {
-        let edges = frame(
-            initializeSequence: Int64.max - 1, sequenceBeforeInputs: 0, sequenceBeforeTickHandler: Int64.max - 1,
-            passSequenceBefore: 0, outputAfterPass: 0, markerAfterPass: Int64.max
+    @Test("The lowest and the highest accepted sequence open for each of the four fields, in a JSON and a 3.x record (#729)")
+    func acceptedSequenceEdgesOpen() async throws {
+        for (name, make) in sequenceFieldCases() {
+            for value in [Int64(0), Int64.max - 1] {
+                _ = try JSONReevaluationSource(data: jsonRecord([make(value)]))
+                let made = make(value)
+                let turn = ReevaluationTickRecord(
+                    tickId: 0, sequenceBeforeInputs: made.sequenceBeforeInputs,
+                    sequenceBeforeTickHandler: made.sequenceBeforeTickHandler,
+                    initialize: made.initialize, passes: made.passes
+                )
+                let log = try ReevaluationRecordLogSource(bytes: try logBytes(syncMetadata, turns: [turn]))
+                #expect(try await log.getAllFrames().count == 1, "3.x \(name) \(value)")
+            }
+        }
+    }
+
+    @Test("The lowest and the highest accepted afterPass open on an output and on a seed marker, in a JSON and a 3.x record (#729)")
+    func acceptedAfterPassEdgesOpen() async throws {
+        for value in [Int64(0), Int64.max] {
+            for made in [frame(outputAfterPass: value), frame(markerAfterPass: value)] {
+                _ = try JSONReevaluationSource(data: jsonRecord([made]))
+                let turn = ReevaluationTickRecord(tickId: 0, syncOutputs: made.syncOutputs, syncMarkers: made.syncMarkers)
+                let log = try ReevaluationRecordLogSource(bytes: try logBytes(syncMetadata, turns: [turn]))
+                #expect(try await log.getSyncStream().count == 1, "3.x afterPass \(value)")
+            }
+        }
+    }
+
+    @Test("A record at the lowest accepted sequences replays end to end")
+    func lowestAcceptedSequencesReplay() async throws {
+        let path = try await mutatedRecordPath(quiet: true) { frames in
+            var initialize = try #require(frames[0]["initialize"] as? [String: Any], "no initialize record")
+            initialize["sequence"] = Int64(0)
+            frames[0]["initialize"] = initialize
+            for index in frames.indices {
+                frames[index]["sequenceBeforeInputs"] = Int64(0)
+                frames[index]["sequenceBeforeTickHandler"] = Int64(0)
+            }
+        }
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeRangeTestLand(quiet: true), initialState: RangeTestState(), recordFilePath: path
         )
-        let source = try JSONReevaluationSource(data: jsonRecord([edges]))
-        #expect(try await source.getInitializeRecord()?.sequence == Int64.max - 1)
-        let turn = ReevaluationTickRecord(
-            tickId: 0, sequenceBeforeInputs: 0, sequenceBeforeTickHandler: Int64.max - 1,
-            syncOutputs: edges.syncOutputs, syncMarkers: edges.syncMarkers,
-            initialize: edges.initialize, passes: edges.passes
+        #expect(result.maxTickId == 1)
+    }
+
+    @Test("A record at the highest accepted initialize sequence that leaves room for OnInitialize replays end to end")
+    func highestAcceptedInitializeSequenceReplays() async throws {
+        // OnInitialize takes its own number, then one for its event: Int64.max - 2 leaves the counter at Int64.max.
+        let path = try await mutatedRecordPath(quiet: true) { frames in
+            var initialize = try #require(frames[0]["initialize"] as? [String: Any], "no initialize record")
+            initialize["sequence"] = Int64.max - 2
+            frames[0]["initialize"] = initialize
+        }
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeRangeTestLand(quiet: true), initialState: RangeTestState(), recordFilePath: path
         )
-        let log = try ReevaluationRecordLogSource(bytes: try logBytes(syncMetadata, turns: [turn]))
-        #expect(try await log.getSyncStream().count == 2)
+        #expect(result.maxTickId == 1)
     }
 
     // MARK: A malformed event target reports the typed error, not a mismatch (#729, from #727's review)
@@ -336,6 +447,42 @@ struct ReplayRecordRangeTests {
         await #expect(throws: ReevaluationRecordContentError.malformedEventTarget(kind: "all", idCount: 1)) {
             try await runner.prepare()
         }
+    }
+
+    @Test("A second prepare() after the refusal throws it again, and step() does too (#741 review)")
+    func retriedPrepareStillThrows() async throws {
+        let path = try await mutatedRecordPath { frames in
+            try setTarget(&frames, frame: 0, initialize: true, to: Self.allWithIDs)
+        }
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let runner = try await ConcreteReevaluationRunner(
+            definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: path
+        )
+        let refusal = ReevaluationRecordContentError.malformedEventTarget(kind: "all", idCount: 1)
+        await #expect(throws: refusal) { try await runner.prepare() }
+        await #expect(throws: refusal) { try await runner.prepare() }
+        await #expect(throws: refusal) { _ = try await runner.step() }
+    }
+
+    @Test("The hosted runner ends with the typed error when the replay takes a sequence past Int64.max (#741 review)")
+    func hostedRunnerEndsOnSequenceExhaustion() async throws {
+        let atInitialize = try await mutatedRecordPath { frames in
+            var initialize = try #require(frames[0]["initialize"] as? [String: Any])
+            initialize["sequence"] = Int64.max - 1
+            frames[0]["initialize"] = initialize
+        }
+        defer { try? FileManager.default.removeItem(atPath: atInitialize) }
+        let initializeRunner = try await ConcreteReevaluationRunner(
+            definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: atInitialize
+        )
+        await #expect(throws: ReevaluationRecordContentError.sequenceExhausted) { try await initializeRunner.prepare() }
+
+        let atTick = try await mutatedRecordPath { frames in frames[0]["sequenceBeforeTickHandler"] = Int64.max - 1 }
+        defer { try? FileManager.default.removeItem(atPath: atTick) }
+        let tickRunner = try await ConcreteReevaluationRunner(
+            definition: makeRangeTestLand(), initialState: RangeTestState(), recordFilePath: atTick
+        )
+        await #expect(throws: ReevaluationRecordContentError.sequenceExhausted) { _ = try await tickRunner.step() }
     }
 
     @Test("A well-formed recorded run still verifies its initialize record and tick events")

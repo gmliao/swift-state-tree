@@ -139,6 +139,11 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
     /// A sync output's or seed marker's `afterPass` below 0 (#729). A live tickless land numbers
     /// its passes from 1 and records 0 before the first.
     case afterPassOutOfRange(Int64)
+    /// A replay on a re-evaluation keeper needed a next output sequence past `Int64.max` (#741). A
+    /// value inside `0 ..< Int64.max` can still leave too little room: the number of numbers taken
+    /// after it comes from the land's code, so only the replay itself can tell. A live keeper's
+    /// counter can't reach this, so only a record whose counter was set near the top gets here.
+    case sequenceExhausted
 
     public var description: String {
         switch self {
@@ -152,6 +157,8 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
             "the record holds the output sequence \(sequence), outside the sequences a live run writes (0 ..< \(Int64.max))"
         case .afterPassOutOfRange(let afterPass):
             "the record holds a sync entry that read after pass \(afterPass); a live run writes 0 or more"
+        case .sequenceExhausted:
+            "the replay needed an output sequence past \(Int64.max): the record's sequence counter leaves too little room for the events the land emits"
         }
     }
 
@@ -375,6 +382,8 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
         metadata = contents.metadata
         frames = contents.frames
         // The assembler merges one tick's records into one frame, so a duplicate can't fail here.
+        // The checks see the assembled frames, after the reader has merged and trimmed the turns,
+        // not the raw records: a value the assembler drops is not refused.
         framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(contents.frames)
         maxTickId = contents.frames.map(\.tickId).max() ?? -1
         completeness = contents.completeness

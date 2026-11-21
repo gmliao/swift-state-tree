@@ -281,6 +281,7 @@ public enum ReevaluationEngine {
         )
         await keeper.setLandID(metadata.landID)
         await keeper.awaitInitialization()
+        if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
         let initializeRecord = try await source.getInitializeRecord()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
@@ -356,6 +357,7 @@ public enum ReevaluationEngine {
         if lastTickId >= 0 {
             for tickId in 0...lastTickId {
                 await keeper.stepTickOnce()
+                if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
                 let state = await keeper.currentState()
 
                 // The hash the record holds (`hashDefinition`). A conversion that throws makes

@@ -407,12 +407,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private final class OutputCollector: @unchecked Sendable {
         var nextSequence: Int64 = 0
+        /// Re-evaluation only: a take past `Int64.max` stops the replay instead of the process (#741).
+        /// A live counter starts at 0 and traps first, so the live path keeps the plain increment.
+        var checksOverflow = false
+        /// Set by the first take that found no number left; read at the run's step boundaries.
+        var sequenceExhausted = false
         var emittedEvents: [EmittedEvent] = []
         var syncRequestsByTick: [Int64: SyncRequests] = [:]
 
         func takeNextSequence() -> Int64 {
             let s = nextSequence
-            nextSequence += 1
+            guard checksOverflow else {
+                nextSequence += 1
+                return s
+            }
+            let (next, overflow) = s.addingReportingOverflow(1)
+            if overflow {
+                // The counter stays at Int64.max and the number repeats: the run ends at its next
+                // step boundary (`replaySequenceExhausted()`), and what it computed meanwhile is dropped.
+                sequenceExhausted = true
+            } else {
+                nextSequence = next
+            }
             return s
         }
 
@@ -997,6 +1013,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.actualLandID = landID
         state = initialState
         self.mode = mode
+        outputCollector.checksOverflow = mode == .reevaluation
         self.reevaluationSink = reevaluationSink
         self.reevaluationOutputMode = reevaluationOutputMode
 
@@ -4389,6 +4406,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Installs `replayFailureEnd` (re-evaluation only).
     package func setReplayFailureEnd(tickId: Int64, pass: Int64?) {
         replayFailureEnd = (tickId, pass)
+    }
+
+    /// Re-evaluation only: whether a take found the sequence counter at `Int64.max` (#741). The run
+    /// throws `ReevaluationRecordContentError.sequenceExhausted` at its next step boundary.
+    package func replaySequenceExhausted() -> Bool {
+        outputCollector.sequenceExhausted
     }
 
     /// Installs `replayPassObserver` (re-evaluation only).
