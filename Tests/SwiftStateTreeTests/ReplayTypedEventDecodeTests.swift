@@ -520,3 +520,89 @@ struct ReplayTypedEventDecodeTests {
         #expect(copy.projectedFrame?.tickID == 1)
     }
 }
+
+// MARK: - Recorded event targets (#641)
+
+@Suite("ReplayEventTargetTests", .timeLimit(.minutes(1)))
+struct ReplayEventTargetTests {
+    /// Every target form `ReevaluationEventTargetRecord.from(_:)` doesn't write.
+    private static let malformed: [(kind: String, ids: [String])] = [
+        ("unknown", ["x"]),
+        ("player", []), ("client", []), ("session", []),
+        ("player", ["a", "b"]), ("client", ["a", "b"]), ("session", ["a", "b"]),
+        ("all", ["a"]),
+    ]
+
+    private static let eventName = payloadEventName(for: ReplayUnsignedEvent.self)
+
+    private static func recorded(_ target: ReevaluationEventTargetRecord) -> ReevaluationRecordedServerEvent {
+        ReevaluationRecordedServerEvent(
+            kind: "serverEvent", sequence: 4, tickId: 2, typeIdentifier: eventName,
+            payload: AnyCodable(["big": 7] as [String: Int]), target: target
+        )
+    }
+
+    @Test("Each malformed recorded target fails the resolve with the tick, the event and the target (#641)")
+    func malformedTargetsFailTheResolve() throws {
+        let definition = makeUnsignedLand(emitting: ReplayUnsignedEvent(big: 7))
+        for (kind, ids) in Self.malformed {
+            let target = ReevaluationEventTargetRecord(kind: kind, ids: ids)
+            let error = #expect(throws: ReevaluationReplayResolutionError.self, "kind \(kind), ids \(ids)") {
+                try ReevaluationReplayFrame.resolve(
+                    tickId: 3, recordedServerEvents: [Self.recorded(target)], emittedServerEvents: [],
+                    actualState: nil, definition: definition
+                )
+            }
+            let cause = ReevaluationRecordContentError.malformedEventTarget(kind: kind, idCount: ids.count)
+            #expect(error == .eventTarget(tickId: 3, origin: .recorded, sequence: 4, name: Self.eventName, error: "\(cause)"))
+        }
+    }
+
+    @Test("A well-formed recorded target resolves to the target the live run sent")
+    func wellFormedTargetResolves() throws {
+        let frame = try ReevaluationReplayFrame.resolve(
+            tickId: 3,
+            recordedServerEvents: [Self.recorded(ReevaluationEventTargetRecord(kind: "player", ids: ["p1"]))],
+            emittedServerEvents: [], actualState: nil,
+            definition: makeUnsignedLand(emitting: ReplayUnsignedEvent(big: 7))
+        )
+        guard case .player(let playerID)? = frame.recordedEvents.first?.target else {
+            Issue.record("expected .player, got \(String(describing: frame.recordedEvents.first?.target))")
+            return
+        }
+        #expect(playerID.rawValue == "p1")
+    }
+
+    @Test("A replay of a record whose event target was edited to a malformed one fails the run at that tick (#641)")
+    func malformedTargetFailsTheRun() async throws {
+        let path = tempPath("sstr")
+        try await recordOneTick(makeUnsignedLand(emitting: ReplayUnsignedEvent(big: 7)), path: path)
+        let view = String(decoding: try ReevaluationRecordFile.jsonView(ofRecordData: Data(contentsOf: URL(fileURLWithPath: path))), as: UTF8.self)
+        // Turn the one recorded `all` target into a `player` target with no ID.
+        var edited = 0
+        func edit(_ value: Any) -> Any {
+            if var object = value as? [String: Any] {
+                if var target = object["target"] as? [String: Any], target["kind"] as? String == "all" {
+                    target["kind"] = "player"
+                    object["target"] = target
+                    edited += 1
+                }
+                return object.mapValues(edit)
+            }
+            if let array = value as? [Any] { return array.map(edit) }
+            return value
+        }
+        let tree = edit(try JSONSerialization.jsonObject(with: Data(view.utf8)))
+        try #require(edited == 1, "one recorded target to edit")
+        let json = tempPath("json")
+        try JSONSerialization.data(withJSONObject: tree).write(to: URL(fileURLWithPath: json))
+        let runner = try await ConcreteReevaluationRunner(
+            definition: makeUnsignedLand(emitting: ReplayUnsignedEvent(big: 7)), recordFilePath: json
+        )
+        let error = await #expect(throws: ReevaluationReplayResolutionError.self) { _ = try await runner.step() }
+        guard case .eventTarget(0, .recorded, _, Self.eventName, _)? = error else {
+            Issue.record("expected eventTarget of the recorded event at tick 0, got \(String(describing: error))")
+            return
+        }
+    }
+}

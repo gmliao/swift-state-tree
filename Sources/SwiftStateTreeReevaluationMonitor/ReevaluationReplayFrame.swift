@@ -18,6 +18,9 @@ public enum ReevaluationReplayResolutionError: Error, Sendable, Equatable, Custo
     /// A server event whose payload doesn't decode into its registered type (EV7), or whose
     /// descriptor has no decoder (a custom runner that skipped the registration check, EV8).
     case eventDecode(tickId: Int64, origin: ReevaluationReplayEventOrigin, sequence: Int64, name: String, error: String)
+    /// A server event whose recorded target isn't one a live run writes (#641): replay would
+    /// otherwise send it to a different audience.
+    case eventTarget(tickId: Int64, origin: ReevaluationReplayEventOrigin, sequence: Int64, name: String, error: String)
     /// The runner couldn't read the tick's recorded server events or state hash (A9).
     case recordRead(tickId: Int64, read: String, error: String)
     /// The runner's snapshot of the replayed state didn't encode (A10).
@@ -40,6 +43,8 @@ public enum ReevaluationReplayResolutionError: Error, Sendable, Equatable, Custo
             return "replay tick \(tickId): \(origin.rawValue) server event \(sequence) '\(name)' isn't registered on the land"
         case let .eventDecode(tickId, origin, sequence, name, error):
             return "replay tick \(tickId): \(origin.rawValue) server event \(sequence) '\(name)' doesn't decode: \(error)"
+        case let .eventTarget(tickId, origin, sequence, name, error):
+            return "replay tick \(tickId): \(origin.rawValue) server event \(sequence) '\(name)' has a malformed target: \(error)"
         case let .recordRead(tickId, read, error):
             return "replay tick \(tickId): can't read the recorded \(read): \(error)"
         case let .stateEncode(tickId, error):
@@ -63,12 +68,13 @@ public enum ReevaluationReplayResolutionError: Error, Sendable, Equatable, Custo
 /// the runner's `step()` by `resolve`, so a record/code mismatch fails the run there; the replay
 /// land's tick only reads it and can't fail.
 public struct ReevaluationReplayFrame: Sendable {
-    /// A server event decoded into its registered type, with its recorded target.
+    /// A server event decoded into its registered type, with its recorded target converted
+    /// (`ReevaluationEventTargetRecord.eventTarget()`, #641).
     package struct ResolvedEvent: Sendable {
         package let sequence: Int64
         package let typeIdentifier: String
         package let event: any ServerEventPayload
-        package let target: ReevaluationEventTargetRecord
+        package let target: EventTarget
     }
 
     package let tickId: Int64
@@ -199,7 +205,16 @@ public struct ReevaluationReplayFrame: Sendable {
                     tickId: tickId, origin: origin, sequence: recorded.sequence, name: recorded.typeIdentifier, error: "\(error)"
                 )
             }
-            return ResolvedEvent(sequence: recorded.sequence, typeIdentifier: recorded.typeIdentifier, event: event, target: recorded.target)
+            // A target the record doesn't spell out fails the tick, never widens to `.all` (#641).
+            let target: EventTarget
+            do {
+                target = try recorded.target.eventTarget()
+            } catch {
+                throw ReevaluationReplayResolutionError.eventTarget(
+                    tickId: tickId, origin: origin, sequence: recorded.sequence, name: recorded.typeIdentifier, error: "\(error)"
+                )
+            }
+            return ResolvedEvent(sequence: recorded.sequence, typeIdentifier: recorded.typeIdentifier, event: event, target: target)
         }
     }
 
