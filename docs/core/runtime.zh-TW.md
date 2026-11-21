@@ -38,28 +38,9 @@ await withTaskGroup(of: Void.self) { group in
 }
 ```
 
-### Snapshot 同步模式
+### 在 Turn 內同步
 
-> 本節與[同步流程](#同步流程)描述的是 keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑：在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。在 #546 L2d 移除它之前，只有測試與直接呼叫公開 `beginSync` 的程式碼仍會用到這個 cycle。
-
-`LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
-
-- **同步時取得快照**：同步操作在開始時取得狀態快照
-- **不阻塞變更**：狀態變更可以與同步並行進行
-- **一致性保證**：Actor 序列化確保每個同步都取得一致的快照
-- **去重機制**：並發的同步請求會被去重，避免重複工作
-
-```swift
-// Sync 流程
-guard let state = await keeper.beginSync(clearDirtyFlags: true) else {
-    // 另一個同步正在進行，跳過（去重）
-    return
-}
-defer { await keeper.endSync() }
-
-// 使用 state 快照進行同步操作
-// 此時狀態變更可以並行進行，不會阻塞
-```
+Keeper 從自己的 turn 內把狀態送給 client。一個 turn 套用它的 input，接著把 event 交給 transport；需要同步時，sync phase 也在同一個 actor turn 內交出。因此狀態變更與同步不會交錯：在某個 turn 的 sync phase 之後發生的變更，由下一次送出。各種 turn 見 [In-Turn Sync](#in-turn-sync預設)。
 
 ## 狀態管理
 
@@ -88,19 +69,11 @@ func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows ->
 
 ### 狀態讀取
 
-讀取狀態有兩種方式：
-
-1. **當前狀態**：`currentState()` - 取得當前狀態的快照（只讀）
-2. **同步快照**：`beginSync(clearDirtyFlags:)` - 開始同步操作時取得的快照。僅供同步流程使用；讀取狀態請用 `currentState()`。傳入 `clearDirtyFlags: true` 會清除即時狀態的 dirty 標記，只想取得副本的讀取者若這樣呼叫，下一次同步就會漏掉這些變更。
+`currentState()` 回傳當前狀態的副本。讀取不會改變任何東西，dirty 標記也不會。
 
 ```swift
 // 讀取當前狀態（只讀）
 let current = await keeper.currentState()
-
-// 開始同步（取得快照）
-guard let snapshot = await keeper.beginSync(clearDirtyFlags: true) else { return }
-defer { await keeper.endSync() }
-// 使用 snapshot 進行同步操作
 ```
 
 ## Request-Scoped LandContext
@@ -432,54 +405,16 @@ Join 在它 flip 的那個 turn 的 sync phase 中完成（#69、#194）。Joine
 已知限制：
 
 - Debug freeze 的 settle 是它自己的一個 sync-only turn。它依序確認：land 是 live、沒有失敗也還沒開始關閉，settle 的期限還沒過，仍是同一次 freeze，且經由 keeper 的同步 adapter 執行：也就是掛載到 keeper 的 adapter；若 keeper 從未掛載，則是 keeper 接受其同步請求的那個 adapter。接著在同一個 turn 內從凍結的 state 規劃並 commit 一次 sync phase，不因 writer back-pressure 延後，也不 flip join；凍結期間執行的一般 phase 仍把同步留給 resume。檢查未通過的 settle 什麼都不規劃：freeze 已釋放時回 `released`，land 已失敗時回該失敗，正在關閉時回 `LandInputRejection.landClosed`。它的 plan 第一次拋出錯誤就在該 turn 結束 land，與任何 sync phase 相同。它不會接手其他 turn 待辦的同步工作，那些由 resume 送出。之後的 resume 會提出兩個請求。第一，凍結期間被延後的同步以一個 sync-only turn 執行。第二，已就緒但尚未 flip 的 join 另外得到一個 sync-only turn。以下情況會跳過第二個請求：第一個請求因 writer back-pressure 被延後（由重試或下一次週期 phase flip 它們）、land 已失敗，或兩者之間 land 又被凍結（由那次凍結的 resume 提出）。
-- `validate` 拋出錯誤的 input 單獨失敗，與 legacy 路徑相同：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
+- `validate` 拋出錯誤的 input 單獨失敗：在 tickless land 上呼叫者收到錯誤（在 tick land 上，它在收件時已被確認，失敗只記錄在 log），該 input 被移除並記錄為 rejected，同一 turn 的其他 input 照常套用。它什麼都沒寫入，因此下一次同步沒有它的內容要送（[Input 與 Turn](#input-與-turn)）。
 - 沒有 transport 的 live keeper 也執行同樣的 turn。Benchmark 的 worker pool，或直接驅動 keeper 的測試，就是這種 keeper。它的 turn 會取出並記錄 event 與同步請求，但不送往任何地方。
 - Live keeper 會拒絕無法在 turn 內執行 sync phase 的 transport，並停止 process（[掛載 transport](../transport/README.zh-TW.md#掛載-transport)）。
-- Re-evaluation 的 keeper 一律走 legacy 路徑。
+- Re-evaluation 的 keeper 重播錄下的 input，不執行這些 turn。對 tickless 的 re-evaluation keeper 發出 live 的 join 或 leave 會停止 process；它的 action 與 client event 會被忽略，server input 則被拒絕（`notLive`）。
 
 In-turn sync 無法關閉。`IN_TURN_SYNC` 環境變數原本是它的開關，現已移除：仍設定它的 server 會忽略它，process 中第一個 adapter 會記錄一筆 warning 指出它。
 
 ### Writer Back-Pressure
 
 每個 adapter 都透過一個有序的 outbound writer 送出。當 writer 仍持有先前 cycle 的 sync frame 時，新的 cycle 會在取得 copy 之前被略過：不做任何 plan，dirty flag 與排隊中的 event 保留，下一個 cycle 會與最後送出的狀態做 diff，因此包含所有變更。有週期同步的 land 靠它的下一個週期 cycle；沒有的 land 會在 writer 清空後重試一次。過載因此變成略過的 cycle，而不是不斷增長的佇列。Event 與 action response 的 frame 不會被擋下。被略過的 phase 同時記為一次略過與一個 deferred turn；transport profiler 會回報兩者（見 [Transport](../transport/README.zh-TW.md#profiling)）。
-
-### 同步流程
-
-> Keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑。
-
-同步使用 snapshot 模式，不阻塞狀態變更：
-
-```swift
-// 開始同步
-public func beginSync(clearDirtyFlags: Bool) -> State? {
-    guard !isSyncing else {
-        return nil  // 去重：跳過並發的同步請求
-    }
-    isSyncing = true
-    let snapshot = state  // 直接取得快照，不阻塞
-    if clearDirtyFlags {
-        state.clearDirty()  // 清除即時狀態的 dirty 標記；快照保留自己的標記
-    }
-    return snapshot
-}
-
-// 結束同步
-public func endSync() {
-    isSyncing = false
-}
-```
-
-Dirty 標記在 `beginSync` 中清除，與取得快照位於同一個 actor 回合。快照保留自己的 dirty 標記，因此同步週期能看到上一個會清除標記的週期以來的所有變更；同步進行中發生的狀態變更則維持 dirty，留給下一個週期。`clearDirtyFlags` 沒有預設值，每個呼叫端都必須明確決定。`endSync(clearDirtyFlags:)` 已標記為 deprecated，並忽略其參數；請改把這個選擇傳給 `beginSync(clearDirtyFlags:)`。
-
-### 同步去重
-
-> 這是 legacy 路徑。In-turn sync 下，同步請求是一個 turn，不會被跳過（[In-Turn Sync](#in-turn-sync預設)）。
-
-`isSyncing` 標記用於去重，不是用於阻塞：
-
-- 當同步進行中時，並發的同步請求會被跳過
-- 狀態變更（Action/Event）不會被阻塞，可以並行進行
-- 每個同步都取得一致的快照（actor 序列化保證）
 
 ### Dirty Tracking
 
@@ -495,7 +430,7 @@ var players: [PlayerID: PlayerState] = [:] {
 }
 ```
 
-完整的同步週期在取得快照時會清除 dirty 標記（見同步流程）。若要手動清除：
+已 commit 的 sync phase 若它的 plan 對每個同步欄位都做了 diff，會在該 turn 內清除 dirty 標記（見 [In-Turn Sync](#in-turn-sync預設)）。若要手動清除：
 
 ```swift
 // 清除所有 dirty 標記
