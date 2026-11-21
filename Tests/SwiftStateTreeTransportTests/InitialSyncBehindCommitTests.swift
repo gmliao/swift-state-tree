@@ -88,13 +88,13 @@ private func setTotal(_ state: inout BehindCommitState, _ action: BehindCommitSe
 @Suite("A firstSync whose state read a sync commit passed (#564)")
 struct InitialSyncBehindCommitTests {
 
-    @Test("A cycle commits during a joiner's firstSync read: the joiner gets its whole view from the next cycle", arguments: [true, false], [true, false])
-    func cycleCommitsDuringFirstSyncRead(periodic: Bool, inTurnSync: Bool) async throws {
+    @Test("A cycle commits during a joiner's firstSync read: the joiner gets its whole view from the next cycle", arguments: [true, false])
+    func cycleCommitsDuringFirstSyncRead(periodic: Bool) async throws {
         let definition = makeBehindCommitLand(periodic: periodic)
         let transport = BehindCommitTransport()
         let keeper = LandKeeper(definition: definition, initialState: BehindCommitState(), autoStartLoops: periodic)
         let adapter = TransportAdapter<BehindCommitState>(
-            keeper: keeper, transport: transport, landID: "behind-commit", inTurnSync: inTurnSync
+            keeper: keeper, transport: transport, landID: "behind-commit"
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -154,15 +154,15 @@ struct InitialSyncBehindCommitTests {
             // The next periodic cycle.
             await adapter.syncNow()
         } else {
-            // No periodic sync: the follow-up runs the next cycle. In-turn it is one requested
-            // sync-only turn (#546 L2a).
+            // No periodic sync: the follow-up runs the next cycle, one requested sync-only turn
+            // (#546 L2a).
             #expect(await followUps.waitForArrivals(1), "no follow-up cycle started")
             followUps.open()
         }
 
         // The follow-up is a background sync, which this wait covers, with the writer's drain.
         #expect(await adapter.waitForSyncQuiescenceForTesting())
-        if inTurnSync && !periodic {
+        if !periodic {
             #expect(await keeper.requestedSyncTurnsForTesting[.behindCommitRepair, default: 0] == 1)
         }
         let joinerTotals = await transport.totals(for: joiner.session)

@@ -55,14 +55,13 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
     let player = PlayerID("sst-player")
 
     static func make(
-        encoding: InTurnEncoding, inTurn: Bool = true, recording: Bool = true, syncSequence: Bool = false
+        encoding: InTurnEncoding, recording: Bool = true, syncSequence: Bool = false
     ) async -> SyncStreamFixture<SyncStreamTestState> {
         await SyncStreamFixture<SyncStreamTestState>.make(
             definition: makeSyncStreamLand(),
             initialState: SyncStreamTestState(),
             encoding: encoding,
             pathHashes: syncStreamPathHashes,
-            inTurn: inTurn,
             recording: recording,
             syncSequence: syncSequence
         )
@@ -75,7 +74,6 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
         encoding: InTurnEncoding,
         pathHashes: [String: UInt32],
         encoder: (any StateUpdateEncoder)? = nil,
-        inTurn: Bool = true,
         recording: Bool = true,
         syncSequence: Bool = false
     ) async -> SyncStreamFixture<S> {
@@ -92,8 +90,7 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-stream-test",
-                stateUpdateEncoder: encoder,
-                inTurnSync: inTurn
+                stateUpdateEncoder: encoder
             )
         } else {
             adapter = TransportAdapter<S>(
@@ -101,8 +98,7 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
                 transport: transport,
                 landID: "sync-stream-test",
                 encodingConfig: encoding.config.withSyncSequence(syncSequence),
-                pathHashes: encoding == .json ? nil : pathHashes,
-                inTurnSync: inTurn
+                pathHashes: encoding == .json ? nil : pathHashes
             )
         }
         await transport.setDelegate(adapter)
@@ -275,18 +271,7 @@ struct SyncStreamProducerTests {
         #expect(seed.viewHash == CanonicalPatchList([StatePatch(path: "/ticks", operation: .set(.int(1)))]).hash)
     }
 
-    @Test("Off path records nothing: in-turn sync off with a recorder", arguments: InTurnEncoding.allCases)
-    func offPathRecordsNothing(encoding: InTurnEncoding) async throws {
-        let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: encoding, inTurn: false)
-        try await f.join()
-        await f.tick()
-        await f.tick()
-        #expect(try await f.stream().isEmpty)
-        #expect(await f.keeper.syncStreamCounterForTesting() == 0)
-        #expect(await f.adapter.syncOutputDigestCountForTesting == 0)
-    }
-
-    @Test("No recorder, no work: in-turn sync on without a recorder", arguments: InTurnEncoding.allCases)
+    @Test("No recorder, no work: in-turn sync without a recorder", arguments: InTurnEncoding.allCases)
     func noRecorderNoWork(encoding: InTurnEncoding) async throws {
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: encoding, recording: false)
         try await f.join()

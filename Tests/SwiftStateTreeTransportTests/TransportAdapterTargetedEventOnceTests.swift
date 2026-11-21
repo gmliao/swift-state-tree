@@ -46,7 +46,7 @@ struct TargetedOnceEvent: ServerEventPayload {
 /// Unique text carried by the targeted event; a frame contains it iff it carries the event.
 private let targetedOnceMarker = "targeted-once-marker-7f3a"
 
-/// Records every frame in send order. Cycles are held in flight with `SyncCycleHold`.
+/// Records every frame in send order.
 private actor TargetedOnceRecordingTransport: Transport {
     var delegate: TransportDelegate?
     private var frames: [(target: SwiftStateTreeTransport.EventTarget, data: Data)] = []
@@ -78,14 +78,11 @@ private struct TargetedOnceFixture {
     let keeper: LandKeeper<TargetedOnceTestState>
     let adapter: TransportAdapter<TargetedOnceTestState>
     let transport: TargetedOnceRecordingTransport
-    let hold = SyncCycleHold()
     let session = SessionID("to-session")
     let client = ClientID("to-client")
     let player = PlayerID("to-player")
 
-    /// `inTurnSync: false`: the adapter's own cycle, for the tests that hold one in flight (until
-    /// #546 L2c removes it).
-    static func make(encoding: TransportEncodingConfig, inTurnSync: Bool = true) async throws -> TargetedOnceFixture {
+    static func make(encoding: TransportEncodingConfig) async throws -> TargetedOnceFixture {
         let definition = Land("targeted-once-test", using: TargetedOnceTestState.self) {
             ServerEvents {
                 Register(TargetedOnceEvent.self)
@@ -115,12 +112,10 @@ private struct TargetedOnceFixture {
                 syncStrategy: .delta,
                 profilingConfig: nil
             ),
-            encodingConfig: encoding,
-            inTurnSync: inTurnSync
+            encodingConfig: encoding
         )
         await transport.setDelegate(adapter)
         let fixture = TargetedOnceFixture(keeper: keeper, adapter: adapter, transport: transport)
-        await fixture.hold.install(on: adapter)
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         try await simulateRouterJoin(
             adapter: adapter,
@@ -163,25 +158,6 @@ private struct TargetedOnceFixture {
 
     func sendTargetedEvent(_ message: String, to target: PlayerID) async {
         await adapter.sendEvent(AnyServerEvent(TargetedOnceEvent(message: message)), to: .player(target))
-        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
-    }
-
-    /// Runs `syncNow` held in flight (after it read the event queue, before `endSync`; see
-    /// `SyncCycleHold`), runs `duringCycle`, then lets the cycle finish.
-    func syncNowHolding(_ duringCycle: () async throws -> Void) async throws {
-        hold.arm()
-        let adapter = self.adapter
-        let cycle = Task { await adapter.syncNow() }
-        do {
-            try await hold.waitUntilHeld()
-            try await duringCycle()
-        } catch {
-            hold.release()
-            await cycle.value
-            throw error
-        }
-        hold.release()
-        await cycle.value
         #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     }
 
@@ -266,79 +242,6 @@ struct TransportAdapterTargetedEventOnceTests {
         let eventIndices = await f.eventFrameIndices()
         #expect(eventIndices.count == 1, "targeted event must arrive exactly once; event frames at \(eventIndices) of \(frames.count)")
         #expect(messagePackStateFrameIndices(frames).isEmpty, "no state frame expected without a state change")
-    }
-
-    // Before #60 the cycle awaited the transport between the per-player batch and the flush,
-    // and this test queued the late event in that window (served by the flush). The cycle no
-    // longer suspends there, so the late event is queued while the cycle is held before
-    // `endSync`, after it read the queue: it is kept and the follow-up cycle sends it, once.
-    @Test("opcode 107: a targeted event queued while a cycle is in flight, after it read the queue, is still sent, once")
-    func targetedEventQueuedDuringBatchIsSentOnce() async throws {
-        let f = try await TargetedOnceFixture.make(encoding: .messagepack, inTurnSync: false)
-        let lateMarker = "targeted-once-late-marker-c41d"
-
-        try await f.setScore(5)
-        await f.sendTargetedEvent()
-        try await f.syncNowHolding {
-            await f.sendTargetedEvent(lateMarker)
-        }
-        try await f.waitForEvent(lateMarker, at: f.session)
-
-        let earlyIndices = await f.eventFrameIndices()
-        let lateIndices = await f.eventFrameIndices(lateMarker)
-        #expect(earlyIndices.count == 1, "batched event must arrive exactly once; frames at \(earlyIndices)")
-        #expect(lateIndices.count == 1, "event queued during the batch must arrive exactly once; frames at \(lateIndices)")
-    }
-
-    // As above: the "in-batch" events are now queued while the cycle is held before `endSync`
-    // and the follow-up cycle sends them; the per-session and ordering claims are unchanged.
-    @Test("opcode 107: two sessions with interleaved pre-batch and in-flight events each get their own events once")
-    func twoSessionsInterleavedEventsArriveOnceAtTheirOwnSession() async throws {
-        let f = try await TargetedOnceFixture.make(encoding: .messagepack, inTurnSync: false)
-        let sessionB = SessionID("to-session-b")
-        let clientB = ClientID("to-client-b")
-        let playerB = PlayerID("to-player-b")
-        try await f.joinSecondSession(session: sessionB, client: clientB, player: playerB)
-
-        // A has a per-player change (served by the batch); B has none (served by the flush).
-        try await f.setScore(5)
-        await f.sendTargetedEvent("evt-a1-pre", to: f.player)
-        await f.sendTargetedEvent("evt-b1-pre", to: playerB)
-        await f.sendTargetedEvent("evt-a2-pre", to: f.player)
-        try await f.syncNowHolding {
-            await f.sendTargetedEvent("evt-a3-held", to: f.player)
-            await f.sendTargetedEvent("evt-b3-held", to: playerB)
-        }
-        try await f.waitForEvent("evt-a3-held", at: f.session)
-        try await f.waitForEvent("evt-b3-held", at: sessionB)
-
-        let aFrames = await f.transport.frames(for: f.session)
-        let bFrames = await f.transport.frames(for: sessionB)
-        let aEvents = ["evt-a1-pre", "evt-a2-pre", "evt-a3-held"]
-        let bEvents = ["evt-b1-pre", "evt-b3-held"]
-
-        for event in aEvents {
-            #expect(frameIndices(containing: event, in: aFrames).count == 1, "\(event) must reach A exactly once")
-            #expect(frameIndices(containing: event, in: bFrames).isEmpty, "\(event) must not reach B")
-        }
-        for event in bEvents {
-            #expect(frameIndices(containing: event, in: bFrames).count == 1, "\(event) must reach B exactly once")
-            #expect(frameIndices(containing: event, in: aFrames).isEmpty, "\(event) must not reach A")
-        }
-
-        let aState = messagePackStateFrameIndices(aFrames)
-        #expect(aState.count == 1, "expected one per-player state frame for A; got \(aState)")
-        #expect(messagePackStateFrameIndices(bFrames).isEmpty, "B has no state change this cycle")
-        if let state = aState.first {
-            for event in ["evt-a1-pre", "evt-a2-pre"] {
-                if let index = frameIndices(containing: event, in: aFrames).first {
-                    #expect(index < state, "\(event) (\(index)) must precede A's state frame (\(state))")
-                }
-            }
-            if let index = frameIndices(containing: "evt-a3-held", in: aFrames).first {
-                #expect(index > state, "evt-a3-held (\(index)) is queued after the batch and follows A's state frame (\(state))")
-            }
-        }
     }
 
     @Test(

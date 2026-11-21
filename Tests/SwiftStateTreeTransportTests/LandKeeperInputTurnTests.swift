@@ -207,7 +207,7 @@ private struct InputTurnFixture {
     let client = ClientID("input-turn-client")
     let player = PlayerID("input-turn-player")
 
-    static func make(inTurn: Bool = true, recording: Bool = false, logger: Logger? = nil) async throws -> InputTurnFixture {
+    static func make(recording: Bool = false, logger: Logger? = nil) async throws -> InputTurnFixture {
         let transport = InputTurnTransport()
         let keeper = LandKeeper<InputTurnTestState>(
             definition: makeInputTurnLand(),
@@ -219,7 +219,6 @@ private struct InputTurnFixture {
             keeper: keeper,
             transport: transport,
             landID: "input-turn-test",
-            inTurnSync: inTurn,
             logger: logger
         )
         await transport.setDelegate(adapter)
@@ -588,61 +587,43 @@ struct LandKeeperInputTurnTests {
         #expect(f.log.batchSizes.count == 4, "join, action, client event, leave: \(f.log.snapshot)")
     }
 
-    @Test("a throwing input fails alone: same errors, nothing pending and same state, ON vs OFF")
+    @Test("a throwing input fails alone: its caller's error, nothing pending, the inputs around it applied")
     func throwSemanticsMatchLegacy() async throws {
-        var outcomes: [(errors: Int, pending: [Int64], total: Int)] = []
-        for inTurn in [true, false] {
-            let f = try await InputTurnFixture.make(inTurn: inTurn)
-            var errors = 0
-            try await f.add(1)
-            do { try await f.add(-5) } catch { errors += 1 }  // refused by validate, nothing written
-            do { try await f.add(2) } catch { errors += 1 }   // -5 is not run again: this applies
-            outcomes.append((errors, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total))
-        }
-        let on = outcomes[0], off = outcomes[1]
-        #expect(on.errors == off.errors, "errors ON \(on.errors) vs OFF \(off.errors)")
-        #expect(on.pending == off.pending, "pending ON \(on.pending) vs OFF \(off.pending)")
-        #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
-        #expect(on.errors == 1, "only the throwing input's caller gets an error")
-        #expect(on.pending.isEmpty, "the throwing input was removed; the one after it applied")
+        let f = try await InputTurnFixture.make()
+        var errors = 0
+        try await f.add(1)
+        do { try await f.add(-5) } catch { errors += 1 }  // refused by validate, nothing written
+        do { try await f.add(2) } catch { errors += 1 }   // -5 is not run again: this applies
+        let pending = await f.keeper.pendingItemSequencesForTesting()
+        let total = await f.keeper.currentState().total
+        #expect(errors == 1, "only the throwing input's caller gets an error")
+        #expect(pending.isEmpty, "the throwing input was removed; the one after it applied")
         // 1, then 2: -5 was refused before it wrote (#586).
-        #expect(on.total == 3, "state \(on.total)")
+        #expect(total == 3, "state \(total)")
     }
 
-    @Test("a throw at P in a batch: the input before P succeeds, P fails and is removed (ON vs OFF)")
+    @Test("a throw at P in a batch: the input before P succeeds, P fails and is removed")
     func throwAfterInnocentInputInOneBatch() async throws {
-        var outcomes: [(first: Int?, failed: Bool, pending: [Int64], total: Int)] = []
-        for inTurn in [true, false] {
-            let f = try await InputTurnFixture.make(inTurn: inTurn)
-            let gate = InputTurnGate()
-            if inTurn {
-                // Both inputs wait in the queue, so one turn applies them together.
-                await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.wait() })
-            }
-            let first = Task { try await f.add(1) }
-            if inTurn {
-                try await f.waitForPending(1)
-            } else {
-                _ = try? await first.value  // legacy: its own pass, before P arrives
-            }
-            let poison = Task { try await f.add(-5) }
-            if inTurn {
-                try await f.waitForPending(2)
-                await f.keeper.installHolds(nil)
-                await gate.release()
-            }
-            let firstResult = try? await first.value
-            var failed = false
-            do { _ = try await poison.value } catch { failed = true }
-            outcomes.append((firstResult ?? nil, failed, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total))
-        }
-        let on = outcomes[0], off = outcomes[1]
-        #expect(on.first == 1 && off.first == 1, "the input before P succeeds: ON \(String(describing: on.first)) OFF \(String(describing: off.first))")
-        #expect(on.failed && off.failed, "P's caller gets its error")
-        #expect(on.pending.isEmpty && off.pending.isEmpty, "P is removed, not left pending: ON \(on.pending) vs OFF \(off.pending)")
+        let f = try await InputTurnFixture.make()
+        let gate = InputTurnGate()
+        // Both inputs wait in the queue, so one turn applies them together.
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.wait() })
+        let first = Task { try await f.add(1) }
+        try await f.waitForPending(1)
+        let poison = Task { try await f.add(-5) }
+        try await f.waitForPending(2)
+        await f.keeper.installHolds(nil)
+        await gate.release()
+        let firstResult = (try? await first.value) ?? nil
+        var failed = false
+        do { _ = try await poison.value } catch { failed = true }
+        let pending = await f.keeper.pendingItemSequencesForTesting()
+        let total = await f.keeper.currentState().total
+        #expect(firstResult == 1, "the input before P succeeds: \(String(describing: firstResult))")
+        #expect(failed, "P's caller gets its error")
+        #expect(pending.isEmpty, "P is removed, not left pending: \(pending)")
         // 1 only: P was refused before it wrote (#586).
-        #expect(on.total == 1, "state \(on.total)")
-        #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
+        #expect(total == 1, "state \(total)")
     }
 
     @Test("a failed in-turn plan on a tickless land ends the land at its first throw (#535 row 15)")

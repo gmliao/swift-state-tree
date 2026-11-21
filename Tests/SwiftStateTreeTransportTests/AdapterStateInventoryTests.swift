@@ -15,9 +15,6 @@ import Testing
 private struct AdapterSyncStateInventory {
     // The sync state.
     var syncSkips: SyncSkipCounts
-    var backlogDeferredSyncNow: Bool
-    var backlogDeferredBroadcastOnly: Bool
-    var backlogRetryScheduled: Bool
     var lastSyncSeq: UInt64
     var planSyncSeq: UInt64?
     var planResyncPlayers: Set<PlayerID>
@@ -35,7 +32,6 @@ private struct AdapterSyncStateInventory {
     var syncStreamUnmergedEvents: ReevaluationUnmergedEvents
     // The lag state.
     var syncLag: [SessionID: SyncLagSession]
-    var syncLagFullPlanRequested: Bool
     var syncLagTimerSyncRequestedEpoch: UInt64?
     // What the lag and the event queues hold, named so a change of their storage can't hide one.
     var lagEntry: SyncLagSession.Entry

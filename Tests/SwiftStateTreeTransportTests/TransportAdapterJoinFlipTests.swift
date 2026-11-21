@@ -147,8 +147,7 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
     let adapter = TransportAdapter<JoinFlipTestState>(
         keeper: keeper,
         transport: sent,
-        landID: "join-flip",
-        inTurnSync: true
+        landID: "join-flip"
     )
     await sent.setDelegate(adapter)
     await keeper.setTransport(adapter)

@@ -161,8 +161,7 @@ private func makeFixture(_ encoding: HeldEncoding, tick: Bool = true) async -> F
         keeper: keeper,
         transport: sent,
         landID: "held-events",
-        encodingConfig: config,
-        inTurnSync: true
+        encodingConfig: config
     )
     await sent.setDelegate(adapter)
     await keeper.setTransport(adapter)

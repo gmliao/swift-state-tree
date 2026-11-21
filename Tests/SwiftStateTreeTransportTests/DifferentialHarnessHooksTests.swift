@@ -169,8 +169,6 @@ struct DifferentialHarnessHooksTests {
     func noPendingFlip() async throws {
         let h = try await HooksHarness.make()
         #expect(await bounded { await h.router.waitForNoPendingFlipForTesting() }, "none pending: returns at once")
-        guard h.adapter.inTurnSyncEnabled else { return }  // only an in-turn join has a flip wait
-
         let flipped = TestGate()
         await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.flipWaitResumed, arrival: 1) {
             await flipped.arrive()
@@ -196,7 +194,6 @@ struct DifferentialHarnessHooksTests {
     @Test("The no-pending-flip waiter returns when its task is cancelled, registered or not yet")
     func noPendingFlipWaiterIsCancellable() async throws {
         let h = try await HooksHarness.make()
-        guard h.adapter.inTurnSyncEnabled else { return }  // only an in-turn join has a flip wait
         let flipped = TestGate()
         await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.flipWaitResumed, arrival: 1) {
             await flipped.arrive()
