@@ -67,6 +67,14 @@ PlayerSession 欄位優先序：
 - diff：只傳變更（path-based patches）
 - firstSync：玩家首次建立 cache 後送出一次
 
+### 掛載 transport
+
+Keeper 透過掛載在它身上的 transport 送出 frame，掛載方式是 `init(transport:)` 或 `setTransport(_:)`。在 live land 上，keeper 在自己的 turn 內執行 sync phase，因此 transport 必須能為這個 keeper 在 turn 內執行該 phase。`TransportAdapter` 對它所建立時對應的 keeper 可以做到。
+
+Live keeper 在掛載時檢查這一點。回答 `runsSyncPhaseInTurn(of:) == false` 的 transport 會讓 process 停止，訊息中寫明 land 與 transport 的型別。Release build 也一樣。為其他 keeper 建立的 adapter 也會以同樣方式被拒絕。
+
+限制：可以不掛 transport（`nil`），此時 keeper 會記錄輸出，但不送出任何東西。Re-evaluation keeper 不受檢查，land 銷毀後的掛載也不受檢查。
+
 ### Broadcast 與 Per-Player 更新
 
 每個 session 每個 sync cycle 的 frame，依此順序（outbound writer 會維持順序）：
