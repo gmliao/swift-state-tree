@@ -166,7 +166,13 @@ public final class LandLifecycleLog: @unchecked Sendable {
             ])
             return nil
         }
-        let stream = AppendStream(file)
+        guard let stream = AppendStream(file) else {
+            logger.error("Land lifecycle log disabled: \(TransportEnvKeys.landLifecycleLogPath) can't be opened", metadata: [
+                "path": .string(path),
+                "error": .string("setvbuf failed"),
+            ])
+            return nil
+        }
         return LandLifecycleLog(
             write: { line in try stream.writeLine(line) },
             close: { stream.close() }
@@ -257,15 +263,28 @@ public final class LandLifecycleLog: @unchecked Sendable {
         UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
     }
 
-    /// A file opened for appending. Unbuffered, so each line is one write that reaches the file
-    /// at once, and a failed write throws (`FileHandle.write(_:)` would terminate the process).
-    /// Callers serialize access; `LandLifecycleLog.append` holds its lock.
+    /// A file opened for appending, flushed after every line, and a failed write throws
+    /// (`FileHandle.write(_:)` would terminate the process). The stream is fully buffered with a
+    /// buffer far larger than a line, so each line reaches the file in one `write` from the
+    /// flush; processes sharing a path then never interleave inside a line. (Unbuffered stdio
+    /// doesn't promise that: some C libraries write in chunks.) A line longer than the buffer
+    /// may be split. Callers serialize access; `LandLifecycleLog.append` holds its lock.
     private final class AppendStream: @unchecked Sendable {
+        private static let bufferSize = 64 * 1024
         private var file: UnsafeMutablePointer<FILE>?
+        // Our own buffer: with a `nil` buffer some C libraries ignore the size.
+        private var buffer: UnsafeMutablePointer<CChar>?
 
-        init(_ file: UnsafeMutablePointer<FILE>) {
-            setvbuf(file, nil, _IONBF, 0)
+        /// `nil` when the buffer can't be set up; the file is closed then.
+        init?(_ file: UnsafeMutablePointer<FILE>) {
+            let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: Self.bufferSize)
+            guard setvbuf(file, buffer, _IOFBF, Self.bufferSize) == 0 else {
+                fclose(file)
+                buffer.deallocate()
+                return nil
+            }
             self.file = file
+            self.buffer = buffer
         }
 
         deinit { close() }
@@ -282,6 +301,9 @@ public final class LandLifecycleLog: @unchecked Sendable {
             guard let file else { return }
             self.file = nil
             fclose(file)
+            // After the close: the stream may flush into the buffer until then.
+            buffer?.deallocate()
+            buffer = nil
         }
     }
 
