@@ -638,7 +638,8 @@ struct LandKeeperInputTurnTests {
             }
         }
         let before = await f.transport.texts(for: f.session).count
-        try await f.add(7, sync: true)
+        // The turn ends the land, so its caller gets landClosed, not the handler's outcome (#704).
+        await #expect(throws: LandInputRejection.landClosed) { try await f.add(7, sync: true) }
         #expect(f.keeper.failure?.kind == .syncPlan, "failure \(String(describing: f.keeper.failure))")
         #expect(f.keeper.failure?.position.stage == .syncPhase)
         #expect(f.keeper.destructionCause == .failed)

@@ -25,9 +25,10 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case debugFreezeAutoResumeStale
     /// A pending action's answer (`finishActionResponse`), before it checks its ticket.
     case actionResponse
-    /// An action's answer (its response or its error reply) that didn't encode, after the
-    /// output gate closed and before the failure is submitted to the keeper.
-    case answerFailureSubmit
+    /// A failure found outside a keeper turn (an answer or an event that didn't encode, a
+    /// joiner's first sync that failed), after the output gate closed and the failure was noted
+    /// on the keeper, before it is submitted (`submitNotedFailure`, #701, #704).
+    case failureSubmit
     /// An in-turn freeze settle after its writer wait, before its keeper turn
     /// (`LandKeeper.settleTurn`): a release, refreeze, shutdown or expiry here is caught by the
     /// turn's fence (#546 L2d-1).
@@ -615,6 +616,9 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// (#535): the output gate is closed, so nothing was planned, committed or recorded for
     /// them (diagnostics).
     private(set) var initialSyncsDroppedLandFailed = 0
+    /// Frames dropped at the writer's door because the land's output gate was closed (#696): an
+    /// action's answer, an error or join reply, or a router frame after the land failed.
+    package internal(set) var framesDroppedLandFailed = 0
     /// Counts sync phase commits. A standalone firstSync captures it before its state read and
     /// commits only if it is unchanged after (#564): a commit in between may have moved the
     /// shared broadcast cache past the read, which the next diff would then start from.
@@ -2736,8 +2740,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             detail: "event \(event.type) did not encode",
             position: LandFailurePosition(stage: .eventFlush)
         )
-        outputGate.close(failure)
-        await keeper.submitLandFailure(failure)
+        await failOutsideTurn(failure)
     }
 
     /// The synchronous core of `sendEvent`: opcode 107 queues the event body for the next merged
@@ -5270,8 +5273,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 detail: String(describing: error),
                 position: LandFailurePosition(stage: .syncPhase)
             )
-            outputGate.close(failure)
-            await keeper.submitLandFailure(failure)
+            await failOutsideTurn(failure)
         }
     }
 
@@ -5412,7 +5414,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await submitAnswerFailure(failure)
+                await submitNotedFailure(failure)
             }
         } catch {
             if let failure = handleActionError(
@@ -5423,7 +5425,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await submitAnswerFailure(failure)
+                await submitNotedFailure(failure)
             }
         }
     }
@@ -5499,7 +5501,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await submitAnswerFailure(failure)
+                await submitNotedFailure(failure)
             }
         case .failure(let error):
             if let failure = handleActionError(
@@ -5510,7 +5512,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 ticket: ticket
             ) {
-                await submitAnswerFailure(failure)
+                await submitNotedFailure(failure)
             }
         }
     }
@@ -5623,16 +5625,34 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 detail: "the response to action \(actionType) did not encode: \(error)",
                 position: LandFailurePosition(stage: .actionResponse)
             )
-            outputGate.close(failure)
+            closeAndNoteOutsideTurn(failure)
             return failure
         }
     }
     
-    /// Submits the failure of an action's answer that didn't encode. The answer's own segment
-    /// closed the output gate, so nothing more goes out before the keeper applies the failure
-    /// in a later turn.
-    private func submitAnswerFailure(_ failure: LandFailure) async {
-        await holds.at(.answerFailureSubmit)
+    /// Ends the land with a failure found outside a keeper turn (#704): closes the output gate
+    /// and notes the failure on the keeper in this segment, then submits it. Every adapter-side
+    /// close outside a turn goes through here or `closeAndNoteOutsideTurn` (the census in
+    /// `scripts/gate-close-census.sh` pins that).
+    func failOutsideTurn(_ failure: LandFailure) async {
+        closeAndNoteOutsideTurn(failure)
+        await submitNotedFailure(failure)
+    }
+
+    /// The synchronous half of `failOutsideTurn`, for a caller that closes in one segment and
+    /// submits later. From here no frame of this land is enqueued (`enqueueFrames`), and the
+    /// keeper's next step ends the land with `failure` before anything of that step goes out
+    /// (`LandKeeper.notePendingFailure`), whichever adapter it runs through.
+    func closeAndNoteOutsideTurn(_ failure: LandFailure) {
+        outputGate.close(failure)
+        keeper.notePendingFailure(failure)
+    }
+
+    /// Submits a failure already noted on the keeper (`closeAndNoteOutsideTurn`). It wakes a
+    /// keeper with no turn due; a keeper that ran a step since the note has already failed, and
+    /// keeps the first cause.
+    private func submitNotedFailure(_ failure: LandFailure) async {
+        await holds.at(.failureSubmit)
         await keeper.submitLandFailure(failure)
     }
 
@@ -5693,7 +5713,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 detail: "the error reply to action \(envelope.typeIdentifier) did not encode: \(error)",
                 position: LandFailurePosition(stage: .actionResponse)
             )
-            outputGate.close(failure)
+            closeAndNoteOutsideTurn(failure)
             return failure
         }
     }

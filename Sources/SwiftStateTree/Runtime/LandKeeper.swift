@@ -549,6 +549,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// failure wins.
     public nonisolated var failure: LandFailure? { drainFlag.failure }
 
+    /// A failure a transport found outside a turn, noted for this keeper's next step boundary
+    /// (#704). See `notePendingFailure(_:)`.
+    private nonisolated let pendingTransportFailure = LandFailureMailbox()
+
+    /// Notes a failure that a transport found outside a keeper turn, in the same segment as it
+    /// closed the land's output gate (#704). The keeper's next step reads it before anything of
+    /// that step goes out (`finishApply`, `runSyncOnlyTurn`, `runTurnOutputs`) and ends the land
+    /// with it. The transport still submits it (`submitLandFailure`), which wakes a keeper with no
+    /// turn due; by then the land has usually failed, and the first cause stays.
+    ///
+    /// The first failure noted wins. A keeper in re-evaluation never gets one: replay has no
+    /// transport.
+    package nonisolated func notePendingFailure(_ failure: LandFailure) {
+        guard mode == .live else { return }
+        pendingTransportFailure.note(failure)
+    }
+
+    /// Tests: the failure noted by `notePendingFailure(_:)`, if any.
+    package nonisolated var pendingFailureForTesting: LandFailure? { pendingTransportFailure.failure }
+
     /// Waits until this keeper's destruction has finished, handlers and the transport's
     /// `onLandDestroyed` included. Returns at once when no destruction started.
     ///
@@ -1629,6 +1649,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     package func settleTurn(via port: any LandKeeperTransport, fence: SettleFence) -> SettleTurnOutcome {
         requestedSyncTurnsForTesting[.settle, default: 0] += 1
         guard mode == .live, failure == nil, !isDraining else { return .closed(failure) }
+        // A failure a transport noted outside a turn ends the land first (#704): no phase runs,
+        // and a tickless land's turn still ends its record, as after a failed phase.
+        let markBeforeNote = recorderSubmissionCount
+        if applyPendingTransportFailure(), let failure {
+            enqueueTicklessTurnEnd(since: markBeforeNote)
+            return .failed(failure)
+        }
         guard ContinuousClock.now < fence.deadline else { return .timedOut }
         guard debugFrozen, debugActiveGeneration == fence.generation else { return .released }
         guard let transport,
@@ -4153,7 +4180,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if removingFromQueue { removePendingItems(Array(items.prefix(consumed))) }
         noteJoinInputsConsumed(joinResults)
         if appliedShutdown { completeShutdownTurn() }
-        if let appliedFailure { failLand(appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty) }
+        // A failure noted on the mailbox came first, even when another closer's submit queued its
+        // item ahead of the noted one's (#704): the noted failure stays the cause.
+        if let appliedFailure {
+            failLand(pendingTransportFailure.failure ?? appliedFailure, endsInputs: true, appliedInputs: !applied.appliedOrder.isEmpty)
+        }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount, consumed: consumed)
     }
 
@@ -4772,6 +4803,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         wantsSync: Bool,
         joinSyncOnly: Bool = false
     ) {
+        // A failure a transport noted since this turn's apply ended ends the land here, as a
+        // failed phase would (#704): no event and no phase.
+        guard !applyPendingTransportFailure() else { return }
         // A land without periodic sync runs the phase for joins waiting on it (#69): the turn
         // that consumed a join's input completes it in its own output step.
         var includeSync = wantsSync || (!hasPeriodicSync && transportHasJoinsAwaitingSync)
@@ -4872,6 +4906,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
         let applied = applyInputs(readyPendingItemsInOrder(), executingTickId: tickId).applied
+        // A failure a transport noted outside the turn ends this tick's inputs here, before the
+        // handler (#704), as a failure item in the batch does: the record then matches what replay
+        // does at a failure that ended a tick's inputs, which skips the handler.
+        if failure == nil { _ = finishApply(appliedInputs: !applied.appliedOrder.isEmpty) }
         if failure != nil {
             // The land failed in this batch (#535): no tick handler, no events, no sync. The
             // inputs applied before it are recorded; no state hash and no W2 (it never ran).
@@ -5193,6 +5231,34 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await submission?.value
     }
 
+    /// How a turn goes on after its apply segment (#704; #716 adds its depth check).
+    enum ApplyEnd: Equatable {
+        /// Nothing ended the land: the turn's outputs go out.
+        case proceed
+        /// The land ended in this step: the turn takes its failure branch, with no events and
+        /// no sync.
+        case ended
+    }
+
+    /// The end of an apply segment, before anything of the turn goes out: its events, its sync
+    /// phase and its record entry with the hash. Called only when the apply hasn't already
+    /// failed the land. It ends the land with a failure a transport noted outside the turn
+    /// (`applyPendingTransportFailure`). `appliedInputs`: the segment applied inputs, so the
+    /// failure's position names this pass.
+    private func finishApply(appliedInputs: Bool) -> ApplyEnd {
+        applyPendingTransportFailure(endsInputs: true, appliedInputs: appliedInputs) ? .ended : .proceed
+    }
+
+    /// Ends the land with the failure a transport noted outside a turn (`notePendingFailure`), if
+    /// there is one and the land hasn't failed yet. The failure keeps its own stage
+    /// (`actionResponse`, `syncPhase` or `eventFlush`). Returns whether the land has failed.
+    private func applyPendingTransportFailure(endsInputs: Bool = false, appliedInputs: Bool = false) -> Bool {
+        if failure == nil, let noted = pendingTransportFailure.failure {
+            failLand(noted, endsInputs: endsInputs, appliedInputs: appliedInputs)
+        }
+        return failure != nil
+    }
+
     /// A sync-only turn (no inputs, no tick): the sync phase on the current state, synchronous,
     /// with the dirty-flag clear in the same turn. While a legacy cycle holds the sync flag, it
     /// runs again after that cycle's `endSync` instead.
@@ -5201,6 +5267,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A failed land sends nothing more (#535): a scheduled repair, writer-drain retry or
         // join-sync turn that runs after the failure returns here.
         guard failure == nil else { return .skipped }
+        let markBeforeNote = recorderSubmissionCount
+        // A failure a transport noted outside a turn ends the land first (#704): no phase runs. A
+        // tickless land's turn still ends its record, as after a failed phase.
+        if applyPendingTransportFailure(), let failure {
+            enqueueTicklessTurnEnd(since: markBeforeNote)
+            return .landFailed(failure)
+        }
         guard !isSyncing else {
             latchSyncOnlyTurnAfterLegacyCycle(transport: transport)
             return .skipped
@@ -5814,9 +5887,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// P's caller gets P's error, and every other input of the batch is applied and its caller
     /// gets its own outcome. P wrote nothing and requested nothing (#586). P is recorded in
     /// order, as rejected, so replay checks it is refused the same way.
+    ///
+    /// A turn that ends the land (a failure item in the batch, a failure a transport noted
+    /// outside the turn, or a failed sync phase) sends nothing, and every consumed caller gets
+    /// `landClosed` instead of its outcome. The record keeps those inputs as applied: a recorded
+    /// input carries no outcome, so replay has none to compare.
     private func runInputTurn(_ batch: [PendingItem], removingFromQueue: Bool = true) -> InputTurnOutcome {
         inTurnProbeForTesting?("turn-begin")
         inTurnProbeForTesting?("input-batch-\(batch.count)")
+        let failedBefore = failure != nil
         let executingTickId = executingTickIdForPendingItems()
         let sequenceBefore = outputCollector.nextSequence
         beginPass()
@@ -5826,6 +5905,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let applied = application.applied
         // Numbered in the segment that applied it, before this turn's sync phase reads (#563).
         let passOrdinal = takePassOrdinal(applied: applied)
+        // After the ordinal is taken, so a failure noted outside the turn names this pass (#704).
+        if failure == nil { _ = finishApply(appliedInputs: !applied.appliedOrder.isEmpty) }
         // Only the consumed prefix is this turn's: the suffix was dropped (`landClosed`) by a
         // failure's settle, and its callers must not be resumed again with a success (#535).
         let consumedItems = Array(batch.prefix(application.consumed))
@@ -5840,8 +5921,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
         }
         inTurnProbeForTesting?("turn-end")
+        // A turn that ended the land answers every consumed caller with `landClosed`, a caller
+        // whose handler threw included: none of the turn's outputs went out, so a success would
+        // promise effects the land never sends (#704, #716). The failure item has no caller.
+        let endedInTurn = !failedBefore && failure != nil
         for item in consumedItems {
-            inputTurnResults[item.sequence] = application.outcomes[item.sequence]
+            inputTurnResults[item.sequence] = endedInTurn
+                ? .failure(LandInputRejection.landClosed)
+                : application.outcomes[item.sequence]
         }
         var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
         // A tickless land's turn is one pass (#325, #321).

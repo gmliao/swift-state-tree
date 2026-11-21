@@ -1,6 +1,6 @@
 # Turn core: a nonisolated post lane that the next step takes first (#725)
 
-**Status:** rev 3, plan only, for review. No code until Review's GO. Main approves the additive API once this revision holds: `LaneReport = Never`, the default `handleReport` where `LaneReport == Never`, and `TurnStats`' two new fields (§6).
+**Status:** rev 3, GO from Review on the design and on §6's Public API, with §3.9's must-fix folded in below (Review glances, no new round). Main approved the additive API on 2026-11-21. Main approves the additive API once this revision holds: `LaneReport = Never`, the default `handleReport` where `LaneReport == Never`, and `TurnStats`' two new fields (§6).
 
 **Rev 3** (Review's NOT GO on rev 2: 3 must-fix, 8 should, 1 nit; the direction was right: the lane on the core, the helper from `beginEntry()`, checkpoints per turn):
 - §3.4: the driver removes one report at a time from the lane's head, bounded by a sequence watermark read at the check. Unstepped reports stay in the lane, so a step's `takeReports()` sees them in order: with A and B posted and C posted while A steps, A's take returns B, C. There is a test for that order. Two ordering exceptions are stated and tested: a query from `flush` inside a batch, and a report posted by a report's own step during an entry's helper (MF 1).
@@ -14,6 +14,13 @@
   - `.cancelsCall`'s policy read: the control or normal choice must depend on the input alone (§3.4);
   - Q5 = `fatalError` (§3.5).
 - Nit: "set-once" is now "the first pending report wins".
+- After Review's GO on rev 3, these follow:
+  - §3.9's must-fix: driver-stepped reports are keyed `before(n, i)` in the same staged map as mid-step takes, and served from the check in replay. `replayReport` is dropped. Test 13 gains a report stepped between two releases.
+  - The shoulds:
+    - the step ordinal counts only when `usesLane` holds;
+    - the epilogue wakes whenever reports remain;
+    - `TurnReplayDivergence` is `package`.
+  - The prior art is corrected: "was empty, so kick" (the kernel's lock-free list queues, not `prepare_to_wait`); NAPI's `napi_poll` weight within `netdev_budget`; and the signal loop against the lane's budget.
 - Prior art (the maintainer): Unix signal delivery at a safe point, receive livelock and NAPI's budget, check-then-sleep, and FIFO across two takes, each tied to the section it shapes.
 
 **Rev 2** (Review's NOT GO on rev 1: 5 must-fix, 10 should, 2 nit):
@@ -52,17 +59,19 @@ When LandKeeper moves onto `TurnCore` (#700), that box should be a capability of
 - **Unix signals: delivery at a safe point.**
   - The kernel never delivers a signal in the middle of an instruction. It checks the pending flag (`TIF_SIGPENDING`) on the way back to user mode (`exit_to_user_mode_loop`), where the task's state is consistent.
   - The lane's safe point is the step boundary: `takeLaneBeforeStep()`, before each step (§3.4).
+  - One difference: the kernel loops in `exit_to_user_mode_loop` until no work flag is set. The lane bounds each entry's delivery by a budget instead, which is NAPI's choice, for the same livelock reason (next item).
   - A step's own `turn.takeReports()` is the exception, a delivery inside the unit of work, and it needs its own justification. Here that is #732's case: a failure that lands during a turn must stop the turn's outputs, which go out after the step. The read is made only at checkpoints the machine names (§3.6, §4.1), and it is recorded as an environment read for replay (§3.9).
 - **Receive livelock, and NAPI's budget.**
   - Mogul and Ramakrishnan ("[Eliminating Receive Livelock in an Interrupt-driven Kernel](https://www.usenix.org/conference/usenix-1996-annual-technical-conference/eliminating-receive-livelock-interrupt-driven)", USENIX 1996) showed that work run at a fixed higher priority than everything else (there, interrupt-driven packet input) starves the rest under load: the system spends all its time accepting work it never completes.
   - Reports step ahead of everything (§3.4), so a stream of reports, or a report whose handler posts its successor, is the same hazard.
-  - The fix follows [Linux NAPI](https://docs.kernel.org/next/networking/napi.html): a poll has a budget, and work left when the budget runs out is rescheduled, not looped over. The lane's budget is NAPI's: one budget per entry, the poll, spent by the helper and by every check in that entry's segment. The epilogue is its single owner: when reports remain at the budget's end, it reschedules them with a wake, including when the budget was already zero (§3.3, §3.4).
+  - The fix follows [Linux NAPI](https://docs.kernel.org/next/networking/napi.html). `net_rx_action` runs each device's `napi_poll` up to its weight, within the softirq's `netdev_budget`. Work left at the end re-raises `NET_RX_SOFTIRQ`, or goes to `ksoftirqd`: it is rescheduled, not looped over. The lane's budget is NAPI's: one budget per entry, the poll, spent by the helper and by every check in that entry's segment. The epilogue is its single owner: when reports remain at the budget's end, it reschedules them with a wake, including when the budget was already zero (§3.3, §3.4).
   - Test 11 pins the split: a self-reposting report splits exactly at the budget.
-- **Lost wakeup: check-then-sleep.**
-  - The classic race is a sleeper that checks a condition, then sleeps, while the waker sets the condition and wakes between the two, so the wake is lost. The check and the act have to be atomic:
-    - xv6's `sleep` holds the condition's lock until the sleeper is on the wait channel;
-    - Linux's `prepare_to_wait` registers the waiter first, and the waiter re-checks the condition after.
-  - The lane's version is on the producer's side. `post`'s "was the lane empty" check and its append are one critical section (§3.3). The mutant splits them with a hook between (§5, test 4).
+- **Lost wakeup: "was empty, so kick".**
+  - The lane has no sleeper, so the match isn't `prepare_to_wait` (the sleeper's side of the check-then-sleep race). It is the kernel's lock-free list queues, where the producer that makes the queue non-empty owns the kick:
+    - `__smp_call_single_queue` does `if (llist_add(node, queue)) send_call_function_single_ipi(cpu)`, and `llist_add` returns true only when the list was empty;
+    - `irq_work_queue` does the same.
+  - Every other producer finds work already queued and a kick already owed. The consumer drains the whole list, so a later add again finds it empty.
+  - The lane works the same way. `post`'s "was the lane empty" check and its append are one critical section (§3.3), and only the post that found it empty schedules the wake. The mutant splits the two with a hook between (§5, test 4).
 - **FIFO across two takes.** A consumer that detaches a batch and steps it from a private copy lets a nested consumer (a step's `takeReports()`) take later reports ahead of the batch's rest. So a check dequeues one head at a time, bounded by the watermark read at the check (§3.4), and never holds a detached batch.
 - **Swift actors** have no second lane. Task priority changes scheduling but promises nothing about which job runs first, so an awaited call can't promise "before your next step".
 - **The repository's own precedents:**
@@ -106,7 +115,7 @@ A machine opts in with a new associated type, `associatedtype LaneReport: Sendab
 
 **Who schedules a wake.** The post that makes the lane non-empty schedules it. "A wake is due" is derived from the lane holding reports, so there is no `wakePending` flag.
 
-**The other owner of a wake.** A segment that leaves reports in the lane, because its budget ran out (§3.4), schedules the wake from its epilogue. Every entry that took the lane ends through that epilogue (§3.4), so this owner always runs. A zero remaining budget counts: a segment that took nothing because the entry's budget was already spent still schedules the wake.
+**The other owner of a wake.** A segment's epilogue schedules a wake whenever reports remain in the lane at its end, whatever left them there: a spent budget, or reports posted after the segment's last check. Every entry that ran the helper ends through that epilogue (§3.4), so this owner always runs. A zero remaining budget counts: a segment that stepped no report because the entry's budget was already spent still schedules the wake.
 
 **No lost wakeup.** The read of "was empty" and the append are in one critical section, so a post can't see the lane as non-empty because of a report that a take is removing at the same moment. Every post that leaves the lane non-empty has one of two owners for its wake:
 - the post that made it non-empty;
@@ -221,18 +230,31 @@ A machine that never calls `takeReports()` gets only the pre-step checks, which 
 
 ### 3.9 Replay and recording
 
-Replay can't point a staged take at its consuming step from outside. Some steps are dispatched by the core itself: a follow-up, a released input, a query asked from `flush`. So the core keys takes itself.
+Replay can't point a report at its place from outside. The driver can step a report between two core-dispatched steps in one segment: between two released parked inputs, before a captured follow-up, after a send that a flush queued. Some steps are themselves dispatched by the core: a follow-up, a released input, a query asked from `flush`. So the core keys every report it hands out, both kinds, by the steps it dispatches.
 
-**Step ordinals.** The core numbers every step it dispatches, of every kind: `stepOrdinal`, counted from the core's start. A take inside a step has a take ordinal, counted from 0 in that step. For one input sequence, live and replay dispatch the same steps in the same order, so the pair `(stepOrdinal, takeOrdinal)` names the same take on both.
+**Step ordinals.**
+- The core numbers every non-report step it dispatches: `stepOrdinal`, counted from the core's start, for inputs, releases, follow-ups, answers, completions, timers and abandonments alike.
+- For one input sequence, live and replay dispatch those steps in the same order, so an ordinal names the same step on both.
+- A report's own step doesn't take an ordinal. Its place is given relative to the next one (below).
+- **The counter's cost.** It counts only when `usesLane` holds, so it folds away on a machine with `LaneReport == Never`. The gated `emit` and `call` cells don't pay it (§3.8).
+
+**The keys.** One staged map serves both kinds of report:
+- `before(n, i)`: the i-th report the driver stepped at the check that ran before step n's dispatch. The checks of an entry's helper and of the segment's loop all count. A check after the segment's last step counts for the next step the core dispatches.
+- `inside(n, t)`: what take t of step n's `turn.takeReports()` returned, with t counted from 0 in that step.
+- Inside a report's own step, `takeReports()` returns `[]` and isn't recorded. Any reports posted meanwhile step at the next check.
 
 **Live.**
-- A driver-stepped report goes through `handleReport`, which records it as one record entry at its position, as the keeper records a server-originated input (#387). Replay feeds it back through a package entry, `replayReport(_:)`, at that position.
-- A non-empty mid-step take calls the core's report source, `.live(lane)`. The source returns the reports and passes `(stepOrdinal, takeOrdinal, reports)` to the adopter's recorder (`onReportsTaken`), which writes it into the step's record entry.
-- Empty takes aren't recorded.
+- The core's report source is `.live(lane)`. Each report the driver steps is passed to the adopter's recorder (`onReportsTaken`) under its `before` key, before `handleReport` runs. Each non-empty mid-step take is passed under its `inside` key.
+- The adopter writes them into its record at those keys, as the keeper records a server-originated input (#387). Empty takes aren't recorded.
 
-**Replay.** The source is `.replay(staged)`, where `staged` maps `(stepOrdinal, takeOrdinal)` to the recorded reports. Each `takeReports()` is served from `staged`: the entry is removed, and `[]` is served when nothing is staged for that key. Nothing is posted. Two cases are a replay divergence and fail fast with `TurnReplayDivergence`, naming the key:
-- **Unconsumed:** when a step ends, an entry for that step's ordinal is still staged.
-- **Overdrawn:** a take finds nothing staged for its key, but an entry for the same step and a later take ordinal is staged.
+**Replay.**
+- The source is `.replay(staged)`, the map read back from the record, and nothing is posted. There is no separate `replayReport` entry.
+- Before it dispatches step n, the check steps the reports staged under `before(n, 0…)`, in order. That covers both the entry's helper and the segment's loop, in replay mode whether or not the lane is empty.
+- `turn.takeReports()` in step n is served from `inside(n, t)`, or `[]` when nothing is staged for that key.
+
+**Divergence.** `TurnReplayDivergence` is `package`, like the replay source. It names the key and the case, and goes to the adopter's replay through a package hook, `onReplayDivergence`, which fails the replay run. With no hook set, it is a `fatalError`. The cases are:
+- **unconsumed:** step n dispatches while an entry for an ordinal below n is still staged;
+- **overdrawn:** a take finds nothing under its key, but a later take of the same step has an entry.
 
 A live post's position depends on timing; the record fixes it.
 
@@ -317,7 +339,8 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
     - a mid-step take in an input's step;
     - a mid-step take in a follow-up's step;
     - a mid-step take in a query's answer asked from `flush`;
-    - a driver-stepped report ahead of a direct input in one segment.
+    - a driver-stepped report ahead of a direct input in one segment;
+   - a report stepped between two releases in one segment: posted under the hook while the first release steps, with `maxReleasesPerBatch: 2`.
 
     A replay with one take removed from the stage fails as overdrawn. One with an extra take staged fails as unconsumed.
 14. FIFO across the two takes (MF 1): A and B posted, C posted while A steps (a hold inside A's handler). A's `takeReports()` returns B, C, and the log is A, B, C, with no report stepped twice.
@@ -335,12 +358,13 @@ Mutants, each to fail a named test:
 - the budget removed (11, which then ends only by the hang bound);
 - the check detaching its whole snapshot instead of one head at a time (14);
 - a stale return in `deadlineFired` skipping the epilogue (15);
-- the replay stage served by position, ignoring the step ordinal (13).
+- the replay stage served by position, ignoring the step ordinal (13);
+- the `before` key taken from the entry instead of the step (13's between-releases case).
 
 ## 6. Steps
 
 1. **One SwiftStateTurns PR** (core path). It adds:
-   - `LaneReport`, `TurnLane`, `post`, `laneWoke`, the helper, `turn.takeReports()`, the report source with its replay entries and its divergence error, the step ordinal, and the counters;
+   - `LaneReport`, `TurnLane`, `post`, `laneWoke`, the helper, `turn.takeReports()`, the report source with its staged map and its divergence hook, the step ordinal, and the counters;
    - lint-turns `[let-lane]`;
    - the tests and mutants above, and the bench cells;
    - the docs: `docs/turns/README.md` and `.zh-TW.md`, and the DocC CoreConcepts page;
@@ -357,7 +381,7 @@ Mutants, each to fail a named test:
    - `TurnCore.init`'s `laneCapacity:`;
    - `TurnStats.emptyLaneWakes` and `TurnStats.refusedReports`. `TurnStats` is `Equatable`, so whole-value comparisons see the two fields.
 
-   The replay entries are `package`.
+   The report source, the step ordinal, `onReportsTaken`, `TurnReplayDivergence` and `onReplayDivergence` are `package`.
 2. **#700** maps #732's mailbox onto the lane (§4) when LandKeeper moves onto `TurnCore`. Its plan names this plan, states the record change (§4.2), and refines the staging of §4.1.
 
 #696/#704 (#732) ships the keeper box now and isn't blocked by this plan.

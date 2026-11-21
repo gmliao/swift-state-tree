@@ -82,6 +82,10 @@ actor UntypedPayloadTransport: Transport {
     func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
         closes.append(close.code)
     }
+    /// Closes without a code: the writer's close behind a session's final frame
+    /// (`closeSessionAfterQueuedFrames`, whose default closes at once).
+    private(set) var plainCloses: [SessionID] = []
+    func closeSession(_ sessionID: SessionID) async { plainCloses.append(sessionID) }
 }
 
 /// One land on its own keeper and adapter, with one joined session.
@@ -184,7 +188,7 @@ func makeUntypedResponseLand() -> LandDefinition<UntypedPayloadState> {
 }
 
 /// Runs `fail`, which makes an action's answer fail to encode, with the failure held between
-/// the adapter and the keeper (`.answerFailureSubmit`). In that window the land hasn't failed
+/// the adapter and the keeper (`.failureSubmit`). In that window the land hasn't failed
 /// yet, but the adapter has closed its output gate in the failing segment, so an event sent then
 /// doesn't go out. Then the keeper applies the failure.
 func expectGateClosedBeforeTheFailureTurn(
@@ -193,12 +197,13 @@ func expectGateClosedBeforeTheFailureTurn(
     fail: @escaping @Sendable () async throws -> Void
 ) async throws {
     let submit = TestGate()
-    await land.adapter.installHolds(HoldRegistry.at(.answerFailureSubmit) { await submit.arrive() })
+    await land.adapter.installHolds(HoldRegistry.at(.failureSubmit) { await submit.arrive() })
     let sentBefore = await land.transport.sends
     let failing = Task { try await fail() }
     #expect(await submit.waitForArrivals(1), "\(label): the failure is held before the keeper")
     #expect(land.keeper.failure == nil, "\(label): the keeper hasn't applied the failure yet")
     #expect(land.adapter.outputGate.isClosed, "\(label): the gate closed in the failing segment")
+    #expect(land.keeper.pendingFailureForTesting != nil, "\(label): the failure is noted on the keeper (#704)")
     await land.adapter.sendEventToTransport(AnyServerEvent(UntypedPayloadTypedEvent(hp: 1)), to: .all)
     await land.adapter.waitForOutboundIdleForTesting()
     // On messagepack, events merge: the event only queues a body, which this window doesn't
