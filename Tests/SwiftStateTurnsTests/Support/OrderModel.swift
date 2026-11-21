@@ -60,6 +60,8 @@ struct OrderModel: TurnMachine {
     typealias Key = Int
     typealias Reply = Int
     typealias FollowUpSlot = Int
+    /// A lane report: the harness's post number.
+    typealias LaneReport = Int
 
     var violations: [String] = []
     /// Request seq → id, for the requests this machine believes open.
@@ -97,6 +99,8 @@ struct OrderModel: TurnMachine {
     var followUpBySlot: [Int: Int] = [:]
     /// Follow-ups that stepped, and those closed unrun.
     var ranFollowUps: Int = 0
+    /// The lane reports stepped, in order.
+    var reportsStepped: [Int] = []
     var closedFollowUps: Int = 0
 
     func inputPolicy(for input: Input) -> InputPolicy<Int> {
@@ -120,6 +124,13 @@ struct OrderModel: TurnMachine {
         if depth != 0 { violate("a step entered while another ran") }
         depth += 1
         stepCount += 1
+    }
+
+    mutating func handleReport(_ report: Int, _ turn: inout Turn<OrderModel>) {
+        enter()
+        defer { depth -= 1 }
+        if reportsStepped.contains(report) { violate("report \(report) stepped twice") }
+        reportsStepped.append(report)
     }
 
     mutating func handle(_ input: Input, _ turn: inout Turn<OrderModel>) {

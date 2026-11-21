@@ -336,6 +336,49 @@ await board.waitForQuiescence()
 
 API：`followUp`、`consumeFollowUp`、`followUpPending`、`FollowUpTrigger`、`FollowUpArming`、`FollowUpSlot`、`waitForQuiescence`、`pendingWork`、`TurnWork`。
 
+### Lane
+
+另一條 thread 上的協作者有時必須在 machine 下一個 step 之前告訴它某件事，例如 transport 因失敗而關閉了 output gate。await 的 `send` 做不到這個保證：hop 抵達之前，actor 可能先跑了一個 step。core 的 *lane* 做得到。machine 以 `LaneReport` 型別和 `handleReport` 加入，後者把 report 當作 control input step（hold、`close` 和 queue 上限都不適用）：
+
+```swift
+mutating func handleReport(_ report: Failure, _ turn: inout Turn<Keeper>) {
+    failed = failed ?? report
+}
+```
+
+它的 actor 保存 core 的 lane，所以 `post` 不需要 actor 的隔離就能碰到它：
+
+```swift
+let core: TurnCore<Keeper>
+nonisolated let lane: TurnLane<Keeper.LaneReport>?
+
+init() {
+    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+    self.core = core
+    // The core's own lane: a lint checks it's assigned from `core.lane`.
+    self.lane = core.lane
+}
+```
+
+`post` 不 await，從任何 thread 都能呼叫：
+
+```swift
+// From any thread, with no await: the core's next step takes the report first.
+_ = keeper.post(.transportFailed)
+```
+
+每個 step 之前，driver 會依 post 的順序 step 在那之前 post 的 report。一個 entry 最多 step `laneCapacity` 個 report（`TurnCore.init`，預設 8），其餘在之後的 batch 裡 step，所以 handler 會再 post 一個的 report 不會餓死其他工作。lane 滿了就拒絕 post：`post` 回傳 false，`refusedReports` 計數，第一個待處理的 report 勝出。必須看到自己執行期間 post 的 report 的 step，會自己取 lane：
+
+```swift
+// A failure posted while this step ran stops its output.
+if let failure = turn.takeReports().first { failed = failed ?? failure }
+if failed == nil { turn.emit(.sync, for: .land) }
+```
+
+取 lane 是環境讀取，和 `now` 一樣：replay 時提供錄下的那次取用。`LaneReport` 是 `Never`（預設）的 machine 沒有 lane，也不為它付出任何成本。
+
+API：`LaneReport`、`handleReport`、`TurnLane`、`TurnActor.lane`、`post`、`Turn.takeReports`、`TurnCore.init`（`laneCapacity:`）、`TurnStats`（`emptyLaneWakes`、`refusedReports`）。
+
 ### Batch 與 `maxReleasesPerBatch`
 
 *batch* 是一次進入 actor 所引起的 step：一次 `send`、一次 `sendAndWait`、或一個回來的結果。載入結果釋放 hold 時，排在後面的加入會在同一個 batch 裡執行。兩次進入之間沒有 run loop。`maxReleasesPerBatch` 限制一次釋放在一個 batch 裡能讓多少個佇列的 input 執行；其餘的在之後的 batch 繼續，所以排在同一個 hold 後面的一長串 input，不會把其他呼叫端擋在外面。限制：它只計算 hold 釋放後讓它執行的佇列中 input；batch 期間的放棄與新到的 send 不計入。
@@ -390,6 +433,7 @@ API：`CallerCancellation`。
 | Withdraw token | 送出者能在 input 執行前放棄它嗎？ | `WithdrawToken`、`revoke` |
 | Timer 與時鐘 | step 如何在之後行動？測試如何控制時間？ | `timer`、`now`、`TurnClock` |
 | Follow-up | key 如何要求之後 step 一次，不論要求幾次？ | `followUp`、`consumeFollowUp`、`waitForQuiescence` |
+| Lane | 另一條 thread 如何在 machine 下一個 step 之前告訴它某件事？ | `LaneReport`、`post`、`takeReports` |
 | Batch | 每次進入執行多少？ | `maxReleasesPerBatch` |
 | send 在等什麼 | `await send` 在等什麼？順序如何？ | `send`、`sendAndWait` |
 | Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |

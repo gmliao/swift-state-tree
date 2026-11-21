@@ -336,6 +336,49 @@ await board.waitForQuiescence()
 
 API: `followUp`, `consumeFollowUp`, `followUpPending`, `FollowUpTrigger`, `FollowUpArming`, `FollowUpSlot`, `waitForQuiescence`, `pendingWork`, `TurnWork`.
 
+### The lane
+
+A collaborator on another thread sometimes has to tell the machine something before its next step, such as a transport that closed the output gate on a failure. An awaited `send` can't promise that: the actor may run a step before the hop lands. The core's *lane* can. A machine opts in with a `LaneReport` type and `handleReport`, which steps a report as a control input (holds, `close` and the queue limit don't apply):
+
+```swift
+mutating func handleReport(_ report: Failure, _ turn: inout Turn<Keeper>) {
+    failed = failed ?? report
+}
+```
+
+Its actor stores the core's lane, so `post` reaches it without the actor's isolation:
+
+```swift
+let core: TurnCore<Keeper>
+nonisolated let lane: TurnLane<Keeper.LaneReport>?
+
+init() {
+    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+    self.core = core
+    // The core's own lane: a lint checks it's assigned from `core.lane`.
+    self.lane = core.lane
+}
+```
+
+`post` doesn't await, and works from any thread:
+
+```swift
+// From any thread, with no await: the core's next step takes the report first.
+_ = keeper.post(.transportFailed)
+```
+
+Before every step, the driver steps the reports posted before that point, in post order. One entry steps at most `laneCapacity` reports (`TurnCore.init`, default 8), and the rest step in a later batch, so a report whose handler posts another can't starve other work. A full lane refuses a post: `post` returns false, `refusedReports` counts it, and the first pending report wins. A step that must see a report posted while it runs takes the lane itself:
+
+```swift
+// A failure posted while this step ran stops its output.
+if let failure = turn.takeReports().first { failed = failed ?? failure }
+if failed == nil { turn.emit(.sync, for: .land) }
+```
+
+A take is an environment read, like `now`: a replay serves the recorded take. A machine whose `LaneReport` is `Never` (the default) has no lane and pays nothing for it.
+
+API: `LaneReport`, `handleReport`, `TurnLane`, `TurnActor.lane`, `post`, `Turn.takeReports`, `TurnCore.init` (`laneCapacity:`), `TurnStats` (`emptyLaneWakes`, `refusedReports`).
+
 ### Batch and `maxReleasesPerBatch`
 
 A *batch* is the steps one entry into the actor causes: a `send`, a `sendAndWait`, or a result coming back. When a load's result releases a hold, the queued joins behind it step in the same batch. There is no run loop between entries. The `maxReleasesPerBatch` caps how many queued inputs a release lets step in one batch; the rest continue in a later one, so a long queue behind one hold can't keep other callers out. Limit: it counts only queued inputs that a hold's release lets step; abandonments and sends that arrive during the batch don't count.
@@ -390,6 +433,7 @@ API: `CallerCancellation`.
 | Withdraw token | Can the sender give up an input before it steps? | `WithdrawToken`, `revoke` |
 | Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
 | Follow-up | How does a key ask for one step later, however often it asks? | `followUp`, `consumeFollowUp`, `waitForQuiescence` |
+| Lane | How does another thread tell the machine something before its next step? | `LaneReport`, `post`, `takeReports` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
 | What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |

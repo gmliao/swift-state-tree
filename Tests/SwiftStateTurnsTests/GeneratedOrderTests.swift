@@ -86,18 +86,44 @@ final class CallBox: @unchecked Sendable {
 
 actor OrderActor: TurnActor {
     let core: TurnCore<OrderModel>
+    nonisolated let lane: TurnLane<Int>?
     nonisolated let fixture: Fixture
     nonisolated let notes: Notes
     /// What the sink received, and the outputs flushed after another step had run (invariant 11).
     private var delivered: [Int] = []
     private var lateFlushes: [String] = []
 
-    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int) {
+    /// A report the next flush posts (a post between steps); nil when none is due.
+    private var postOnFlush: Int?
+    /// Reports accepted by a post this actor made from a flush.
+    private var flushPosted: [Int] = []
+    /// Reports accepted by a post a check's hook made: a lock, not the actor, because the hook
+    /// is a plain closure.
+    nonisolated let checkPosted = ReportList()
+
+    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int, laneCapacity: Int) {
         self.fixture = fixture
         self.notes = notes
-        core = TurnCore(OrderModel(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: TestClock(fixture: fixture))
+        let core = TurnCore(OrderModel(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: TestClock(fixture: fixture), laneCapacity: laneCapacity)
         core.onDiagnostic = { event in
             if case .queued = event { notes.post("park") }
+        }
+        self.core = core
+        lane = core.lane
+    }
+
+    /// The next flush posts `report`.
+    func postAtNextFlush(_ report: Int) {
+        postOnFlush = report
+    }
+
+    /// The next lane check posts `report` at its hold point, after its watermark is read.
+    func postAtNextCheck(_ report: Int) {
+        let once = Once()
+        core.onLaneCheckForTesting = { [unowned self] in
+            once.run {
+                if self.post(report) { self.checkPosted.append(report) }
+            }
         }
     }
 
@@ -113,6 +139,10 @@ actor OrderActor: TurnActor {
     }
 
     func flush(_ outputs: consuming [OrderOutput]) {
+        if let report = postOnFlush {
+            postOnFlush = nil
+            if post(report) { flushPosted.append(report) }
+        }
         // Between steps: the machine's step count is the step whose outputs these are.
         let step = core.read { $0.stepCount }
         for output in outputs {
@@ -137,6 +167,8 @@ actor OrderActor: TurnActor {
         var pendingFollowUps: Int
         var pendingWork: Int
         var stats: TurnStats
+        var reportsStepped: [Int]
+        var selfPosted: [Int]
     }
 
     func view() -> View {
@@ -160,7 +192,9 @@ actor OrderActor: TurnActor {
                 droppedQueued: machine.droppedQueued,
                 pendingFollowUps: machine.followUps.count,
                 pendingWork: pendingWork,
-                stats: stats
+                stats: stats,
+                reportsStepped: machine.reportsStepped,
+                selfPosted: flushPosted + checkPosted.reports
             )
         }
     }
@@ -202,10 +236,18 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
     // Follow-up operations draw from their own stream, so the main stream (and the seeds pinned
     // to a mutant) keep their operations.
     var followUpRandom = SeededGenerator(seed: seed ^ 0x702)
+    // Lane posts draw from a third stream, for the same reason.
+    var laneRandom = SeededGenerator(seed: seed ^ 0x725)
+    var nextReport = 1
+    // Reports the harness's own posts had accepted, and held posts whose wakes wait at a gate.
+    var accepted: Set<Int> = []
+    var heldPosts: [(report: Int, task: Task<Bool, Never>)] = []
     var nextLabel = 1
     let fixture = Fixture()
     let notes = Notes()
-    let actor = OrderActor(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch)
+    // The budget-2 seeds also take at most 2 reports per entry, so lane batches split too.
+    let actor = OrderActor(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch,
+                           laneCapacity: maxReleasesPerBatch == 2 ? 2 : 8)
     var failures: [String] = []
     var nextSeq = 1
     var nextWork = 1
@@ -358,6 +400,61 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             break
         }
 
+        // A lane operation about a quarter of the time: a post now, a post whose wake is held
+        // (released by a later lane operation, so a wake is in flight across operations), a
+        // post at the next check's hold point, or a post from the next flush (between steps).
+        if Int.random(in: 0 ..< 4, using: &laneRandom) == 0 {
+            let report = nextReport
+            nextReport += 1
+            var laneOp: String
+            switch Int.random(in: 0 ..< 5, using: &laneRandom) {
+            case 0:
+                laneOp = "post \(report)"
+                if actor.post(report) { accepted.insert(report) }
+            case 1:
+                laneOp = "post \(report), its wake held"
+                let task = Task {
+                    let posted = await actor.postForTesting(report, afterAppend: {
+                        notes.post("appended \(report)")
+                        await fixture.wait("wake \(report)")
+                    })
+                    // Refused (a full lane): no append, so no hold.
+                    if !posted { notes.post("appended \(report)") }
+                    return posted
+                }
+                guard await notes.reach("appended \(report)") else {
+                    failures.append("post \(report) never appended")
+                    break
+                }
+                heldPosts.append((report, task))
+            case 2:
+                laneOp = "post \(report) at the next check"
+                await actor.postAtNextCheck(report)
+            case 3:
+                laneOp = "post \(report) at the next flush"
+                await actor.postAtNextFlush(report)
+            default:
+                laneOp = "release a held wake"
+                if !heldPosts.isEmpty {
+                    let held = heldPosts.removeFirst()
+                    fixture.open("wake \(held.report)")
+                    if await held.task.value { accepted.insert(held.report) }
+                    laneOp += " (\(held.report))"
+                }
+            }
+            log.append(laneOp)
+            let laneView = await actor.view()
+            failures += check(laneView, op: laneOp, parkedBound: 6 + nextWork)
+            let known = accepted.union(laneView.selfPosted).union(heldPosts.map(\.report))
+            if let stray = laneView.reportsStepped.first(where: { !known.contains($0) }) {
+                failures.append("after `\(laneOp)`: report \(stray) stepped, never accepted")
+            }
+            if !failures.isEmpty {
+                failures.append("seed \(seed), budget \(maxReleasesPerBatch), operation \(step); the last operations: \(log.suffix(12))")
+                break
+            }
+        }
+
         // A follow-up operation about a quarter of the time: arm (in a slot that may hold one
         // already, so some arms join) or consume. Armed ones step in later jobs, interleaved
         // with the operations that follow.
@@ -394,6 +491,20 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             }
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
+        // Every accepted report steps once: release the held wakes, then wait for the lane.
+        for held in heldPosts {
+            fixture.open("wake \(held.report)")
+            if await held.task.value { accepted.insert(held.report) }
+        }
+        heldPosts = []
+        // A check's or a flush's post still due when no check or flush follows isn't made, and
+        // isn't counted: only accepted posts are expected to step.
+        let selfPosted = Set((await actor.view()).selfPosted)
+        let laneSettled = await settle(actor) { Set($0.reportsStepped) == accepted.union(selfPosted) }
+        if !laneSettled {
+            let stepped = Set((await actor.view()).reportsStepped)
+            failures.append("lane: accepted \(accepted.union(selfPosted).subtracting(stepped).sorted()) never stepped")
+        }
         // Invariant 20: the wait returns once every follow-up stepped or closed.
         if !(await bounded({ await actor.waitForQuiescence() })) { failures.append("the follow-up wait returned false") }
         let final = await actor.view()
@@ -489,4 +600,14 @@ struct GeneratedOrderTests {
         let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed))
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
+}
+
+/// Reports a lane check's hook posted, from a plain closure.
+final class ReportList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [Int] = []
+
+    func append(_ report: Int) { lock.withLock { list.append(report) } }
+
+    var reports: [Int] { lock.withLock { list } }
 }
