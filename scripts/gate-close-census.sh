@@ -11,7 +11,7 @@
 #   closeOutputs              the keeper's own failLand, already in its turn
 # Any other function that calls it fails the census, naming the file, line and function.
 #
-# Usage: scripts/gate-close-census.sh [DIR]     (default: Sources/SwiftStateTreeTransport)
+# Usage: scripts/gate-close-census.sh [DIR]     (default: Sources)
 #        scripts/gate-close-census.sh --self-test
 set -euo pipefail
 
@@ -19,21 +19,28 @@ allowed='closeAndNoteOutsideTurn|runSyncPhaseInTurnResult|closeOutputs'
 
 census() { # dir
   local dir="$1" status=0 found=0
-  while IFS= read -r file; do
-    # For each call: the nearest `func` declaration above it.
-    while IFS=$'\t' read -r line fn; do
-      found=$((found + 1))
-      if [[ "$fn" =~ ^($allowed)$ ]]; then
-        printf 'ok    %s:%s in %s\n' "$file" "$line" "$fn"
-      else
-        printf 'FAIL  %s:%s in %s: close the gate through closeAndNoteOutsideTurn or failOutsideTurn\n' "$file" "$line" "${fn:-<no function>}"
-        status=1
-      fi
-    done < <(awk '
-      match($0, /func [A-Za-z_][A-Za-z0-9_]*/) { fn = substr($0, RSTART + 5, RLENGTH - 5) }
-      /outputGate\.close\(/ && !/^[[:space:]]*\/\// { printf "%d\t%s\n", NR, fn }
-    ' "$file")
-  done < <(find "$dir" -name '*.swift' | sort)
+  # One awk over every file: a process substitution per file runs out of descriptors in the
+  # bash 3.2 macOS ships, after about 250 files.
+  while IFS=$'\t' read -r file line fn; do
+    found=$((found + 1))
+    if [[ "$fn" =~ ^($allowed)$ ]]; then
+      printf 'ok    %s:%s in %s\n' "$file" "$line" "$fn"
+    else
+      printf 'FAIL  %s:%s in %s: close the gate through closeAndNoteOutsideTurn or failOutsideTurn\n' "$file" "$line" "${fn:-<no function>}"
+      status=1
+    fi
+  done < <(find "$dir" -name '*.swift' -print0 | sort -z | xargs -0 awk '
+    FNR == 1 { fn = "" }
+    # Comments are not code: a close named in a comment is not a call.
+    { line = $0; sub(/\/\/.*/, "", line) }
+    # A member or type declaration (indented at most 4 spaces) that is not a function resets
+    # the enclosing name, so a close in a property or an init is not credited to the function
+    # above it. A local inside a function body is indented deeper and keeps the function.
+    line ~ /^( {0,4})([a-z@][A-Za-z@() ]* )?(var|let|init|deinit|subscript|struct|class|enum|actor|extension)[^A-Za-z0-9_]/ && line !~ /func / { fn = "" }
+    # For each call: the nearest declaration above it.
+    match(line, /func [A-Za-z_][A-Za-z0-9_]*/) { fn = substr(line, RSTART + 5, RLENGTH - 5) }
+    line ~ /outputGate\.close\(/ { printf "%s\t%d\t%s\n", FILENAME, FNR, fn }
+  ')
   if [[ "$found" -eq 0 ]]; then
     echo "FAIL  no outputGate.close( found under $dir: the census looks in the wrong place"
     status=1
@@ -56,8 +63,21 @@ func sendEvent() async {
 }
 SWIFT
   if census "$tmp" > /dev/null; then echo "self-test: a close outside the helper passed"; exit 1; fi
+  rm "$tmp/Bad.swift"
+  cat > "$tmp/Property.swift" <<'SWIFT'
+func closeAndNoteOutsideTurn(_ failure: LandFailure) {}
+var closer: () -> Void = { outputGate.close(failure) }
+SWIFT
+  if census "$tmp" > /dev/null; then echo "self-test: a close in a property after the helper passed"; exit 1; fi
+  rm "$tmp/Property.swift"
+  cat > "$tmp/Comment.swift" <<'SWIFT'
+func sendEvent() async {
+    // outputGate.close(failure) used to be here
+}
+SWIFT
+  census "$tmp" > /dev/null || { echo "self-test: a close in a comment was counted"; exit 1; }
   echo "self-test: ok"
   exit 0
 fi
 
-census "${1:-Sources/SwiftStateTreeTransport}"
+census "${1:-Sources}"
