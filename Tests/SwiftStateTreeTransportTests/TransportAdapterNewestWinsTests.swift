@@ -157,7 +157,7 @@ private struct NewestWinsFixture {
     }
 }
 
-private func makeFixture(inTurn: Bool, legacyJoin: Bool = false) async -> NewestWinsFixture {
+private func makeFixture(legacyJoin: Bool = false) async -> NewestWinsFixture {
     let definition = Land("newest-wins", using: NewestWinsTestState.self) {
         Rules {
             OnJoin(resolvers: NewestWinsJoinResolver.self) { (state: inout NewestWinsTestState, _: LandContext) in
@@ -187,8 +187,7 @@ private func makeFixture(inTurn: Bool, legacyJoin: Bool = false) async -> Newest
         keeper: keeper,
         transport: transport,
         landID: "newest-wins",
-        enableLegacyJoin: legacyJoin,
-        inTurnSync: inTurn
+        enableLegacyJoin: legacyJoin
     )
     await transport.setDelegate(adapter)
     await keeper.setTransport(adapter)
@@ -201,9 +200,9 @@ struct TransportAdapterNewestWinsTests {
     let s1 = SessionID("s1"), c1 = ClientID("c1")
     let s2 = SessionID("s2"), c2 = ClientID("c2")
 
-    @Test("A second join of the player supersedes the first session: one member, the old one closed", arguments: [true, false])
-    func secondJoinSupersedesFirst(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn)
+    @Test("A second join of the player supersedes the first session: one member, the old one closed")
+    func secondJoinSupersedesFirst() async throws {
+        let f = await makeFixture()
         await f.connect(s1, c1)
         let first = try await f.join(s1, c1, as: player)
         await f.connect(s2, c2)
@@ -238,9 +237,9 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.keeper.currentState().leaves == 1)
     }
 
-    @Test("A reconnect from the same client supersedes the old session; the old one's input is rejected", arguments: [true, false])
-    func sameClientReconnectSupersedes(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn)
+    @Test("A reconnect from the same client supersedes the old session; the old one's input is rejected")
+    func sameClientReconnectSupersedes() async throws {
+        let f = await makeFixture()
         await f.connect(s1, c1)
         try await f.join(s1, c1, as: player)
         await f.connect(s2, c1)
@@ -262,9 +261,9 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.keeper.currentState().bumps == 0)
     }
 
-    @Test("The old session's action between the keeper's kick and the admission is rejected", arguments: [true, false])
-    func oldSessionActionInKickToAdmissionGap(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn)
+    @Test("The old session's action between the keeper's kick and the admission is rejected")
+    func oldSessionActionInKickToAdmissionGap() async throws {
+        let f = await makeFixture()
         let held = NewestWinsJoinHold.shared.fresh { ClientID("held-client-\($0)") }
         let gate = NewestWinsJoinHold.shared.gate(held)
         await f.connect(s1, c1)
@@ -289,9 +288,9 @@ struct TransportAdapterNewestWinsTests {
         #expect(await pollUntil { await f.keeper.currentState().bumps == 1 })
     }
 
-    @Test("An action whose resolver awaits across the kick is rejected, not applied to the new session", arguments: [true, false])
-    func actionHeldAcrossKickIsRejected(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn)
+    @Test("An action whose resolver awaits across the kick is rejected, not applied to the new session")
+    func actionHeldAcrossKickIsRejected() async throws {
+        let f = await makeFixture()
         let oldClient = NewestWinsActionHold.gates.fresh { ClientID("held-action-client-\($0)") }
         let gate = NewestWinsActionHold.gates.gate(oldClient)
         await f.connect(s1, oldClient)
@@ -319,9 +318,9 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.keeper.currentState().bumps == 0)
     }
 
-    @Test("Legacy join: the second join supersedes the first, OnLeave runs once", arguments: [true, false])
-    func legacyJoinSupersedes(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn, legacyJoin: true)
+    @Test("Legacy join: the second join supersedes the first, OnLeave runs once")
+    func legacyJoinSupersedes() async throws {
+        let f = await makeFixture(legacyJoin: true)
         for (session, client) in [(s1, c1), (s2, c2)] {
             await f.connect(session, client)
             let join = TransportMessage.join(
@@ -344,7 +343,7 @@ struct TransportAdapterNewestWinsTests {
 
     @Test("Direct-caller intake is unchanged: a join then sends, an absent player, the system player")
     func directCallerIntakeUnchanged() async throws {
-        let f = await makeFixture(inTurn: false)
+        let f = await makeFixture()
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: NewestWinsBumpAction.self),
             payload: AnyCodable(NewestWinsBumpAction(by: 1))
@@ -379,7 +378,7 @@ struct TransportAdapterNewestWinsTests {
 
     @Test("leave with a session leaves only that session's entry")
     func leaveChecksSession() async throws {
-        let f = await makeFixture(inTurn: false)
+        let f = await makeFixture()
         _ = try await f.keeper.join(
             session: PlayerSession(playerID: player.rawValue, deviceID: "dev", metadata: [:]),
             clientID: c1, sessionID: s1, services: LandServices()
@@ -390,9 +389,9 @@ struct TransportAdapterNewestWinsTests {
         #expect(await f.keeper.playerCount() == 0)
     }
 
-    @Test("An older initial sync finishing after the newer one started doesn't clear the newer one's mark", arguments: [true, false])
-    func olderInitialSyncKeepsNewerMark(inTurn: Bool) async throws {
-        let f = await makeFixture(inTurn: inTurn)
+    @Test("An older initial sync finishing after the newer one started doesn't clear the newer one's mark")
+    func olderInitialSyncKeepsNewerMark() async throws {
+        let f = await makeFixture()
         let observer = PlayerID("observer")
         let s0 = SessionID("s0"), c0 = ClientID("c0")
         await f.connect(s0, c0)

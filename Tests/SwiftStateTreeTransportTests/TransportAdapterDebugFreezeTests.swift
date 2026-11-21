@@ -139,9 +139,7 @@ private struct Fixture {
     let alice = (session: SessionID("s-alice"), client: ClientID("c-alice"), player: PlayerID("alice"))
     let bob = (session: SessionID("s-bob"), client: ClientID("c-bob"), player: PlayerID("bob"))
 
-    /// `inTurnSync: false`: the adapter's package-only off mode, whose settle still takes the
-    /// keeper's sync flag (until #546 L2c).
-    init(inTurnSync: Bool = true) async throws {
+    init() async throws {
         keeper = LandKeeper<DebugFreezeAdapterState>(
             definition: makeDefinition(),
             initialState: DebugFreezeAdapterState()
@@ -155,8 +153,7 @@ private struct Fixture {
                 useSnapshotForSync: true,
                 syncStrategy: .delta,
                 profilingConfig: nil
-            ),
-            inTurnSync: inTurnSync
+            )
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -221,11 +218,6 @@ private func patchCount(_ frames: [Data]) -> Int {
 private func drainSends() async {
     for _ in 0..<20 { await Task.yield() }
     try? await Task.sleep(for: .milliseconds(20))
-}
-
-private actor DoneFlag {
-    private(set) var isDone = false
-    func set() { isDone = true }
 }
 
 /// Wait (bounded) until `condition` holds.
@@ -308,32 +300,6 @@ struct TransportAdapterDebugFreezeTests {
         await #expect(throws: DebugFreezeError.notFrozen) {
             try await f.adapter.debugProjection(playerID: f.alice.player)
         }
-    }
-
-    @Test("Off adapter: settle waits for a sync cycle already in flight, then runs its own")
-    func settleRetriesUntilBeginSyncAccepts() async throws {
-        // In-turn, the settle takes no sync flag (#546 L2b): this is the off settle's, until L2c.
-        let f = try await Fixture(inTurnSync: false)
-        try await f.update(headline: "retry-marker-7d0e", score: 1)
-
-        // Hold the keeper's sync flag, as a running cycle would.
-        let held = await f.keeper.beginSync(clearDirtyFlags: false)
-        #expect(held != nil)
-
-        let done = DoneFlag()
-        let freeze = Task {
-            let response = try await f.adapter.debugFreeze()
-            await done.set()
-            return response
-        }
-        await drainSends()
-        #expect(await done.isDone == false, "freeze returned while beginSync was rejecting")
-
-        await f.keeper.endSync()
-        let token = try await freeze.value.freezeToken
-        await drainSends()
-        #expect(frames(await f.aliceFrames(), contain: "retry-marker-7d0e"))
-        _ = await f.adapter.debugResume(freezeToken: token)
     }
 
     @Test("While frozen, syncNow and a leave's sync send nothing; they run on resume")

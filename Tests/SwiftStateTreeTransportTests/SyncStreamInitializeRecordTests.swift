@@ -77,7 +77,7 @@ private struct InitRecordFixture {
     /// OnInitialize runs as a turn when in-turn sync is on; otherwise OnInitialize finishes
     /// before the adapter exists (the timing `LandManager` gives a land without resolvers).
     /// The land ID is `landPrefix` plus a fresh number, so its gate is this case's alone.
-    static func make(landPrefix: String, inTurn: Bool, transportBeforeInitialize: Bool) async throws -> InitRecordFixture {
+    static func make(landPrefix: String, transportBeforeInitialize: Bool) async throws -> InitRecordFixture {
         let landID = initResolverGates.fresh { "\(landPrefix)-\($0)" }
         let gate = initResolverGates.gate(landID)
         let keeper = LandKeeper<InitRecordTestState>(
@@ -96,8 +96,7 @@ private struct InitRecordFixture {
         let adapter = TransportAdapter<InitRecordTestState>(
             keeper: keeper,
             transport: InitRecordTransport(),
-            landID: landID,
-            inTurnSync: inTurn
+            landID: landID
         )
         await keeper.setTransport(adapter)
         gate.open()
@@ -113,9 +112,9 @@ private struct InitRecordFixture {
 
 @Suite("Initialize record and marker (record format 2.1)", .timeLimit(.minutes(1)), .resolverDeadlinesOff)
 struct SyncStreamInitializeRecordTests {
-    @Test("Both sync paths record OnInitialize's events and post-initialize state hash", arguments: [true, false])
-    func initializeRecordOnBothPaths(inTurn: Bool) async throws {
-        let f = try await InitRecordFixture.make(landPrefix: "init-record-\(inTurn)", inTurn: inTurn, transportBeforeInitialize: true)
+    @Test("The sync path records OnInitialize's events and post-initialize state hash")
+    func initializeRecordOnBothPaths() async throws {
+        let f = try await InitRecordFixture.make(landPrefix: "init-record-true", transportBeforeInitialize: true)
         #expect(await f.keeper.currentState().value == 7)
         let frame = try await f.frame0()
         let record = try #require(frame.initialize)
@@ -127,9 +126,9 @@ struct SyncStreamInitializeRecordTests {
         #expect(frame.lifecycleEvents.map(\.kind) == ["initialize"])
     }
 
-    @Test("With in-turn sync on, OnInitialize as a turn records an initialize marker at stream position 0")
+    @Test("OnInitialize as a turn records an initialize marker at stream position 0")
     func markerInTurn() async throws {
-        let f = try await InitRecordFixture.make(landPrefix: "init-marker-on", inTurn: true, transportBeforeInitialize: true)
+        let f = try await InitRecordFixture.make(landPrefix: "init-marker-on", transportBeforeInitialize: true)
         let frame = try await f.frame0()
         let record = try #require(frame.initialize)
         #expect(frame.syncMarkers == [
@@ -138,19 +137,9 @@ struct SyncStreamInitializeRecordTests {
         #expect(await f.keeper.syncStreamCounterForTesting() == 1)
     }
 
-    @Test("With in-turn sync off, nothing is numbered and no marker is recorded")
-    func noMarkerOff() async throws {
-        let f = try await InitRecordFixture.make(landPrefix: "init-marker-off", inTurn: false, transportBeforeInitialize: true)
-        let frame = try await f.frame0()
-        #expect(frame.initialize != nil)
-        #expect(frame.syncMarkers.isEmpty)
-        #expect(frame.syncOutputs.isEmpty)
-        #expect(await f.keeper.syncStreamCounterForTesting() == 0)
-    }
-
     @Test("OnInitialize before the adapter exists records no marker: it precedes every sync output")
     func initializeBeforeTransport() async throws {
-        let f = try await InitRecordFixture.make(landPrefix: "init-before-transport", inTurn: true, transportBeforeInitialize: false)
+        let f = try await InitRecordFixture.make(landPrefix: "init-before-transport", transportBeforeInitialize: false)
         let frame = try await f.frame0()
         #expect(frame.initialize != nil)
         #expect(frame.syncMarkers.isEmpty)
@@ -160,21 +149,19 @@ struct SyncStreamInitializeRecordTests {
 
 @Suite("Record header: recordsSyncStream")
 struct SyncStreamRecordHeaderTests {
-    @Test("LandManager writes version 2.1 and recordsSyncStream from the adapter's in-turn switch", arguments: [true, false])
-    func header(inTurn: Bool) async throws {
+    @Test("LandManager writes version 2.1 and recordsSyncStream")
+    func header() async throws {
         let manager = LandManager<InitRecordTestState>(
             landFactory: { _ in makeInitRecordLand() },
             initialStateFactory: { _ in InitRecordTestState() },
             enableLiveStateHashRecording: true,
-            inTurnSync: inTurn,
             syncLagPolicy: nil
         )
-        let landID = LandID(landType: "init-record-test", instanceId: "header-\(inTurn)")
+        let landID = LandID(landType: "init-record-test", instanceId: "header-true")
         let container = try await manager.getOrCreateLand(landID: landID, definition: makeInitRecordLand(), initialState: InitRecordTestState(), metadata: [:])
         let recorder = try #require(await container.keeper.getReevaluationRecorder())
         let metadata = try #require(await recorder.getMetadata())
         #expect(metadata.version == ReevaluationRecordVersion.current)
-        #expect(metadata.recordsSyncStream == inTurn)
-        #expect(metadata.recordsSyncStream == container.transportAdapter.inTurnSyncEnabled)
+        #expect(metadata.recordsSyncStream == true)
     }
 }

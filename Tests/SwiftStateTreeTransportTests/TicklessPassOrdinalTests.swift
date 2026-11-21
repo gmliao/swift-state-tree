@@ -68,7 +68,7 @@ struct OrdinalFixture {
     let keeper: LandKeeper<OrdinalState>
     let adapter: TransportAdapter<OrdinalState>
 
-    static func make(encoding: InTurnEncoding = .json, inTurn: Bool = true) async -> OrdinalFixture {
+    static func make(encoding: InTurnEncoding = .json) async -> OrdinalFixture {
         let keeper = LandKeeper<OrdinalState>(
             definition: makeOrdinalLand(),
             initialState: OrdinalState(),
@@ -80,8 +80,7 @@ struct OrdinalFixture {
             keeper: keeper,
             transport: transport,
             landID: "tickless-pass-ordinal-test",
-            encodingConfig: encoding.config,
-            inTurnSync: inTurn
+            encodingConfig: encoding.config
         )
         await transport.setDelegate(adapter)
         await keeper.awaitInitialization()
@@ -221,7 +220,6 @@ struct TicklessPassOrdinalTests {
         let passes = frames.flatMap(\.passes)
         #expect(!passes.isEmpty)
         #expect(passes.map(\.ordinal) == (1 ... Int64(passes.count)).map { Optional($0) })
-        // Without in-turn sync the stream isn't recorded (the legacy sync path).
         let stream = ReevaluationSyncStreamEntry.stream(of: frames)
         var readsAfter: [Int64] = []
         for entry in stream {
@@ -536,40 +534,5 @@ struct TicklessPassOrdinalTests {
         for (tickId, recorded) in result.recordedStateHashes {
             #expect(result.tickHashes[tickId] == recorded, "tick \(tickId)")
         }
-    }
-
-    @Test("Off in-turn sync, a failure applied as an input in a tickless pass ends that pass: its events are neither sent nor recorded, and replay drops them too")
-    func legacyTicklessFailureInsideAPass() async throws {
-        let f = await OrdinalFixture.make(inTurn: false)
-        #expect(await !f.keeper.isUsingInTurnSync())
-        try await f.join(1)
-        try await f.emit(1, 2)
-        // A server input and, behind it, a transport-reported failure: each kicks a pass, held
-        // at its start, so the first pass applies both, the input first.
-        let kick = TestGate()
-        await f.keeper.installHolds(HoldRegistry.at(.serverInputKick) { await kick.arrive() })
-        _ = await f.keeper.submitServerInput(OrdinalServerEmit(amount: 7))
-        #expect(await kick.waitForArrivals(1))
-        await f.keeper.submitLandFailure(LandFailure(
-            kind: .syncEncode, detail: "test failure", position: LandFailurePosition(stage: .syncPhase)
-        ))
-        kick.open()
-        await f.keeper.installHolds(nil)
-        #expect(await f.keeper.waitForFailureForTesting())
-
-        let frames = try await f.frames()
-        let failure = try #require(frames.compactMap(\.landFailure).first)
-        let lastPass = try #require(frames.flatMap(\.passes).last)
-        #expect(failure.position.endsInputs == true)
-        #expect(failure.position.pass.map(Int64.init) == lastPass.ordinal)
-        #expect(lastPass.inputs.count == 1, "the server input applied before the failure")
-        #expect(!frames.flatMap(\.serverEvents).contains { $0.sequence >= lastPass.sequenceBefore }, "the failing pass's events were recorded")
-
-        let result = try await f.replay()
-        #expect(result.liveFailure?.kind == .syncEncode)
-        #expect(result.serverEventVerification == .passed, "\(result.serverEventMismatches.map(\.tickId))")
-        #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
-        let hosted = try await f.replayHosted()
-        #expect(hosted.liveFailure?.kind == .syncEncode)
     }
 }
