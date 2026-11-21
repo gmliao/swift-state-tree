@@ -159,10 +159,21 @@ struct NestingBudgetTests {
         expectRefusal(.containers, limit: 1) { _ = try SnapshotValue.broadcastView(of: node, budget: NestingBudget(containers: 1, hops: 1)) }
     }
 
+    @Test("a container with no container left is refused at the root, before any cast looks inside")
+    func rootRefusal() {
+        // The shape whose root casts bridged the whole value on Linux (#716): refused at once.
+        expectRefusal(.containers, limit: 0) {
+            _ = try SnapshotValue.make(from: nestedAny(8), budget: NestingBudget(containers: 0, hops: 0))
+        }
+        #expect(throws: Never.self) { _ = try SnapshotValue.make(from: NSNull()) }
+        #expect((try? SnapshotValue.make(from: NSNull())) == .null, "a real NSNull still converts to null")
+    }
+
     @Test("a value far past the limit is refused before the conversion recurses deep (exit test)")
     func farPastTheLimitIsRefused() async {
         // With the container guard removed this overflows the child's stack: a mutant for the
-        // Linux host.
+        // Linux host. On Linux it also overflowed with the guard in place while `make` checked
+        // `value is NSNull`, which bridges a nested `[Any]` eagerly (#716).
         await #expect(processExitsWith: .success) {
             let deep = nestedAny(100_000)
             do {

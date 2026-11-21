@@ -397,7 +397,9 @@ public extension SnapshotValue {
         }
         
         // Priority 5: Handle basic types directly (no Mirror needed)
-        if value is NSNull {
+        // A metatype check, not `value is NSNull`: on Linux that cast bridges a Swift collection
+        // to `NSArray` element by element, which recursed through the whole nested value (#716).
+        if Swift.type(of: value) is NSNull.Type {
             return .null
         }
         switch value {
