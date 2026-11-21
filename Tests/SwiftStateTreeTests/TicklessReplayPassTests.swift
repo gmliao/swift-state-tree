@@ -690,7 +690,8 @@ struct TicklessReplayPassTests {
             case "duplicate":
                 all.append(ReevaluationRecordedPass(sequenceBefore: 1_000, inputs: all[0].inputs))
             default:
-                all.append(ReevaluationRecordedPass(sequenceBefore: -1, inputs: []))
+                // 0 is below every earlier pass's counter (the join took 0), and a sequence a live run can write (#729).
+                all.append(ReevaluationRecordedPass(sequenceBefore: 0, inputs: []))
             }
             record.passes = all
         }

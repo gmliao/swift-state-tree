@@ -320,8 +320,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         await keeper.awaitInitialization()
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
+        let initializeRecord = try await source.getInitializeRecord()
+        try ReevaluationEngine.checkTargets(of: initializeRecord?.serverEvents ?? [])
         initialize = ReevaluationEngine.verifyInitialize(
-            record: try await source.getInitializeRecord(),
+            record: initializeRecord,
             emitted: initializeEvents,
             state: stateAfterInitialize,
             hashDefinition: hashDefinition,

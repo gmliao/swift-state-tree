@@ -121,7 +121,7 @@ extension ReevaluationSource {
 
 // MARK: - Record content checks
 
-/// A record whose content isn't one a live run writes (#639, #640, #641). A source refuses it
+/// A record whose content isn't one a live run writes (#639, #640, #641, #729). A source refuses it
 /// when the record is opened, and a replay resolve when it reads the tick, so the replay run
 /// fails with the cause and the process goes on.
 public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
@@ -132,6 +132,13 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
     case tickIdOutOfRange(Int64)
     /// A recorded event target that `ReevaluationEventTargetRecord.from(_:)` doesn't write (#641).
     case malformedEventTarget(kind: String, idCount: Int)
+    /// A recorded output sequence (the initialize record's, or a sequence counter watermark) outside
+    /// `0 ..< Int64.max` (#729). A live keeper numbers from 0 and can't record `Int64.max`: taking
+    /// the next number from it would overflow first.
+    case sequenceOutOfRange(Int64)
+    /// A sync output's or seed marker's `afterPass` below 0 (#729). A live tickless land numbers
+    /// its passes from 1 and records 0 before the first.
+    case afterPassOutOfRange(Int64)
 
     public var description: String {
         switch self {
@@ -141,6 +148,10 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
             "the record holds a frame for tick \(tickId), outside the ticks a live run writes (0 ..< \(Int64.max))"
         case let .malformedEventTarget(kind, idCount):
             "a recorded event target of kind '\(kind)' with \(idCount) IDs; a live run writes 'all' with none, 'player', 'client' or 'session' with one, and 'players' with any number"
+        case .sequenceOutOfRange(let sequence):
+            "the record holds the output sequence \(sequence), outside the sequences a live run writes (0 ..< \(Int64.max))"
+        case .afterPassOutOfRange(let afterPass):
+            "the record holds a sync entry that read after pass \(afterPass); a live run writes 0 or more"
         }
     }
 
@@ -150,8 +161,8 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
 
 enum ReevaluationRecordContentCheck {
     /// The frames indexed by tick. Throws at the first frame, in record order, whose tick is out
-    /// of range or is already indexed.
-    static func tickIndex(_ frames: [ReevaluationTickFrame]) throws -> [Int64: ReevaluationTickFrame] {
+    /// of range or is already indexed, or that holds a sequence or pass ordinal out of range (#729).
+    static func checkedIndex(_ frames: [ReevaluationTickFrame]) throws -> [Int64: ReevaluationTickFrame] {
         var index: [Int64: ReevaluationTickFrame] = [:]
         index.reserveCapacity(frames.count)
         for frame in frames {
@@ -161,8 +172,31 @@ enum ReevaluationRecordContentCheck {
             guard index.updateValue(frame, forKey: frame.tickId) == nil else {
                 throw ReevaluationRecordContentError.duplicateTickId(frame.tickId)
             }
+            try checkNumbers(of: frame)
         }
         return index
+    }
+
+    /// Throws when a sequence or pass ordinal of `frame` is one a live run can't write, before
+    /// replay does arithmetic on it: the next sequence after `Int64.max`, or the pass before an
+    /// `afterPass` of `Int64.min`.
+    private static func checkNumbers(of frame: ReevaluationTickFrame) throws {
+        func sequence(_ value: Int64?) throws {
+            if let value, value < 0 || value == Int64.max {
+                throw ReevaluationRecordContentError.sequenceOutOfRange(value)
+            }
+        }
+        func afterPass(_ value: Int64?) throws {
+            if let value, value < 0 {
+                throw ReevaluationRecordContentError.afterPassOutOfRange(value)
+            }
+        }
+        try sequence(frame.initialize?.sequence)
+        try sequence(frame.sequenceBeforeInputs)
+        try sequence(frame.sequenceBeforeTickHandler)
+        for pass in frame.passes { try sequence(pass.sequenceBefore) }
+        for output in frame.syncOutputs { try afterPass(output.afterPass) }
+        for marker in frame.syncMarkers { try afterPass(marker.afterPass) }
     }
 }
 
@@ -220,8 +254,8 @@ public actor JSONReevaluationSource: ReevaluationSource {
         let frames = recordFile.tickFrames
         
         self.frames = frames
-        // A record is untrusted input: a duplicate or out-of-range tick throws, it never traps (#639, #640).
-        self.framesByTickId = try ReevaluationRecordContentCheck.tickIndex(frames)
+        // A record is untrusted input: a duplicate tick or an out-of-range number throws, it never traps (#639, #640, #729).
+        self.framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(frames)
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         // Every 2.x record is older than 3.3 (#446).
         self.holdsNonNFCText = Self.holdsNonNFCText(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
@@ -241,14 +275,15 @@ public actor JSONReevaluationSource: ReevaluationSource {
     /// Initialize from tick frames (for testing). The frames are taken as this build's: their
     /// text is not scanned, and `getHoldsNonNFCText()` is false.
     ///
-    /// - Precondition: every frame's tick is in `0 ..< Int64.max`, and no two frames share a
-    ///   tick. The frames come from code, so a frame that breaks this stops the process; a record
-    ///   read from bytes or a file throws instead (#639).
+    /// - Precondition: every frame's tick is in `0 ..< Int64.max`, no two frames share a tick,
+    ///   and no sequence or `afterPass` in them is out of range (`ReevaluationRecordContentError`).
+    ///   The frames come from code, so a frame that breaks this stops the process; a record read
+    ///   from bytes or a file throws instead (#639, #729).
     public init(metadata: ReevaluationRecordMetadata, frames: [ReevaluationTickFrame]) {
         self.metadata = metadata
         self.frames = frames
         do {
-            self.framesByTickId = try ReevaluationRecordContentCheck.tickIndex(frames)
+            self.framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(frames)
         } catch {
             preconditionFailure("JSONReevaluationSource(metadata:frames:): \(error)")
         }
@@ -339,8 +374,8 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
         let contents = try ReevaluationRecordLogReader.read(bytes)
         metadata = contents.metadata
         frames = contents.frames
-        // The assembler merges one tick's records into one frame, so only the range can fail here.
-        framesByTickId = try ReevaluationRecordContentCheck.tickIndex(contents.frames)
+        // The assembler merges one tick's records into one frame, so a duplicate can't fail here.
+        framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(contents.frames)
         maxTickId = contents.frames.map(\.tickId).max() ?? -1
         completeness = contents.completeness
         holdsNonNFCText = contents.holdsNonNFCText
