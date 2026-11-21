@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot 同步模式
 
-> 本節與[同步流程](#同步流程)描述的是 keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑：在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。在移除之前，re-evaluation 的 keeper 與測試仍會用到這個 cycle。
+> 本節與[同步流程](#同步流程)描述的是 keeper 的 legacy 路徑，也就是 `beginSync` / `endSync` cycle。`TransportAdapter` 已不再走這條路徑：在 live land 上，sync phase 在 keeper 自己的 turn 內執行，見 [In-Turn Sync](#in-turn-sync預設)。在 #546 L2d 移除它之前，只有測試與直接呼叫公開 `beginSync` 的程式碼仍會用到這個 cycle。
 
 `LandKeeper` 使用 snapshot 模式進行同步，這是一個非阻塞的設計：
 

@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot Sync Mode
 
-> This section and [Sync Flow](#sync-flow) describe the keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it: on a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default). Re-evaluation keepers and tests still reach the cycle until it is removed.
+> This section and [Sync Flow](#sync-flow) describe the keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it: on a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default). Only tests and direct callers of the public `beginSync` still reach the cycle, until #546 L2d removes it.
 
 `LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
 
