@@ -1,6 +1,17 @@
 # Turn core: one timer for all deadlines (#621 item 2)
 
-**Status:** Rev 1, plan only, for review.
+**Status:** Rev 2, plan only, for review (rev 1 GO on shape; Q2 overturned).
+
+## Rev 2: what changed
+
+Review gave rev 1 GO on the shape and the semantics. Changes:
+- **Q2 overturned (§3.6, test 8).** The per-wake cap is a fixed internal constant, `maxFiresPerWake = 64`, not `maxReleasesPerBatch`. That knob bounds parked releases per batch, and reusing it would couple release fairness to timer fairness.
+- **Decided:** Q3 (fire on `target`, no clock read), Q4 (internal constants: rebuild at half, with a floor of 64), Q5 (`park-64` as a recorded cell, its own commit), Q6 (keep `.staleDeadline`/`.staleTimer`; the docs say compacted or `endAll`-dropped entries emit nothing), Q7 (timers in scope). Q1 is the one open question.
+- **Should 1 (§1.2, §3.4, §6).** `TurnClock.sleep(until:)`'s doc contract becomes "returns no earlier than the instant unless cancelled", and so does the WorkedExample clock's comment. The wake fires on `target` without reading the clock, so a clock that returned early would fire deadlines early.
+- **Should 2 (§3.1, test 12, §4.5).** A DEBUG `liveTimerInputsForTesting` count, pinned by a test: a replaced or dropped timer releases its input at once (the retention class of `ScheduledThreadPoolExecutor`'s lazy cancel).
+- **Should 3 (test 9, §4.5).** Test 9 asserts the wasted hop when a rebuild removes the sleeper's target. The wake finds nothing due, re-sleeps to the new head and emits no stale diagnostic. Two mutants, "re-arm on rebuild" and "drop the next target", must fail it.
+- **Should 4 (§4.1).** `TestClock.set(seconds:)` must not move `now` backwards; it asserts.
+- **Nit (§3.7, §3.8, §7).** `endAll`'s stop runs inside its step. §3.8 and step 2 now say so: the heap changes only in actor-isolated synchronous code, between steps, with that one terminal exception.
 
 Code references are at `origin/main` `311d540a`. The post lane (#725, PR #738) is open and not on that SHA; §3.9 says what changes when it lands first.
 
@@ -28,7 +39,7 @@ A request and a gate share one id space (`rt.nextRequest`), and ids are never re
   - `core.deadlineTasks: [RequestID: Task<Void, Never>]` is at `TurnCore.swift:161`, with the package test hook `deadlineTasksForTesting` at `:163`.
   - `core.timerTasks: [M.Key: (generation:, task:)]` is at `:172`.
 - **Who owns the actor.** Every sleeping task holds the actor weakly, so a periodic timer doesn't outlive the actor. The protocol doc says so (`TurnActor.swift:5–9`).
-- **What the sleep is.** The sleep is the injected `TurnClock.sleep(until:)` (`Values.swift:205–213`). It returns at the instant, or earlier when its task is cancelled. SwiftStateTurns doesn't depend on SwiftStateTree, so it can't call `safeTaskSleep` itself. A production adopter's clock sleeps with it (`WorkedExample.md:153–167`).
+- **What the sleep is.** The sleep is the injected `TurnClock.sleep(until:)` (`Values.swift:205–213`). It returns at the instant, or earlier when its task is cancelled (rev 2 tightens the doc to "no earlier than the instant unless cancelled", §6). SwiftStateTurns doesn't depend on SwiftStateTree, so it can't call `safeTaskSleep` itself. A production adopter's clock sleeps with it (`WorkedExample.md:153–167`).
 
 ### 1.3 Cancellation and abandonment
 
@@ -239,9 +250,9 @@ The ticket is the request id or the timer generation. Neither is ever reused in 
 ### 3.6 The per-wake cap
 
 A wake steps at most `maxFiresPerWake` due entries, and then returns `target` itself as the next target. The sleeper's sleep returns at once and hops again, so other entries queued on the actor run in between.
-- **Why.** Without it, ten thousand deadlines at one instant would run ten thousand batches in one actor job. That is the starvation `maxReleasesPerBatch` prevents for releases.
+- **Why.** Without it, ten thousand deadlines at one instant would run ten thousand batches in one actor job. That is the same starvation that `maxReleasesPerBatch` prevents for releases, but the two bounds stay separate.
 - **Who owns the rest.** The remainder has an owner, the returned target, so a capped wake can't strand it (`Notes/solutions/2026-11-20-a-budget-break-strands-the-work-kinds-after-it.md`).
-- **The value.** Proposed: `maxReleasesPerBatch`, the knob an adopter already sets for "how much one job may step" (Q2).
+- **The value.** `maxFiresPerWake = 64`, a fixed internal constant (decided, rev 2). It isn't `maxReleasesPerBatch`: that knob bounds parked releases per batch, and tying the two would make release fairness and timer fairness move together. It isn't public; a later need for a knob is its own change.
 
 ### 3.7 Stop, end and lifetime
 
@@ -259,7 +270,7 @@ A wake steps at most `maxFiresPerWake` due entries, and then returns `target` it
 
 The sleeper is outside a turn. It holds no state, and its only act is the hop.
 - **Two tickets.** Its wake carries the incarnation and the sleeper generation, which are checked first. Each entry carries the request id or timer generation, which is checked in the batch that would act on it, the same segment as the act.
-- **No mutation outside a turn.** No keeper or machine state is mutated outside a turn. The heap is driver state, and only actor-isolated synchronous code changes it, between steps.
+- **No mutation outside a turn.** No keeper or machine state is mutated outside a turn. The heap is driver state, and only actor-isolated synchronous code changes it: the driver between steps (`armDeadline`, `timerWoke`, compaction), with one exception. `Turn.endAll` empties the heap and cancels the sleeper from inside its step (§3.7). That is synchronous, isolated and terminal: no later step can arm an entry, and touching the heap from a step reads no machine state.
 
 This adds no exception to `CLAUDE.md`'s list.
 
@@ -288,7 +299,7 @@ The clock is already injected (`TurnClock`, `TestClock`), so no new seam is need
 - **The new model, after `swift-clocks`' `TestClock`.**
   - `release(through: TurnInstant)` raises a horizon and wakes every sleep whose instant is at or before it, in instant order. A later sleep until an instant at or before the horizon returns at once.
   - `advance(to:)` is `set` plus `release(through:)`.
-  - `set(seconds:)` stays: it moves `now` only, for "the fire ran late" (27).
+  - `set(seconds:)` stays: it moves `now` only, for "the fire ran late" (27). It never moves `now` backwards: a set below the current `now` stops the test (`precondition`, with the two values in the message). `advance(to:)` checks the same. Test 30, which set 2 and then 3, already moves forward; any site found moving back is fixed in the commit that converts it.
   - The `"woke deadline N"`, `"cancelled deadline N"` events stay. A sleep counter (`sleeps`, and `sleepsInFlight`) is added.
   - A hold point: `holdAfterWake(N)` makes the sleep that wakes for N wait at `"resume deadline N"` (cancellable) before it returns. That forces a woken sleeper's hop to land after other entries.
 - **The call sites.** Every `f.open("deadline N")` becomes `clock.release(through: .seconds(N))`, or `advance(to:)` where the test also set `now`. That is about 30 sites in the files of §1.5.
@@ -321,10 +332,12 @@ The clock is already injected (`TurnClock`, `TestClock`), so no new seam is need
 5. **An abandoned request's deadline never fires, for each closer**: `cancel`, `end`, a supersede, a completion, `endAll`, and a request closed in the step that made it. Each is closed before the release, and nothing steps for it at the release (`.staleDeadline`, or nothing for `endAll`). The completion case also runs with the wake held after waking (`holdAfterWake`) and the completion landing before it resumes: the close and the wake's re-check meet in that order.
 6. **The re-check is per entry.** A and B are due at 5, and `handleAbandoned(A)` cancels B. B is stale at its turn: no second abandonment, `.staleDeadline` once.
 7. **Inserts during a wake aren't due in it.** A's abandonment step makes a request with deadline 0 s (instant = the batch's now, at or before the wake's target in the test clock). It isn't stepped in A's wake: the next sleep is for its instant (`sleeps` goes up), and it fires on that wake.
-8. **The cap.** `maxReleasesPerBatch: 2` and five deadlines at 5: the first wake steps two, and a send queued by A's flush steps before the third. The wake count is 3 (a package counter).
+8. **The cap.** 66 deadlines at 5, on the demo actor (`maxReleasesPerBatch: 16`): the first wake steps 64, and a send queued by the first one's flush steps before the 65th. The wake count is 2 (a package counter). A second run with `maxReleasesPerBatch: 1` gives the same 64, so the cap doesn't follow the release knob.
 9. **Compaction.** Arm and cancel 200 deadlines at 3600 s, one live at 10 s in the middle: the heap count stays at or below `max(64, 2 × live) + 1` throughout, and the live one still fires at 10. Mixed instants after a rebuild still fire in order.
+   - **The wasted hop.** A variant makes the sleeper's target a stale entry at 5 (arm 5, arm 10, cancel 5, then enough arm-and-cancel at 3600 s to trigger a rebuild). The rebuild removes 5, and the sleeper isn't re-armed: `sleeperStartsForTesting` stays 1, and no `"cancelled deadline 5"`. Releasing through 5 gives one wake (`timerWakesForTesting` up by 1) that steps nothing and emits no `.staleDeadline`, because the entry is gone. The next sleep is for 10 (`"deadline 10"` is the next sleep's gate). Releasing through 10 fires the live one.
 10. **`endAll` stops the timer.** Live deadlines and a timer, then `endAll`: heap 0, the sleeper cancelled, and releasing through every instant steps nothing.
 11. **A periodic timer reuses the sleeper.** A 2 s periodic timer over five fires: `sleeperStartsForTesting == 1`, `sleeps == 5`.
+12. **A replaced or dropped timer releases its input at once.** Arm a timer, replace it, arm another key's timer and end that key, then supersede a third. After each step, the DEBUG `liveTimerInputsForTesting` equals the number of current timers, while the stale heap entries are still there (`deadlines.count` larger). So no stale entry holds an input until its instant or a compaction. It is `#if DEBUG`, like `gateLaunchesForTesting`.
 
 ### 4.4 GeneratedOrder
 
@@ -349,11 +362,13 @@ Time becomes monotonic in the harness. Two ops change, `deadline` (`:284–288`)
 | the cap removed | 8 |
 | the capped wake returns the next instant instead of `target` (remainder stranded) | 8 (the hang bound) |
 | compaction keeps nothing, or drops live entries | 9 |
+| a rebuild that re-arms the sleeper when it removes the target | 9's wasted-hop variant (`sleeperStartsForTesting == 2`, `"cancelled deadline 5"`) |
+| a wake that finds nothing due drops the next target (returns nil and ends the sleeper) | 9's wasted-hop variant (the live entry at 10 never fires; the hang bound fails it) |
 | compaction never runs | 9 (the count bound) |
 | `endAll` leaves the heap and sleeper | 10, OrderedChecks 18 |
 | the sleeper captures the actor strongly | Lifetime `timerDoesNotRetain` |
 | a cancelled wake exits without hopping | FollowUp 34 (no foreign deadline) |
-| a timer's input kept on the heap entry instead of `rt.timers` | none by behavior: Review checks it. A debug-only `liveTimerInputsForTesting` count could pin it if Review asks. |
+| a timer's input kept on the heap entry instead of `rt.timers` (released only at its instant or a compaction) | 12 |
 | the sweeps left in (dead code) | none by behavior: the §5 gated cells |
 
 The suite runs in all three modes (`swift test`, the release mode with `-DTURNS_EXCLUSIVITY_CHECKED`, and the release default), with the generated-order fixed seeds and a `TURNS_SEEDS=2000` local run reported in the PR.
@@ -374,7 +389,7 @@ The suite runs in all three modes (`swift test`, the release mode with `-DTURNS_
 - **Target: `park`** must fall by at least 2,000 instr/op and by more than 3 × the base's spread. The expectation is about the step-0 share minus the heap's cost: roughly 100–200 instructions per op for the push, plus the amortized compaction.
 - **Gated, must not regress** (head above base by more than max(0.5 %, 3 × base's spread)): `idle` (the control), `emit`, `call`, `request`, `read1`. `emit` and `call` should fall slightly, by the two per-segment sweep checks.
 - **Recorded:** `follow-up`, `follow-up-join`, `held-lookup`. A rise is explained in the PR.
-- **New, recorded (optional, Q5):** `park-64`, 64 holds outstanding then released, per hold. It shows the heap at more than one live entry. It needs a second bench machine input, so it is its own commit.
+- **New, recorded (decided):** `park-64`, 64 holds outstanding then released, per hold. It shows the heap at more than one live entry. It needs a second bench machine input, so it is its own commit.
 
 The PR body carries the table with both SHAs and both `swift --version` outputs.
 
@@ -384,10 +399,10 @@ No public declaration is added, removed or changed. Behavior and documentation c
 - **`TurnDiagnostic.staleDeadline` and `.staleTimer`** (`TurnCore.swift:38–43`). Their doc comments change: "the core's timer reached the entry of a request, follow-up gate or timer that had already closed or been replaced, and did nothing".
   - A closed request no longer wakes a sleep early, so the diagnostic comes at the entry's instant, or never: compacted, or dropped by `endAll`.
   - Code that waits for `.staleDeadline` right after a cancel would now wait until the instant. In this repository that is only the tests in §4.2.
-- **`TurnClock`** (`Values.swift:205–213`). Its contract is unchanged. A core has at most one sleep in flight, plus a superseded one finishing, instead of one per deadline and timer. Cancelling a request no longer cancels a sleep. One sentence goes into its doc comment.
+- **`TurnClock`** (`Values.swift:205–213`). The sleep's doc contract is tightened to "returns no earlier than `instant`, unless its task is cancelled". The WorkedExample clock's comment (`WorkedExample.md:156`) says the same, and its `Task.sleep(until:clock:)` already meets it. The wake fires on its target without reading the clock (§3.4), so a clock that returned early would fire deadlines early. Today's per-deadline tasks relied on the same thing without stating it. A core has at most one sleep in flight, plus a superseded one finishing, instead of one per deadline and timer. Cancelling a request no longer cancels a sleep. One sentence goes into its doc comment.
 - **Order.** Deadlines and timers fire in instant order, entries at one instant in arm order, each in its own batch, and up to the cap with no other entry between them. The docs gain this, in `docs/turns/README.md` § "Timers and the clock" and its `.zh-TW.md`, in the DocC `CoreConcepts.md`, and in `TurnActor`'s protocol doc (`TurnActor.swift:5–9`: "a deadline's or a timer's task" becomes "the core's timer task").
-- **Package (not public).** `deadlineTasksForTesting` is removed. Added: `liveDeadlinesForTesting`, `sleeperStartsForTesting`, `supersededWakesForTesting`, `timerWakesForTesting`.
-- **No new `TurnStats` field and no new `TurnDiagnostic` case.** The tests use package hooks (Q6).
+- **Package (not public).** `deadlineTasksForTesting` is removed. Added: `liveDeadlinesForTesting`, `sleeperStartsForTesting`, `supersededWakesForTesting`, `timerWakesForTesting`, and the DEBUG `liveTimerInputsForTesting`.
+- **No new `TurnStats` field and no new `TurnDiagnostic` case** (decided, rev 2). The tests use package hooks. The diagnostics' docs say that a compacted or `endAll`-dropped entry emits nothing.
 
 The PR body's "Public API" section lists the two diagnostics' doc changes and the `TurnClock` sentence as behavior changes, with "no source break".
 
@@ -395,21 +410,17 @@ The PR body's "Public API" section lists the two diagnostics' doc changes and th
 
 One SwiftStateTurns PR (core path), after step 0's numbers and the maintainer's go (Q1). The commits:
 1. `DeadlineHeap` and its unit tests.
-2. Request and gate deadlines on the one timer: the core state, `armDeadline`, `timerWoke`, compaction, `endAll` and deinit. The sweeps for deadlines are removed. `TestClock`'s monotonic model, the request and gate tests of §4.2, and new tests 2–10 without the timer parts.
+2. Request and gate deadlines on the one timer: the core state, `armDeadline`, `timerWoke`, compaction, the stop from inside `Turn.endAll`'s step (§3.7, §3.8), and deinit. The sweeps for deadlines are removed. `TestClock`'s monotonic model, the request and gate tests of §4.2, and new tests 2–10 without the timer parts.
 3. Timers on the same timer: `rt.timers` with the input, `rt.timerKeys`, the timer sweep removed, the timer tests of §4.2, and new test 11.
 4. GeneratedOrder's monotonic ops and `OrderModel`'s relative timer instants.
 5. Docs (§6) and, if the work turns one up, a `Notes/solutions` entry with its index row. A likely candidate: "a test clock with independent per-instant gates can't drive a single sleeper". Plus the plan index row.
 
-Optional commit 6: the `park-64` bench (Q5).
+Commit 6: the `park-64` bench, a recorded cell (decided, rev 2).
 
 It can land before or after #738. Whichever is second adapts the entry table (§3.9).
 
 ## 8. Questions for the maintainer
 
-1. **The issue's gate.** #621 says items 2–4 wait for an A/B showing that an adopter puts holds or requests on a hot path. No adopter on `main` uses `TurnCore` deadlines yet (#546 is moving the keeper and the transport). Proceed now, as foundation work, if step 0 shows at least 2k instr/op? Or wait for the adopter's numbers?
-2. **The per-wake cap.** Proposed: `maxReleasesPerBatch`. Alternatives: a fixed internal 64, or no cap.
-3. **The due rule.** Fire entries at or before the slept-for `target` (recommended: no clock read, clock-read counts unchanged, one extra immediate hop per distinct late instant)? Or at or before `clock.now`, which costs one read per wake and changes the clock-read counts?
-4. **Compaction constants.** A floor of 64 stale entries, and rebuild when stale ≥ half the heap (Go uses a quarter). Keep them as internal constants?
-5. **`park-64`.** Add the bench cell, or record `park` only?
-6. **Diagnostics.** Keep `.staleDeadline`/`.staleTimer` with the new meaning (recommended, no API change)? Or add a public case for a compacted or superseded entry, which is an additive enum case and a switch break for adopters that switch exhaustively?
-7. **Timers in scope.** They are commit 3 here, recommended, so a core has one sleeping mechanism. The alternative is a follow-up PR, which leaves per-key timer tasks for now.
+1. **The issue's gate (open).** #621 says items 2–4 wait for an A/B showing that an adopter puts holds or requests on a hot path. No adopter on `main` uses `TurnCore` deadlines yet (#546 is moving the keeper and the transport). Main recommends: review now, implement after L2d-3, with step 0's attribution as the first act and its 2k instr/op floor as the stop rule.
+
+Decided in rev 2: Q2 (overturned: a fixed internal 64 per wake), Q3 (fire on `target`), Q4 (internal constants: half, with a floor of 64), Q5 (`park-64` recorded, its own commit), Q6 (keep the diagnostics, no new case), Q7 (timers in this PR, commit 3).
