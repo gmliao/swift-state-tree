@@ -89,6 +89,6 @@ struct FullStateSnapshotExpansionTests {
         #expect(body.contains("public func toFullSnapshotValue() throws -> SnapshotValue { try toFullSnapshotValue(budget: NestingBudget()) }"))
         #expect(body.contains("\"count\": try SnapshotValue.makeFull(from: self.count as Any, budget: inner)"))
         #expect(body.contains("\"node\": try SnapshotValue.makeFull(from: self.node as Any, budget: inner)"))
-        #expect(body.contains("\"count\": SnapshotValue.unsigned(count)"), "UInt64 converts losslessly")
+        #expect(body.contains("\"count\": SnapshotValue.unsigned(self.count)"), "UInt64 converts losslessly")
     }
 }

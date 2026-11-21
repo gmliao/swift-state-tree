@@ -31,9 +31,9 @@ final class SnapshotConvertibleMacroTests {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                     let inner = try budget.enteringContainer()
                 return .object([
-                    "name": .string(name),
-                    "hpCurrent": .int(hpCurrent),
-                    "hpMax": .int(hpMax)
+                    "name": .string(self.name),
+                    "hpCurrent": .int(self.hpCurrent),
+                    "hpMax": .int(self.hpMax)
                 ])
                 }
 
@@ -159,8 +159,8 @@ final class SnapshotConvertibleMacroTests {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                     let inner = try budget.enteringContainer()
                 return .object([
-                    "players": try SnapshotValue.make(from: players, budget: inner),
-                    "round": .int(round)
+                    "players": try SnapshotValue.make(from: self.players, budget: inner),
+                    "round": .int(self.round)
                 ])
                 }
 
@@ -227,7 +227,7 @@ final class SnapshotConvertibleMacroTests {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                     let inner = try budget.enteringContainer()
                 return .object([
-                    "count": try SnapshotValue.make(from: count, budget: inner)
+                    "count": try SnapshotValue.make(from: self.count, budget: inner)
                 ])
                 }
 
@@ -287,8 +287,8 @@ final class SnapshotConvertibleMacroTests {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                     let inner = try budget.enteringContainer()
                 return .object([
-                    "name": try SnapshotValue.make(from: name, budget: inner),
-                    "score": .int(score)
+                    "name": try SnapshotValue.make(from: self.name, budget: inner),
+                    "score": .int(self.score)
                 ])
                 }
 
@@ -359,9 +359,9 @@ final class SnapshotConvertibleMacroTests {
                 public func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
                     let inner = try budget.enteringContainer()
                 return .object([
-                    "name": .string(name),
-                    "hpCurrent": .int(hpCurrent),
-                    "hpMax": .int(hpMax)
+                    "name": .string(self.name),
+                    "hpCurrent": .int(self.hpCurrent),
+                    "hpMax": .int(self.hpMax)
                 ])
                 }
 
