@@ -281,7 +281,7 @@ struct MembershipModelTests {
         // (e) A generation passed in: the transport registration still runs, and the passed
         //     one is the one kept.
         transport.connect(12)
-        let suppliedResult = outcome(await register(12, 120, "", generation: 77).result)
+        let suppliedResult = outcome(await boundedResult(register(12, 120, "", generation: 77)))
         let afterSupplied = await a.snapshot()
         let mapAfterSupplied = transport.sessions(of: 120)
         transport.disconnect(12)
@@ -378,7 +378,7 @@ struct MembershipModelTests {
 
         // (e) A member's disconnect while other membership work is in flight: its leave keeps
         //     its place, behind a registration that was already queued.
-        let fifthResult = outcome(await join(5, 50, "", .callerAdmits).result)
+        let fifthResult = outcome(await boundedResult(join(5, 50, "", .callerAdmits)))
         a.transport.connect(6)
         await a.send(.txn(9, gate: "x9"))
         let registration = Task {
@@ -394,7 +394,7 @@ struct MembershipModelTests {
         let keeperAfterFifth = keeper.players
 
         // (f) A queued leave outlives `close`.
-        let sixthResult = outcome(await join(7, 70, "", .insertThenAdmit).result)
+        let sixthResult = outcome(await boundedResult(join(7, 70, "", .insertThenAdmit)))
         await a.send(.txn(8, gate: "x8"))
         await a.send(.disconnect(7))
         await a.send(.shutdown)
@@ -453,11 +453,11 @@ struct MembershipModelTests {
         }
 
         // (a) No leave is due: answered in the disconnect's own step.
-        let noneResult = outcome(await disconnect(99).result)
+        let noneResult = outcome(await boundedResult(disconnect(99)))
 
         // (b) A member's disconnect arrives behind a transaction in flight: its caller waits,
         //     and is answered after the leave ran against the keeper.
-        let firstResult = outcome(await join(1, 10, "", .callerAdmits).result)
+        let firstResult = outcome(await boundedResult(join(1, 10, "", .callerAdmits)))
         await a.send(.txn(9, gate: "x9"))
         let firstLeft = disconnect(1)
         await a.waitForLog(6)
@@ -471,9 +471,9 @@ struct MembershipModelTests {
         // (c) A stop: three sessions' disconnects arrive in an order of their own, behind work
         //     in flight. Each is awaited, and each is answered after its leave.
         let joinResults = [
-            outcome(await join(5, 50, "", .callerAdmits).result),
-            outcome(await join(6, 60, "", .insertThenAdmit).result),
-            outcome(await join(7, 70, "", .admitAtInsert).result),
+            outcome(await boundedResult(join(5, 50, "", .callerAdmits))),
+            outcome(await boundedResult(join(6, 60, "", .insertThenAdmit))),
+            outcome(await boundedResult(join(7, 70, "", .admitAtInsert))),
         ]
         await a.send(.txn(8, gate: "x8"))
         let left7 = disconnect(7)
@@ -506,8 +506,8 @@ struct MembershipModelTests {
         //     the adapter ends. The caller is answered by the ending step. The worker returns
         //     afterwards and reports that it joined, so its stale completion asks for a
         //     compensating leave, which the ended core can't make.
-        let secondResult = outcome(await join(2, 20, "", .insertThenAdmit).result)
-        let fourthResult = outcome(await join(4, 40, "", .callerAdmits).result)
+        let secondResult = outcome(await boundedResult(join(2, 20, "", .insertThenAdmit)))
+        let fourthResult = outcome(await boundedResult(join(4, 40, "", .callerAdmits)))
         let third = join(3, 30, "j3", .callerAdmits)
         await f.reach("at j3")
         let left2 = disconnect(2)
@@ -524,7 +524,7 @@ struct MembershipModelTests {
 
         // (f) A member's disconnect that arrives after the end queues nothing and is answered
         //     at once.
-        let lateResult = outcome(await disconnect(4).result)
+        let lateResult = outcome(await boundedResult(disconnect(4)))
         let s = await a.snapshot()
 
         let results = [noneResult, firstResult, firstLeftResult] + joinResults + stopResults
