@@ -138,11 +138,7 @@ let diffScenarios: [DiffScenario] = [
     // admission has flipped the join and sent its reply before the router reaches the hold; on
     // a tick land the flip waits for the tick that applies OnJoin.
     routerRow("disconnect-after-admit", hold: .afterAdmit, cells: .all, joinReply: .none,
-              joinReplyIn: { $0.sync == .inTurn && $0.land == .tickless ? .reply : nil }, admitted: true),
-    // Only on the path without the in-turn flip: the reply goes to a removed session.
-    routerRow("disconnect-sending-join-response", hold: .sendingJoinResponse, cells: .legacyOnly, joinReply: .none, admitted: true),
-    // The reply was sent; the initial sync is for a player the leave removed.
-    routerRow("disconnect-sending-initial-sync", hold: .sendingInitialSync, cells: .legacyOnly, joinReply: .reply, admitted: true),
+              joinReplyIn: { $0.land == .tickless ? .reply : nil }, admitted: true),
     // The pre-admission case: the disconnect ends the attempt before it is queued, so the
     // queued join is refused as stale; neither OnJoin nor OnLeave runs.
     DiffScenario(
@@ -209,7 +205,7 @@ let diffScenarios: [DiffScenario] = [
     // OnJoin there), so OnJoin's turn can't run after the registration and flip the join first.
     DiffScenario(
         name: "disconnect-at-registration",
-        cells: .inTurnOnly,
+        cells: .all,
         steps: witnessJoins + [
             .connect("A", session: "s-a"),
             .arm(.adapter(.keeperJoinReturned)),
@@ -311,7 +307,7 @@ let diffScenarios: [DiffScenario] = [
     // Mutant: drop the writer-drain retry's turn; B's frames never come.
     DiffScenario(
         name: "join-during-writer-backlog",
-        cells: .inTurnOnly,
+        cells: .all,
         steps: [
             .connect("A", session: "s-a"),
             .join("A", player: "pa"),
