@@ -40,7 +40,7 @@ await withTaskGroup(of: Void.self) { group in
 
 ### Snapshot Sync Mode
 
-> This section and [Sync Flow](#sync-flow) describe the legacy path, the `beginSync` / `endSync` cycle. On a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default).
+> This section and [Sync Flow](#sync-flow) describe the keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it: on a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default). Re-evaluation keepers and tests still reach the cycle until it is removed.
 
 `LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
 
@@ -439,11 +439,11 @@ In-turn sync can't be turned off. The `IN_TURN_SYNC` environment variable was it
 
 ### Writer Back-Pressure
 
-Each adapter sends through one ordered outbound writer. While the writer still holds a sync cycle's frames from an earlier cycle, a new cycle is skipped before it takes its copy: nothing is planned, the dirty flags and queued events stay, and the next cycle diffs against the last state sent, so it carries every change. On a land with periodic sync that is its next periodic cycle; a land without one gets one retry once the writer has drained. Overload thus turns into skipped cycles instead of a growing queue. Event and action-response frames are not held back. With in-turn sync a skipped phase is counted as a deferred turn; the transport profiler reports both (see [Transport](../transport/README.md#profiling)).
+Each adapter sends through one ordered outbound writer. While the writer still holds a sync cycle's frames from an earlier cycle, a new cycle is skipped before it takes its copy: nothing is planned, the dirty flags and queued events stay, and the next cycle diffs against the last state sent, so it carries every change. On a land with periodic sync that is its next periodic cycle; a land without one gets one retry once the writer has drained. Overload thus turns into skipped cycles instead of a growing queue. Event and action-response frames are not held back. A skipped phase is counted as a skip and as a deferred turn; the transport profiler reports both (see [Transport](../transport/README.md#profiling)).
 
 ### Sync Flow
 
-> The legacy path, the `beginSync` / `endSync` cycle.
+> The keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it.
 
 Synchronization uses snapshot mode, doesn't block state changes:
 
@@ -467,7 +467,7 @@ public func endSync() {
 }
 ```
 
-Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `TransportAdapter` passes `clearDirtyFlags: false` for broadcast-only cycles (they do not diff per-player fields) and when dirty tracking is disabled. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
+Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
 
 ### Sync Deduplication
 

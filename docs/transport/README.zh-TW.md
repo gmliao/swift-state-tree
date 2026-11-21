@@ -254,7 +254,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `syncCycles` | commit 了 plan 的 sync cycle（兩種路徑皆計）：其他計數器的分母 |
 | `syncSkipsBacklog` | 因 writer back-pressure 而略過的 cycle |
 | `syncDeferredTurns` | `syncSkipsBacklog` 中：因 back-pressure 而延後的 in-turn sync phase |
-| `syncSkipsBusy` | 因已有 cycle 進行中而被拒的請求（legacy 路徑；in-turn 的請求是一個 turn，不會被拒） |
+| `syncSkipsBusy` | 恆為 `0`：in-turn 的同步請求是一個 turn，不會被拒。保留此欄位是為了不改變 profile 格式 |
 | `syncFolds` | 併入下一個 tick turn 的 in-turn sync cycle（coincident sync），每個 cycle 最多一次 |
 | `syncOverdueFolds` | `syncFolds` 中：其 tick 已逾時、frame 須等待遲到 tick 的併入 |
 | `syncFailedPlans` | 拋出錯誤、什麼都沒 commit 的 sync plan |

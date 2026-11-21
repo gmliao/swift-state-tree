@@ -262,7 +262,7 @@ With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per in
 | `syncCycles` | sync cycles that committed their plan (both paths): the denominator for the others |
 | `syncSkipsBacklog` | cycles skipped for writer back-pressure |
 | `syncDeferredTurns` | of `syncSkipsBacklog`: in-turn sync phases deferred by back-pressure |
-| `syncSkipsBusy` | requests rejected because another cycle was in flight (legacy path; an in-turn request is a turn and is never rejected) |
+| `syncSkipsBusy` | always `0`: an in-turn sync request is a turn and is never rejected. Kept so the profile format doesn't change |
 | `syncFolds` | in-turn sync cycles folded into the next tick turn (coincident sync), at most one per cycle |
 | `syncOverdueFolds` | of `syncFolds`: folds whose tick was already overdue, so the frame waited for a late tick |
 | `syncFailedPlans` | sync plans that threw and committed nothing |
