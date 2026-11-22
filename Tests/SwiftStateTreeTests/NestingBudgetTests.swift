@@ -176,12 +176,15 @@ struct NestingBudgetTests {
         // `value is NSNull`, which bridges a nested `[Any]` eagerly (#716).
         await #expect(processExitsWith: .success) {
             let deep = nestedAny(100_000)
-            do {
-                _ = try SnapshotValue.make(from: deep)
-                exit(1)
-            } catch let error {
-                // Exit before `deep` is released: its release recurses once per level (§3.1).
-                exit(isNestingRefusal(error, .containers, limit: NestingBudget.containerLimit) ? 0 : 2)
+            // Exit before `deep` is released: its release recurses once per level (§3.1). Kept
+            // alive explicitly, since a release build may release it after its last use.
+            withExtendedLifetime(deep) {
+                do {
+                    _ = try SnapshotValue.make(from: deep)
+                    exit(1)
+                } catch let error {
+                    exit(isNestingRefusal(error, .containers, limit: NestingBudget.containerLimit) ? 0 : 2)
+                }
             }
         }
     }
@@ -192,16 +195,19 @@ struct NestingBudgetTests {
         // runtime and overflows the child's stack: a mutant for the Linux host.
         await #expect(processExitsWith: .success) {
             let deep = optionalChain(100_000)
-            for full in [false, true] {
-                do {
-                    _ = try full ? SnapshotValue.makeFull(from: deep) : SnapshotValue.make(from: deep)
-                    exit(1)
-                } catch let error {
-                    guard isNestingRefusal(error, .hops, limit: NestingBudget.hopLimit) else { exit(2) }
+            // Exit before `deep` is released: its release recurses once per level. Kept alive
+            // explicitly, since a release build may release it after its last use.
+            withExtendedLifetime(deep) {
+                for full in [false, true] {
+                    do {
+                        _ = try full ? SnapshotValue.makeFull(from: deep) : SnapshotValue.make(from: deep)
+                        exit(1)
+                    } catch let error {
+                        guard isNestingRefusal(error, .hops, limit: NestingBudget.hopLimit) else { exit(2) }
+                    }
                 }
+                exit(0)
             }
-            // Exit before `deep` is released: its release recurses once per level.
-            exit(0)
         }
     }
 

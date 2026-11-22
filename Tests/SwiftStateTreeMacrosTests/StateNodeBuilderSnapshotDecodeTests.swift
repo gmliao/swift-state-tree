@@ -45,7 +45,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     return true
                 }
 
-                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
 
                     // Include score if no dirtyFields filter or if field is dirty
@@ -72,7 +72,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     return StateSnapshot(values: result)
                 }
 
-                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                public func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
 
                     // Include score if no dirtyFields filter or if field is dirty
@@ -88,16 +88,16 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     return StateSnapshot(values: result)
                 }
 
-                public func fullStateSnapshot() throws -> StateSnapshot {
+                public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
                     result.reserveCapacity(3)
-                    result["score"] = try SnapshotValue.makeFull(from: self._score.wrappedValue as Any)
-                    result["name"] = try SnapshotValue.makeFull(from: self._name.wrappedValue as Any)
-                    result["internal_counter"] = try SnapshotValue.makeFull(from: self._internal_counter.wrappedValue as Any)
+                    result["score"] = try SnapshotValue.makeFull(from: self._score.wrappedValue as Any, budget: budget)
+                    result["name"] = try SnapshotValue.makeFull(from: self._name.wrappedValue as Any, budget: budget)
+                    result["internal_counter"] = try SnapshotValue.makeFull(from: self._internal_counter.wrappedValue as Any, budget: budget)
                     return StateSnapshot(values: result)
                 }
 
-                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
                     var broadcastResult: [String: SnapshotValue] = [:]
                     let perPlayerResult: [PlayerID: [String: SnapshotValue]] = [:]
 
@@ -112,6 +112,22 @@ final class StateNodeBuilderSnapshotDecodeTests {
                     return (StateSnapshot(values: broadcastResult), perPlayerResult.mapValues {
                             StateSnapshot(values: $0)
                         })
+                }
+
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    try snapshot(for: playerID, dirtyFields: dirtyFields, budget: NestingBudget())
+                }
+
+                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    try broadcastSnapshot(dirtyFields: dirtyFields, budget: NestingBudget())
+                }
+
+                public func fullStateSnapshot() throws -> StateSnapshot {
+                    try fullStateSnapshot(budget: NestingBudget())
+                }
+
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                    try snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields, budget: NestingBudget())
                 }
 
                 public func isDirty() -> Bool {
