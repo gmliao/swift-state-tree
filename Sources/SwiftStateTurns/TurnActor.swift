@@ -14,17 +14,17 @@ public protocol TurnActor: Actor {
     /// could otherwise do).
     var core: TurnCore<M> { get }
     /// The asynchronous work of an effect, off the actor. It doesn't throw: nil means nothing to
-    /// report, and an error is a case of the input. Its result comes back as an input.
+    /// mail, and an error is a case of the input. Its result comes back as an input.
     @concurrent nonisolated func perform(_ effect: M.Effect) async -> M.Input?
     /// The synchronous sink of a step's outputs, called between steps.
     func flush(_ outputs: consuming [M.Output])
-    /// The core's lane, for `post`: a stored `nonisolated let` assigned from `core.lane` (a lint
-    /// checks it). A machine without reports gets nil by default.
-    nonisolated var lane: TurnLane<M.LaneReport>? { get }
+    /// The core's mailbox, for `post`: a stored `nonisolated let` assigned from `core.mailbox` (a lint
+    /// checks it). A machine without mail gets nil by default.
+    nonisolated var mailbox: TurnMailbox<M.Mail>? { get }
 }
 
-extension TurnActor where M.LaneReport == Never {
-    @inlinable public nonisolated var lane: TurnLane<Never>? { nil }
+extension TurnActor where M.Mail == Never {
+    @inlinable public nonisolated var mailbox: TurnMailbox<Never>? { nil }
 }
 
 extension TurnActor {
@@ -92,95 +92,95 @@ extension TurnActor {
     // MARK: Entries
 
     /// A new entry from outside: a new batch, so the next `Turn.now` reads the clock. It takes
-    /// the lane first (`takeLaneBeforeStep`), under a fresh lane budget, so the entry's own checks
-    /// read the state after the reports. Every entry that calls it ends through the segment
+    /// the mailbox first (`takeMailBeforeStep`), under a fresh mailbox budget, so the entry's own checks
+    /// read the state after the mail. Every entry that calls it ends through the segment
     /// epilogue (`if core.rt.dirty { runSegment() }`), its stale returns included.
     @inlinable func beginEntry() {
         let core = self.core
         core.cachedNow = nil
-        if TurnCore<M>.usesLane, let lane = core.lane {
-            core.laneBudget = lane.capacity
-            takeLaneBeforeStep()
+        if TurnCore<M>.usesMailbox, let mailbox = core.mailbox {
+            core.mailBudget = mailbox.capacity
+            takeMailBeforeStep()
         }
     }
 
-    /// An entry's boundary, after its lane take and before its own work (a completion, a
+    /// An entry's boundary, after its mailbox take and before its own work (a completion, a
     /// deadline, a timer, a gate's return), as an admission is (plan §3.9): it takes an
-    /// ordinal, so a report posted between the take and the work, which steps after the work
+    /// ordinal, so a mail posted between the take and the work, which steps after the work
     /// live, is keyed after the boundary and replays there too. Every such entry calls it,
     /// its stale returns included, so both sides count alike.
     @inlinable func entryBoundary() {
         let core = self.core
-        guard TurnCore<M>.usesLane else { return }
+        guard TurnCore<M>.usesMailbox else { return }
         core.noteDispatch()
         core.onEntryBoundaryForTesting?()
     }
 
-    // MARK: The lane
+    // MARK: The mailbox
 
-    /// Posts `report` to the core's lane, from any thread, without awaiting: the core steps it
-    /// (`handleReport`) before the next step after the check that sees it, within an entry's
-    /// budget. A report posted after a check's watermark, or while an entry is admitting its
-    /// own input, steps after that step, at the next check. False when the lane is
-    /// full: the report isn't stored (the first pending report wins) and the refusal is counted.
-    /// The post that finds the lane empty schedules one wake (`laneWoke`).
-    @inlinable public nonisolated func post(_ report: M.LaneReport) -> Bool {
-        guard let lane else { fatalError("TurnActor: post on an actor whose machine takes no reports") }
-        guard let wasEmpty = lane.append(report) else { return false }
-        if wasEmpty { Task { await self.laneWoke() } }
+    /// Posts `mail` to the core's mailbox, from any thread, without awaiting: the core steps it
+    /// (`handleMail`) before the next step after the check that sees it, within an entry's
+    /// budget. A mail posted after a check's watermark, or while an entry is admitting its
+    /// own input, steps after that step, at the next check. False when the mailbox is
+    /// full: the mail isn't stored (the first pending mail wins) and the refusal is counted.
+    /// The post that finds the mailbox empty schedules one wake (`mailboxWoke`).
+    @inlinable public nonisolated func post(_ mail: M.Mail) -> Bool {
+        guard let mailbox else { fatalError("TurnActor: post on an actor whose machine takes no mail") }
+        guard let wasEmpty = mailbox.append(mail) else { return false }
+        if wasEmpty { Task { await self.mailboxWoke() } }
         return true
     }
 
-    /// Tests: `post`, with `beforeAppend` awaited before the lane's critical section (its "was
+    /// Tests: `post`, with `beforeAppend` awaited before the mailbox's critical section (its "was
     /// empty" read and the append) and `afterAppend` between the append and the wake, so a test
     /// can hold a post at either point.
     @inlinable package nonisolated func postForTesting(
-        _ report: M.LaneReport,
+        _ mail: M.Mail,
         beforeAppend: @Sendable () async -> Void = {},
         afterAppend: @Sendable () async -> Void = {}
     ) async -> Bool {
-        guard let lane else { fatalError("TurnActor: post on an actor whose machine takes no reports") }
+        guard let mailbox else { fatalError("TurnActor: post on an actor whose machine takes no mail") }
         await beforeAppend()
-        guard let wasEmpty = lane.append(report) else { return false }
+        guard let wasEmpty = mailbox.append(mail) else { return false }
         await afterAppend()
-        if wasEmpty { Task { await self.laneWoke() } }
+        if wasEmpty { Task { await self.mailboxWoke() } }
         return true
     }
 
-    /// The lane's wake: an ordinary entry. It finds the lane empty when an entry took the
-    /// reports first (`emptyLaneWakes`), and ends through the epilogue either way.
-    @inlinable func laneWoke() {
+    /// The mailbox's wake: an ordinary entry. It finds the mailbox empty when an entry took the
+    /// mail first (`emptyMailboxWakes`), and ends through the epilogue either way.
+    @inlinable func mailboxWoke() {
         let core = self.core
-        core.onLaneWakeForTesting?()
-        core.laneWakeScheduled = false
-        if let lane = core.lane, lane.isEmpty { core.counters.emptyLaneWakes += 1 }
+        core.onMailboxWakeForTesting?()
+        core.mailboxWakeScheduled = false
+        if let mailbox = core.mailbox, mailbox.isEmpty { core.counters.emptyMailboxWakes += 1 }
         beginEntry()
         if core.rt.dirty { runSegment() }
     }
 
-    /// The entry's lane take. It steps the reports posted before it, in the segment's mode
+    /// The entry's mailbox take. It steps the mail posted before it, in the segment's mode
     /// (`inSegment` set, so a send from `flush` queues and a query answers in place), draining
-    /// each one's products before the next. When it stepped a report or left some, the entry
+    /// each one's products before the next. When it stepped a mail or left some, the entry
     /// runs a segment now, before its own checks and step (products first, plan §3.4): the
-    /// whole loop, so what the reports caused (queued sends, releases, abandonments, due
-    /// follow-ups, reports posted meanwhile) steps before the entry's own work, as a wake's
+    /// whole loop, so what the mail caused (queued sends, releases, abandonments, due
+    /// follow-ups, mail posted meanwhile) steps before the entry's own work, as a wake's
     /// segment would have stepped it before any later entry. That is what replay relies on: it
-    /// steps a wake's report at the next entry's take. Leaving reports (a post after the
+    /// steps a wake's mail at the next entry's take. Leaving mail (a post after the
     /// watermark) happens only live; running the segment for it too is a live ordering choice,
-    /// reports before the entry's work, not a replay need. Inside a segment, the enclosing loop
+    /// mail before the entry's work, not a replay need. Inside a segment, the enclosing loop
     /// steps the products instead.
-    @inlinable func takeLaneBeforeStep() {
+    @inlinable func takeMailBeforeStep() {
         let core = self.core
         // Not from inside a step or a read (a `query` from a collaborator a step calls): that
         // call stops in its own step's borrow check, with its own message.
-        guard TurnCore<M>.usesLane, core.borrows == 0, let lane = core.lane else { return }
-        let replaying = core.laneReplay != nil
-        if !replaying, lane.isEmpty { return }
+        guard TurnCore<M>.usesMailbox, core.borrows == 0, let mailbox = core.mailbox else { return }
+        let replaying = core.mailReplay != nil
+        if !replaying, mailbox.isEmpty { return }
         let wasInSegment = core.inSegment
         core.inSegment = true
-        let stepped = replaying ? takeStaged(keepingNow: !wasInSegment) : takeLane(lane)
+        let stepped = replaying ? takeStaged(keepingNow: !wasInSegment) : takeMail(mailbox)
         core.inSegment = wasInSegment
-        if stepped || !lane.isEmpty {
+        if stepped || !mailbox.isEmpty {
             core.rt.dirty = true
             if !wasInSegment { runSegment() }
         }
@@ -188,42 +188,42 @@ extension TurnActor {
         core.productsNow = nil
     }
 
-    /// One check: the reports at or below the lane's watermark now, one head at a time, each
+    /// One check: the mail at or below the mailbox's watermark now, one head at a time, each
     /// stepped and its products drained before the next is removed. Spends the entry's budget.
     /// True when it stepped any.
-    @inlinable func takeLane(_ lane: TurnLane<M.LaneReport>) -> Bool {
+    @inlinable func takeMail(_ mailbox: TurnMailbox<M.Mail>) -> Bool {
         let core = self.core
-        if core.laneBudget == 0 { return false }
-        let watermark = lane.watermark
-        core.onLaneCheckForTesting?()
+        if core.mailBudget == 0 { return false }
+        let watermark = mailbox.watermark
+        core.onMailboxCheckForTesting?()
         var stepped = false
-        while core.laneBudget > 0, let report = lane.removeHead(atOrBelow: watermark) {
-            core.laneBudget -= 1
-            let key = LaneRecordKey.before(step: core.nextOrdinal, index: core.beforeIndex)
+        while core.mailBudget > 0, let mail = mailbox.removeHead(atOrBelow: watermark) {
+            core.mailBudget -= 1
+            let key = MailRecordKey.before(step: core.nextOrdinal, index: core.beforeIndex)
             core.beforeIndex += 1
-            if let record = core.onReportsTaken { record(key, [report], core.segmentNow()) }
-            core.stepReport(report)
+            if let record = core.onMailTaken { record(key, [mail], core.segmentNow()) }
+            core.stepMail(mail)
             drainProducts()
             stepped = true
         }
         return stepped
     }
 
-    /// A replay's check: the staged reports for the next step's `before` keys, in order, each
+    /// A replay's check: the staged mail for the next step's `before` keys, in order, each
     /// with its recorded `now`. The budget doesn't apply: the record fixed where each one steps.
-    /// `keepingNow`: the last report's `now` stays served (`productsNow`) for the entry's
-    /// products-first segment, which the caller ends; a loop check's reports were recorded with
+    /// `keepingNow`: the last mail's `now` stays served (`productsNow`) for the entry's
+    /// products-first segment, which the caller ends; a loop check's mail was recorded with
     /// the entry's own `now`, so it doesn't keep it.
     @inlinable func takeStaged(keepingNow: Bool = false) -> Bool {
         let core = self.core
         var stepped = false
-        while let head = core.laneReplay?.first,
+        while let head = core.mailReplay?.first,
               head.key == .before(step: core.nextOrdinal, index: core.beforeIndex) {
-            core.laneReplay?.removeFirst()
+            core.mailReplay?.removeFirst()
             core.beforeIndex += 1
             core.productsNow = head.now
-            for report in head.reports {
-                core.stepReport(report)
+            for mail in head.mail {
+                core.stepMail(mail)
                 drainProducts()
             }
             stepped = true
@@ -233,15 +233,15 @@ extension TurnActor {
         return stepped
     }
 
-    /// Replay: called once after the record's last input. It steps the reports staged after
+    /// Replay: called once after the record's last input. It steps the mail staged after
     /// the last step (`before` the next ordinal, which no step takes) as a check would, then
     /// reports any entry still staged as `leftover`.
     package func finishReplay() {
         let core = self.core
-        guard TurnCore<M>.usesLane, core.laneReplay != nil else { return }
+        guard TurnCore<M>.usesMailbox, core.mailReplay != nil else { return }
         beginEntry()
         if core.rt.dirty { runSegment() }
-        while let head = core.laneReplay?.first { core.diverged(.leftover(head.key)) }
+        while let head = core.mailReplay?.first { core.diverged(.leftover(head.key)) }
     }
 
     @inlinable func callerCancelled(_ id: InputID) {
@@ -253,7 +253,7 @@ extension TurnActor {
     }
 
     /// `readControl`: what `sendAndWait(.cancelsCall)` read from `inputPolicy(for:)` before it
-    /// submitted; debug builds check that the policy still says the same after the lane.
+    /// submitted; debug builds check that the policy still says the same after the mailbox.
     @inlinable func submit(_ input: M.Input, caller: InputID?, readControl: Bool? = nil) {
         let core = self.core
         if core.borrows < 0 || core.inSegment {
@@ -265,7 +265,7 @@ extension TurnActor {
         }
         beginEntry()
         #if DEBUG
-        if TurnCore<M>.usesLane, let readControl {
+        if TurnCore<M>.usesMailbox, let readControl {
             let isControl: Bool
             if case .control = core.machine.inputPolicy(for: input) { isControl = true } else { isControl = false }
             assert(isControl == readControl, "TurnCore: inputPolicy's control or normal choice changed with the machine's state")
@@ -278,7 +278,7 @@ extension TurnActor {
     /// `arrival`: a deferred input's scope-end clock when it arrived; nil when admitted on arrival.
     @inlinable func admit(_ input: M.Input, caller: InputID?, arrival: UInt64? = nil) {
         let core = self.core
-        // A boundary, whatever the outcome: a report keyed after a parked or refused admission
+        // A boundary, whatever the outcome: a mail keyed after a parked or refused admission
         // can't replay ahead of it (plan §3.9).
         core.noteDispatch()
         switch core.machine.inputPolicy(for: input) {
@@ -364,24 +364,24 @@ extension TurnActor {
             return
         }
         core.deadlineTasks.removeValue(forKey: id)
-        // With a lane, its reports step before the checks below, which read the state after them.
-        if TurnCore<M>.usesLane {
+        // With a mailbox, its mail steps before the checks below, which read the state after it.
+        if TurnCore<M>.usesMailbox {
             beginEntry()
             entryBoundary()
         }
         if core.rt.open[id] == nil, core.rt.gateDeadlineLive(id) {
             // A follow-up's gate deadline: the follow-up closes unrun.
-            if !TurnCore<M>.usesLane { beginEntry() }
+            if !TurnCore<M>.usesMailbox { beginEntry() }
             core.rt.closeFollowUp(id, .deadline)
             runSegment()
             return
         }
         guard core.rt.open[id] != nil else {
             core.onDiagnostic?(.staleDeadline)
-            if TurnCore<M>.usesLane, core.rt.dirty { runSegment() }
+            if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
             return
         }
-        if !TurnCore<M>.usesLane { beginEntry() }
+        if !TurnCore<M>.usesMailbox { beginEntry() }
         core.rt.closeRequest(id, .deadline)
         runSegment()
     }
@@ -395,17 +395,17 @@ extension TurnActor {
             return
         }
         if core.timerTasks[key]?.generation == generation { core.timerTasks.removeValue(forKey: key) }
-        if TurnCore<M>.usesLane {
+        if TurnCore<M>.usesMailbox {
             beginEntry()
             entryBoundary()
         }
         guard core.rt.timers[key] == generation else {
             core.onDiagnostic?(.staleTimer)
-            if TurnCore<M>.usesLane, core.rt.dirty { runSegment() }
+            if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
             return
         }
         core.rt.timers.removeValue(forKey: key)
-        if !TurnCore<M>.usesLane { beginEntry() }
+        if !TurnCore<M>.usesMailbox { beginEntry() }
         core.step(input, caller: nil)
         runSegment()
     }
@@ -419,11 +419,11 @@ extension TurnActor {
         let core = self.core
         core.continuationScheduled = false
         core.onContinuationJobForTesting?()
-        if TurnCore<M>.usesLane {
-            // The follow-ups due at the job's start, captured before the lane's take: an
-            // `.afterBatch` follow-up a report arms becomes due after this, so it steps in the
+        if TurnCore<M>.usesMailbox {
+            // The follow-ups due at the job's start, captured before the mailbox's take: an
+            // `.afterBatch` follow-up a mail arms becomes due after this, so it steps in the
             // next job, in a new batch as `.afterBatch` promises. They are pushed after the take,
-            // so the reports' products-first segment steps before them. The swap moves the
+            // so the mail's products-first segment steps before them. The swap moves the
             // buffer out and back, so the capture doesn't allocate.
             var due: [RequestID] = []
             if TurnCore<M>.usesFollowUps { swap(&due, &core.rt.dueFollowUps) }
@@ -568,10 +568,10 @@ extension TurnActor {
         var capped = false
         while true {
             drainProducts()
-            // The lane before every step, a capped segment's included; a check that stepped a
-            // report comes round again, so a report its step posted is checked before the next.
-            if TurnCore<M>.usesLane, let lane = core.lane,
-               core.laneReplay != nil ? takeStaged() : (!lane.isEmpty && takeLane(lane)) { continue }
+            // The mailbox before every step, a capped segment's included; a check that stepped a
+            // mail comes round again, so a mail its step posted is checked before the next.
+            if TurnCore<M>.usesMailbox, let mailbox = core.mailbox,
+               core.mailReplay != nil ? takeStaged() : (!mailbox.isEmpty && takeMail(mailbox)) { continue }
             if !core.rt.abandoned.isEmpty {
                 let (id, why) = core.rt.abandoned.removeFirst()
                 core.stepAbandoned(id, why)
@@ -620,14 +620,14 @@ extension TurnActor {
         if TurnCore<M>.usesFollowUps, !core.rt.dueFollowUps.isEmpty, !core.continuationScheduled {
             scheduleContinuation()
         }
-        // Reports the entry's spent budget left in the lane step in a new batch, with a fresh
-        // budget. Only a spent budget leaves reports with no wake: while it lasts, every check
-        // steps up to its watermark and the loop comes round, so the first report posted after
-        // the lane empties finds it empty and schedules its own wake. The budget test keeps the
+        // Mail that the entry's spent budget left in the mailbox steps in a new batch, with a fresh
+        // budget. Only a spent budget leaves mail with no wake: while it lasts, every check
+        // steps up to its watermark and the loop comes round, so the first mail posted after
+        // the mailbox empties finds it empty and schedules its own wake. The budget test keeps the
         // lock off an entry that spent none.
-        if TurnCore<M>.usesLane, core.laneBudget == 0, !core.laneWakeScheduled, let lane = core.lane, !lane.isEmpty {
-            core.laneWakeScheduled = true
-            Task { await self.laneWoke() }
+        if TurnCore<M>.usesMailbox, core.mailBudget == 0, !core.mailboxWakeScheduled, let mailbox = core.mailbox, !mailbox.isEmpty {
+            core.mailboxWakeScheduled = true
+            Task { await self.mailboxWoke() }
         }
         // Checked here, not in the call: an empty check inline costs a load, a call per segment
         // costs the whole frame.

@@ -84,61 +84,61 @@ final class CallBox: @unchecked Sendable {
     var answer: String? { lock.withLock { value } }
 }
 
-actor OrderActor<Report: OrderReport & PlainData>: TurnActor {
+actor OrderActor<Mail: OrderMail & PlainData>: TurnActor {
     typealias View = OrderView
-    let core: TurnCore<OrderModel<Report>>
-    nonisolated let lane: TurnLane<Report>?
+    let core: TurnCore<OrderModel<Mail>>
+    nonisolated let mailbox: TurnMailbox<Mail>?
     nonisolated let fixture: Fixture
     nonisolated let notes: Notes
     /// What the sink received, and the outputs flushed after another step had run (invariant 11).
     private var delivered: [Int] = []
     private var lateFlushes: [String] = []
 
-    /// A report the next flush posts (a post between steps); nil when none is due.
+    /// A mail the next flush posts (a post between steps); nil when none is due.
     private var postOnFlush: Int?
-    /// Reports accepted by a post this actor made from a flush.
+    /// Mail accepted by a post this actor made from a flush.
     private var flushPosted: [Int] = []
-    /// Reports accepted by a post a check's hook made: a lock, not the actor, because the hook
+    /// Mail accepted by a post a check's hook made: a lock, not the actor, because the hook
     /// is a plain closure.
-    nonisolated let checkPosted = ReportList()
+    nonisolated let checkPosted = MailList()
 
-    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int, laneCapacity: Int) {
+    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int, mailboxCapacity: Int) {
         self.fixture = fixture
         self.notes = notes
-        let core = TurnCore(OrderModel<Report>(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: TestClock(fixture: fixture), laneCapacity: laneCapacity)
+        let core = TurnCore(OrderModel<Mail>(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: TestClock(fixture: fixture), mailboxCapacity: mailboxCapacity)
         core.onDiagnostic = { event in
             if case .queued = event { notes.post("park") }
         }
         self.core = core
-        lane = core.lane
+        mailbox = core.mailbox
     }
 
-    /// The next flush posts `report`.
-    func postAtNextFlush(_ report: Int) {
-        postOnFlush = report
+    /// The next flush posts `mail`.
+    func postAtNextFlush(_ mail: Int) {
+        postOnFlush = mail
     }
 
-    /// The next lane check posts `report` at its hold point, after its watermark is read.
-    func postAtNextCheck(_ report: Int) {
+    /// The next mailbox check posts `mail` at its hold point, after its watermark is read.
+    func postAtNextCheck(_ mail: Int) {
         let once = Once()
-        core.onLaneCheckForTesting = { [unowned self] in
+        core.onMailboxCheckForTesting = { [unowned self] in
             once.run {
-                if self.postNumber(report) { self.checkPosted.append(report) }
+                if self.postNumber(mail) { self.checkPosted.append(mail) }
             }
         }
     }
 
-    /// Posts the report numbered `number`; false when refused, or for the laneless twin.
+    /// Posts the mail numbered `number`; false when refused, or for the mailboxless twin.
     nonisolated func postNumber(_ number: Int) -> Bool {
-        Report.numbered(number).map { post($0) } ?? false
+        Mail.numbered(number).map { post($0) } ?? false
     }
 
     nonisolated func postNumberForTesting(_ number: Int, afterAppend: @Sendable @escaping () async -> Void) async -> Bool {
-        guard let report = Report.numbered(number) else { return false }
-        return await postForTesting(report, afterAppend: afterAppend)
+        guard let mail = Mail.numbered(number) else { return false }
+        return await postForTesting(mail, afterAppend: afterAppend)
     }
 
-    @concurrent nonisolated func perform(_ effect: OrderModel<Report>.Effect) async -> OrderModel<Report>.Input? {
+    @concurrent nonisolated func perform(_ effect: OrderModel<Mail>.Effect) async -> OrderModel<Mail>.Input? {
         switch effect {
         case .work(let seq):
             await fixture.wait("work \(seq)")
@@ -150,9 +150,9 @@ actor OrderActor<Report: OrderReport & PlainData>: TurnActor {
     }
 
     func flush(_ outputs: consuming [OrderOutput]) {
-        if let report = postOnFlush {
+        if let mail = postOnFlush {
             postOnFlush = nil
-            if postNumber(report) { flushPosted.append(report) }
+            if postNumber(mail) { flushPosted.append(mail) }
         }
         // Between steps: the machine's step count is the step whose outputs these are.
         let step = core.read { $0.stepCount }
@@ -184,8 +184,8 @@ actor OrderActor<Report: OrderReport & PlainData>: TurnActor {
                 pendingFollowUps: machine.followUps.count,
                 pendingWork: pendingWork,
                 stats: stats,
-                reportsStepped: machine.reportsStepped,
-                selfPosted: flushPosted + checkPosted.reports
+                mailStepped: machine.mailStepped,
+                selfPosted: flushPosted + checkPosted.mail
             )
         }
     }
@@ -208,7 +208,7 @@ struct OrderView: Sendable {
     var pendingFollowUps: Int
     var pendingWork: Int
     var stats: TurnStats
-    var reportsStepped: [Int]
+    var mailStepped: [Int]
     var selfPosted: [Int]
 }
 
@@ -244,28 +244,28 @@ func settle<R>(_ actor: OrderActor<R>, rounds: Int = 10_000, until done: (OrderV
 
 /// Runs one seed and returns its failures (empty: it passed).
 func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> [String] {
-    await runOrder(seed: seed, operations: operations, maxReleasesPerBatch: maxReleasesPerBatch, report: Int.self)
+    await runOrder(seed: seed, operations: operations, maxReleasesPerBatch: maxReleasesPerBatch, mail: Int.self)
 }
 
-/// Runs one seed with lane reports of type `R`; `Never`, the laneless twin, skips the lane
+/// Runs one seed with mail of type `R`; `Never`, the mailboxless twin, skips the mailbox
 /// operations (their stream is separate, so the other operations are the same).
-func runOrder<R: OrderReport & PlainData>(seed: UInt64, operations: Int, maxReleasesPerBatch: Int, report _: R.Type) async -> [String] {
+func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleasesPerBatch: Int, mail _: R.Type) async -> [String] {
     var random = SeededGenerator(seed: seed)
     // Follow-up operations draw from their own stream, so the main stream (and the seeds pinned
     // to a mutant) keep their operations.
     var followUpRandom = SeededGenerator(seed: seed ^ 0x702)
-    // Lane posts draw from a third stream, for the same reason.
-    var laneRandom = SeededGenerator(seed: seed ^ 0x725)
-    var nextReport = 1
-    // Reports the harness's own posts had accepted, and held posts whose wakes wait at a gate.
+    // Mailbox posts draw from a third stream, for the same reason.
+    var mailboxRandom = SeededGenerator(seed: seed ^ 0x725)
+    var nextMail = 1
+    // Mail the harness's own posts had accepted, and held posts whose wakes wait at a gate.
     var accepted: Set<Int> = []
-    var heldPosts: [(report: Int, task: Task<Bool, Never>)] = []
+    var heldPosts: [(mail: Int, task: Task<Bool, Never>)] = []
     var nextLabel = 1
     let fixture = Fixture()
     let notes = Notes()
-    // The budget-2 seeds also take at most 2 reports per entry, so lane batches split too.
+    // The budget-2 seeds also take at most 2 mail per entry, so mailbox batches split too.
     let actor = OrderActor<R>(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch,
-                           laneCapacity: maxReleasesPerBatch == 2 ? 2 : 8)
+                           mailboxCapacity: maxReleasesPerBatch == 2 ? 2 : 8)
     var failures: [String] = []
     var nextSeq = 1
     var nextWork = 1
@@ -418,54 +418,54 @@ func runOrder<R: OrderReport & PlainData>(seed: UInt64, operations: Int, maxRele
             break
         }
 
-        // A lane operation about a quarter of the time: a post now, a post whose wake is held
-        // (released by a later lane operation, so a wake is in flight across operations), a
+        // A mailbox operation about a quarter of the time: a post now, a post whose wake is held
+        // (released by a later mailbox operation, so a wake is in flight across operations), a
         // post at the next check's hold point, or a post from the next flush (between steps).
-        if R.self != Never.self, Int.random(in: 0 ..< 4, using: &laneRandom) == 0 {
-            let report = nextReport
-            nextReport += 1
-            var laneOp: String
-            switch Int.random(in: 0 ..< 5, using: &laneRandom) {
+        if R.self != Never.self, Int.random(in: 0 ..< 4, using: &mailboxRandom) == 0 {
+            let mail = nextMail
+            nextMail += 1
+            var mailOp: String
+            switch Int.random(in: 0 ..< 5, using: &mailboxRandom) {
             case 0:
-                laneOp = "post \(report)"
-                if actor.postNumber(report) { accepted.insert(report) }
+                mailOp = "post \(mail)"
+                if actor.postNumber(mail) { accepted.insert(mail) }
             case 1:
-                laneOp = "post \(report), its wake held"
+                mailOp = "post \(mail), its wake held"
                 let task = Task {
-                    let posted = await actor.postNumberForTesting(report, afterAppend: {
-                        notes.post("appended \(report)")
-                        await fixture.wait("wake \(report)")
+                    let posted = await actor.postNumberForTesting(mail, afterAppend: {
+                        notes.post("appended \(mail)")
+                        await fixture.wait("wake \(mail)")
                     })
-                    // Refused (a full lane): no append, so no hold.
-                    if !posted { notes.post("appended \(report)") }
+                    // Refused (a full mailbox): no append, so no hold.
+                    if !posted { notes.post("appended \(mail)") }
                     return posted
                 }
-                guard await notes.reach("appended \(report)") else {
-                    failures.append("post \(report) never appended")
+                guard await notes.reach("appended \(mail)") else {
+                    failures.append("post \(mail) never appended")
                     break
                 }
-                heldPosts.append((report, task))
+                heldPosts.append((mail, task))
             case 2:
-                laneOp = "post \(report) at the next check"
-                await actor.postAtNextCheck(report)
+                mailOp = "post \(mail) at the next check"
+                await actor.postAtNextCheck(mail)
             case 3:
-                laneOp = "post \(report) at the next flush"
-                await actor.postAtNextFlush(report)
+                mailOp = "post \(mail) at the next flush"
+                await actor.postAtNextFlush(mail)
             default:
-                laneOp = "release a held wake"
+                mailOp = "release a held wake"
                 if !heldPosts.isEmpty {
                     let held = heldPosts.removeFirst()
-                    fixture.open("wake \(held.report)")
-                    if await held.task.value { accepted.insert(held.report) }
-                    laneOp += " (\(held.report))"
+                    fixture.open("wake \(held.mail)")
+                    if await held.task.value { accepted.insert(held.mail) }
+                    mailOp += " (\(held.mail))"
                 }
             }
-            log.append(laneOp)
-            let laneView = await actor.view()
-            failures += check(laneView, op: laneOp, parkedBound: 6 + nextWork)
-            let known = accepted.union(laneView.selfPosted).union(heldPosts.map(\.report))
-            if let stray = laneView.reportsStepped.first(where: { !known.contains($0) }) {
-                failures.append("after `\(laneOp)`: report \(stray) stepped, never accepted")
+            log.append(mailOp)
+            let mailboxView = await actor.view()
+            failures += check(mailboxView, op: mailOp, parkedBound: 6 + nextWork)
+            let known = accepted.union(mailboxView.selfPosted).union(heldPosts.map(\.mail))
+            if let stray = mailboxView.mailStepped.first(where: { !known.contains($0) }) {
+                failures.append("after `\(mailOp)`: mail \(stray) stepped, never accepted")
             }
             if !failures.isEmpty {
                 failures.append("seed \(seed), budget \(maxReleasesPerBatch), operation \(step); the last operations: \(log.suffix(12))")
@@ -509,20 +509,20 @@ func runOrder<R: OrderReport & PlainData>(seed: UInt64, operations: Int, maxRele
             }
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
-        // Every accepted report steps once: release the held wakes, then wait for the lane.
+        // Every accepted mail steps once: release the held wakes, then wait for the mailbox.
         for held in heldPosts {
-            fixture.open("wake \(held.report)")
-            if await held.task.value { accepted.insert(held.report) }
+            fixture.open("wake \(held.mail)")
+            if await held.task.value { accepted.insert(held.mail) }
         }
         heldPosts = []
         // A check's or a flush's post still due when no check or flush follows isn't made, and
         // isn't counted: only accepted posts are expected to step.
         // Both sides from one view: a flush's post made while settling is in the same view as
         // its step, or in neither.
-        let laneSettled = await settle(actor) { Set($0.reportsStepped) == accepted.union($0.selfPosted) }
-        if !laneSettled {
+        let mailboxSettled = await settle(actor) { Set($0.mailStepped) == accepted.union($0.selfPosted) }
+        if !mailboxSettled {
             let view = await actor.view()
-            failures.append("lane: accepted \(accepted.union(view.selfPosted).subtracting(view.reportsStepped).sorted()) never stepped")
+            failures.append("mailbox: accepted \(accepted.union(view.selfPosted).subtracting(view.mailStepped).sorted()) never stepped")
         }
         // Invariant 20: the wait returns once every follow-up stepped or closed.
         if !(await bounded({ await actor.waitForQuiescence() })) { failures.append("the follow-up wait returned false") }
@@ -611,11 +611,11 @@ struct GeneratedOrderTests {
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 
-    /// The laneless twin (`LaneReport == Never`) on every fourth seed: the same operations
-    /// without the lane's, so the driver's `!usesLane` branches keep the invariants too.
-    @Test("Seeded orders keep the invariants on the laneless twin", arguments: seeds.filter { $0 % 4 == 2 })
-    func lanelessOrder(seed: UInt64) async {
-        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed), report: Never.self)
+    /// The mailboxless twin (`Mail == Never`) on every fourth seed: the same operations
+    /// without the mailbox's, so the driver's `!usesMailbox` branches keep the invariants too.
+    @Test("Seeded orders keep the invariants on the mailboxless twin", arguments: seeds.filter { $0 % 4 == 2 })
+    func mailboxlessOrder(seed: UInt64) async {
+        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed), mail: Never.self)
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 
@@ -629,12 +629,12 @@ struct GeneratedOrderTests {
     }
 }
 
-/// Reports a lane check's hook posted, from a plain closure.
-final class ReportList: @unchecked Sendable {
+/// Mail a mailbox check's hook posted, from a plain closure.
+final class MailList: @unchecked Sendable {
     private let lock = NSLock()
     private var list: [Int] = []
 
-    func append(_ report: Int) { lock.withLock { list.append(report) } }
+    func append(_ mail: Int) { lock.withLock { list.append(mail) } }
 
-    var reports: [Int] { lock.withLock { list } }
+    var mail: [Int] { lock.withLock { list } }
 }

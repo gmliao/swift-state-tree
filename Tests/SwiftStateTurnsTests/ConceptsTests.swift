@@ -310,11 +310,11 @@ func plainDataDocExampleIsPlain() {
     #expect(isPlain(SessionID.self))
 }
 
-// MARK: - The lane
+// MARK: - The mailbox
 
-/// The lane's documented example: a keeper that a transport tells, from its own thread, that the
+/// The mailbox's documented example: a keeper that a transport tells, from its own thread, that the
 /// output gate closed on a failure. The next step takes the failure first, and a step that runs
-/// while it lands sees it through `takeReports`.
+/// while it lands sees it through `takeMail`.
 @PlainData
 struct Keeper: TurnMachine {
     enum Input: Sendable {
@@ -336,7 +336,7 @@ struct Keeper: TurnMachine {
 
     typealias Effect = Never
     typealias Reply = Int
-    typealias LaneReport = Failure
+    typealias Mail = Failure
 
     var failed: Failure?
     var ticks: Int = 0
@@ -349,31 +349,31 @@ struct Keeper: TurnMachine {
             turn.start(.land)
             ticks += 1
             StepHooks.duringStep?()
-            // docs:lane-take
+            // docs:mailbox-take
             // A failure posted while this step ran stops its output.
-            if let failure = turn.takeReports().first { failed = failed ?? failure }
+            if let failure = turn.takeMail().first { failed = failed ?? failure }
             if failed == nil { turn.emit(.sync, for: .land) }
             // docs:end
         }
     }
 
-    // docs:lane-report
-    mutating func handleReport(_ report: Failure, _ turn: inout ReportTurn<Keeper>) {
-        failed = failed ?? report
+    // docs:mailbox-mail
+    mutating func handleMail(_ mail: Failure, _ turn: inout MailTurn<Keeper>) {
+        failed = failed ?? mail
     }
     // docs:end
 }
 
 actor KeeperActor: TurnActor {
-    // docs:lane-actor
+    // docs:mailbox-actor
     let core: TurnCore<Keeper>
-    nonisolated let lane: TurnLane<Keeper.LaneReport>?
+    nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
 
     init() {
         let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
         self.core = core
-        // The core's own lane: a lint checks it's assigned from `core.lane`.
-        self.lane = core.lane
+        // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
+        self.mailbox = core.mailbox
     }
     // docs:end
 
@@ -388,15 +388,15 @@ actor KeeperActor: TurnActor {
     var failed: Keeper.Failure? { core.read { $0.failed } }
 }
 
-@Suite("The lane, as documented")
-struct LaneConceptTests {
+@Suite("The mailbox, as documented")
+struct MailboxConceptTests {
     @Test("A failure posted before a tick steps first; one posted during a tick stops its output")
     func keeperSeesFailures() async {
         let keeper = KeeperActor()
         await keeper.send(.tick)
         #expect(await keeper.synced == 1)
-        // docs:lane-post
-        // From any thread, with no await: the core's next step takes the report first.
+        // docs:mailbox-post
+        // From any thread, with no await: the core's next step takes the mail first.
         _ = keeper.post(.transportFailed)
         // docs:end
         await keeper.send(.tick)

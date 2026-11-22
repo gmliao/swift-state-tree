@@ -1,17 +1,17 @@
 import SwiftStateTurns
 import Testing
 
-// MARK: - A machine that takes lane reports
+// MARK: - A machine that takes mail
 
-/// What a lane machine's script step does, in order.
+/// What a mailbox machine's script step does, in order.
 @PlainData
-indirect enum LaneOp: Sendable {
+indirect enum MailOp: Sendable {
     case log(String)
     /// An output whose flush records `text` and opens "flushed `text`".
     case note(String)
     /// Calls the task-local `StepHooks.duringStep` (a collaborator the step calls).
     case hook
-    /// `Turn.takeReports()`: logs "took" and the reports' labels.
+    /// `Turn.takeMail()`: logs "took" and the mail's labels.
     case take
     case start(Int)
     case end(Int)
@@ -27,43 +27,43 @@ indirect enum LaneOp: Sendable {
     case timer(String, key: Int = 1, seconds: Int64)
     /// An `.afterWork` follow-up under `key`, whose gate is "gate `gate`"; its step logs "ran
     /// `label`", then runs `then`.
-    case arm(String, key: Int = 1, gate: String, then: [LaneOp] = [])
+    case arm(String, key: Int = 1, gate: String, then: [MailOp] = [])
     /// An `.afterBatch` follow-up under `key` (slot `b`), whose step logs "ran `label`".
     case armAfterBatch(String, key: Int = 1)
     case consume(key: Int = 1)
     /// An output whose flush sends `.script(ops)`.
-    case send([LaneOp])
+    case send([MailOp])
     /// An output whose flush asks `query(.ask(label))`.
     case ask(String)
-    /// An output whose flush asks `query(.take(label))`, whose answer takes the lane.
+    /// An output whose flush asks `query(.take(label))`, whose answer takes the mailbox.
     case askTake(String)
-    /// An output whose flush posts a report.
-    case post(String, then: [LaneOp] = [])
+    /// An output whose flush posts a mail.
+    case post(String, then: [MailOp] = [])
     case readNow
 }
 
-/// A lane report: logs "report `label`", then runs its script.
+/// A mail: logs "mail `label`", then runs its script.
 @PlainData
-struct LaneNote: Sendable {
+struct MailNote: Sendable {
     var label: String
-    var then: [LaneOp]
+    var then: [MailOp]
 
-    init(_ label: String, then: [LaneOp] = []) {
+    init(_ label: String, then: [MailOp] = []) {
         self.label = label
         self.then = then
     }
 }
 
 @PlainData
-struct LaneMachine: TurnMachine {
+struct MailboxMachine: TurnMachine {
     enum Input: Sendable {
-        case script([LaneOp])
+        case script([MailOp])
         /// A script as a control input: it steps after `close` and `endAll`.
-        case control([LaneOp])
+        case control([MailOp])
         /// A normal input that waits behind key 99 (held by a `.hold` request); logs, then runs.
-        case parked(String, [LaneOp] = [])
+        case parked(String, [MailOp] = [])
         /// A follow-up's input: logs, then runs its script.
-        case ran(String, [LaneOp])
+        case ran(String, [MailOp])
         /// A request's result.
         case result(String)
         /// A timer's input.
@@ -76,15 +76,15 @@ struct LaneMachine: TurnMachine {
 
     enum Output {
         case note(String)
-        case send([LaneOp])
+        case send([MailOp])
         case ask(String)
         case askTake(String)
-        case post(LaneNote)
+        case post(MailNote)
     }
 
     enum Query: Sendable {
         case ask(String)
-        /// Logs "answer `label` took" and the labels of `Turn.takeReports()`.
+        /// Logs "answer `label` took" and the labels of `Turn.takeMail()`.
         case take(String)
     }
 
@@ -92,7 +92,7 @@ struct LaneMachine: TurnMachine {
     typealias Reply = Int
     typealias Answer = Bool
     typealias FollowUpSlot = Slot
-    typealias LaneReport = LaneNote
+    typealias Mail = MailNote
 
     var log: [String] = []
     var labels: [RequestID: String] = [:]
@@ -107,7 +107,7 @@ struct LaneMachine: TurnMachine {
         }
     }
 
-    mutating func handle(_ input: Input, _ turn: inout Turn<LaneMachine>) {
+    mutating func handle(_ input: Input, _ turn: inout Turn<MailboxMachine>) {
         switch input {
         case .script(let ops), .control(let ops):
             run(ops, &turn)
@@ -124,9 +124,9 @@ struct LaneMachine: TurnMachine {
         }
     }
 
-    mutating func handleReport(_ report: LaneNote, _ turn: inout ReportTurn<LaneMachine>) {
-        log.append("report \(report.label)")
-        for op in report.then {
+    mutating func handleMail(_ mail: MailNote, _ turn: inout MailTurn<MailboxMachine>) {
+        log.append("mail \(mail.label)")
+        for op in mail.then {
             switch op {
             case .log(let text):
                 log.append(text)
@@ -151,38 +151,38 @@ struct LaneMachine: TurnMachine {
             case .askTake(let label):
                 turn.emit(.askTake(label), for: 0)
             case .post(let label, let then):
-                turn.emit(.post(LaneNote(label, then: then)), for: 0)
+                turn.emit(.post(MailNote(label, then: then)), for: 0)
             case .readNow:
                 log.append("now \(turn.now.wholeSeconds)")
             default:
-                // A report's turn can't take or arm `.afterBatch` work (ReportTurn). A failed test,
+                // A mail's turn can't take or arm `.afterBatch` work (MailTurn). A failed test,
                 // not a crash: a crash ends every test in the process with no summary line.
-                Issue.record("LaneMachine: op \(op) in a report")
+                Issue.record("MailboxMachine: op \(op) in a mail")
             }
         }
     }
 
-    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<LaneMachine>) {
+    mutating func handleLateResult(_ input: Input, _ turn: inout Turn<MailboxMachine>) {
         if case .result(let label) = input { log.append("late \(label)") }
     }
 
-    mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<LaneMachine>) {
+    mutating func handleAbandoned(_ request: RequestID, _ why: Abandonment, _ turn: inout Turn<MailboxMachine>) {
         log.append("abandoned \(labels[request] ?? "?") \(why)")
     }
 
-    mutating func answer(_ query: Query, _ turn: inout Turn<LaneMachine>) -> Bool {
+    mutating func answer(_ query: Query, _ turn: inout Turn<MailboxMachine>) -> Bool {
         switch query {
         case .ask(let label):
             log.append("answer \(label)")
             return true
         case .take(let label):
-            let taken = turn.takeReports().map(\.label)
+            let taken = turn.takeMail().map(\.label)
             log.append((["answer \(label) took"] + taken).joined(separator: " "))
             return true
         }
     }
 
-    mutating func run(_ ops: [LaneOp], _ turn: inout Turn<LaneMachine>) {
+    mutating func run(_ ops: [MailOp], _ turn: inout Turn<MailboxMachine>) {
         for op in ops {
             switch op {
             case .log(let text):
@@ -192,7 +192,7 @@ struct LaneMachine: TurnMachine {
             case .hook:
                 StepHooks.duringStep?()
             case .take:
-                let taken = turn.takeReports().map(\.label)
+                let taken = turn.takeMail().map(\.label)
                 log.append((["took"] + taken).joined(separator: " "))
             case .start(let key):
                 turn.start(key)
@@ -235,7 +235,7 @@ struct LaneMachine: TurnMachine {
             case .askTake(let label):
                 turn.emit(.askTake(label), for: 0)
             case .post(let label, let then):
-                turn.emit(.post(LaneNote(label, then: then)), for: 0)
+                turn.emit(.post(MailNote(label, then: then)), for: 0)
             case .readNow:
                 log.append("now \(turn.now.wholeSeconds)")
             }

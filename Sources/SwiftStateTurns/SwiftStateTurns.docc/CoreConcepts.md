@@ -179,48 +179,50 @@ await board.waitForQuiescence()
 
 API: ``Turn/followUp(_:_:of:_:)``, ``Turn/consumeFollowUp(_:of:)``, ``Turn/followUpPending(_:of:)``, ``FollowUpTrigger``, ``FollowUpArming``, ``TurnActor/waitForQuiescence(_:of:atMost:)``, ``TurnWork``.
 
-## The lane
+## The mailbox
 
-A collaborator on another thread sometimes has to tell the machine something before its next step, such as a transport that closed the output gate on a failure. An awaited `send` can't promise that: the actor may run a step before the hop lands. The core's *lane* can. A machine opts in with a `LaneReport` type and `handleReport`, which steps a report as a control input (holds, `close` and the queue limit don't apply):
+The mailbox is a side channel, like Akka's system queue next to an actor's main queue: post and go, taken at the core's checkpoints.
+
+A collaborator on another thread sometimes has to tell the machine something before its next step, such as a transport that closed the output gate on a failure. An awaited `send` can't promise that: the actor may run a step before the hop lands. The core's *mailbox* can. A machine opts in with a `Mail` type and `handleMail`, which steps a mail as a control input (holds, `close` and the queue limit don't apply):
 
 ```swift
-mutating func handleReport(_ report: Failure, _ turn: inout ReportTurn<Keeper>) {
-    failed = failed ?? report
+mutating func handleMail(_ mail: Failure, _ turn: inout MailTurn<Keeper>) {
+    failed = failed ?? mail
 }
 ```
 
-Its actor stores the core's lane, so `post` reaches it without the actor's isolation:
+Its actor stores the core's mailbox, so `post` reaches it without the actor's isolation:
 
 ```swift
 let core: TurnCore<Keeper>
-nonisolated let lane: TurnLane<Keeper.LaneReport>?
+nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
 
 init() {
     let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
     self.core = core
-    // The core's own lane: a lint checks it's assigned from `core.lane`.
-    self.lane = core.lane
+    // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
+    self.mailbox = core.mailbox
 }
 ```
 
 `post` doesn't await, and works from any thread:
 
 ```swift
-// From any thread, with no await: the core's next step takes the report first.
+// From any thread, with no await: the core's next step takes the mail first.
 _ = keeper.post(.transportFailed)
 ```
 
-Before every step, the driver steps the reports posted before that point, in post order. What a report's step causes (the inputs its outputs send, the parked inputs it frees) steps before the entry's own input, as if the report had stepped in a batch of its own. One entry steps at most `laneCapacity` reports (`TurnCore.init`, default 8), and the rest step in a later batch, so a report whose handler posts another can't starve other work. A full lane refuses a post: `post` returns false, `refusedReports` counts it, and the first pending report wins. A step that must see a report posted while it runs takes the lane itself:
+Before every step, the driver steps the mail posted before that point, in post order. What a mail's step causes (the inputs its outputs send, the parked inputs it frees) steps before the entry's own input, as if the mail had stepped in a batch of its own. One entry steps at most `mailboxCapacity` mail (`TurnCore.init`, default 8), and the rest step in a later batch, so a mail whose handler posts another can't starve other work. A full mailbox refuses a post: `post` returns false, `refusedMail` counts it, and the first pending mail wins. A step that must see a mail posted while it runs takes the mailbox itself:
 
 ```swift
 // A failure posted while this step ran stops its output.
-if let failure = turn.takeReports().first { failed = failed ?? failure }
+if let failure = turn.takeMail().first { failed = failed ?? failure }
 if failed == nil { turn.emit(.sync, for: .land) }
 ```
 
-A take is an environment read, like `now`: a replay serves the recorded take. A machine whose `LaneReport` is `Never` (the default) has no lane and pays nothing for it.
+A take is an environment read, like `now`: a replay serves the recorded take. A machine whose `Mail` is `Never` (the default) has no mailbox and pays nothing for it.
 
-API: ``TurnMachine/LaneReport``, ``TurnMachine/handleReport(_:_:)``, ``TurnLane``, ``TurnActor/lane`` (from ``TurnCore/lane``), ``TurnActor/post(_:)``, ``Turn/takeReports()``, ``TurnCore/init(_:queueLimit:maxReleasesPerBatch:clock:laneCapacity:)``, ``TurnStats``.
+API: ``TurnMachine/Mail``, ``TurnMachine/handleMail(_:_:)``, ``TurnMailbox``, ``TurnActor/mailbox`` (from ``TurnCore/mailbox``), ``TurnActor/post(_:)``, ``Turn/takeMail()``, ``TurnCore/init(_:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)``, ``TurnStats``.
 
 ## Batch and `maxReleasesPerBatch`
 
@@ -276,7 +278,7 @@ API: ``CallerCancellation``.
 | Withdraw token | Can the sender give up an input before it steps? | `WithdrawToken`, `revoke` |
 | Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
 | Follow-up | How does a key ask for one step later, however often it asks? | `followUp`, `consumeFollowUp`, `waitForQuiescence` |
-| Lane | How does another thread tell the machine something before its next step? | `LaneReport`, `post`, `takeReports` |
+| Mailbox | How does another thread tell the machine something before its next step? | `Mail`, `post`, `takeMail` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
 | What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |

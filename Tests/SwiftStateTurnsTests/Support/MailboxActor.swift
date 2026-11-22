@@ -1,39 +1,39 @@
 import Foundation
 import SwiftStateTurns
 
-/// The lane machine's actor. Outputs go under key 0, which `started` starts. A flush records each
+/// The mailbox machine's actor. Outputs go under key 0, which `started` starts. A flush records each
 /// note in the fixture's trace and opens "flushed `text`"; it sends, asks and posts as its outputs
 /// say, as a collaborator between steps would.
-actor LaneActor: TurnActor {
-    let core: TurnCore<LaneMachine>
-    nonisolated let lane: TurnLane<LaneNote>?
+actor MailboxActor: TurnActor {
+    let core: TurnCore<MailboxMachine>
+    nonisolated let mailbox: TurnMailbox<MailNote>?
     nonisolated let fixture: Fixture
     nonisolated let clock: TestClock
-    /// Where each lane wake started, as a count of the machine's log lines.
+    /// Where each mailbox wake started, as a count of the machine's log lines.
     nonisolated let wakes = JobLog()
     /// Where each continuation job started, as a count of the machine's log lines.
     nonisolated let jobs = JobLog()
-    /// Live: every lane hand-out the core recorded, in order. Replay: the divergences.
-    nonisolated let records = LaneRecords()
+    /// Live: every mailbox hand-out the core recorded, in order. Replay: the divergences.
+    nonisolated let records = MailRecords()
     /// How deep flushes nest now, and the deepest seen.
     private var flushDepth = 0
     private(set) var deepestFlush = 0
     /// Runs once at the start of the next continuation job, before it captures its due
     /// follow-ups.
     nonisolated let atNextJob = OneShot()
-    /// Runs once at the next entry's boundary (after its lane take, before its own work).
+    /// Runs once at the next entry's boundary (after its mailbox take, before its own work).
     nonisolated let atNextBoundary = OneShot()
 
-    init(fixture: Fixture, maxReleasesPerBatch: Int, laneCapacity: Int, queueLimit: Int = 64, replay: [LaneRecordEntry<LaneNote>]? = nil) {
+    init(fixture: Fixture, maxReleasesPerBatch: Int, mailboxCapacity: Int, queueLimit: Int = 64, replay: [MailRecordEntry<MailNote>]? = nil) {
         let clock = TestClock(fixture: fixture)
         self.fixture = fixture
         self.clock = clock
-        let core = TurnCore(LaneMachine(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock, laneCapacity: laneCapacity)
+        let core = TurnCore(MailboxMachine(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock, mailboxCapacity: mailboxCapacity)
         core.onDiagnostic = { event in fixture.observe(event) }
         let wakes = self.wakes
         let jobs = self.jobs
         // Between steps, so the reads are allowed.
-        core.onLaneWakeForTesting = { [unowned core] in
+        core.onMailboxWakeForTesting = { [unowned core] in
             wakes.mark(core.read { $0.log.count })
             fixture.openCounted("wake")
         }
@@ -47,29 +47,29 @@ actor LaneActor: TurnActor {
         core.onEntryBoundaryForTesting = { atNextBoundary.take()?() }
         let records = self.records
         if let replay {
-            core.replayReports(replay)
+            core.replayMail(replay)
             core.onReplayDivergence = { records.diverged($0) }
         } else {
-            core.onReportsTaken = { key, reports, now in records.append(LaneRecordEntry(key: key, reports: reports, now: now)) }
+            core.onMailTaken = { key, mail, now in records.append(MailRecordEntry(key: key, mail: mail, now: now)) }
         }
         self.core = core
-        self.lane = core.lane
+        self.mailbox = core.mailbox
     }
 
     /// An actor with key 0 started, so its outputs aren't dropped.
     static func started(
         _ fixture: Fixture = Fixture(),
         maxReleasesPerBatch: Int = 64,
-        laneCapacity: Int = 8,
+        mailboxCapacity: Int = 8,
         queueLimit: Int = 64,
-        replay: [LaneRecordEntry<LaneNote>]? = nil
-    ) async -> LaneActor {
-        let actor = LaneActor(fixture: fixture, maxReleasesPerBatch: maxReleasesPerBatch, laneCapacity: laneCapacity, queueLimit: queueLimit, replay: replay)
+        replay: [MailRecordEntry<MailNote>]? = nil
+    ) async -> MailboxActor {
+        let actor = MailboxActor(fixture: fixture, maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit, replay: replay)
         await actor.send(.control([.start(0)]))
         return actor
     }
 
-    @concurrent nonisolated func perform(_ effect: LaneMachine.Effect) async -> LaneMachine.Input? {
+    @concurrent nonisolated func perform(_ effect: MailboxMachine.Effect) async -> MailboxMachine.Input? {
         switch effect {
         case .work(let label):
             fixture.open("at \(label)")
@@ -79,7 +79,7 @@ actor LaneActor: TurnActor {
         }
     }
 
-    func flush(_ outputs: consuming [LaneMachine.Output]) {
+    func flush(_ outputs: consuming [MailboxMachine.Output]) {
         flushDepth += 1
         deepestFlush = max(deepestFlush, flushDepth)
         defer { flushDepth -= 1 }
@@ -100,9 +100,9 @@ actor LaneActor: TurnActor {
         }
     }
 
-    /// Sets the lane check's hook: `body` runs at each check, after its watermark is read.
-    func onLaneCheck(_ body: (@Sendable () -> Void)?) {
-        core.onLaneCheckForTesting = body
+    /// Sets the mailbox check's hook: `body` runs at each check, after its watermark is read.
+    func onMailboxCheck(_ body: (@Sendable () -> Void)?) {
+        core.onMailboxCheckForTesting = body
     }
 
     var log: [String] { core.read { $0.log } }
@@ -120,13 +120,13 @@ actor LaneActor: TurnActor {
     }
 }
 
-/// A live lane actor's record, or a replay's divergences.
-final class LaneRecords: @unchecked Sendable {
+/// A live mailbox actor's record, or a replay's divergences.
+final class MailRecords: @unchecked Sendable {
     private let lock = NSLock()
-    private var recorded: [LaneRecordEntry<LaneNote>] = []
+    private var recorded: [MailRecordEntry<MailNote>] = []
     private var divergences: [TurnReplayDivergence] = []
 
-    func append(_ entry: LaneRecordEntry<LaneNote>) {
+    func append(_ entry: MailRecordEntry<MailNote>) {
         lock.withLock { recorded.append(entry) }
     }
 
@@ -134,7 +134,7 @@ final class LaneRecords: @unchecked Sendable {
         lock.withLock { divergences.append(divergence) }
     }
 
-    var entries: [LaneRecordEntry<LaneNote>] { lock.withLock { recorded } }
+    var entries: [MailRecordEntry<MailNote>] { lock.withLock { recorded } }
     var diverged: [TurnReplayDivergence] { lock.withLock { divergences } }
 }
 

@@ -20,16 +20,16 @@ public protocol TurnMachine: Sendable {
     /// Names a key's coalesced follow-ups apart (`Turn.followUp`): one pending per key and slot.
     /// Default: none.
     associatedtype FollowUpSlot: Hashable & Sendable = Never
-    /// What another thread tells the machine through the core's lane (`TurnActor.post`), taken
-    /// before the next step. Default: none, and the lane's paths fold away.
-    associatedtype LaneReport: Sendable = Never
+    /// What another thread tells the machine through the core's mailbox (`TurnActor.post`), taken
+    /// before the next step. Default: none, and the mailbox's paths fold away.
+    associatedtype Mail: Sendable = Never
 
     /// How `input` is admitted. Default: normal, with no hold and no scope.
     ///
     /// Whether it is `.control` or `.normal` must depend on the input alone, never on the
-    /// machine's state: `sendAndWait(.cancelsCall)` reads it before the entry takes the lane, so
-    /// a report stepped in between must not change it (debug builds check). A `.normal` case's
-    /// hold, scope and token may depend on state; they are read after the lane.
+    /// machine's state: `sendAndWait(.cancelsCall)` reads it before the entry takes the mailbox, so
+    /// a mail stepped in between must not change it (debug builds check). A `.normal` case's
+    /// hold, scope and token may depend on state; they are read after the mailbox.
     func inputPolicy(for input: Input) -> InputPolicy<Key>
     mutating func handle(_ input: Input, _ turn: inout Turn<Self>)
     /// A request closed without its completion. Default: nothing.
@@ -37,10 +37,10 @@ public protocol TurnMachine: Sendable {
     /// The result of a request that had already closed: its worker has returned. Default: nothing.
     mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Self>)
     mutating func answer(_ query: Query, _ turn: inout Turn<Self>) -> Answer
-    /// A report from the lane, stepped as a control input: holds, `close`, the queue limit and
-    /// withdrawal don't apply, and it has no caller to reply to. Its `ReportTurn` can't arm
+    /// A mail from the mailbox, stepped as a control input: holds, `close`, the queue limit and
+    /// withdrawal don't apply, and it has no caller to reply to. Its `MailTurn` can't arm
     /// `.afterBatch` work (plan §3.9).
-    mutating func handleReport(_ report: LaneReport, _ turn: inout ReportTurn<Self>)
+    mutating func handleMail(_ mail: Mail, _ turn: inout MailTurn<Self>)
 }
 
 extension TurnMachine {
@@ -55,8 +55,8 @@ extension TurnMachine where Query == Never, Answer == Never {
     }
 }
 
-extension TurnMachine where LaneReport == Never {
-    @inlinable public mutating func handleReport(_ report: Never, _ turn: inout ReportTurn<Self>) {
-        switch report {}
+extension TurnMachine where Mail == Never {
+    @inlinable public mutating func handleMail(_ mail: Never, _ turn: inout MailTurn<Self>) {
+        switch mail {}
     }
 }
