@@ -213,7 +213,7 @@ func testLandKeeperAllowedEvents() async throws {
 }
 
 // Helper for async assertions
-func waitFor(
+private func waitFor(
     _ description: String,
     timeout: Duration = .seconds(2),
     interval: Duration = .milliseconds(10),

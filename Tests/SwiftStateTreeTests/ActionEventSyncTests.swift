@@ -7,6 +7,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+import SwiftStateTreeTestSupport
 @testable import SwiftStateTreeTransport
 
 // Import MockLandKeeperTransport from test module
@@ -110,6 +111,9 @@ final class MockLandKeeperTransport: LandKeeperTransport, @unchecked Sendable {
     var lastTarget: CoreEventTarget? { lock.withLock { last?.target } }
     /// `count` as each sync phase saw it, in turn order.
     var syncObservedCounts: [Int] { lock.withLock { observed } }
+    /// "sync count `n`" for each sync phase, as it runs: a test waits on the sync it needs
+    /// instead of polling `syncObservedCounts` against a deadline (#458). Not cleared by `reset`.
+    let syncLog = EventLog()
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: CoreEventTarget) async {}
     func syncNowFromTransport() async {}
@@ -123,14 +127,16 @@ final class MockLandKeeperTransport: LandKeeperTransport, @unchecked Sendable {
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        lock.withLock {
+        let seen: Int? = lock.withLock {
             events += turnEvents.count
             if let final = turnEvents.last { last = final }
-            if includeSync {
-                phases += 1
-                if let synced = state as? ActionEventSyncTestState { observed.append(synced.count) }
-            }
+            guard includeSync else { return nil }
+            phases += 1
+            guard let synced = state as? ActionEventSyncTestState else { return nil }
+            observed.append(synced.count)
+            return synced.count
         }
+        if let seen { syncLog.append("sync count \(seen)") }
         return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
 
@@ -423,11 +429,9 @@ func testActionWithTickTriggersSync() async throws {
     let action = IncrementAction(amount: 5)
     _ = try await keeper.sendAction(action, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait (bounded) for a sync request that sees the action's change: a sync before the
-    // tick applied it would see the old count and does not count.
-    await waitFor("a sync that includes the action's change", timeout: .seconds(2)) {
-        mockTransport.syncObservedCounts.contains(5)
-    }
+    // Wait for a sync phase that sees the action's change: a sync before the tick applied it
+    // would see the old count and does not count. Woken by the sync itself, not a deadline.
+    #expect(await mockTransport.syncLog.waitFor("sync count 5"), "no sync saw the action's change")
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
@@ -496,11 +500,9 @@ func testEventWithTickTriggersSync() async throws {
     let event = AnyClientEvent(IncrementEvent(amount: 3))
     try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
     
-    // Wait (bounded) for a sync request that sees the event's change: a sync before the
-    // tick applied it would see the old count and does not count.
-    await waitFor("a sync that includes the event's change", timeout: .seconds(2)) {
-        mockTransport.syncObservedCounts.contains(3)
-    }
+    // Wait for a sync phase that sees the event's change: a sync before the tick applied it
+    // would see the old count and does not count. Woken by the sync itself, not a deadline.
+    #expect(await mockTransport.syncLog.waitFor("sync count 3"), "no sync saw the event's change")
     
     // Assert: Verify state was modified
     let state = await keeper.currentState()
