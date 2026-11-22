@@ -361,7 +361,7 @@ struct DifferentialHarnessHooksTests {
 
     // MARK: Named observations through the router
 
-    @Test("admittedNotRegistered and the join commits through a real router attempt: keyed by the router's attempt number")
+    @Test("admittedNotRegistered and the join commits through a real router attempt: keyed by the router's attempt number", .enabled(if: isDebugBuild, "reads join and drain probes recorded only in DEBUG builds (#748)"))
     func observationsThroughTheRouter() async throws {
         let h = try await HooksHarness.make(autoStartLoops: false)
         // The in-turn join's observations.

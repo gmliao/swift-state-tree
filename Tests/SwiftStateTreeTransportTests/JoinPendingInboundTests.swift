@@ -450,7 +450,7 @@ struct JoinPendingInboundTests {
         #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
     }
 
-    @Test("A disconnect while a drained action waits in its resolver: the rest is dispatched, the action is never applied, nothing is sent, and its slot is released")
+    @Test("A disconnect while a drained action waits in its resolver: the rest is dispatched, the action is never applied, nothing is sent, and its slot is released", .enabled(if: isDebugBuild, "reads join and drain probes recorded only in DEBUG builds (#748)"))
     func disconnectInsideDispatchedAction() async throws {
         let h = try await PendingHarness.make()
         let resolver = TestGate()

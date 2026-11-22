@@ -387,7 +387,7 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
-    @Test("At joinSyncRequested an in-turn join is registered and not flipped; its sync-only turn flips it after release (#555)")
+    @Test("At joinSyncRequested an in-turn join is registered and not flipped; its sync-only turn flips it after release (#555)", .enabled(if: isDebugBuild, "reads join and drain probes recorded only in DEBUG builds (#748)"))
     func joinSyncRequestedIsRegisteredNotFlipped() async throws {
         // Tickless: the join's own turn consumes its OnJoin, so only the sync turn is missing.
         let fixture = await makeFixture(tick: false)

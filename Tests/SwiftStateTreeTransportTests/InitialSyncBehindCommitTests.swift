@@ -88,7 +88,11 @@ private func setTotal(_ state: inout BehindCommitState, _ action: BehindCommitSe
 @Suite("A firstSync whose state read a sync commit passed (#564)")
 struct InitialSyncBehindCommitTests {
 
-    @Test("A cycle commits during a joiner's firstSync read: the joiner gets its whole view from the next cycle", arguments: [true, false])
+    @Test(
+        "A cycle commits during a joiner's firstSync read: the joiner gets its whole view from the next cycle",
+        .enabled(if: isDebugBuild, "reads join and drain probes recorded only in DEBUG builds (#748)"),
+        arguments: [true, false]
+    )
     func cycleCommitsDuringFirstSyncRead(periodic: Bool) async throws {
         let definition = makeBehindCommitLand(periodic: periodic)
         let transport = BehindCommitTransport()
