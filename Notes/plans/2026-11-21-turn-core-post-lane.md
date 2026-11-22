@@ -314,6 +314,7 @@ Together with products first (§3.4), a report's key now fixes its place against
 - **The clock.** With a recorder set (`onReportsTaken`), every live check that steps a report reads `segmentNow()` for the record, even when no step reads `now`; replay serves the recorded `now` and reads no clock for it. #700's replay-clock contract states this.
 - **`turn.now` would differ.** The report's step would read the next dispatch's time, not the wake's. So each `before` entry records the `now` of the check that stepped it, and replay serves that `now` inside the report's step. It applies to every `before` entry, trailing or not; for the others it is the same value the entry reads anyway.
   - The served `now` is scoped to the report's step. It doesn't set the entry's cached `now`, so the replaying entry's own input and the later steps of its segment still read the entry's time, not the wake's.
+- **A continuation job can replay after the next input (known gap, #745).** A report can't arm `.afterBatch` work (`ReportTurn`), but an input its `flush` sends can. Live, the wake's epilogue schedules that work's continuation job, which can run before a later input X. Replay steps the products in X's products-first segment, so the job runs after X. Replay doesn't record where a continuation job ran relative to the next external input, with or without the lane. #745 fixes it in the core later by recording each input's admission ordinal; the interface doesn't change. Test 13o names the reorder as known.
 
 A live post's position depends on timing; the record fixes it.
 
