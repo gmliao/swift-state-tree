@@ -1,6 +1,6 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 1, plan only, for Review's plan check and Code-1's turn-core fit read. No code until Review's GO, and none in a slice whose core gap (§7) is still open.
+**Status:** rev 1 (§7's gaps G1, G2, G3 and G5 filed as #758–#761 on 2026-11-22), plan only, for Review's plan check and Code-1's turn-core fit read. No code until Review's GO, and none in a slice whose core gap (§7) is still open.
 
 Code pointers are at main 8e622a20. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`.
 
@@ -28,7 +28,7 @@ Code pointers are at main 8e622a20. `LK` is `Sources/SwiftStateTree/Runtime/Land
 | Post lane, now the mailbox (#725) | merged as #738 (names: `Mail`, `post`, `takeMail`, `handleMail`, `TurnMailbox`) |
 | Lifecycle handler shapes (#593) | merged as #751; join and resolver items still open, and #700 takes them (§3.4, §5 K5–K6) |
 | Shared deadline timer (#621 item 2) | PR #753, merge round; needed by K8 only |
-| The core gaps in §7 | not filed yet; G1 blocks K2 |
+| The core gaps in §7 | filed 2026-11-22: #758 (G1, blocks K2), #759 (G2), #760 (G3), #761 (G5) |
 
 ## 2. The keeper today, in short
 
@@ -70,7 +70,7 @@ Code pointers are at main 8e622a20. `LK` is `Sources/SwiftStateTree/Runtime/Land
 
 The adapter's answer is `CommitTools`, passed in through a `Query` and never stored (rewrite plan §2.1). It works because the adapter's non-plain data is touched in one routine, the commit. The keeper touches its non-plain data in every step: every input handler can write `State`. A query per step would be the coordinator-shaped API that #546's decision calls a review finding. An actor-side box with a borrow assertion would be a hand-rolled workaround for a core gap (core-gap-fix-core-first).
 
-**Proposal (G1, a core issue): the core owns a second, unchecked value next to the machine, and lends it only to steps.**
+**Proposal (G1, #758): the core owns a second, unchecked value next to the machine, and lends it only to steps.**
 - Sketch: `associatedtype World = Void`; `TurnCore.init(_:world:…)`; `Turn.world`, a `_modify` accessor reachable only through the step's `Turn`, plus `MailTurn.world`; and `flush` gets it read-only.
 - The contract is a documentation rule the macro can't check: nothing reachable from the world is changed except through it. The keeper keeps that by construction: the world's references (collector, recorder, port box) are created by the keeper and handed to no one else.
 - This keeps "changed only in steps" for the land's data, which the `CommitTools` route gives up.
@@ -222,7 +222,7 @@ Actions and client events are per-message. #546's decision budgets about +100 in
 | Action, tick land | intake as a query, as above, then the caller awaits the result. Today's `awaitActionResult` continuation becomes a reply waiter: one waiter for one continuation | about equal; K2's A/B measures it |
 | Action, tickless | `sendAndWait`; the reply after the record request | one waiter, replacing `awaitInputTurn`'s continuation |
 
-**G5, a candidate core issue.** A `send` that steps at once could return the step's admission (refused, accepted). It would make the query path unnecessary. Code-1 judges whether that fits the core. Until then, the query fast path above is the plan.
+**G5, a candidate core issue (#761).** A `send` that steps at once could return the step's admission (refused, accepted). It would make the query path unnecessary. Code-1 judges whether that fits the core. Until then, the query fast path above is the plan.
 
 ### 3.9 Ticks and the sync loop (Q3)
 
@@ -364,11 +364,11 @@ Each slice's PR lists the tests whose hold moved.
 
 | # | Gap | Tracked | Blocks | Proposed |
 |---|---|---|---|---|
-| G1 | Step-lent non-plain world: the keeper's land state, payloads, sessions, collector, recorder and port can't be machine state (§3.1) | **untracked** | K2 | a new core issue; Code-1 to judge the shape |
-| G2 | A production `TurnClock` over `safeTaskSleep` | planned in #546 B1, not started | K8 | its own core issue, so the keeper isn't gated on B1 |
-| G3 | Specialization of a **generic** machine (`TurnCore<KeeperMachine<State>>`): `check-turns-inlinable.sh` and #624 checked concrete bench machines only | **untracked** | K2's A/B reading | a core issue: extend the check to a generic machine instantiated from another module |
+| G1 | Step-lent non-plain world: the keeper's land state, payloads, sessions, collector, recorder and port can't be machine state (§3.1) | **#758** (foundation) | K2 | Code-1 to judge the shape |
+| G2 | A production `TurnClock` over `safeTaskSleep` | **#759** (foundation); planned in #546 B1, which had no issue | K8 | whichever of K8 and B1 comes first adds it |
+| G3 | Specialization of a **generic** machine (`TurnCore<KeeperMachine<State>>`): `check-turns-inlinable.sh` and #624 checked concrete bench machines only | **#760** (foundation) | K2's A/B reading | extend the check to a generic machine instantiated from another module; a core change only if it fails |
 | G4 | One sleeper for all deadlines | #753 (#621 item 2) | K8 | — |
-| G5 | `send` returns `Void`; a synchronous admission answer would replace the query fast path (§3.8) | **untracked** | nothing (the query path works) | a candidate; Code-1 to judge |
+| G5 | `send` returns `Void`; a synchronous admission answer would replace the query fast path (§3.8) | **#761** (before-release) | nothing (the query path works) | a candidate; Code-1 to judge |
 | G6 | Effect launch and hop cost (`request` about 13.1k instr) | #621 item 3 | only if K5's A/B regresses | — |
 | G7 | Waiter table cost (`call` about 2.9k instr) | #621 item 4 | only if K2's A/B regresses on actions | — |
 | G8 | The mailbox's per-entry cost has no budget | post-lane §3.8 open item | K4 sets it | — |
