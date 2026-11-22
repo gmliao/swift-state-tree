@@ -300,6 +300,10 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 
 A periodic game tick is a timer that re-arms itself, not a `while` loop. The tick's input carries the instant it was scheduled for, and its step does the tick's work and arms the next tick. When the next tick falls after a late fire is the machine's choice. The core's tests re-arm at the first point of the period's grid after `turn.now`: with a 2-second period, a tick due at 2 s that fires at 7 s re-arms at 8 s, so the missed ticks are skipped, not run as a backlog. Each tick is an input like any other, a test moves the clock to fire it, and ending the key stops the ticks.
 
+One timer in each core serves every request deadline and every timer. The core keeps one sleeping task, which sleeps until the earliest instant that is set. Due entries fire in instant order, and entries at the same instant fire in the order they were set. Each one fires as its own input, in its own batch. One wake fires at most 64 entries back to back; the rest fire after the other work already queued on the actor. Cancelling a request or replacing a timer wakes nothing: the old entry stays until its instant, or until the core drops it, and then does nothing.
+
+A clock's sleep must not return before its instant, unless its task is cancelled. The core fires the entries due at the instant it slept until, without reading the clock again, so a clock that woke early would fire them early.
+
 API: `timer(at:for:_:)`, `now`, `TurnClock`, `TurnInstant`.
 
 ### Follow-ups

@@ -300,6 +300,10 @@ turn.timer(at: turn.now + .seconds(60), for: .player(player), .idleKick(player: 
 
 週期性的遊戲 tick 是一個會自己重新設定的 timer，不是 `while` 迴圈。tick 的 input 帶著它原本排定的時刻，它的 step 做 tick 的工作並設定下一個 tick。延遲觸發後下一個 tick 排在何時，由狀態機決定。core 的測試把它排在 `turn.now` 之後、週期格點上的第一個時刻：週期 2 秒、原定在 2 秒的 tick 若在 7 秒才觸發，就重新設定在 8 秒，錯過的 tick 被跳過，而不是一次補跑。每個 tick 都是一般的 input，測試推進時鐘就能觸發它，結束該 key 就會停止 tick。
 
+每個 core 用一個計時器處理所有 request 的 deadline 與所有 timer。core 保留一個睡眠中的 task，它睡到已設定的最早時刻為止。到期的項目依時刻先後觸發，同一時刻的項目依設定的先後觸發。每一個都作為自己的 input，在自己的 batch 中觸發。一次喚醒最多連續觸發 64 個，其餘的排在 actor 上已排隊的其他工作之後。取消 request 或取代 timer 不會喚醒任何東西：舊的項目留到它的時刻，或留到 core 把它丟掉，到時什麼都不做。
+
+時鐘的 sleep 不可在它的時刻之前返回，除非它的 task 被取消。core 觸發的是它睡到的那個時刻已到期的項目，不再讀一次時鐘，所以提早醒來的時鐘會讓它們提早觸發。
+
 API：`timer(at:for:_:)`、`now`、`TurnClock`、`TurnInstant`。
 
 ### Follow-up

@@ -1,6 +1,14 @@
 # Turn core: one timer for all deadlines (#621 item 2)
 
-**Status:** Rev 3: step 0 passed (continue, §5.1); the wake's per-entry rule follows #738 round 4's stale-arrival rule (§3.4). Rev 2 GO. Implementation on `refactor/621-shared-deadline-timer`, after #738 merges.
+**Status:** Rev 3: step 0 passed (continue, §5.1); the wake's per-entry rule follows #738 round 4's stale-arrival rule (§3.4). Rev 2 GO. Implemented on `refactor/621-shared-deadline-timer`; it takes #738 when that merges (the live entry's re-check after `beginEntry()` and `entryBoundary()` come with #738's lane).
+
+## Implementation notes (where the code differs from this plan)
+
+- **Commit order.** GeneratedOrder's monotonic ops and `OrderModel`'s relative timer instants (§4.4, planned as commit 4) are in the deadlines commit: the monotonic `TestClock` no longer wakes a sleep for a gate opened by name, so the harness would fail at that commit otherwise.
+- **A wake hook.** `onTimerWakeForTesting` (package, one nil check per wake) is called at each wake that isn't foreign, with whether it was superseded. The tests wait for "timer wake #n" and "superseded wake #n" instead of polling the counters, which stay. `TestClock` also opens "sleeping deadline N #k" when a sleep starts waiting.
+- **`liveTimerInputsForTesting`** is in every build, not DEBUG only: it is `rt.timers.count`, with nothing recorded, so a release test run needs no gate (`Notes/solutions/2026-11-22-a-test-that-reads-a-debug-only-probe-fails-in-a-release-test-run.md`).
+- **Test 4.** A release horizon at 9 makes a later sleep until 5 return at once, so the new sleeper fires 5 then 9 without a release through 5. The superseded wake is checked by its hook and count; the log is 5, then 9.
+- **Mutants not run.** "A rebuild that re-arms the sleeper" needs a structural change to apply; "a timer's input kept on the heap entry" can't be written while `DeadlineEntry` is plain data. 9's wasted-hop variant still pins the first (`sleeperStartsForTesting == 1`, no `"cancelled deadline 5"`).
 
 ## Rev 3: what changed
 
