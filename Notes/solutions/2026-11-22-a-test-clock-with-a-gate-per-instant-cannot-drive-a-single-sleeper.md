@@ -34,7 +34,7 @@ Independent gates let a test say "60 has passed" while 5 hasn't. Real time never
 ## Fix
 
 `TestClock` became monotonic, after `swift-clocks`' `TestClock`:
-- `release(through:)` raises a horizon and wakes every sleep until an instant at or before it, in instant order. A later sleep until a released instant returns at once.
+- `release(through:)` moves `now` up to the instant, raises a horizon and wakes every sleep until an instant at or before it, in instant order. A later sleep until a released instant returns at once. Moving `now` first matters: a release that left `now` behind let a sleep return before its instant, which the clock contract forbids, and tests then pinned fire times the production clock can't produce.
 - `advance(to:)` is `set` plus `release(through:)`. `set` never moves `now` back.
 - A sleep that starts waiting opens `"sleeping deadline N #k"`, and `holdAfterWake(N)` holds a woken sleep at `"resume deadline N"`, so tests wait for events instead of polling.
 
@@ -43,5 +43,6 @@ Every `f.open("deadline N")` became a release. The generated-order harness advan
 ## Prevention
 
 - A test clock models time as one ordered horizon, never one gate per instant: the code under test may share one sleep across many deadlines.
+- A test clock's wake never runs ahead of its own `now`: releasing an instant moves `now` there first.
 - A test that needs "the fire ran late" moves `now` forward (`set`); it never releases a later instant while an earlier one is pending, unless that is what it checks.
 - When a change merges per-item sleeps into one, grep the tests for gates or waits named after single instants first: each one assumes a sleep per item.
