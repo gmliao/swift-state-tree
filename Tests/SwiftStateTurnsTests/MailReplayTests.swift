@@ -245,6 +245,9 @@ struct MailReplayTests {
             await a.send(.parked("P", [.note("P done")]))
             // The request closes; its hold on 99 stays until the worker returns.
             await a.send(.control([.end(1)]))
+            // The closed request's deadline task wakes early and returns stale: no entry, no
+            // boundary. Waited for, so the test doesn't lean on that.
+            await a.fixture.reach("stale deadline #1")
             Self.postAtBoundary(a, on, MailNote("R", then: [.log("R")]))
             a.fixture.open("gate nilr")
             await a.fixture.reach("flushed P done")
@@ -252,7 +255,7 @@ struct MailReplayTests {
         #expect(run.live == ["abandoned nilr keyEnded", "mail R", "R", "parked P"])
         #expect(run.replayed == run.live)
         // R only logs, so the order alone can't tell the boundary: its key names it, after the
-        // retire's own ordinal.
+        // retire's own ordinal (the stale deadline took none).
         #expect(run.record.map(\.key) == [.before(step: 9, index: 0)])
         #expect(run.diverged.isEmpty)
     }
@@ -327,6 +330,9 @@ struct MailReplayTests {
             }
             a.clock.set(seconds: 20)
             await a.send(.script([.readNow]))
+            // S1's post runs in replay too, so a real B sits in the mailbox, which a replay never
+            // reads: the B that stepped was the staged one. Live, the wake took it.
+            #expect(a.mailbox?.isEmpty == on)
         }
         #expect(run.live == ["mail A", "now 10", "mail B", "now 10", "now 20"])
         // Replay steps A, S1, B and S2 in X's products-first segment: S2 reads the wake's 10,
@@ -337,14 +343,19 @@ struct MailReplayTests {
 
     @Test("13r: a wake's mail that a previous segment's last check steps in replay serves the wake's now to its send")
     func wakeNowInAPreviousSegment() async {
+        let afterY = Released()
         let run = await Self.liveThenReplay { a, on in
             a.clock.set(seconds: 5)
-            await a.send(.script([.readNow]))
+            // Y: dirty (its note), so its segment runs and ends with a check.
+            await a.send(.script([.readNow, .note("y")]))
             a.clock.set(seconds: 10)
             if on {
                 _ = a.post(MailNote("A", then: [.send([.readNow])]))
                 await a.fixture.reach("wake #1")
                 _ = await a.log
+            } else {
+                // Before X: A stepped at Y's last check, in Y's segment, reading the wake's 10.
+                afterY.add((await a.log).joined(separator: ","))
             }
             a.clock.set(seconds: 20)
             await a.send(.script([.readNow]))
@@ -352,28 +363,130 @@ struct MailReplayTests {
         #expect(run.live == ["now 5", "mail A", "now 10", "now 20"])
         // Replay steps A at Y's last check, in Y's segment: A's send reads the wake's 10, not
         // Y's cached 5.
+        #expect(afterY.names == [Array(run.live.prefix(while: { $0 != "now 20" })).joined(separator: ",")])
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }
 
-    @Test("13s: a mail posted at a cancellation's boundary replays after the withdrawal: the parked call isn't released")
+    @Test("13s: a cancellation takes the mailbox and then an ordinal: a mail posted at its boundary steps after the withdrawal (live only: a replay refuses .cancelsCall)")
     func mailAtACancellationBoundary() async {
-        let outcomes = Released()
+        let a = await MailboxActor.started()
+        await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+        let p = Task { try await a.sendAndWait(.parked("P"), cancellation: .cancelsCall) }
+        await a.fixture.reach("park #1")
+        // M ends key 1, which frees the hold P waits behind.
+        Self.postAtBoundary(a, true, MailNote("M", then: [.end(1), .note("M done")]))
+        p.cancel()
+        #expect(outcome(await boundedResult(p)) == "cancelled")
+        await a.fixture.reach("flushed M done")
+        // Ahead of the withdrawal, M would release P, which would step and answer.
+        #expect(await a.log == ["mail M", "abandoned h keyEnded"])
+        // M's key names the boundary, after the cancellation's own ordinal.
+        #expect(a.records.entries.map(\.key) == [.before(step: 6, index: 0)])
+    }
+
+    @Test("13t: a stale deadline takes no ordinal: one that lands before X live and after X in replay leaves the mail between them in place")
+    func staleDeadlineAnyWhere() async {
         let run = await Self.liveThenReplay { a, on in
-            await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
-            let p = Task { try await a.sendAndWait(.parked("P"), cancellation: .cancelsCall) }
-            await a.fixture.reach("park #1")
-            // M ends key 1, which frees the hold P waits behind.
-            Self.postAtBoundary(a, on, MailNote("M", then: [.end(1), .note("M done")]))
-            p.cancel()
-            outcomes.add(outcome(await boundedResult(p)))
-            if on { await a.fixture.reach("flushed M done") }
-            _ = await a.log
+            a.fixture.open("hold cancelled deadline 60")
+            await a.send(.script([.start(1), .request(gate: "g", key: 1, deadlineSeconds: 60)]))
+            await a.fixture.reach("at g")
+            a.fixture.open("gate g")
+            // The completion closes the request and cancels its deadline task, held here.
+            await a.fixture.reach("cancelled deadline 60")
+            if on {
+                a.fixture.open("release cancelled deadline 60")
+                await a.fixture.reach("stale deadline #1")
+                _ = a.post(MailNote("M", then: [.log("M")]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+            await a.send(.script([.log("X")]))
+            if !on {
+                a.fixture.open("release cancelled deadline 60")
+                await a.fixture.reach("stale deadline #1")
+            }
         }
-        #expect(run.live == ["mail M", "abandoned h keyEnded"])
-        // Replayed ahead of the withdrawal, M would release P, which would step and answer.
+        #expect(run.live.suffix(3) == ["mail M", "M", "X"])
         #expect(run.replayed == run.live)
-        #expect(outcomes.names == ["cancelled", "cancelled"])
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13u: a normal .cancelsCall call cancelled before entry makes no cancellation entry: the next mail's key counts no ordinal for it")
+    func preCancelledCallTakesNoOrdinal() async {
+        let a = await MailboxActor.started()
+        let before = await a.stats.cancelledCalls
+        let p = Task { () async throws -> Int in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await a.sendAndWait(.script([.log("P")]), cancellation: .cancelsCall)
+        }
+        #expect(outcome(await boundedResult(p)) == "cancelled")
+        _ = a.post(MailNote("M", then: [.log("M")]))
+        await a.fixture.reach("wake #1")
+        await a.send(.script([.log("X")]))
+        #expect(await a.log == ["mail M", "M", "X"])
+        #expect(await a.stats.cancelledCalls == before + 1)
+        // The started actor's control input took ordinals 0 and 1; the call took none.
+        #expect(a.records.entries.map(\.key) == [.before(step: 2, index: 0)])
+    }
+
+    @Test("13v: a refusal that wins over a cancellation: the call ends refused, and the late cancellation is stale, with no entry and no ordinal")
+    func refusalBeatsCancellation() async {
+        let a = await MailboxActor.started()
+        await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+        let p = Task { try await a.sendAndWait(.parked("P"), cancellation: .cancelsCall) }
+        await a.fixture.reach("park #1")
+        let before = await a.stats.cancelledCalls
+        // The cancellation's hop waits behind this step, whose close refuses P first.
+        await StepHooks.$duringStep.withValue({ @Sendable in p.cancel() }) {
+            await a.send(.control([.hook, .close]))
+        }
+        #expect(outcome(await boundedResult(p)) == "\(TurnError.closed)")
+        _ = a.post(MailNote("M", then: [.log("M")]))
+        await a.fixture.reach("wake #1")
+        await a.send(.control([.log("X")]))
+        #expect(await a.stats.cancelledCalls == before)
+        #expect(await a.log.suffix(3) == ["mail M", "M", "X"])
+        // Wherever the stale cancellation landed, it took no ordinal.
+        #expect(a.records.entries.map(\.key) == [.before(step: 7, index: 0)])
+    }
+
+    @Test("13w: a core replaying its mail stops the process on a .cancelsCall call")
+    func replayRefusesCancelsCall() async {
+        await #expect(processExitsWith: .failure) {
+            let a = await MailboxActor.started(replay: [])
+            // Cancelled first, so the call ends at once if the refusal is ever dropped.
+            let call = Task { () async throws -> Int in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await a.sendAndWait(.script([.log("P")]), cancellation: .cancelsCall)
+            }
+            _ = await call.result
+        }
+    }
+
+    @Test("13x: a stale timer takes no ordinal: one that lands before X live and after X in replay leaves the mail between them in place")
+    func staleTimerAnyWhere() async {
+        let run = await Self.liveThenReplay { a, on in
+            a.fixture.open("hold cancelled deadline 60")
+            await a.send(.script([.start(1), .timer("T", key: 1, seconds: 60)]))
+            // U replaces T, whose task is cancelled and held here.
+            await a.send(.script([.timer("U", key: 1, seconds: 70)]))
+            await a.fixture.reach("cancelled deadline 60")
+            if on {
+                a.fixture.open("release cancelled deadline 60")
+                await a.fixture.reach("stale timer #1")
+                _ = a.post(MailNote("M", then: [.log("M")]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+            await a.send(.script([.log("X")]))
+            if !on {
+                a.fixture.open("release cancelled deadline 60")
+                await a.fixture.reach("stale timer #1")
+            }
+        }
+        #expect(run.live.suffix(3) == ["mail M", "M", "X"])
+        #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }
 

@@ -47,16 +47,25 @@ extension TurnActor {
                 self.submit(input, caller: id)
             }
         case .cancelsCall:
+            // A mail replay can't place a cancellation: its driver can't tell a call cancelled
+            // before submission from one whose cancellation entry withdrew it (both throw
+            // `CancellationError`), so it can't reproduce the ordinals. A replayed core's calls
+            // use `.ignoresCancel` (plan §3.9).
+            if TurnCore<M>.usesMailbox {
+                precondition(core.mailReplay == nil, "TurnActor: a mail replay doesn't take .cancelsCall calls; use .ignoresCancel")
+            }
             // Through `read`, as every access to the machine outside a step: from inside a step
             // (a task started synchronously on the actor) it stops instead of reading mid-write.
             let isControl = core.read { machine in
                 if case .control = machine.inputPolicy(for: input) { return true } else { return false }
             }
-            if Task.isCancelled, isControl {
+            if Task.isCancelled {
                 // Cancelled before entry: a control input is still submitted and stepped,
-                // but its caller doesn't wait. A reply from its step finds no waiter.
+                // but its caller doesn't wait. A reply from its step finds no waiter. A normal
+                // input isn't submitted. Checked here, before the handler, so no cancellation
+                // hop is made for a call that never waits.
                 core.counters.cancelledCalls += 1
-                submit(input, caller: id, readControl: isControl)
+                if isControl { submit(input, caller: id, readControl: isControl) }
                 throw CancellationError()
             }
             return try await withTaskCancellationHandler {
@@ -178,13 +187,14 @@ extension TurnActor {
         guard TurnCore<M>.usesMailbox, core.borrows == 0, let mailbox = core.mailbox else { return }
         let replaying = core.mailReplay != nil
         if !replaying, mailbox.isEmpty { return }
-        let wasInSegment = core.inSegment
+        // An entry's take: never inside a segment, whose served `now` the clear below would drop.
+        assert(!core.inSegment, "takeMailBeforeStep inside a segment")
         core.inSegment = true
         let stepped = replaying ? takeStaged() : takeMail(mailbox)
-        core.inSegment = wasInSegment
+        core.inSegment = false
         if stepped || !mailbox.isEmpty {
             core.rt.dirty = true
-            if !wasInSegment { runSegment() }
+            runSegment()
         }
         // The entry's own work reads its own `now`.
         core.productsNow = nil
@@ -247,21 +257,31 @@ extension TurnActor {
 
     /// A call's cancellation: an entry with state to change, as a deadline's is. With a
     /// mailbox it takes the mail first and then an ordinal, so a mail posted between the two
-    /// replays after the withdrawal; a replay replays each cancellation at its place (plan §3.9).
+    /// replays after the withdrawal. Mailbox first, as every entry: the mail pending when the
+    /// cancellation enters steps, and its products run, before the waiter is removed, so a
+    /// pending `close` answers the call `.closed`, and a mail that frees the call's hold lets
+    /// it step and reply, although its caller cancelled. A cancellation that finds no waiter
+    /// (the call was answered or refused first, or never submitted), before or after the take,
+    /// is stale: no entry and no ordinal. Only live cores take `.cancelsCall` calls: a mail
+    /// replay refuses them (`sendAndWait`), because it can't place a cancellation (plan §3.9).
     @inlinable func callerCancelled(_ id: InputID) {
         let core = self.core
+        // A cancellation of a call already answered or refused (or never submitted) changes no
+        // state: no entry, no ordinal, as a stale deadline.
+        guard core.waiters[id] != nil else { return }
         if TurnCore<M>.usesMailbox {
             beginEntry()
+            // The take's mail can answer or refuse the call first: then the cancellation is stale.
+            guard core.waiters[id] != nil else {
+                if core.rt.dirty { runSegment() }
+                return
+            }
             entryBoundary()
         }
-        guard let waiter = core.waiters.removeValue(forKey: id) else {
-            if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
-            return
-        }
+        guard let waiter = core.waiters.removeValue(forKey: id) else { return }
         _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
         waiter.resume(throwing: CancellationError())
-        if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
     }
 
     /// `readControl`: what `sendAndWait(.cancelsCall)` read from `inputPolicy(for:)` before it
@@ -376,9 +396,21 @@ extension TurnActor {
             return
         }
         core.deadlineTasks.removeValue(forKey: id)
-        // With a mailbox, its mail steps before the checks below, which read the state after it.
         if TurnCore<M>.usesMailbox {
+            // A stale arrival (a cancelled deadline task of a request that closed another way, or
+            // of a follow-up whose gate returned) changes no state, so it is no entry and takes no
+            // ordinal, as a wake: it counts the same whether it lands early, late or never. A live
+            // one takes its mail first, which can make it stale; only then does it take an ordinal.
+            guard core.rt.open[id] != nil || core.rt.gateDeadlineLive(id) else {
+                core.onDiagnostic?(.staleDeadline)
+                return
+            }
             beginEntry()
+            guard core.rt.open[id] != nil || core.rt.gateDeadlineLive(id) else {
+                core.onDiagnostic?(.staleDeadline)
+                if core.rt.dirty { runSegment() }
+                return
+            }
             entryBoundary()
         }
         if core.rt.open[id] == nil, core.rt.gateDeadlineLive(id) {
@@ -389,8 +421,8 @@ extension TurnActor {
             return
         }
         guard core.rt.open[id] != nil else {
+            // Without a mailbox only: with one, a stale deadline returned above.
             core.onDiagnostic?(.staleDeadline)
-            if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
             return
         }
         if !TurnCore<M>.usesMailbox { beginEntry() }
@@ -407,14 +439,21 @@ extension TurnActor {
             return
         }
         if core.timerTasks[key]?.generation == generation { core.timerTasks.removeValue(forKey: key) }
-        if TurnCore<M>.usesMailbox {
-            beginEntry()
-            entryBoundary()
-        }
+        // A replaced or ended timer's task still calls this: stale, it changes no state, so with a
+        // mailbox it is no entry and takes no ordinal (as a stale deadline). A live one takes its
+        // mail first, which can end or replace the timer; only then does it take an ordinal.
         guard core.rt.timers[key] == generation else {
             core.onDiagnostic?(.staleTimer)
-            if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
             return
+        }
+        if TurnCore<M>.usesMailbox {
+            beginEntry()
+            guard core.rt.timers[key] == generation else {
+                core.onDiagnostic?(.staleTimer)
+                if core.rt.dirty { runSegment() }
+                return
+            }
+            entryBoundary()
         }
         core.rt.timers.removeValue(forKey: key)
         if !TurnCore<M>.usesMailbox { beginEntry() }

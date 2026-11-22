@@ -241,8 +241,9 @@ public final class TurnCore<M: TurnMachine> {
     #endif
     @usableFromInline package var onRemainderWakeForTesting: (() -> @Sendable () async -> Void)?
     /// Tests: called on the actor at an entry's boundary (`entryBoundary`), after its mailbox take
-    /// and ordinal and before its own work, so a test can post there. Observe-only, apart from
-    /// `post`.
+    /// and ordinal and before its own work, so a test can post there: a completion, a deadline, a
+    /// timer, a gate's return, a cancellation and a withdrawn release's refusal (none for a stale
+    /// arrival, which takes no ordinal). Observe-only, apart from `post`.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif

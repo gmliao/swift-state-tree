@@ -148,7 +148,8 @@ final class Fixture: @unchecked Sendable {
 /// A clock the test drives by hand. `now` starts at zero, is set by the test and counts its
 /// reads. A sleep until an instant of N whole seconds waits at the gate "deadline N" (deadlines
 /// and timers alike), and returns early when its task is cancelled. When it returns it opens
-/// "woke deadline N" or "cancelled deadline N", so a check can wait for either.
+/// "woke deadline N" or "cancelled deadline N", so a check can wait for either. With "hold
+/// cancelled deadline N" open, a cancelled sleep then waits for "release cancelled deadline N".
 final class TestClock: TurnClock, @unchecked Sendable {
     let fixture: Fixture
     private let lock = NSLock()
@@ -185,6 +186,9 @@ final class TestClock: TurnClock, @unchecked Sendable {
         let gate = Self.gate(for: instant)
         let woke = await fixture.waitUnlessCancelled(gate)
         fixture.open(woke ? "woke \(gate)" : "cancelled \(gate)")
+        // A test that opened "hold cancelled <gate>" places the cancelled sleep's return (its
+        // stale arrival) itself, by opening "release cancelled <gate>".
+        if !woke, fixture.isOpen("hold cancelled \(gate)") { await fixture.wait("release cancelled \(gate)") }
     }
 }
 
