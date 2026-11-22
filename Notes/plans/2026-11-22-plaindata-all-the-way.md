@@ -1,6 +1,6 @@
 # PlainData all the way: no world in the turn core
 
-**Status:** rev 1, plan only, for Review (sent after the usage reset) and the maintainer's questions (§6). No code. The maintainer's direction (2026-11-22): settle the `PlainData` question before #700 K1, and keep the turn core free of a world. #758 (a step-lent world) is on hold, and this plan doesn't design it.
+**Status:** rev 2: the maintainer decided Q1–Q6 (2026-11-22, §6 Decisions). P1 and P2 are implemented in one draft PR, stacked on #768's; Review checks this plan and that code together. P3–P5 are not started. Rev 1 was plan only, with no code. The maintainer's direction (2026-11-22): settle the `PlainData` question before #700 K1, and keep the turn core free of a world. #758 (a step-lent world) is on hold, and this plan doesn't design it.
 
 Code pointers are at main 2ef1c328.
 
@@ -75,7 +75,7 @@ Outside this repository the lint doesn't run. There, a hand-written `_plainDataC
 | An action's result | `.completed(AnyCodable)` (LandKeeper.swift:87) | the encoded response bytes, or a response protocol that refines `PlainData` (K1's census decides by use) | depends on K1's census |
 | `LandFailure` | a struct of an enum, strings and a position (LandFailure.swift:9) | `@PlainData` | none |
 
-Foundation value types that users put in `State` and payloads (`Date`, `UUID`, `Decimal`, `URL`) aren't `PlainData` today: Q2.
+Foundation value types that users put in `State` and payloads (`Date`, `UUID`, `Decimal`, `URL`) aren't `PlainData`, and stay that way (Q2): `@PlainData` refuses them with a diagnostic that names what to store instead.
 
 ### 3.4 What stays out of the core's state (Cover 4)
 
@@ -96,7 +96,7 @@ So, with Q1 answered, `KeeperModel` holds every value the keeper's turns change,
 | Slice | Content | Order |
 |---|---|---|
 | **P0** | The probes re-run on 6.2.4 (in progress) and again at the 6.4.3 bump. Any difference is recorded here | now; again at the bump |
-| **P1** (SwiftStateTurns) | `_plainDataCheck` as a requirement; built-ins implement it; `@PlainData` emits the existential and nested checks (§3.1); the lint change (§3.2); Foundation conformances if Q2 says so | first. Independent of the toolchain bump (the macro's swift-syntax range is unchanged); either order |
+| **P1** (SwiftStateTurns) | `_plainDataCheck` as a requirement; built-ins implement it; `@PlainData` emits the existential and nested checks (§3.1); the lint change (§3.2); the Foundation refusals with their replacements (Q2) | first. Independent of the toolchain bump (the macro's swift-syntax range is unchanged); either order |
 | **P2** = #767 | `@Internal` requires `PlainData` | with or right after P1 |
 | **P3** (SwiftStateTree) | The payload and resolver protocols refine `PlainData`; `@Payload` emits `_plainDataCheck`; server inputs typed | after P1 |
 | **P4** (SwiftStateTree) | `StateNodeProtocol` refines `PlainData`; `@StateNodeBuilder` emits the checks; containers and `@Sync` get `@PlainData`; #464's runtime check retired where the compile check covers it | after P1, with or after P3 |
@@ -141,3 +141,14 @@ Each slice's PR lists its own.
 | Q4 | The recorded raw action payload | keep the wire bytes (`Data` plus an encoding tag); or keep only the decoded typed value and re-encode it for the record, which can change record bytes (the integral-float case `RecordPayloadSource` handles) | keep the bytes |
 | Q5 | A copy-on-write storage class inside a SwiftStateTree container, if K1's census finds one | rewrite it over value storage; or allow an audited hand-written `_plainDataCheck` in SwiftStateTree, with a value-semantics test | decide when the census finds one; none is known today |
 | Q6 | #767's order | fold it into P2, with P1's mechanism; or ship it alone first | P2, with P1 |
+
+### Decisions (maintainer, 2026-11-22)
+
+| Q | Decision |
+|---|---|
+| Q1 | **D**, named `Behavior`: #768 adds `TurnMachine.Behavior`, given once to `TurnCore.init(machine:behavior:…)` and read through `turn.behavior` in every step kind |
+| Q2 | **Refuse all four.** The diagnostic names the replacement: an `Int64` of milliseconds or the turn's `now` for `Date`; a `String` or a project ID type for `UUID`; a `String` for `URL`; an integer in the smallest unit or a `String` for `Decimal`. This replaces rev 1's recommendation (conform all four) |
+| Q3 | **Require `@PlainData`** on nested user types, with a diagnostic |
+| Q4 | **Keep the raw bytes** per action. The encoding goes once in the record header (`ReevaluationRecordMetadata`), not per entry; the bytes are base64 inside the JSON record |
+| Q5 | If the census finds a copy-on-write class, **rewrite it over value storage**; no hand-written exception |
+| Q6 | **Fold #767 into P2**, with P1 |
