@@ -18,6 +18,8 @@ struct MailReplayTests {
     ) async -> (live: [String], replayed: [String], record: [MailRecordEntry<MailNote>], diverged: [TurnReplayDivergence]) {
         let live = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit)
         await inputs(live, true)
+        // On the live actor first: a wake's take records before its step, in the actor's job.
+        _ = await live.log
         let record = live.records.entries
         let replay = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit, replay: edit(record))
         await inputs(replay, false)
@@ -645,7 +647,7 @@ struct MailReplayTests {
         RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
     }
 
-    @Test("13zh: replayMail on a core whose mailbox already took a woken post stops the process, though no ordinal was taken")
+    @Test("13zh: replayMail after a woken post stops the process: a mail was taken, though no ordinal was")
     func replayInstalledAfterAWokenPostStops() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             let fixture = Fixture()
@@ -655,6 +657,50 @@ struct MailReplayTests {
             await a.installReplayForTesting([])
         }
         RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
+    }
+
+    @Test("13zn: replayMail after a post whose wake hasn't run stops the process: no mail taken yet, but the mailbox took a post")
+    func replayInstalledAfterAnUnwokenPostStops() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let a = MailboxActor(fixture: Fixture(), maxReleasesPerBatch: 64, mailboxCapacity: 8)
+            await a.postThenInstallReplayForTesting()
+        }
+        RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
+    }
+
+    @Test("13zo: replayMail after a call cancelled before entry stops the process: no ordinal, no waiter, but a call was made")
+    func replayInstalledAfterAPreCancelledCallStops() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let a = MailboxActor(fixture: Fixture(), maxReleasesPerBatch: 64, mailboxCapacity: 8)
+            let call = Task { () async throws -> Int in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await a.sendAndWait(.script([.log("P")]), cancellation: .cancelsCall)
+            }
+            _ = await call.result
+            await a.installReplayForTesting([])
+        }
+        RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
+    }
+
+    @Test("13zp: replayMail on a core without a mailbox stops the process")
+    func replayOnACoreWithoutAMailboxStops() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let demo = DemoActor()
+            await demo.installReplayForTesting()
+        }
+        RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
+    }
+
+    @Test("13zq: in replay, a query from inside a read stops on the open read before it takes an ordinal, not as a divergence")
+    func queryInsideReadStopsBeforeItsOrdinal() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            // A staged mail for before ordinal 0 and no divergence hook: a query that took its
+            // ordinal first would stop as a divergence instead.
+            let staged = [MailRecordEntry(key: .before(step: 0, index: 0), mail: [MailNote("S")], now: nil)]
+            let a = MailboxActor(fixture: Fixture(), maxReleasesPerBatch: 64, mailboxCapacity: 8, replay: staged, divergenceHook: false)
+            await a.queryInsideReadForTesting()
+        }
+        RuntimeStopTests.expectCoreStop(result, "TurnCore: a step was entered while a read is open")
     }
 
     @Test("13zi: in replay, a physical post wakes nothing: a staged trailing mail steps at finishReplay, not at the wake")
@@ -667,7 +713,9 @@ struct MailReplayTests {
             // mailbox, which a replay never reads; its wake must not step the staged M.
             _ = a.post(on ? MailNote("M", then: [.log("M")]) : MailNote("Q"))
             await a.fixture.reach("wake #1")
-            if !on { beforeFinish.add((await a.log).joined(separator: ",")) }
+            // Through the actor, so the wake's job (its take, live) has ended.
+            let log = await a.log
+            if !on { beforeFinish.add(log.joined(separator: ",")) }
         }
         #expect(run.live == ["X", "mail M", "M"])
         #expect(beforeFinish.names == ["X"])

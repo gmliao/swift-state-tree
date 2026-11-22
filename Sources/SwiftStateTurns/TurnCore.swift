@@ -407,13 +407,14 @@ public final class TurnCore<M: TurnMachine> {
 
     /// Replays the mailbox from `entries` (a record's hand-outs): the mailbox isn't read, checks step
     /// the staged `before` mail and takes return the staged `inside` ones. Once, on a fresh
-    /// core, before the first entry and before any post: installed later, it stops the process
-    /// (an ordinal or a mail already taken, a post already made, or a call already waiting
-    /// would replay against a record it isn't in). The core stays in replay mode for good,
+    /// core, before the first entry, any post and any call: installed later, it stops the
+    /// process (an ordinal or a mail already taken, a post already made, or a call already made
+    /// would replay against a record it isn't in). A core without a mailbox has no mail to
+    /// replay: installing one there stops too. The core stays in replay mode for good,
     /// after `finishReplay()` too, so `.cancelsCall` keeps stopping.
     package func replayMail(_ entries: [MailRecordEntry<M.Mail>]) {
-        if nextOrdinal != 0 || beforeIndex != 0 || (mailbox?.watermark ?? 0) != 0 || !waiters.isEmpty
-            || mailReplay != nil || inSegment || borrows != 0 {
+        if mailbox == nil || nextOrdinal != 0 || beforeIndex != 0 || (mailbox?.watermark ?? 0) != 0
+            || nextInput != 0 || !waiters.isEmpty || mailReplay != nil || inSegment || borrows != 0 {
             fatalError("TurnCore: replayMail after the first entry; install a replay before any input")
         }
         mailReplay = MailReplayStage(entries)

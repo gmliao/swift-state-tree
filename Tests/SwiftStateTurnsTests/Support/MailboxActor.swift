@@ -24,7 +24,7 @@ actor MailboxActor: TurnActor {
     /// Runs once at the next entry's boundary (after its mailbox take, before its own work).
     nonisolated let atNextBoundary = OneShot()
 
-    init(fixture: Fixture, maxReleasesPerBatch: Int, mailboxCapacity: Int, queueLimit: Int = 64, replay: [MailRecordEntry<MailNote>]? = nil) {
+    init(fixture: Fixture, maxReleasesPerBatch: Int, mailboxCapacity: Int, queueLimit: Int = 64, replay: [MailRecordEntry<MailNote>]? = nil, divergenceHook: Bool = true) {
         let clock = TestClock(fixture: fixture)
         self.fixture = fixture
         self.clock = clock
@@ -48,7 +48,8 @@ actor MailboxActor: TurnActor {
         let records = self.records
         if let replay {
             core.replayMail(replay)
-            core.onReplayDivergence = { records.diverged($0) }
+            // Without the hook, a divergence stops the process.
+            if divergenceHook { core.onReplayDivergence = { records.diverged($0) } }
         } else {
             core.onMailTaken = { key, mail, now in records.append(MailRecordEntry(key: key, mail: mail, now: now)) }
         }
@@ -114,6 +115,18 @@ actor MailboxActor: TurnActor {
     /// Installs a replay on a core that already took entries: it must stop the process.
     func installReplayForTesting(_ entries: [MailRecordEntry<MailNote>]) {
         core.replayMail(entries)
+    }
+
+    /// Posts, then installs a replay in the same actor job, before the post's wake can run: it
+    /// must stop the process.
+    func postThenInstallReplayForTesting() {
+        _ = post(MailNote("M"))
+        core.replayMail([])
+    }
+
+    /// Asks a query from inside a read: it must stop the process on the open read.
+    func queryInsideReadForTesting() {
+        _ = core.read { _ in self.query(.ask("Q")) }
     }
 
     /// Sets the mailbox check's hook: `body` runs at each check, after its watermark is read.
