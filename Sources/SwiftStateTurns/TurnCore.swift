@@ -406,12 +406,14 @@ public final class TurnCore<M: TurnMachine> {
     // MARK: Replay
 
     /// Replays the mailbox from `entries` (a record's hand-outs): the mailbox isn't read, checks step
-    /// the staged `before` mail and takes return the staged `inside` ones. Once, before the
-    /// first entry: installed later, it stops the process (a call already waiting, or an
-    /// ordinal already taken, would replay against a record it isn't in). The core stays in
-    /// replay mode for good, after `finishReplay()` too, so `.cancelsCall` keeps stopping.
+    /// the staged `before` mail and takes return the staged `inside` ones. Once, on a fresh
+    /// core, before the first entry and before any post: installed later, it stops the process
+    /// (an ordinal or a mail already taken, a post already made, or a call already waiting
+    /// would replay against a record it isn't in). The core stays in replay mode for good,
+    /// after `finishReplay()` too, so `.cancelsCall` keeps stopping.
     package func replayMail(_ entries: [MailRecordEntry<M.Mail>]) {
-        if nextOrdinal != 0 || !waiters.isEmpty || mailReplay != nil {
+        if nextOrdinal != 0 || beforeIndex != 0 || (mailbox?.watermark ?? 0) != 0 || !waiters.isEmpty
+            || mailReplay != nil || inSegment || borrows != 0 {
             fatalError("TurnCore: replayMail after the first entry; install a replay before any input")
         }
         mailReplay = MailReplayStage(entries)
@@ -523,8 +525,13 @@ public final class TurnCore<M: TurnMachine> {
         machine.handleMail(mail, &turn)
     }
 
+    /// A query is a step: its answer gets the turn, so it can change state and take mail. It takes
+    /// a dispatch ordinal, so a recorded core's outside queries replay in order; a read that must
+    /// not count goes through `read`.
     @inlinable func stepAnswer(_ query: M.Query) -> M.Answer {
         if borrows < 0 { fatalError("TurnCore: query was called from inside a step") }
+        // Before the ordinal: a query from inside a read stops here, never as a replay divergence.
+        if borrows > 0 { fatalError("TurnCore: a step was entered while a read is open") }
         noteDispatch()
         enterStep(nil)
         defer { leaveStep() }

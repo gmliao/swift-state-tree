@@ -645,6 +645,103 @@ struct MailReplayTests {
         RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
     }
 
+    @Test("13zh: replayMail on a core whose mailbox already took a woken post stops the process, though no ordinal was taken")
+    func replayInstalledAfterAWokenPostStops() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let fixture = Fixture()
+            let a = MailboxActor(fixture: fixture, maxReleasesPerBatch: 64, mailboxCapacity: 8)
+            _ = a.post(MailNote("M"))
+            await fixture.reach("wake #1")
+            await a.installReplayForTesting([])
+        }
+        RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
+    }
+
+    @Test("13zi: in replay, a physical post wakes nothing: a staged trailing mail steps at finishReplay, not at the wake")
+    func replayWakeTakesNothing() async {
+        let beforeFinish = Released()
+        let run = await Self.liveThenReplay { a, on in
+            // X is clean: no segment, so no check after its ordinals.
+            await a.send(.script([.log("X")]))
+            // Live, M's wake steps it, keyed after X. In replay, Q only reaches the physical
+            // mailbox, which a replay never reads; its wake must not step the staged M.
+            _ = a.post(on ? MailNote("M", then: [.log("M")]) : MailNote("Q"))
+            await a.fixture.reach("wake #1")
+            if !on { beforeFinish.add((await a.log).joined(separator: ",")) }
+        }
+        #expect(run.live == ["X", "mail M", "M"])
+        #expect(beforeFinish.names == ["X"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    /// Live only: `setup` leaves an entry that will arrive stale, held; pending mail C then waits
+    /// behind a held remainder wake (the `staleAfterTake` setup). `release` lets the stale entry
+    /// in: it returns before its take, so C is still pending when `event` opens.
+    static func pendingStaysAtAStaleArrival(_ setup: (MailboxActor) async -> Void, release: (MailboxActor) -> Void, event: String) async -> [String] {
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        await setup(a)
+        await StepHooks.$duringStep.withValue({ @Sendable in
+            _ = a.post(MailNote("N", then: [.post("C")]))
+            _ = a.post(MailNote("N2"))
+        }) {
+            await a.send(.script([.hook]))
+        }
+        await a.fixture.reach("remainder #1")
+        release(a)
+        await a.fixture.reach(event)
+        let log = await a.log
+        a.fixture.open("remainder go")
+        return log
+    }
+
+    @Test("13zj: a stale deadline returns before its take: mail pending when it lands stays pending")
+    func staleDeadlineLeavesPendingMail() async {
+        let log = await Self.pendingStaysAtAStaleArrival({ a in
+            a.fixture.open("hold cancelled deadline 60")
+            await a.send(.script([.start(1), .request(gate: "g", key: 1, deadlineSeconds: 60)]))
+            await a.fixture.reach("at g")
+            a.fixture.open("gate g")
+            await a.fixture.reach("cancelled deadline 60")
+        }, release: { $0.fixture.open("release cancelled deadline 60") }, event: "stale deadline #1")
+        #expect(log.contains("mail N2"))
+        #expect(!log.contains("mail C"))
+    }
+
+    @Test("13zk: a stale timer returns before its take: mail pending when it lands stays pending")
+    func staleTimerLeavesPendingMail() async {
+        let log = await Self.pendingStaysAtAStaleArrival({ a in
+            a.fixture.open("hold cancelled deadline 60")
+            await a.send(.script([.start(1), .timer("T", key: 1, seconds: 60)]))
+            await a.send(.script([.timer("U", key: 1, seconds: 70)]))
+            await a.fixture.reach("cancelled deadline 60")
+        }, release: { $0.fixture.open("release cancelled deadline 60") }, event: "stale timer #1")
+        #expect(log.contains("mail N2"))
+        #expect(!log.contains("mail C"))
+    }
+
+    @Test("13zl: a nil run completion returns before its take: mail pending when it lands stays pending")
+    func idleCompletionLeavesPendingMail() async {
+        let log = await Self.pendingStaysAtAStaleArrival({ a in
+            await a.send(.script([.run(gate: "nilq")]))
+            await a.fixture.reach("at nilq")
+        }, release: { $0.fixture.open("gate nilq") }, event: "idle completion #1")
+        #expect(log.contains("mail N2"))
+        #expect(!log.contains("mail C"))
+    }
+
+    @Test("13zm: a stale nil gate return returns before its take: mail pending when it lands stays pending")
+    func staleGateReturnLeavesPendingMail() async {
+        let log = await Self.pendingStaysAtAStaleArrival({ a in
+            await a.send(.script([.start(5), .arm("F", key: 5, gate: "nilg")]))
+            await a.fixture.reach("at nilg")
+            await a.send(.script([.consume(key: 5)]))
+        }, release: { $0.fixture.open("gate nilg") }, event: "stale follow-up #1")
+        #expect(log.contains("mail N2"))
+        #expect(!log.contains("mail C"))
+    }
+
     @Test("13: a replay with an extra take staged fails as unconsumed; an extra mail staged past the last input, as leftover; a removed take changes the output")
     func divergences() async {
         let inputs: (MailboxActor, Bool) async -> Void = { a, on in

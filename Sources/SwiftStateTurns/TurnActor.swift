@@ -90,6 +90,10 @@ extension TurnActor {
     /// Called outside a batch, what the answer's step produced (outputs, replies, effects) has
     /// left the core when this returns. Called from inside a batch (a collaborator the driver
     /// called between two steps), it leaves when that batch drains, after the return.
+    ///
+    /// The answer can change state, so with a mailbox a query takes a dispatch ordinal, as any
+    /// step: a recorded core's queries replay in the same order. A read that must not count
+    /// goes through `read`.
     @inlinable public func query(_ query: M.Query) -> M.Answer {
         let core = self.core
         if !core.inSegment { beginEntry() }
@@ -166,6 +170,9 @@ extension TurnActor {
         let core = self.core
         core.onMailboxWakeForTesting?()
         if remainder { core.mailboxWakeScheduled = false }
+        // A replay's mail comes from its record only, never from a wake: a replayed `flush` that
+        // posts physical mail doesn't make a scheduler-placed entry.
+        if core.mailReplay != nil { return }
         if let mailbox = core.mailbox, mailbox.isEmpty { core.counters.emptyMailboxWakes += 1 }
         beginEntry()
         if core.rt.dirty { runSegment() }
@@ -378,8 +385,8 @@ extension TurnActor {
         if TurnCore<M>.usesMailbox {
             // A nil result that changes nothing (a `run` with nothing to mail, a closed request's
             // late nil with no hold to retire) is no entry and takes no ordinal, as a stale
-            // deadline. Live once, a result stays live through the take: a request the take's
-            // mail closes keeps its hold in `retiring`, or has none.
+            // deadline. The take's mail can make a live one stale (it closes the request, which
+            // had no hold to retire), so it is checked again after the take.
             guard completionIsLive(id, input) else {
                 core.onDiagnostic?(.idleCompletion)
                 return
