@@ -3,6 +3,8 @@
 //
 //   TurnsBench [<bench>|all] [turn|direct|both] [iterations]
 //
+// `park-64` runs `iterations / 64` rounds of 64 holds; give it a multiple of 64.
+//
 // One bench and one side per run is what a normal counter (`perf stat`) wraps. On Darwin the
 // run also prints the process's retired instructions, for development only.
 
@@ -80,6 +82,12 @@ actor BenchActor: TurnActor {
                 send(.held)
                 send(.releaseHold)
             }
+        case "park-64":
+            // Per hold: 64 outstanding at once, then released in one step.
+            for _ in 0 ..< n / 64 {
+                for _ in 0 ..< 64 { send(.takeKept) }
+                send(.releaseKept)
+            }
         case "read1":
             var sum = 0
             for i in 0 ..< n { sum &+= core.read { $0.table[i & 63] ?? 0 } }
@@ -137,6 +145,12 @@ actor DirectActor {
             held[1] = 1
             for _ in 0 ..< n where held[2] == nil { counter &+= 1 }
             held.removeValue(forKey: 1)
+        case "park-64":
+            for _ in 0 ..< n / 64 {
+                for _ in 0 ..< 64 { held[1, default: 0] += 1 }
+                held.removeValue(forKey: 1)
+                counter &+= 1
+            }
         case "park":
             for _ in 0 ..< n {
                 held[1, default: 0] += 1
@@ -170,7 +184,7 @@ actor DirectActor {
     func callNoop() -> Int { counter }
 }
 
-let syncBenches = ["idle", "emit", "issue-end", "held-lookup", "read1", "read4", "park", "now", "follow-up-join"]
+let syncBenches = ["idle", "emit", "issue-end", "held-lookup", "read1", "read4", "park", "park-64", "now", "follow-up-join"]
 let asyncBenches = ["request", "call", "follow-up"]
 
 func instructions() -> UInt64? {
