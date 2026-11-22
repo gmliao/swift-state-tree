@@ -1,6 +1,12 @@
 # Turn core: one timer for all deadlines (#621 item 2)
 
-**Status:** Rev 2, plan only, for review (rev 1 GO on shape; Q2 overturned).
+**Status:** Rev 3: step 0 passed (continue, §5.1); the wake's per-entry rule follows #738 round 4's stale-arrival rule (§3.4). Rev 2 GO. Implementation on `refactor/621-shared-deadline-timer`, after #738 merges.
+
+## Rev 3: what changed
+
+- **Step 0 done (§5.1): continue.** The deadline machinery costs at least about 3,550 instr/op of `park`'s 23,234 at base `3bceb649`, against the 2k floor.
+- **A stale entry takes no entry ordinal (§3.4 step 4, §3.9).** #738's round 4 found that a stale deadline, timer or cancellation arrival takes an entry ordinal at a point the scheduler picks, so a replay can move mail onto another entry (#738, must-fix 1 on `TurnActor.swift:382`). Its rule: a stale arrival changes no state, so it gets no ordinal and behaves like a wake. The arrival checks staleness before `beginEntry()`, runs `beginEntry()` and re-checks only when it is live, and calls `entryBoundary()` only on the branches that change state. The wake's per-entry step follows that rule.
+- **What the one timer removes by construction (§3.9).** Today a closed request's deadline task is cancelled and still hops to `deadlineFired`, at a time the scheduler picks. With one sleeper, a closed request's entry never hops: it is compacted, or the wake reaches it at its instant as a stale entry, without an ordinal. The same holds for a replaced or dropped timer. That doesn't make #738's fix unneeded. Until this PR lands, `deadlineFired` and `timerFired` are the live paths. After it, a stale entry the wake reaches still has to skip the ordinal, and `callerCancelled` is outside this PR.
 
 ## Rev 2: what changed
 
@@ -219,10 +225,11 @@ The ticket is the request id or the timer generation. Neither is ever reused in 
 1. **A foreign incarnation** is counted (`foreignCompletions`), reports `.foreignCompletion` and returns nil.
 2. **A superseded sleeper.** If `generation != core.sleeperGeneration`, the wake comes from a sleeper that a re-arm, `endAll` or deinit replaced. It counts in a package test counter and returns nil, so that task ends. The current sleeper owns every entry.
 3. **`sleeperAwake = true`.** Take the **due list**: pop every entry with `instant <= target`, in (instant, order) order, up to the per-wake cap (§3.6). Entries a step inserts during this wake aren't in the list, even if their instant is at or before `target`.
-4. **Step the due entries, each as its own entry and batch**, as `deadlineFired` and `timerFired` do today:
-   - `beginEntry()`, so the next `Turn.now` reads the clock;
-   - re-check the ticket **at its turn**, not when the list was taken. A request: `rt.open[id] != nil` closes it with `.deadline`; else `gateDeadlineLive(id)` closes the follow-up; else `.staleDeadline`. A timer: `rt.timers[key]?.generation == ticket` steps its input as a control input; else `.staleTimer`;
-   - `runSegment()` for a live one. A stale one returns through `if core.rt.dirty { runSegment() }` (#725's rule; harmless without the lane).
+4. **Step the due entries, each as its own entry and batch**, as `deadlineFired` and `timerFired` do today, with #738 round 4's stale-arrival rule (rev 3):
+   - **check the ticket at its turn, before `beginEntry()`**, not when the list was taken. A request is live if `rt.open[id] != nil`, a gate if `gateDeadlineLive(id)`, a timer if `rt.timers[key]?.generation == ticket`. A stale entry reports `.staleDeadline` or `.staleTimer` and takes no entry: no `beginEntry()`, no ordinal, no `entryBoundary()`. So a stale entry counts the same whether the wake reaches it, a compaction drops it, or `endAll` empties the heap;
+   - for a live entry, `beginEntry()`, so the next `Turn.now` reads the clock (and, with the post lane, its mail steps first). Then **re-check**, because that mail can have closed the request or replaced the timer: stale now, it reports the diagnostic and returns through the epilogue;
+   - still live: `entryBoundary()` where the lane has it, then act. A request closes with `.deadline`, a gate closes its follow-up, a timer steps its input as a control input. Then `runSegment()`. Every return after a `beginEntry()` goes through `if core.rt.dirty { runSegment() }` (#725's rule).
+   - **The wake itself takes no ordinal.** Its hop is like a lane wake: the foreign and superseded checks (steps 1–2) and the due-list pop change no machine state.
 
    An earlier due entry's step that closes a later due request (for example `handleAbandoned(A)` cancels B at the same instant) makes B stale at its turn.
 5. **The next target.** `sleeperAwake = false`. Drop stale entries off the head (Go's `cleanHead`, §3.5), then peek.
@@ -282,8 +289,9 @@ This adds no exception to `CLAUDE.md`'s list.
   - The lane has a capacity and refuses past it, and a deadline must never be refused.
   - The sleeper's wake already is one hop, and the lane's wake would be one more.
 - **The wake is an ordinary entry.** In #725 §3.4's entry table it replaces the `deadlineFired` and `timerFired` rows. Each due entry's `beginEntry()` runs the lane helper (after the incarnation and generation checks), and every return, stale ones included, goes through the epilogue `if core.rt.dirty { runSegment() }` (step 4). #725's test 15, "a report-induced stale deadline", carries over: its `deadlineFired(R)` becomes a wake whose due entry is R.
-- **Replay.** Each due entry is one batch, so the step ordinals of #725 §3.9 count it as they count a `deadlineFired` today. The instant-then-arm order makes a run's sequence of fires deterministic given where each wake lands.
-- **Merge order.** Whichever of #738 and this PR merges second adapts. The entry list is the only shared surface.
+- **Replay.** Each live due entry is one batch and takes one ordinal, as a live `deadlineFired` does. A stale one takes none (step 4), so where the scheduler lands a wake that reaches only stale entries doesn't move any mail. The instant-then-arm order makes a run's sequence of fires deterministic given where each wake lands.
+- **What the one timer removes by construction.** Today every request with a deadline that closes another way leaves a cancelled task that still hops to `deadlineFired` (#738's epilogue cancel), and a replaced or ended timer leaves one that still hops to `timerFired`. With one sleeper no cancelled deadline hops: the closed entry stays in the heap without a task, and is compacted or reached at its instant as a stale entry. That removes the scheduler-placed stale `deadlineFired` and `timerFired` arrivals #738 round 4 found. It doesn't remove the need for its rule. A stale entry the wake reaches must still take no ordinal (step 4). `callerCancelled` (a cancellation for a call already answered, or the orphan of a pre-cancelled `sendAndWait`) isn't touched by this PR. And until this PR lands, the per-deadline tasks are what #738 fixes.
+- **Merge order (rev 3).** #738 merges first; this PR then takes main with it (a merge, or a rebase before the first push), so the entry table and the stale-arrival helpers come from #738. This PR keeps its diff away from the lane and mailbox code: it replaces `deadlineFired` and `timerFired` with the wake, and reuses #738's stale-check shape there.
 
 ## 4. Tests
 
@@ -374,6 +382,19 @@ Time becomes monotonic in the harness. Two ops change, `deadline` (`:284–288`)
 The suite runs in all three modes (`swift test`, the release mode with `-DTURNS_EXCLUSIVITY_CHECKED`, and the release default), with the generated-order fixed seeds and a `TURNS_SEEDS=2000` local run reported in the PR.
 
 ## 5. A/B
+
+### 5.1 Step 0 result (rev 3): continue
+
+Host run at base `3bceb649`, archive `arch-turns-park-step0-2026-11-22b`, Swift 6.2.4, `perf stat` and `perf record -e instructions:u` (call graphs `--call-graph fp --user-callchains`; the host runs `perf_event_paranoid` 2).
+- **Counts.** `park` turn 23,234.12 instr/op (largest spread 0.684 %), `request` turn 13,553.39 (0.279 %).
+- **The deadline's share, from the profile, × 23,234.** Every row is a deadline-only frame, checked against the callers report:
+  - `swift_task_cancel`, with the sleeper's cancellation handler `CancelGate.cancel` that wakes it (children 5.09 %, called from the sweep in `drainProducts`): about 1,180;
+  - the sleep's `withTaskCancellationHandler` (children 3.83 %, with `swift_task_addCancellationHandler` and the continuation init from `BenchClock.sleep`): about 890;
+  - the deadline closure's `[weak self]` (`swift_weakInit` → `formWeakReference` 1.06 % self, from the launch inlined in `drainProducts`; `swift_weakLoadStrong` 0.94 %, from the deadline closure): about 465;
+  - the deadline task's creation, one of two per op: about 1,010 at `request`'s one-create cost, about 1,680 at half of `park`'s `swift_task_create_common` children (14.45 %).
+- **Floor: about 3,550 instr/op**; with the unquantified rest (the cancelled task's wake, hop and `deadlineFired`, its completion and deallocation, the `deadlineTasks` insert and removes, the sweep's `Array(keys)`) the estimate is 4,500–5,000. Above the 2k floor: continue. The target below (≥ 2,000, and > 3 × spread, about 480) is reachable at the floor after the heap's 100–200.
+- **`park` − `request` bounds nothing.** `request` is a call with a completion (`ProcessOutOfLineJob` 68.6 % and `TurnActor.complete` 25.5 % children) that `park` doesn't make, so the 9,681 difference is neither an upper nor a lower bound.
+- The children frames above `swift_job_run` are unwinder artifacts (a non-symbol root, small integers as symbols); the rows used here are below them, and the flat reports agree.
 
 **Tier:** a host A/B. This change exists to move `park`'s numbers.
 

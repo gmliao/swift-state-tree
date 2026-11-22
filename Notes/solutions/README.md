@@ -182,4 +182,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-21 | [A generated local shadows a property of the same name](2026-11-21-a-macro-local-shadows-a-property-of-the-same-name.md) | macros, shadowing, snapshot-convertible, nesting-budget |
 | 2026-11-21 | [A collection cast converts every element](2026-11-21-a-collection-cast-converts-every-element.md) | casts, collections, conditional-conformance, nesting-budget, stack-overflow |
 | 2026-11-21 | [An exit body's local can be moved into a call's `Any` temporary and released there](2026-11-21-an-exit-body-local-can-be-released-through-a-calls-any-temporary.md) | exit-tests, lifetime, release-build, stack-overflow, nesting-budget |
+| 2026-11-22 | [A test that reads a DEBUG-only probe fails in a release test run](2026-11-22-a-test-that-reads-a-debug-only-probe-fails-in-a-release-test-run.md) | testing, release-build, debug-only, probes, testable-import |
 | 2026-11-22 | [A check placed at one replay site misses the other](2026-11-22-a-check-placed-at-one-replay-site-misses-the-other.md) | replay, reevaluation, initialize, verifier |

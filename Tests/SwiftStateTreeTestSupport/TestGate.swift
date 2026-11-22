@@ -5,7 +5,7 @@
 // Deterministic, unlike sleeping and hoping the scheduler interleaves.
 
 import Foundation
-@testable import SwiftStateTreeTransport
+import SwiftStateTreeTransport
 
 /// How long a wait for an event may take before the test fails as hung (#447).
 ///
@@ -15,6 +15,17 @@ import Foundation
 /// CPU-heavy tests on a 4-core runner. A wait that checks something *doesn't* happen must not use
 /// it; it states its own short bound instead.
 package let testHangBound: Duration = .seconds(60)
+
+/// Whether the test support (and so the package) was built in debug. A test whose ordering
+/// depends on a wait probe that returns at once outside DEBUG builds gates on it
+/// (`.enabled(if: isDebugBuild, …)`), so a release run reports it skipped. A test that only
+/// reads a DEBUG-only observation puts `#if DEBUG` around that capture and its expectations
+/// instead, so release keeps the rest of its coverage (#748).
+#if DEBUG
+package let isDebugBuild = true
+#else
+package let isDebugBuild = false
+#endif
 
 package final class TestGate: @unchecked Sendable {
     private struct ArrivalWaiter {
