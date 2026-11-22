@@ -578,6 +578,9 @@ struct MailReplayTests {
             }
             a.clock.release(through: 5)
             await a.fixture.reach(event)
+            // Live, A's segment left `pending` with its budget spent: a remainder wake follows.
+            // Had A taken again with a fresh budget, its segment would have stepped `pending`.
+            if on { await a.fixture.reach("remainder #1") }
             _ = await a.log
             await posting(a, on, MailNote("Z")) { await a.send(.script([.hook, .take])) }
             a.fixture.open("remainder go")
@@ -931,6 +934,28 @@ struct MailReplayTests {
         #expect(run.live == ["mail C", "abandoned nild2 keyEnded", "abandoned nild4 deadline", "timer T3b"])
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13zk4: when the wake's take closes the head it was taken for, the next due entry takes its own, with a fresh budget")
+    func takeClosesItsOwnHead() async {
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        await a.send(.script([.start(1), .start(2),
+                              .timer("A", key: 1, seconds: 5),
+                              .timerRunning("B", key: 2, seconds: 5, then: [.post("D")])]))
+        // P1 and P2 spend the take made for A; P1 ends A's key, so B is the list's first entry.
+        let post = await MailboxTests.heldPost(a, MailNote("P1", then: [.end(1)]))
+        _ = a.post(MailNote("P2"))
+        a.clock.release(through: 5)
+        await a.fixture.reach("stale timer #1")
+        // B's own take reset the budget, so B's segment stepped D, which its flush posted;
+        // D's wake then found the mailbox empty. Without that take, D would wait for its wake.
+        await a.fixture.reach("wake #1")
+        #expect(await a.log == ["mail P1", "mail P2", "ran B", "mail D"])
+        #expect(await a.stats.emptyMailboxWakes == 1)
+        a.fixture.open("remainder go")
+        a.fixture.open("wake P1")
+        _ = await post.value
     }
 
     @Test("13zk3: mail pending at a wake arms a timer at or before the wake's instant: it steps before the wake takes its entries, live and in replay")

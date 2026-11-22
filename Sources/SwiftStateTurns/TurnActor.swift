@@ -466,15 +466,18 @@ extension TurnActor {
         // same in both. The rest of the list is then read from the heap the mail left: an
         // entry it closed pops as stale, and one it armed at or before `target` joins. The
         // take is that entry's (the first `fireDeadline` takes none), so it takes no ordinal
-        // of its own; a wake whose heads are all stale takes nothing.
+        // of its own; a wake whose heads are all stale takes nothing. When the mail closed the
+        // head it was taken for, the list's first entry is another one, which takes its own.
         var due: [DeadlineEntry] = []
         var stalePops = 0
         var taken = false
+        var takenFor: UInt64 = 0
         while let head = core.deadlines.first, head.instant <= target.nanoseconds {
             if core.deadlineIsLive(head) {
                 if due.count == TurnCore<M>.maxFiresPerWake { break }
                 if TurnCore<M>.usesMailbox, !taken {
                     taken = true
+                    takenFor = head.order
                     // `endAll` by this mail empties the heap: the loop ends, and so does the wake.
                     beginEntry()
                     continue
@@ -493,7 +496,7 @@ extension TurnActor {
         for (index, entry) in due.enumerated() {
             // `endAll` in an earlier entry's step stopped the timer: the rest is dropped.
             if core.sleeperGeneration != generation { break }
-            fireDeadline(entry, generation: generation, taken: taken && index == 0)
+            fireDeadline(entry, generation: generation, taken: taken && index == 0 && entry.order == takenFor)
         }
         core.sleeperAwake = false
         if core.sleeperGeneration != generation { return nil }
