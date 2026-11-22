@@ -795,8 +795,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
 
-    /// Interim (#700, #702): the follow-up slots below (this retry, the latch, the join-sync turn,
-    /// the after-turn request) each keep the binding ticket they were armed under, and each job
+    /// Interim (#700, #702): the follow-up slots below (this retry, the join-sync turn, the
+    /// after-turn request) each keep the binding ticket they were armed under, and each job
     /// checks and retires only its own. That is TurnCore's request-per-key shape (#700), with the
     /// per-slot coalescing of a pending request per key (#702), kept by hand until the keeper's
     /// turns run on TurnCore. Known gap until then (#702 closes a superseded binding's follow-up
@@ -5105,8 +5105,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Requested sync turns (#546 L2a)
 
-    /// A follow-up a turn armed (the writer-drain retry, the latch's rerun, the join-sync turn, a
-    /// requested turn after this one): the port of the turn that armed it, and the binding it was
+    /// A follow-up a turn armed (the writer-drain retry, the join-sync turn, a requested
+    /// turn after this one): the port of the turn that armed it, and the binding it was
     /// armed under. It runs only while that binding holds.
     /// The keeper's sync binding as a generation: each bind or rebind issues a new ticket, and a
     /// ticket from an earlier binding is never current again (also after A → B → A).
@@ -5265,8 +5265,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: Requested sync work, for the test wait
 
-    /// Follow-ups armed and not yet run or retired: the writer-drain retry, the join-sync turn,
-    /// the latch's rerun and a pending requested turn.
+    /// Follow-ups armed and not yet run or retired: the writer-drain retry, the join-sync turn
+    /// and a pending requested turn.
     private var requestedSyncWork = 0
     /// Test waiters, by id: each returns once at most its `atMost` follow-ups are pending, or when
     /// its task is cancelled (a test bounds the wait with `withinHangBound`).
@@ -5289,7 +5289,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Tests: returns once no requested sync work is pending: no writer-drain retry, join-sync
-    /// turn, latch rerun or requested turn armed and not yet run (its frames then are with the
+    /// turn or requested turn armed and not yet run (its frames then are with the
     /// writer) or retired. Also returns when its task is cancelled.
     package func waitForRequestedSyncTurnsForTesting() async {
         await waitForRequestedSyncTurnsForTesting(atMost: 0)

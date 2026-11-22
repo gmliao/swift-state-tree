@@ -75,7 +75,7 @@ A live keeper checks this at the attach, and at `init(transport:)` when a transp
 
 Limit: no transport (`nil`) is allowed; the keeper then records its outputs and delivers none. A re-evaluation keeper isn't checked, and neither is an attach after the land was destroyed.
 
-A transport of your own implements three requirements of `LandKeeperTransport` itself, because they have no default: `runsSyncPhaseInTurn(of:)`, `runSyncPhaseInTurn` (the turn's output step) and `waitForWriterDrainForInTurnSync()` (what the keeper waits on before it retries a sync phase the transport deferred for back-pressure). A transport that leaves one out doesn't compile. The other requirements have defaults that suit a transport that runs in turn. `syncNowFromTransport()` and `syncBroadcastOnlyFromTransport()` do nothing by default: no live keeper calls them.
+A transport of your own implements five requirements of `LandKeeperTransport` itself, because they have no default: `sendEventToTransport(_:to:)`, `onLandDestroyed()`, `runsSyncPhaseInTurn(of:)`, `runSyncPhaseInTurn` (the turn's output step) and `waitForWriterDrainForInTurnSync()` (what the keeper waits on before it retries a sync phase the transport deferred for back-pressure). A transport that leaves one out doesn't compile. The other requirements have defaults that suit a transport that runs in turn. `syncNowFromTransport()` and `syncBroadcastOnlyFromTransport()` do nothing by default: no live keeper calls them. Only a re-evaluation keeper that holds a transport (`ReevaluationOutputMode.transportAndSink`) still calls both, until #612; a custom transport used there implements them itself.
 
 ### Broadcast vs Per-Player Updates
 

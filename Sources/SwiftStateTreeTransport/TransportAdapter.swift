@@ -3141,7 +3141,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Tests: returns once no background sync task is left (the delayed repair, or the lag
     /// timer's request) and the keeper has no requested sync work pending (a writer-drain
-    /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
+    /// retry, a join-sync turn, a requested turn after a turn). The
     /// differential harness runs with its loops off and awaits this after each sync it asks for,
     /// so a skipped or deferred phase's retry is part of that step. Also returns when its task is
     /// cancelled (a test bounds it with `withinHangBound`).

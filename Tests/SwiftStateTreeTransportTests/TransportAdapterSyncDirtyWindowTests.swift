@@ -4,8 +4,11 @@
 // after it took its state copy; otherwise the next dirty-tracking cycle skips them and clients
 // keep the stale value. The window #68 found (a cycle that took its copy, then awaited while
 // the keeper mutated) no longer exists: every sync phase runs inside a keeper turn and clears
-// the dirty flags in that turn (#546 L2d), so no mutation lands inside a cycle. What stays is
-// the other half: a mutation after a committed cycle is sent by the next one.
+// the dirty flags in that turn (#546 L2d), so no mutation lands inside a cycle. What this file
+// checks is what that in-turn clear decides, through the adapter: a committed cycle leaves the
+// keeper's state clean, and a mutation after it is carried by the next cycle's own update (not
+// only by the final view, which a cycle that sends more would also make converge). The keeper
+// side of the clear is pinned by the dirty-flag spy tests in `LandKeeperSyncLockTests`.
 //
 // Every scenario dirties one more field before the checked cycle, so it is not an `.all` cycle:
 // a cycle with nothing dirty falls back to `.all`, which would repair the lost update and hide it.
@@ -82,8 +85,11 @@ private actor DirtyWindowTransport: Transport {
         }
     }
 
-    func messages(for sessionID: SessionID) -> [Data] {
-        sent.compactMap { entry in
+    /// How many frames were sent so far; pass it to `messages(for:after:)` to read only later ones.
+    var sentCount: Int { sent.count }
+
+    func messages(for sessionID: SessionID, after mark: Int = 0) -> [Data] {
+        sent.dropFirst(mark).compactMap { entry in
             if case .session(let id) = entry.target, id == sessionID { return entry.data }
             return nil
         }
@@ -237,19 +243,33 @@ private func makeDirtyWindowEnvConfig(
 @Suite("TransportAdapter sync dirty-flag window (#68)", .timeLimit(.minutes(1)))
 struct TransportAdapterSyncDirtyWindowTests {
 
-    @Test("a mutation after a committed sync is sent by the next dirty-tracking sync", arguments: [true, false])
-    func mutationInsideKeeperWindowIsSentNextCycle(useSnapshotForSync: Bool) async throws {
+    @Test(
+        "a committed sync leaves the state clean, and the next cycle's own update carries a later mutation",
+        arguments: [true, false]
+    )
+    func mutationAfterCommittedSyncIsSentByNextCycle(useSnapshotForSync: Bool) async throws {
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: useSnapshotForSync))
+
+        // First cycle: a dirty-tracking cycle (`b` dirty), which clears the dirty flags in its turn.
+        try await f.set("b", 1)
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        let dirtyAfterFirst = await f.keeper.currentState().getDirtyFields()
+        #expect(dirtyAfterFirst.isEmpty, "a committed cycle must clear the dirty flags in its turn, left \(dirtyAfterFirst)")
 
-        // The cycle committed and cleared the dirty flags; the keeper mutates `a` after it.
+        // The keeper mutates `a` after the committed cycle; `b` (same broadcast category) is dirty
+        // too, so the next cycle is not an `.all` cycle that would resend `a` regardless.
         try await f.set("a", 1)
-
-        // Next cycle: `b` (same broadcast category) is dirty too, so no `.all` fallback.
         try await f.set("b", 2)
+        let mark = await f.transport.sentCount
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
+
+        // Only the second cycle's frames: `a` starts at a value no update sets, so it must change.
+        var second = DirtyWindowClientView(a: -1, b: -1, score: nil, bonus: nil)
+        second.apply(decodeStateUpdates(await f.transport.messages(for: f.session, after: mark)), player: f.player)
+        #expect(second.a == 1, "the second cycle's update must carry a=1, got \(second)")
+        #expect(second.b == 2, "the second cycle's update must carry b=2, got \(second)")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
