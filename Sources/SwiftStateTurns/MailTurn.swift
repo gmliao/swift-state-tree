@@ -21,6 +21,9 @@ public struct MailTurn<M: TurnMachine>: ~Copyable {
         self.turn = Turn(core: core, input: nil)
     }
 
+    /// `Turn.behavior`.
+    @inlinable public var behavior: M.Behavior { turn.behavior }
+
     /// `Turn.now`: in a replay, the recorded `now` of the mail's check.
     @inlinable public var now: TurnInstant {
         mutating get { turn.now }

@@ -6,7 +6,7 @@ struct SnippetClock: TurnClock {
     func sleep(until instant: TurnInstant) async {}
 }
 
-func snippetCore<M: TurnMachine & PlainData>(_ machine: M) -> TurnCore<M> {
+func snippetCore<M: TurnMachine & PlainData>(_ machine: M) -> TurnCore<M> where M.Behavior == Void {
     TurnCore(machine, queueLimit: 8, maxReleasesPerBatch: 8, clock: SnippetClock())
 }
 

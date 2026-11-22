@@ -104,6 +104,9 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var machine: M
+    /// The machine's behavior (`TurnMachine.Behavior`), fixed at init: steps read it, nothing
+    /// writes it.
+    @usableFromInline let behavior: M.Behavior
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
@@ -394,12 +397,23 @@ public final class TurnCore<M: TurnMachine> {
     ///
     /// Only a `PlainData` machine can be run: `@PlainData` writes that conformance and checks
     /// every stored field, so a machine that stores a class or a closure doesn't compile here.
-    public init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock, mailboxCapacity: Int = 8) where M: PlainData {
+    /// For a machine with no behavior (`Behavior == Void`); one that has a behavior uses
+    /// `init(machine:behavior:…)`.
+    public convenience init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock, mailboxCapacity: Int = 8)
+    where M: PlainData, M.Behavior == Void {
+        self.init(machine: machine, behavior: (), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch,
+                  clock: clock, mailboxCapacity: mailboxCapacity)
+    }
+
+    /// A core for a machine with a behavior (`TurnMachine.Behavior`): what its steps call and
+    /// read, fixed for the core's lifetime. The other parameters are `init(_:queueLimit:…)`'s.
+    public init(machine: M, behavior: M.Behavior, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock, mailboxCapacity: Int = 8) where M: PlainData {
         // `fatalError`, not `precondition`: its message prints in release builds too.
         if M.self is AnyClass { fatalError("TurnCore: the machine must be a value type, not \(M.self)") }
         if queueLimit < 0 { fatalError("TurnCore: queueLimit must not be negative") }
         if maxReleasesPerBatch < 1 { fatalError("TurnCore: maxReleasesPerBatch must be at least 1") }
         self.machine = machine
+        self.behavior = behavior
         self.queueLimit = queueLimit
         self.maxReleasesPerBatch = maxReleasesPerBatch
         self.clock = clock

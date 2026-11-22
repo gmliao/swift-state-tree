@@ -14,6 +14,11 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         self.input = input
     }
 
+    /// The machine's behavior (`TurnMachine.Behavior`): its handlers and fixed configuration,
+    /// as given to `TurnCore.init(machine:behavior:…)`. Read-only: a behavior is fixed for the
+    /// machine's lifetime, and every change goes to the model (there is no `become`).
+    @inlinable public var behavior: M.Behavior { core.behavior }
+
     /// The core's clock, read at most once per batch: the first use reads it, later uses in
     /// the same batch (and a `Duration` deadline) see that instant.
     @inlinable public var now: TurnInstant {

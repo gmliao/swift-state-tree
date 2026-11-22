@@ -91,6 +91,19 @@ struct Room {
 - **狀態存的是 ID。** actor 保有從 ID 到物件的對照表。
 - **需要物件的 step 發出工作請求。** 它回傳一個指名該 ID 的 output 或 effect，由 actor（或在 actor 之外執行的 `perform`）使用那個物件。回來的結果以純資料的形式，透過之後的 input 進入狀態。
 
+### 固定的函式與設定：behavior
+
+狀態機的 *behavior*（行為）是它「做什麼」，有別於它「持有什麼」：每個 step 都會讀的函式和固定設定，例如一個 land 的 action handler、resolver 清單和人數上限。它們不能放進狀態，因為函式不是純資料；也不需要放進狀態，因為它們從不改變。
+
+- **一開始就固定。** 狀態機把它的型別宣告為 `Behavior`（預設是 `Void`，也就是沒有）。adopter 把值傳給 `TurnCore(machine:behavior:…)`，只傳一次。有 behavior 的狀態機，不給 behavior 就建不出來。
+- **每個 step 都讀得到。** `turn.behavior` 在 `handle`、`handleAbandoned`、`handleLateResult` 和 `answer` 裡都讀得到；follow-up 和 timer 的 step 經由 `handle`，也一樣。在 `handleMail` 裡，`MailTurn` 有同樣的 `behavior`。
+- **從不寫入。** behavior 在狀態機的整個生命期內固定不變；所有改變都進 model（沒有 `become`）。對 `turn.behavior` 賦值無法編譯。
+- **它的函式能做什麼。** 它們在 step 裡執行，所以是同步的、不碰 model 以外的任何東西，而且是確定性的：不自己讀時鐘、不用沒有種子的亂數、不做 I/O。需要等待或做 I/O 的事以 effect 送出，結果再以 input 回來。
+
+限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。
+
+API：`TurnMachine.Behavior`、`Turn.behavior`、`MailTurn.behavior`、`TurnCore.init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)`。
+
 ## 範例
 
 一個大廳：每位玩家入座前，先載入其個人資料，一次只載入一份。完整程式碼在 `Tests/SwiftStateTurnsTests/WorkedExampleTests.swift`。這個測試會編譯並執行範例，並檢查本頁與 DocC 的每段節錄都與它一致。載入結果以 input 的形式回來，而且只在它的 request 仍開著時才會到 `handle`：
@@ -444,6 +457,7 @@ API：`CallerCancellation`。
 | send 在等什麼 | `await send` 在等什麼？順序如何？ | `send`、`sendAndWait` |
 | Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |
 | 呼叫端取消 | 呼叫端的 task 被取消時會怎樣？ | `CallerCancellation` |
+| Behavior | 每個 step 都需要的函式和固定設定放在哪裡？ | `Behavior`、`turn.behavior` |
 
 ## 如何測試
 
