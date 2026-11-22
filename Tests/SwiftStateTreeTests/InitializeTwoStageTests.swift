@@ -649,8 +649,10 @@ struct InitializeTwoStageTests {
         let allWaiting = try await withinDeadline("three calls wait on the initialization") {
             await keeper.waitForInitializationWaitersForTesting(3)
         }
-        guard allWaiting == true else {
-            Issue.record("not every call waited on the initialization: \(String(describing: allWaiting))")
+        // A timeout has recorded its own issue.
+        guard let allWaiting else { return }
+        guard allWaiting else {
+            Issue.record("the initialization ended before every call waited on it")
             return
         }
         DeliveryGates.gate(key).release()
@@ -662,6 +664,22 @@ struct InitializeTwoStageTests {
         #expect(await input.value == .refused(.draining))
         _ = try await withinDeadline("the land is torn down") { () async -> Void in await transport.waitUntilDestroyed() }
         #expect(await keeper.currentState().log == [], "no handler ran")
+    }
+
+    @Test("A cancelled wait for initialization waiters returns false, while the initialization is still held")
+    func cancelledWaiterWaitReturnsFalse() async throws {
+        let key = DeliveryGates.freshKey()
+        let keeper = try await makeKeeper(makeWaitDefinition(), landID: "init-wait:\(key)")
+        guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
+        defer { DeliveryGates.gate(key).release() }
+        let (registrations, registered) = AsyncStream<Void>.makeStream()
+        let wait = Task { await keeper.waitForInitializationWaitersForTesting(1, registered: { registered.yield() }) }
+        // Cancelled once its watcher is registered, so the cancellation handler resumes it.
+        var notices = registrations.makeAsyncIterator()
+        _ = await notices.next()
+        wait.cancel()
+        let reached = try await withinDeadline("the cancelled wait returns") { await wait.value }
+        #expect(reached == false)
     }
 
     @Test("Two stages with .failLand: a resolver that throws fails the initialization before validate runs, counted as a resolver failure")

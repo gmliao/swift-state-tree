@@ -1174,7 +1174,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// end the initialization with its waiters in place (#593). Also returns when the
     /// initialization ends first or the waiting task is cancelled, so a wrong count fails its
     /// test instead of hanging it (#447). True when `count` calls waited.
-    package func waitForInitializationWaitersForTesting(_ count: Int) async -> Bool {
+    /// `registered` runs once the watcher is in place, so a test can cancel a registered one.
+    package func waitForInitializationWaitersForTesting(
+        _ count: Int,
+        registered: (@Sendable () -> Void)? = nil
+    ) async -> Bool {
         if initializationWaits >= count { return true }
         if didInitialize { return false }
         let id = UUID()
@@ -1185,6 +1189,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     return
                 }
                 initializationWaitWatchers.append((id: id, count: count, continuation: continuation))
+                registered?()
             }
         } onCancel: {
             Task { await self.cancelInitializationWaitWatcher(id) }
@@ -3819,9 +3824,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                   !replayedInitializeBeforeTickZero else { break }
             // Only a record without an initialize record reaches this fallback, and a live run
             // writes one whenever it records: records before 2.1 no longer open
-            // (`minimumReplayable`), so it is a crafted record. `ctx.tickId` stays at 0, where
-            // the live run had the tick before it: with that ID, OnInitialize's events would go
-            // to a tick whose outputs are already flushed (#593).
+            // (`minimumReplayable`), so it is a crafted record. `ctx.tickId` is the executing tick
+            // (0 for an item in tick 0, later for one a crafted record puts later), so the
+            // outputs flush with that frame. The live run had the tick before it: with that ID,
+            // OnInitialize's events would go to a tick whose outputs are already flushed (#593).
             let ctx = makeContext(
                 playerID: systemPlayerID,
                 clientID: systemClientID,

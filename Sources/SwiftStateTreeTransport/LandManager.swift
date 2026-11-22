@@ -617,7 +617,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             logger: logger
         )
 
-
         // Debug: Check if pathHashes is available
         if let pathHashes = pathHashes {
             logger.info("🔍 PathHashes available for land", metadata: ["count": .stringConvertible(pathHashes.count)])
