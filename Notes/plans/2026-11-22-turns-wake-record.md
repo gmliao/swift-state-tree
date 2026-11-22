@@ -1,6 +1,6 @@
 # Turn core: record timer wakes so mail replay reproduces their batches (#756)
 
-**Status:** rev 2, design only, for Review's plan check. Not implemented; #756 carries it (before release, with #612 and #745). Today's behavior and its documented limit are in PR #753 (`2026-11-21-turns-shared-deadline-timer.md`).
+**Status:** rev 2, design only, GO from Review (one should and two nits folded in below). Not implemented; #756 carries it (before release, with #612 and #745). Today's behavior and its documented limit are in PR #753 (`2026-11-21-turns-shared-deadline-timer.md`).
 
 Rev 2 (Review of rev 1: shape (2) holds; 3 must-fix, 2 shoulds, 2 nits):
 - §3.3 (MF 1): a marker runs from a non-reentrant pump at the start of each outside entry and in `finishReplay`, never from a check inside a segment. A check stops at a marker and leaves it staged. The pump is off during a replay wake.
@@ -59,7 +59,7 @@ A wake that reaches no live head (all its due entries stale) changes no state an
 A marker is a `MailRecordEntry` keyed `before(k, j)` whose content is a wake (`MailRecordWake`):
 - `target`: the instant the sleeper slept until;
 - `selection`: the selection key `before(ks, is)`;
-- `fires`: per selected entry, in order, its ticket (a request or follow-up id, or a timer key and generation, with its kind) and the `now` its entry's segment read (§3.5);
+- `fires`: per selected entry, in order, its ticket (a request or follow-up id, or a timer key and generation, with its kind) and the `now` its entry's segment read (§3.5). A selected entry that is stale at its own `fireDeadline` re-check has no step, so its `now` is nil, as for a stale mail check;
 - `stop`: why selection stopped: `exhausted` (no live entry left at or before `target`), `fireCap` (64 selected) or `staleCap` (256 stale entries popped).
 
 A wake whose take staled every due entry is recorded with no fires and `stop: exhausted`. The live loop's 256 stale pops before the first live head stay unrecorded (no state).
@@ -72,7 +72,7 @@ A marker never runs from inside a segment: firing there would reach `beginEntry`
 - **The pump.** `runReplayWakes()` runs while the core is between entries (not in a segment, no borrow) and no replay wake is running. In a loop, it steps the staged mail keyed for the current position below the next marker (as an entry's take, with its own products-first segment), then, when the head is a marker for the current position, consumes it and runs the wake (§3.4). It ends when the head is neither.
 - **When it runs.** First thing in every outside entry in replay, before the entry reads or changes any state: `send` and `sendAndWait` at submission, a query from outside, an effect's completion and a gate's return (before their pre-checks), a continuation job (before `continueBatch` captures the due follow-ups), and `finishReplay` (before it reports leftovers). Live, the wake ran before that entry arrived, so the entry sees the state after it.
 - **Off during a replay wake.** The wake sets a flag that the pump checks, so a fired entry's segment epilogue or its take can't run a second marker before the batch ends. A second marker at the same position (an empty wake followed by another wake) runs on the pump's next iteration, after the first wake returns.
-- **Reads.** `read` doesn't run the pump: it changes no state. A replay driver that reads between entries sees the state before a pending marker. Replay compares outputs, not reads.
+- **Reads.** `read` doesn't run the pump: it changes no state. A replay driver that reads between entries sees the state before a pending marker. Replay compares outputs, not reads. A reader that decides from `read` (#700's keeper: the initialization barrier, the frozen flag, the adapter's reads) could decide differently before a pending marker under #612's replay: such a reader runs the pump first, or the replay adopter (#612) owns that ordering.
 
 A marker still staged when its ordinal is dispatched is reported `unconsumed` by `noteDispatch`'s existing check; one still staged after `finishReplay`'s pump is `leftover`.
 
@@ -92,7 +92,7 @@ Replay starts no sleeper: `armDeadline` pushes the entry and returns, and the re
 
 Live, each fired entry runs `beginEntry`, which clears the cached `now`, so each one reads the clock when its step asks: a wake for instant 5 can run at 20, and two entries of one wake can read different times. Relative request and gate deadlines are computed from `segmentNow()`, so the time also changes the heap.
 
-- **Live, with a recorder set:** each fire reads `segmentNow()` after its take, before its boundary, and the value goes into its `fires` element. For the first fire when it skipped its take, that is the `now` the pre-selection segment cached, as its step reads.
+- **Live, with a recorder set:** each fire reads `segmentNow()` after its take, before its boundary, and the value goes into its `fires` element. Reading it eagerly per fire follows #738's per-check `now` (`MailRecordEntry.now`), which a check records whether or not its step reads the clock. For the first fire when it skipped its take, that is the `now` the pre-selection segment cached, as its step reads.
 - **Replay:** after the fire's take, the recorded `now` becomes the entry's cached `now` (`cachedNow`), so the fire's step and its segment read it, and so do the deadlines they arm. The pre-selection segment's products read the served `now` of the staged mail before them, as #738 already does.
 - **Behavior change, for the PR text:** a replayed fire's `Turn.now` is the recorded time of the live fire, not the replay's clock.
 - **Cost:** one clock read per fire, only with a recorder set.

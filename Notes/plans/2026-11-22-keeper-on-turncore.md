@@ -464,6 +464,7 @@ package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to 
   - replay owns no core.
 
   So #756's "before any adopter records mail" holds, and #745's limitation never meets a keeper path. Both stay with #612.
+  - The keeper's decisions from `core.read` (the initialization barrier, the frozen flag, the adapter's reads) are a reader #756 §3.3 names: under #612's replay, such a reader runs #756's pump first, or #612 owns that ordering.
 - **Later, at #546 B** (Code-1): once the adapter has its own core on the shared executor, a keeper step that calls the adapter's in-turn methods nests two cores. That needs its own rule then; #700 doesn't create it.
 
 ## 4. How each CLAUDE.md exception ends
