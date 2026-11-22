@@ -72,7 +72,8 @@ public final class TurnMailbox<Mail: Sendable>: @unchecked Sendable {
     @usableFromInline package func removeHead(atOrBelow watermark: UInt64) -> Mail? {
         lock.lock()
         defer { lock.unlock() }
-        guard count > 0, lastSequence &- UInt64(count) &+ 1 <= watermark else { return nil }
+        // Modular: the head's sequence number is at or below the watermark across a rollover.
+        guard count > 0, Int64(bitPattern: watermark &- (lastSequence &- UInt64(count) &+ 1)) >= 0 else { return nil }
         let mail = slots[head].take()
         head = (head + 1) % capacity
         count -= 1
