@@ -220,6 +220,12 @@ replay 時，handler 讀取錄製的 resolver output（`ctx.productInfo`）的�
 
 限制：錄製的 action 本身的 payload 仍以 JSON 來回轉換解碼，所以 payload 含 `Date`、`Data` 或 `URL` 欄位的 action 在 replay 時會被丟棄（#709）。
 
+### Replay 中的 OnInitialize
+
+Replay 以錄製的 resolver output 再次執行 OnInitialize：不會拋出錯誤的 body，或先 `validate` 再 `apply`（#593）。只有 live 的 `validate` 通過時，錄製才會有 initialize 項目，因為 live 的拒絕會在記錄任何內容之前結束 land。因此重播的 `validate` 若拋出錯誤，表示 `validate` 不是確定性的：它讀取了 state 與 context 以外的東西，例如時鐘或可變的全域變數。
+
+此時 replay 什麼都不寫入，和 live 執行相同，initialize 檢查失敗，原因會指出 OnInitialize 與錯誤（`InitializeVerification.failed`）。沒有 initialize record 的錄製（早於 2.1）也一樣，它的 OnInitialize 在 tick 0 內重播。Replay 會繼續進行，之後的 state hash 會回報後續的狀況。
+
 ### 錄製所含的 Hash
 
 | 錄製格式 | State 與 initialize hash | 驗證方式 |

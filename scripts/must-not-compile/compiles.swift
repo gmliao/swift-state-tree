@@ -41,3 +41,35 @@ let compilesLand = Land("snippet", using: SnippetState.self) {
         OnLeave { (state: inout SnippetState, _: LandContext) in state.total -= 1 }
     }
 }
+
+// The lifecycle handlers (#593): destroy handlers and a single OnInitialize that can't fail,
+// OnInitialize in two stages (with and without a plan), and InitializeHandler's public inits.
+let compilesLifecycle = Land("snippet-lifecycle", using: SnippetState.self) {
+    Lifetime {
+        OnInitialize(validate: { (state: SnippetState, _: ValidateContext) -> Int in
+            guard state.total == 0 else { throw SnippetError() }
+            return 1
+        }, apply: { (state: inout SnippetState, total: Int, _: LandContext) in
+            state.total = total
+        })
+        DestroyWhenEmpty(after: .seconds(1)) { (state: inout SnippetState, _: LandContext) in state.total = 0 }
+        OnFinalize { (state: inout SnippetState, _: LandContext) in state.total = 0 }
+    }
+}
+
+let compilesSingleInitialize = Land("snippet-single-initialize", using: SnippetState.self) {
+    Lifetime {
+        OnInitialize { (state: inout SnippetState, _: LandContext) in state.total = 1 }
+    }
+}
+
+let compilesInitializeHandlers: [InitializeHandler<SnippetState>] = [
+    InitializeHandler { (state: inout SnippetState, _: LandContext) in state.total = 1 },
+    InitializeHandler(validate: { (_: SnippetState, _: ValidateContext) in
+        throw SnippetError()
+    }, apply: { (state: inout SnippetState, _: LandContext) in
+        state.total = 1
+    }),
+    InitializeHandler(validate: { (_: SnippetState, _: ValidateContext) -> Int in 1 },
+                      apply: { (state: inout SnippetState, total: Int, _: LandContext) in state.total = total }),
+]

@@ -116,13 +116,20 @@ public enum ReevaluationEngine {
     /// Compares OnInitialize's replayed events and state with the initialize record. A caller
     /// checks the record's targets first (`checkTargets(of:)`), so a malformed one is not
     /// reported as a mismatch.
+    ///
+    /// `refusal` is the keeper's `replayedInitializeRefusal` (#593): a replayed `validate` that
+    /// threw. It is checked first, before the record: a record holds OnInitialize only when the
+    /// live `validate` passed, so a refusal fails the check, also on a record without an
+    /// initialize record (older than 2.1).
     package static func verifyInitialize<State: StateNodeProtocol>(
         record: ReevaluationRecordedInitialize?,
         emitted: [ReevaluationRecordedServerEvent],
         state: State,
         hashDefinition: ReevaluationHashDefinition = .fullState,
-        hashIncomparability: String? = nil
+        hashIncomparability: String? = nil,
+        refusal: String? = nil
     ) -> InitializeVerification {
+        if let refusal { return .failed(reason: refusal) }
         guard let record else { return .notRecorded }
         if !serverEventsMatch(recorded: record.serverEvents, emitted: emitted) {
             return .failed(reason: "server events differ (recorded \(record.serverEvents.count), replayed \(emitted.count))")
@@ -143,6 +150,18 @@ public enum ReevaluationEngine {
             }
         }
         return .passed
+    }
+
+    /// The initialize verdict once a record without an initialize record (older than 2.1) has
+    /// replayed OnInitialize inside tick 0, after `verifyInitialize` ran (#593): a refusal noted
+    /// then fails the check too. A verdict that already failed keeps its reason.
+    package static func initializeVerdict(
+        _ verdict: InitializeVerification,
+        afterTickZeroRefusal refusal: String?
+    ) -> InitializeVerification {
+        guard let refusal else { return verdict }
+        if case .failed = verdict { return verdict }
+        return .failed(reason: refusal)
     }
 
     /// Outcome of server-event verification for a re-evaluation run.
@@ -296,12 +315,13 @@ public enum ReevaluationEngine {
         let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version, stateType: State.self)
             ?? nfcIncomparability
         try checkTargets(of: initializeRecord?.serverEvents ?? [])
-        let initialize = verifyInitialize(
+        var initialize = verifyInitialize(
             record: initializeRecord,
             emitted: initializeEvents,
             state: stateAfterInitialize,
             hashDefinition: hashDefinition,
-            hashIncomparability: hashIncomparability
+            hashIncomparability: hashIncomparability,
+            refusal: await keeper.replayedInitializeRefusal
         )
         // A land without a tick handler is tickless, as the keeper decides it: its record holds
         // its passes in frame 0 (3.1 on), and from 3.4 its sync stream is located by pass, stepped
@@ -362,6 +382,9 @@ public enum ReevaluationEngine {
             for tickId in 0...lastTickId {
                 await keeper.stepTickOnce()
                 if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
+                if tickId == 0 {
+                    initialize = initializeVerdict(initialize, afterTickZeroRefusal: await keeper.replayedInitializeRefusal)
+                }
                 let state = await keeper.currentState()
 
                 // The hash the record holds (`hashDefinition`). A conversion that throws makes

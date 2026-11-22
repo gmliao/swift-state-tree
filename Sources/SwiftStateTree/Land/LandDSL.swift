@@ -401,8 +401,9 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// Use this callback for logging, metrics collection, or other read-only operations during sync.
     public var syncHandler: (@Sendable (State, LandContext) -> Void)?
     
-    /// Handler called when the Land is initialized (on creation).
-    public var onInitialize: (@Sendable (inout State, LandContext) throws -> Void)?
+    /// Handler called when the Land is initialized (on creation): a body that can't fail, or
+    /// `validate` and `apply` (#593).
+    public var onInitialize: InitializeHandler<State>?
     /// Resolver executors for the onInitialize handler.
     public var onInitializeResolverExecutors: [any AnyResolverExecutor] = []
     /// What a throwing OnInitialize resolver does (#238).
@@ -644,19 +645,34 @@ public func PersistSnapshot<State: StateNodeProtocol>(
     }
 }
 
+/// Installs OnInitialize's handler and its resolvers in the config: every form goes through here.
+private func initializeDirective<State: StateNodeProtocol>(
+    _ handler: InitializeHandler<State>,
+    executors: [any AnyResolverExecutor],
+    onResolverFailure: InitializeResolverFailure
+) -> LifetimeDirective<State> {
+    return { config in
+        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
+        config.onInitialize = handler
+        config.onInitializeResolverExecutors = executors
+        config.onInitializeResolverFailure = onResolverFailure
+    }
+}
+
 /// Registers a handler called when the Land is initialized (on creation).
 ///
 /// This handler is executed once when the Land is created, before any players join.
 /// It can use resolvers to load initial configuration or setup data.
 ///
+/// The body can't throw (#593). An initialization that can be refused uses
+/// `OnInitialize(validate:apply:)`: a `validate` throw fails the initialization with nothing
+/// written.
+///
 /// - Parameter body: The synchronous closure to execute.
 public func OnInitialize<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    return { config in
-        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
-        config.onInitialize = body
-    }
+    initializeDirective(InitializeHandler(body), executors: [], onResolverFailure: .failLand)
 }
 
 /// What a land does when one of its OnInitialize resolvers throws (#238). A timeout
@@ -677,56 +693,184 @@ public enum InitializeResolverFailure: Sendable, Equatable {
 /// - Parameters:
 ///   - resolvers: One or more resolver types to execute before the handler.
 ///   - onResolverFailure: What a throwing resolver does (`.failLand` by default).
-///   - body: The synchronous closure to execute with resolved data available via `ctx`.
+///   - body: The synchronous closure to execute with resolved data available via `ctx`. It
+///     can't throw (#593); with `.continue`, a check of the outputs that may refuse belongs in
+///     `OnInitialize(resolvers:onResolverFailure:validate:apply:)`'s `validate`.
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
     onResolverFailure: InitializeResolverFailure = .failLand,
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    let executors = [ResolverExecutor.createExecutor(for: resolvers)]
-    return { config in
-        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
-        config.onInitialize = body
-        config.onInitializeResolverExecutors = executors
-        config.onInitializeResolverFailure = onResolverFailure
-    }
+    initializeDirective(
+        InitializeHandler(body),
+        executors: [ResolverExecutor.createExecutor(for: resolvers)],
+        onResolverFailure: onResolverFailure
+    )
 }
 
 /// Registers a handler called when the Land is initialized with multiple resolvers.
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    let executors = [
+    initializeDirective(
+        InitializeHandler(body),
+        executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
         ResolverExecutor.createExecutor(for: resolvers.1)
-    ]
-    return { config in
-        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
-        config.onInitialize = body
-        config.onInitializeResolverExecutors = executors
-        config.onInitializeResolverFailure = onResolverFailure
-    }
+    ],
+        onResolverFailure: onResolverFailure
+    )
 }
 
 /// Registers a handler called when the Land is initialized with multiple resolvers.
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
     onResolverFailure: InitializeResolverFailure = .failLand,
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
-    let executors = [
+    initializeDirective(
+        InitializeHandler(body),
+        executors: [
         ResolverExecutor.createExecutor(for: resolvers.0),
         ResolverExecutor.createExecutor(for: resolvers.1),
         ResolverExecutor.createExecutor(for: resolvers.2)
-    ]
-    return { config in
-        warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
-        config.onInitialize = body
-        config.onInitializeResolverExecutors = executors
-        config.onInitializeResolverFailure = onResolverFailure
-    }
+    ],
+        onResolverFailure: onResolverFailure
+    )
+}
+
+/// Registers OnInitialize in two stages (#593): `validate` reads the state and may throw;
+/// `apply` writes the plan `validate` returned and can't throw.
+///
+/// A `validate` throw fails the initialization, as an OnInitialize resolver that throws with
+/// `.failLand` does: nothing is written, the land is torn down without its destroy handlers, and
+/// a waiting join gets the retryable `JOIN_DENIED`.
+///
+/// Example:
+/// ```swift
+/// OnInitialize(
+///     validate: { (state: RoomState, ctx: ValidateContext) throws -> Int in
+///         guard state.maxPlayers == 0 else { throw RoomSetupError.alreadySetUp }
+///         return 4
+///     },
+///     apply: { (state: inout RoomState, maxPlayers: Int, ctx: LandContext) in
+///         state.maxPlayers = maxPlayers
+///     })
+/// ```
+public func OnInitialize<State: StateNodeProtocol, Plan>(
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
+}
+
+/// OnInitialize in two stages with nothing to pass from `validate` to `apply` (#593).
+public func OnInitialize<State: StateNodeProtocol>(
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(InitializeHandler(validate: validate, apply: apply), executors: [], onResolverFailure: .failLand)
+}
+
+/// OnInitialize in two stages with a resolver (#593): `validate` reads its output from the
+/// context. With `.continue`, `validate` runs without the group's outputs and may refuse.
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, Plan>(
+    resolvers: R1.Type,
+    onResolverFailure: InitializeResolverFailure = .failLand,
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(
+        InitializeHandler(validate: validate, apply: apply),
+        executors: [ResolverExecutor.createExecutor(for: resolvers)],
+        onResolverFailure: onResolverFailure
+    )
+}
+
+/// The two-stage form with a resolver and nothing to pass from `validate` to `apply` (#593).
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
+    resolvers: R1.Type,
+    onResolverFailure: InitializeResolverFailure = .failLand,
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(
+        InitializeHandler(validate: validate, apply: apply),
+        executors: [ResolverExecutor.createExecutor(for: resolvers)],
+        onResolverFailure: onResolverFailure
+    )
+}
+
+/// OnInitialize in two stages with two resolvers (#593).
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, Plan>(
+    resolvers: (R1.Type, R2.Type),
+    onResolverFailure: InitializeResolverFailure = .failLand,
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(
+        InitializeHandler(validate: validate, apply: apply),
+        executors: [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1)
+    ],
+        onResolverFailure: onResolverFailure
+    )
+}
+
+/// The two-stage form with two resolvers and nothing to pass from `validate` to `apply` (#593).
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
+    resolvers: (R1.Type, R2.Type),
+    onResolverFailure: InitializeResolverFailure = .failLand,
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(
+        InitializeHandler(validate: validate, apply: apply),
+        executors: [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1)
+    ],
+        onResolverFailure: onResolverFailure
+    )
+}
+
+/// OnInitialize in two stages with three resolvers (#593).
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver, Plan>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    onResolverFailure: InitializeResolverFailure = .failLand,
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
+    apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(
+        InitializeHandler(validate: validate, apply: apply),
+        executors: [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1),
+        ResolverExecutor.createExecutor(for: resolvers.2)
+    ],
+        onResolverFailure: onResolverFailure
+    )
+}
+
+/// The two-stage form with three resolvers and nothing to pass from `validate` to `apply` (#593).
+public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
+    resolvers: (R1.Type, R2.Type, R3.Type),
+    onResolverFailure: InitializeResolverFailure = .failLand,
+    validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
+    apply: @escaping @Sendable (inout State, LandContext) -> Void
+) -> LifetimeDirective<State> {
+    initializeDirective(
+        InitializeHandler(validate: validate, apply: apply),
+        executors: [
+        ResolverExecutor.createExecutor(for: resolvers.0),
+        ResolverExecutor.createExecutor(for: resolvers.1),
+        ResolverExecutor.createExecutor(for: resolvers.2)
+    ],
+        onResolverFailure: onResolverFailure
+    )
 }
 
 /// Registers a handler called when the Land is finalizing (before shutdown).

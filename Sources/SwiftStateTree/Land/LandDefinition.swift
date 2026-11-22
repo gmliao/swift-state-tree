@@ -145,8 +145,9 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// Handler called when the Land is initialized (on creation).
     ///
     /// This is called once when the Land is created, before any players join.
-    /// It can use resolvers to load initial configuration or setup data.
-    public var onInitialize: (@Sendable (inout State, LandContext) throws -> Void)?
+    /// It can use resolvers to load initial configuration or setup data. It can't throw after
+    /// it writes (#593): a refusal is `InitializeHandler`'s `validate`, before anything is written.
+    public var onInitialize: InitializeHandler<State>?
     
     /// Resolver executors for the onInitialize handler (empty if no resolvers declared).
     public var onInitializeResolverExecutors: [any AnyResolverExecutor]
@@ -189,7 +190,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         onDestroyWhenEmpty: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = [],
         persistInterval: Duration? = nil,
-        onInitialize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
+        onInitialize: InitializeHandler<State>? = nil,
         onInitializeResolverExecutors: [any AnyResolverExecutor] = [],
         onInitializeResolverFailure: InitializeResolverFailure = .failLand,
         onFinalize: (@Sendable (inout State, LandContext) -> Void)? = nil,
@@ -218,6 +219,48 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.onFinalizeResolverExecutors = onFinalizeResolverExecutors
         self.afterFinalize = afterFinalize
         self.onShutdown = onShutdown
+    }
+}
+
+// MARK: - OnInitialize Handler
+
+/// OnInitialize's handler (#593): a body that can't fail, or two stages, `validate` and `apply`,
+/// as for an input that can be refused (#586).
+///
+/// `validate` reads the state (a constant) and the resolver outputs, may throw, and returns the
+/// plan; `apply` writes it and can't throw. They run back to back, in one synchronous segment. A
+/// `validate` throw fails the land's initialization, as an OnInitialize resolver that throws with
+/// `.failLand` does, with nothing written. There is no public init that takes a throwing body.
+public struct InitializeHandler<State: StateNodeProtocol>: Sendable {
+    /// The check and the write, as one call: it throws only from `validate`, before `apply`
+    /// writes.
+    package let invoke: @Sendable (inout State, LandContext) throws -> Void
+
+    /// A handler that can't fail.
+    public init(_ body: @escaping @Sendable (inout State, LandContext) -> Void) {
+        invoke = { state, ctx in body(&state, ctx) }
+    }
+
+    /// A handler in two stages: `validate` returns the plan that `apply` writes.
+    public init<Plan>(
+        validate: @escaping @Sendable (State, ValidateContext) throws -> Plan,
+        apply: @escaping @Sendable (inout State, Plan, LandContext) -> Void
+    ) {
+        invoke = { state, ctx in
+            let plan = try validate(state, ValidateContext(ctx))
+            apply(&state, plan, ctx)
+        }
+    }
+
+    /// A handler in two stages, with nothing to pass from `validate` to `apply`.
+    public init(
+        validate: @escaping @Sendable (State, ValidateContext) throws -> Void,
+        apply: @escaping @Sendable (inout State, LandContext) -> Void
+    ) {
+        invoke = { state, ctx in
+            try validate(state, ValidateContext(ctx))
+            apply(&state, ctx)
+        }
     }
 }
 

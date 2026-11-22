@@ -345,7 +345,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             emitted: initializeEvents,
             state: stateAfterInitialize,
             hashDefinition: hashDefinition,
-            hashIncomparability: try await hashIncomparability()
+            hashIncomparability: try await hashIncomparability(),
+            refusal: await keeper.replayedInitializeRefusal
         )
         syncOutputDriver.begin(
             beforeInitialize: initialState,
@@ -400,6 +401,12 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // We can track it ourselves since we control the stepping.
         currentTickId += 1
         let tickId = currentTickId
+        if tickId == 0 {
+            // A record older than 2.1 replays OnInitialize inside tick 0, after the check (#593).
+            initialize = ReevaluationEngine.initializeVerdict(
+                initialize, afterTickZeroRefusal: await keeper.replayedInitializeRefusal
+            )
+        }
 
         // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String

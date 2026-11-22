@@ -664,6 +664,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
     /// record, so tick 0 skips its `initialize` lifecycle event.
     private var replayedInitializeBeforeTickZero = false
+    /// Re-evaluation: OnInitialize's `validate` threw on the recorded inputs (#593), set once,
+    /// naming the handler and the error. The record holds an initialize entry only when the live
+    /// `validate` passed, so the replay contradicts it: `ReevaluationEngine.verifyInitialize`
+    /// reports `.failed`. Nothing was written, as live.
+    package private(set) var replayedInitializeRefusal: String?
 
     /// Next tick ID (0-based, increments with each tick) for deterministic replay.
     /// This represents the ID that will be assigned to the next tick execution.
@@ -1177,16 +1182,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: resolverOutputs
         )
         do {
+            // `invoke` throws only from `validate`, before `apply` writes (#593).
             try withMutableStateSync { state in
-                try handler(&state, ctx)
+                try handler.invoke(&state, ctx)
             }
         } catch {
-            logger.error("❌ OnInitialize handler failed during re-evaluation", metadata: [
-                "error": .string(String(describing: error)),
-            ])
+            noteReplayedInitializeRefusal(error)
         }
         replayedInitializeBeforeTickZero = true
         await flushOutputs(forTick: lastCommittedTickId)
+    }
+
+    /// A replayed OnInitialize's `validate` threw (#593): logged, and kept for the initialize
+    /// check (`replayedInitializeRefusal`). Nothing was written, and `validate` emits nothing.
+    private func noteReplayedInitializeRefusal(_ error: any Error) {
+        logger.error("❌ OnInitialize's validate threw during re-evaluation: nothing is written", metadata: [
+            "error": .string(String(describing: error)),
+        ])
+        if replayedInitializeRefusal == nil {
+            replayedInitializeRefusal = "OnInitialize's validate threw in replay: \(error)"
+        }
     }
 
     /// Whether a throwing OnInitialize resolver group fails the initialization (#238): with
@@ -1291,14 +1306,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
 
             do {
-                // The land runs on with the state OnInitialize left: the check applies.
+                // `invoke` throws only from `validate`, before `apply` writes (#593).
                 try withMutableStateSync { state in
-                    try handler(&state, ctx)
+                    try handler.invoke(&state, ctx)
                 }
             } catch {
-                logger.error("❌ OnInitialize handler failed", metadata: [
+                // A refusal fails the initialization, as a resolver failure with `.failLand`
+                // does: nothing was written, `validate` emitted nothing, and nothing is recorded.
+                logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
                     "error": .string(String(describing: error)),
                 ])
+                initializationFailure = LandInitializationError(underlying: error)
+                Task { await self.tearDownAfterFailedInitialization() }
+                return
             }
             // Recorded in the same synchronous segment as the state write: sync outputs before
             // this point read the state before OnInitialize, outputs after it the state after.
@@ -3312,9 +3332,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
     /// suspend and the actor's state is mutated directly.
     ///
-    /// Input handlers throw only from `validate`, before they write (#586). A lifecycle handler
-    /// that still throws (OnInitialize, the destroy-phase handlers) keeps what it wrote before
-    /// the throw (#87).
+    /// Handlers throw only from `validate`, before they write: the input handlers (#586) and
+    /// OnInitialize (#593). The destroy handlers don't throw.
     private func withMutableStateSync<R>(_ body: (inout State) throws -> R) rethrows -> R {
         try body(&state)
     }
@@ -3697,7 +3716,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Applies a lifecycle input: recorded, then its handler. It can't fail: OnJoin and OnLeave
-    /// don't throw (#586), and a replayed OnInitialize that throws is logged here.
+    /// don't throw (#586), and a replayed OnInitialize whose `validate` throws writes nothing and
+    /// is noted for the initialize check (#593).
     private func applyLifecycleItem(_ lifecycleItem: PendingLifecycleItem, executingTickId: Int64, into applied: inout AppliedInputs) {
         if skipsAfterDestroy(.lifecycle(lifecycleItem)) { return }
         // Recorded before the handler runs (see the action case).
@@ -3735,18 +3755,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverOutputs: lifecycleItem.resolverOutputs
             )
             // Execute handler synchronously (resolver outputs already injected). Only
-            // re-evaluation queues an initialize item, so the check (live only) never runs.
-            // OnInitialize can still throw; it fails alone, as before, keeping its writes (#87).
-            let sequenceBefore = outputCollector.nextSequence
+            // re-evaluation queues an initialize item (a record older than 2.1). `invoke` throws
+            // only from `validate`, before `apply` writes and with nothing emitted (#593).
             do {
                 try withMutableStateSync { state in
-                    try handler(&state, ctx)
+                    try handler.invoke(&state, ctx)
                 }
             } catch {
-                outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
-                logger.error("❌ OnInitialize handler failed during re-evaluation", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
+                noteReplayedInitializeRefusal(error)
             }
         case .join:
             guard
