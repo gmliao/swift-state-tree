@@ -139,7 +139,8 @@ private struct Fixture {
     let alice = (session: SessionID("s-alice"), client: ClientID("c-alice"), player: PlayerID("alice"))
     let bob = (session: SessionID("s-bob"), client: ClientID("c-bob"), player: PlayerID("bob"))
 
-    init() async throws {
+    /// `attach: false` builds the adapter for the keeper but never calls `setTransport`.
+    init(attach: Bool = true) async throws {
         keeper = LandKeeper<DebugFreezeAdapterState>(
             definition: makeDefinition(),
             initialState: DebugFreezeAdapterState()
@@ -156,7 +157,7 @@ private struct Fixture {
             )
         )
         await transport.setDelegate(adapter)
-        await keeper.setTransport(adapter)
+        if attach { await keeper.setTransport(adapter) }
         for member in [alice, bob] {
             await adapter.onConnect(sessionID: member.session, clientID: member.client)
             try await simulateRouterJoin(
@@ -778,33 +779,21 @@ struct TransportAdapterDebugFreezeTests {
         await f.adapter.installHolds(nil)
     }
 
-    @Test("A settle that meets a direct beginSync retries after its endSync, then settles")
-    func directBeginSyncIsRetried() async throws {
-        let f = try await Fixture()
+    /// A keeper never attached syncs through the first adapter that asks (`bindSyncRequester`;
+    /// here the fixture's `syncNow()` bound it); its settle takes the same rule as the requested
+    /// turns, so it settles instead of being refused for having no attached transport (#546 L2d).
+    /// The settle's own binding, and that a refused settle binds nothing: SettleFenceBindingTests.
+    @Test("A keeper never attached settles through the adapter it syncs with")
+    func neverAttachedKeeperSettles() async throws {
+        let f = try await Fixture(attach: false)
         await f.adapter.setDebugFreezeSettleDeadline(.seconds(3600))
-        let firstTry = TestGate(), retry = TestGate()
-        defer { firstTry.open(); retry.open() }
-        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
-            .on(.settleBeforeCommit, arrival: 1) { await firstTry.arrive() }
-            .on(.settleBeforeCommit, arrival: 2) { await retry.arrive() }
-            .hook)
+        #expect(await f.keeper.transportForTesting == nil, "the fixture never attached")
         try await f.makeDirty()
 
-        let adapter = f.adapter
-        let freeze = Task { try await adapter.debugFreeze() }
-        try #require(await firstTry.waitForArrivals(1), "the settle didn't reach its keeper turn")
-        _ = try #require(await f.keeper.beginSync(clearDirtyFlags: false), "the test holds the sync flag")
-        firstTry.open()
-        // Refused while the flag is held: the settle comes back to its keeper turn.
-        try #require(await retry.waitForArrivals(1), "the settle didn't retry")
-        #expect(await f.isStillDirty(), "the refused try planned nothing")
-        await f.keeper.endSync()
-        retry.open()
-
-        let response = try await freeze.value
-        #expect(await !f.isStillDirty(), "the retry settled")
-        await f.adapter.installHolds(nil)
-        _ = await f.adapter.debugResume(freezeToken: response.freezeToken)
+        let freeze = try await f.adapter.debugFreeze()
+        #expect(await !f.isStillDirty(), "the settle committed")
+        #expect(try #require(await f.adapter.debugFreezeState.settled).state.headline == "unsettled")
+        _ = await f.adapter.debugResume(freezeToken: freeze.freezeToken)
     }
 
     @Test("The fence checks a failed land before the freeze generation: a failed and released land names its failure")

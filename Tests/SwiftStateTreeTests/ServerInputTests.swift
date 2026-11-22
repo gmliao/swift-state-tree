@@ -176,7 +176,7 @@ private func makeTickDefinitionWithoutServerInputs() -> LandDefinition<ServerInp
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
 /// Reports in-turn sync for every keeper, so a tickless keeper attached to it applies inputs in
-/// input turns (`usesInTurnSync`) whatever the adapter's mode. Counts the server events each
+/// input turns (`syncsInTurn`) whatever the adapter's mode. Counts the server events each
 /// path delivered: in a turn's sync phase, or through the legacy send.
 private final class SIInTurnTransport: LandKeeperTransport, @unchecked Sendable {
     private let lock = NSLock()
@@ -207,6 +207,7 @@ private final class SIInTurnTransport: LandKeeperTransport, @unchecked Sendable 
         lock.withLock { inTurn += events.count }
         return includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// Counts the keeper's input drain ends (its in-turn probe), so a test can wait for a drain
@@ -535,7 +536,7 @@ struct ServerInputTests {
             await kickHold.enterAndWait()
         }.hook)
         let a = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
-        await kickHold.waitUntilEntered()
+        guard await kickHold.waitUntilEntered() else { return }
 
         // The freeze waits for A's turn, which is in flight; B is accepted meanwhile.
         let freeze = Task { await keeper.debugFreeze(generation: 1, timeout: .seconds(30)) }

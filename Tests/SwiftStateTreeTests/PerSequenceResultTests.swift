@@ -163,6 +163,7 @@ private final class PerSequenceInTurnTransport: LandKeeperTransport, @unchecked 
     ) -> InTurnSyncResult {
         includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// In-turn transport that counts the turns whose output step included the sync phase.
@@ -194,16 +195,30 @@ private final class InTurnSyncSpyTransport: LandKeeperTransport, @unchecked Send
         lock.withLock { syncs += 1 }
         return .committed(clearDirtyFlags: true)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
-/// Counts the legacy broadcast-only syncs (the one a leave asks for).
-private actor BroadcastSpyTransport: LandKeeperTransport {
-    private(set) var broadcastSyncs = 0
+/// Counts the sync phases its keeper's turns run (a leave asks for one).
+private final class BroadcastSpyTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var phases = 0
+    var syncPhases: Int { lock.withLock { phases } }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
-    func syncBroadcastOnlyFromTransport() async { broadcastSyncs += 1 }
+    func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        if includeSync { lock.withLock { phases += 1 } }
+        return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let perSequenceLandID = "per-sequence-test:local"
@@ -293,9 +308,7 @@ struct PerSequenceResultTests {
 
         // Y takes its number, then holds in its resolver; T, numbered after Y, throws.
         let y = Task { try await send(keeper, PerSequenceGatedAction(amount: gateKey), from: p2) }
-        guard try await withinDeadline("Y's resolver holds", {
-            await DeliveryGates.gate(gateKey).waitUntilEntered()
-        }) != nil else { return }
+        guard await DeliveryGates.gate(gateKey).waitUntilEntered("Y's resolver holds") else { return }
         #expect(await outcome(keeper, PerSequenceThrowingAction(amount: 7, tag: t)) == "threw \(t)")
 
         DeliveryGates.gate(gateKey).release()
@@ -372,22 +385,22 @@ struct PerSequenceResultTests {
         #expect(runs[0].last == "total 15")
     }
 
-    @Test("Legacy tick: a leave applied before a throwing input still gets its broadcast-only sync")
+    @Test("Tick land: a leave applied before a throwing input still gets its sync in that tick's turn")
     func leaveBeforeThrowStillBroadcasts() async throws {
         let spy = BroadcastSpyTransport()
         let keeper = await makePerSequenceKeeper(
-            tick: true, inTurn: false, refusedTags: ["w"], transport: spy
+            tick: true, inTurn: true, refusedTags: ["w"], transport: spy
         )
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()
-        let before = await spy.broadcastSyncs
+        let before = spy.syncPhases
 
         try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
         _ = try await send(keeper, PerSequenceThrowingAction(amount: 1, tag: "w"))
         await keeper.stepTickOnce()
 
-        #expect(await spy.broadcastSyncs == before + 1)
+        #expect(spy.syncPhases == before + 1, "the tick turn after the leave ran one sync phase")
         #expect(await keeper.currentState().log.contains("leave:p2"))
     }
 
@@ -442,9 +455,7 @@ struct PerSequenceResultTests {
         let recordGate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.turnRecord) { await recordGate.enterAndWait() })
         let failing = Task { await outcome(keeper, PerSequenceThrowingAction(amount: 1, tag: "w")) }
-        guard try await withinDeadline("P's pass holds before its record", {
-            await recordGate.waitUntilEntered()
-        }) != nil else { return }
+        guard await recordGate.waitUntilEntered("P's pass holds before its record") else { return }
 
         // The shutdown applies once P's turn has ended (in-turn: after its record); an input
         // after the shutdown is rejected (#382).

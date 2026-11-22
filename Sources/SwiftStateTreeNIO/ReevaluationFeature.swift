@@ -10,6 +10,25 @@ public struct ReevaluationFeatureConfiguration: Sendable {
     public var monitorLandType: String
     public var monitorWebSocketPath: String
     public var replayWebSocketPathResolver: @Sendable (String) -> String
+    /// The run length limit the admin replay start checks a record against (#728). Set it to the
+    /// `maxReplayTicks` of the `ReevaluationRunnerService` that `runnerServiceFactory` makes (and
+    /// of the runners its factory builds): a record the admin start accepts is then one the run
+    /// accepts. A mismatch is safe, not silent: a limit below the service's refuses a record the
+    /// run would take, and a limit above it lets the run fail with `replayTooLong`.
+    ///
+    /// The reevaluation monitor land is registered once, by the first `registerWithGenericReplay`
+    /// call with re-evaluation enabled (a disabled call registers no monitor), with that call's
+    /// configuration, so its runs use that registration's service and limit.
+    /// `/admin/reevaluation/start` checks a record against the limit of the land type in the
+    /// request: with lands at different limits, a record accepted for the higher one can still
+    /// fail in the monitor: its status is `phase == .failed`, with the `replayTooLong`
+    /// description in `errorMessage` (reported, not silent). Lands that share a monitor should
+    /// share a limit when the monitor route has to honor it.
+    ///
+    /// `NIOAdminRoutes` takes a snapshot of these limits when `registerAdminRoutes()` runs
+    /// (`NIOLandHost.run` does so after the registrations): a land registered after that keeps
+    /// the default limit for the admin start.
+    public var maxReplayTicks: Int64
     public var runnerServiceFactory: @Sendable () -> ReevaluationRunnerService
 
     public init(
@@ -21,8 +40,11 @@ public struct ReevaluationFeatureConfiguration: Sendable {
         replayWebSocketPathResolver: @escaping @Sendable (String) -> String = { replayLandType in
             "/game/\(replayLandType)"
         },
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks,
         runnerServiceFactory: @escaping @Sendable () -> ReevaluationRunnerService
     ) {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
+        self.maxReplayTicks = maxReplayTicks
         self.enabled = enabled
         self.replayEventPolicy = replayEventPolicy
         self.replayLandSuffix = replayLandSuffix
@@ -122,6 +144,7 @@ public extension NIOLandHost {
         }
 
         replayLandSuffix = reevaluation.replayLandSuffix
+        maxReplayTicksByLandType[landType] = reevaluation.maxReplayTicks
 
         try await register(
             landType: replay.landType,

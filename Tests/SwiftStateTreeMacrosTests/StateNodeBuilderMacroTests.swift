@@ -44,13 +44,13 @@ final class StateNodeBuilderMacroTests {
                     return true
                 }
 
-                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
 
                     // Include players if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("players") == true {
                         if let value = Self._syncPolicy_players.filteredValue(self._players.wrappedValue, for: playerID) {
-                            result["players"] = try SnapshotValue.make(from: value, for: playerID)
+                            result["players"] = try SnapshotValue.make(from: value, for: playerID, budget: budget)
                         }
                     }
 
@@ -64,13 +64,13 @@ final class StateNodeBuilderMacroTests {
                     return StateSnapshot(values: result)
                 }
 
-                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                public func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
 
                     // Include players if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("players") == true {
                         do {
-                            result["players"] = try SnapshotValue.make(from: self._players.wrappedValue)
+                            result["players"] = try SnapshotValue.make(from: self._players.wrappedValue, budget: budget)
                         } catch {
                             throw error
                         }
@@ -79,21 +79,21 @@ final class StateNodeBuilderMacroTests {
                     return StateSnapshot(values: result)
                 }
 
-                public func fullStateSnapshot() throws -> StateSnapshot {
+                public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
                     result.reserveCapacity(2)
-                    result["players"] = try SnapshotValue.makeFull(from: self._players.wrappedValue as Any)
-                    result["hiddenData"] = try SnapshotValue.makeFull(from: self._hiddenData.wrappedValue as Any)
+                    result["players"] = try SnapshotValue.makeFull(from: self._players.wrappedValue as Any, budget: budget)
+                    result["hiddenData"] = try SnapshotValue.makeFull(from: self._hiddenData.wrappedValue as Any, budget: budget)
                     return StateSnapshot(values: result)
                 }
 
-                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
                     var broadcastResult: [String: SnapshotValue] = [:]
                     let perPlayerResult: [PlayerID: [String: SnapshotValue]] = [:]
 
                     if dirtyFields == nil || dirtyFields?.contains("players") == true {
                         do {
-                            broadcastResult["players"] = try SnapshotValue.make(from: self._players.wrappedValue)
+                            broadcastResult["players"] = try SnapshotValue.make(from: self._players.wrappedValue, budget: budget)
                         } catch {
                             throw error
                         }
@@ -102,6 +102,22 @@ final class StateNodeBuilderMacroTests {
                     return (StateSnapshot(values: broadcastResult), perPlayerResult.mapValues {
                             StateSnapshot(values: $0)
                         })
+                }
+
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    try snapshot(for: playerID, dirtyFields: dirtyFields, budget: NestingBudget())
+                }
+
+                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    try broadcastSnapshot(dirtyFields: dirtyFields, budget: NestingBudget())
+                }
+
+                public func fullStateSnapshot() throws -> StateSnapshot {
+                    try fullStateSnapshot(budget: NestingBudget())
+                }
+
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                    try snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields, budget: NestingBudget())
                 }
 
                 public func isDirty() -> Bool {
@@ -244,7 +260,7 @@ final class StateNodeBuilderMacroTests {
                     return true
                 }
 
-                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
 
                     // Include secret if no dirtyFields filter or if field is dirty
@@ -257,20 +273,20 @@ final class StateNodeBuilderMacroTests {
                     return StateSnapshot(values: result)
                 }
 
-                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                public func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
                     let result: [String: SnapshotValue] = [:]
 
                     return StateSnapshot(values: result)
                 }
 
-                public func fullStateSnapshot() throws -> StateSnapshot {
+                public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {
                     var result: [String: SnapshotValue] = [:]
                     result.reserveCapacity(1)
-                    result["secret"] = try SnapshotValue.makeFull(from: self._secret.wrappedValue as Any)
+                    result["secret"] = try SnapshotValue.makeFull(from: self._secret.wrappedValue as Any, budget: budget)
                     return StateSnapshot(values: result)
                 }
 
-                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
                     let broadcastResult: [String: SnapshotValue] = [:]
                     var perPlayerResult: [PlayerID: [String: SnapshotValue]] = [:]
                     for playerID in playerIDs {
@@ -286,6 +302,22 @@ final class StateNodeBuilderMacroTests {
                     return (StateSnapshot(values: broadcastResult), perPlayerResult.mapValues {
                             StateSnapshot(values: $0)
                         })
+                }
+
+                public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    try snapshot(for: playerID, dirtyFields: dirtyFields, budget: NestingBudget())
+                }
+
+                public func broadcastSnapshot(dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                    try broadcastSnapshot(dirtyFields: dirtyFields, budget: NestingBudget())
+                }
+
+                public func fullStateSnapshot() throws -> StateSnapshot {
+                    try fullStateSnapshot(budget: NestingBudget())
+                }
+
+                public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+                    try snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields, budget: NestingBudget())
                 }
 
                 public func isDirty() -> Bool {

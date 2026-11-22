@@ -70,6 +70,79 @@ struct ReevaluationFeatureRegistrationTests {
         #expect(await realm.isRegistered(landType: "reevaluation-monitor"))
     }
 
+    @Test("registerWithGenericReplay records the feature's run length limit for the admin start, and a default feature uses the default (#728)")
+    func registerWithGenericReplayRecordsTheServiceLimit() async throws {
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(
+            host: "localhost",
+            port: 8080,
+            adminAPIKey: "test-admin-key"
+        ))
+        let feature = ReevaluationFeatureConfiguration(
+            enabled: true,
+            maxReplayTicks: 7_000_000,
+            runnerServiceFactory: {
+                ReevaluationRunnerService(factory: MockReevaluationTargetFactory(), maxReplayTicks: 7_000_000)
+            }
+        )
+        try await host.registerWithGenericReplay(
+            landType: "feature-live",
+            liveLand: FeatureLiveLand.makeLand(),
+            liveInitialState: FeatureLiveState(),
+            liveWebSocketPath: "/game/feature-live",
+            configuration: NIOLandServerConfiguration(transportEncoding: .json),
+            reevaluation: feature
+        )
+        #expect(await host.maxReplayTicksByLandType == ["feature-live": 7_000_000])
+
+        // A feature that is off registers no replay, so no limit.
+        let off = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080))
+        try await off.registerWithGenericReplay(
+            landType: "feature-live",
+            liveLand: FeatureLiveLand.makeLand(),
+            liveInitialState: FeatureLiveState(),
+            liveWebSocketPath: "/game/feature-live",
+            configuration: NIOLandServerConfiguration(transportEncoding: .json),
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: false,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: MockReevaluationTargetFactory()) }
+            )
+        )
+        #expect(await off.maxReplayTicksByLandType.isEmpty)
+
+        let defaulted = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080))
+        try await defaulted.registerWithGenericReplay(
+            landType: "feature-live",
+            liveLand: FeatureLiveLand.makeLand(),
+            liveInitialState: FeatureLiveState(),
+            liveWebSocketPath: "/game/feature-live",
+            configuration: NIOLandServerConfiguration(transportEncoding: .json),
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: true,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: MockReevaluationTargetFactory()) }
+            )
+        )
+        #expect(await defaulted.maxReplayTicksByLandType == ["feature-live": ReevaluationRecordFile.defaultMaxReplayTicks])
+    }
+
+    @Test("A limit below 1 stops the process at the feature configuration and the admin routes (#728)")
+    func limitBelowOneIsRejected() async {
+        // An error thrown out of an exit test's body also exits with failure, so a child that can throw
+        // would pass without the precondition. These two inits don't throw: only the trap fails them.
+        await #expect(processExitsWith: .failure) {
+            _ = ReevaluationFeatureConfiguration(
+                enabled: true,
+                maxReplayTicks: 0,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: MockReevaluationTargetFactory()) }
+            )
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = NIOAdminRoutes(
+                landRealm: LandRealm(), adminAuth: NIOAdminAuth(apiKey: "test-admin-key"),
+                maxReplayTicksByLandType: ["feature-live": 0]
+            )
+        }
+    }
+
     @Test("registerWithGenericReplay registers only live land when disabled")
     func registerWithGenericReplayDisabled() async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(

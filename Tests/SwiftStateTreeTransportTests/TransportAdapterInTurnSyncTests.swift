@@ -424,7 +424,7 @@ private struct InTurnSyncFixture {
 )
 struct TransportAdapterInTurnSyncTests {
 
-    @Test("in-turn sync only for the adapter's own keeper; an adapter of another keeper does not trap")
+    @Test("in-turn sync only for the adapter's own keeper; for another keeper the adapter answers false")
     func inTurnSyncOnlyForOwnKeeper() async throws {
         let f = try await InTurnSyncFixture.make(encoding: .json)
         #expect(f.adapter.runsSyncPhaseInTurn(of: f.keeper))
@@ -435,15 +435,33 @@ struct TransportAdapterInTurnSyncTests {
             autoStartLoops: false
         )
         #expect(f.adapter.runsSyncPhaseInTurn(of: other) == false)
-        // `other` uses the legacy path with this adapter: no `assumeIsolated` on a foreign
-        // executor (which would trap).
-        await other.setTransport(f.adapter)
-        await other.stepTickOnce()
-        #expect(await other.currentState().ticks == 1)
+        // Attaching it to `other` stops the process (#546 L2d): TransportRefusalTests,
+        // "setTransport with another keeper's adapter stops the process".
 
         // The own keeper's turn enters the adapter with `assumeIsolated`: shared executor.
         _ = await f.tick()
         #expect(await f.adapter.syncFailedPlans == 0)
+    }
+
+    /// An exit test: the child must stop with the keeper's refusal (TransportRefusalTests).
+    @Test("setTransport with another keeper's adapter stops the process (#546 L2d)")
+    func otherKeepersAdapterIsRefused() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let keeper = LandKeeper<InTurnSyncTestState>(
+                definition: makeInTurnSyncLand(), initialState: InTurnSyncTestState(), autoStartLoops: false
+            )
+            let adapter = TransportAdapter<InTurnSyncTestState>(
+                keeper: keeper, transport: InTurnSyncTransport(), landID: "in-turn-sync-test"
+            )
+            await keeper.setTransport(adapter)
+            let other = LandKeeper<InTurnSyncTestState>(
+                definition: makeInTurnSyncLand(), initialState: InTurnSyncTestState(), autoStartLoops: false
+            )
+            await other.setTransport(adapter)
+        }
+        let text = result.map { String(decoding: $0.standardErrorContent, as: UTF8.self) } ?? ""
+        #expect(text.contains("a live keeper's transport must run its sync phase in turn"))
+        #expect(text.contains("TransportAdapter"))
     }
 
     @Test(

@@ -3141,7 +3141,7 @@ package actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Tests: returns once no background sync task is left (the delayed repair, or the lag
     /// timer's request) and the keeper has no requested sync work pending (a writer-drain
-    /// retry, a join-sync turn, the latch's rerun, a requested turn after a turn). The
+    /// retry, a join-sync turn, a requested turn after a turn). The
     /// differential harness runs with its loops off and awaits this after each sync it asks for,
     /// so a skipped or deferred phase's retry is part of that step. Also returns when its task is
     /// cancelled (a test bounds it with `withinHangBound`).
@@ -6239,17 +6239,6 @@ extension TransportAdapter {
             case .refused(.writerBusy):
                 // A sync cycle's element entered the writer since the wait: wait again.
                 guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
-            case .refused(.syncInFlight):
-                // TODO(#546 L2d-3): remove with `isSyncing`. A direct `beginSync` holds the
-                // keeper's sync flag, and nothing reports its `endSync`: retry shortly, within
-                // the deadline. The sleep is clamped to what is left of it. A release cancels
-                // this task (`debugReleaseFreeze`): the sleep then ends early, and the ticket
-                // check names it `released`, not a `CancellationError`.
-                let remaining = deadline - ContinuousClock.now
-                guard remaining > .zero else { throw DebugFreezeError.settleTimedOut }
-                try? await safeTaskSleep(for: min(.milliseconds(2), remaining))
-                guard debugFreezeTickets.isCurrent(ticket) else { throw DebugFreezeError.released }
-                try Task.checkCancellation()
             }
         }
         guard let settled = found else { preconditionFailure("the settle loop ends only with a result") }

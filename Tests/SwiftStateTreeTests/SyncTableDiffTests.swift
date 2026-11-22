@@ -9,6 +9,14 @@ import Testing
 @testable import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 
+/// Whether this test target was built in debug: a test whose whole body is DEBUG-only gates on
+/// it, so a release run reports it skipped instead of passing with nothing checked (#748).
+#if DEBUG
+private let syncTableDiffDebugBuild = true
+#else
+private let syncTableDiffDebugBuild = false
+#endif
+
 // MARK: - States
 
 @StateNodeBuilder
@@ -637,7 +645,7 @@ struct SyncTableDiffTests {
         #expect(result.typed.map(\.path) == ["/throwing"])
     }
 
-    @Test("A lax == is reported in debug builds, and its change is skipped")
+    @Test("A lax == is reported in debug builds, and its change is skipped", .enabled(if: syncTableDiffDebugBuild, "the report is DEBUG-only; its whole body is under #if DEBUG (#748)"))
     func laxEquality() {
         #if DEBUG
         final class Reports: @unchecked Sendable {

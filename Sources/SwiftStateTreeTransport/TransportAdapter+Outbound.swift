@@ -203,7 +203,7 @@ extension TransportAdapter {
                 continue
             }
             // The keeper's requested sync work (#546 L2a): a writer-drain retry, a join-sync turn,
-            // the latch's rerun, a requested turn after a turn.
+            // a requested turn after a turn.
             if await keeperHasRequestedSyncWorkForTesting() {
                 guard await Self.completes(by: deadline, { await self.waitForKeeperRequestedSyncWorkForTesting() }) else { return false }
                 continue

@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterSyncConcurrencyTests.swift
 //
 // Tests for concurrent sync operations in TransportAdapter
-// Verifies that beginSync() properly handles concurrent sync requests
+// Verifies that concurrent sync requests each run as a sync-only keeper turn, one at a time
 
 import Foundation
 import Testing
@@ -64,7 +64,7 @@ struct TransportAdapterSyncConcurrencyTests {
         try await Task.sleep(for: .milliseconds(50))
 
         // Act: Start two syncNow operations concurrently
-        // The second one should be skipped (beginSync returns nil)
+        // Each runs as its own sync-only keeper turn: the keeper serializes them
         let sync1Task = Task {
             await adapter.syncNow()
         }

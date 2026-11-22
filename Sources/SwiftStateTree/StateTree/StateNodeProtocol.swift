@@ -168,6 +168,30 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// **Default implementation**: Falls back to calling broadcastSnapshot() + snapshot(for:) for each player.
     /// Hand-written or macro-generated implementations should do one tree walk for better performance.
     func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot])
+
+    // MARK: - Budget-aware conversions (#716)
+    //
+    // Each takes the budget for the node's field values: the node's own object is outside it
+    // (the caller spent it, or it is the synthetic root). `@StateNodeBuilder` generates them,
+    // passing the budget to every field's conversion, and makes the requirements above forward
+    // with a root field's budget.
+    //
+    // Two cases for a hand-written node:
+    // - It implements only the requirements above: the defaults call them and check the returned
+    //   fields against the budget, after the conversion ran. The conversion inside them counts
+    //   from the root, so a node that nests its own type is bounded only by that late check.
+    // - It implements these: it must pass `budget` on to every field's conversion. Nothing
+    //   checks its result (`make`, `makeFull`, `broadcastView` and the typed maps trust it), so
+    //   an override that ignores `budget` is not bounded at all.
+
+    /// `snapshot(for:dirtyFields:)`, its fields converted within `budget`.
+    func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot
+    /// `broadcastSnapshot(dirtyFields:)`, its fields converted within `budget`.
+    func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot
+    /// `snapshotForSync(playerIDs:dirtyFields:)`, its fields converted within `budget`.
+    func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot])
+    /// `fullStateSnapshot()`, its fields converted within `budget`.
+    func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot
     
     // MARK: - Dirty Tracking
     
@@ -228,6 +252,39 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
 }
 
 extension StateNodeProtocol {
+    /// Default: `snapshot(for:dirtyFields:)`, then its fields checked against `budget`.
+    public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
+        let snapshot = try snapshot(for: playerID, dirtyFields: dirtyFields)
+        NestingBudget.note(.resultCheck)
+        try budget.check(snapshot)
+        return snapshot
+    }
+
+    /// Default: `broadcastSnapshot(dirtyFields:)`, then its fields checked against `budget`.
+    public func broadcastSnapshot(dirtyFields: Set<String>?, budget: NestingBudget) throws -> StateSnapshot {
+        let snapshot = try broadcastSnapshot(dirtyFields: dirtyFields)
+        NestingBudget.note(.resultCheck)
+        try budget.check(snapshot)
+        return snapshot
+    }
+
+    /// Default: `snapshotForSync(playerIDs:dirtyFields:)`, then every snapshot checked.
+    public func snapshotForSync(playerIDs: [PlayerID], dirtyFields: Set<String>?, budget: NestingBudget) throws -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+        let result = try snapshotForSync(playerIDs: playerIDs, dirtyFields: dirtyFields)
+        NestingBudget.note(.resultCheck)
+        try budget.check(result.broadcast)
+        for snapshot in result.perPlayer.values { try budget.check(snapshot) }
+        return result
+    }
+
+    /// Default: `fullStateSnapshot()`, then its fields checked against `budget`.
+    public func fullStateSnapshot(budget: NestingBudget) throws -> StateSnapshot {
+        let snapshot = try fullStateSnapshot()
+        NestingBudget.note(.resultCheck)
+        try budget.check(snapshot)
+        return snapshot
+    }
+
     /// Default: computed on first use and cached per type.
     public static var hasPlayerDependentSyncFields: Bool {
         SyncPolicyNesting.cachedHasPlayerDependentFields(self)

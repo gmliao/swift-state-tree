@@ -67,6 +67,16 @@ PlayerSession 欄位優先序：
 - diff：只傳變更（path-based patches）
 - firstSync：玩家首次建立 cache 後送出一次
 
+### 掛載 transport
+
+Keeper 透過掛載在它身上的 transport 送出 frame。Live keeper 建立時不帶 transport，因為 `TransportAdapter` 需要先有 keeper；之後再用 `setTransport(_:)` 掛上 adapter。在 live land 上，keeper 在自己的 turn 內執行 sync phase，因此 transport 必須能為這個 keeper 在 turn 內執行該 phase。`TransportAdapter` 對它所建立時對應的 keeper 可以做到。
+
+Live keeper 在掛載時檢查這一點；若在 `init(transport:)` 傳入 transport，也會在那裡檢查。回答 `runsSyncPhaseInTurn(of:) == false` 的 transport 會讓 process 停止，訊息中寫明 land 與 transport 的型別。Release build 也一樣。為其他 keeper 建立的 adapter 也會以同樣方式被拒絕。
+
+限制：可以不掛 transport（`nil`），此時 keeper 會記錄輸出，但不送出任何東西。Re-evaluation keeper 不受檢查，land 銷毀後的掛載也不受檢查。
+
+自己實作的 transport 必須親自實作 `LandKeeperTransport` 的五個需求，因為它們沒有預設：`sendEventToTransport(_:to:)`、`onLandDestroyed()`、`runsSyncPhaseInTurn(of:)`、`runSyncPhaseInTurn`（turn 的輸出步驟），以及 `waitForWriterDrainForInTurnSync()`（transport 因 back-pressure 延後 sync phase 時，keeper 重試前等待的對象）。少實作其中一個就無法編譯。其他需求都有預設，適用於在 turn 內執行的 transport。`syncNowFromTransport()` 與 `syncBroadcastOnlyFromTransport()` 預設什麼都不做：沒有 live keeper 會呼叫它們。只有持有 transport 的 re-evaluation keeper（`ReevaluationOutputMode.transportAndSink`）在 #612 之前仍會呼叫這兩者；用在那裡的自訂 transport 要自己實作。
+
 ### Broadcast 與 Per-Player 更新
 
 每個 session 每個 sync cycle 的 frame，依此順序（outbound writer 會維持順序）：

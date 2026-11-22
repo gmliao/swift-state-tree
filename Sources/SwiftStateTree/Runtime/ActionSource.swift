@@ -121,7 +121,7 @@ extension ReevaluationSource {
 
 // MARK: - Record content checks
 
-/// A record whose content isn't one a live run writes (#639, #640, #641). A source refuses it
+/// A record whose content isn't one a live run writes (#639, #640, #641, #729). A source refuses it
 /// when the record is opened, and a replay resolve when it reads the tick, so the replay run
 /// fails with the cause and the process goes on.
 public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
@@ -132,6 +132,22 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
     case tickIdOutOfRange(Int64)
     /// A recorded event target that `ReevaluationEventTargetRecord.from(_:)` doesn't write (#641).
     case malformedEventTarget(kind: String, idCount: Int)
+    /// A recorded output sequence (the initialize record's, or a sequence counter watermark) outside
+    /// `0 ..< Int64.max` (#729). A live keeper numbers from 0 and can't record `Int64.max`: taking
+    /// the next number from it would overflow first.
+    case sequenceOutOfRange(Int64)
+    /// A sync output's or seed marker's `afterPass` below 0 (#729). A live tickless land numbers
+    /// its passes from 1 and records 0 before the first.
+    case afterPassOutOfRange(Int64)
+    /// A replay on a re-evaluation keeper needed a next output sequence past `Int64.max` (#741). A
+    /// value inside `0 ..< Int64.max` can still leave too little room: the number of numbers taken
+    /// after it comes from the land's code, so only the replay itself can tell. A live keeper's
+    /// counter can't reach this, so only a record whose counter was set near the top gets here.
+    case sequenceExhausted
+    /// The record's last tick is past the run length a reader allows (#728). A replay steps every
+    /// tick from 0 to the last one, the ticks without a frame included, so a last tick of
+    /// `lastTick` costs `lastTick + 1` steps; `limit` is the most steps allowed.
+    case replayTooLong(lastTick: Int64, limit: Int64)
 
     public var description: String {
         switch self {
@@ -141,19 +157,39 @@ public enum ReevaluationRecordContentError: Error, Equatable, Sendable, CustomSt
             "the record holds a frame for tick \(tickId), outside the ticks a live run writes (0 ..< \(Int64.max))"
         case let .malformedEventTarget(kind, idCount):
             "a recorded event target of kind '\(kind)' with \(idCount) IDs; a live run writes 'all' with none, 'player', 'client' or 'session' with one, and 'players' with any number"
+        case .sequenceOutOfRange(let sequence):
+            "the record holds the output sequence \(sequence), outside the sequences a live run writes (0 ..< \(Int64.max))"
+        case .afterPassOutOfRange(let afterPass):
+            "the record holds a sync entry that read after pass \(afterPass); a live run writes 0 or more"
+        case .sequenceExhausted:
+            "the replay needed an output sequence past \(Int64.max): the record's sequence counter leaves too little room for the events the land emits"
+        case let .replayTooLong(lastTick, limit):
+            "the record's last tick is \(lastTick), so a replay would take \(lastTick) + 1 steps, past the limit of \(limit)"
         }
     }
 
     /// The run's status shows this text (the runner service reports `localizedDescription`).
     public var errorDescription: String? { description }
+
+    /// Whether this is `replayTooLong`, whatever its numbers.
+    public var isReplayTooLong: Bool {
+        if case .replayTooLong = self { return true }
+        return false
+    }
 }
 
 enum ReevaluationRecordContentCheck {
     /// The frames indexed by tick. Throws at the first frame, in record order, whose tick is out
-    /// of range or is already indexed.
-    static func tickIndex(_ frames: [ReevaluationTickFrame]) throws -> [Int64: ReevaluationTickFrame] {
+    /// of range or is already indexed, or that holds a sequence or pass ordinal out of range (#729).
+    /// After every frame has passed, throws `replayTooLong` when the last tick + 1 is past
+    /// `maxReplayTicks` (#728).
+    static func checkedIndex(
+        _ frames: [ReevaluationTickFrame],
+        maxReplayTicks: Int64
+    ) throws -> [Int64: ReevaluationTickFrame] {
         var index: [Int64: ReevaluationTickFrame] = [:]
         index.reserveCapacity(frames.count)
+        var lastTick: Int64 = -1
         for frame in frames {
             guard frame.tickId >= 0, frame.tickId < Int64.max else {
                 throw ReevaluationRecordContentError.tickIdOutOfRange(frame.tickId)
@@ -161,8 +197,36 @@ enum ReevaluationRecordContentCheck {
             guard index.updateValue(frame, forKey: frame.tickId) == nil else {
                 throw ReevaluationRecordContentError.duplicateTickId(frame.tickId)
             }
+            try checkNumbers(of: frame)
+            lastTick = max(lastTick, frame.tickId)
+        }
+        // Every tick is below `Int64.max`, so the sum can't overflow.
+        guard lastTick + 1 <= maxReplayTicks else {
+            throw ReevaluationRecordContentError.replayTooLong(lastTick: lastTick, limit: maxReplayTicks)
         }
         return index
+    }
+
+    /// Throws when a sequence or pass ordinal of `frame` is one a live run can't write, before
+    /// replay does arithmetic on it: the next sequence after `Int64.max`, or the pass before an
+    /// `afterPass` of `Int64.min`.
+    private static func checkNumbers(of frame: ReevaluationTickFrame) throws {
+        func sequence(_ value: Int64?) throws {
+            if let value, value < 0 || value == Int64.max {
+                throw ReevaluationRecordContentError.sequenceOutOfRange(value)
+            }
+        }
+        func afterPass(_ value: Int64?) throws {
+            if let value, value < 0 {
+                throw ReevaluationRecordContentError.afterPassOutOfRange(value)
+            }
+        }
+        try sequence(frame.initialize?.sequence)
+        try sequence(frame.sequenceBeforeInputs)
+        try sequence(frame.sequenceBeforeTickHandler)
+        for pass in frame.passes { try sequence(pass.sequenceBefore) }
+        for output in frame.syncOutputs { try afterPass(output.afterPass) }
+        for marker in frame.syncMarkers { try afterPass(marker.afterPass) }
     }
 }
 
@@ -182,13 +246,18 @@ public actor JSONReevaluationSource: ReevaluationSource {
     /// (#154): a record older than `ReevaluationRecordVersion.minimumSupported` throws
     /// `ReevaluationRecordVersionError.unsupported` after only its metadata is read, before its
     /// frames (whose identifiers no longer decode) are.
-    public init(filePath: String) throws {
-        try self.init(data: Data(contentsOf: URL(fileURLWithPath: filePath)))
+    public init(filePath: String, maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks) throws {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
+        try self.init(data: Data(contentsOf: URL(fileURLWithPath: filePath)), maxReplayTicks: maxReplayTicks)
     }
 
     /// Initialize from the bytes of a 2.x JSON record (`ReevaluationRecordFile.openSource`
     /// picks this for anything without the 3.x magic).
-    public init(data: Data) throws {
+    ///
+    /// Throws `ReevaluationRecordContentError.replayTooLong` when the record's last tick + 1 is past
+    /// `maxReplayTicks` (#728), which must be at least 1.
+    public init(data: Data, maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks) throws {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         // Refused before it is parsed when it nests deeper than a 3.x record can
         // (`CanonicalMessagePack.maxDepth`): the decode and `holdsNonNFCText` below recurse per
         // level (#362). A recorded payload is checked again at its own limit when it is
@@ -220,8 +289,8 @@ public actor JSONReevaluationSource: ReevaluationSource {
         let frames = recordFile.tickFrames
         
         self.frames = frames
-        // A record is untrusted input: a duplicate or out-of-range tick throws, it never traps (#639, #640).
-        self.framesByTickId = try ReevaluationRecordContentCheck.tickIndex(frames)
+        // A record is untrusted input: a duplicate tick or an out-of-range number throws, it never traps (#639, #640, #729).
+        self.framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(frames, maxReplayTicks: maxReplayTicks)
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
         // Every 2.x record is older than 3.3 (#446).
         self.holdsNonNFCText = Self.holdsNonNFCText(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
@@ -241,14 +310,19 @@ public actor JSONReevaluationSource: ReevaluationSource {
     /// Initialize from tick frames (for testing). The frames are taken as this build's: their
     /// text is not scanned, and `getHoldsNonNFCText()` is false.
     ///
-    /// - Precondition: every frame's tick is in `0 ..< Int64.max`, and no two frames share a
-    ///   tick. The frames come from code, so a frame that breaks this stops the process; a record
-    ///   read from bytes or a file throws instead (#639).
+    /// - Precondition: every frame's tick is in `0 ..< Int64.max`, no two frames share a tick,
+    ///   and no sequence or `afterPass` in them is out of range (`ReevaluationRecordContentError`).
+    ///   The frames come from code, so a frame that breaks this stops the process; a record read
+    ///   from bytes or a file throws instead (#639, #729). The run length is not bounded here
+    ///   (`maxReplayTicks`, #728): the frames come from code. The same holds for a `LandKeeper`
+    ///   built directly in `.reevaluation` mode with a custom `ReevaluationSource`: no run length
+    ///   is checked, so a host that passes externally supplied frames reads them with a checked
+    ///   source (`ReevaluationRecordFile.openSource`).
     public init(metadata: ReevaluationRecordMetadata, frames: [ReevaluationTickFrame]) {
         self.metadata = metadata
         self.frames = frames
         do {
-            self.framesByTickId = try ReevaluationRecordContentCheck.tickIndex(frames)
+            self.framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(frames, maxReplayTicks: Int64.max)
         } catch {
             preconditionFailure("JSONReevaluationSource(metadata:frames:): \(error)")
         }
@@ -329,18 +403,24 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
     private let completeness: ReevaluationRecordCompleteness
     private let holdsNonNFCText: Bool
 
-    public init(filePath: String) throws {
-        try self.init(bytes: Array(Data(contentsOf: URL(fileURLWithPath: filePath))))
+    public init(filePath: String, maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks) throws {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
+        try self.init(bytes: Array(Data(contentsOf: URL(fileURLWithPath: filePath))), maxReplayTicks: maxReplayTicks)
     }
 
     /// Reads a 3.0 record. A record older than `minimumSupported` can't be 3.x, so only the
-    /// format is checked here; the callers check the version as for 2.x.
-    public init(bytes: [UInt8]) throws {
+    /// format is checked here; the callers check the version as for 2.x. Throws
+    /// `ReevaluationRecordContentError.replayTooLong` when the last tick + 1 is past
+    /// `maxReplayTicks` (#728), which must be at least 1.
+    public init(bytes: [UInt8], maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks) throws {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         let contents = try ReevaluationRecordLogReader.read(bytes)
         metadata = contents.metadata
         frames = contents.frames
-        // The assembler merges one tick's records into one frame, so only the range can fail here.
-        framesByTickId = try ReevaluationRecordContentCheck.tickIndex(contents.frames)
+        // The assembler merges one tick's records into one frame, so a duplicate can't fail here.
+        // The checks see the assembled frames, after the reader has merged and trimmed the turns,
+        // not the raw records: a value the assembler drops is not refused.
+        framesByTickId = try ReevaluationRecordContentCheck.checkedIndex(contents.frames, maxReplayTicks: maxReplayTicks)
         maxTickId = contents.frames.map(\.tickId).max() ?? -1
         completeness = contents.completeness
         holdsNonNFCText = contents.holdsNonNFCText
@@ -408,17 +488,32 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
 
 /// Opens a record file of any supported format.
 public enum ReevaluationRecordFile {
+    /// The most steps a replay run may take unless a caller says otherwise: the record's last
+    /// tick + 1 (#728). A run steps every tick from 0 to the last one (a tickless land's passes
+    /// are steps inside a tick, so they aren't counted). 1,000,000 ticks is about 13.9 hours at
+    /// 50 ms ticks. A land that stays alive longer needs a raised limit.
+    public static let defaultMaxReplayTicks: Int64 = 1_000_000
+
     /// A 3.x log (`SSTR` magic) opens `ReevaluationRecordLogSource`; anything else the 2.x
-    /// `JSONReevaluationSource`, which rejects records older than `minimumSupported`.
-    public static func openSource(filePath: String) throws -> any ReevaluationSource {
-        try openSource(data: Data(contentsOf: URL(fileURLWithPath: filePath)))
+    /// `JSONReevaluationSource`, which rejects records older than `minimumSupported`. A record
+    /// whose last tick + 1 is past `maxReplayTicks` (at least 1) is refused with `replayTooLong`.
+    public static func openSource(
+        filePath: String,
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
+    ) throws -> any ReevaluationSource {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
+        return try openSource(data: Data(contentsOf: URL(fileURLWithPath: filePath)), maxReplayTicks: maxReplayTicks)
     }
 
-    public static func openSource(data: Data) throws -> any ReevaluationSource {
+    public static func openSource(
+        data: Data,
+        maxReplayTicks: Int64 = ReevaluationRecordFile.defaultMaxReplayTicks
+    ) throws -> any ReevaluationSource {
+        precondition(maxReplayTicks >= 1, "maxReplayTicks must be at least 1")
         if ReevaluationRecordLog.hasMagic(data) {
-            return try ReevaluationRecordLogSource(bytes: Array(data))
+            return try ReevaluationRecordLogSource(bytes: Array(data), maxReplayTicks: maxReplayTicks)
         }
-        return try JSONReevaluationSource(data: data)
+        return try JSONReevaluationSource(data: data, maxReplayTicks: maxReplayTicks)
     }
 
     /// The 2.6 JSON view of a 3.0 record's bytes (any other bytes are returned unchanged).

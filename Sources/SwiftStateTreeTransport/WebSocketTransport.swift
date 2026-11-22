@@ -670,12 +670,12 @@ public actor WebSocketTransport: Transport {
 
     /// The two closes `closeSessionAfterQueuedFrames` leaves behind, which can run after the
     /// connection they were for has gone (tests).
-    enum DelayedClose: Sendable {
+    package enum DelayedClose: Sendable {
         case marker
         case bound
     }
 
-    enum DelayedCloseStage: Sendable {
+    package enum DelayedCloseStage: Sendable {
         /// Before the close checks which connection the session has.
         case willCheck(DelayedClose)
         /// After it closed, or left the session alone.
@@ -687,7 +687,7 @@ public actor WebSocketTransport: Transport {
     /// tests, where the close doesn't suspend for it.
     private var delayedCloseForTesting: (@Sendable (DelayedCloseStage) async -> Void)?
 
-    func setDelayedCloseForTesting(_ hook: (@Sendable (DelayedCloseStage) async -> Void)?) {
+    package func setDelayedCloseForTesting(_ hook: (@Sendable (DelayedCloseStage) async -> Void)?) {
         delayedCloseForTesting = hook
     }
 

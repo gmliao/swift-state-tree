@@ -42,7 +42,7 @@ struct ResolverDeadlineSettledResultTests {
         return await ResolverDeadline.$overrideForTesting.withValue(.milliseconds(1)) {
             await ResolverDeadline.$metricsForTesting.withValue(metrics) {
                 await ResolverDeadline.$beforeResultDeliveryForTesting.withValue({ await delivery.enterAndWait() }) {
-                    await ResolverDeadline.$deadlinePassedForTesting.withValue({ await delivery.waitUntilEntered() }) {
+                    await ResolverDeadline.$deadlinePassedForTesting.withValue({ _ = await delivery.waitUntilEntered("the deadline hook sees the delivery held") }) {
                         do {
                             return .success(try await ResolverExecutor.executeResolvers(
                                 executors: [executor],

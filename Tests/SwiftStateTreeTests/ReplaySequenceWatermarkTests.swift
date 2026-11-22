@@ -84,6 +84,9 @@ struct WatermarkThrowingResolver: ContextResolver {
 }
 
 /// Test-controlled gate: the caller signals entry and then waits until the test releases it.
+///
+/// One use per gate: once entered or released it stays so. `resolver` is shared by every test
+/// in the process (it has one user, `WatermarkGatedResolver`'s test).
 final class WatermarkGate: @unchecked Sendable {
     /// Gate used by `WatermarkGatedResolver` (resolvers are static, so the gate is shared).
     static let resolver = WatermarkGate()
@@ -91,17 +94,19 @@ final class WatermarkGate: @unchecked Sendable {
     private let lock = NSLock()
     private var entered = false
     private var released = false
-    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var nextWaiter = 0
+    private var enteredWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var registrationObserver: AsyncStream<Void>.Continuation?
 
     func enterAndWait() async {
-        let toResume: [CheckedContinuation<Void, Never>] = lock.withLock {
+        let toResume: [CheckedContinuation<Bool, Never>] = lock.withLock {
             entered = true
-            let waiters = enteredWaiters
-            enteredWaiters = []
+            let waiters = Array(enteredWaiters.values)
+            enteredWaiters = [:]
             return waiters
         }
-        toResume.forEach { $0.resume() }
+        toResume.forEach { $0.resume(returning: true) }
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let resumeNow: Bool = lock.withLock {
@@ -113,14 +118,49 @@ final class WatermarkGate: @unchecked Sendable {
         }
     }
 
-    func waitUntilEntered() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let resumeNow: Bool = lock.withLock {
-                if entered { return true }
-                enteredWaiters.append(continuation)
-                return false
+    /// Waits until code under test enters the gate, at most `deadline`. A gate never entered
+    /// records an issue at the caller's line, naming `step`, and returns `false`. The entry wait
+    /// itself ignores cancellation, and a suite's time limit can't end it, so this bound is what
+    /// turns a hold that never fires into a failure. The caller decides what follows: a test
+    /// that would next await something only the entry unblocks returns on `false`.
+    func waitUntilEntered(
+        _ step: String? = nil,
+        deadline: Duration = .seconds(10),
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async -> Bool {
+        let id: Int = lock.withLock {
+            nextWaiter += 1
+            return nextWaiter
+        }
+        let outcome = await raceDeadline(deadline) { await self.waitForEntry(id) }
+        if case .finished(.success(true)) = outcome { return true }
+        // Timed out: the wait is removed and resumed, so neither it nor its task outlives
+        // this call.
+        let stale = lock.withLock { enteredWaiters.removeValue(forKey: id) }
+        stale?.resume(returning: false)
+        let what = step.map { ": \($0)" } ?? ""
+        Issue.record("WatermarkGate never entered within \(deadline)\(what)", sourceLocation: sourceLocation)
+        return false
+    }
+
+    /// Tests of the gate itself: entry waits still registered.
+    var registeredEntryWaitsForTesting: Int { lock.withLock { enteredWaiters.count } }
+
+    /// Tests of the gate itself: `observer` gets one element per entry wait that registers.
+    func observeRegistrationsForTesting(_ observer: AsyncStream<Void>.Continuation) {
+        lock.withLock { registrationObserver = observer }
+    }
+
+    /// Registers entry wait `id`: `true` on entry, `false` once `waitUntilEntered` removes it.
+    private func waitForEntry(_ id: Int) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let (enteredNow, observer): (Bool, AsyncStream<Void>.Continuation?) = lock.withLock {
+                if entered { return (true, nil) }
+                enteredWaiters[id] = continuation
+                return (false, registrationObserver)
             }
-            if resumeNow { continuation.resume() }
+            if enteredNow { continuation.resume(returning: true) }
+            observer?.yield()
         }
     }
 
@@ -313,34 +353,34 @@ private actor CollectingSink: ReevaluationSink {
     }
 }
 
-private actor RecordingTransport: LandKeeperTransport {
-    private(set) var sent: [String] = []
-    private let gate: WatermarkGate?
-    private var gateArmed = false
+/// Records the events each turn hands over, in emit order (#546 L2d: a live keeper's transport
+/// runs its sync phase in turn).
+private final class RecordingTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+    var sent: [String] { lock.withLock { entries } }
 
-    init(gate: WatermarkGate? = nil) {
-        self.gate = gate
-    }
-
-    /// The next send suspends on `gate` until the test releases it.
-    func armGate() {
-        gateArmed = true
-    }
-
-    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
-        if gateArmed, let gate {
-            gateArmed = false
-            await gate.enterAndWait()
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let payload = (try? encoder.encode(event.payload)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        sent.append("\(event.type):\(payload)")
-    }
-
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = events.map { item in
+            let payload = (try? encoder.encode(item.event.payload)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            return "\(item.event.type):\(payload)"
+        }
+        lock.withLock { entries.append(contentsOf: encoded) }
+        return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func makeLiveKeeper(
@@ -534,7 +574,7 @@ struct ReplaySequenceWatermarkTests {
             )
         }
         // The gated action has taken its sequence number once the resolver is entered.
-        await WatermarkGate.resolver.waitUntilEntered()
+        guard await WatermarkGate.resolver.waitUntilEntered() else { return }
 
         // Inputs arriving while the gated resolver is pending take later sequence numbers.
         _ = try await keeper.handleActionEnvelope(
@@ -761,7 +801,7 @@ struct ReplaySequenceWatermarkTests {
                 }
                 await keeper.stepTickOnce()
             }
-            return (await transport.sent, await keeper.currentState())
+            return (transport.sent, await keeper.currentState())
         }
 
         let withRecording = try await run(recording: true)
@@ -773,26 +813,29 @@ struct ReplaySequenceWatermarkTests {
     }
 
     // Test 9b
-    @Test("An input that arrives while a live tick is suspended after its watermarks: replay still matches")
+    @Test("An input that arrives while a live tick's record is held, after its watermarks: replay still matches")
     func inputDuringTickSuspensionStillMatches() async throws {
         let definition = makeWatermarkTestDefinition()
         let gate = WatermarkGate()
-        let transport = RecordingTransport(gate: gate)
-        let keeper = await makeLiveKeeper(definition: definition, transport: transport)
+        let keeper = await makeLiveKeeper(definition: definition, transport: RecordingTransport())
         let path = tempRecordPath("mid-tick-input")
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
         await keeper.stepTickOnce()
 
-        // Tick 1 suspends in its output flush (after the tick handler); an action arrives then.
+        // Tick 1's turn is held at its record (after the tick handler and its outputs); an
+        // action arrives then.
         _ = try await keeper.handleActionEnvelope(
             emitActionEnvelope(1),
             playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
         )
-        await transport.armGate()
+        await keeper.installHolds { point in
+            if point == .turnRecord { await gate.enterAndWait() }
+        }
         let suspendedTick = Task { await keeper.stepTickOnce() }
-        await gate.waitUntilEntered()
+        guard await gate.waitUntilEntered() else { return }
+        await keeper.installHolds(nil)
         _ = try await keeper.handleActionEnvelope(
             emitActionEnvelope(2),
             playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")

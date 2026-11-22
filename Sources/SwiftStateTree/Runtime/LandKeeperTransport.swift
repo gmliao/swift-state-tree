@@ -33,39 +33,30 @@ public struct InTurnSyncFold: Sendable, Equatable {
 /// the architectural separation where Core (LandKeeper) doesn't depend on
 /// Transport layer, while Transport layer depends on Core.
 ///
-/// The keeper awaits `sendEventToTransport` and `syncBroadcastOnlyFromTransport` in ordered
-/// delivery: with in-turn sync off, a tickless land's passes deliver one after another, in apply
-/// order. An implementation must not await a keeper input (a join, a leave, an action or a
-/// client event) from those two calls: that input's pass delivers behind the call's own
-/// delivery, which waits for it, so both hang. Start the input in a task of its own instead,
-/// without awaiting it there. `syncNowFromTransport` isn't ordered this way.
+/// A live keeper hands its output to the transport inside its turns (`runSyncPhaseInTurn`), so a
+/// transport implements the in-turn requirements itself: `runsSyncPhaseInTurn(of:)`,
+/// `runSyncPhaseInTurn` and `waitForWriterDrainForInTurnSync()` have no default (#546 L2d-3).
+/// The other requirements' defaults are right for a transport that runs in turn but never
+/// admits joins in its turn and doesn't profile folds.
 public protocol LandKeeperTransport: Sendable {
     /// Send a server event to clients.
     ///
     /// - Parameters:
     ///   - event: The server event to send.
     ///   - target: The target recipients (session, player, broadcast, etc.).
-    ///
-    /// Must not await a keeper input (see the protocol's doc): a legacy tickless pass awaits
-    /// this call in ordered delivery.
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async
     
     /// Trigger immediate state synchronization to all connected players.
     ///
-    /// This should extract the current state, compute diffs, and send updates
-    /// to all connected players.
+    /// No live keeper calls it (it syncs in its turns, #546 L2d); a re-evaluation keeper with a
+    /// transport (`ReevaluationOutputMode.transportAndSink`) does from its sync loop, until #612.
+    /// The default does nothing.
     func syncNowFromTransport() async
     
     /// Sync only broadcast changes (optimized for player leaving).
     ///
-    /// This is an optimization for cases where only broadcast fields have changed
-    /// (e.g., a player leaving). It should only extract and compare broadcast fields,
-    /// avoiding per-player snapshot extraction.
-    ///
-    /// If not implemented, should fall back to `syncNowFromTransport()`.
-    ///
-    /// Must not await a keeper input (see the protocol's doc): a legacy tickless pass awaits
-    /// this call in ordered delivery.
+    /// No live keeper calls it (a leave's sync runs in its turn, #546 L2d); a re-evaluation
+    /// keeper with a transport does after a replayed leave, until #612. The default does nothing.
     func syncBroadcastOnlyFromTransport() async
     
     /// Notify transport that the land has been destroyed.
@@ -94,10 +85,13 @@ public protocol LandKeeperTransport: Sendable {
 
     /// Whether `keeper` may call `runSyncPhaseInTurn` from inside its own actor turn.
     ///
-    /// `true` only when in-turn sync is on for this transport and it is attached to that keeper
-    /// (identity) and runs on its serial executor. A keeper asks this once per
-    /// turn; a transport attached to another keeper, or with in-turn sync off, answers `false`, so
-    /// no keeper ever reaches an `assumeIsolated` that would trap.
+    /// `true` only when this transport is attached to that keeper (identity) and runs on its
+    /// serial executor. A keeper asks this once per turn; a transport attached to another keeper
+    /// answers `false`, so no keeper ever reaches an `assumeIsolated` that would trap.
+    ///
+    /// A live keeper also asks it at the attach (`init(transport:)`, `setTransport(_:)`): `false`
+    /// there stops the process, because a live keeper syncs only in its turns (#546 L2d). No
+    /// default: a transport answers for itself (#546 L2d-3).
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool
 
     /// Admits `sessionID` as joining `playerID`, in the keeper's join (#69).
@@ -114,6 +108,11 @@ public protocol LandKeeperTransport: Sendable {
     /// `joinSequence` is the sequence of the join's OnJoin input, `nil` when the join has none
     /// (its insert is the whole join). The keeper reports it again when a turn consumes it
     /// (`noteJoinInputsConsumed`).
+    ///
+    /// A transport that returns `.admittedCompletesInTurn` must also implement
+    /// `noteJoinInputsConsumed` and `hasJoinsAwaitingSync`: with their defaults the join is never
+    /// completed. The default (`.notAdmitted`) needs neither. Only the package's in-turn join
+    /// (`joinReportingAdmission(admitThroughTransport: true)`) asks; the public `join` doesn't.
     func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission
 
     /// Whether the transport refuses this join for `playerID`, the player CanJoin resolved: a
@@ -143,7 +142,10 @@ public protocol LandKeeperTransport: Sendable {
 
     /// Returns once the outbound writer no longer holds a state element from an earlier sync
     /// phase. A keeper without periodic sync waits on it before retrying a sync phase that was
-    /// deferred by back-pressure.
+    /// deferred by back-pressure (`.deferredBackPressure`), and retries as soon as it returns.
+    /// No default (#546 L2d-3): one that returned at once would make a transport that defers
+    /// retry its sync-only turn again and again until its writer drains. A transport that never
+    /// defers may return at once.
     func waitForWriterDrainForInTurnSync() async
 
     /// Whether the transport records in-turn sync folds (`noteInTurnSyncFold`): true only while
@@ -295,8 +297,6 @@ package enum InTurnSettleRefusal: Sendable, Equatable {
     case outputClosed
     /// The writer holds a sync cycle's element again: the settle waits for it and retries.
     case writerBusy
-    /// A direct `beginSync` holds the keeper's sync flag: the settle retries.
-    case syncInFlight
 }
 
 /// A transport that runs the debug freeze settle in its keeper's turn (#546 L2d-1). A package
@@ -363,8 +363,11 @@ public enum InTurnSyncResult: Sendable, Equatable {
 }
 
 extension LandKeeperTransport {
-    /// Default: in-turn sync is not supported for any keeper.
-    public func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+    /// Default: nothing; only a re-evaluation keeper's sync loop calls it (until #612).
+    public func syncNowFromTransport() async {}
+
+    /// Default: nothing; only a re-evaluation keeper's replayed leave calls it (until #612).
+    public func syncBroadcastOnlyFromTransport() async {}
 
     /// Default: nothing; the keeper still tears the land down.
     public func landDidFail(_ failure: LandFailure) async {}
@@ -383,9 +386,6 @@ extension LandKeeperTransport {
     /// Default: none.
     public var hasJoinsAwaitingSync: Bool { false }
 
-    /// Default: returns immediately.
-    public func waitForWriterDrainForInTurnSync() async {}
-
     /// Default: folds are not recorded.
     public var recordsInTurnSyncFolds: Bool { false }
 
@@ -394,16 +394,6 @@ extension LandKeeperTransport {
 
     /// Default: nothing.
     public func noteInTurnJoinSyncTick() {}
-
-    /// Default: in-turn sync is not supported.
-    public func runSyncPhaseInTurn<S: StateNodeProtocol>(
-        state: S,
-        events: [InTurnServerEvent],
-        includeSync: Bool,
-        recording: InTurnSyncRecording?
-    ) -> InTurnSyncOutput {
-        InTurnSyncOutput(.unsupported)
-    }
 }
 
 /// What `LandKeeperTransport.admitJoiningSession` did.
@@ -465,4 +455,16 @@ final class ReleasedLandTransport: LandKeeperTransport, @unchecked Sendable {
     func syncBroadcastOnlyFromTransport() async { drop("syncBroadcastOnly") }
     func onLandDestroyed() async { drop("onLandDestroyed") }
     func landDidFail(_ failure: LandFailure) async { drop("landDidFail") }
+    /// No keeper runs a phase through it: it serves none (the attach check exempts it).
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        drop("runSyncPhaseInTurn")
+        return InTurnSyncOutput(.unsupported)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
 }

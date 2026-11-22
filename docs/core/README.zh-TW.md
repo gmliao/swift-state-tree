@@ -36,8 +36,7 @@
 ### 核心特性
 
 - **Actor 序列化**：所有狀態變更通過 actor 序列化，確保線程安全
-- **Snapshot 同步模式**：使用 snapshot 模式進行同步，不阻塞狀態變更
-- **同步去重**：並發的同步請求會被去重，避免重複工作
+- **在 Turn 內同步**：每次 sync phase 都在 keeper 的 turn 內執行，因此狀態變更與同步不會交錯
 - **Request-Scoped Context**：每次請求建立新的 `LandContext`，處理完成後釋放
 
 ### 主要功能

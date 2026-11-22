@@ -518,10 +518,9 @@ struct LocatedReadTests {
         let located = await keeper.currentStateLocated()
         #expect(Int64(located.state.ticks) == located.position.observedTickId + 1)
         await keeper.stepTickOnce()
-        let begun = try #require(await keeper.beginSyncLocated(clearDirtyFlags: false))
-        #expect(Int64(begun.state.ticks) == begun.position.observedTickId + 1)
-        #expect(begun.position.observedTickId == located.position.observedTickId + 1)
-        #expect(begun.position.sequence > located.position.sequence)
-        await keeper.endSync()
+        let next = await keeper.currentStateLocated()
+        #expect(Int64(next.state.ticks) == next.position.observedTickId + 1)
+        #expect(next.position.observedTickId == located.position.observedTickId + 1)
+        #expect(next.position.sequence > located.position.sequence)
     }
 }

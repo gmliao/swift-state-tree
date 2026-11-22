@@ -1,6 +1,15 @@
 # Turn core: a nonisolated post lane that the next step takes first (#725)
 
-**Status:** rev 3, GO from Review on the design and on §6's Public API, with §3.9's must-fix folded in below (Review glances, no new round). Main approved the additive API on 2026-11-21. Main approves the additive API once this revision holds: `LaneReport = Never`, the default `handleReport` where `LaneReport == Never`, and `TurnStats`' two new fields (§6).
+**Status:** rev 4, for Review's glance: MF 1 below changes §3.4 and §3.9. Rev 3 had GO from Review on the design and on §6's Public API, with §3.9's must-fix folded in below (Review glances, no new round). Main approved the additive API on 2026-11-21. Main approves the additive API once this revision holds: `LaneReport = Never`, the default `handleReport` where `LaneReport == Never`, and `TurnStats`' two new fields (§6).
+
+**Rev 4** (Review's NOT GO on the PR at 3388de7d: 4 must-fix, 6 should, 4 nit; the narrowed epilogue wake and test 14 hold):
+- §3.4, §3.9 (MF 1): replay's `before(n, i)` key lost the boundary a report stepped at. Two fixes:
+  - **products first**: an entry whose helper stepped a report runs a segment before its own checks and step, so the report's products step before the entry's own work, live and in replay. Exception 2 is gone: the order is A, B, X;
+  - **admissions count**: every admission takes an ordinal, whatever its outcome.
+- §3.4 (MF 2): `continueBatch` captures its due follow-ups before the helper runs, so an `.afterBatch` follow-up a report arms steps in the next job.
+- §3.5 (MF 3): the lane is a ring of `capacity` slots, and removed reports are released after the lock is dropped.
+- §3.3, §3.8: the epilogue's wake is coalesced (`laneWakeScheduled`), and `isEmpty` is inlinable.
+- §5: test 13f hops onto the actor before it moves the clock (MF 4); new tests 13g, 13h, 18, 19, 20; test 5 and the generated orders tightened (shoulds 1, 3, 4); test 11c and the "no `continue`" mutant (should 2).
 
 **Implementation notes** (the SwiftStateTurns PR, 2026-11-21; each is folded into its section below):
 - §3.9: the **overdrawn** divergence is dropped (Review). A removed take is served `[]` and fails the replay's output comparison; unconsumed and leftover stay.
@@ -126,6 +135,10 @@ A machine opts in with a new associated type, `associatedtype LaneReport: Sendab
 
 Why a spent budget is the only case: while the budget lasts, every check steps the reports up to its watermark, and a check that stepped one comes round again (§3.4), so the segment's last check finds no report at or below its watermark. A report left after it was posted after that watermark. The first such post found the lane empty and scheduled its own wake, and every later one is behind it. So with budget left, reports in the lane at the epilogue already have a wake. The budget test is a plain field read, which keeps the lane's lock off the epilogue of an entry that spent none (§3.8). Test 11b fails without the wake, and with the test inverted.
 
+The argument rests on the loop's `continue` after a check that stepped a report: without it, a report posted between that check's watermark and its first removal found the lane non-empty, scheduled no wake, and is left with budget remaining. Test 11c pins the `continue`.
+
+**One epilogue wake at a time (rev 4).** The epilogue's wake is coalesced by `laneWakeScheduled`, set when it is scheduled and cleared when `laneWoke` starts, as `continuationScheduled` coalesces the continuation job. A post's own wake isn't coalesced: only the post that makes the lane non-empty schedules one.
+
 **No lost wakeup.** The read of "was empty" and the append are in one critical section, so a post can't see the lane as non-empty because of a report that a take is removing at the same moment. Every post that leaves the lane non-empty has one of two owners for its wake:
 - the post that made it non-empty;
 - an epilogue that left reports behind.
@@ -148,7 +161,7 @@ Why a spent budget is the only case: while the budget lasts, every check steps t
 So the driver and a step's `takeReports()` take from one queue, and nothing is ever detached ahead of its step:
 - A and B are posted, and a check reads watermark B. A is removed and steps.
 - C is posted while A steps.
-- A's `takeReports()` returns B, C: B was still in the lane, and nothing passes it.
+- A step that takes the lane while A steps (a query its flush asks, whose answer calls `takeReports()`) gets B, C: B was still in the lane, and nothing passes it. A's own `takeReports()` returns `[]` (§3.6).
 - The check then finds the lane empty and stops.
 
 The order is A, B, C, and no report is seen twice. A report posted during a check, with a sequence number past the watermark, waits for the next check, so a report whose handler posts its successor can't extend the check it is in.
@@ -177,7 +190,9 @@ Setting `inSegment` is what makes reentrancy safe. While a report's products flu
   | `timerFired` | `rt.timers[key] == generation`, the same way |
   | `gateReturned` | `followUpIDs[id]` and the arm's `waiting` |
   | `continueDrain`, `continueFollowUps` (#723: `continueBatch`), `laneWoke` | none; their segment follows |
-  | `callerCancelled` | none, and no helper: it steps nothing (a withdraw and a resume) |
+  | `callerCancelled` | (#738 round 3) the waiter; it is an entry with state to change (a withdraw and a resume), so the helper runs first (see the boundary ordinals below) |
+
+  (#738 rounds 4 and 5) A stale arrival returns before the helper, as a foreign one does: a deadline whose request closed another way and whose follow-up gate isn't live, a timer whose generation moved, a cancellation that finds no waiter, a completion with no result whose request is closed with no hold to retire (or that had none: a `run`), a gate's nil return whose follow-up was consumed or closed. It changes no state, so it is no entry. The check runs again after the helper, because a stepped mail can make the entry stale.
 
   An entry with a foreign incarnation returns before the helper, as it returns before touching the core today. The lane's own wake covers it.
 
@@ -188,11 +203,14 @@ Setting `inSegment` is what makes reentrancy safe. While a report's products flu
 
 **The direct form (Q2, decided).** An entry runs the helper, then its own checks, then its own step, as today.
 
-**Exception 2: a report posted by a report's own step during an entry's helper.**
-- Suppose B is posted by A's step while the helper of an entry with its own input X runs. B is past the helper's watermark, so the helper stops after A.
-- X then steps, and B steps at the loop's first check. The order is A, X, B.
-- B is still taken before the loop's next step; X had been admitted already.
-- Test 16 pins it.
+**Products first (rev 4).** When the helper stepped a report, or left one in the lane, the entry runs a segment (`runSegment()`) before its own checks and its own step, under the same budget. So everything the report caused steps before the entry's own work: the sends its `flush` queued, the releases and abandonments it caused, and the reports posted meanwhile (within the budget).
+- **Why.** Live, a report is often stepped by a wake, whose segment steps the report's products before any later entry. Replay has no wake: the report steps at the next entry's helper. Without this rule, that entry's own input stepped before the report's products, and replay reordered two non-report steps silently (§3.9).
+- **What it replaces.** Exception 2 is gone. B, posted by A's step during the helper of an entry with input X, steps in that segment's loop check, so the order is A, B, X. Test 16 pins it.
+- **Where it doesn't apply.** A helper called inside a segment (`wasInSegment`) runs no segment of its own: the enclosing segment's loop steps the products.
+- **The whole loop.** The products-first segment is a full `runSegment()`: it also steps the releases, abandonments and due follow-ups the report caused, not only its sends. That is intended, and matches live, where the wake's segment ran the same loop. Test 16 includes a release the report frees.
+- **"Or left one in the lane"** is a live ordering choice (reports before the entry's own work), not a replay need: replay never leaves a staged report behind its watermark.
+
+**`continueBatch` captures before the helper (rev 4).** The continuation job takes the follow-ups due at its start, then runs the helper (and its segment), then steps the captured follow-ups. An `.afterBatch` follow-up a report arms is due after the capture, so it steps in the next job, as `.afterBatch` promises. Test 18 pins it.
 
 **`.cancelsCall`'s policy read.** `sendAndWait(.cancelsCall)` reads `inputPolicy(for:)` before it submits, to choose between the control and normal paths, and the helper then runs inside `submit`.
 - **The rule.** The control or normal choice must depend on the input alone, never on the machine's state, so a report stepped in between can't change it. The `.normal` case's hold, scope and token may depend on state, because `admit` reads them after the helper.
@@ -201,6 +219,8 @@ Setting `inSegment` is what makes reentrancy safe. While a report's products flu
 **Against queued work.** Reports go ahead of everything not yet stepped at the check: queued sends, parked releases, due follow-ups. They never interrupt a step, except through a step's own `takeReports()` (§3.6). Two reports keep their post order. A report and an ordinary input from two different tasks have no order beyond "taken before the next step that starts after the post", within the budget, the same as Swift's order between calls from different tasks.
 
 ### 3.5 Capacity, and the first pending report wins
+
+**Storage (rev 4).** The lane is a ring of `capacity` slots, each holding a sequence number and a report. A removal moves the report out and leaves the slot empty, so the lane never holds more than `capacity` reports, stepped or not, however long posting continues without the lane emptying. A removed report is released by its caller, after the lock is dropped: a report whose `deinit` posts to the same lane would otherwise deadlock on the non-recursive lock. Tests 19 and 20 pin both.
 
 - **At capacity 1, the first pending report wins.** It stays until something takes it, which is #732's rule.
 - **First wins.** A post to a full lane returns `false` and isn't stored: for terminal reports the first cause matters. The lane counts the refusal under its lock, and the next check adds it to `TurnStats.refusedReports`.
@@ -246,6 +266,23 @@ A machine that never calls `takeReports()` gets only the pre-step checks, which 
 
 Replay can't point a report at its place from outside. The driver can step a report between two core-dispatched steps in one segment: between two released parked inputs, before a captured follow-up, after a send that a flush queued. Some steps are themselves dispatched by the core: a follow-up, a released input, a query asked from `flush`. So the core keys every report it hands out, both kinds, by the steps it dispatches.
 
+**Boundary ordinals (rev 4).** The ordinal counts every boundary at which the core decides on the state, not only the steps it dispatches:
+- every non-report step it dispatches, as below;
+- every admission (`admit`), whatever its outcome: stepped, parked or refused. A stepped admission takes two ordinals, its admission and its dispatch, on both sides alike.
+- (#738 round 2) every entry's own work, after its mailbox take and before the work: a completion (a nil result and a retire included), a deadline, a timer, a gate's return (`entryBoundary`). Tests 13i–13m.
+- (#738 round 4) not a stale deadline, timer or cancellation, before or after its take. Round 2 gave them an ordinal too, but they arrive where the scheduler puts them: every closed request with a deadline makes one (its cancelled deadline task still calls `deadlineFired`), and so does every replaced or ended timer. Replay matches by count, so a stale entry that landed at another place moved mail onto another entry, with no divergence reported. Now a stale arrival counts the same whether it lands early, late or never (tests 13t, 13x). (#738 round 5) The same holds for a completion or gate return that changes nothing: a nil `run` result, a closed request's late nil with no hold to retire, a nil gate return whose follow-up was consumed (tests 13y, 13z, 13za). Each also re-checks after its take, which can make it stale (tests 13zb–13zf). A completion or gate return with a result is never stale: its result steps.
+- (#738 round 3) a released parked input whose token was withdrawn: its refusal is a boundary, as a refused admission is (test 13p).
+- (#738 round 3) a call's cancellation (`sendAndWait(.cancelsCall)`) that finds its waiter: an entry, so it takes the mailbox first and then an ordinal (test 13s). Mailbox first, as every entry: mail pending when the cancellation enters steps before the waiter is removed, so it can answer or refuse the call first, and the cancellation is then stale (test 13v). A call cancelled before entry makes no cancellation entry (test 13u).
+- (#738 round 4) a mail replay refuses `.cancelsCall` (a `fatalError`, so it stops in release too; test 13w). `replayMail` stops when installed after the first entry (test 13zg), and the core stays in replay mode after `finishReplay()`, so a replayed core's calls use `.ignoresCancel`. Why: a call that ends in `CancellationError` was either cancelled before it was submitted (no ordinals) or withdrawn by its cancellation entry (its admission's ordinals and the cancellation's). Both throw the same error, so a replay driver can't tell which happened and can't reproduce the ordinals. Lifting the refusal needs new API, a distinct outcome or a cancellation the core records, to be designed with the reevaluation keepers' move to the turn core (#612). No adopter outside SwiftStateTurns uses `.cancelsCall` today.
+
+Why admissions: an admission that parks or refuses dispatches nothing, and a report can change its outcome (a hold or the queue limit read after the report). Live, a report stepped after such an admission is keyed for the next dispatch, and replay, which steps it at the first check where that ordinal is next, would step it before the admission and flip the outcome. With admissions counted, the key names the boundary after the admission. Test 13h pins it.
+
+Why not outside `query` entries: their answers aren't replay inputs and aren't compared, so their place doesn't matter. If they ever become inputs, each takes an ordinal, as an admission does.
+
+Why not entry starts: an entry that dispatches nothing returns stale (a closed request, a superseded timer generation, a consumed follow-up, a foreign incarnation), and staleness never reverts, so a later report can't change that outcome. (#738 round 4) The same reason keeps stale arrivals from taking an ordinal at all. Counting entry starts would also count a live wake, which replay doesn't have.
+
+Together with products first (§3.4), a report's key now fixes its place against every non-report step and admission: a wake-stepped report whose `flush` sends S replays as A, S, X, as it ran live (test 13g).
+
 **Step ordinals.**
 - The core numbers every non-report step it dispatches: `stepOrdinal`, counted from the core's start, for inputs, releases, follow-ups, answers, completions, timers and abandonments alike.
 - For one input sequence, live and replay dispatch those steps in the same order, so an ordinal names the same step on both.
@@ -255,7 +292,7 @@ Replay can't point a report at its place from outside. The driver can step a rep
 **The keys.** One staged map serves both kinds of report:
 - `before(n, i)`: the i-th report the driver stepped at the check that ran before step n's dispatch. The checks of an entry's helper and of the segment's loop all count. A check after the segment's last step counts for the next step the core dispatches.
 - `inside(n, t)`: what take t of step n's `turn.takeReports()` returned, with t counted from 0 in that step.
-- Inside a report's own step, `takeReports()` returns `[]` and isn't recorded. Any reports posted meanwhile step at the next check.
+- A report's own step has no take: it steps in a `MailTurn` (#738), which has no `takeMail()`. Any reports posted meanwhile step at the next check.
 
 **Live.**
 - The core's report source is `.live(lane)`. Each report the driver steps is passed to the adopter's recorder (`onReportsTaken`) under its `before` key, before `handleReport` runs. Each non-empty mid-step take is passed under its `inside` key.
@@ -270,6 +307,9 @@ Replay can't point a report at its place from outside. The driver can step a rep
 - **unconsumed:** step n dispatches while an entry for an ordinal below n is still staged;
 - **leftover:** at the end of the record, an entry is still staged after `finishReplay()` (below).
 
+- **13g** (MF 1a): a wake steps A, whose `flush` sends S; X is sent after S's step. Live and replay both log A, S, X.
+- **13h** (MF 1b): an admission refused (`.queueFull`) or parked, then a report posted after it that frees the queue or the hold. Replay steps the report after the admission, as live did, and the admission's outcome matches.
+
 **Trailing reports.** A check that runs after the last step the core ever dispatches steps its reports under `before(n, i)`, where n is the next ordinal, which no step takes. That happens for a `laneWoke` with no turn due (#704's idle failure is one), and for reports posted at the end of a record. Replay never dispatches step n, so no check steps them, and the unconsumed check, which runs only at a dispatch, never sees them.
 - The core gains a package `finishReplay()`. The adopter's replay calls it once, after the record's last input. It steps the reports staged under `before(n, 0…)` for the core's current next ordinal n, in order, through the same path as a check. Then any entry still staged fails the replay as **leftover**.
 - A removed take isn't a divergence: the take is served `[]`, and the replay's output comparison fails.
@@ -277,9 +317,11 @@ Replay can't point a report at its place from outside. The driver can step a rep
 - A replay that never calls it can't tell a trailing report from a missing one, so the adopter's replay must call it. That is part of the adopter's replay contract; for the keeper, §4.2's re-evaluation item.
 
 **Where a trailing report replays.** The same keying covers a report a `laneWoke` stepped mid-run, with no turn due: it is keyed `before(n)` for the next dispatch, and replay steps it at that dispatch's check, not at its own live entry. This is accepted, with two consequences:
-- **The segment boundary differs.** Live, the report steps in its own segment and that segment's epilogue runs. Replay steps it in the next dispatch's segment. Replay compares outputs, not settlement points, so a quiescence waiter's wake point is the only thing that moves, and replay has no waiters.
+- **The segment boundary differs.** Live, the report steps in its own segment and that segment's epilogue runs. Replay steps it at the next entry, in that entry's products-first segment (§3.4), so its products step before the entry's own work, as they did live. Replay compares outputs, not settlement points, so a quiescence waiter's wake point is the only thing that moves, and replay has no waiters.
+- **The clock.** With a recorder set (`onReportsTaken`), every live check that steps a report reads `segmentNow()` for the record, even when no step reads `now`; replay serves the recorded `now` and reads no clock for it. #700's replay-clock contract states this.
 - **`turn.now` would differ.** The report's step would read the next dispatch's time, not the wake's. So each `before` entry records the `now` of the check that stepped it, and replay serves that `now` inside the report's step. It applies to every `before` entry, trailing or not; for the others it is the same value the entry reads anyway.
-  - The served `now` is scoped to the report's step. It doesn't set the entry's cached `now`, so the replaying entry's own input and the later steps of its segment still read the entry's time, not the wake's.
+  - (#738 round 3) The served `now` has the live segment's scope. Each staged step sets it, and it stays served for the rest of the replay's segment, until a later staged step overwrites it, the entry's own work starts or the segment ends. Live, the wake's segment cached one `now` for all its steps: a send after a later staged mail (13q) and a wake's mail that a previous segment's last check steps in replay (13r) read it too. A check in the entry's own segment recorded that segment's `now`, so serving it there changes nothing. It doesn't set the entry's cached `now`.
+- **A continuation job can replay after the next input (known gap, #745).** A report can't arm `.afterBatch` work (`ReportTurn`, now `MailTurn`). But the wake's segment can still schedule a continuation job: a capped release (a report that ends a hold with more than `maxReleasesPerBatch` parked inputs behind it), or `.afterBatch` work that a product step arms (an input its `flush` sends, an answer to a query it asks, an abandonment its `end` causes, a released input). Live, that job can run before a later input X. Replay steps the products in X's products-first segment, so the job runs after X. Replay doesn't record where a continuation job ran relative to the next external input, with or without the lane. #745 fixes it in the core later by recording each input's admission ordinal; the interface doesn't change. Test 13o names the reorder as known.
 
 A live post's position depends on timing; the record fixes it.
 
@@ -347,7 +389,7 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
 2. A post during a step (from a collaborator the step calls) is taken after that step's products drain, before the next step in the segment.
 3. A post from another executor, held after the append and before the wake is scheduled: the next entry takes it, and the wake later finds the lane empty (`emptyLaneWakes == 1`).
 4. No lost wakeup: posts from another executor, at every hold point of the lane's hook, are each stepped (`bounded` waits).
-5. A capped segment (`maxReleasesPerBatch: 1`) still checks the lane before each step it makes. A post lands during a step through the hook.
+5. A capped segment (`maxReleasesPerBatch: 1`) still checks the lane before each step it makes. A post lands during a step through the hook. The report's own wake then finds the lane empty (`emptyLaneWakes` is 1), so the segment's check took it. 5b: the same, posted by a step that runs after the cap (a send from the released input's flush).
 6. At capacity 1, a second post before the check returns `false`, and the first is the one stepped; `refusedReports == 1`. (`capacity < 1` is a `fatalError`, with no test.)
 7. `turn.takeReports()` in a step returns a report posted, under a hold, during that step. The step emits nothing, and the report isn't stepped again. A later post is stepped by the driver after it.
 8. Through `close` and after `endAll`, a report still steps.
@@ -359,6 +401,7 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
    - `submit`'s input is refused when the report closes the core.
 10. Reentrancy and exception 1: a report whose output's `flush` sends an input and asks a query, with another report posted before the query. The send queues and steps after the report. The query answers in place with no check, and the other report steps at the next check. A recursion counter stays at 1.
 11. NAPI's split: a finite self-reposting script (each report's handler posts the next, five in all), with capacity 2. Each batch steps exactly two, which is the budget. The epilogue's wake runs the next batch, and the chain ends where its script ends, in three batches (2, 2, 1). The job hook and `TurnStats` witness the batch boundaries.
+11c. The loop's `continue` after a check that stepped: a check in the loop (not the helper) steps R1, and a post between its watermark and its removal adds R3, which schedules no wake; with R1's wake held, R3 steps in the same segment.
 11b. The epilogue's remainder wake: at capacity 2, R1 (its wake held) and R2 posted, and R1's flush posts R3 while R2 is in the lane, so R3's post schedules no wake. R1's wake steps R1 and R2, spending the budget; only its epilogue's wake steps R3.
 12. A machine with `LaneReport == Never` compiles with no `lane`, and its `TurnsBench` cells are unchanged (§3.8).
 13. Replay with the same outputs, live then replayed with the recorded takes:
@@ -372,8 +415,11 @@ The awaited `submitLandFailure` goes, and so does its hold point `.failureSubmit
     A replay with an extra take staged fails as unconsumed. One with an extra report staged after the last input fails as leftover at `finishReplay()`.
 14. FIFO across the two takes (MF 1): A and B posted, C posted while A steps (a hold inside A's handler). A's flush asks a query whose answer calls `takeReports()` (a report's own take returns `[]`, §3.6); it returns B, C, and the log is A, the answer with B and C, then X, with no report stepped twice.
 15. A report-induced stale deadline (MF 2): the report closes R, queues R's abandonment, and its flush queues a send. `deadlineFired(R)` runs the helper and finds R stale. The abandonment and the send both step with no later entry (`bounded` wait).
-16. Exception 2: an entry with input X, while the helper steps A and A posts B. The log is A, X, B.
-17. Generated orders: the `post` operation in every seed family, the budget-2 seeds included.
+16. Products first (rev 4; was exception 2): an entry with input X, while the helper steps A and A posts B. The log is A, B, X.
+17. Generated orders: the `post` operation in every seed family, the budget-2 seeds included, with a laneless twin of the order machine on some seeds so the `!usesLane` branches stay driven; the settle predicate compares `reportsStepped` with `accepted ∪ selfPosted` from one view.
+18. `continueBatch` (MF 2): a report that arms an `.afterBatch` follow-up while a continuation is pending steps in the continuation's helper, and the follow-up steps in the following job (`continuationJobs` goes up by one).
+19. The ring (MF 3): sustained turnover, one removal and one post at a time with the lane never empty, keeps the storage at `capacity` slots.
+20. Release outside the lock (MF 3): a report whose `deinit` posts to the same lane is removed and dropped without a deadlock, and the post lands.
 
 Mutants, each to fail a named test:
 - the loop's check removed (1, 5);
@@ -386,6 +432,11 @@ Mutants, each to fail a named test:
 - the check detaching its whole snapshot instead of one head at a time (14);
 - a stale return in `deadlineFired` skipping the epilogue (15);
 - the epilogue's remainder wake removed, and its budget test inverted (11b);
+- the loop's `continue` after a stepping check removed (11c);
+- products first removed, the entry's own work before the report's products (13g, 16);
+- admissions not counted in the ordinal (13h);
+- the follow-up capture back after the helper in `continueBatch` (18);
+- removal without clearing the slot, or a release under the lock (19, 20);
 - the replay stage served by position, ignoring the step ordinal (13);
 - the `before` key taken from the entry instead of the step (13's between-releases case);
 - `finishReplay()` that skips the leftover check (13's leftover case), and one that doesn't step the staged trailing reports (13's trailing case);

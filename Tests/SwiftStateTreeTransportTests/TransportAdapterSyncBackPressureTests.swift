@@ -1,8 +1,8 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterSyncBackPressureTests.swift
 //
 // Sync back-pressure: while the adapter's outbound writer still holds a sync cycle element from
-// an earlier cycle, a new sync cycle is skipped before `beginSync` (dirty flags and queued
-// events stay), and runs again once the writer drained. A joiner's firstSync, the debug settle
+// an earlier cycle, a new sync phase is deferred before it plans (dirty flags and
+// queued events stay), and runs again once the writer drained. A joiner's firstSync, the debug settle
 // and action responses are not held back.
 
 import Foundation

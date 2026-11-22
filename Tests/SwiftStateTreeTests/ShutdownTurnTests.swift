@@ -31,13 +31,14 @@ struct ShutdownAck: ResponsePayload {
     let ok: Bool
 }
 
-/// Where a test's keeper applies its inputs.
+/// The keeper a test runs. Every live keeper applies its inputs in turns (#546 L2d-2); the
+/// tickless arms differ only in whether a port receives the outputs.
 enum ShutdownPath: String, CaseIterable, Sendable, CustomTestStringConvertible {
-    /// Tickless, in-turn sync: the input drain.
+    /// Tickless, with a port that runs the sync phase in turn.
     case inTurn
-    /// Tickless, off in-turn sync: the legacy pass.
-    case legacy
-    /// A tick land (legacy tick path): the shutdown turn between ticks.
+    /// Tickless, with no port: the same input turns, outputs recorded and not delivered.
+    case portless
+    /// A tick land with no port: the shutdown turn between ticks.
     case tick
 
     var testDescription: String { rawValue }
@@ -164,6 +165,7 @@ private final class ShutdownInTurnTransport: LandKeeperTransport, @unchecked Sen
         }
         return includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// Counts arrivals at a hold point, so a test holds only the first.
@@ -295,7 +297,7 @@ struct ShutdownTurnTests {
         let gate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.shutdownTurnApplied) { await gate.enterAndWait() })
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown turn applies", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown turn applies") else { return }
 
         #expect(await keeper.playerCount() == 0, "the players are cleared in the turn")
         #expect(await keeper.pendingItemSequencesForTesting().isEmpty, "nothing is left queued")
@@ -353,7 +355,7 @@ struct ShutdownTurnTests {
         let signals = KeeperProbeSignals()
         await keeper.setInTurnProbeForTesting(signals.probe)
         let tickInFlight = Task { await keeper.stepTickOnce() }
-        guard try await withinDeadline("the tick holds at its record", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the tick holds at its record") else { return }
 
         let shutdown = Task { await keeper.forceShutdown() }
         guard await signals.wait(for: "shutdown-stop-gate") else { return }
@@ -384,7 +386,7 @@ struct ShutdownTurnTests {
         let second = Task { await keeper.forceShutdown() }
         // Both calls have joined the flight, and the shutdown's drain holds.
         guard await signals.wait(for: "force-shutdown-joined", count: 2) else { return }
-        guard try await withinDeadline("the shutdown's input drain holds", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown's input drain holds") else { return }
         #expect(await keeper.pendingItemSequencesForTesting().count == 1)
 
         await keeper.installHolds(nil)
@@ -396,7 +398,7 @@ struct ShutdownTurnTests {
         #expect(await keeper.currentState().log == ["join:p1", "finalize"])
     }
 
-    @Test("Tickless: a leave queued before the shutdown runs its OnLeave; a join after it is rejected", arguments: [ShutdownPath.inTurn, .legacy])
+    @Test("Tickless: a leave queued before the shutdown runs its OnLeave; a join after it is rejected", arguments: [ShutdownPath.inTurn, .portless])
     func arrivalOrder(path: ShutdownPath) async throws {
         let keeper = try await makeKeeper(path)
         try await join(keeper, path, [(p1, c1, s1), (p2, c2, s2)])
@@ -407,31 +409,6 @@ struct ShutdownTurnTests {
             try await keeper.join(playerID: PlayerID("late"), clientID: ClientID("cl"), sessionID: SessionID("sl"))
         }
         #expect(await keeper.currentState().log == ["join:p1", "join:p2", "leave:p2", "finalize"])
-    }
-
-    @Test("Legacy tickless: another caller's pass applies the shutdown first; that caller's input, behind it, gets landClosed")
-    func legacyCallerPassAppliesTheShutdown() async throws {
-        let keeper = try await makeKeeper(.legacy)
-        try await join(keeper, .legacy, [(p1, c1, s1)])
-
-        let gate = WatermarkGate()
-        await keeper.installHolds(HoldRegistry.at(.legacyShutdownPass) { await gate.enterAndWait() })
-        let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown's own pass holds", { await gate.waitUntilEntered() }) != nil else { return }
-
-        // This caller's pass applies every ready input: the shutdown, then the batch ends.
-        do {
-            _ = try await keeper.handleActionEnvelope(add(5), playerID: p1, clientID: c1, sessionID: s1)
-            Issue.record("Expected landClosed")
-        } catch {
-            #expect(error as? LandInputRejection == .landClosed)
-        }
-        guard try await withinDeadline("forceShutdown returns", { await shutdown.value }) != nil else { return }
-        await keeper.installHolds(nil)
-        gate.release()
-        await keeper.waitForInFlightWorkForTesting()
-        #expect(await keeper.currentState().total == 0)
-        #expect(await keeper.currentState().log == ["join:p1", "finalize"])
     }
 
     @Test("Tick land: a join after the shutdown turn gets landShuttingDown")
@@ -461,7 +438,7 @@ struct ShutdownTurnTests {
         await keeper.installHolds(HoldRegistry.at(.shutdownTurnApplied) { await gate.enterAndWait() })
         let before = transport.outputs
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown turn applies", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown turn applies") else { return }
         #expect(transport.outputs == before)
         gate.release()
         await shutdown.value
@@ -483,7 +460,7 @@ struct ShutdownTurnTests {
         let shutdown = Task { await keeper.forceShutdown() }
         // The shutdown input is queued, and the drain it scheduled holds.
         guard await signals.wait(for: "shutdown-queued") else { return }
-        guard try await withinDeadline("the shutdown's input drain holds", { await gate.waitUntilEntered() }) != nil else { return }
+        guard await gate.waitUntilEntered("the shutdown's input drain holds") else { return }
 
         await keeper.runEmptyRoomShutdownForTesting()
         guard try await withinDeadline("forceShutdown returns after that drain", { await shutdown.value }) != nil else { return }

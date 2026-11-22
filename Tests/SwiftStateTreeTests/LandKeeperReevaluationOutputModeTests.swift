@@ -45,12 +45,31 @@ private actor MockTransport: LandKeeperTransport {
         sentEvents.append((event, target))
     }
 
-    func syncNowFromTransport() async {}
+    private(set) var syncNowCount = 0
+
+    func syncNowFromTransport() async { syncNowCount += 1 }
     func syncBroadcastOnlyFromTransport() async {}
     func onLandDestroyed() async {}
 
     func eventCount() -> Int {
         sentEvents.count
+    }
+    nonisolated func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { false }
+    nonisolated func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S, events: [InTurnServerEvent], includeSync: Bool, recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        InTurnSyncOutput(.unsupported)
+    }
+    func waitForWriterDrainForInTurnSync() async {}
+}
+
+/// A land with only a sync loop, hourly, so the test drives each iteration by hand.
+private func makeOutputModeSyncLoopDefinition() -> LandDefinition<OutputModeTestState> {
+    Land("output-mode-sync-loop-test", using: OutputModeTestState.self) {
+        Rules { }
+        Lifetime {
+            StateSync(every: .seconds(3600)) { (_: OutputModeTestState, _: LandContext) in }
+        }
     }
 }
 
@@ -160,5 +179,39 @@ struct LandKeeperReevaluationOutputModeTests {
 
         #expect(sinkCount == 1, "Sink should receive 1 emitted event")
         #expect(transportCount == 1, "Transport should receive 1 event in transportAndSink mode")
+    }
+
+    /// The sync loop of a re-evaluation keeper with a transport still calls `syncNowFromTransport`
+    /// (#546 L2d-2 keeps that tail for `.reevaluation` until #612): only live keepers sync in turn.
+    @Test("mode .reevaluation with outputMode .transportAndSink: a sync loop iteration reaches the transport's syncNow")
+    func transportAndSinkSyncLoopReachesTransport() async throws {
+        let metadata = ReevaluationRecordMetadata(
+            landID: "output-mode-sync-loop-test:local",
+            landType: "output-mode-sync-loop-test",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            metadata: [:],
+            landDefinitionID: "output-mode-sync-loop-test",
+            version: "1.0"
+        )
+        let source = JSONReevaluationSource(
+            metadata: metadata,
+            frames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
+        )
+        let mockTransport = MockTransport()
+        let keeper = LandKeeper<OutputModeTestState>(
+            definition: makeOutputModeSyncLoopDefinition(),
+            initialState: OutputModeTestState(),
+            mode: .reevaluation,
+            reevaluationSource: source,
+            reevaluationSink: MockSink(),
+            reevaluationOutputMode: .transportAndSink,
+            transport: mockTransport
+        )
+        await keeper.awaitInitialization()
+        try #require(await keeper.hasSyncLoopForTesting(), "the sync loop started after the initialization")
+
+        await keeper.runSyncLoopIterationForTesting()
+        #expect(await mockTransport.syncNowCount == 1)
+        await keeper.forceShutdown()
     }
 }
