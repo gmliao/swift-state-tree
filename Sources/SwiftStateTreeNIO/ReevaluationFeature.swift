@@ -17,11 +17,13 @@ public struct ReevaluationFeatureConfiguration: Sendable {
     /// run would take, and a limit above it lets the run fail with `replayTooLong`.
     ///
     /// The reevaluation monitor land is registered once, by the first `registerWithGenericReplay`
-    /// call, with that call's configuration, so its runs use that registration's service and
-    /// limit. `/admin/reevaluation/start` checks a record against the limit of the land type in
-    /// the request: with lands at different limits, a record accepted for the higher one can still
-    /// fail in the monitor with `replayTooLong` (typed, not silent). Lands that share a monitor
-    /// should share a limit when the monitor route has to honor it.
+    /// call with re-evaluation enabled (a disabled call registers no monitor), with that call's
+    /// configuration, so its runs use that registration's service and limit.
+    /// `/admin/reevaluation/start` checks a record against the limit of the land type in the
+    /// request: with lands at different limits, a record accepted for the higher one can still
+    /// fail in the monitor: its status is `phase == .failed`, with the `replayTooLong`
+    /// description in `errorMessage` (reported, not silent). Lands that share a monitor should
+    /// share a limit when the monitor route has to honor it.
     ///
     /// `NIOAdminRoutes` takes a snapshot of these limits when `registerAdminRoutes()` runs
     /// (`NIOLandHost.run` does so after the registrations): a land registered after that keeps

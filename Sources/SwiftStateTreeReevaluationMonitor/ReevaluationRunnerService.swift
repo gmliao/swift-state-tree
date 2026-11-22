@@ -296,7 +296,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
     /// The failure message of a run whose runner stepped more often than the limit.
     static func tooManyResultsMessage(limit: Int64) -> String {
-        "the runner produced more than \(limit) results, and a replay may take at most \(limit) steps"
+        "the runner produced more than \(limit) results; a replay accepts at most \(limit)"
     }
 
     private func updateStatus(ticket: UInt64, _ block: (inout ReevaluationStatus) -> Void) {
