@@ -94,12 +94,12 @@ actor DemoActor: TurnActor {
         }
     }
 
-    /// A `.hook` step whose hook reads this actor's machine from inside `handle`: a stop.
     /// Installs a mail replay on this core, which has no mailbox: it must stop the process.
     func installReplayForTesting() {
         core.replayMail([])
     }
 
+    /// A `.hook` step whose hook reads this actor's machine from inside `handle`: a stop.
     func readFromInsideStep() {
         let me = self
         StepHooks.$duringStep.withValue({
