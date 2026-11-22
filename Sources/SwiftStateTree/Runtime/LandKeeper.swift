@@ -110,6 +110,12 @@ private final class ActionJobCallerCancellation: @unchecked Sendable {
     }
 }
 
+/// Tests: observes a `LandKeeper.setLandID(_:)` that arrives after the keeper's initialization
+/// started, instead of the DEBUG assertion (#593).
+package enum LateLandIDReport {
+    @TaskLocal package static var handlerForTesting: (@Sendable (String) -> Void)?
+}
+
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
     package enum PendingItem: Sendable {
@@ -533,7 +539,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Set the actual land instance ID (called after LandKeeper is created)
     /// This allows LandContext to use the actual instance ID instead of just the land type
     /// Also updates the RNG service seed if it was created with a default seed
+    ///
+    /// Pass `landID:` to the init instead. The init starts the initialization eagerly, so a call
+    /// here races with it: once it has started, OnInitialize, its resolvers, the RNG seed and
+    /// the loop phase offset may have read the land type. Such a late call is logged, and in
+    /// DEBUG it stops the process (`LateLandIDReport` lets a test observe it instead) (#593).
     public func setLandID(_ landID: String) {
+        if didInitialize || initializationTask != nil {
+            logger.error("setLandID after the initialization started: pass landID: to the init", metadata: [
+                "landID": .string(landID),
+                "landType": .string(definition.id),
+            ])
+            if let report = LateLandIDReport.handlerForTesting {
+                report(landID)
+            } else {
+                #if DEBUG
+                assertionFailure("setLandID(\(landID)) after the keeper's initialization started: pass landID: to the init (#593)")
+                #endif
+            }
+        }
         actualLandID = landID
 
         // Update RNG service seed if it was created with definition.id seed
@@ -992,7 +1016,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - landID: The land instance ID (e.g. "counter:550e8400-..."), when known at creation.
     ///     Set before the eager initialization can start, so OnInitialize, the default RNG seed
     ///     and the loop phase offset all use the instance ID instead of the land type. Without
-    ///     it, `setLandID(_:)` sets the ID later, racing with that initialization.
+    ///     it, `setLandID(_:)` sets the ID later, racing with that initialization (a call after
+    ///     it started is reported).
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, a live keeper still runs its turns and records their
     ///                outputs, but delivers none. On a live keeper a transport that can't run the
@@ -1025,7 +1050,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Ensure DeterministicRngService is always registered for deterministic behavior
         // If not provided, seed it from the instance ID when known, else from definition.id
-        // (setLandID(_:) replaces a definition.id seed later).
+        // (setLandID(_:) replaces a definition.id seed later, racing with the initialization).
         var resolvedServices = services
         if resolvedServices.get(DeterministicRngService.self) == nil {
             let seed = DeterministicSeed.fromLandID(landID ?? definition.id)
@@ -1124,28 +1149,51 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await task.value
         initializationTask = nil
         didInitialize = true
+        resumeInitializationWaitWatchers { _ in true }
         if let initializationFailure { throw initializationFailure }
     }
 
     /// Tests: how many calls have waited on a running initialization, and the tests waiting for
     /// a count (`waitForInitializationWaitersForTesting`).
     private var initializationWaits = 0
-    private var initializationWaitWatchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var initializationWaitWatchers: [(id: UUID, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     private func noteInitializationWait() {
         initializationWaits += 1
-        let ready = initializationWaitWatchers.filter { $0.count <= initializationWaits }
-        initializationWaitWatchers.removeAll { $0.count <= initializationWaits }
-        ready.forEach { $0.continuation.resume() }
+        let waits = initializationWaits
+        resumeInitializationWaitWatchers { $0.count <= waits }
+    }
+
+    private func resumeInitializationWaitWatchers(where ready: (_ watcher: (id: UUID, count: Int, continuation: CheckedContinuation<Void, Never>)) -> Bool) {
+        let resumed = initializationWaitWatchers.filter(ready)
+        initializationWaitWatchers.removeAll(where: ready)
+        resumed.forEach { $0.continuation.resume() }
     }
 
     /// Tests: returns once `count` calls have waited on a running initialization, so a test can
-    /// end the initialization with its waiters in place (#593).
-    package func waitForInitializationWaitersForTesting(_ count: Int) async {
-        if initializationWaits >= count { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            initializationWaitWatchers.append((count: count, continuation: continuation))
+    /// end the initialization with its waiters in place (#593). Also returns when the
+    /// initialization ends first or the waiting task is cancelled, so a wrong count fails its
+    /// test instead of hanging it (#447). True when `count` calls waited.
+    package func waitForInitializationWaitersForTesting(_ count: Int) async -> Bool {
+        if initializationWaits >= count { return true }
+        if didInitialize { return false }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                initializationWaitWatchers.append((id: id, count: count, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelInitializationWaitWatcher(id) }
         }
+        return initializationWaits >= count
+    }
+
+    private func cancelInitializationWaitWatcher(_ id: UUID) {
+        resumeInitializationWaitWatchers { $0.id == id }
     }
 
     /// `ensureInitialized` for a join: a failed initialization is a retryable
@@ -3769,8 +3817,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case .initialize:
             guard let handler = definition.lifetimeHandlers.onInitialize,
                   !replayedInitializeBeforeTickZero else { break }
-            // At tick 0, where the live run had the tick before it: kept as it was before #593,
-            // since moving it changes what these older records replay to (and where its events go).
+            // Only a record without an initialize record reaches this fallback, and a live run
+            // writes one whenever it records: records before 2.1 no longer open
+            // (`minimumReplayable`), so it is a crafted record. `ctx.tickId` stays at 0, where
+            // the live run had the tick before it: with that ID, OnInitialize's events would go
+            // to a tick whose outputs are already flushed (#593).
             let ctx = makeContext(
                 playerID: systemPlayerID,
                 clientID: systemClientID,

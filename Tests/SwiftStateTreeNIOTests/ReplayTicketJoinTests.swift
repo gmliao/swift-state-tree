@@ -48,6 +48,9 @@ private struct NoRunnerFactory: ReevaluationTargetFactory {
 }
 
 private actor IdleRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     let maxTickId: Int64 = -1
     func prepare() async throws {}
     func step() async throws -> ReevaluationStepResult? { nil }

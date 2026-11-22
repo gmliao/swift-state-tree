@@ -289,9 +289,9 @@ struct LandKeeperLoopPhaseOffsetTests {
         let keeper = LandKeeper<PhaseOffsetTestState>(
             definition: phaseOffsetLand(tick: .milliseconds(100), recorder: recorder),
             initialState: PhaseOffsetTestState(),
-            enableLoopPhaseOffset: false
+            enableLoopPhaseOffset: false,
+            landID: "counter:550e8400-e29b-41d4-a716-446655440000"
         )
-        await keeper.setLandID("counter:550e8400-e29b-41d4-a716-446655440000")
         #expect(await keeper.loopPhaseOffset(interval: .milliseconds(100)) == .zero)
     }
 
@@ -302,9 +302,9 @@ struct LandKeeperLoopPhaseOffsetTests {
             initialState: PhaseOffsetTestState(),
             mode: .reevaluation,
             autoStartLoops: false,
-            enableLoopPhaseOffset: true
+            enableLoopPhaseOffset: true,
+            landID: "counter:550e8400-e29b-41d4-a716-446655440000"
         )
-        await keeper.setLandID("counter:550e8400-e29b-41d4-a716-446655440000")
         #expect(await keeper.loopPhaseOffset(interval: .milliseconds(100)) == .zero)
     }
 

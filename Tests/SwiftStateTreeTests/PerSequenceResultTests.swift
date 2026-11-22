@@ -237,10 +237,10 @@ private func makePerSequenceKeeper(
         initialState: initial,
         enableLiveStateHashRecording: recording,
         autoStartLoops: false,
+        landID: perSequenceLandID,
         transport: transport ?? (inTurn ? PerSequenceInTurnTransport() : nil)
     )
     #expect(await keeper.isUsingInTurnSync() == inTurn)
-    await keeper.setLandID(perSequenceLandID)
     if recording, let recorder = await keeper.getReevaluationRecorder() {
         await recorder.setMetadata(ReevaluationRecordMetadata(
             landID: perSequenceLandID,

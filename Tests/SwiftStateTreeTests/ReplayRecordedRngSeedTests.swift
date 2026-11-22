@@ -47,10 +47,10 @@ private func recordRngSeedLand(seed: UInt64?, recordsSeed: Bool = true, path: St
         initialState: RngSeedReplayState(),
         services: services,
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: rngSeedReplayLandID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    await keeper.setLandID(rngSeedReplayLandID)
     await keeper.awaitInitialization()
     let liveSeed = await keeper.getRngSeed()
     await recorder.setMetadata(ReevaluationRecordMetadata(

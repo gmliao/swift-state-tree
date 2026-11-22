@@ -393,9 +393,9 @@ private func makeLiveKeeper(
         initialState: WatermarkTestState(),
         enableLiveStateHashRecording: recording,
         autoStartLoops: false,
+        landID: watermarkLandID,
         transport: transport
     )
-    await keeper.setLandID(watermarkLandID)
     if let recorder = await keeper.getReevaluationRecorder() {
         await recorder.setMetadata(watermarkMetadata(landType: definition.id))
     }
@@ -431,9 +431,9 @@ struct ReplaySequenceWatermarkTests {
             mode: .reevaluation,
             reevaluationSource: source,
             reevaluationSink: sink,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: watermarkLandID
         )
-        await keeper.setLandID(watermarkLandID)
 
         await keeper.stepTickOnce()
 

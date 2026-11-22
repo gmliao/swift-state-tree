@@ -42,4 +42,4 @@ In #239 (squashed into `90fd08b9`; branch commit `3dea437c`): make `WebSocketTra
 
 ## Seen again
 
-- #751 (#593): `ReevaluationRunnerProtocol.initializeVerification()` gained an async requirement with a `.notRecorded` default, and `ConcreteReevaluationRunner`'s synchronous accessor lost to it in a direct `await runner.initializeVerification()`. The runner service, calling through the protocol, got the real verdict; a test calling the concrete type got `.notRecorded`. The fix was the same: the accessor is `async`.
+- #751 (#593): `ReevaluationRunnerProtocol.initializeVerification()` gained an async requirement with a `.notRecorded` default, and `ConcreteReevaluationRunner`'s synchronous accessor lost to it in a direct `await runner.initializeVerification()`. The runner service, calling through the protocol, got the real verdict; a test calling the concrete type got `.notRecorded`. The fix was the same: the accessor is `async`. The maintainer then removed the default (2026-11-22), so every conformer answers and there is no default to lose to.

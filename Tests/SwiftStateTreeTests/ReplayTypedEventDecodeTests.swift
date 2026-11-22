@@ -147,10 +147,10 @@ private func recordOneTick<S: StateNodeProtocol>(_ definition: LandDefinition<S>
         definition: definition,
         initialState: S(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: replayDecodeLandID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    await keeper.setLandID(replayDecodeLandID)
     await keeper.awaitInitialization()
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: replayDecodeLandID,

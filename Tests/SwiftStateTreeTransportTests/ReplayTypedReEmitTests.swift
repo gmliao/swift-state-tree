@@ -15,6 +15,9 @@ import SwiftStateTreeMessagePack
 
 /// A runner whose ticks `steps` build, in order; a step may throw, as `step()` does.
 final class ScriptedReplayRunner: ReevaluationRunnerProtocol, @unchecked Sendable {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     private let lock = NSLock()
     private var next = 0
     private let steps: [@Sendable () throws -> ReevaluationStepResult]

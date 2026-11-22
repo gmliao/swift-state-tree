@@ -206,16 +206,16 @@ private let p3 = PlayerID("p3"), c3 = ClientID("c3"), s3 = SessionID("s3")
 /// which runs the same turns and delivers nothing).
 private func makePassKeeper(withPort: Bool, initializeWithResolver: Bool = false) async throws -> LandKeeper<PassOrderState> {
     let definition = makePassDefinition(initializeWithResolver: initializeWithResolver)
+    // One land ID per keeper: parallel tests must not share a recorder spool.
+    let landID = "pass-order:\(UUID().uuidString)"
     let keeper = LandKeeper<PassOrderState>(
         definition: definition,
         initialState: PassOrderState(),
         enableLiveStateHashRecording: true,
         autoStartLoops: false,
+        landID: landID,
         transport: withPort ? PassInTurnTransport() : nil
     )
-    // One land ID per keeper: parallel tests must not share a recorder spool.
-    let landID = "pass-order:\(UUID().uuidString)"
-    await keeper.setLandID(landID)
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: landID,
@@ -267,15 +267,16 @@ private actor PassReplaySink: ReevaluationSink {
 /// A replay keeper on `path`'s record, initialized, with its tick 0 not yet run.
 private func makePassReplayKeeper(_ path: String, sink: PassReplaySink) async throws -> LandKeeper<PassOrderState> {
     let source = try ReevaluationRecordFile.openSource(filePath: path)
+    let recordLandID = try await source.getMetadata().landID
     let keeper = LandKeeper<PassOrderState>(
         definition: makePassDefinition(),
         initialState: PassOrderState(),
         mode: .reevaluation,
         reevaluationSource: source,
         reevaluationSink: sink,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: recordLandID
     )
-    await keeper.setLandID(try await source.getMetadata().landID)
     await keeper.awaitInitialization()
     return keeper
 }
@@ -453,9 +454,9 @@ struct TicklessReplayPassTests {
             definition: makePassDefinition(),
             initialState: PassOrderState(),
             autoStartLoops: false,
+            landID: "pass-order:\(UUID().uuidString)",
             transport: transport
         )
-        await keeper.setLandID("pass-order:\(UUID().uuidString)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let base = transport.log.count
@@ -493,9 +494,9 @@ struct TicklessReplayPassTests {
             definition: makePassDefinition(),
             initialState: PassOrderState(),
             autoStartLoops: false,
+            landID: "pass-order:\(UUID().uuidString)",
             transport: transport
         )
-        await keeper.setLandID("pass-order:\(UUID().uuidString)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let base = transport.log.count
@@ -771,8 +772,7 @@ struct TicklessReplayPassTests {
                 Tick(every: .seconds(3600)) { (_: inout PassOrderState, _: LandContext) in }
             }
         }
-        let keeper = LandKeeper<PassOrderState>(definition: definition, initialState: PassOrderState(), enableLiveStateHashRecording: true, autoStartLoops: false)
-        await keeper.setLandID("pass-tick:\(UUID().uuidString)")
+        let keeper = LandKeeper<PassOrderState>(definition: definition, initialState: PassOrderState(), enableLiveStateHashRecording: true, autoStartLoops: false, landID: "pass-tick:\(UUID().uuidString)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         _ = try await keeper.handleActionEnvelope(plainAction("a"), playerID: p1, clientID: c1, sessionID: s1)
         await keeper.stepTickOnce()

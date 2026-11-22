@@ -316,7 +316,15 @@ private func expectReplayRefusal(_ verdict: ReevaluationEngine.InitializeVerific
     #expect(reason.contains("ReplayRefusedError"), "\(reason)", sourceLocation: sourceLocation)
 }
 
-// MARK: - Waiters, .failLand, the hosted run
+// MARK: - Waiters, .failLand, the hosted run, a late land ID
+
+/// The land IDs a late `setLandID` reported.
+private final class LateReports: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: [String] = []
+    var landIDs: [String] { lock.withLock { ids } }
+    func note(_ landID: String) { lock.withLock { ids.append(landID) } }
+}
 
 /// OnInitialize's resolver, held at the gate keyed by the land ID's last part
 /// ("init-wait:<key>"), then a room for 4.
@@ -553,20 +561,41 @@ struct InitializeTwoStageTests {
         expectReplayRefusal(try await runnerVerdict(definition, path))
     }
 
-    @Test("The replay keepers have the record's land ID before their eager initialization: forced to run first, OnInitialize still sees it", arguments: [false, true])
-    func replayKeeperHasTheLandIDFirst(dropInitializeRecord: Bool) async throws {
+    @Test("The replay keepers use the record's land ID: apply logs it, and every replayed tick matches, through the engine and both runner inits", arguments: [false, true])
+    func replayKeepersUseTheRecordsLandID(dropInitializeRecord: Bool) async throws {
         let definition = makeReplayDefinition()
         let (path, landID) = try await recordLiveRun(definition, dropInitializeRecord: dropInitializeRecord)
         defer { try? FileManager.default.removeItem(atPath: path) }
-        try await ReevaluationEngine.$initializesFirstForTesting.withValue(true) {
-            let result = try await ReevaluationEngine.run(definition: definition, initialState: RoomState(), recordFilePath: path)
-            #expect(result.initialize == (dropInitializeRecord ? .notRecorded : .passed))
-            #expect(result.tickHashes == result.recordedStateHashes, "apply logged the record's land ID, \(landID)")
-            #expect(try await runnerVerdict(definition, path) == (dropInitializeRecord ? .notRecorded : .passed))
-            let runner = try await ConcreteReevaluationRunner(definition: definition, initialState: RoomState(), recordFilePath: path)
-            while try await runner.step() != nil {}
-            #expect(await runner.initializeVerification() == (dropInitializeRecord ? .notRecorded : .passed), "the runner built with a state")
+        let verdict: ReevaluationEngine.InitializeVerification = dropInitializeRecord ? .notRecorded : .passed
+        let result = try await ReevaluationEngine.run(definition: definition, initialState: RoomState(), recordFilePath: path)
+        #expect(result.initialize == verdict)
+        #expect(!result.recordedStateHashes.isEmpty)
+        #expect(result.tickHashes == result.recordedStateHashes, "apply logged the record's land ID, \(landID)")
+        let runners = [
+            try await ConcreteReevaluationRunner(definition: definition, recordFilePath: path),
+            try await ConcreteReevaluationRunner(definition: definition, initialState: RoomState(), recordFilePath: path),
+        ]
+        for runner in runners {
+            try await runner.prepare()
+            var steps = 0
+            while let step = try await runner.step() {
+                steps += 1
+                #expect(step.isMatch, "tick \(step.tickId): \(step.stateHash) vs \(String(describing: step.recordedHash))")
+            }
+            #expect(steps > 0)
+            #expect(await runner.initializeVerification() == verdict)
         }
+    }
+
+    @Test("A setLandID after the keeper's initialization started is reported (in DEBUG, an assertion)")
+    func lateSetLandIDIsReported() async throws {
+        let keeper = LandKeeper<RoomState>(definition: makeReplayDefinition(voidForm: true), initialState: RoomState(), autoStartLoops: false)
+        await keeper.awaitInitialization()
+        let reports = LateReports()
+        await LateLandIDReport.$handlerForTesting.withValue({ reports.note($0) }) {
+            await keeper.setLandID("init-replay:late")
+        }
+        #expect(reports.landIDs == ["init-replay:late"])
     }
 
     @Test("A malformed record whose OnInitialize replays in tick 1: a refusal there still fails the check, in the engine and the runner")
@@ -600,6 +629,8 @@ struct InitializeTwoStageTests {
         let transport = InitStageTransport()
         let keeper = try await makeKeeper(makeWaitDefinition(), landID: "init-wait:\(key)", transport: transport)
         guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
+        // Released on every exit, so a failed wait doesn't leave the resolver parked.
+        defer { DeliveryGates.gate(key).release() }
 
         let join = Task { () -> (any Error)? in
             do { try await keeper.join(playerID: player, clientID: client, sessionID: session); return nil } catch { return error }
@@ -615,7 +646,13 @@ struct InitializeTwoStageTests {
         }
         let input = Task { await keeper.submitServerInput(InitWaitInput(n: 1)) }
         // All three wait on the running initialization before it ends.
-        await keeper.waitForInitializationWaitersForTesting(3)
+        let allWaiting = try await withinDeadline("three calls wait on the initialization") {
+            await keeper.waitForInitializationWaitersForTesting(3)
+        }
+        guard allWaiting == true else {
+            Issue.record("not every call waited on the initialization: \(String(describing: allWaiting))")
+            return
+        }
         DeliveryGates.gate(key).release()
 
         let joinError = await join.value

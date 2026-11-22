@@ -82,11 +82,6 @@ public enum ReevaluationEngine {
         }
     }
 
-    /// Tests: the replay keeper's eager initialization runs to its end right after the keeper is
-    /// built, before anything else the engine or the runner asks of it. A test forces that order
-    /// to check that nothing the initialization reads is set after construction (#593).
-    @TaskLocal package static var initializesFirstForTesting = false
-
     /// Outcome of the OnInitialize check: the replayed events and post-initialize state hash
     /// against the record's initialize record.
     public enum InitializeVerification: Sendable, Equatable {
@@ -160,8 +155,9 @@ public enum ReevaluationEngine {
 
     /// The initialize verdict after a replayed tick (#593). A record without an initialize record
     /// replays OnInitialize inside tick 0, after `verifyInitialize` ran: a refusal noted then
-    /// fails the check too. Merged after every tick, so a malformed record that replays it later
-    /// or twice fails as well. A verdict that already failed keeps its reason.
+    /// fails the check too. Merged after every tick, so a malformed record whose OnInitialize
+    /// replays later, or again, and refuses there fails as well; a repeat that passes is not
+    /// detected. A verdict that already failed keeps its reason.
     package static func initializeVerdict(
         _ verdict: InitializeVerification,
         afterTickRefusal refusal: String?
@@ -312,8 +308,6 @@ public enum ReevaluationEngine {
             landID: metadata.landID,
             logger: logger
         )
-        // A test forces the eager initialization to win here: nothing it reads may be set later.
-        if initializesFirstForTesting { await keeper.awaitInitialization() }
         await keeper.awaitInitialization()
         if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
         let initializeRecord = try await source.getInitializeRecord()

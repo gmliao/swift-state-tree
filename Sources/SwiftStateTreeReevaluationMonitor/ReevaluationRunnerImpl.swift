@@ -229,7 +229,6 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             landID: metadata.landID,
             logger: logger
         )
-        if ReevaluationEngine.initializesFirstForTesting { await keeper.awaitInitialization() }
 
         snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -303,7 +302,6 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             landID: metadata.landID,
             logger: logger
         )
-        if ReevaluationEngine.initializesFirstForTesting { await keeper.awaitInitialization() }
 
         snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -375,10 +373,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         syncOutputDriver.finish()
     }
 
-    /// The OnInitialize check. After `prepare()` for a record with an initialize record; for one
-    /// without, final only after tick 0, whose step replays OnInitialize (#593).
-    /// `async`, as the protocol's requirement is: a synchronous one would lose to the protocol
-    /// extension's `.notRecorded` default in a direct `await` call, which prefers the async overload.
+    /// The OnInitialize check, final once `step()` has returned `nil`: a refusal is merged after
+    /// every step (#593).
     public func initializeVerification() async -> ReevaluationEngine.InitializeVerification {
         initialize
     }

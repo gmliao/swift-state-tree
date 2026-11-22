@@ -164,9 +164,9 @@ struct ActionJobReplayOrderTests {
             definition: makeReplayOrderLand(),
             initialState: ReplayOrderJobState(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
         let transport = ReplayOrderTransport()
         let adapter = TransportAdapter<ReplayOrderJobState>(
             keeper: keeper, transport: transport, landID: landID

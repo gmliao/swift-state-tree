@@ -146,9 +146,9 @@ private func makeDeliveryKeeper(tick: Bool, inTurn: Bool = false) async -> LandK
         initialState: DeliveryTestState(),
         enableLiveStateHashRecording: tick,
         autoStartLoops: false,
+        landID: deliveryLandID,
         transport: inTurn ? InTurnTransport() : nil
     )
-    await keeper.setLandID(deliveryLandID)
     if tick, let recorder = await keeper.getReevaluationRecorder() {
         await recorder.setMetadata(ReevaluationRecordMetadata(
             landID: deliveryLandID,
@@ -385,9 +385,9 @@ struct ResolverDeliveryTests {
             definition: makeDeliveryDefinition(tick: true),
             initialState: DeliveryTestState(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: deliveryLandID
         )
-        await keeper.setLandID(deliveryLandID)
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
             landID: deliveryLandID,

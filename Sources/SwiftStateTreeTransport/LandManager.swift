@@ -616,9 +616,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             landID: landID.stringValue,
             logger: logger
         )
-        
-        // The keeper already got the instance ID in init (before its eager initialization).
-        await keeper.setLandID(landID.stringValue)
+
 
         // Debug: Check if pathHashes is available
         if let pathHashes = pathHashes {
@@ -661,7 +659,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             // Extract RNG seed from LandKeeper's services for deterministic re-evaluation
             // RNG seed is critical when RNG is used in game logic (e.g., monster spawning, player positioning)
             // Note: DeterministicRngService is automatically registered by LandKeeper if not provided,
-            // and setLandID() ensures it uses the actual landID seed
+            // seeded from the landID the keeper got at construction
             let rngSeed = await keeper.getRngSeed()
             
             // Note: We do NOT record tickInterval/syncInterval because:
@@ -706,9 +704,6 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         lastBuiltAdapterForTesting = transportAdapter
         await holds.at(.wiring)
         await keeper.setTransport(transportAdapter)
-        
-        // Note: setLandID was already called above before recording metadata
-        // to ensure the RNG seed uses the actual landID
         
         // Only set delegate if we created the transport (own it)
         // If sharedTransport is provided, LandRouter handles delegation

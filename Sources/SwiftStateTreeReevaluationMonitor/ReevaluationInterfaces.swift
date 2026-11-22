@@ -81,15 +81,10 @@ public protocol ReevaluationRunnerProtocol: Sendable {
     func prepare() async throws
     func step() async throws -> ReevaluationStepResult?
     /// The OnInitialize check, final once `step()` has returned `nil`. The runner service fails a
-    /// run whose check failed, even when every tick matched (#593).
+    /// run whose check failed, even when every tick matched (#593). There is no default: a
+    /// runner that doesn't check OnInitialize reports `.notRecorded`, and a wrapper around
+    /// another runner forwards its answer.
     func initializeVerification() async -> ReevaluationEngine.InitializeVerification
-}
-
-extension ReevaluationRunnerProtocol {
-    /// A runner that doesn't check OnInitialize reports `.notRecorded`.
-    public func initializeVerification() async -> ReevaluationEngine.InitializeVerification {
-        .notRecorded
-    }
 }
 
 public protocol ReevaluationTargetFactory: Sendable {

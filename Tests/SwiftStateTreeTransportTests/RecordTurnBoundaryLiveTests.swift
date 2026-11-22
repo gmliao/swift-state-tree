@@ -86,11 +86,11 @@ private func recordTurnBoundaryRun(tick: Bool, forceTimer: Bool, path: String) a
         definition: makeTurnBoundaryLand(tick: tick),
         initialState: TurnBoundaryState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: turnBoundaryLandID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
     if forceTimer { await recorder.forceTimerFlushAfterEverySubmitForTesting() }
-    await keeper.setLandID(turnBoundaryLandID)
     let transport = VerifierTransport()
     let adapter = TransportAdapter<TurnBoundaryState>(
         keeper: keeper, transport: transport, landID: turnBoundaryLandID
