@@ -62,6 +62,8 @@ struct MailboxMachine: TurnMachine {
         case control([MailOp])
         /// A normal input that waits behind key 99 (held by a `.hold` request); logs, then runs.
         case parked(String, [MailOp] = [])
+        /// A parked input that `token` withdraws: logs "parked `label`" if it steps.
+        case tokened(String, WithdrawToken)
         /// A follow-up's input: logs, then runs its script.
         case ran(String, [MailOp])
         /// A request's result.
@@ -103,6 +105,7 @@ struct MailboxMachine: TurnMachine {
         switch input {
         case .script: return .normal(waitsFor: nil, belongsTo: nil)
         case .parked: return .normal(waitsFor: 99, belongsTo: nil)
+        case .tokened(_, let token): return .normal(waitsFor: 99, belongsTo: nil, withdrawnBy: token)
         case .control, .ran, .result, .fired: return .control
         }
     }
@@ -114,6 +117,8 @@ struct MailboxMachine: TurnMachine {
         case .parked(let label, let ops):
             log.append("parked \(label)")
             run(ops, &turn)
+        case .tokened(let label, _):
+            log.append("parked \(label)")
         case .ran(let label, let ops):
             log.append("ran \(label)")
             run(ops, &turn)

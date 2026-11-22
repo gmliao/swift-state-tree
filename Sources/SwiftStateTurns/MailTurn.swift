@@ -5,11 +5,13 @@
 /// a job that mail scheduled would run after that entry's input, not before it as live
 /// (plan §3.9). For follow-up work, arm one `afterWork` (its gate's result comes back as a
 /// recorded input), or `run` an effect whose result steps as an input. It has no `takeMail`
-/// either: inside a mail's step a take returns nothing.
+/// either: mail posted during a mail's step steps at the next check.
 ///
-/// What the mail's products cause is not covered: an input that a mail's flush sends can
-/// still arm `.afterBatch` work, and a replay doesn't fix that job's order relative to the
-/// next external input (#745).
+/// What the wake's segment does after the mail is not covered: a continuation job that segment
+/// schedules (a capped release, or `.afterBatch` work that a product step arms: an input the
+/// mail's flush sends, an answer to a query it asks, an abandonment its `end` causes, a
+/// released input) can replay after the next external input, because a replay doesn't fix a
+/// continuation job's order relative to that input (#745).
 ///
 /// Like `Turn`, it can't be made, copied or moved away by a handler.
 public struct MailTurn<M: TurnMachine>: ~Copyable {

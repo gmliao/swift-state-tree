@@ -161,7 +161,7 @@ struct MailReplayTests {
         #expect(run.diverged.isEmpty)
     }
 
-    @Test("13o: known gap (#745): an .afterBatch job a wake's products schedule can replay after the next input")
+    @Test("13o: known gap (#745): a continuation job a wake's segment schedules (here .afterBatch work its send arms) can replay after the next input")
     func afterBatchThroughProductsReorders() async {
         let run = await Self.liveThenReplay { a, on in
             if on {
@@ -177,7 +177,8 @@ struct MailReplayTests {
         }
         #expect(run.live == ["mail A", "armed F", "ran F", "X"])
         // Replay steps S in X's products-first segment, and F's job runs after X: replay
-        // doesn't place a continuation job relative to the next external input (#745).
+        // doesn't place a continuation job relative to the next external input (#745). A capped
+        // release the wake's segment schedules replays the same way.
         #expect(run.replayed == ["mail A", "armed F", "X", "ran F"])
         #expect(run.diverged.isEmpty)
     }
@@ -250,6 +251,9 @@ struct MailReplayTests {
         }
         #expect(run.live == ["abandoned nilr keyEnded", "mail R", "R", "parked P"])
         #expect(run.replayed == run.live)
+        // R only logs, so the order alone can't tell the boundary: its key names it, after the
+        // retire's own ordinal.
+        #expect(run.record.map(\.key) == [.before(step: 9, index: 0)])
         #expect(run.diverged.isEmpty)
     }
 
@@ -264,6 +268,10 @@ struct MailReplayTests {
         // The timer fired before R ended its key.
         #expect(run.live == ["timer T", "mail R"])
         #expect(run.replayed == run.live)
+        // The timer's work is a dispatched step, so R replays after it with or without the
+        // boundary; the boundary keeps the timer entry's count alike on both sides, and the key
+        // names it.
+        #expect(run.record.map(\.key) == [.before(step: 6, index: 0)])
         #expect(run.diverged.isEmpty)
     }
 
@@ -278,6 +286,94 @@ struct MailReplayTests {
         }
         #expect(run.live == ["armed F", "mail R", "consumed F"])
         #expect(run.replayed == run.live)
+        // `consume` takes F waiting or due, so neither the log nor the gate's outcome tells the
+        // orders apart: R's key names the boundary, after the gate's own ordinal.
+        #expect(run.record.map(\.key) == [.before(step: 5, index: 0)])
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13p: a mail posted at a withdrawn release's refusal replays after it: the caller is still refused withdrawn")
+    func mailAtAWithdrawnRelease() async {
+        let outcomes = Released()
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+            let token = WithdrawToken()
+            let p = Task { try await a.sendAndWait(.tokened("P", token), cancellation: .ignoresCancel) }
+            await a.fixture.reach("park #1")
+            token.withdraw()
+            // Ending key 1 frees the hold, and P's release is refused; M, posted at that
+            // refusal's boundary, closes the core.
+            Self.postAtBoundary(a, on, MailNote("M", then: [.close]))
+            await a.send(.script([.end(1)]))
+            outcomes.add(outcome(await boundedResult(p)))
+        }
+        #expect(run.live == ["abandoned h keyEnded", "mail M"])
+        #expect(run.replayed == run.live)
+        // Replayed ahead of the refusal, M's close would answer P closed.
+        #expect(outcomes.names == ["withdrawn", "withdrawn"])
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13q: a wake's served now lasts its whole replayed segment: a send after a later staged mail reads it too")
+    func wakeNowAcrossALaterStagedMail() async {
+        let run = await Self.liveThenReplay { a, on in
+            a.clock.set(seconds: 10)
+            if on {
+                // A's flush sends S1 and S2; S1's step posts B, which the loop's check steps
+                // between them, all in the wake's segment.
+                _ = a.post(MailNote("A", then: [.send([.readNow, .post("B")]), .send([.readNow])]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+            a.clock.set(seconds: 20)
+            await a.send(.script([.readNow]))
+        }
+        #expect(run.live == ["mail A", "now 10", "mail B", "now 10", "now 20"])
+        // Replay steps A, S1, B and S2 in X's products-first segment: S2 reads the wake's 10,
+        // and X its own 20.
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13r: a wake's mail that a previous segment's last check steps in replay serves the wake's now to its send")
+    func wakeNowInAPreviousSegment() async {
+        let run = await Self.liveThenReplay { a, on in
+            a.clock.set(seconds: 5)
+            await a.send(.script([.readNow]))
+            a.clock.set(seconds: 10)
+            if on {
+                _ = a.post(MailNote("A", then: [.send([.readNow])]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+            a.clock.set(seconds: 20)
+            await a.send(.script([.readNow]))
+        }
+        #expect(run.live == ["now 5", "mail A", "now 10", "now 20"])
+        // Replay steps A at Y's last check, in Y's segment: A's send reads the wake's 10, not
+        // Y's cached 5.
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13s: a mail posted at a cancellation's boundary replays after the withdrawal: the parked call isn't released")
+    func mailAtACancellationBoundary() async {
+        let outcomes = Released()
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+            let p = Task { try await a.sendAndWait(.parked("P"), cancellation: .cancelsCall) }
+            await a.fixture.reach("park #1")
+            // M ends key 1, which frees the hold P waits behind.
+            Self.postAtBoundary(a, on, MailNote("M", then: [.end(1), .note("M done")]))
+            p.cancel()
+            outcomes.add(outcome(await boundedResult(p)))
+            if on { await a.fixture.reach("flushed M done") }
+            _ = await a.log
+        }
+        #expect(run.live == ["mail M", "abandoned h keyEnded"])
+        // Replayed ahead of the withdrawal, M would release P, which would step and answer.
+        #expect(run.replayed == run.live)
+        #expect(outcomes.names == ["cancelled", "cancelled"])
         #expect(run.diverged.isEmpty)
     }
 

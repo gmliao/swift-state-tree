@@ -180,7 +180,7 @@ extension TurnActor {
         if !replaying, mailbox.isEmpty { return }
         let wasInSegment = core.inSegment
         core.inSegment = true
-        let stepped = replaying ? takeStaged(keepingNow: !wasInSegment) : takeMail(mailbox)
+        let stepped = replaying ? takeStaged() : takeMail(mailbox)
         core.inSegment = wasInSegment
         if stepped || !mailbox.isEmpty {
             core.rt.dirty = true
@@ -213,10 +213,11 @@ extension TurnActor {
 
     /// A replay's check: the staged mail for the next step's `before` keys, in order, each
     /// with its recorded `now`. The budget doesn't apply: the record fixed where each one steps.
-    /// `keepingNow`: the last mail's `now` stays served (`productsNow`) for the entry's
-    /// products-first segment, which the caller ends; a loop check's mail was recorded with
-    /// the entry's own `now`, so it doesn't keep it.
-    @inlinable func takeStaged(keepingNow: Bool = false) -> Bool {
+    /// The last staged mail's `now` stays served (`productsNow`) for the rest of the replay's
+    /// segment, as the live segment that stepped it cached it, until a later staged mail
+    /// overwrites it, the entry's own work starts or the segment ends. A check in the entry's
+    /// own segment recorded that segment's `now`, so serving it there changes nothing.
+    @inlinable func takeStaged() -> Bool {
         let core = self.core
         var stepped = false
         while let head = core.mailReplay?.first,
@@ -230,8 +231,6 @@ extension TurnActor {
             }
             stepped = true
         }
-        // A loop check that stepped nothing leaves the products-first segment's `now` served.
-        if stepped, !keepingNow { core.productsNow = nil }
         return stepped
     }
 
@@ -246,12 +245,23 @@ extension TurnActor {
         while let head = core.mailReplay?.first { core.diverged(.leftover(head.key)) }
     }
 
+    /// A call's cancellation: an entry with state to change, as a deadline's is. With a
+    /// mailbox it takes the mail first and then an ordinal, so a mail posted between the two
+    /// replays after the withdrawal; a replay replays each cancellation at its place (plan §3.9).
     @inlinable func callerCancelled(_ id: InputID) {
         let core = self.core
-        guard let waiter = core.waiters.removeValue(forKey: id) else { return }
+        if TurnCore<M>.usesMailbox {
+            beginEntry()
+            entryBoundary()
+        }
+        guard let waiter = core.waiters.removeValue(forKey: id) else {
+            if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
+            return
+        }
         _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
         waiter.resume(throwing: CancellationError())
+        if TurnCore<M>.usesMailbox, core.rt.dirty { runSegment() }
     }
 
     /// `readControl`: what `sendAndWait(.cancelsCall)` read from `inputPolicy(for:)` before it
@@ -600,6 +610,9 @@ extension TurnActor {
                 budget -= 1
                 if let parked = core.rt.popParked(key) {
                     if let token = parked.token, token.isWithdrawn {
+                        // A boundary, as a refused admission is: a mail taken at the next check
+                        // can't replay ahead of the refusal (plan §3.9).
+                        entryBoundary()
                         refuse(parked.caller, .withdrawn)
                     } else {
                         core.step(parked.input, caller: parked.caller)
@@ -638,6 +651,8 @@ extension TurnActor {
         // Checked here, not in the call: an empty check inline costs a load, a call per segment
         // costs the whole frame.
         if !core.quiescenceWaiters.isEmpty { settleQuiescence() }
+        // A replay's served `now` ends with the segment it stands for.
+        if TurnCore<M>.usesMailbox { core.productsNow = nil }
         core.rt.dirty = false
     }
 

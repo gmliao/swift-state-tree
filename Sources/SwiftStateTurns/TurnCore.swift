@@ -221,12 +221,6 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var mailboxWakeScheduled = false
-    /// A mail's own step is running: its `Turn.takeMail()` returns nothing, and mail
-    /// posted meanwhile step at the next check.
-    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
-    @exclusivity(unchecked)
-    #endif
-    @usableFromInline var inMailStep = false
     /// Tests: called on the actor at each mailbox check, after it reads its watermark and before
     /// its first removal, so a test can post there. Observe-only, apart from `post`.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
@@ -282,10 +276,10 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var mailReplay: MailReplayStage<M.Mail>?
-    /// Replay: the recorded `now` of the staged mail an entry's take stepped, served to
-    /// those mail's steps and to the whole products-first segment after them, as live
-    /// served the wake's `now` to the wake's segment. It doesn't set `cachedNow`, so the
-    /// entry's own work reads its own `now` after it.
+    /// Replay: the recorded `now` of the last staged mail a check stepped, served to its step
+    /// and to the rest of the replay's segment, as live served the wake's `now` to the wake's
+    /// segment, until a later staged mail overwrites it, the entry's own work starts or the
+    /// segment ends. It doesn't set `cachedNow`.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
@@ -512,11 +506,7 @@ public final class TurnCore<M: TurnMachine> {
 
     @inlinable func stepMail(_ mail: M.Mail) {
         enterStep(nil)
-        inMailStep = true
-        defer {
-            inMailStep = false
-            leaveStep()
-        }
+        defer { leaveStep() }
         var turn = MailTurn<M>(core: self)
         machine.handleMail(mail, &turn)
     }
