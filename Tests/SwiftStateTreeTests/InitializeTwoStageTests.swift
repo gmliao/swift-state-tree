@@ -115,18 +115,39 @@ private func makeReplayDefinition(voidForm: Bool = false) -> LandDefinition<Room
 
 // MARK: - Helpers
 
-/// Counts `onLandDestroyed` and the events the keeper sends in turn.
+/// Notes `onLandDestroyed` (and wakes `waitUntilDestroyed()`), and counts the events the keeper
+/// sends in turn.
 private final class InitStageTransport: LandKeeperTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var destroyedFlag = false
+    private var destroyWaiters: [CheckedContinuation<Void, Never>] = []
     private var sent = 0
     var destroyed: Bool { lock.withLock { destroyedFlag } }
     var eventsSent: Int { lock.withLock { sent } }
 
+    /// Returns once the keeper has called `onLandDestroyed`.
+    func waitUntilDestroyed() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if destroyedFlag { return true }
+                destroyWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { lock.withLock { sent += 1 } }
     func syncNowFromTransport() async {}
     func syncBroadcastOnlyFromTransport() async {}
-    func onLandDestroyed() async { lock.withLock { destroyedFlag = true } }
+    func onLandDestroyed() async {
+        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+            destroyedFlag = true
+            defer { destroyWaiters = [] }
+            return destroyWaiters
+        }
+        waiters.forEach { $0.resume() }
+    }
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
@@ -197,7 +218,7 @@ private func expectRefused<E: Error & Equatable>(
         #expect(error.underlying as? E == expected, "the refusal is the error", sourceLocation: sourceLocation)
     }
     _ = try await withinDeadline("the land is torn down", sourceLocation: sourceLocation) { () async -> Void in
-        while !transport.destroyed { await Task.yield() }
+        await transport.waitUntilDestroyed()
     }
     let state = await keeper.currentState()
     #expect(state.maxPlayers == 0 && state.log == [], "nothing was written, not by a destroy handler either", sourceLocation: sourceLocation)
