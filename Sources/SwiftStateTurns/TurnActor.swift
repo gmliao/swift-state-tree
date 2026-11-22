@@ -187,29 +187,120 @@ extension TurnActor {
         runSegment()
     }
 
-    /// A deadline's task woke. It abandons the request only if that request is still open.
-    @inlinable func deadlineFired(_ id: RequestID, incarnation: UInt64) {
+    /// The core's timer woke for `target` (#621 item 2, Notes/plans/2026-11-21-turns-shared-
+    /// deadline-timer.md §3.4). It steps the entries due at `target`, each as its own entry and
+    /// batch, in (instant, arm order), up to `maxFiresPerWake`, and returns the instant to sleep
+    /// until next; nil ends the sleeper (nothing is armed, or the wake is foreign or superseded).
+    /// The wake itself changes no machine state: only a live entry begins an entry.
+    @inlinable func timerWoke(_ target: TurnInstant, generation: UInt64, incarnation: UInt64) -> TurnInstant? {
         let core = self.core
         guard core.incarnation == incarnation else {
             core.counters.foreignCompletions += 1
             core.onDiagnostic?(.foreignCompletion)
-            return
+            return nil
         }
-        core.deadlineTasks.removeValue(forKey: id)
-        if core.rt.open[id] == nil, core.rt.gateDeadlineLive(id) {
+        // A sleeper that a re-arm, `endAll` or the core's deinit replaced: the current one owns
+        // every entry.
+        guard core.sleeperGeneration == generation else {
+            core.supersededWakesForTesting &+= 1
+            core.onTimerWakeForTesting?(true)
+            return nil
+        }
+        core.timerWakesForTesting &+= 1
+        core.onTimerWakeForTesting?(false)
+        core.sleeperAwake = true
+        // The due list is taken first: an entry a step arms during this wake isn't due in it,
+        // even at or before `target`.
+        var due: [DeadlineEntry] = []
+        while due.count < TurnCore<M>.maxFiresPerWake, let head = core.deadlines.first, head.instant <= target.nanoseconds {
+            due.append(head)
+            _ = core.deadlines.popFirst()
+        }
+        for entry in due {
+            // `endAll` in an earlier entry's step stopped the timer: the rest is dropped.
+            if core.sleeperGeneration != generation { break }
+            fireDeadline(entry)
+        }
+        core.sleeperAwake = false
+        if core.sleeperGeneration != generation { return nil }
+        // Stale heads are dropped silently, as a compaction drops them.
+        while let head = core.deadlines.first, !core.deadlineIsLive(head) {
+            _ = core.deadlines.popFirst()
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+        }
+        guard let head = core.deadlines.first else {
+            core.sleeper = nil
+            core.sleeperTarget = nil
+            return nil
+        }
+        // At or before `target` (a capped wake's rest, or an entry armed during it): the sleep
+        // returns at once, and other entries queued on the actor run before the next wake.
+        let next = TurnInstant(nanoseconds: head.instant)
+        core.sleeperTarget = next
+        return next
+    }
+
+    /// One due entry of a wake. The ticket is checked here, at its turn, before the entry begins:
+    /// a stale entry (its request or gate closed, possibly by an earlier entry of this wake) only
+    /// reports `.staleDeadline`.
+    @inlinable func fireDeadline(_ entry: DeadlineEntry) {
+        let core = self.core
+        let id = RequestID(raw: entry.ticket)
+        if core.rt.open[id] != nil {
+            beginEntry()
+            core.rt.closeRequest(id, .deadline)
+            // The close counted this entry stale, but it has left the heap already.
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+            runSegment()
+        } else if TurnCore<M>.usesFollowUps, core.rt.gateDeadlineLive(id) {
             // A follow-up's gate deadline: the follow-up closes unrun.
             beginEntry()
             core.rt.closeFollowUp(id, .deadline)
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
             runSegment()
-            return
-        }
-        guard core.rt.open[id] != nil else {
+        } else {
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
             core.onDiagnostic?(.staleDeadline)
-            return
         }
-        beginEntry()
-        core.rt.closeRequest(id, .deadline)
-        runSegment()
+    }
+
+    /// Arms a deadline entry on the core's one timer, after the step that made it was flushed.
+    /// A sleeper is started when there is none, or re-armed when the entry is due before the
+    /// instant it sleeps until and no wake is being serviced (that wake returns the next target).
+    @inlinable func armDeadline(_ instant: TurnInstant, ticket: UInt64, isTimer: Bool) {
+        let core = self.core
+        core.compactDeadlinesIfStale()
+        core.nextArm &+= 1
+        core.deadlines.push(DeadlineEntry(instant: instant.nanoseconds, order: core.nextArm, ticket: ticket, isTimer: isTimer))
+        if core.sleeper == nil {
+            startSleeper(until: instant)
+        } else if !core.sleeperAwake, let target = core.sleeperTarget, instant < target {
+            core.sleeper?.cancel()
+            startSleeper(until: instant)
+        }
+    }
+
+    /// Starts the core's one sleeping task. It touches no core state: it sleeps, hops to
+    /// `timerWoke` and sleeps until the instant that returns. Held weakly between hops, so it
+    /// doesn't keep a released actor alive. Woken early (cancelled) or on time, it still hops,
+    /// and the actor drops a superseded wake by its generation.
+    @inlinable func startSleeper(until instant: TurnInstant) {
+        let core = self.core
+        core.sleeperGeneration &+= 1
+        core.sleeperTarget = instant
+        core.sleeperStartsForTesting &+= 1
+        let generation = core.sleeperGeneration
+        let incarnation = core.incarnation
+        let clock = core.clock
+        core.sleeper = Task { [weak self] in
+            var target = instant
+            while true {
+                await clock.sleep(until: target)
+                guard let actor = self else { return }
+                guard let next = await actor.timerWoke(target, generation: generation, incarnation: incarnation) else { return }
+                target = next
+            }
+        }
     }
 
     /// A timer's task woke. It fires only if it is still its key's current timer.
@@ -275,7 +366,7 @@ extension TurnActor {
             core.rt.followUps[name]?.waiting = false
             if core.rt.followUps[name]?.hasDeadline == true {
                 core.rt.followUps[name]?.hasDeadline = false
-                core.rt.deadlinesToCancel = true
+                core.rt.staleDeadlines &+= 1
             }
             core.followUpsToStep.push(id)
         } else {
@@ -464,12 +555,6 @@ extension TurnActor {
                 }
                 progressed = true
             }
-            if core.rt.deadlinesToCancel {
-                core.rt.deadlinesToCancel = false
-                for id in Array(core.deadlineTasks.keys) where core.rt.open[id] == nil && !(TurnCore<M>.usesFollowUps && core.rt.gateDeadlineLive(id)) {
-                    core.deadlineTasks.removeValue(forKey: id)?.cancel()
-                }
-            }
             if core.rt.timersToCancel {
                 core.rt.timersToCancel = false
                 for key in Array(core.timerTasks.keys) {
@@ -520,12 +605,7 @@ extension TurnActor {
             self.complete(id, input, incarnation: incarnation)
         }
         if let id, let instant = pending.deadline, core.rt.open[id] != nil {
-            let clock = core.clock
-            core.deadlineTasks[id] = Task { [weak self] in
-                // Woken early (cancelled) or on time, the core re-checks the request.
-                await clock.sleep(until: instant)
-                await self?.deadlineFired(id, incarnation: incarnation)
-            }
+            armDeadline(instant, ticket: id.raw, isTimer: false)
         }
     }
 
@@ -543,12 +623,7 @@ extension TurnActor {
             self.gateReturned(id, input, incarnation: incarnation)
         }
         if let instant = pending.deadline {
-            let clock = core.clock
-            core.deadlineTasks[id] = Task { [weak self] in
-                // Woken early (cancelled) or on time, the core re-checks the follow-up.
-                await clock.sleep(until: instant)
-                await self?.deadlineFired(id, incarnation: incarnation)
-            }
+            armDeadline(instant, ticket: id.raw, isTimer: false)
         }
     }
 

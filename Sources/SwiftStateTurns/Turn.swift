@@ -95,6 +95,8 @@ public struct Turn<M: TurnMachine>: ~Copyable {
             core.rt.timersToCancel = true
         }
         core.rt.timersToArm.removeAll()
+        // No entry can be live again: the core's timer stops here, in this step (plan §3.7).
+        core.stopDeadlines()
         core.rt.ended = true
         core.rt.withdraw { $0.scope != nil || $0.pinned }
         close()

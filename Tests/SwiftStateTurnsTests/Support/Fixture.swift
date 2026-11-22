@@ -145,15 +145,32 @@ final class Fixture: @unchecked Sendable {
     }
 }
 
-/// A clock the test drives by hand. `now` starts at zero, is set by the test and counts its
-/// reads. A sleep until an instant of N whole seconds waits at the gate "deadline N" (deadlines
-/// and timers alike), and returns early when its task is cancelled. When it returns it opens
-/// "woke deadline N" or "cancelled deadline N", so a check can wait for either.
+/// A clock the test drives by hand, with monotonic time (after `swift-clocks`' `TestClock`).
+/// `now` starts at zero, is moved forward by the test and counts its reads. Sleeps wait for the
+/// release horizon: `release(through:)` raises it and wakes every sleep until an instant at or
+/// before it, in instant order, and a later sleep until a released instant returns at once. A
+/// sleep returns early when its task is cancelled. When it returns it opens "woke deadline N" or
+/// "cancelled deadline N" (N whole seconds, else "Nns"), so a check can wait for either.
+/// `holdAfterWake` makes a woken sleep wait at "resume deadline N" before it returns. A sleep
+/// that starts waiting for a release opens "sleeping deadline N #k" (k counts them).
 final class TestClock: TurnClock, @unchecked Sendable {
+    private struct Sleep {
+        let instant: Int64
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     let fixture: Fixture
     private let lock = NSLock()
     private var current = TurnInstant(nanoseconds: 0)
     private var readCount = 0
+    /// Every sleep until an instant at or before it has returned. Nothing is released at first.
+    private var horizon = Int64.min
+    private var pending: [UInt64: Sleep] = [:]
+    private var cancelledEarly: Set<UInt64> = []
+    private var nextSleep: UInt64 = 0
+    private var sleepCount = 0
+    private var inFlight = 0
+    private var held: Set<Int64> = []
 
     init(fixture: Fixture) {
         self.fixture = fixture
@@ -166,13 +183,67 @@ final class TestClock: TurnClock, @unchecked Sendable {
         }
     }
 
+    /// `now`, without counting a read: for a harness that computes instants.
+    var peek: TurnInstant {
+        lock.withLock { current }
+    }
+
     /// How many times `now` was read.
     var reads: Int {
         lock.withLock { readCount }
     }
 
+    /// How many sleeps started, and how many haven't returned.
+    var sleeps: Int { lock.withLock { sleepCount } }
+    var sleepsInFlight: Int { lock.withLock { inFlight } }
+
+    /// The instants the sleeps still waiting for a release sleep until, in order.
+    var sleepingUntil: [TurnInstant] {
+        lock.withLock { pending.values.map { TurnInstant(nanoseconds: $0.instant) }.sorted() }
+    }
+
+    /// Moves `now` only (a fire that runs late). Never backwards.
     func set(seconds: Int64) {
-        lock.withLock { current = .seconds(seconds) }
+        set(.seconds(seconds))
+    }
+
+    func set(_ instant: TurnInstant) {
+        lock.withLock {
+            precondition(instant >= current, "TestClock: now moved back from \(current.nanoseconds) ns to \(instant.nanoseconds) ns")
+            current = instant
+        }
+    }
+
+    /// Releases every sleep until `instant` or earlier, in instant order (then start order).
+    func release(through instant: TurnInstant) {
+        let woken = lock.withLock { () -> [CheckedContinuation<Bool, Never>] in
+            horizon = max(horizon, instant.nanoseconds)
+            let due = pending.filter { $0.value.instant <= horizon }
+                .sorted { ($0.value.instant, $0.key) < ($1.value.instant, $1.key) }
+            for (id, _) in due { pending.removeValue(forKey: id) }
+            return due.map(\.value.continuation)
+        }
+        for continuation in woken { continuation.resume(returning: true) }
+    }
+
+    func release(through seconds: Int64) {
+        release(through: .seconds(seconds))
+    }
+
+    /// `set` plus `release(through:)`.
+    func advance(to instant: TurnInstant) {
+        set(instant)
+        release(through: instant)
+    }
+
+    func advance(to seconds: Int64) {
+        advance(to: .seconds(seconds))
+    }
+
+    /// The sleep that wakes for `seconds` waits at "resume deadline N" (cancellable) before it
+    /// returns, after opening "woke deadline N".
+    func holdAfterWake(_ seconds: Int64) {
+        lock.withLock { _ = held.insert(TurnInstant.seconds(seconds).nanoseconds) }
     }
 
     static func gate(for instant: TurnInstant) -> String {
@@ -183,8 +254,39 @@ final class TestClock: TurnClock, @unchecked Sendable {
 
     func sleep(until instant: TurnInstant) async {
         let gate = Self.gate(for: instant)
-        let woke = await fixture.waitUnlessCancelled(gate)
+        let id = lock.withLock { () -> UInt64 in
+            nextSleep += 1
+            sleepCount += 1
+            inFlight += 1
+            return nextSleep
+        }
+        let woke = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let immediate = lock.withLock { () -> Bool? in
+                    if instant.nanoseconds <= horizon { return true }
+                    if cancelledEarly.remove(id) != nil { return false }
+                    pending[id] = Sleep(instant: instant.nanoseconds, continuation: continuation)
+                    return nil
+                }
+                if let immediate {
+                    continuation.resume(returning: immediate)
+                } else {
+                    fixture.openCounted("sleeping \(gate)")
+                }
+            }
+        } onCancel: {
+            let sleep = lock.withLock { () -> Sleep? in
+                if let sleep = pending.removeValue(forKey: id) { return sleep }
+                cancelledEarly.insert(id)
+                return nil
+            }
+            sleep?.continuation.resume(returning: false)
+        }
         fixture.open(woke ? "woke \(gate)" : "cancelled \(gate)")
+        if woke, lock.withLock({ held.contains(instant.nanoseconds) }) {
+            _ = await fixture.waitUnlessCancelled("resume \(gate)")
+        }
+        lock.withLock { inFlight -= 1 }
     }
 }
 

@@ -112,8 +112,14 @@ actor FollowUpActor: TurnActor {
         send(.script([.consume(slot, key: key)]))
     }
 
-    func deadlineTaskCount() -> Int {
-        core.deadlineTasksForTesting
+    /// Live entries in the core's deadline heap.
+    func liveDeadlines() -> Int {
+        core.liveDeadlinesForTesting
+    }
+
+    /// Entries in the core's deadline heap, stale ones included.
+    func deadlineEntries() -> Int {
+        core.deadlineEntriesForTesting
     }
 }
 

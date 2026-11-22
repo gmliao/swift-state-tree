@@ -158,9 +158,8 @@ struct ConceptsTests {
             }
             // docs:end
 
-            // The idle timer: the test clock moves to the deadline, and the timer's sleep returns.
-            clock.set(seconds: 60)
-            f.open("deadline 60")
+            // The idle timer: the test clock moves to the deadline, and the core's timer wakes.
+            clock.advance(to: 60)
             for _ in 0 ..< 10_000 where await room.query(.seatCount) != 0 {
                 await Task.yield() // wall-clock: not time: documented code carries no test hooks; yields until the timer has run
             }

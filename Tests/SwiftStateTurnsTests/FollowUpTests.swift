@@ -112,8 +112,7 @@ struct FollowUpTests {
         #expect(await a.snapshot().log == ["armed A", "gate result a", "ran A"])
 
         await a.send(.script([.arm("B", .work(gate: "never", deadlineSeconds: 5))]))
-        a.clock.set(seconds: 5)
-        f.open("deadline 5")
+        a.clock.advance(to: 5)
         #expect(await bounded { await a.waitForQuiescence() })
         #expect(await a.snapshot().log.suffix(2) == ["armed B", "abandoned B deadline"])
     }
@@ -285,14 +284,12 @@ struct FollowUpTests {
         await a.send(.script([.start(1), .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
         await f.reach("at gate a")
         await a.send(.script([.consume()]))
-        a.clock.set(seconds: 5)
-        f.open("deadline 5")
+        a.clock.advance(to: 5)
         await f.reach("stale deadline #1")
         // Deadline first: the consume then finds nothing. The clock is at 5 s, so this deadline is at 10 s.
         await a.send(.script([.arm("B", .work(gate: "b", deadlineSeconds: 5))]))
         await f.reach("at gate b")
-        a.clock.set(seconds: 10)
-        f.open("deadline 10")
+        a.clock.advance(to: 10)
         #expect(await bounded { await a.waitForQuiescence() })
         await a.send(.script([.consume()]))
         f.open("gate a")
@@ -462,50 +459,59 @@ struct FollowUpTests {
         #expect(f.segments.allSatisfy { $0 <= 1 })
     }
 
-    @Test("28: a gate's return cancels its deadline and keeps a live request's deadline, which still fires")
-    func gateReturnCancelsItsDeadline() async {
+    @Test("28: a gate's return invalidates its deadline and keeps a live request's deadline, which still fires")
+    func gateReturnInvalidatesItsDeadline() async {
         let f = Fixture()
         let a = FollowUpActor(fixture: f)
         await a.send(.script([.start(1), .hold(gate: "h", deadlineSeconds: 7), .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
         await f.reach("at gate a")
         f.open("gate a")
-        await f.reach("cancelled deadline 5")
         #expect(await bounded { await a.waitForQuiescence() })
+        // A's entry is reached at 5 as stale; no sleep was cancelled.
+        a.clock.release(through: 5)
+        await f.reach("stale deadline #1")
+        #expect(!f.isOpen("cancelled deadline 5"))
         #expect(!f.isOpen("cancelled deadline 7"))
-        a.clock.set(seconds: 7)
-        f.open("deadline 7")
+        a.clock.advance(to: 7)
         await f.reach("woke deadline 7")
         #expect(await bounded { await a.waitForQuiescence(.requests) })
         f.open("gate h")
         #expect(await a.snapshot().log == ["armed A", "ran A"])
     }
 
-    @Test("29: A's obsolete deadline leaves B pending in the same slot; a later sweep keeps B's live gate deadline")
+    @Test("29: A's obsolete deadline leaves B pending in the same slot; a later invalidation keeps B's live gate deadline")
     func obsoleteDeadlineLeavesSuccessor() async {
         let f = Fixture()
         let a = FollowUpActor(fixture: f)
         await a.send(.script([.start(1), .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
         await f.reach("at gate a")
         await a.send(.script([.consume(), .arm("B", .work(gate: "b", deadlineSeconds: 9))]))
-        await f.reach("cancelled deadline 5")
-        await f.reach("stale deadline #1")
         #expect(await a.pendingWork() == 1)
         await f.reach("at gate b")
-        // B's deadline task now exists. C, in the other slot, is consumed in a step of its own,
-        // so that step's sweep runs with B's gate deadline live: it cancels C's and keeps B's.
+        // C, in the other slot, is consumed in a step of its own: that invalidates C's entry
+        // and keeps B's live one.
         await a.send(.script([.arm("C", .slot(.b), .work(gate: "c", deadlineSeconds: 11))]))
         await f.reach("at gate c")
-        #expect(await a.deadlineTaskCount() == 2)
+        #expect(await a.liveDeadlines() == 2)
         await a.send(.script([.consume(.b)]))
-        #expect(await a.deadlineTaskCount() == 1)
-        await f.reach("cancelled deadline 11")
-        await f.reach("stale deadline #2")
+        #expect(await a.liveDeadlines() == 1)
+        // A's entry is reached at 5 as stale; B's, still live, is the next one slept for.
+        a.clock.release(through: 5)
+        await f.reach("stale deadline #1")
         f.open("gate b")
         #expect(await bounded { await a.waitForQuiescence() })
+        // B's gate returned, so its entry is stale too: reached at 9. C's, then at the head, is
+        // dropped without a report.
+        a.clock.release(through: 11)
+        await f.reach("stale deadline #2")
         f.open("gate a")
         f.open("gate c")
         await f.reach("stale follow-up #2")
         #expect(await a.snapshot().log == ["armed A", "consumed A", "armed B", "armed C", "consumed C", "ran B"])
+        #expect(f.count(of: "stale deadline") == 2)
+        #expect(await a.deadlineEntries() == 0)
+        #expect(!f.isOpen("cancelled deadline 5"))
+        #expect(!f.isOpen("cancelled deadline 11"))
     }
 
     @Test("34: a foreign gate return and a foreign gate deadline are rejected after the core is replaced")
@@ -514,8 +520,9 @@ struct FollowUpTests {
         let a = ReplaceableCoreActor(fixture: f)
         await a.send(.gatedFollowUp(job: 1, gate: "g", deadline: .seconds(5)))
         await a.replaceCore()
-        // The old core's deadline wakes first, then its gate returns (with a non-nil result).
-        f.open("deadline 5")
+        // The old core's deinit cancels its timer, whose wake is foreign; then its gate returns
+        // (with a non-nil result).
+        await f.reach("cancelled deadline 5")
         await f.reach("foreign")
         f.open("g")
         await f.reach("foreign #2")
@@ -584,8 +591,7 @@ struct FollowUpTests {
         a.clock.set(seconds: 3)
         await a.send(.script([.start(1), .readNow, .arm("A", .work(gate: "a", deadlineSeconds: 5))]))
         #expect(a.clock.reads == 1)
-        a.clock.set(seconds: 8)
-        f.open("deadline 8")
+        a.clock.advance(to: 8)
         #expect(await bounded { await a.waitForQuiescence() })
         #expect(await a.snapshot().log == ["now", "armed A", "abandoned A deadline"])
         f.open("gate a")

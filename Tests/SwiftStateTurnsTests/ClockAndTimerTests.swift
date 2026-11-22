@@ -2,8 +2,8 @@ import SwiftStateTurns
 import Testing
 
 /// Timers, deadlines and the clock, on a test clock the checks drive by hand. A sleep until N
-/// seconds waits at the gate "deadline N" and, when it returns, opens "woke deadline N" or
-/// "cancelled deadline N".
+/// seconds returns once the check releases the clock through N, and then opens "woke deadline N"
+/// (or "cancelled deadline N" when its task was cancelled).
 @Suite("Turn core: clock and timers", .timeLimit(.minutes(1)))
 struct ClockAndTimerTests {
     @Test("26: a timer fires once at its instant with that instant in its input; a new one replaces it; ending the key drops a fire on its way; one clock read per batch")
@@ -14,8 +14,7 @@ struct ClockAndTimerTests {
         // Fires once, at its instant, carrying it. The arming step reads `now` twice: one read.
         await a.send(.armIn(job: 1, after: .seconds(5)))
         let readsAfterArm = a.clock.reads
-        a.clock.set(seconds: 5)
-        f.open("deadline 5")
+        a.clock.advance(to: 5)
         await a.waitForLog(2)
         await f.reach("woke deadline 5")
 
@@ -23,15 +22,14 @@ struct ClockAndTimerTests {
         await a.send(.arm(job: 2, at: .seconds(6)))
         await a.send(.arm(job: 2, at: .seconds(7)))
         await f.reach("cancelled deadline 6")
-        f.open("deadline 6")
-        f.open("deadline 7")
+        a.clock.release(through: 7)
         await a.waitForLog(3)
 
         // Ending the key drops a fire that has already woken: the wake and the end happen in
-        // one batch (the flush of `.emit(3)` opens the gate, then sends the end), so the
+        // one batch (the flush of `.emit(3)` releases the clock, then sends the end), so the
         // timer's task re-enters the actor only after the end.
         await a.send(.arm(job: 3, at: .seconds(8)))
-        await a.onOutput(3, open: "deadline 8", thenSend: .endJob(3))
+        await a.onOutput(3, release: 8, thenSend: .endJob(3))
         await a.send(.emit(3))
         await f.reach("woke deadline 8")
         // The woken task's trip back into the actor is ordered before the next arm: the drop is
@@ -40,7 +38,7 @@ struct ClockAndTimerTests {
 
         // A later timer still fires.
         await a.send(.arm(job: 4, at: .seconds(9)))
-        f.open("deadline 9")
+        a.clock.release(through: 9)
         await a.waitForLog(4)
         let s = await a.snapshot()
 
@@ -59,13 +57,11 @@ struct ClockAndTimerTests {
         await a.send(.startPeriodic(job: 1, periodSeconds: 2))
         // The fire due at 2 runs at 7: the fires due at 4 and 6 were missed.
         a.clock.set(seconds: 7)
-        f.open("deadline 2")
+        a.clock.release(through: 2)
         await a.waitForLog(1)
-        // Nothing sleeps until the missed instants: opening them fires nothing.
-        f.open("deadline 4")
-        f.open("deadline 6")
-        a.clock.set(seconds: 8)
-        f.open("deadline 8")
+        // Nothing sleeps until the missed instants: releasing them fires nothing.
+        a.clock.release(through: 6)
+        a.clock.advance(to: 8)
         await a.waitForLog(2)
         await a.send(.endJob(1))
         await f.reach("cancelled deadline 10")
@@ -75,43 +71,43 @@ struct ClockAndTimerTests {
         #expect(!f.isOpen("woke deadline 6"))
     }
 
-    @Test("29: wake re-check: a deadline woken after its request completed abandons nothing; a replaced timer fires nothing; a cancelled sleep submits nothing")
+    @Test("29: wake re-check: a deadline woken after its request completed abandons nothing; a replaced timer fires nothing; a cancelled request's deadline submits nothing")
     func wakeRecheck() async {
         let f = Fixture()
         let a = DemoActor(fixture: f)
 
-        // The completion's step emits 5; its flush opens the deadline's gate. The deadline's
-        // task wakes, but re-enters the actor only after the request has closed.
+        // The completion's step emits 5; its flush releases the clock through the deadline. The
+        // core's timer wakes, but re-enters the actor only after the request has closed.
         await a.send(.replyAfter(job: 5, gate: "c5", deadline: .seconds(5)))
-        await a.onOutput(5, open: "deadline 5", thenSend: nil)
+        await a.onOutput(5, release: 5, thenSend: nil)
         f.open("c5")
         await f.reach("woke deadline 5")
         await f.reach("stale deadline #1")
         await a.waitForLog(1)
 
-        // The step that replaces the timer also opens the old timer's gate.
+        // The step that replaces the timer also releases the clock through the old timer.
         await a.send(.arm(job: 6, at: .seconds(6)))
-        await a.onOutput(6, open: "deadline 6", thenSend: .arm(job: 6, at: .seconds(7)))
+        await a.onOutput(6, release: 6, thenSend: .arm(job: 6, at: .seconds(7)))
         await a.send(.emit(6))
         await f.reach("woke deadline 6")
         await f.reach("stale timer #1")
-        f.open("deadline 7")
+        a.clock.release(through: 7)
         await a.waitForLog(2)
 
-        // A request cancelled before its deadline: the deadline's sleep is cancelled, and
-        // opening its gate afterwards does nothing.
+        // A request cancelled before its deadline: its entry stays in the core's timer, and is
+        // reached at 9 as stale. No sleep is cancelled.
         await a.send(.replyAfter(job: 8, gate: "c8", deadline: .seconds(9)))
         await a.send(.cancelJob(8))
-        await f.reach("cancelled deadline 9")
+        a.clock.release(through: 9)
         await f.reach("stale deadline #2")
-        f.open("deadline 9")
+        #expect(!f.isOpen("cancelled deadline 9"))
         f.open("c8")
         await a.waitForLog(4)
         let s = await a.snapshot()
 
         #expect(s.log == ["finished 5", "tick 6 at 7", "abandoned job 8 cancelled", "stale 8"])
         #expect(s.stats.openRequests == 0)
-        // Each woken task re-checked in the core and did nothing: two deadlines, one timer.
+        // Each wake re-checked in the core and did nothing: two deadlines, one timer.
         #expect(f.count(of: "stale deadline") == 2)
         #expect(f.count(of: "stale timer") == 1)
     }
@@ -125,18 +121,18 @@ struct ClockAndTimerTests {
         await a.send(.nowAndDeadline(job: 1, deadline: .seconds(5)))
         let readsAfterFirst = a.clock.reads
         // The deadline came from that one read: 2 + 5.
-        f.open("deadline 7")
+        a.clock.release(through: 7)
         await a.waitForLog(2)
         // The next entry reads the clock again, once.
-        a.clock.set(seconds: 3)
+        a.clock.set(seconds: 7)
         await a.send(.nowAndDeadline(job: 2, deadline: .seconds(1)))
         let readsAfterSecond = a.clock.reads
-        f.open("deadline 4")
+        a.clock.release(through: 8)
         await a.waitForLog(4)
         let s = await a.snapshot()
         #expect(readsAfterFirst == 1)
         #expect(readsAfterSecond == 2)
         #expect(f.count(of: "clock read") == 2)
-        #expect(s.log == ["now 2", "abandoned job 1 deadline", "now 3", "abandoned job 2 deadline"])
+        #expect(s.log == ["now 2", "abandoned job 1 deadline", "now 7", "abandoned job 2 deadline"])
     }
 }

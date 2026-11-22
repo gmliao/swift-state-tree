@@ -45,7 +45,8 @@ struct RequestRecord<Key: Hashable & Sendable> {
     @usableFromInline var key: Key
     @usableFromInline var hold: Key?
     @usableFromInline var untilRetire: Bool
-    /// A deadline task was armed for it.
+    /// It was made with a deadline: an entry for it is (or is about to be) in the core's deadline
+    /// heap.
     @usableFromInline var hasDeadline: Bool
 
     @inlinable init(key: Key, hold: Key?, untilRetire: Bool, hasDeadline: Bool) {
@@ -146,8 +147,10 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var retiring: [RequestID: M.Key] = [:]
     /// Hold key → how many open requests (or workers that have not returned) own it.
     @usableFromInline var held: [M.Key: Int] = [:]
-    /// Set when a request with a deadline task closed: the driver cancels the closed ones' tasks.
-    @usableFromInline var deadlinesToCancel = false
+    /// Deadline heap entries invalidated (their request or gate closed) and not yet removed. Approximate
+    /// (a request closed in the step that made it was never inserted): it only decides when the heap
+    /// is compacted (`TurnCore.compactDeadlinesIfStale`).
+    @usableFromInline var staleDeadlines = 0
     // Timers: the current one per key, by generation.
     @usableFromInline var nextTimer: UInt64 = 0
     @usableFromInline var timers: [M.Key: UInt64] = [:]
@@ -193,7 +196,7 @@ struct Runtime<M: TurnMachine> {
     /// Removes a pending follow-up without stepping it, and returns it.
     @inlinable mutating func removeFollowUp(_ id: RequestID) -> FollowUpRecord<M>? {
         guard let name = followUpIDs.removeValue(forKey: id), let record = followUps.removeValue(forKey: name) else { return nil }
-        if record.hasDeadline { deadlinesToCancel = true }
+        if record.hasDeadline { staleDeadlines &+= 1 }
         dirty = true
         return record
     }
@@ -211,7 +214,7 @@ struct Runtime<M: TurnMachine> {
         for id in ids { closeFollowUp(id, .keyEnded) }
     }
 
-    /// A follow-up whose gate hasn't returned, with a deadline: its deadline task is live.
+    /// A follow-up whose gate hasn't returned, with a deadline: its deadline entry is live.
     @inlinable func gateDeadlineLive(_ id: RequestID) -> Bool {
         guard let name = followUpIDs[id], let record = followUps[name] else { return false }
         return record.waiting && record.hasDeadline
@@ -248,7 +251,7 @@ struct Runtime<M: TurnMachine> {
     /// Closes a request. `why` nil: its completion arrived.
     @inlinable mutating func closeRequest(_ id: RequestID, _ why: Abandonment?) {
         guard let record = open.removeValue(forKey: id) else { return }
-        if record.hasDeadline { deadlinesToCancel = true }
+        if record.hasDeadline { staleDeadlines &+= 1 }
         if let hold = record.hold {
             if record.untilRetire, why != nil {
                 retiring[id] = hold

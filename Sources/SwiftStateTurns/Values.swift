@@ -209,5 +209,8 @@ public protocol TurnClock: Sendable {
     var now: TurnInstant { get }
     /// Returns at `instant`, or earlier when its task is cancelled. A caller that wakes re-checks
     /// whatever it slept for: the core does, before it abandons a request or fires a timer.
+    /// Returns no earlier than `instant` unless its task is cancelled: the core fires what is due
+    /// at the instant it slept until without reading the clock again. A core has at most one
+    /// sleep in flight, plus a superseded one finishing.
     func sleep(until instant: TurnInstant) async
 }
