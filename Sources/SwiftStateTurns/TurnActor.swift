@@ -170,10 +170,11 @@ extension TurnActor {
         let core = self.core
         core.onMailboxWakeForTesting?()
         if remainder { core.mailboxWakeScheduled = false }
-        // A replay's mail comes from its record only, never from a wake: a replayed `flush` that
-        // posts physical mail doesn't make a scheduler-placed entry.
-        if core.mailReplay != nil { return }
         if let mailbox = core.mailbox, mailbox.isEmpty { core.counters.emptyMailboxWakes += 1 }
+        // A replay's mail comes from its record only, never from a wake: a replayed `flush` that
+        // posts physical mail doesn't make a scheduler-placed entry. (Here, after the counter:
+        // returning before it costs the function its specialization on mailbox machines.)
+        guard core.mailReplay == nil else { return }
         beginEntry()
         if core.rt.dirty { runSegment() }
     }
