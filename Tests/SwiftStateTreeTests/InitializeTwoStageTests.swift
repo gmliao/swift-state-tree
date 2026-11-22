@@ -251,7 +251,9 @@ private func expectRefused<E: Error & Equatable>(
 /// The record's JSON view at a temporary path (removed by the caller). With
 /// `dropInitializeRecord`, frame 0 loses its initialize record: OnInitialize then replays as
 /// tick 0's lifecycle item, as for a record older than 2.1.
-private func saveRecord(_ keeper: LandKeeper<RoomState>, dropInitializeRecord: Bool) async throws -> String {
+/// With `moveInitializeToTickOne`, a malformed record: no initialize record, and the initialize
+/// lifecycle item in tick 1 instead of tick 0.
+private func saveRecord(_ keeper: LandKeeper<RoomState>, dropInitializeRecord: Bool, moveInitializeToTickOne: Bool = false) async throws -> String {
     await keeper.waitForRecorderSubmissionsForTesting()
     let recorder = try #require(await keeper.getReevaluationRecorder())
     let path = FileManager.default.temporaryDirectory.appendingPathComponent("init-two-stage-\(UUID().uuidString).sstr").path
@@ -264,6 +266,16 @@ private func saveRecord(_ keeper: LandKeeper<RoomState>, dropInitializeRecord: B
         var frames = try #require(object["tickFrames"] as? [[String: Any]])
         let index = try #require(frames.firstIndex { $0["initialize"] != nil }, "the live run recorded an initialize record")
         frames[index].removeValue(forKey: "initialize")
+        if moveInitializeToTickOne {
+            let from = try #require(frames.firstIndex { ($0["tickId"] as? Int) == 0 })
+            let to = try #require(frames.firstIndex { ($0["tickId"] as? Int) == 1 })
+            var events = try #require(frames[from]["lifecycleEvents"] as? [[String: Any]])
+            let item = try #require(events.firstIndex { ($0["kind"] as? String) == LandKeeper<RoomState>.LifecycleKind.initialize.rawValue })
+            var moved = events.remove(at: item)
+            moved["tickId"] = 1
+            frames[from]["lifecycleEvents"] = events
+            frames[to]["lifecycleEvents"] = [moved] + ((frames[to]["lifecycleEvents"] as? [[String: Any]]) ?? [])
+        }
         object["tickFrames"] = frames
     }
     try JSONSerialization.data(withJSONObject: object).write(to: URL(fileURLWithPath: jsonPath))
@@ -555,6 +567,21 @@ struct InitializeTwoStageTests {
             while try await runner.step() != nil {}
             #expect(await runner.initializeVerification() == (dropInitializeRecord ? .notRecorded : .passed), "the runner built with a state")
         }
+    }
+
+    @Test("A malformed record whose OnInitialize replays in tick 1: a refusal there still fails the check, in the engine and the runner")
+    func lateInitializeRefusalFailsTheCheck() async throws {
+        let definition = makeReplayDefinition()
+        let landID = "init-replay:\(UUID().uuidString)"
+        let keeper = try await makeKeeper(definition, landID: landID, recording: true)
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        let path = try await saveRecord(keeper, dropInitializeRecord: true, moveInitializeToTickOne: true)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        InitializeRefusals.refuse(landID)
+        expectReplayRefusal(try await ReevaluationEngine.run(definition: definition, initialState: RoomState(), recordFilePath: path).initialize)
+        expectReplayRefusal(try await runnerVerdict(definition, path))
     }
 
     @Test("initializeVerdict: a refusal fails a passed or unrecorded check; an earlier failure keeps its reason; no refusal keeps the verdict")
