@@ -1110,6 +1110,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let initializationFailure { throw initializationFailure }
         if didInitialize { return }
         if let task = initializationTask {
+            noteInitializationWait()
             await task.value
             if let initializationFailure { throw initializationFailure }
             return
@@ -1124,6 +1125,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         initializationTask = nil
         didInitialize = true
         if let initializationFailure { throw initializationFailure }
+    }
+
+    /// Tests: how many calls have waited on a running initialization, and the tests waiting for
+    /// a count (`waitForInitializationWaitersForTesting`).
+    private var initializationWaits = 0
+    private var initializationWaitWatchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    private func noteInitializationWait() {
+        initializationWaits += 1
+        let ready = initializationWaitWatchers.filter { $0.count <= initializationWaits }
+        initializationWaitWatchers.removeAll { $0.count <= initializationWaits }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    /// Tests: returns once `count` calls have waited on a running initialization, so a test can
+    /// end the initialization with its waiters in place (#593).
+    package func waitForInitializationWaitersForTesting(_ count: Int) async {
+        if initializationWaits >= count { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            initializationWaitWatchers.append((count: count, continuation: continuation))
+        }
     }
 
     /// `ensureInitialized` for a join: a failed initialization is a retryable
@@ -3747,6 +3769,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case .initialize:
             guard let handler = definition.lifetimeHandlers.onInitialize,
                   !replayedInitializeBeforeTickZero else { break }
+            // At tick 0, where the live run had the tick before it: kept as it was before #593,
+            // since moving it changes what these older records replay to (and where its events go).
             let ctx = makeContext(
                 playerID: systemPlayerID,
                 clientID: systemClientID,
@@ -3755,8 +3779,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverOutputs: lifecycleItem.resolverOutputs
             )
             // Execute handler synchronously (resolver outputs already injected). Only
-            // re-evaluation queues an initialize item (a record older than 2.1). `invoke` throws
-            // only from `validate`, before `apply` writes and with nothing emitted (#593).
+            // re-evaluation queues an initialize item, for a record without an initialize record
+            // (a live run writes one whenever it records). `invoke` throws only from `validate`,
+            // before `apply` writes and with nothing emitted (#593).
             do {
                 try withMutableStateSync { state in
                     try handler.invoke(&state, ctx)

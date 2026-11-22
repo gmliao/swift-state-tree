@@ -39,3 +39,7 @@ In #239 (squashed into `90fd08b9`; branch commit `3dea437c`): make `WebSocketTra
 - Implement a protocol requirement with exactly its signature, including `async` and `throws`. Don't rely on a sync method satisfying an async requirement when the protocol has an extension default with the same name.
 - Be wary of protocol extension defaults for behaviour that a conforming type must change (here, "close after queued frames" against "close at once"). A default that is wrong for the real type hides the mismatch.
 - Test the behaviour through the call site's static type (the concrete type, from async code), not only through the protocol.
+
+## Seen again
+
+- #751 (#593): `ReevaluationRunnerProtocol.initializeVerification()` gained an async requirement with a `.notRecorded` default, and `ConcreteReevaluationRunner`'s synchronous accessor lost to it in a direct `await runner.initializeVerification()`. The runner service, calling through the protocol, got the real verdict; a test calling the concrete type got `.notRecorded`. The fix was the same: the accessor is `async`.

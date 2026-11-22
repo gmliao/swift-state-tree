@@ -224,7 +224,9 @@ replay 時，handler 讀取錄製的 resolver output（`ctx.productInfo`）的�
 
 Replay 以錄製的 resolver output 再次執行 OnInitialize：不會拋出錯誤的 body，或先 `validate` 再 `apply`（#593）。只有 live 的 `validate` 通過時，錄製才會有 initialize 項目，因為 live 的拒絕會在記錄任何內容之前結束 land。因此重播的 `validate` 若拋出錯誤，表示 `validate` 不是確定性的：它讀取了 state 與 context 以外的東西，例如時鐘或可變的全域變數。
 
-此時 replay 什麼都不寫入，和 live 執行相同，initialize 檢查失敗，原因會指出 OnInitialize 與錯誤（`InitializeVerification.failed`）。沒有 initialize record 的錄製（早於 2.1）也一樣，它的 OnInitialize 在 tick 0 內重播。Replay 會繼續進行，之後的 state hash 會回報後續的狀況。
+此時 replay 什麼都不寫入，和 live 執行相同，initialize 檢查失敗，原因會指出 OnInitialize 與錯誤（`InitializeVerification.failed`）。沒有 initialize record 的錄製也一樣，它的 OnInitialize 在 tick 0 內重播。Replay 會繼續進行，之後的 state hash 會回報後續的狀況。
+
+託管的 replay（reevaluation monitor 與 replay land）在 initialize 檢查失敗時，即使每個 tick 的 hash 都相符，也會讓該次執行失敗。被拒絕的初始化可能讓 tick hash 保持相同，例如 `apply` 什麼都不寫入，或只寫入之後的 tick 會覆寫的內容。執行的錯誤訊息會指出 OnInitialize 與錯誤。自訂的 runner 透過 `ReevaluationRunnerProtocol.initializeVerification()` 回報它的檢查；沒有實作的 runner 回報 `.notRecorded`，不會讓執行失敗。
 
 ### 錄製所含的 Hash
 

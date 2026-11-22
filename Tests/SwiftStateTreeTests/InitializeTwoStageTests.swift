@@ -82,33 +82,50 @@ private struct ReplayRefusedError: Error, Equatable, CustomStringConvertible {
     var description: String { "ReplayRefusedError" }
 }
 
-/// A tick land whose OnInitialize writes its plan; `voidForm` picks the form without a plan.
-private func makeReplayDefinition(voidForm: Bool = false) -> LandDefinition<RoomState> {
+@Payload
+struct RoomOpenedEvent: ServerEventPayload {
+    let maxPlayers: Int
+}
+
+/// `apply`'s outputs: it logs the land ID it sees (so a replay that sees another ID diverges),
+/// emits an event and requests a sync, so a refusal's "nothing goes out" can fail.
+private func openRoom(_ state: inout RoomState, maxPlayers: Int, _ ctx: LandContext) {
+    state.maxPlayers = maxPlayers
+    state.log.append("init:\(ctx.landID)")
+    ctx.emitEvent(RoomOpenedEvent(maxPlayers: maxPlayers), to: .all)
+    ctx.requestSyncNow()
+}
+
+/// A tick land (or, with `tickless`, a land without a tick handler) whose OnInitialize writes its
+/// plan; `voidForm` picks the form without a plan.
+private func makeReplayDefinition(voidForm: Bool = false, tickless: Bool = false) -> LandDefinition<RoomState> {
     let refuse: @Sendable (ValidateContext) throws -> Void = { ctx in
         if InitializeRefusals.isRefused(ctx.landID) { throw ReplayRefusedError() }
     }
-    if voidForm {
+    let onInitialize: LifetimeDirective<RoomState> = voidForm
+        ? OnInitialize(validate: { (_: RoomState, ctx: ValidateContext) in
+            try refuse(ctx)
+        }, apply: { (state: inout RoomState, ctx: LandContext) in
+            openRoom(&state, maxPlayers: 2, ctx)
+        })
+        : OnInitialize(resolvers: RoomConfigResolver.self, validate: { (_: RoomState, ctx: ValidateContext) throws -> Int in
+            try refuse(ctx)
+            guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
+            return config.maxPlayers
+        }, apply: { (state: inout RoomState, maxPlayers: Int, ctx: LandContext) in
+            openRoom(&state, maxPlayers: maxPlayers, ctx)
+        })
+    if tickless {
         return Land("init-replay", using: RoomState.self) {
-            Lifetime {
-                Tick(every: .milliseconds(50)) { (_: inout RoomState, _: LandContext) in }
-                OnInitialize(validate: { (_: RoomState, ctx: ValidateContext) in
-                    try refuse(ctx)
-                }, apply: { (state: inout RoomState, _: LandContext) in
-                    state.maxPlayers = 2
-                })
-            }
+            ServerEvents { Register(RoomOpenedEvent.self) }
+            Lifetime { onInitialize }
         }
     }
     return Land("init-replay", using: RoomState.self) {
+        ServerEvents { Register(RoomOpenedEvent.self) }
         Lifetime {
             Tick(every: .milliseconds(50)) { (_: inout RoomState, _: LandContext) in }
-            OnInitialize(resolvers: RoomConfigResolver.self, validate: { (_: RoomState, ctx: ValidateContext) throws -> Int in
-                try refuse(ctx)
-                guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
-                return config.maxPlayers
-            }, apply: { (state: inout RoomState, maxPlayers: Int, _: LandContext) in
-                state.maxPlayers = maxPlayers
-            })
+            onInitialize
         }
     }
 }
@@ -122,8 +139,10 @@ private final class InitStageTransport: LandKeeperTransport, @unchecked Sendable
     private var destroyedFlag = false
     private var destroyWaiters: [CheckedContinuation<Void, Never>] = []
     private var sent = 0
+    private var syncs = 0
     var destroyed: Bool { lock.withLock { destroyedFlag } }
     var eventsSent: Int { lock.withLock { sent } }
+    var syncsRun: Int { lock.withLock { syncs } }
 
     /// Returns once the keeper has called `onLandDestroyed`.
     func waitUntilDestroyed() async {
@@ -155,7 +174,10 @@ private final class InitStageTransport: LandKeeperTransport, @unchecked Sendable
         includeSync: Bool,
         recording: InTurnSyncRecording?
     ) -> InTurnSyncOutput {
-        lock.withLock { sent += events.count }
+        lock.withLock {
+            sent += events.count
+            if includeSync { syncs += 1 }
+        }
         return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
     func waitForWriterDrainForInTurnSync() async {}
@@ -165,7 +187,7 @@ private let player = PlayerID("p-1")
 private let client = ClientID("c-p-1")
 private let session = SessionID("s-p-1")
 
-/// A keeper whose land ID is set before anything waits for the initialization. With
+/// A keeper built with its land ID, before its eager initialization can start. With
 /// `recording`, its recorder gets the metadata a saved record needs.
 private func makeKeeper(
     _ definition: LandDefinition<RoomState>,
@@ -178,9 +200,10 @@ private func makeKeeper(
         initialState: RoomState(),
         enableLiveStateHashRecording: recording,
         autoStartLoops: false,
+        // At construction: the eager initialization reads it (`ctx.landID`).
+        landID: landID,
         transport: transport
     )
-    await keeper.setLandID(landID)
     if recording {
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -222,7 +245,7 @@ private func expectRefused<E: Error & Equatable>(
     }
     let state = await keeper.currentState()
     #expect(state.maxPlayers == 0 && state.log == [], "nothing was written, not by a destroy handler either", sourceLocation: sourceLocation)
-    #expect(transport.eventsSent == 0, sourceLocation: sourceLocation)
+    #expect(transport.eventsSent == 0 && transport.syncsRun == 0, "nothing went out", sourceLocation: sourceLocation)
 }
 
 /// The record's JSON view at a temporary path (removed by the caller). With
@@ -247,13 +270,19 @@ private func saveRecord(_ keeper: LandKeeper<RoomState>, dropInitializeRecord: B
     return jsonPath
 }
 
-/// A live run that initializes, joins and ticks twice, recorded; its land ID.
-private func recordLiveRun(_ definition: LandDefinition<RoomState>, dropInitializeRecord: Bool) async throws -> (path: String, landID: String) {
+/// A live run that initializes, joins and (on a tick land) ticks twice, recorded; its land ID.
+private func recordLiveRun(
+    _ definition: LandDefinition<RoomState>,
+    dropInitializeRecord: Bool,
+    tickless: Bool = false
+) async throws -> (path: String, landID: String) {
     let landID = "init-replay:\(UUID().uuidString)"
     let keeper = try await makeKeeper(definition, landID: landID, recording: true)
     try await keeper.join(playerID: player, clientID: client, sessionID: session)
-    await keeper.stepTickOnce()
-    await keeper.stepTickOnce()
+    if !tickless {
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+    }
     return (try await saveRecord(keeper, dropInitializeRecord: dropInitializeRecord), landID)
 }
 
@@ -273,6 +302,112 @@ private func expectReplayRefusal(_ verdict: ReevaluationEngine.InitializeVerific
     }
     #expect(reason.contains("OnInitialize's validate threw in replay"), "\(reason)", sourceLocation: sourceLocation)
     #expect(reason.contains("ReplayRefusedError"), "\(reason)", sourceLocation: sourceLocation)
+}
+
+// MARK: - Waiters, .failLand, the hosted run
+
+/// OnInitialize's resolver, held at the gate keyed by the land ID's last part
+/// ("init-wait:<key>"), then a room for 4.
+struct GatedRoomConfigResolver: ContextResolver {
+    typealias Output = RoomConfigOutput
+    static func resolve(ctx: ResolverContext) async throws -> RoomConfigOutput {
+        let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
+        await DeliveryGates.gate(key).enterAndWait()
+        return RoomConfigOutput(maxPlayers: 4)
+    }
+}
+
+@Payload
+struct InitWaitAck: ResponsePayload {
+    let ok: Bool
+}
+
+@Payload
+struct InitWaitAction: ActionPayload {
+    typealias Response = InitWaitAck
+    let n: Int
+}
+
+struct InitWaitInput: ServerInputPayload {
+    let n: Int
+}
+
+/// A land whose OnInitialize waits at its resolver's gate and then refuses; an action and a
+/// server input are declared, so calls of each kind can wait for the initialization.
+private func makeWaitDefinition() -> LandDefinition<RoomState> {
+    Land("init-wait", using: RoomState.self) {
+        Rules {
+            HandleAction(InitWaitAction.self) { (state: inout RoomState, _: InitWaitAction, _: LandContext) in
+                state.log.append("action")
+                return InitWaitAck(ok: true)
+            }
+            HandleServerInput(InitWaitInput.self) { (state: inout RoomState, _: InitWaitInput, _: LandContext) in
+                state.log.append("input")
+            }
+        }
+        Lifetime {
+            OnInitialize(resolvers: GatedRoomConfigResolver.self, validate: { (_: RoomState, _: ValidateContext) in
+                throw RoomSetupError.noConfig
+            }, apply: { (state: inout RoomState, _: LandContext) in
+                state.log.append("init")
+            })
+        }
+    }
+}
+
+/// The land IDs whose OnInitialize `validate` ran: a resolver failure with `.failLand` must stop
+/// the initialization before it.
+private enum ValidateRuns {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var landIDs: Set<String> = []
+
+    static func note(_ landID: String) { lock.withLock { _ = landIDs.insert(landID) } }
+    static func ran(_ landID: String) -> Bool { lock.withLock { landIDs.contains(landID) } }
+}
+
+/// A two-stage OnInitialize with the default `.failLand`, whose resolver throws for a land ID
+/// that contains "missing".
+private func makeFailLandDefinition() -> LandDefinition<RoomState> {
+    Land("init-fail-land", using: RoomState.self) {
+        Lifetime {
+            OnInitialize(resolvers: RoomConfigResolver.self, validate: { (_: RoomState, ctx: ValidateContext) -> Int in
+                ValidateRuns.note(ctx.landID)
+                return 1
+            }, apply: { (state: inout RoomState, maxPlayers: Int, _: LandContext) in
+                state.maxPlayers = maxPlayers
+            })
+        }
+    }
+}
+
+/// A tick land whose OnInitialize writes nothing: a replayed refusal leaves every tick hash
+/// matching, so only the initialize check can report it.
+private func makeNoWriteDefinition() -> LandDefinition<RoomState> {
+    Land("init-no-write", using: RoomState.self) {
+        Lifetime {
+            Tick(every: .milliseconds(50)) { (_: inout RoomState, _: LandContext) in }
+            OnInitialize(validate: { (_: RoomState, ctx: ValidateContext) in
+                if InitializeRefusals.isRefused(ctx.landID) { throw ReplayRefusedError() }
+            }, apply: { (_: inout RoomState, _: LandContext) in })
+        }
+    }
+}
+
+/// Builds the monitor's runner for the record, as a hosted replay does.
+private struct InitRunnerFactory: ReevaluationTargetFactory {
+    let definition: LandDefinition<RoomState>
+    func createRunner(landType _: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
+        try await ConcreteReevaluationRunner(definition: definition, recordFilePath: recordFilePath)
+    }
+}
+
+/// A hosted run of the record, to its end: its terminal status.
+private func hostedRun(_ definition: LandDefinition<RoomState>, _ path: String) async throws -> ReevaluationStatus {
+    let service = ReevaluationRunnerService(factory: InitRunnerFactory(definition: definition))
+    service.startVerification(landType: definition.id, recordFilePath: path)
+    let task = try #require(service.verificationTaskForTesting(), "no verification run was started")
+    await task.value
+    return service.getStatus()
 }
 
 // MARK: - Destroy handlers (#593 §1)
@@ -339,11 +474,13 @@ struct InitializeTwoStageTests {
         #expect(await keeper.currentState().maxPlayers == 4)
     }
 
-    @Test("The form without a plan: apply runs after validate passes, and nothing runs after validate refuses")
+    @Test("The form without a plan: apply runs after validate passes, with its event and sync, and nothing runs or goes out after validate refuses")
     func voidForm() async throws {
-        let passing = try await makeKeeper(makeReplayDefinition(voidForm: true), landID: "init-replay:\(UUID().uuidString)")
+        let passingTransport = InitStageTransport()
+        let passing = try await makeKeeper(makeReplayDefinition(voidForm: true), landID: "init-replay:\(UUID().uuidString)", transport: passingTransport)
         try await passing.join(playerID: player, clientID: client, sessionID: session)
         #expect(await passing.currentState().maxPlayers == 2)
+        #expect(passingTransport.eventsSent == 1 && passingTransport.syncsRun >= 1, "apply's outputs go out, so the refusal's check can fail")
 
         let landID = "init-replay:\(UUID().uuidString)"
         InitializeRefusals.refuse(landID)
@@ -391,10 +528,10 @@ struct InitializeTwoStageTests {
         #expect(try await runnerVerdict(definition, path) == (dropInitializeRecord ? .notRecorded : .passed))
     }
 
-    @Test("A replayed validate that throws fails the initialize check, through the engine and the runner, at both replay sites", arguments: [false, true])
-    func replayedRefusalFailsTheCheck(dropInitializeRecord: Bool) async throws {
-        let definition = makeReplayDefinition()
-        let (path, landID) = try await recordLiveRun(definition, dropInitializeRecord: dropInitializeRecord)
+    @Test("A replayed validate that throws fails the initialize check, through the engine and the runner, at both replay sites, on a tick and a tickless land", arguments: [false, true], [false, true])
+    func replayedRefusalFailsTheCheck(dropInitializeRecord: Bool, tickless: Bool) async throws {
+        let definition = makeReplayDefinition(tickless: tickless)
+        let (path, landID) = try await recordLiveRun(definition, dropInitializeRecord: dropInitializeRecord, tickless: tickless)
         defer { try? FileManager.default.removeItem(atPath: path) }
         // The live validate passed; the replay's refuses: validate was not deterministic.
         InitializeRefusals.refuse(landID)
@@ -402,6 +539,98 @@ struct InitializeTwoStageTests {
         expectReplayRefusal(result.initialize)
         #expect(result.tickHashes != result.recordedStateHashes, "nothing was written, so the replayed state differs")
         expectReplayRefusal(try await runnerVerdict(definition, path))
+    }
+
+    @Test("The replay keepers have the record's land ID before their eager initialization: forced to run first, OnInitialize still sees it", arguments: [false, true])
+    func replayKeeperHasTheLandIDFirst(dropInitializeRecord: Bool) async throws {
+        let definition = makeReplayDefinition()
+        let (path, landID) = try await recordLiveRun(definition, dropInitializeRecord: dropInitializeRecord)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await ReevaluationEngine.$initializesFirstForTesting.withValue(true) {
+            let result = try await ReevaluationEngine.run(definition: definition, initialState: RoomState(), recordFilePath: path)
+            #expect(result.initialize == (dropInitializeRecord ? .notRecorded : .passed))
+            #expect(result.tickHashes == result.recordedStateHashes, "apply logged the record's land ID, \(landID)")
+            #expect(try await runnerVerdict(definition, path) == (dropInitializeRecord ? .notRecorded : .passed))
+            let runner = try await ConcreteReevaluationRunner(definition: definition, initialState: RoomState(), recordFilePath: path)
+            while try await runner.step() != nil {}
+            #expect(await runner.initializeVerification() == (dropInitializeRecord ? .notRecorded : .passed), "the runner built with a state")
+        }
+    }
+
+    @Test("initializeVerdict: a refusal fails a passed or unrecorded check; an earlier failure keeps its reason; no refusal keeps the verdict")
+    func initializeVerdictMerge() {
+        typealias Engine = ReevaluationEngine
+        #expect(Engine.initializeVerdict(.passed, afterTickRefusal: "later") == .failed(reason: "later"))
+        #expect(Engine.initializeVerdict(.notRecorded, afterTickRefusal: "later") == .failed(reason: "later"))
+        #expect(Engine.initializeVerdict(.failed(reason: "earlier"), afterTickRefusal: "later") == .failed(reason: "earlier"))
+        #expect(Engine.initializeVerdict(.passed, afterTickRefusal: nil) == .passed)
+        #expect(Engine.initializeVerdict(.failed(reason: "earlier"), afterTickRefusal: nil) == .failed(reason: "earlier"))
+    }
+
+    @Test("Calls waiting while OnInitialize's resolver is held get the refusal: a join JOIN_DENIED, an action LandInitializationError, a server input draining")
+    func waitersGetTheRefusal() async throws {
+        let key = DeliveryGates.freshKey()
+        let transport = InitStageTransport()
+        let keeper = try await makeKeeper(makeWaitDefinition(), landID: "init-wait:\(key)", transport: transport)
+        guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
+
+        let join = Task { () -> (any Error)? in
+            do { try await keeper.join(playerID: player, clientID: client, sessionID: session); return nil } catch { return error }
+        }
+        let action = Task { () -> (any Error)? in
+            do {
+                _ = try await keeper.handleActionEnvelope(
+                    ActionEnvelope(typeIdentifier: String(describing: InitWaitAction.self), payload: AnyCodable(InitWaitAction(n: 1))),
+                    playerID: player, clientID: client, sessionID: session
+                )
+                return nil
+            } catch { return error }
+        }
+        let input = Task { await keeper.submitServerInput(InitWaitInput(n: 1)) }
+        // All three wait on the running initialization before it ends.
+        await keeper.waitForInitializationWaitersForTesting(3)
+        DeliveryGates.gate(key).release()
+
+        let joinError = await join.value
+        if case .landShuttingDown? = joinError as? JoinError {} else { Issue.record("join: \(String(describing: joinError))") }
+        let actionError = await action.value
+        #expect((actionError as? LandInitializationError)?.underlying as? RoomSetupError == .noConfig, "action: \(String(describing: actionError))")
+        #expect(await input.value == .refused(.draining))
+        _ = try await withinDeadline("the land is torn down") { () async -> Void in await transport.waitUntilDestroyed() }
+        #expect(await keeper.currentState().log == [], "no handler ran")
+    }
+
+    @Test("Two stages with .failLand: a resolver that throws fails the initialization before validate runs, counted as a resolver failure")
+    func twoStageFailLand() async throws {
+        let metrics = ResolverDeadlineMetrics(), transport = InitStageTransport()
+        let landID = "init-fail-land:missing:\(UUID().uuidString)"
+        try await ResolverDeadline.$metricsForTesting.withValue(metrics) {
+            let keeper = try await makeKeeper(makeFailLandDefinition(), landID: landID, transport: transport)
+            do {
+                try await keeper.leave(playerID: player, clientID: client, sessionID: session)
+                Issue.record("Expected LandInitializationError")
+            } catch is LandInitializationError {}
+            _ = try await withinDeadline("the land is torn down") { () async -> Void in await transport.waitUntilDestroyed() }
+            #expect(await keeper.currentState().maxPlayers == 0)
+        }
+        #expect(!ValidateRuns.ran(landID), "validate didn't run")
+        #expect(metrics.snapshot.initFailures == 1)
+    }
+
+    @Test("A hosted replay fails on a refused OnInitialize even when every tick hash matches; the same record without the refusal completes")
+    func hostedRunFailsOnTheInitializeCheck() async throws {
+        let definition = makeNoWriteDefinition()
+        let (path, landID) = try await recordLiveRun(definition, dropInitializeRecord: false)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let clean = try await hostedRun(definition, path)
+        #expect(clean.phase == .completed, "\(clean.errorMessage)")
+        #expect(clean.mismatchedTicks == 0)
+
+        InitializeRefusals.refuse(landID)
+        let refused = try await hostedRun(definition, path)
+        #expect(refused.mismatchedTicks == 0, "every tick hash matched")
+        #expect(refused.phase == .failed)
+        #expect(refused.errorMessage.contains("OnInitialize's validate threw in replay"), "\(refused.errorMessage)")
     }
 
     @Test("Destroy handlers: each runs exactly once; a resolver that throws skips its handler, and the teardown goes on", arguments: [false, true])

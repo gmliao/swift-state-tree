@@ -63,6 +63,17 @@ let compilesSingleInitialize = Land("snippet-single-initialize", using: SnippetS
     }
 }
 
+// The two-stage DSL form without a plan, the one `throw-in-oninitialize-apply.swift` refuses.
+let compilesVoidInitialize = Land("snippet-void-initialize", using: SnippetState.self) {
+    Lifetime {
+        OnInitialize(validate: { (state: SnippetState, _: ValidateContext) in
+            guard state.total == 0 else { throw SnippetError() }
+        }, apply: { (state: inout SnippetState, _: LandContext) in
+            state.total = 1
+        })
+    }
+}
+
 let compilesInitializeHandlers: [InitializeHandler<SnippetState>] = [
     InitializeHandler { (state: inout SnippetState, _: LandContext) in state.total = 1 },
     InitializeHandler(validate: { (_: SnippetState, _: ValidateContext) in

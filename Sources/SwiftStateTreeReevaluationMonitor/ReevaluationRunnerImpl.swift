@@ -225,10 +225,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
+            // At construction, before the eager initialization can start (#593).
+            landID: metadata.landID,
             logger: logger
         )
-
-        await keeper.setLandID(metadata.landID)
+        if ReevaluationEngine.initializesFirstForTesting { await keeper.awaitInitialization() }
 
         snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -298,10 +299,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
+            // At construction, before the eager initialization can start (#593).
+            landID: metadata.landID,
             logger: logger
         )
-
-        await keeper.setLandID(metadata.landID)
+        if ReevaluationEngine.initializesFirstForTesting { await keeper.awaitInitialization() }
 
         snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -373,8 +375,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         syncOutputDriver.finish()
     }
 
-    /// The OnInitialize check (after `prepare()`).
-    public func initializeVerification() -> ReevaluationEngine.InitializeVerification {
+    /// The OnInitialize check. After `prepare()` for a record with an initialize record; for one
+    /// without, final only after tick 0, whose step replays OnInitialize (#593).
+    /// `async`, as the protocol's requirement is: a synchronous one would lose to the protocol
+    /// extension's `.notRecorded` default in a direct `await` call, which prefers the async overload.
+    public func initializeVerification() async -> ReevaluationEngine.InitializeVerification {
         initialize
     }
 
@@ -401,12 +406,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // We can track it ourselves since we control the stepping.
         currentTickId += 1
         let tickId = currentTickId
-        if tickId == 0 {
-            // A record older than 2.1 replays OnInitialize inside tick 0, after the check (#593).
-            initialize = ReevaluationEngine.initializeVerdict(
-                initialize, afterTickZeroRefusal: await keeper.replayedInitializeRefusal
-            )
-        }
+        // A record without an initialize record replays OnInitialize inside tick 0, after the
+        // check; merged after every step, so a later or repeated one fails it too (#593).
+        initialize = ReevaluationEngine.initializeVerdict(
+            initialize, afterTickRefusal: await keeper.replayedInitializeRefusal
+        )
 
         // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String

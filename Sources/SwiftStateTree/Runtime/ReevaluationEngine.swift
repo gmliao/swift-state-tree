@@ -82,6 +82,11 @@ public enum ReevaluationEngine {
         }
     }
 
+    /// Tests: the replay keeper's eager initialization runs to its end right after the keeper is
+    /// built, before anything else the engine or the runner asks of it. A test forces that order
+    /// to check that nothing the initialization reads is set after construction (#593).
+    @TaskLocal package static var initializesFirstForTesting = false
+
     /// Outcome of the OnInitialize check: the replayed events and post-initialize state hash
     /// against the record's initialize record.
     public enum InitializeVerification: Sendable, Equatable {
@@ -119,8 +124,9 @@ public enum ReevaluationEngine {
     ///
     /// `refusal` is the keeper's `replayedInitializeRefusal` (#593): a replayed `validate` that
     /// threw. It is checked first, before the record: a record holds OnInitialize only when the
-    /// live `validate` passed, so a refusal fails the check, also on a record without an
-    /// initialize record (older than 2.1).
+    /// live `validate` passed, so a refusal fails the check. A record without an initialize
+    /// record replays OnInitialize later, in tick 0: `initializeVerdict(_:afterTickRefusal:)`
+    /// merges that refusal.
     package static func verifyInitialize<State: StateNodeProtocol>(
         record: ReevaluationRecordedInitialize?,
         emitted: [ReevaluationRecordedServerEvent],
@@ -152,12 +158,13 @@ public enum ReevaluationEngine {
         return .passed
     }
 
-    /// The initialize verdict once a record without an initialize record (older than 2.1) has
-    /// replayed OnInitialize inside tick 0, after `verifyInitialize` ran (#593): a refusal noted
-    /// then fails the check too. A verdict that already failed keeps its reason.
+    /// The initialize verdict after a replayed tick (#593). A record without an initialize record
+    /// replays OnInitialize inside tick 0, after `verifyInitialize` ran: a refusal noted then
+    /// fails the check too. Merged after every tick, so a malformed record that replays it later
+    /// or twice fails as well. A verdict that already failed keeps its reason.
     package static func initializeVerdict(
         _ verdict: InitializeVerification,
-        afterTickZeroRefusal refusal: String?
+        afterTickRefusal refusal: String?
     ) -> InitializeVerification {
         guard let refusal else { return verdict }
         if case .failed = verdict { return verdict }
@@ -300,9 +307,13 @@ public enum ReevaluationEngine {
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
+            // At construction, before the keeper's eager initialization can start: a replayed
+            // OnInitialize, its resolvers' context and the RNG see the record's land ID (#593).
+            landID: metadata.landID,
             logger: logger
         )
-        await keeper.setLandID(metadata.landID)
+        // A test forces the eager initialization to win here: nothing it reads may be set later.
+        if initializesFirstForTesting { await keeper.awaitInitialization() }
         await keeper.awaitInitialization()
         if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
         let initializeRecord = try await source.getInitializeRecord()
@@ -382,9 +393,9 @@ public enum ReevaluationEngine {
             for tickId in 0...lastTickId {
                 await keeper.stepTickOnce()
                 if await keeper.replaySequenceExhausted() { throw ReevaluationRecordContentError.sequenceExhausted }
-                if tickId == 0 {
-                    initialize = initializeVerdict(initialize, afterTickZeroRefusal: await keeper.replayedInitializeRefusal)
-                }
+                // After every tick, not only tick 0: a record that replays OnInitialize later, or
+                // twice, still fails the check (#593).
+                initialize = initializeVerdict(initialize, afterTickRefusal: await keeper.replayedInitializeRefusal)
                 let state = await keeper.currentState()
 
                 // The hash the record holds (`hashDefinition`). A conversion that throws makes
