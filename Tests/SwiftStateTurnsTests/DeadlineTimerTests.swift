@@ -269,6 +269,24 @@ struct DeadlineTimerTests {
         #expect(f.count(of: "stale deadline") == 0)
     }
 
+    @Test("9: TurnsBench's park shape (a hold with a far deadline, then its cancel, as the clock moves on) starts one sleeper for the whole run")
+    func parkShapeStartsOneSleeper() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        for label in 0 ..< 1000 {
+            // Each deadline is later than the one the sleeper sleeps until: no re-arm.
+            a.clock.set(seconds: Int64(label))
+            await a.send(.request(label, seconds: 3600))
+            await a.send(.cancel(label))
+        }
+        let timer = await a.timer()
+        #expect(timer.starts == 1)
+        #expect(timer.superseded == 0)
+        #expect(timer.wakes == 0)
+        // Compaction keeps the heap bounded: every entry is stale.
+        #expect(timer.entries <= 64)
+    }
+
     @Test("9: a rebuild that removes the sleeper's target doesn't re-arm it: one wake that steps nothing, then the live entry")
     func compactionWastedHop() async {
         let f = Fixture()

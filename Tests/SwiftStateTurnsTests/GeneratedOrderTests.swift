@@ -557,7 +557,7 @@ func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleas
             failures.append("queued work \(id) neither stepped nor dropped by endAll")
         }
     }
-    // End everything (cancelling the deadline and timer tasks); every queued call is answered.
+    // End everything (stopping the core's timer); every queued call is answered.
     if !(await actor.view()).ended { await actor.send(.endAll) }
     // One bound for every call of the seed: a regression that never answers them costs one
     // bound, not one per call.

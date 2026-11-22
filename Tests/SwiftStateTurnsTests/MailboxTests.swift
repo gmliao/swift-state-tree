@@ -195,12 +195,12 @@ struct MailboxTests {
         a.fixture.open("wake R")
     }
 
-    @Test("9e: a due timer whose take's mail ends everything: it and the rest of the wake end silently")
+    @Test("9f: a due timer whose take's mail ends everything: it and the rest of the wake end silently")
     func endAllByMailDuringAWake() async {
         let a = await MailboxActor.started()
         await a.send(.script([.start(1), .start(2), .timer("T1", key: 1, seconds: 5), .timer("T2", key: 2, seconds: 5)]))
-        // A mail can't end everything itself: its flush sends the input that does, stepped in the
-        // take's segment, before T1's own check.
+        // The fixture's mail has no `endAll` op: its flush sends the input that ends everything,
+        // stepped in the take's segment, before the wake takes its entries.
         let post = await Self.heldPost(a, MailNote("R", then: [.note("R stepped"), .send([.endAll])]))
         a.clock.release(through: 5)
         // R's own note, flushed before its send ends everything (after endAll no keyed output is kept).
@@ -209,6 +209,29 @@ struct MailboxTests {
         #expect(await a.log == ["mail R"])
         #expect(a.fixture.count(of: "stale timer") == 0)
         a.fixture.open("wake R")
+        _ = await post.value
+    }
+
+    @Test("9g: a later due timer whose take's mail ends everything: it and the rest of the wake end silently")
+    func endAllByMailAtALaterEntry() async {
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        // P1 and P2 spend the first entry's budget, so R, which A's flush posts, is left for B's
+        // take; R's flush sends the input that ends everything, before B's own check.
+        await a.send(.script([.start(1), .start(2), .start(3),
+                              .timerRunning("A", key: 1, seconds: 5, then: [.post("R", then: [.send([.endAll])])]),
+                              .timer("B", key: 2, seconds: 5), .timer("C", key: 3, seconds: 5)]))
+        let post = await Self.heldPost(a, MailNote("P1"))
+        _ = a.post(MailNote("P2"))
+        a.clock.release(through: 5)
+        await a.fixture.reach("remainder #1")
+        _ = await a.log
+        // B and C neither fire nor report: endAll emptied the timer.
+        #expect(await a.log == ["mail P1", "mail P2", "ran A", "mail R"])
+        #expect(a.fixture.count(of: "stale timer") == 0)
+        #expect(await a.deadlineEntries == 0)
+        a.fixture.open("remainder go")
+        a.fixture.open("wake P1")
         _ = await post.value
     }
 
