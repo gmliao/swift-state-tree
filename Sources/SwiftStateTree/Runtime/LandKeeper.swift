@@ -110,12 +110,6 @@ private final class ActionJobCallerCancellation: @unchecked Sendable {
     }
 }
 
-/// Tests: observes a `LandKeeper.setLandID(_:)` that arrives after the keeper's initialization
-/// started, instead of the DEBUG assertion (#593).
-package enum LateLandIDReport {
-    @TaskLocal package static var handlerForTesting: (@Sendable (String) -> Void)?
-}
-
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
     package enum PendingItem: Sendable {
@@ -535,44 +529,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tests: the transport attached now (after the destruction, the released placeholder,
     /// `ReleasedLandTransport`, #346).
     var transportForTesting: LandKeeperTransport? { transport }
-
-    /// Set the actual land instance ID (called after LandKeeper is created)
-    /// This allows LandContext to use the actual instance ID instead of just the land type
-    /// Also updates the RNG service seed if it was created with a default seed
-    ///
-    /// Pass `landID:` to the init instead. The init starts the initialization eagerly, so a call
-    /// here races with it: once it has started, OnInitialize, its resolvers, the RNG seed and
-    /// the loop phase offset may have read the land type. Such a late call is logged, and in
-    /// DEBUG it stops the process (`LateLandIDReport` lets a test observe it instead) (#593).
-    public func setLandID(_ landID: String) {
-        if didInitialize || initializationTask != nil {
-            logger.error("setLandID after the initialization started: pass landID: to the init", metadata: [
-                "landID": .string(landID),
-                "landType": .string(definition.id),
-            ])
-            if let report = LateLandIDReport.handlerForTesting {
-                report(landID)
-            } else {
-                #if DEBUG
-                assertionFailure("setLandID(\(landID)) after the keeper's initialization started: pass landID: to the init (#593)")
-                #endif
-            }
-        }
-        actualLandID = landID
-
-        // Update RNG service seed if it was created with definition.id seed
-        // This ensures deterministic behavior based on actual land instance ID
-        if let rngService = services.get(DeterministicRngService.self),
-           rngService.seed == DeterministicSeed.fromLandID(definition.id)
-        {
-            // Replace with new RNG service using actual landID seed
-            let newSeed = DeterministicSeed.fromLandID(landID)
-            let newRngService = DeterministicRngService(seed: newSeed)
-            var updatedServices = services
-            updatedServices.register(newRngService, as: DeterministicRngService.self)
-            services = updatedServices
-        }
-    }
 
     /// Get the RNG seed for recording purposes.
     /// Returns the seed from the DeterministicRngService if it exists, nil otherwise.
@@ -1016,8 +972,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - landID: The land instance ID (e.g. "counter:550e8400-..."), when known at creation.
     ///     Set before the eager initialization can start, so OnInitialize, the default RNG seed
     ///     and the loop phase offset all use the instance ID instead of the land type. Without
-    ///     it, `setLandID(_:)` sets the ID later, racing with that initialization (a call after
-    ///     it started is reported).
+    ///     it, they use the land type. There is no setter: the init starts the initialization
+    ///     eagerly, so an ID set later would race with it (#593).
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, a live keeper still runs its turns and records their
     ///                outputs, but delivers none. On a live keeper a transport that can't run the
@@ -1049,8 +1005,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.reevaluationOutputMode = reevaluationOutputMode
 
         // Ensure DeterministicRngService is always registered for deterministic behavior
-        // If not provided, seed it from the instance ID when known, else from definition.id
-        // (setLandID(_:) replaces a definition.id seed later, racing with the initialization).
+        // If not provided, seed it from the instance ID when known, else from definition.id.
         var resolvedServices = services
         if resolvedServices.get(DeterministicRngService.self) == nil {
             let seed = DeterministicSeed.fromLandID(landID ?? definition.id)
@@ -3435,7 +3390,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
     /// this land's instance ID, or `.zero` when disabled. A keeper created without `landID:`
-    /// falls back to the land type until `setLandID(_:)`.
+    /// uses the land type.
     func loopPhaseOffset(interval: Duration) -> Duration {
         guard enableLoopPhaseOffset else { return .zero }
         return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)

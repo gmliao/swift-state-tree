@@ -38,8 +38,8 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     public var rngSeed: UInt64? { rngSeedCoding?.value }
     /// The seed a replay of this record uses: the recorded seed, which is the one the live land
     /// used, or the seed derived from `landID` when the record has none. A configured RNG
-    /// service's seed is the live seed, unless it equals the `definition.id`-derived seed, which
-    /// `LandKeeper.setLandID` replaces.
+    /// service's seed is the live seed. (Before #751, `LandKeeper.setLandID` replaced one equal
+    /// to the `definition.id`-derived seed; the setter is gone.)
     public var replayRngSeed: UInt64 { rngSeed ?? DeterministicSeed.fromLandID(landID) }
     /// Written as 16 hex digits (a JSON number above 2^53 does not survive JavaScript readers);
     /// a number, as older records wrote it, is still read.

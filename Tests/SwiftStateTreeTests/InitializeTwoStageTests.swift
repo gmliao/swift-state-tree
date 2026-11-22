@@ -316,15 +316,7 @@ private func expectReplayRefusal(_ verdict: ReevaluationEngine.InitializeVerific
     #expect(reason.contains("ReplayRefusedError"), "\(reason)", sourceLocation: sourceLocation)
 }
 
-// MARK: - Waiters, .failLand, the hosted run, a late land ID
-
-/// The land IDs a late `setLandID` reported.
-private final class LateReports: @unchecked Sendable {
-    private let lock = NSLock()
-    private var ids: [String] = []
-    var landIDs: [String] { lock.withLock { ids } }
-    func note(_ landID: String) { lock.withLock { ids.append(landID) } }
-}
+// MARK: - Waiters, .failLand, the hosted run
 
 /// OnInitialize's resolver, held at the gate keyed by the land ID's last part
 /// ("init-wait:<key>"), then a room for 4.
@@ -585,17 +577,6 @@ struct InitializeTwoStageTests {
             #expect(steps > 0)
             #expect(await runner.initializeVerification() == verdict)
         }
-    }
-
-    @Test("A setLandID after the keeper's initialization started is reported (in DEBUG, an assertion)")
-    func lateSetLandIDIsReported() async throws {
-        let keeper = LandKeeper<RoomState>(definition: makeReplayDefinition(voidForm: true), initialState: RoomState(), autoStartLoops: false)
-        await keeper.awaitInitialization()
-        let reports = LateReports()
-        await LateLandIDReport.$handlerForTesting.withValue({ reports.note($0) }) {
-            await keeper.setLandID("init-replay:late")
-        }
-        #expect(reports.landIDs == ["init-replay:late"])
     }
 
     @Test("A malformed record whose OnInitialize replays in tick 1: a refusal there still fails the check, in the engine and the runner")

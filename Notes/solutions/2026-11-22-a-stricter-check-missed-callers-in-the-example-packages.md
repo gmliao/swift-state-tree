@@ -36,8 +36,11 @@ Two gaps added up.
 
 The eight callers pass `landID:` at construction. A repo-wide search with the pattern quoted (`--include='*.swift'`) finds no `setLandID` call left except the test that checks the report. `swift test` was run in `Examples/Demo` and `Examples/GameDemo` too.
 
+The report still depended on the schedule: a call that reached the actor before the eager initialization went unreported, though it raced all the same. The maintainer then removed `setLandID` (2026-11-22), so the compiler refuses any caller. `scripts/must-not-compile/set-land-id-removed.swift` keeps it out.
+
 ## Prevention
 
 - When a check gets stricter (an assertion, a refusal, a new requirement), search the whole repository for every caller: `Examples/` and `Tools/` too, not only `Sources/` and `Tests/`.
 - Quote glob patterns in grep's options (`--include='*.swift'`). A shell error is not an empty result: rerun the search before you rely on it.
 - Run `swift test` in each package the change can reach. `Examples/Demo` and `Examples/GameDemo` are built only by CI's examples job, unless you build them yourself.
+- Prefer a check the compiler makes (a removed or deprecated API) over a runtime report that fires only on some schedules.
