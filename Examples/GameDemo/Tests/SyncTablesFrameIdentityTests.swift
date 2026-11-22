@@ -63,9 +63,8 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
     ) async {
         transport = FrameRecordingTransport()
         // No loops: the script ticks and syncs, so two runs are comparable.
-        keeper = LandKeeper<State>(definition: definition, initialState: State(), services: services, autoStartLoops: false)
         // The same land ID in both runs: it seeds the land's random numbers and is in the frames.
-        await keeper.setLandID(landID)
+        keeper = LandKeeper<State>(definition: definition, initialState: State(), services: services, autoStartLoops: false, landID: landID)
         adapter = TransportAdapter<State>(
             keeper: keeper,
             transport: transport,

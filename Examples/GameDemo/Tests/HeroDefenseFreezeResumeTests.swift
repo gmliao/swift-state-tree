@@ -39,14 +39,14 @@ struct HeroDefenseFreezeResumeTests {
                           as: GameConfigProviderService.self)
         let stats = HeroDefenseStatsRecorder()
         services.register(stats, as: HeroDefenseStatsRecorder.self)
+        let landID = "hero-defense:freeze-resume"
         let keeper = LandKeeper<HeroDefenseState>(
             definition: HeroDefense.makeLand(),
             initialState: HeroDefenseState(),
             services: services,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        let landID = "hero-defense:freeze-resume"
-        await keeper.setLandID(landID)
         let ids = (0..<players).map { (PlayerID("p\($0)"), ClientID("c\($0)"), SessionID(fixed: "s\($0)")) }
         for (player, client, session) in ids {
             try await keeper.join(playerID: player, clientID: client, sessionID: session)

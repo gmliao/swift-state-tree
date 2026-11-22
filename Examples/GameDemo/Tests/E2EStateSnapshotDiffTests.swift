@@ -61,9 +61,9 @@ struct E2EStateSnapshotDiffTests {
             initialState: HeroDefenseState(),
             services: makeServices(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
 
         guard let recorder = await keeper.getReevaluationRecorder() else {
             Issue.record("ReevaluationRecorder not available")
@@ -171,9 +171,9 @@ struct E2EStateSnapshotDiffTests {
             initialState: HeroDefenseState(),
             services: makeServices(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
 
         guard let recorder = await keeper.getReevaluationRecorder() else {
             Issue.record("ReevaluationRecorder not available"); return
@@ -263,9 +263,9 @@ struct E2EStateSnapshotDiffTests {
             initialState: HeroDefenseState(),
             services: makeServices(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
 
         guard let recorder = await keeper.getReevaluationRecorder() else {
             Issue.record("ReevaluationRecorder not available")
