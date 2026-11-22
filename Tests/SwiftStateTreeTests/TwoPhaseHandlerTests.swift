@@ -171,6 +171,7 @@ private final class TwoPhaseInTurnTransport: LandKeeperTransport, @unchecked Sen
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func makeTwoPhaseKeeper(

@@ -36,8 +36,7 @@ This section organizes SwiftStateTree's core concepts and APIs: StateNode, Sync,
 ### Core Features
 
 - **Actor Serialization**: All state changes go through actor serialization, ensuring thread safety
-- **Snapshot Sync Mode**: Uses snapshot mode for synchronization, doesn't block state changes
-- **Sync Deduplication**: Concurrent sync requests are deduplicated, avoiding duplicate work
+- **Sync in Turns**: Every sync phase runs inside a keeper turn, so state changes and syncs never interleave
 - **Request-Scoped Context**: New `LandContext` created for each request, released after processing
 
 ### Main Functions

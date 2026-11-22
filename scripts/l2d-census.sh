@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Census for #546 L2d-2: every live keeper routes through turns
-# (Notes/plans/2026-11-20-remove-adapter-off-mode.md §3.8.4).
+# Census for #546 L2d-2/L2d-3: every live keeper routes through turns, and the keeper's legacy
+# pass and sync flag are gone (Notes/plans/2026-11-20-remove-adapter-off-mode.md §3.8.4,
+# Notes/plans/2026-11-21-l2d3-delete-legacy-sync.md).
 #
 # 1. Symbol counts. Non-comment lines (first non-space characters not `//`) in Sources, Tests,
 #    Examples and Tools, per file and symbol, at REF. scripts/l2d-census.allow lists
@@ -31,6 +32,14 @@ symbols=(
   'syncBroadcastOnlyFromTransport-decl|func syncBroadcastOnlyFromTransport\('
   'usesInTurnSync|usesInTurnSync'
   'legacyCycle|\.legacyCycle([^A-Za-z0-9_]|$)'
+  # Deleted in L2d-3: allowed nowhere.
+  'beginSync|(^|[^A-Za-z0-9_])beginSync(Located)?\('
+  'endSync|(^|[^A-Za-z0-9_])endSync\('
+  'isSyncing|(^|[^A-Za-z0-9_])isSyncing([^A-Za-z0-9_]|$)'
+  'syncInFlight|\.syncInFlight([^A-Za-z0-9_]|$)|case syncInFlight'
+  'syncOnlyTurnAfterLegacyCycle|[sS]yncOnlyTurnAfterLegacyCycle'
+  'legacyPass|runLegacyPass|finishTicklessLegacyPass|deliverLegacyPass|legacyDeliveries|runTicklessJobPass|legacyPass(Callers|Results|Owner|AppliedBy)'
+  'legacyHoldPoints|\.(legacyShutdownPass|syncOnlyAfterLegacyCycle|legacyDelivery|ticklessJobPass)([^A-Za-z0-9_]|$)|case (legacyShutdownPass|syncOnlyAfterLegacyCycle|legacyDelivery|ticklessJobPass)'
 )
 
 # Prints `path count` for non-comment lines matching pattern at ref.

@@ -163,6 +163,7 @@ private final class PerSequenceInTurnTransport: LandKeeperTransport, @unchecked 
     ) -> InTurnSyncResult {
         includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// In-turn transport that counts the turns whose output step included the sync phase.
@@ -194,6 +195,7 @@ private final class InTurnSyncSpyTransport: LandKeeperTransport, @unchecked Send
         lock.withLock { syncs += 1 }
         return .committed(clearDirtyFlags: true)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 /// Counts the sync phases its keeper's turns run (a leave asks for one).
@@ -216,6 +218,7 @@ private final class BroadcastSpyTransport: LandKeeperTransport, @unchecked Senda
         if includeSync { lock.withLock { phases += 1 } }
         return InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let perSequenceLandID = "per-sequence-test:local"

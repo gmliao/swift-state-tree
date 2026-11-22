@@ -156,6 +156,7 @@ private final class DestroyRecorder: LandKeeperTransport, @unchecked Sendable {
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func makeKeeper(destroyWhenEmpty: Bool = false, transport: (any LandKeeperTransport)? = nil) -> LandKeeper<DeadlineTestState> {

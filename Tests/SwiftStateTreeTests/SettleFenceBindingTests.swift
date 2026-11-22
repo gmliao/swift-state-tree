@@ -21,6 +21,7 @@ private final class SettlePortFake: LandKeeperSettlePort, @unchecked Sendable {
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(.notRequested, syncStream: [], settle: .empty(membershipEpoch: 0))
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func isSettled(_ outcome: LandKeeper<RoutingPinState>.SettleTurnOutcome) -> Bool {
@@ -30,7 +31,8 @@ private func isSettled(_ outcome: LandKeeper<RoutingPinState>.SettleTurnOutcome)
 
 /// On a keeper never attached, a settle binds the sync requester only once its whole fence has
 /// passed (#546 L2d-2): a refused settle changes nothing, so the port that settles next isn't
-/// excluded by a binding the refused one left.
+/// excluded by a binding the refused one left. The refusal for a held sync flag went with the
+/// flag (#546 L2d-3); the rule stays pinned by the refusal of a port that isn't a settle port.
 @Suite("Settle fence: a refused settle binds no requester (#546 L2d-2)", .timeLimit(.minutes(1)))
 struct SettleFenceBindingTests {
     private static func frozenNeverAttachedKeeper() async -> LandKeeper<RoutingPinState> {
@@ -57,18 +59,5 @@ struct SettleFenceBindingTests {
         }
         #expect(isSettled(await keeper.settleTurn(via: settle, fence: Self.fence)))
         withExtendedLifetime(notSettle) {}
-    }
-
-    @Test("A settle refused for a held sync flag leaves no binding")
-    func syncInFlightLeavesNoBinding() async {
-        let keeper = await Self.frozenNeverAttachedKeeper()
-        let first = SettlePortFake(), second = SettlePortFake()
-        _ = await keeper.beginSync(clearDirtyFlags: false)
-        guard case .refused(.syncInFlight) = await keeper.settleTurn(via: first, fence: Self.fence) else {
-            Issue.record("the settle wasn't refused for the held sync flag"); return
-        }
-        await keeper.endSync()
-        #expect(isSettled(await keeper.settleTurn(via: second, fence: Self.fence)))
-        withExtendedLifetime(first) {}
     }
 }

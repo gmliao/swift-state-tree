@@ -196,6 +196,7 @@ private final class DrainInTurnTransport: LandKeeperTransport, @unchecked Sendab
     ) -> InTurnSyncResult {
         includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
@@ -292,6 +293,7 @@ private final class DestroyHoldTransport: LandKeeperTransport, @unchecked Sendab
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func makeLifecycleKeeper(

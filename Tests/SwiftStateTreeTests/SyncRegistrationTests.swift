@@ -146,6 +146,7 @@ private final class RegistrationDestroyFlag: LandKeeperTransport, @unchecked Sen
     ) -> InTurnSyncOutput {
         InTurnSyncOutput(includeSync ? .committed(clearDirtyFlags: true) : .notRequested)
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private func isUnsupportedKey(_ problem: SyncRegistrationError.Problem) -> Bool {

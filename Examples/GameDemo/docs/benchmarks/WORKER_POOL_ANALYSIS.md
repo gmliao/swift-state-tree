@@ -227,7 +227,7 @@ Worker 處理順序：Room 0 → Room 1 → ... → Room 8
 基於實驗結果，未來的效能優化應該專注於：
 
 1. **狀態同步層面**（`TransportAdapter.syncNow()`）
-   - 優化狀態快照提取（`keeper.beginSync()`）
+   - 優化 turn 內 sync phase 的狀態讀取與規劃（`runSyncPhaseInTurn`）
    - 減少 diff 計算開銷
    - 考慮增量同步策略
 

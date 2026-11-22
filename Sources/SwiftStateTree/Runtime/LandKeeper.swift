@@ -55,8 +55,6 @@ package typealias SyncTurnTicket = Ticket<SyncBindingKey>
 enum LandKeeperHoldPoint: Hashable, Sendable {
     /// `forceShutdown`, right after its shutdown turn applied and before the destroy (#382).
     case shutdownTurnApplied
-    /// A tickless legacy land's shutdown pass, before it applies the ready inputs (#382).
-    case legacyShutdownPass
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
     /// The start of a failed land's teardown task (#535), before it tells the transport: the
@@ -68,23 +66,13 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case leave
     /// The start of each input drain, before its first turn.
     case inputDrain
-    /// The task `endSync` starts for the sync-only turn a turn left to it (a turn that found a
-    /// legacy cycle in flight), before that turn runs.
-    case syncOnlyAfterLegacyCycle
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
     case serverInputKick
-    /// After an input turn's record is enqueued (in the turn's synchronous segment), or after a
-    /// legacy pass's record and delivery are enqueued: the inputs are applied and their callers
-    /// wait only for the record (and, legacy, its delivery, which doesn't wait for this hold).
+    /// After an input turn's record is enqueued (in the turn's synchronous segment), or, on a
+    /// re-evaluation tick, after its inputs are applied: their callers wait only for the record.
     case turnRecord
-    /// The start of a legacy tickless pass's delivery job (`legacyDeliveries`), before it waits
-    /// for the pass's record.
-    case legacyDelivery
     /// The start of an action job's completion (`completeAction`), before its segment.
     case actionComplete
-    /// The trigger pass a tickless job's completion starts (in-turn sync off), before it
-    /// applies anything: the job is delivered and waits in the queue.
-    case ticklessJobPass
     /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
     /// a job's registration) is done.
     case actionSubmitted
@@ -753,20 +741,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    /// Flag to prevent duplicate sync operations (for deduplication only).
-    ///
-    /// **Note**: This flag is used for deduplication, NOT for blocking mutations.
-    /// Sync operations use snapshot model - they take a snapshot of state at the start,
-    /// which naturally provides consistency without blocking mutations.
-    ///
-    /// When sync is in progress, concurrent sync requests are skipped to avoid redundant work.
-    /// Mutations (actions/events) are NOT blocked and can proceed concurrently with sync.
-    ///
-    /// TODO: Future optimizations to consider:
-    /// - Sync queue: Queue sync requests and batch them to reduce overhead
-    /// - Debouncing: Debounce rapid sync requests to reduce frequency
-    /// - Metrics: Track sync frequency and performance
-    private var isSyncing = false
 
     // MARK: In-turn sync state (see `docs/core/runtime.md`, In-Turn Sync)
 
@@ -806,8 +780,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
 
-    /// Interim (#700, #702): the follow-up slots below (this retry, the latch, the join-sync turn,
-    /// the after-turn request) each keep the binding ticket they were armed under, and each job
+    /// Interim (#700, #702): the follow-up slots below (this retry, the join-sync turn, the
+    /// after-turn request) each keep the binding ticket they were armed under, and each job
     /// checks and retires only its own. That is TurnCore's request-per-key shape (#700), with the
     /// per-slot coalescing of a pending request per key (#702), kept by hand until the keeper's
     /// turns run on TurnCore. Known gap until then (#702 closes a superseded binding's follow-up
@@ -819,14 +793,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// neither blocks the current binding's nor clears its mark.
     private var inTurnDrainRetryBinding: SyncTurnTicket?
 
-    /// A turn wanted a sync phase while a legacy cycle (`beginSync` ... `endSync`, called
-    /// directly) held the sync flag: `endSync` then runs a sync-only turn through
-    /// the port of the turn that set it, so the request is not lost. A latch that coalesces
-    /// requests, not a counter.
-    private var syncOnlyTurnAfterLegacyCycle: SyncTurnFollowUp?
-    /// Tests (#555): a sync request met a legacy cycle in flight, and a sync-only turn is due
-    /// after its `endSync()`.
-    package var syncOnlyTurnAfterLegacyCycleForTesting: Bool { syncOnlyTurnAfterLegacyCycle != nil }
 
     /// The tick loop's next deadline: set by the loop after each tick, cleared when the tick starts.
     private var nextTickDeadline: ContinuousClock.Instant?
@@ -856,8 +822,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// reach the recorder in turn order.
     /// Orders recorder submissions and lets the shutdown saver wait for them.
     private let recorderSubmissions = ReevaluationSubmissionTracker()
-    /// Legacy tickless passes' delivery jobs, one per pass in apply order (`finishTicklessLegacyPass`).
-    private let legacyDeliveries = ReevaluationSubmissionTracker()
     /// Recorder submissions enqueued so far: a turn compares it with its start to know whether
     /// it recorded anything (a tickless sync-only turn then ends its turn record, #327).
     private var recorderSubmissionCount = 0
@@ -1440,107 +1404,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Returns the current state snapshot.
     ///
     /// This is a read-only view of the state. Mutations should be done through action/event handlers.
-    ///
-    /// Note: This method does not check sync lock. For sync operations, use `beginSync(clearDirtyFlags:)` instead.
     public func currentState() -> State {
         state
-    }
-
-    /// Begin a sync operation, taking a snapshot of current state.
-    ///
-    /// For the sync pipeline only; use `currentState()` to read the state.
-    ///
-    /// **Simplified Model**: Sync uses snapshot model - it takes a snapshot at the start
-    /// and works with that snapshot. Mutations are NOT blocked during sync.
-    ///
-    /// **Dirty flags**: when `clearDirtyFlags` is `true`, the live state's dirty flags are cleared
-    /// in the same actor turn that takes the snapshot. The snapshot keeps its own dirty flags (they
-    /// live in value types), so the sync cycle still sees every change since the previous clearing
-    /// cycle, while any mutation that runs after this call (the sync cycle awaits, and actions or
-    /// ticks can run on this actor meanwhile) stays dirty for the next cycle.
-    ///
-    /// - Parameter clearDirtyFlags: Required, so every caller decides. Pass `true` only for cycles
-    ///   that diff every synced field. Pass `false` for partial cycles (e.g. broadcast-only) and
-    ///   when dirty tracking is disabled.
-    /// - Returns: The current state snapshot if sync can proceed, `nil` if another sync is already in progress (deduplication).
-    ///   A rejected call leaves the dirty flags untouched.
-    /// - Important: Always call `endSync()` after sync completes, even if an error occurs.
-    ///   Flags cleared here are not restored if the cycle fails; the transport adapter then runs
-    ///   its next cycle as a recovery cycle (`.all` extraction), which does not depend on them.
-    ///
-    /// **Why snapshot model works**:
-    /// - Each sync gets a consistent snapshot (actor serialization ensures this)
-    /// - Mutations can proceed concurrently (they'll be included in next sync)
-    /// - No blocking = better performance and simpler code
-    ///
-    /// Example:
-    /// ```swift
-    /// guard let state = await keeper.beginSync(clearDirtyFlags: true) else {
-    ///     // Another sync in progress, skip this one (deduplication)
-    ///     return
-    /// }
-    /// defer { await keeper.endSync() }
-    /// // ... perform sync operations with state snapshot ...
-    /// ```
-    public func beginSync(clearDirtyFlags: Bool) -> State? {
-        guard !isSyncing else {
-            return nil // Deduplication: skip concurrent sync requests
-        }
-        isSyncing = true
-        let snapshot = state
-        if clearDirtyFlags {
-            state.clearDirty()
-        }
-        return snapshot
-    }
-
-    /// `beginSync`, with where its copy was taken (`SyncReadPosition`) and whether the sync
-    /// stream is recorded, from the same job (#553).
-    package func beginSyncLocated(clearDirtyFlags: Bool) -> (state: State, position: SyncReadPosition, recordsSyncStream: Bool)? {
-        let position = syncReadPosition()
-        let records = recordsSyncStream
-        return beginSync(clearDirtyFlags: clearDirtyFlags).map { ($0, position, records) }
     }
 
     /// `currentState()`, with where it was read and whether the sync stream is recorded, from
     /// the same job.
     package func currentStateLocated() -> (state: State, position: SyncReadPosition, recordsSyncStream: Bool) {
         (state, syncReadPosition(), recordsSyncStream)
-    }
-
-    /// End a sync operation, releasing the sync flag.
-    ///
-    /// This must be called after `beginSync(clearDirtyFlags:)` to allow new sync requests.
-    /// It does not touch dirty flags: those are cleared by `beginSync(clearDirtyFlags:)`, so
-    /// mutations made while the sync was in flight stay dirty for the next cycle.
-    public func endSync() {
-        isSyncing = false
-        // A turn found this cycle in flight and left its sync phase to a sync-only turn now.
-        if let followUp = syncOnlyTurnAfterLegacyCycle {
-            syncOnlyTurnAfterLegacyCycle = nil
-            // Counted from the latch until its turn ran (the latch counted it when it was set).
-            // One hop onto the keeper: the closure captures `self` weakly, so it isn't isolated
-            // to it, and the hold and the turn run in one isolated call.
-            Task { [weak self] in
-                await self?.runSyncOnlyTurnAfterLegacyCycle(followUp)
-            }
-        }
-    }
-
-    /// The sync-only turn `endSync` leaves to a Task, behind its test hold point. The hold is
-    /// the only await: the binding check and the turn run in the synchronous segment after it.
-    private func runSyncOnlyTurnAfterLegacyCycle(_ followUp: SyncTurnFollowUp) async {
-        await holds.at(.syncOnlyAfterLegacyCycle)
-        defer { endRequestedSyncWork() }
-        runFollowUpSyncOnlyTurn(followUp)
-    }
-
-    /// End a sync operation, releasing the sync flag.
-    ///
-    /// - Parameter clearDirtyFlags: Ignored. Pass the clearing choice to `beginSync(clearDirtyFlags:)`.
-    @available(*, deprecated, message: "pass clearDirtyFlags to beginSync(clearDirtyFlags:); call endSync()")
-    public func endSync(clearDirtyFlags: Bool) {
-        endSync()
     }
 
     /// Whether this keeper syncs the land periodically on its own: its loops auto-start and either
@@ -1700,8 +1571,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// is live and neither failed nor drains (`.closed`), the deadline (`.timedOut`), the
     /// frozen generation (`.released`), `port` runs in-turn here, is this keeper's sync port (the
     /// attached transport or, never attached, its bound requester, as `acceptsSyncTurn`) and is a
-    /// settle port (`.refused(.notCurrent)`), and no direct `beginSync` holds the sync flag
-    /// (`.refused(.syncInFlight)`; it never latches).
+    /// settle port (`.refused(.notCurrent)`).
     ///
     /// The settle's own bookkeeping, not a requested turn's: it doesn't consume the pending
     /// sync-only turn (which runs later, skips as frozen and leaves its sync to the resume),
@@ -1726,7 +1596,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
               isSyncPort(port) else {
             return .refused(.notCurrent)
         }
-        guard !isSyncing else { return .refused(.syncInFlight) }
         _ = bindSyncRequester(port)
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
@@ -1894,13 +1763,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
 
-        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
+        // A tickless land applies it now, in an input turn the caller waits for.
         if definition.lifetimeHandlers.tickHandler == nil {
-            if routesThroughTurn {
-                _ = try await awaitInputTurn(sequence: sequence)
-            } else {
-                _ = try await runLegacyPass(for: sequence)
-            }
+            _ = try await awaitInputTurn(sequence: sequence)
         }
     }
 
@@ -2134,10 +1999,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // the input (`noteJoinInputsConsumed`) and a sync phase commits for it. Nobody
                 // awaits the input turn here, so it is scheduled in this segment.
                 scheduleInputDrain()
-            } else if routesThroughTurn {
-                _ = try await awaitInputTurn(sequence: sequence)
             } else {
-                _ = try await runLegacyPass(for: sequence)
+                _ = try await awaitInputTurn(sequence: sequence)
             }
         }
 
@@ -2361,8 +2224,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tickless jobs whose in-flight work (`debugBeginWork` at intake) ends when their slot is
     /// filled, on whichever path fills it: so `debugFreeze` waits for their responses.
     private var ticklessJobWork: Set<Int64> = []
-    /// Tickless jobs delivered (appended) and not yet applied: the input turn or legacy pass that
-    /// applies one fills its slot with the handler's outcome, after the turn's record is in.
+    /// Tickless jobs delivered (appended) and not yet applied: the input turn that applies one
+    /// fills its slot with the handler's outcome, after the turn's record is in.
     private var ticklessJobTurns: Set<Int64> = []
     #if DEBUG
     /// Debug only: the most recent filled slots, so a second fill is caught even after the
@@ -2453,15 +2316,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     // Tickless: the turn or pass that applies it answers, after its record.
                     // Delivered, it is out of the job table's cancellations (`completed`).
                     ticklessJobTurns.insert(sequence)
-                    if routesThroughTurn {
-                        scheduleInputDrain()
-                    } else {
-                        // Only a trigger: it guarantees a pass runs. It's usually empty or
-                        // applies other inputs too, since any pass applies every ready input and
-                        // another session's pass often gets here first; the pass that applies
-                        // this action is the one that answers it.
-                        Task { [weak self] in await self?.runTicklessJobPass() }
-                    }
+                    scheduleInputDrain()
                     return
                 }
                 // Tick land: acknowledged now; the handler runs in a tick.
@@ -2471,18 +2326,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         fillActionSlot(sequence, with: outcome)
-    }
-
-    /// Test hooks for `LegacyEntryStopTests`: the legacy pass entries, which a live keeper never
-    /// reaches (#546 L2d-2). On a live keeper each stops the process.
-    func runTicklessJobPassForTesting() async { await runTicklessJobPass() }
-    func runLegacyPassForTesting(sequence: Int64) async throws { _ = try await runLegacyPass(for: sequence) }
-
-    /// The trigger pass of a tickless job's completion (in-turn sync off).
-    private func runTicklessJobPass() async {
-        precondition(mode == .reevaluation, "LandKeeper.runTicklessJobPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
-        await holds.at(.ticklessJobPass)
-        await processPendingActions()
     }
 
     /// The job leaves the job table (and the caps); test waiters on it resume.
@@ -2840,13 +2683,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
 
-        // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
+        // A tickless land applies it now, in an input turn the caller waits for.
         if definition.lifetimeHandlers.tickHandler == nil {
-            if routesThroughTurn {
-                _ = try await awaitInputTurn(sequence: sequence)
-            } else {
-                _ = try await runLegacyPass(for: sequence)
-            }
+            _ = try await awaitInputTurn(sequence: sequence)
         }
 
         scheduleDestroyIfNeeded()
@@ -2914,18 +2753,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let sequence = outputCollector.takeNextSequence()
             pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: lastCommittedTickId)))
             inTurnProbeForTesting?("shutdown-queued")
-            if routesThroughTurn {
-                scheduleInputDrain()
-            } else {
-                // A pass of its own; its delivery job waits behind earlier passes' deliveries,
-                // which the shutdown doesn't wait for. Another caller's pass may apply the
-                // shutdown first (every pass applies every ready input); this one then applies
-                // nothing. Not `runLegacyPass`: no caller waits on the shutdown's outcome.
-                Task {
-                    await self.holds.at(.legacyShutdownPass)
-                    await self.processPendingActions()
-                }
-            }
+            scheduleInputDrain()
             // Until the turn has applied, or an empty-room drain that started first has dropped
             // the input (that drain is awaited below).
             await withCheckedContinuation { shutdownTurnWaiters.append($0) }
@@ -3166,18 +2994,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // If there's no tick handler, process pending actions immediately and return response
         // This maintains backward compatibility for tests and simple use cases
         if definition.lifetimeHandlers.tickHandler == nil {
-            if routesThroughTurn {
-                // An input turn applies it (with the other ready inputs) and returns its response.
-                return .completed(try await awaitInputTurn(sequence: sequence))
-            }
-            do {
-                return .completed(try await runLegacyPass(for: sequence))
-            } catch {
-                logger.error("Error processing pending actions", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
-                throw error
-            }
+            // An input turn applies it (with the other ready inputs) and returns its response.
+            return .completed(try await awaitInputTurn(sequence: sequence))
         }
 
         // Return immediate ACK (handler will execute in tick)
@@ -3197,9 +3015,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Handles a client event from a player.
     ///
     /// In `.live` mode, a tick land queues the event for its next tick and returns. A tickless
-    /// land with in-turn sync applies it in an input turn and returns once that turn applied it,
-    /// as `sendAction` does (#55); on the legacy path (in-turn sync off) a task applies it and
-    /// this returns at once. In `.reevaluation` mode, returns immediately.
+    /// land applies it in an input turn and returns once that turn applied it, as `sendAction`
+    /// does (#55). In `.reevaluation` mode, returns immediately.
     ///
     /// - Parameters:
     ///   - event: The client event (type-erased).
@@ -3209,10 +3026,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Throws: Errors from event validation (e.g., event not registered)
     ///
     /// **Error Handling**:
-    /// - On a tickless land with in-turn sync, a handler's error is thrown to the caller, once:
-    ///   the event fails alone and is not run again.
-    /// - Elsewhere a handler's error is logged where the event is applied (the tick, or the
-    ///   legacy pass); this call has already returned.
+    /// - On a tickless land, a handler's error is thrown to the caller, once: the event fails
+    ///   alone and is not run again.
+    /// - On a tick land a handler's error is logged where the event is applied (the tick); this
+    ///   call has already returned.
     /// - The caller (TransportAdapter) sends a thrown error to the client.
     public func handleClientEvent(
         _ event: AnyClientEvent,
@@ -3297,33 +3114,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
 
-        // A tickless land applies the event now: in an input turn the caller waits for (in-turn
-        // sync), or in a legacy pass a task runs. `processPendingActions()` advances the tick
-        // counter if needed, so records get valid tick IDs.
+        // A tickless land applies the event now, in an input turn the caller waits for.
         if definition.lifetimeHandlers.tickHandler == nil {
             // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
             debugBeginWork()
-            if routesThroughTurn {
-                // An input turn applies it, and the caller waits for that turn as an action's
-                // caller does (#55): it returns once the event is applied, or throws the handler's
-                // error. The waiter is registered in this segment, the append's, so a drain
-                // started by another input can't apply the event before anyone waits for it.
-                // The probe is synchronous: a test learns the event is queued without a
-                // suspension between the append and the waiter's registration.
-                inTurnProbeForTesting?("client-event-queued")
-                defer { debugEndWork() }
-                _ = try await awaitInputTurn(sequence: sequence)
-                return
-            }
-            Task { [weak self] in
-                guard let self = self else { return }
-                // A failing handler is logged by the pass and fails only this event.
-                await self.processPendingActions(flushOutputsImmediately: true)
-                await self.debugEndWork()
-            }
+            // An input turn applies it, and the caller waits for that turn as an action's caller
+            // does (#55): it returns once the event is applied, or throws the handler's error.
+            // The waiter is registered in this segment, the append's, so a drain started by
+            // another input can't apply the event before anyone waits for it. The probe is
+            // synchronous: a test learns the event is queued without a suspension between the
+            // append and the waiter's registration.
+            inTurnProbeForTesting?("client-event-queued")
+            defer { debugEndWork() }
+            _ = try await awaitInputTurn(sequence: sequence)
+            return
         }
 
-        // A tick land applies the event in its next tick; the legacy path's task applies it soon.
+        // A tick land applies the event in its next tick.
     }
 
     // MARK: - Server inputs (#387)
@@ -3406,20 +3213,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// A tickless land applies server inputs in an input turn, as it does client events: a task,
     /// counted as in-flight work from now (`debugFreeze` drains it), that waits for the turn
-    /// applying `sequence` (in-turn sync) or runs a pass (legacy). A tick land's next tick
-    /// applies them.
+    /// applying `sequence`. A tick land's next tick applies them.
     private func kickServerInputTurn(upTo sequence: Int64) {
         guard definition.lifetimeHandlers.tickHandler == nil else { return }
-        let inTurn = routesThroughTurn
         debugBeginWork()
         Task { [weak self] in
             guard let self else { return }
             await self.holds.at(.serverInputKick)
-            if inTurn {
-                _ = try? await self.awaitInputTurn(sequence: sequence)
-            } else {
-                await self.processPendingActions(flushOutputsImmediately: true)
-            }
+            _ = try? await self.awaitInputTurn(sequence: sequence)
             await self.debugEndWork()
         }
     }
@@ -3993,43 +3794,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
-    /// Applies the pending inputs that are ready (the legacy path: in-turn sync off, or a tick
-    /// land's tick), in order (`applyInputs`), then records them, runs the broadcast-only sync a
-    /// leave asks for, and flushes the outputs.
+    /// A re-evaluation tick's inputs (`runTick`): applies the pending inputs that are ready, in
+    /// order (`applyInputs`), then records them and runs the broadcast-only sync a leave asks for.
+    /// The tick flushes the outputs after its handler, so they include its state changes. A live
+    /// keeper applies inputs only in turns (#546 L2d); this is the re-evaluation keeper's legacy
+    /// tick path until #612.
     ///
-    /// An input whose `validate` throws fails alone and the pass goes on (`applyInputs`). Each
-    /// input's outcome is kept by sequence for the off-path caller waiting for it
-    /// (`runLegacyPass`), not returned: one pass can apply several callers' inputs (#88).
-    /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
-    private func processPendingActions(flushOutputsImmediately: Bool = true) async {
-        let owner = legacyPassOwner
-        legacyPassOwner = nil
+    /// An input whose `validate` throws fails alone and the pass goes on (`applyInputs`).
+    private func processPendingActions() async {
         let executingTickId = executingTickIdForPendingItems()
-        let sequenceBefore = outputCollector.nextSequence
         beginPass()
         let application = applyInputs(readyPendingItemsInOrder(), executingTickId: executingTickId)
         let applied = application.applied
         // Numbered in the apply segment, before any read after it (#563).
-        let passOrdinal = takePassOrdinal(applied: applied)
-        for (sequence, outcome) in application.outcomes where legacyPassCallers.contains(sequence) {
-            legacyPassResults[sequence] = outcome
-            if let owner { legacyPassAppliedBy[sequence] = owner }
-        }
-        if flushOutputsImmediately, mode == .live, definition.lifetimeHandlers.tickHandler == nil {
-            // Taken in the apply segment: the pass that applies a tickless job answers it, after
-            // its record (whichever pass that is: any caller's pass applies every ready input).
-            let jobOutcomes = application.outcomes.filter { ticklessJobTurns.remove($0.key) != nil }
-            await finishTicklessLegacyPass(
-                applied: applied,
-                sequenceBefore: sequenceBefore,
-                passOrdinal: passOrdinal,
-                executingTickId: executingTickId
-            )
-            for (sequence, outcome) in jobOutcomes {
-                fillActionSlot(sequence, with: outcome)
-            }
-            return
-        }
+        _ = takePassOrdinal(applied: applied)
         await holds.at(.turnRecord)
         let recordedActions = applied.recordedActions
         let recordedClientEvents = applied.recordedClientEvents
@@ -4061,120 +3839,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if shouldSyncBroadcastOnly {
             await transport?.syncBroadcastOnlyFromTransport()
         }
-
-        // Flush deterministic outputs produced while processing pending items.
-        // Only flush immediately if requested (e.g., for tickless lands).
-        // In normal tick flow, flush is deferred until after tick handler to ensure
-        // outputs include state changes from the tick handler.
-        if flushOutputsImmediately {
-            // A live tickless pass ends in `finishTicklessLegacyPass` (its turn record, #327);
-            // here the keeper is re-evaluating, with no recorder.
-            await flushOutputs(forTick: executingTickId)
-        }
-    }
-
-    /// The end of a live tickless legacy pass (#325): its inputs, its pass and its server events
-    /// are taken and submitted in the segment that applied them, as one turn record through the
-    /// ordered submission queue, so the record holds passes in apply order and one record per
-    /// pass however passes interleave at the awaits below.
-    ///
-    /// Its delivery is enqueued in the same segment, as one job on `legacyDeliveries`, so passes
-    /// deliver in apply order (as one flush of the tick's events in sequence order did before):
-    /// the job waits for this pass's record, then runs the broadcast-only sync, then sends this
-    /// pass's events. Nothing in a job may enqueue onto, or await, `legacyDeliveries`: the
-    /// broadcast-only sync plans from a snapshot and applies no input, so it can't start a pass.
-    /// The sync requests (`syncNow`, which can reach input application) run in this frame after
-    /// the job, outside the queue. `.turnRecord` holds this frame after both are enqueued; the
-    /// job doesn't wait for it. `.legacyDelivery` holds the job at its start.
-    private func finishTicklessLegacyPass(
-        applied: AppliedInputs,
-        sequenceBefore: Int64,
-        passOrdinal: Int64?,
-        executingTickId: Int64
-    ) async {
-        precondition(mode == .reevaluation, "LandKeeper.finishTicklessLegacyPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
-        // All tickless passes share one tick id, so the events and sync requests are taken
-        // here: a later pass can't flush this pass's, nor this pass a later one's.
-        // The land failed in this pass (a `landFailure` item ended its batch, #535): no events and
-        // no sync, as an input turn (`runInputTurn`). Its inputs were applied and are recorded;
-        // its events are neither sent nor recorded, so replay drops them too.
-        let passEvents = takeEmittedEvents(forTick: executingTickId)
-        let passSyncRequests = outputCollector.syncRequestsByTick.removeValue(forKey: executingTickId)
-        let events = failure == nil ? passEvents : []
-        let syncRequests = failure == nil ? passSyncRequests : nil
-        // The pass is one turn record (#327): its inputs, pass and events in one submission that
-        // ends the turn. With nothing of its own to record it still ends the turn, closing what
-        // reached the recorder during the pass (as before #325).
-        var submission: Task<Void, Never>?
-        if let recorder = reevaluationRecorder {
-            if !applied.isEmpty || !events.isEmpty {
-                var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: events)
-                if !applied.appliedOrder.isEmpty {
-                    record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder, ordinal: passOrdinal, rejected: applied.rejected.isEmpty ? nil : applied.rejected)]
-                }
-                submission = enqueueRecorderSubmission(record, endsTurn: true)
-            } else {
-                recorderSubmissionCount += 1
-                submission = recorderSubmissions.submit { await recorder.endTurn() }
-            }
-        }
-        let broadcastOnly = applied.shouldSyncBroadcastOnly
-        let recordSubmission = submission
-        let delivery = legacyDeliveries.submit { [weak self] in
-            await self?.deliverLegacyPass(after: recordSubmission, broadcastOnly: broadcastOnly, events: events)
-        }
-        await holds.at(.turnRecord)
-        await delivery.value
-        await runSyncRequests(syncRequests)
-    }
-
-    /// A legacy pass's delivery job (`finishTicklessLegacyPass`): runs on `legacyDeliveries`,
-    /// after every earlier pass's job.
-    private func deliverLegacyPass(after submission: Task<Void, Never>?, broadcastOnly: Bool, events: [EmittedEvent]) async {
-        await holds.at(.legacyDelivery)
-        await submission?.value
-        if broadcastOnly {
-            await transport?.syncBroadcastOnlyFromTransport()
-        }
-        for item in events {
-            await transport?.sendEventToTransport(item.event, to: item.target)
-        }
-    }
-
-    /// Off-path tickless inputs whose caller waits in `runLegacyPass`, by sequence.
-    private var legacyPassCallers: Set<Int64> = []
-    /// The outcome of each such input, set by the pass that applied it.
-    private var legacyPassResults: [Int64: Result<AnyCodable, any Error>] = [:]
-    /// The caller whose pass starts next (`runLegacyPass`), and, per caller's input, the caller
-    /// whose pass applied it: the check that a caller's input is applied by its own pass.
-    private var legacyPassOwner: Int64?
-    private var legacyPassAppliedBy: [Int64: Int64] = [:]
-
-    /// Off path (in-turn sync off), tickless: runs a pending-items pass for the input with
-    /// `sequence`, appended in this segment, and returns that input's own outcome (#88): its
-    /// action's response, an empty one for a join or leave, or its handler's error.
-    ///
-    /// The pass applies the input synchronously (a tickless input is always ready), so its
-    /// outcome is set before the pass's first `await`.
-    private func runLegacyPass(for sequence: Int64) async throws -> AnyCodable {
-        precondition(mode == .reevaluation, "LandKeeper.runLegacyPass: no live keeper takes the legacy path since every live keeper routes through turns (#546 L2d)")
-        legacyPassCallers.insert(sequence)
-        defer {
-            legacyPassCallers.remove(sequence)
-            legacyPassResults.removeValue(forKey: sequence)
-            legacyPassAppliedBy.removeValue(forKey: sequence)
-        }
-        // Rule: a caller's input is applied by its own pass, so the caller returns only after
-        // that pass's record (a response never leaves before its input is recorded). It holds
-        // while the pass applies before its first await; an await before the apply breaks it.
-        legacyPassOwner = sequence
-        await processPendingActions()
-        assert(legacyPassAppliedBy[sequence] == sequence, "Input \(sequence) was applied by another legacy pass, before its own")
-        guard let outcome = legacyPassResults[sequence] else {
-            assertionFailure("The pass did not apply the input it ran for (sequence \(sequence))")
-            return AnyCodable(())
-        }
-        return try outcome.get()
     }
 
     /// What `applyInputs` did: the records (failed inputs included) and each input's outcome.
@@ -4188,8 +3852,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var consumed: Int
     }
 
-    /// Applies `items` in order (synchronous), on every path (legacy pass, in-turn input turn,
-    /// in-turn tick turn), and removes them all from the queue in the same segment.
+    /// Applies `items` in order (synchronous), on every path (input turn, tick turn, a
+    /// re-evaluation tick's inputs), and removes them all from the queue in the same segment.
     ///
     /// An input P whose `validate` throws (or whose payload doesn't decode) is refused alone
     /// (#586): its outcome is its error (its caller gets it), and the inputs after it continue in
@@ -4752,7 +4416,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A failing input fails alone; the others and the tick handler still run.
         if replayPasses.isEmpty {
             _ = takeReplayRejected()
-            await processPendingActions(flushOutputsImmediately: false)
+            await processPendingActions()
             // A tick land's refused inputs are on its frame (#586); a tickless frame without
             // passes (an older record) has none to compare.
             if mode == .reevaluation, replayRecordsRejected, !isTickless,
@@ -4866,9 +4530,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The output step of a turn, synchronous: the turn's events, then (when `wantsSync`) the sync
     /// phase, handed to the transport in this actor turn, and the result applied in it.
-    ///
-    /// While a legacy cycle holds the sync flag, the phase is left to a sync-only turn run by
-    /// `endSync`; the events still go out now.
     private func runTurnOutputs(
         transport: any LandKeeperTransport,
         events: [EmittedEvent],
@@ -4880,12 +4541,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !applyPendingTransportFailure() else { return }
         // A land without periodic sync runs the phase for joins waiting on it (#69): the turn
         // that consumed a join's input completes it in its own output step.
-        var includeSync = wantsSync || (!hasPeriodicSync && transportHasJoinsAwaitingSync)
-        if includeSync && isSyncing {
-            includeSync = false
-            inTurnSyncDue = false
-            latchSyncOnlyTurnAfterLegacyCycle(transport: transport)
-        }
+        let includeSync = wantsSync || (!hasPeriodicSync && transportHasJoinsAwaitingSync)
         let output = transport.runSyncPhaseInTurn(
             state: state,
             events: events.map { InTurnServerEvent(event: $0.event, target: $0.target, sequence: $0.sequence) },
@@ -4974,8 +4630,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         transport: (any LandKeeperTransport)?
     ) -> TickTurnOutput {
         // No port: no fold to report and no sync phase; the tick's events and sync request are
-        // still taken below and recorded, so the collector is drained (#546 L2d).
-        if let transport { takePendingFold(transport: transport) }
+        // still taken below and recorded, so the collector is drained (#546 L2d). A sync folded
+        // into this tick ends with it: kept, it would be reported, and its due sync run, by the
+        // first tick turn after a later attach, as that turn's.
+        if let transport {
+            takePendingFold(transport: transport)
+        } else {
+            pendingFold = nil
+            inTurnSyncDue = false
+        }
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
@@ -5336,8 +4999,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// A sync-only turn (no inputs, no tick): the sync phase on the current state, synchronous,
-    /// with the dirty-flag clear in the same turn. While a legacy cycle holds the sync flag, it
-    /// runs again after that cycle's `endSync` instead.
+    /// with the dirty-flag clear in the same turn.
     @discardableResult
     private func runSyncOnlyTurn(transport: any LandKeeperTransport, joinSyncOnly: Bool = false) -> InTurnSyncResult {
         // A failed land sends nothing more (#535): a scheduled repair, writer-drain retry or
@@ -5349,10 +5011,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if applyPendingTransportFailure(), let failure {
             enqueueTicklessTurnEnd(since: markBeforeNote)
             return .landFailed(failure)
-        }
-        guard !isSyncing else {
-            latchSyncOnlyTurnAfterLegacyCycle(transport: transport)
-            return .skipped
         }
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
@@ -5372,16 +5030,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runSyncOnlyTurnIfInTurn() {
         guard syncsInTurn, let transport else { return }
         runSyncOnlyTurn(transport: transport)
-    }
-
-    /// Sets the latch `endSync` reads, with the port of the turn that set it. Counted as requested
-    /// work from now until the latch's turn ran, so a test wait can't see idle in between.
-    /// A latch set under an older binding is replaced, keeping its count, so the current binding's
-    /// request isn't coalesced into a follow-up that would be rejected.
-    private func latchSyncOnlyTurnAfterLegacyCycle(transport: any LandKeeperTransport) {
-        if let latched = syncOnlyTurnAfterLegacyCycle, latched.binding == syncBinding.current { return }
-        if syncOnlyTurnAfterLegacyCycle == nil { beginRequestedSyncWork() }
-        syncOnlyTurnAfterLegacyCycle = SyncTurnFollowUp(port: transport, binding: syncBinding.current)
     }
 
     /// After a deferred phase on a land without periodic sync: one sync-only turn once the writer
@@ -5439,8 +5087,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Requested sync turns (#546 L2a)
 
-    /// A follow-up a turn armed (the writer-drain retry, the latch's rerun, the join-sync turn, a
-    /// requested turn after this one): the port of the turn that armed it, and the binding it was
+    /// A follow-up a turn armed (the writer-drain retry, the join-sync turn, a requested
+    /// turn after this one): the port of the turn that armed it, and the binding it was
     /// armed under. It runs only while that binding holds.
     /// The keeper's sync binding as a generation: each bind or rebind issues a new ticket, and a
     /// ticket from an earlier binding is never current again (also after A → B → A).
@@ -5599,8 +5247,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: Requested sync work, for the test wait
 
-    /// Follow-ups armed and not yet run or retired: the writer-drain retry, the join-sync turn,
-    /// the latch's rerun and a pending requested turn.
+    /// Follow-ups armed and not yet run or retired: the writer-drain retry, the join-sync turn
+    /// and a pending requested turn.
     private var requestedSyncWork = 0
     /// Test waiters, by id: each returns once at most its `atMost` follow-ups are pending, or when
     /// its task is cancelled (a test bounds the wait with `withinHangBound`).
@@ -5623,7 +5271,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Tests: returns once no requested sync work is pending: no writer-drain retry, join-sync
-    /// turn, latch rerun or requested turn armed and not yet run (its frames then are with the
+    /// turn or requested turn armed and not yet run (its frames then are with the
     /// writer) or retired. Also returns when its task is cancelled.
     package func waitForRequestedSyncTurnsForTesting() async {
         await waitForRequestedSyncTurnsForTesting(atMost: 0)
@@ -5880,12 +5528,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if let waiter = inputTurnWaiters.removeValue(forKey: item.sequence) {
                 failed.append(waiter)
             }
-            // A legacy caller whose input was queued behind the shutdown, in the same pass
-            // (#382): its own pass answers it with `.landClosed`, as if it had applied it.
-            if legacyPassCallers.contains(item.sequence) {
-                legacyPassResults[item.sequence] = .failure(LandInputRejection.landClosed)
-                legacyPassAppliedBy[item.sequence] = item.sequence
-            }
             if ticklessJobTurns.remove(item.sequence) != nil {
                 fillActionSlot(item.sequence, with: .failure(LandInputRejection.landClosed))
             }
@@ -6029,8 +5671,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return InputTurnOutcome(record: record, appliedItems: consumedItems, syncBroadcastOnly: applied.shouldSyncBroadcastOnly)
     }
 
-    /// Resumes the callers of `batch` with their outcomes, after the turn was recorded (as the
-    /// legacy path records before it returns).
+    /// Resumes the callers of `batch` with their outcomes, after the turn was recorded: a
+    /// response never leaves before its input is recorded.
     private func resumeInputTurnWaiters(for batch: [PendingItem]) {
         for item in batch {
             let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(AnyCodable(()))

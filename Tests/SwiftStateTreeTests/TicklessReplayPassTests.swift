@@ -194,6 +194,7 @@ private final class PassInTurnTransport: LandKeeperTransport, @unchecked Sendabl
     ) -> InTurnSyncResult {
         includeSync ? .committed(clearDirtyFlags: true) : .notRequested
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let passLandID = "pass-order:local"

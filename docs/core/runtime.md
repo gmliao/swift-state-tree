@@ -38,28 +38,9 @@ await withTaskGroup(of: Void.self) { group in
 }
 ```
 
-### Snapshot Sync Mode
+### Sync in Turns
 
-> This section and [Sync Flow](#sync-flow) describe the keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it: on a live land the sync phase runs inside the keeper's own turns; see [In-Turn Sync](#in-turn-sync-default). Only tests and direct callers of the public `beginSync` still reach the cycle, until #546 L2d removes it.
-
-`LandKeeper` uses snapshot mode for synchronization, which is a non-blocking design:
-
-- **Get snapshot when syncing**: Sync operations get a state snapshot at the start
-- **Don't block changes**: State changes can proceed in parallel with synchronization
-- **Consistency guarantee**: Actor serialization ensures each sync gets a consistent snapshot
-- **Deduplication mechanism**: Concurrent sync requests are deduplicated to avoid duplicate work
-
-```swift
-// Sync flow
-guard let state = await keeper.beginSync(clearDirtyFlags: true) else {
-    // Another sync is in progress, skip (deduplication)
-    return
-}
-defer { await keeper.endSync() }
-
-// Use state snapshot for sync operations
-// State changes can proceed in parallel at this time, won't block
-```
+The keeper sends state to clients from inside its own turns. A turn applies its inputs, then hands its events and, when a sync is due, the sync phase to the transport, all in one actor turn. So a state change and a sync never interleave: a change made after a turn's sync phase is sent by the next one. [In-Turn Sync](#in-turn-sync-default) describes the turns.
 
 ## State Management
 
@@ -88,19 +69,11 @@ func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows ->
 
 ### State Reading
 
-There are two ways to read state:
-
-1. **Current state**: `currentState()` - Get snapshot of current state (read-only)
-2. **Sync snapshot**: `beginSync(clearDirtyFlags:)` - Snapshot obtained when starting sync operation. For the sync pipeline only; use `currentState()` to read the state. With `clearDirtyFlags: true` it clears the live dirty flags, so a reader that only wants a copy would make the next sync skip those changes.
+`currentState()` returns a copy of the current state. Reading it changes nothing, not even the dirty flags.
 
 ```swift
 // Read current state (read-only)
 let current = await keeper.currentState()
-
-// Start sync (get snapshot)
-guard let snapshot = await keeper.beginSync(clearDirtyFlags: true) else { return }
-defer { await keeper.endSync() }
-// Use snapshot for sync operations
 ```
 
 ## Request-Scoped LandContext
@@ -432,54 +405,16 @@ A join completes in the sync phase of the turn it flips in (#69, #194). The join
 Stated limits:
 
 - The debug freeze's settle is a sync-only turn of its own. It first checks, in this order, that the land is live and has neither failed nor started closing, that the settle's deadline hasn't passed, that the same freeze is still in effect, and that it runs through the keeper's sync adapter: the one attached to the keeper or, on a keeper that was never attached, the adapter whose sync requests the keeper accepts. Then it plans and commits a sync phase from the frozen state in the same turn, with no writer back-pressure deferral and no join flips; an ordinary phase that runs while frozen still leaves its sync to the resume. A settle that finds a check failed plans nothing: a released freeze answers `released`, a failed land its failure, a closing one `LandInputRejection.landClosed`. Its plan's first throw ends the land in that turn, as any sync phase's does. It doesn't take the pending sync work of other turns: the resume delivers that. The resume then makes two requests. First, the sync deferred while frozen runs as a sync-only turn. Second, joins that are ready but haven't flipped get a sync-only turn of their own. The second request is skipped when the first was deferred by writer back-pressure (the retry, or the next periodic phase, flips them), when the land failed, or when the land was frozen again in between (that freeze's resume makes it).
-- An input whose `validate` throws fails alone, as on the legacy path: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
+- An input whose `validate` throws fails alone: its caller gets the error on a tickless land (on a tick land it was acknowledged at intake, and the failure is logged), it is removed and recorded as rejected, and the other inputs of the turn are applied. It wrote nothing, so the next sync has nothing of it to send ([Inputs and Turns](#inputs-and-turns)).
 - A live keeper with no transport runs the same turns. A benchmark worker pool or a test that drives a keeper directly is such a keeper. Its turns take and record their events and sync requests, but deliver them nowhere.
 - A live keeper refuses a transport that can't run the sync phase in its turns, and stops the process ([Attaching a transport](../transport/README.md#attaching-a-transport)).
-- Re-evaluation keepers always use the legacy path.
+- A re-evaluation keeper replays recorded inputs and doesn't run these turns. A live join or leave on a tickless re-evaluation keeper stops the process; its actions and client events are ignored, and its server inputs refused (`notLive`).
 
 In-turn sync can't be turned off. The `IN_TURN_SYNC` environment variable was its switch and has been removed: a server that still sets it ignores it, and the first adapter in the process logs a warning naming it.
 
 ### Writer Back-Pressure
 
 Each adapter sends through one ordered outbound writer. While the writer still holds a sync cycle's frames from an earlier cycle, a new cycle is skipped before it takes its copy: nothing is planned, the dirty flags and queued events stay, and the next cycle diffs against the last state sent, so it carries every change. On a land with periodic sync that is its next periodic cycle; a land without one gets one retry once the writer has drained. Overload thus turns into skipped cycles instead of a growing queue. Event and action-response frames are not held back. A skipped phase is counted as a skip and as a deferred turn; the transport profiler reports both (see [Transport](../transport/README.md#profiling)).
-
-### Sync Flow
-
-> The keeper's legacy path, the `beginSync` / `endSync` cycle. `TransportAdapter` no longer runs it.
-
-Synchronization uses snapshot mode, doesn't block state changes:
-
-```swift
-// Start sync
-public func beginSync(clearDirtyFlags: Bool) -> State? {
-    guard !isSyncing else {
-        return nil  // Deduplication: skip concurrent sync requests
-    }
-    isSyncing = true
-    let snapshot = state  // Get snapshot directly, non-blocking
-    if clearDirtyFlags {
-        state.clearDirty()  // Clear live dirty flags; the snapshot keeps its own
-    }
-    return snapshot
-}
-
-// End sync
-public func endSync() {
-    isSyncing = false
-}
-```
-
-Dirty flags are cleared in `beginSync`, in the same actor turn that takes the snapshot. The snapshot keeps its dirty flags, so the sync cycle sees every change since the previous clearing cycle, and a mutation that runs while the cycle is in flight stays dirty for the next one. `clearDirtyFlags` has no default, so every caller decides. `endSync(clearDirtyFlags:)` is deprecated and ignores its argument; pass the choice to `beginSync(clearDirtyFlags:)` instead.
-
-### Sync Deduplication
-
-> The legacy path. With in-turn sync a sync request is a turn, and it is not skipped ([In-Turn Sync](#in-turn-sync-default)).
-
-`isSyncing` flag is used for deduplication, not for blocking:
-
-- When sync is in progress, concurrent sync requests are skipped
-- State changes (Action/Event) are not blocked, can proceed in parallel
-- Each sync gets a consistent snapshot (guaranteed by actor serialization)
 
 ### Dirty Tracking
 
@@ -495,7 +430,7 @@ var players: [PlayerID: PlayerState] = [:] {
 }
 ```
 
-Dirty flags are cleared when a full sync cycle takes its snapshot (see Sync Flow). To clear them manually:
+A committed sync phase clears the dirty flags in its turn when its plan diffed every synced field (see [In-Turn Sync](#in-turn-sync-default)). To clear them manually:
 
 ```swift
 // Clear all dirty flags

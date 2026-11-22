@@ -1,26 +1,16 @@
 // Tests/SwiftStateTreeTests/LandKeeperSyncLockTests.swift
 //
-// Tests to verify that sync lock mechanism prevents race conditions
-// between sync operations and state mutations (actions/events)
+// The dirty flags around a sync phase (#68): a committed sync-only turn clears the live state's
+// dirty flags in its own turn when its plan diffed every field, the phase sees the flags of
+// everything changed since the previous clearing phase, and a mutation after the turn stays
+// dirty for the next one. Every sync phase runs inside a keeper turn (#546 L2d), so these drive
+// sync-only turns through an in-turn fake transport (`syncTurnNow`).
 
 import Foundation
 import Testing
 @testable import SwiftStateTree
 
-// MARK: - Test State
-
-@StateNodeBuilder
-struct SyncLockTestState: StateNodeProtocol {
-    @Sync(.broadcast)
-    var counter: Int = 0
-
-    @Sync(.broadcast)
-    var lastModifiedBy: String = ""
-
-    public init() {}
-}
-
-// MARK: - Test Actions and Events
+// MARK: - Test Actions
 
 @Payload
 struct IncrementCounterAction: ActionPayload {
@@ -34,238 +24,6 @@ struct IncrementCounterAction: ActionPayload {
 struct IncrementCounterResponse: ResponsePayload {
     let success: Bool
     let newValue: Int
-}
-
-@Payload
-struct IncrementCounterEvent: ClientEventPayload {
-    let amount: Int
-    let modifier: String
-}
-
-// MARK: - Tests
-
-@Test("Sync uses snapshot model - mutations can proceed concurrently")
-func testSyncUsesSnapshotModel() async throws {
-    // Arrange
-    let definition = Land(
-        "sync-snapshot-test",
-        using: SyncLockTestState.self
-    ) {
-        Rules {
-            HandleAction(IncrementCounterAction.self) { (state: inout SyncLockTestState, action: IncrementCounterAction, ctx: LandContext) in
-                state.counter += action.amount
-                state.lastModifiedBy = action.modifier
-                return IncrementCounterResponse(success: true, newValue: state.counter)
-            }
-
-            HandleEvent(IncrementCounterEvent.self) { (state: inout SyncLockTestState, event: IncrementCounterEvent, ctx: LandContext) in
-                state.counter += event.amount
-                state.lastModifiedBy = event.modifier
-            }
-        }
-    }
-
-    let keeper = LandKeeper<SyncLockTestState>(
-        definition: definition,
-        initialState: SyncLockTestState()
-    )
-
-    // Act: Start a sync operation (takes snapshot)
-    guard let syncState = await keeper.beginSync(clearDirtyFlags: true) else {
-        Issue.record("Failed to begin sync")
-        return
-    }
-
-    // Verify snapshot state
-    #expect(syncState.counter == 0, "Snapshot counter should be 0")
-
-    // Mutations can proceed concurrently (not blocked by sync)
-    let actionTask = Task {
-        let action = IncrementCounterAction(amount: 10, modifier: "action")
-        let envelope = ActionEnvelope(
-            typeIdentifier: String(describing: IncrementCounterAction.self),
-            payload: AnyCodable(action)
-        )
-        return try await keeper.handleActionEnvelope(
-            envelope,
-            playerID: PlayerID("player1"),
-            clientID: ClientID("client1"),
-            sessionID: SessionID("session1")
-        )
-    }
-
-    let eventTask = Task {
-        try await keeper.handleClientEvent(
-            AnyClientEvent(IncrementCounterEvent(amount: 5, modifier: "event")),
-            playerID: PlayerID("player1"),
-            clientID: ClientID("client1"),
-            sessionID: SessionID("session1")
-        )
-    }
-
-    // Give mutations time to execute (they proceed immediately, not blocked)
-    try await Task.sleep(for: .milliseconds(50))
-
-    // Verify mutations have proceeded (snapshot model doesn't block mutations)
-    let stateDuringSync = await keeper.currentState()
-    // Mutations may have already completed (actor serialization)
-    #expect(stateDuringSync.counter >= 0, "Counter may have changed during sync (snapshot model allows this)")
-
-    // End sync
-    await keeper.endSync()
-
-    // Wait for both tasks to complete
-    let actionResult = try await actionTask.value
-    try? await eventTask.value  // Event handler can throw, but we ignore errors in this test
-
-    // Give a moment for state to be fully updated
-    try await Task.sleep(for: .milliseconds(50))
-
-    // Assert: State should reflect mutations
-    // Note: Due to actor serialization, mutations execute in order
-    // Both mutations should have completed
-    let finalState = await keeper.currentState()
-    #expect(finalState.counter >= 10, "Counter should be at least 10 (from action), got \(finalState.counter)")
-    #expect(finalState.counter <= 15, "Counter should be at most 15 (10 from action + 5 from event), got \(finalState.counter)")
-    // Verify that mutations occurred
-    #expect(finalState.lastModifiedBy != "", "State should be modified")
-
-    // Verify snapshot was consistent (didn't see mutations - snapshot is immutable)
-    #expect(syncState.counter == 0, "Snapshot should still show original value (0)")
-
-    // Verify action response
-    let actionResponse = actionResult.base as? IncrementCounterResponse
-    #expect(actionResponse?.success == true, "Action should succeed")
-    #expect(actionResponse?.newValue == 10, "Action should return newValue 10")
-}
-
-@Test("Multiple sync operations are serialized")
-func testMultipleSyncOperationsSerialized() async throws {
-    // Arrange
-    let keeper = LandKeeper<SyncLockTestState>(
-        definition: Land("test", using: SyncLockTestState.self) {},
-        initialState: SyncLockTestState()
-    )
-
-    // Act: Try to start two sync operations concurrently
-    let sync1Task = Task {
-        await keeper.beginSync(clearDirtyFlags: true)
-    }
-
-    let sync2Task = Task {
-        await keeper.beginSync(clearDirtyFlags: true)
-    }
-
-    // Wait for both to complete
-    let sync1Result = await sync1Task.value
-    let sync2Result = await sync2Task.value
-
-    // Assert: Only one should succeed
-    let successCount = [sync1Result, sync2Result].compactMap { $0 }.count
-    #expect(successCount == 1, "Only one sync operation should acquire lock, got \(successCount)")
-
-    // Clean up: release the lock if one was acquired
-    if sync1Result != nil {
-        await keeper.endSync()
-    } else if sync2Result != nil {
-        await keeper.endSync()
-    }
-}
-
-@Test("Sync lock is released after error")
-func testSyncLockReleasedAfterError() async throws {
-    // Arrange
-    let keeper = LandKeeper<SyncLockTestState>(
-        definition: Land("test", using: SyncLockTestState.self) {},
-        initialState: SyncLockTestState()
-    )
-
-    // Act: Acquire sync lock
-    guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
-        Issue.record("Failed to acquire sync lock")
-        return
-    }
-
-    // Simulate error scenario - release lock manually
-    await keeper.endSync()
-
-    // Verify lock is released - should be able to acquire again
-    let secondSync = await keeper.beginSync(clearDirtyFlags: true)
-    #expect(secondSync != nil, "Should be able to acquire sync lock after release")
-
-    // Clean up
-    if secondSync != nil {
-        await keeper.endSync()
-    }
-}
-
-@Test("Sync snapshot remains consistent even if state changes during sync")
-func testSyncSnapshotRemainsConsistent() async throws {
-    // Arrange
-    let definition = Land(
-        "sync-snapshot-test",
-        using: SyncLockTestState.self
-    ) {
-        Rules {
-            HandleAction(IncrementCounterAction.self) { (state: inout SyncLockTestState, action: IncrementCounterAction, ctx: LandContext) in
-                state.counter += action.amount
-                state.lastModifiedBy = action.modifier
-                return IncrementCounterResponse(success: true, newValue: state.counter)
-            }
-        }
-    }
-
-    let keeper = LandKeeper<SyncLockTestState>(
-        definition: definition,
-        initialState: SyncLockTestState()
-    )
-
-    // Act: Start sync and capture snapshot
-    guard let syncState = await keeper.beginSync(clearDirtyFlags: true) else {
-        Issue.record("Failed to acquire sync lock")
-        return
-    }
-
-    let snapshotCounter = syncState.counter
-
-    // Modify state while sync is in progress (should wait)
-    let modifyTask = Task {
-        let action = IncrementCounterAction(amount: 100, modifier: "action")
-        let envelope = ActionEnvelope(
-            typeIdentifier: String(describing: IncrementCounterAction.self),
-            payload: AnyCodable(action)
-        )
-        _ = try await keeper.handleActionEnvelope(
-            envelope,
-            playerID: PlayerID("player1"),
-            clientID: ClientID("client1"),
-            sessionID: SessionID("session1")
-        )
-    }
-
-    // Give task time to execute (mutation proceeds immediately, not blocked)
-    try await Task.sleep(for: .milliseconds(50))
-
-    // Verify snapshot remains consistent (snapshot is immutable)
-    #expect(snapshotCounter == 0, "Snapshot counter should remain 0 (snapshot is immutable)")
-
-    // State may have changed (snapshot model doesn't block mutations)
-    let stateDuringSync = await keeper.currentState()
-    // Mutation may have already completed
-    #expect(stateDuringSync.counter >= 0, "State counter may have changed (snapshot model allows this)")
-
-    // End sync
-    await keeper.endSync()
-
-    // Wait for mutation to complete
-    _ = try await modifyTask.value
-
-    // Verify state changed
-    let finalState = await keeper.currentState()
-    #expect(finalState.counter == 100, "Counter should be 100 after mutation completes")
-
-    // Verify snapshot was consistent (didn't see the mutation - snapshot is immutable)
-    #expect(snapshotCounter == 0, "Snapshot should still show original value (snapshots are immutable)")
 }
 
 // MARK: - Dirty Flags Clear Tests
@@ -323,6 +81,40 @@ private func makeDirtyFlagsKeeper() -> LandKeeper<DirtyFlagsTestState> {
     )
 }
 
+/// An in-turn transport whose sync phase records the dirty fields of the state it was handed and
+/// commits with `clearDirtyFlags` (a plan that diffed every synced field, or not).
+private final class DirtyFlagsPhaseSpy: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [Set<String>] = []
+    let clearDirtyFlags: Bool
+
+    init(clearDirtyFlags: Bool = true) { self.clearDirtyFlags = clearDirtyFlags }
+
+    /// The dirty fields of the state each sync phase was handed, in order.
+    var dirtyFieldsSeen: [Set<String>] { lock.withLock { seen } }
+
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool,
+        recording: InTurnSyncRecording?
+    ) -> InTurnSyncOutput {
+        guard includeSync else { return InTurnSyncOutput(.notRequested) }
+        lock.withLock { seen.append(state.getDirtyFields()) }
+        return InTurnSyncOutput(.committed(clearDirtyFlags: clearDirtyFlags))
+    }
+    func waitForWriterDrainForInTurnSync() async {}
+}
+
+/// One sync-only turn through `spy`, which must commit.
+private func syncOnce<S: StateNodeProtocol>(_ keeper: LandKeeper<S>, via spy: DirtyFlagsPhaseSpy) async {
+    let result = await keeper.syncTurnNow(via: spy, reason: .syncNow)
+    #expect(result == .committed(clearDirtyFlags: spy.clearDirtyFlags))
+}
+
 private func incrementDirtyFlagsState(_ keeper: LandKeeper<DirtyFlagsTestState>, amount: Int) async throws {
     let envelope = ActionEnvelope(
         typeIdentifier: String(describing: IncrementCounterAction.self),
@@ -336,135 +128,54 @@ private func incrementDirtyFlagsState(_ keeper: LandKeeper<DirtyFlagsTestState>,
     )
 }
 
-@Test("beginSync() clears live dirty flags; mutations after beginSync stay dirty after endSync()")
-func testBeginSync_ClearsDirtyFlags_MutationsDuringSyncStayDirty() async throws {
+@Test("A committed sync-only turn clears the live dirty flags in its turn; a later mutation stays dirty")
+func syncTurnClearsDirtyFlagsAndLaterMutationsStayDirty() async throws {
     let keeper = makeDirtyFlagsKeeper()
-
-    // Act: Modify state (marks as dirty)
+    let spy = DirtyFlagsPhaseSpy()
+    await keeper.setTransport(spy)
     try await incrementDirtyFlagsState(keeper, amount: 5)
+    #expect(await keeper.currentState().getDirtyFields() == ["round", "players", "score"])
 
-    // Verify state is dirty before sync
-    let stateBeforeSync = await keeper.currentState()
-    #expect(stateBeforeSync.isDirty() == true, "State should be dirty after modification")
-    #expect(stateBeforeSync.getDirtyFields().contains("round"), "Should contain 'round' in dirty fields")
-    #expect(stateBeforeSync.getDirtyFields().contains("players"), "Should contain 'players' in dirty fields")
-    #expect(stateBeforeSync.getDirtyFields().contains("score"), "Should contain 'score' in dirty fields")
+    await syncOnce(keeper, via: spy)
+    // The phase saw every field changed since the previous clearing phase.
+    #expect(spy.dirtyFieldsSeen == [["round", "players", "score"]])
+    // The live state is clean once the turn committed.
+    #expect(await keeper.currentState().isDirty() == false)
 
-    guard let snapshot = await keeper.beginSync(clearDirtyFlags: true) else {
-        Issue.record("Failed to begin sync")
-        return
-    }
-
-    // The snapshot keeps its dirty flags so the cycle can diff what changed.
-    #expect(snapshot.getDirtyFields() == ["round", "players", "score"], "Snapshot should keep its dirty fields")
-
-    // The live state is clean as soon as the snapshot is taken.
-    let stateAtBegin = await keeper.currentState()
-    #expect(stateAtBegin.isDirty() == false, "Live state should not be dirty after beginSync()")
-    #expect(stateAtBegin.getDirtyFields().isEmpty == true, "Live state should have no dirty fields after beginSync()")
-
-    // A mutation while the sync is in flight is not in the snapshot; it must stay dirty.
+    // A mutation after the turn is for the next phase: it stays dirty.
     try await incrementDirtyFlagsState(keeper, amount: 1)
-    await keeper.endSync()
-
-    let stateAfterSync = await keeper.currentState()
-    #expect(stateAfterSync.getDirtyFields() == ["round", "players", "score"], "Mutation during sync must stay dirty after endSync()")
-
-    // The deprecated endSync(clearDirtyFlags:) is a no-op for dirty flags.
-    guard await keeper.beginSync(clearDirtyFlags: false) != nil else {
-        Issue.record("Failed to begin sync")
-        return
-    }
-    await keeper.endSync(clearDirtyFlags: true)
-    let stateAfterDeprecatedEnd = await keeper.currentState()
-    #expect(stateAfterDeprecatedEnd.getDirtyFields() == ["round", "players", "score"], "Deprecated endSync(clearDirtyFlags:) must not clear dirty flags")
-    #expect(await keeper.beginSync(clearDirtyFlags: true) != nil, "Deprecated endSync(clearDirtyFlags:) must release the sync flag")
-    await keeper.endSync()
+    #expect(await keeper.currentState().getDirtyFields() == ["round", "players", "score"])
 }
 
-@Test("beginSync(clearDirtyFlags: false) leaves dirty flags untouched")
-func testBeginSync_WithoutClearing_LeavesDirtyFlags() async throws {
+@Test("A phase that doesn't diff every field (clearDirtyFlags: false) leaves the dirty flags")
+func phaseWithoutClearingLeavesDirtyFlags() async throws {
     let keeper = makeDirtyFlagsKeeper()
+    let spy = DirtyFlagsPhaseSpy(clearDirtyFlags: false)
+    await keeper.setTransport(spy)
     try await incrementDirtyFlagsState(keeper, amount: 5)
 
-    guard let snapshot = await keeper.beginSync(clearDirtyFlags: false) else {
-        Issue.record("Failed to begin sync")
-        return
-    }
-    #expect(snapshot.getDirtyFields() == ["round", "players", "score"])
-    let stateDuringSync = await keeper.currentState()
-    #expect(stateDuringSync.getDirtyFields() == ["round", "players", "score"], "Live dirty flags must be untouched by beginSync(clearDirtyFlags: false)")
-
-    await keeper.endSync()
-    let stateAfterSync = await keeper.currentState()
-    #expect(stateAfterSync.getDirtyFields() == ["round", "players", "score"], "Live dirty flags must be untouched by endSync()")
+    await syncOnce(keeper, via: spy)
+    #expect(spy.dirtyFieldsSeen == [["round", "players", "score"]])
+    #expect(await keeper.currentState().getDirtyFields() == ["round", "players", "score"], "live dirty flags must be untouched")
 }
 
 @Test("Multiple sync rounds keep all dirty flags cleared")
-func testMultipleSyncRounds_EndSync_KeepsAllFlagsCleared() async throws {
-    // Arrange
-    let definition = Land(
-        "dirty-flags-multi-round-test",
-        using: DirtyFlagsTestState.self
-    ) {
-        Rules {
-            HandleAction(IncrementCounterAction.self) { (state: inout DirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
-                state.round += action.amount
-                state.players[ctx.playerID] = "Player \(state.round)"
-                state.score += action.amount * 10
-                return IncrementCounterResponse(success: true, newValue: state.round)
-            }
-        }
-    }
-
-    let keeper = LandKeeper<DirtyFlagsTestState>(
-        definition: definition,
-        initialState: DirtyFlagsTestState()
-    )
-
-    // Act: Simulate multiple sync rounds
+func multipleSyncRoundsKeepFlagsCleared() async throws {
+    let keeper = makeDirtyFlagsKeeper()
+    let spy = DirtyFlagsPhaseSpy()
+    await keeper.setTransport(spy)
     for round in 1...10 {
-        // Modify state
-        let action = IncrementCounterAction(amount: 5, modifier: "test")
-    let envelope = ActionEnvelope(
-        typeIdentifier: String(describing: IncrementCounterAction.self),
-        payload: AnyCodable(action)
-    )
-    _ = try await keeper.handleActionEnvelope(
-        envelope,
-        playerID: PlayerID("player1"),
-            clientID: ClientID("client1"),
-            sessionID: SessionID("session1")
-        )
-
-        // Verify state is dirty before sync
-        let stateBeforeSync = await keeper.currentState()
-        #expect(stateBeforeSync.isDirty() == true, "State should be dirty after modification (round \(round))")
-
-        // Perform sync (beginSync -> endSync)
-        guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
-            Issue.record("Failed to begin sync (round \(round))")
-            return
-        }
-
-        // beginSync() cleared the dirty flags; endSync() leaves them clean
-        await keeper.endSync()
-
-        // Verify dirty flags are still cleared after endSync()
-        let stateAfterSync = await keeper.currentState()
-        #expect(stateAfterSync.isDirty() == false, "State should not be dirty after endSync() (round \(round))")
-        #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Should have no dirty fields after endSync() (round \(round))")
+        try await incrementDirtyFlagsState(keeper, amount: 5)
+        #expect(await keeper.currentState().isDirty() == true, "dirty after the mutation (round \(round))")
+        await syncOnce(keeper, via: spy)
+        let state = await keeper.currentState()
+        #expect(state.isDirty() == false, "clean after the sync turn (round \(round))")
+        #expect(state.getDirtyFields().isEmpty, "no dirty fields after the sync turn (round \(round))")
     }
-
-    // Final verification: after 10 rounds, state should still be clean
-    let finalState = await keeper.currentState()
-    #expect(finalState.isDirty() == false, "State should still be clean after 10 sync rounds")
-    #expect(finalState.getDirtyFields().isEmpty == true, "Should have no dirty fields after 10 sync rounds")
+    #expect(spy.dirtyFieldsSeen.count == 10)
 }
 
-@Test("A sync cycle recursively clears nested StateNode dirty flags")
-func testEndSync_RecursivelyClearsNestedStateNode() async throws {
-    // Arrange
+private func makeNestedDirtyFlagsKeeper() -> LandKeeper<ParentDirtyFlagsTestState> {
     let definition = Land(
         "nested-dirty-flags-test",
         using: ParentDirtyFlagsTestState.self
@@ -477,17 +188,16 @@ func testEndSync_RecursivelyClearsNestedStateNode() async throws {
             }
         }
     }
-
-    let keeper = LandKeeper<ParentDirtyFlagsTestState>(
+    return LandKeeper<ParentDirtyFlagsTestState>(
         definition: definition,
         initialState: ParentDirtyFlagsTestState()
     )
+}
 
-    // Act: Modify both parent and nested fields
-    let action = IncrementCounterAction(amount: 5, modifier: "test")
+private func incrementNested(_ keeper: LandKeeper<ParentDirtyFlagsTestState>) async throws {
     let envelope = ActionEnvelope(
         typeIdentifier: String(describing: IncrementCounterAction.self),
-        payload: AnyCodable(action)
+        payload: AnyCodable(IncrementCounterAction(amount: 5, modifier: "test"))
     )
     _ = try await keeper.handleActionEnvelope(
         envelope,
@@ -495,94 +205,42 @@ func testEndSync_RecursivelyClearsNestedStateNode() async throws {
         clientID: ClientID("client1"),
         sessionID: SessionID("session1")
     )
+}
 
-    // Verify both are dirty before sync
-    let stateBeforeSync = await keeper.currentState()
-    #expect(stateBeforeSync.isDirty() == true, "Parent should be dirty")
-    #expect(stateBeforeSync.nested.isDirty() == true, "Nested should be dirty")
-    #expect(stateBeforeSync.getDirtyFields().contains("parentValue"), "Parent should contain 'parentValue'")
-    #expect(stateBeforeSync.getDirtyFields().contains("nested"), "Parent should contain 'nested'")
-    #expect(stateBeforeSync.nested.getDirtyFields().contains("nestedValue"), "Nested should contain 'nestedValue'")
+@Test("A sync turn recursively clears nested StateNode dirty flags")
+func syncTurnRecursivelyClearsNestedStateNode() async throws {
+    let keeper = makeNestedDirtyFlagsKeeper()
+    let spy = DirtyFlagsPhaseSpy()
+    await keeper.setTransport(spy)
+    try await incrementNested(keeper)
 
-    // Perform sync (beginSync -> endSync)
-    guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
-        Issue.record("Failed to begin sync")
-        return
-    }
+    let before = await keeper.currentState()
+    #expect(before.getDirtyFields().contains("parentValue"))
+    #expect(before.getDirtyFields().contains("nested"))
+    #expect(before.nested.getDirtyFields().contains("nestedValue"))
 
-    // beginSync() cleared the dirty flags (including nested); endSync() leaves them clean
-    await keeper.endSync()
-
-    // Verify all dirty flags are cleared (including nested)
-    let stateAfterSync = await keeper.currentState()
-    #expect(stateAfterSync.isDirty() == false, "Parent should not be dirty after endSync()")
-    #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Parent should have no dirty fields after endSync()")
-    #expect(stateAfterSync.nested.isDirty() == false, "Nested should not be dirty after endSync()")
-    #expect(stateAfterSync.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after endSync()")
+    await syncOnce(keeper, via: spy)
+    let after = await keeper.currentState()
+    #expect(after.isDirty() == false, "parent clean after the sync turn")
+    #expect(after.getDirtyFields().isEmpty)
+    #expect(after.nested.isDirty() == false, "nested clean after the sync turn")
+    #expect(after.nested.getDirtyFields().isEmpty)
 }
 
 @Test("Multiple sync rounds with nested StateNode should recursively clear all dirty flags")
-func testMultipleSyncRounds_WithNestedStateNode_RecursivelyClearsAllFlags() async throws {
-    // Arrange
-    let definition = Land(
-        "nested-dirty-flags-multi-round-test",
-        using: ParentDirtyFlagsTestState.self
-    ) {
-        Rules {
-            HandleAction(IncrementCounterAction.self) { (state: inout ParentDirtyFlagsTestState, action: IncrementCounterAction, ctx: LandContext) in
-                state.parentValue += action.amount
-                state.nested.nestedValue += action.amount * 10
-                return IncrementCounterResponse(success: true, newValue: state.parentValue)
-            }
-        }
-    }
-
-    let keeper = LandKeeper<ParentDirtyFlagsTestState>(
-        definition: definition,
-        initialState: ParentDirtyFlagsTestState()
-    )
-
-    // Act: Simulate multiple sync rounds with nested StateNode modifications
+func multipleSyncRoundsClearNestedFlags() async throws {
+    let keeper = makeNestedDirtyFlagsKeeper()
+    let spy = DirtyFlagsPhaseSpy()
+    await keeper.setTransport(spy)
     for round in 1...5 {
-        // Modify both parent and nested fields
-        let action = IncrementCounterAction(amount: 5, modifier: "test")
-    let envelope = ActionEnvelope(
-        typeIdentifier: String(describing: IncrementCounterAction.self),
-        payload: AnyCodable(action)
-    )
-    _ = try await keeper.handleActionEnvelope(
-        envelope,
-        playerID: PlayerID("player1"),
-            clientID: ClientID("client1"),
-            sessionID: SessionID("session1")
-        )
-
-        // Verify both are dirty before sync
-        let stateBeforeSync = await keeper.currentState()
-        #expect(stateBeforeSync.isDirty() == true, "Parent should be dirty (round \(round))")
-        #expect(stateBeforeSync.nested.isDirty() == true, "Nested should be dirty (round \(round))")
-
-        // Perform sync (beginSync -> endSync)
-        guard let _ = await keeper.beginSync(clearDirtyFlags: true) else {
-            Issue.record("Failed to begin sync (round \(round))")
-            return
-        }
-
-        // beginSync() cleared the dirty flags (including nested); endSync() leaves them clean
-        await keeper.endSync()
-
-        // Verify all dirty flags are cleared (including nested)
-        let stateAfterSync = await keeper.currentState()
-        #expect(stateAfterSync.isDirty() == false, "Parent should not be dirty after endSync() (round \(round))")
-        #expect(stateAfterSync.getDirtyFields().isEmpty == true, "Parent should have no dirty fields (round \(round))")
-        #expect(stateAfterSync.nested.isDirty() == false, "Nested should not be dirty after endSync() (round \(round))")
-        #expect(stateAfterSync.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields (round \(round))")
+        try await incrementNested(keeper)
+        let before = await keeper.currentState()
+        #expect(before.isDirty() == true, "parent dirty (round \(round))")
+        #expect(before.nested.isDirty() == true, "nested dirty (round \(round))")
+        await syncOnce(keeper, via: spy)
+        let after = await keeper.currentState()
+        #expect(after.isDirty() == false, "parent clean (round \(round))")
+        #expect(after.nested.isDirty() == false, "nested clean (round \(round))")
+        #expect(after.nested.getDirtyFields().isEmpty, "nested has no dirty fields (round \(round))")
     }
-
-    // Final verification: after multiple rounds, all dirty flags should be cleared
-    let finalState = await keeper.currentState()
-    #expect(finalState.isDirty() == false, "Parent should still be clean after multiple sync rounds")
-    #expect(finalState.nested.isDirty() == false, "Nested should still be clean after multiple sync rounds")
-    #expect(finalState.getDirtyFields().isEmpty == true, "Parent should have no dirty fields after multiple sync rounds")
-    #expect(finalState.nested.getDirtyFields().isEmpty == true, "Nested should have no dirty fields after multiple sync rounds")
 }

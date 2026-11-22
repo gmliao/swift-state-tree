@@ -1,17 +1,18 @@
-# Allowlist for scripts/l2d-census.sh (#546 L2d-2): path symbol count reason.
-# A count above its line fails; an unlisted path allows 0. L2d-3 lowers these (plan §3.8.5).
+# Allowlist for scripts/l2d-census.sh (#546 L2d-2/L2d-3): path symbol count reason.
+# A count above its line fails; an unlisted path allows 0. The symbols L2d-3 deleted have no
+# line: they are allowed nowhere.
 
 # The legacy transport calls: only re-evaluation paths and tests reach them now.
-Sources/SwiftStateTree/Runtime/LandKeeper.swift syncBroadcastOnlyFromTransport-call 3 re-evaluation paths (processPendingActions, deliverLegacyPass, replayed passes in runTick); a re-evaluation keeper has no transport in production; L2d-3 / #612
-Tests/SwiftStateTreeTransportTests/TransportAdapterRequestedSyncTurnTests.swift syncBroadcastOnlyFromTransport-call 1 broadcastOnlyBridgeIsARequestedTurn, retired with the bridge in L2d-3
+Sources/SwiftStateTree/Runtime/LandKeeper.swift syncBroadcastOnlyFromTransport-call 2 re-evaluation paths (processPendingActions, replayed passes in runTick); a re-evaluation keeper has no transport in production; until #612
+Tests/SwiftStateTreeTransportTests/TransportAdapterRequestedSyncTurnTests.swift syncBroadcastOnlyFromTransport-call 1 broadcastOnlyBridgeIsARequestedTurn: the adapter's forward stays for a re-evaluation keeper until #612
 Sources/SwiftStateTree/Runtime/LandKeeper.swift syncNowFromTransport-call 1 the sync loop of a re-evaluation keeper with a transport (ReevaluationOutputMode.transportAndSink), until #612
 Tests/SwiftStateTreeTests/DrainTurnTests.swift syncNowFromTransport-call 1 a late call after the destruction reaches the released placeholder, which counts it
 
-# The requirement, the placeholder, the adapter's forwards (defaults in L2d-3) and the test fakes' conformances.
-Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift syncNowFromTransport-decl 2 LandKeeperTransport requirement and ReleasedLandTransport
-Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 2 LandKeeperTransport requirement and ReleasedLandTransport
-Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift syncNowFromTransport-decl 1 the adapter's forward, deleted in L2d-3
-Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 1 the adapter's forward, deleted in L2d-3
+# The requirement and its do-nothing default (L2d-3), the placeholder, the adapter's forwards and the test fakes' conformances.
+Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift syncNowFromTransport-decl 3 LandKeeperTransport requirement, its default and ReleasedLandTransport
+Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 3 LandKeeperTransport requirement, its default and ReleasedLandTransport
+Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift syncNowFromTransport-decl 1 the adapter's forward, for a re-evaluation keeper with a transport until #612
+Sources/SwiftStateTreeTransport/TransportAdapter+LandKeeperTransport.swift syncBroadcastOnlyFromTransport-decl 1 the adapter's forward, for a re-evaluation keeper with a transport until #612
 Tests/SwiftStateTreeTests/ActionEventSyncTests.swift syncNowFromTransport-decl 1 test fake conformance
 Tests/SwiftStateTreeTests/DrainTurnTests.swift syncNowFromTransport-decl 2 test fake conformance
 Tests/SwiftStateTreeTests/InTurnSyncFoldReportTests.swift syncNowFromTransport-decl 1 test fake conformance

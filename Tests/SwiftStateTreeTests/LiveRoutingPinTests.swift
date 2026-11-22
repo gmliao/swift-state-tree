@@ -146,6 +146,7 @@ final class RoutingPinPort: LandKeeperTransport, @unchecked Sendable {
         let data = (try? JSONEncoder().encode(event.payload)) ?? Data()
         return (try? JSONDecoder().decode(RoutingPinEvent.self, from: data))?.entry ?? event.type
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")

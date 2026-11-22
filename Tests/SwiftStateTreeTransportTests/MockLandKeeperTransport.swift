@@ -45,4 +45,5 @@ final class MockLandKeeperTransport: LandKeeperTransport, @unchecked Sendable {
             last = nil
         }
     }
+    func waitForWriterDrainForInTurnSync() async {}
 }

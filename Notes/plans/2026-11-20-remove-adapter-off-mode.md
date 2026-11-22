@@ -664,6 +664,8 @@ Both in en and zh-TW.
 
 #### 3.8.5 L2d-3: the deletions
 
+**Implemented** on `refactor/546-l2d3-delete-legacy-sync`, per `2026-11-21-l2d3-delete-legacy-sync.md` (its §7 records where the implementation differs from the list below).
+
 **Deleted from the keeper:**
 - `beginSync`, `beginSyncLocated`, `endSync()` and `endSync(clearDirtyFlags:)` (LK:1380–1464);
 - `isSyncing` and its reads (LK:4740, :5166);
