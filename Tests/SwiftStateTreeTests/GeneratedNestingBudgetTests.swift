@@ -466,8 +466,11 @@ struct GeneratedNestingBudgetTests {
         // With a collection cast in place of the exact-type check, the runtime unwraps the
         // chain element by element and overflows the child's stack: a mutant for the Linux host.
         await #expect(processExitsWith: .success) {
-            let deep = optionalChain(100_000)
-            // Kept alive until `exit`, as above.
+            // The array literal below may take `deep` as its last use, and the arrays are released
+            // when the loop ends, before `exit`: the global keeps a reference until `exit`
+            // (`refuseDeepChain`).
+            deepOptionalChainKeptAlive = optionalChain(100_000)
+            let deep = deepOptionalChainKeptAlive!
             withExtendedLifetime(deep) {
                 let values: [Any] = [[deep] as [Any], ["k": deep] as [String: Any]]
                 for value in values {
@@ -488,6 +491,9 @@ struct GeneratedNestingBudgetTests {
 
 /// The chain an exit test converts, held until the process exits (`refuseDeepChain`).
 nonisolated(unsafe) private var deepChainKeptAlive: ChainNode?
+
+/// The Optional chain an exit test converts inside collections, held until the process exits.
+nonisolated(unsafe) private var deepOptionalChainKeptAlive: Any?
 
 /// Converts a 100 000-node chain through `make` (0), `makeFull` (1) or `snapshotForSync` (2), and
 /// exits 0 when it is refused at the container limit: an exit test's body.

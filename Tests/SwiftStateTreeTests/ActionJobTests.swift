@@ -94,9 +94,9 @@ private func makeKeeper(tick: Bool = true, recording: Bool = false) async -> Lan
         definition: makeDefinition(tick: tick),
         initialState: ActionJobTestState(),
         enableLiveStateHashRecording: recording,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: "action-job-test:local"
     )
-    await keeper.setLandID("action-job-test:local")
     return keeper
 }
 
@@ -818,9 +818,9 @@ private func makeKindKeeper(_ name: String) async -> LandKeeper<ActionJobTestSta
     let keeper = LandKeeper<ActionJobTestState>(
         definition: definition,
         initialState: ActionJobTestState(),
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: "action-job-kinds:\(name)"
     )
-    await keeper.setLandID("action-job-kinds:\(name)")
     return keeper
 }
 

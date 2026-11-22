@@ -451,6 +451,11 @@ struct ReevaluationRunnerMain {
             }
             exit(3)
         }
+        // The second run is the determinism check: its OnInitialize check counts too (#593).
+        if case .failed(let reason) = second.initialize {
+            print("❌ Verification failed: OnInitialize in the second run \(reason)")
+            exit(9)
+        }
 
         // Only after every definite failure: hashes the live run could not compute.
         var unverifiable: [String] = []
@@ -481,9 +486,9 @@ struct ReevaluationRunnerMain {
             initialState: HeroDefenseState(),
             services: services,
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
         guard let recorder = await keeper.getReevaluationRecorder() else {
             print("Error: ReevaluationRecorder not available")
             exit(7)

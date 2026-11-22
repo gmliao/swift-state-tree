@@ -225,10 +225,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
+            // At construction, before the eager initialization can start (#593).
+            landID: metadata.landID,
             logger: logger
         )
-
-        await keeper.setLandID(metadata.landID)
 
         snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -298,10 +298,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             reevaluationSink: capturingSink,
             services: resolvedServices,
             autoStartLoops: false,
+            // At construction, before the eager initialization can start (#593).
+            landID: metadata.landID,
             logger: logger
         )
-
-        await keeper.setLandID(metadata.landID)
 
         snapshotEncoder = JSONEncoder()
         snapshotEncoder.outputFormatting = [.sortedKeys]
@@ -345,7 +345,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             emitted: initializeEvents,
             state: stateAfterInitialize,
             hashDefinition: hashDefinition,
-            hashIncomparability: try await hashIncomparability()
+            hashIncomparability: try await hashIncomparability(),
+            refusal: await keeper.replayedInitializeRefusal
         )
         syncOutputDriver.begin(
             beforeInitialize: initialState,
@@ -372,8 +373,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         syncOutputDriver.finish()
     }
 
-    /// The OnInitialize check (after `prepare()`).
-    public func initializeVerification() -> ReevaluationEngine.InitializeVerification {
+    /// The OnInitialize check, final once `step()` has returned `nil`: a refusal is merged after
+    /// every step (#593).
+    public func initializeVerification() async -> ReevaluationEngine.InitializeVerification {
         initialize
     }
 
@@ -400,6 +402,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // We can track it ourselves since we control the stepping.
         currentTickId += 1
         let tickId = currentTickId
+        // A record without an initialize record replays OnInitialize inside tick 0, after the
+        // check; merged after every step, so a later or repeated one fails it too (#593).
+        initialize = ReevaluationEngine.initializeVerdict(
+            initialize, afterTickRefusal: await keeper.replayedInitializeRefusal
+        )
 
         // The hash the record holds (`hashDefinition`), the same one `ReevaluationEngine` checks.
         let stateHash: String

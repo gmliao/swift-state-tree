@@ -189,19 +189,19 @@ private func makeTwoPhaseKeeper(
     services: LandServices = LandServices()
 ) async throws -> LandKeeper<TwoPhaseState> {
     let definition = makeTwoPhaseDefinition(tick: tick)
+    // One land ID per keeper: parallel tests must not share a recorder spool.
+    let landID = "\(definition.id):\(UUID().uuidString)"
     let keeper = LandKeeper<TwoPhaseState>(
         definition: definition,
         initialState: TwoPhaseState(),
         services: services,
         enableLiveStateHashRecording: recording,
         autoStartLoops: false,
+        landID: landID,
         transport: inTurn ? TwoPhaseInTurnTransport() : nil
     )
     // The transport decides: in-turn whatever the adapter's mode.
     #expect(await keeper.isUsingInTurnSync() == inTurn)
-    // One land ID per keeper: parallel tests must not share a recorder spool.
-    let landID = "\(definition.id):\(UUID().uuidString)"
-    await keeper.setLandID(landID)
     if recording {
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(

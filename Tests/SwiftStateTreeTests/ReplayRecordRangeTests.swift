@@ -72,9 +72,9 @@ private func recordedRun(quiet: Bool = false) async throws -> [String: Any] {
         definition: definition,
         initialState: RangeTestState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: rangeLandID
     )
-    await keeper.setLandID(rangeLandID)
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: rangeLandID, landType: definition.id,

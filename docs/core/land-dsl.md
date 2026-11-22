@@ -226,7 +226,9 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 - `StateSync(every:)`: State synchronization (read-only callback, will be called)
 - `DestroyWhenEmpty(after:)`: Auto-close empty rooms
 - `PersistSnapshot(every:)`: Snapshot period
-- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`. Unlike the input handlers, `OnInitialize` and the destroy-phase handlers (`OnFinalize`, `OnDestroyWhenEmpty`) may throw, and keep what they wrote before the throw
+- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`. Like the input handlers, none of them throws after it writes (#593):
+  - `OnFinalize` and the `DestroyWhenEmpty(after:_:)` handler take bodies that don't throw. The land is ending, so nothing would act on a refusal: a body that calls throwing code handles its errors itself.
+  - `OnInitialize` takes a body that doesn't throw, or two stages, `validate` and `apply`, as an input does ([Two-Phase Handlers](#two-phase-handlers)). A `validate` that throws fails the land's initialization, as a failing resolver does, with nothing written (see the example below).
 - `OnInitialize(resolvers:onResolverFailure:)`: a throwing resolver fails the land's initialization by default (`.failLand`); `.continue` runs OnInitialize without the resolvers' outputs. See [Resolver deadline](resolver.md#deadline)
 
 ```swift
@@ -253,3 +255,25 @@ Lifetime {
 ```
 
 **Note**: `Tick` is the only source of state mutations for replay functionality. `StateSync` only triggers state synchronization and does not modify state. The optional callback is read-only and will be called during sync operations for logging, metrics, or other read-only operations.
+
+### An Initialization That Can Be Refused
+
+A land may need data it can't start without: a room's configuration, loaded by a resolver. `validate` checks that the data is there and returns it as the plan. `apply` writes it.
+
+```swift
+Lifetime {
+    OnInitialize(
+        resolvers: RoomConfigResolver.self,
+        onResolverFailure: .continue,
+        validate: { (_: RoomState, ctx: ValidateContext) throws -> RoomConfigOutput in
+            guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
+            return config
+        },
+        apply: { (state: inout RoomState, config: RoomConfigOutput, _: LandContext) in
+            state.maxPlayers = config.maxPlayers
+        }
+    )
+}
+```
+
+With `.continue`, a resolver that throws leaves `ctx.roomConfig` empty, and `validate` refuses. A refusal fails the initialization, as `.failLand` does for the resolver: the land is torn down without its destroy handlers, and a join that was waiting gets the retryable `JOIN_DENIED`. A retried join creates a new land.

@@ -220,6 +220,14 @@ A replayed handler reads a recorded resolver output (`ctx.productInfo`) the way 
 
 Limit: a recorded action's own payload is still decoded with a JSON round trip, so replay drops an action whose payload has a `Date`, `Data` or `URL` field (#709).
 
+### OnInitialize in Replay
+
+Replay runs OnInitialize again with its recorded resolver outputs: a body that doesn't throw, or `validate` and then `apply` (#593). The record holds an initialize entry only when the live `validate` passed, because a live refusal ends the land before anything is recorded. So a replayed `validate` that throws means `validate` was not deterministic: it read something other than the state and the context, such as a clock or a mutable global.
+
+Replay then writes nothing, as the live run would, and the initialize check fails, with a reason that names OnInitialize and the error (`InitializeVerification.failed`). This holds for a record without an initialize record too, whose OnInitialize replays inside tick 0. The replay goes on, so the later state hashes report what follows.
+
+A hosted replay (the reevaluation monitor and the replay land) fails its run when the initialize check fails, even when every tick hash matches. A refused initialization can leave the tick hashes equal, for example when `apply` writes nothing, or only what a later tick overwrites. The run's error message names OnInitialize and the error. Only `.failed` fails the run: a check that is `.unverifiable` or `.notComparable` lets it complete. A custom runner reports its check through `ReevaluationRunnerProtocol.initializeVerification()`, which has no default. A runner that doesn't check OnInitialize returns `.notRecorded`, which never fails a run, and a wrapper around another runner forwards that runner's answer.
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |

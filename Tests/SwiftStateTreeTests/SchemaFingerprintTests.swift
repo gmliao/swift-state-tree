@@ -745,9 +745,9 @@ private func recordFixtureLand<S: StateNodeProtocol>(_ definition: LandDefinitio
         definition: definition,
         initialState: initialState,
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: "\(fpLandID):local"
     )
-    await keeper.setLandID("\(fpLandID):local")
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: "\(fpLandID):local",

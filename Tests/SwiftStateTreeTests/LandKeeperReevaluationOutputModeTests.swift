@@ -125,9 +125,9 @@ struct LandKeeperReevaluationOutputModeTests {
             reevaluationSink: mockSink,
             reevaluationOutputMode: .sinkOnly,
             autoStartLoops: false,
+            landID: "output-mode-test:local",
             transport: mockTransport
         )
-        await keeper.setLandID("output-mode-test:local")
 
         await keeper.stepTickOnce()
 
@@ -168,9 +168,9 @@ struct LandKeeperReevaluationOutputModeTests {
             reevaluationSink: mockSink,
             reevaluationOutputMode: .transportAndSink,
             autoStartLoops: false,
+            landID: "output-mode-test:local",
             transport: mockTransport
         )
-        await keeper.setLandID("output-mode-test:local")
 
         await keeper.stepTickOnce()
 

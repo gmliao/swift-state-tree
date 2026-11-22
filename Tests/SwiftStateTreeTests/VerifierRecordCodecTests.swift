@@ -95,10 +95,10 @@ private func recordOneTick(emitting events: [any ServerEventPayload], form: Veri
         definition: makeVerifierCodecLand(emitting: events),
         initialState: VerifierCodecState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: verifierCodecLandID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    await keeper.setLandID(verifierCodecLandID)
     await keeper.awaitInitialization()
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: verifierCodecLandID,

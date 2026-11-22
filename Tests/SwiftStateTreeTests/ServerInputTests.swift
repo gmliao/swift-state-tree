@@ -255,16 +255,16 @@ private func makeKeeper(
     box: SISubmitterBox? = nil
 ) async throws -> LandKeeper<ServerInputTestState> {
     let definition = makeDefinition(ticking: ticking, box: box)
+    // One land ID per keeper: parallel tests must not share a recorder spool.
+    let landID = "\(definition.id):\(UUID().uuidString)"
     let keeper = LandKeeper<ServerInputTestState>(
         definition: definition,
         initialState: ServerInputTestState(),
         enableLiveStateHashRecording: true,
         autoStartLoops: false,
+        landID: landID,
         transport: transport
     )
-    // One land ID per keeper: parallel tests must not share a recorder spool.
-    let landID = "\(definition.id):\(UUID().uuidString)"
-    await keeper.setLandID(landID)
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: landID,

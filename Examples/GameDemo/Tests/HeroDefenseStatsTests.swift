@@ -36,9 +36,9 @@ struct HeroDefenseStatsTests {
                 definition: HeroDefense.makeLand(),
                 initialState: HeroDefenseState(),
                 services: services,
-                autoStartLoops: false
+                autoStartLoops: false,
+                landID: "hero-defense:stats"
             )
-            await keeper.setLandID("hero-defense:stats")
             try await keeper.join(playerID: PlayerID("alice"), clientID: ClientID("c1"), sessionID: SessionID(fixed: "s1"))
             // Long enough for spawns to be killed and to reach the base (every 30 ticks at first).
             for _ in 0..<400 { await keeper.stepTickOnce() }

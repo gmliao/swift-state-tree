@@ -530,26 +530,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// `ReleasedLandTransport`, #346).
     var transportForTesting: LandKeeperTransport? { transport }
 
-    /// Set the actual land instance ID (called after LandKeeper is created)
-    /// This allows LandContext to use the actual instance ID instead of just the land type
-    /// Also updates the RNG service seed if it was created with a default seed
-    public func setLandID(_ landID: String) {
-        actualLandID = landID
-
-        // Update RNG service seed if it was created with definition.id seed
-        // This ensures deterministic behavior based on actual land instance ID
-        if let rngService = services.get(DeterministicRngService.self),
-           rngService.seed == DeterministicSeed.fromLandID(definition.id)
-        {
-            // Replace with new RNG service using actual landID seed
-            let newSeed = DeterministicSeed.fromLandID(landID)
-            let newRngService = DeterministicRngService(seed: newSeed)
-            var updatedServices = services
-            updatedServices.register(newRngService, as: DeterministicRngService.self)
-            services = updatedServices
-        }
-    }
-
     /// Get the RNG seed for recording purposes.
     /// Returns the seed from the DeterministicRngService if it exists, nil otherwise.
     public func getRngSeed() -> UInt64? {
@@ -664,6 +644,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
     /// record, so tick 0 skips its `initialize` lifecycle event.
     private var replayedInitializeBeforeTickZero = false
+    /// Re-evaluation: OnInitialize's `validate` threw on the recorded inputs (#593), set once,
+    /// naming the handler and the error. The record holds an initialize entry only when the live
+    /// `validate` passed, so the replay contradicts it: `ReevaluationEngine.verifyInitialize`
+    /// reports `.failed`. Nothing was written, as live.
+    package private(set) var replayedInitializeRefusal: String?
 
     /// Next tick ID (0-based, increments with each tick) for deterministic replay.
     /// This represents the ID that will be assigned to the next tick execution.
@@ -987,7 +972,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   - landID: The land instance ID (e.g. "counter:550e8400-..."), when known at creation.
     ///     Set before the eager initialization can start, so OnInitialize, the default RNG seed
     ///     and the loop phase offset all use the instance ID instead of the land type. Without
-    ///     it, `setLandID(_:)` sets the ID later, racing with that initialization.
+    ///     it, they use the land type. There is no setter: the init starts the initialization
+    ///     eagerly, so an ID set later would race with it (#593).
     ///   - transport: Optional transport interface for sending events and syncing state.
     ///                If not provided, a live keeper still runs its turns and records their
     ///                outputs, but delivers none. On a live keeper a transport that can't run the
@@ -1019,8 +1005,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.reevaluationOutputMode = reevaluationOutputMode
 
         // Ensure DeterministicRngService is always registered for deterministic behavior
-        // If not provided, seed it from the instance ID when known, else from definition.id
-        // (setLandID(_:) replaces a definition.id seed later).
+        // If not provided, seed it from the instance ID when known, else from definition.id.
         var resolvedServices = services
         if resolvedServices.get(DeterministicRngService.self) == nil {
             let seed = DeterministicSeed.fromLandID(landID ?? definition.id)
@@ -1105,6 +1090,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if let initializationFailure { throw initializationFailure }
         if didInitialize { return }
         if let task = initializationTask {
+            noteInitializationWait()
             await task.value
             if let initializationFailure { throw initializationFailure }
             return
@@ -1118,7 +1104,56 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await task.value
         initializationTask = nil
         didInitialize = true
+        resumeInitializationWaitWatchers { _ in true }
         if let initializationFailure { throw initializationFailure }
+    }
+
+    /// Tests: how many calls have waited on a running initialization, and the tests waiting for
+    /// a count (`waitForInitializationWaitersForTesting`).
+    private var initializationWaits = 0
+    private var initializationWaitWatchers: [(id: UUID, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    private func noteInitializationWait() {
+        initializationWaits += 1
+        let waits = initializationWaits
+        resumeInitializationWaitWatchers { $0.count <= waits }
+    }
+
+    private func resumeInitializationWaitWatchers(where ready: (_ watcher: (id: UUID, count: Int, continuation: CheckedContinuation<Void, Never>)) -> Bool) {
+        let resumed = initializationWaitWatchers.filter(ready)
+        initializationWaitWatchers.removeAll(where: ready)
+        resumed.forEach { $0.continuation.resume() }
+    }
+
+    /// Tests: returns once `count` calls have waited on a running initialization, so a test can
+    /// end the initialization with its waiters in place (#593). Also returns when the
+    /// initialization ends first or the waiting task is cancelled, so a wrong count fails its
+    /// test instead of hanging it (#447). True when `count` calls waited.
+    /// `registered` runs once the watcher is in place, so a test can cancel a registered one.
+    package func waitForInitializationWaitersForTesting(
+        _ count: Int,
+        registered: (@Sendable () -> Void)? = nil
+    ) async -> Bool {
+        if initializationWaits >= count { return true }
+        if didInitialize { return false }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                initializationWaitWatchers.append((id: id, count: count, continuation: continuation))
+                registered?()
+            }
+        } onCancel: {
+            Task { await self.cancelInitializationWaitWatcher(id) }
+        }
+        return initializationWaits >= count
+    }
+
+    private func cancelInitializationWaitWatcher(_ id: UUID) {
+        resumeInitializationWaitWatchers { $0.id == id }
     }
 
     /// `ensureInitialized` for a join: a failed initialization is a retryable
@@ -1177,16 +1212,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: resolverOutputs
         )
         do {
+            // `invoke` throws only from `validate`, before `apply` writes (#593).
             try withMutableStateSync { state in
-                try handler(&state, ctx)
+                try handler.invoke(&state, ctx)
             }
         } catch {
-            logger.error("❌ OnInitialize handler failed during re-evaluation", metadata: [
-                "error": .string(String(describing: error)),
-            ])
+            noteReplayedInitializeRefusal(error)
         }
         replayedInitializeBeforeTickZero = true
         await flushOutputs(forTick: lastCommittedTickId)
+    }
+
+    /// A replayed OnInitialize's `validate` threw (#593): logged, and kept for the initialize
+    /// check (`replayedInitializeRefusal`). Nothing was written, and `validate` emits nothing.
+    private func noteReplayedInitializeRefusal(_ error: any Error) {
+        logger.error("❌ OnInitialize's validate threw during re-evaluation: nothing is written", metadata: [
+            "error": .string(String(describing: error)),
+        ])
+        if replayedInitializeRefusal == nil {
+            replayedInitializeRefusal = "OnInitialize's validate threw in replay: \(error)"
+        }
     }
 
     /// Whether a throwing OnInitialize resolver group fails the initialization (#238): with
@@ -1291,14 +1336,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
 
             do {
-                // The land runs on with the state OnInitialize left: the check applies.
+                // `invoke` throws only from `validate`, before `apply` writes (#593).
                 try withMutableStateSync { state in
-                    try handler(&state, ctx)
+                    try handler.invoke(&state, ctx)
                 }
             } catch {
-                logger.error("❌ OnInitialize handler failed", metadata: [
+                // A refusal fails the initialization, as a resolver failure with `.failLand`
+                // does: nothing was written, `validate` emitted nothing, and nothing is recorded.
+                logger.error("❌ OnInitialize's validate refused: the land is torn down", metadata: [
                     "error": .string(String(describing: error)),
                 ])
+                initializationFailure = LandInitializationError(underlying: error)
+                Task { await self.tearDownAfterFailedInitialization() }
+                return
             }
             // Recorded in the same synchronous segment as the state write: sync outputs before
             // this point read the state before OnInitialize, outputs after it the state after.
@@ -3312,9 +3362,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
     /// suspend and the actor's state is mutated directly.
     ///
-    /// Input handlers throw only from `validate`, before they write (#586). A lifecycle handler
-    /// that still throws (OnInitialize, the destroy-phase handlers) keeps what it wrote before
-    /// the throw (#87).
+    /// Handlers throw only from `validate`, before they write: the input handlers (#586) and
+    /// OnInitialize (#593). The destroy handlers don't throw.
     private func withMutableStateSync<R>(_ body: (inout State) throws -> R) rethrows -> R {
         try body(&state)
     }
@@ -3341,7 +3390,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
     /// this land's instance ID, or `.zero` when disabled. A keeper created without `landID:`
-    /// falls back to the land type until `setLandID(_:)`.
+    /// uses the land type.
     func loopPhaseOffset(interval: Duration) -> Duration {
         guard enableLoopPhaseOffset else { return .zero }
         return LandLoopPhase.offset(landID: actualLandID ?? definition.id, interval: interval)
@@ -3697,7 +3746,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Applies a lifecycle input: recorded, then its handler. It can't fail: OnJoin and OnLeave
-    /// don't throw (#586), and a replayed OnInitialize that throws is logged here.
+    /// don't throw (#586), and a replayed OnInitialize whose `validate` throws writes nothing and
+    /// is noted for the initialize check (#593).
     private func applyLifecycleItem(_ lifecycleItem: PendingLifecycleItem, executingTickId: Int64, into applied: inout AppliedInputs) {
         if skipsAfterDestroy(.lifecycle(lifecycleItem)) { return }
         // Recorded before the handler runs (see the action case).
@@ -3727,6 +3777,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case .initialize:
             guard let handler = definition.lifetimeHandlers.onInitialize,
                   !replayedInitializeBeforeTickZero else { break }
+            // Only a record without an initialize record reaches this fallback, and a live run
+            // writes one whenever it records: records before 2.1 no longer open
+            // (`minimumReplayable`), so it is a crafted record. `ctx.tickId` is the executing tick
+            // (0 for an item in tick 0, later for one a crafted record puts later), so the
+            // outputs flush with that frame. The live run had the tick before it: with that ID,
+            // OnInitialize's events would go to a tick whose outputs are already flushed (#593).
             let ctx = makeContext(
                 playerID: systemPlayerID,
                 clientID: systemClientID,
@@ -3735,18 +3791,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 resolverOutputs: lifecycleItem.resolverOutputs
             )
             // Execute handler synchronously (resolver outputs already injected). Only
-            // re-evaluation queues an initialize item, so the check (live only) never runs.
-            // OnInitialize can still throw; it fails alone, as before, keeping its writes (#87).
-            let sequenceBefore = outputCollector.nextSequence
+            // re-evaluation queues an initialize item, for a record without an initialize record
+            // (a live run writes one whenever it records). `invoke` throws only from `validate`,
+            // before `apply` writes and with nothing emitted (#593).
             do {
                 try withMutableStateSync { state in
-                    try handler(&state, ctx)
+                    try handler.invoke(&state, ctx)
                 }
             } catch {
-                outputCollector.emittedEvents.removeAll { $0.sequence >= sequenceBefore }
-                logger.error("❌ OnInitialize handler failed during re-evaluation", metadata: [
-                    "error": .string(String(describing: error)),
-                ])
+                noteReplayedInitializeRefusal(error)
             }
         case .join:
             guard
@@ -5925,7 +5978,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// One destroy handler (OnDestroyWhenEmpty, OnFinalize): its resolvers, then the handler
-    /// in one synchronous segment. A resolver or handler failure is logged; the drain goes on.
+    /// in one synchronous segment. A resolver failure is logged and skips the handler; the drain
+    /// goes on.
     ///
     /// No ticket is captured across the resolvers: by now intake is closed (every input and
     /// lifecycle append checks `isDraining`), no tick runs and nothing is pending, so nothing
@@ -5933,7 +5987,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],
-        handler: @Sendable (inout State, LandContext) throws -> Void
+        handler: @Sendable (inout State, LandContext) -> Void
     ) async {
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -5941,27 +5995,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: systemSessionID
         )
         var updatedCtx = ctx
-        do {
-            if !resolvers.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: state
-                )
+        if !resolvers.isEmpty {
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: nil,
+                eventPayload: nil,
+                currentState: state
+            )
+            do {
                 updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
                     executors: resolvers,
                     resolverContext: resolverContext,
                     landContext: ctx
                 )
+            } catch {
+                logger.error("❌ \(name) resolvers failed: the handler is skipped", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+                return
             }
-            try withMutableStateSync { state in
-                try handler(&state, updatedCtx)
-            }
-        } catch {
-            logger.error("❌ \(name) handler failed", metadata: [
-                "error": .string(String(describing: error)),
-            ])
+        }
+        // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
+        withMutableStateSync { state in
+            handler(&state, updatedCtx)
         }
     }
 

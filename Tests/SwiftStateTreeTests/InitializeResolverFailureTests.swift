@@ -93,7 +93,7 @@ struct InitOkResolver: ContextResolver {
 /// OnInitialize logs "init:<output>" or "init:no-output"; OnJoin "join:<p>"; OnFinalize
 /// "finalize"; OnDestroyWhenEmpty "destroyWhenEmpty".
 private func makeDefinition(_ policy: InitializeResolverFailure?) -> LandDefinition<DeadlineTestState> {
-    let body: @Sendable (inout DeadlineTestState, LandContext) throws -> Void = { state, ctx in
+    let body: @Sendable (inout DeadlineTestState, LandContext) -> Void = { state, ctx in
         let output: DeadlineResolverOutput? = ctx.initFailure
         state.log.append(output.map { "init:\($0.value)" } ?? "init:no-output")
     }

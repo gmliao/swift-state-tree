@@ -304,9 +304,9 @@ private func makeLifecycleKeeper(
         definition: makeLifecycleDrainDefinition(),
         initialState: DrainTestState(),
         autoStartLoops: false,
+        landID: "drain-lifecycle:\(gateKey)",
         transport: transport
     )
-    await keeper.setLandID("drain-lifecycle:\(gateKey)")
     return keeper
 }
 
@@ -386,15 +386,15 @@ struct DrainTurnTests {
 
     @Test("Tickless: an action during OnFinalize's resolver is rejected, not applied after finalize", arguments: [false, true])
     func actionDuringFinalizeResolverIsRejected(inTurn: Bool) async throws {
+        let gateKey = DeliveryGates.freshKey()
         let keeper = LandKeeper<DrainTestState>(
             definition: makeDrainDefinition(tick: false, finalizeResolver: true),
             initialState: DrainTestState(),
             autoStartLoops: false,
+            landID: "drain-finalize:\(gateKey)",
             transport: inTurn ? DrainInTurnTransport() : nil
         )
         #expect(await keeper.isUsingInTurnSync() == inTurn)
-        let gateKey = DeliveryGates.freshKey()
-        await keeper.setLandID("drain-finalize:\(gateKey)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let shutdown = Task { await keeper.forceShutdown() }
         guard await DeliveryGates.gate(gateKey).waitUntilEntered() else { return }

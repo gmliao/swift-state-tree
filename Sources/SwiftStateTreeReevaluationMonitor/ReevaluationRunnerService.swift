@@ -222,9 +222,16 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
                             break
                         }
                     } else {
-                        // Finished
+                        // Finished. A failed OnInitialize check fails the run, even when every
+                        // tick matched: the tick hashes don't see a refused initialization whose
+                        // writes a later tick replaces (#593).
+                        let initialize = await newRunner.initializeVerification()
                         self.updateStatus(ticket: ticket) { s in
-                            if s.phase != .failed {
+                            guard s.phase != .failed else { return }
+                            if case .failed(let reason) = initialize {
+                                s.phase = .failed
+                                s.errorMessage = "the OnInitialize check failed: \(reason)"
+                            } else {
                                 s.phase = .completed
                             }
                         }

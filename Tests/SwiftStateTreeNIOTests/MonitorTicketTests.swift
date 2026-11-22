@@ -121,6 +121,9 @@ private struct ResultRunFactory: ReevaluationTargetFactory {
 }
 
 private actor OneResultRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     let gate: StepGate
     let hash: String
     let entered: StepGate?
@@ -138,6 +141,9 @@ private actor OneResultRunner: ReevaluationRunnerProtocol {
 }
 
 private actor GatedRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     let gate: StepGate?
     nonisolated let maxTickId: Int64 = 0
     init(gate: StepGate?) { self.gate = gate }
