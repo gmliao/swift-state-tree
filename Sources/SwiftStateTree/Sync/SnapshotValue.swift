@@ -169,15 +169,21 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 /// whose default instance holds a class, and conversion refuses a conforming class.
 public protocol SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue
-    /// `toSnapshotValue()` with the budget at this value (#716). The default checks what
-    /// `toSnapshotValue()` returned, after it ran; a conversion that recurses into its own type
-    /// implements this one, so the count reaches its recursion.
+    /// `toSnapshotValue()` with the budget at this value (#716). `@SnapshotConvertible`
+    /// generates it, spending the value's object and converting each property within the rest.
+    ///
+    /// A type that implements only `toSnapshotValue()` gets the default, which checks what it
+    /// returned, after it ran: the conversion inside it counts from the root. A type that
+    /// implements this one must pass `budget` on: nothing checks its result (`make` and the
+    /// typed maps trust it), so an override that ignores `budget` is not bounded. A conversion
+    /// that recurses into its own type implements this one, so the count reaches its recursion.
     func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue
 }
 
 public extension SnapshotValueConvertible {
     func toSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
         let value = try toSnapshotValue()
+        NestingBudget.note(.resultCheck)
         try budget.check(value)
         return value
     }
@@ -244,10 +250,20 @@ public extension SnapshotValue {
     /// one, so the first cast on a long chain would recurse through every level inside the
     /// runtime before a hop could refuse it. This cast succeeds at the first level, because
     /// `Optional` itself conforms, and the loop takes the levels one at a time.
+    ///
+    /// An `AnyHashable` is taken out of its box here too, by its exact type, so its value converts
+    /// as itself: otherwise the scalar casts below see the box (`AnyHashable(1)` casts to `Bool`
+    /// on Darwin), and so does an `[Any]` holding it. The box spends no hop: `AnyHashable` never
+    /// holds another one, and an `Optional` inside it spends its own.
     fileprivate static func unwrappingOptionals(_ value: Any, budget: NestingBudget) throws -> (Any, NestingBudget)? {
         var value = value
         var budget = budget
-        while let optional = value as? any NestingOptionalPayload {
+        while true {
+            if Swift.type(of: value) == AnyHashable.self, let box = value as? AnyHashable {
+                value = box.base
+                continue
+            }
+            guard let optional = value as? any NestingOptionalPayload else { break }
             guard let payload = optional.nestingPayload else { return nil }
             budget = try budget.hop()
             value = payload
@@ -299,14 +315,17 @@ public extension SnapshotValue {
             return try convertible.toSnapshotValue(budget: budget)
         }
         
-        // Priority 3: Handle known collection types directly (avoid Mirror overhead)
-        // This significantly reduces dynamic dispatch overhead for common types
-        if let arrayValue = value as? [SnapshotValue] {
+        // Priority 3: Handle known collection types directly (avoid Mirror overhead).
+        // Each matches its exact dynamic type, never a collection cast: a collection cast
+        // converts every element, and unwraps an `Optional` chain inside an `[Any]` with no hop
+        // counted (#716).
+        let valueType = Swift.type(of: value)
+        if valueType == [SnapshotValue].self, let arrayValue = value as? [SnapshotValue] {
             let array = SnapshotValue.array(arrayValue)
             try budget.check(array)
             return array
         }
-        if let dictValue = value as? [String: SnapshotValue] {
+        if valueType == [String: SnapshotValue].self, let dictValue = value as? [String: SnapshotValue] {
             try budget.check(.object(dictValue))
             // Its own keys are written in NFC, as `makeFull` writes them (through `[String: Any]`);
             // objects inside its values are the caller's and are sent as written.
@@ -318,7 +337,7 @@ public extension SnapshotValue {
             }
             return .object(object)
         }
-        if let playerSnapshotDict = value as? [PlayerID: SnapshotValue] {
+        if valueType == [PlayerID: SnapshotValue].self, let playerSnapshotDict = value as? [PlayerID: SnapshotValue] {
             let inner = try budget.enteringContainer()
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerSnapshotDict.count)
@@ -330,50 +349,26 @@ public extension SnapshotValue {
         }
         
         // Priority 4: Handle other common collection types directly
-        if let stringArray = value as? [String] {
+        if valueType == [String].self, let stringArray = value as? [String] {
             _ = try budget.enteringContainer()
             let mapped = stringArray.map { SnapshotValue.string($0) }
             return .array(mapped)
         }
-        if let intArray = value as? [Int] {
+        if valueType == [Int].self, let intArray = value as? [Int] {
             _ = try budget.enteringContainer()
             let mapped = intArray.map { SnapshotValue.int($0) }
             return .array(mapped)
         }
-        // Map elements go through `make` again, never straight to `toSnapshotValue()`: a state
-        // node that is also `SnapshotValueConvertible` (`@SnapshotConvertible`) must still be
-        // converted by its own `@Sync` policies, and `make` checks `StateNodeProtocol` first (#175).
-        if let playerConvertibleDict = value as? [PlayerID: SnapshotValueConvertible] {
-            let inner = try budget.enteringContainer()
-            var object: [String: SnapshotValue] = [:]
-            object.reserveCapacity(playerConvertibleDict.count)
-            for (key, val) in playerConvertibleDict {
-                object[key.rawValue] = try make(from: val, for: playerID, budget: inner)
-            }
-            return .object(object)
+        // Typed maps of nodes and of convertibles, by their conditional conformance: one check
+        // on the type's metadata, so no element is cast (#716). Nodes first, as `make` checks
+        // `StateNodeProtocol` first (#175).
+        if let nodeMap = value as? any _StateNodeMap {
+            NestingBudget.note(.nodeMap)
+            return try nodeMap._snapshotNodeMap(for: playerID, budget: budget)
         }
-        if let playerStateNodeDict = value as? [PlayerID: any StateNodeProtocol] {
-            let inner = try budget.enteringContainer()
-            // Process all StateNodes in the dictionary (including single-element dictionaries from perPlayerSlice)
-            var object: [String: SnapshotValue] = [:]
-            object.reserveCapacity(playerStateNodeDict.count)
-            for (key, val) in playerStateNodeDict {
-                if playerID == nil {
-                    try refusePlayerDependentNode(val)
-                }
-                let snapshot = try val.snapshot(for: playerID, dirtyFields: nil, budget: try inner.enteringContainer())
-                object[key.rawValue] = .object(snapshot.values)
-            }
-            return .object(object)
-        }
-        if let stringConvertibleDict = value as? [String: SnapshotValueConvertible] {
-            let inner = try budget.enteringContainer()
-            var object: [String: SnapshotValue] = [:]
-            object.reserveCapacity(stringConvertibleDict.count)
-            for (key, val) in stringConvertibleDict {
-                object[wireKey(key)] = try make(from: val, for: playerID, budget: inner)
-            }
-            return .object(object)
+        if let convertibleMap = value as? any _SnapshotConvertibleMap {
+            NestingBudget.note(.convertibleMap)
+            return try convertibleMap._snapshotConvertibleMap(for: playerID, budget: budget)
         }
         if let dictStringAny = value as? [String: Any] {
             let inner = try budget.enteringContainer()
@@ -530,7 +525,7 @@ public extension SnapshotValue {
     /// rejects such a nesting where it can see it; this refuses every other path to it (a plain
     /// holder in an empty collection, a land built without the check). One stored flag per type
     /// (`hasPlayerDependentSyncFields`), so it adds no walk to the broadcast encoding.
-    private static func refusePlayerDependentNode(_ node: any StateNodeProtocol) throws {
+    fileprivate static func refusePlayerDependentNode(_ node: any StateNodeProtocol) throws {
         guard type(of: node).hasPlayerDependentSyncFields else { return }
         throw SyncError.unsupportedValue(
             "\(type(of: node)) has player-dependent fields and is encoded without a player, under a broadcast field: those fields would reach no player (#179)"
@@ -564,14 +559,16 @@ public extension SnapshotValue {
 /// a hand-written `toSnapshotValue()` is hashed through that, as clients see it.
 public protocol FullSnapshotValueConvertible {
     func toFullSnapshotValue() throws -> SnapshotValue
-    /// `toFullSnapshotValue()` with the budget at this value (#716), defaulted as
-    /// `toSnapshotValue(budget:)` is.
+    /// `toFullSnapshotValue()` with the budget at this value (#716), generated and defaulted as
+    /// `toSnapshotValue(budget:)` is: the default checks the result of `toFullSnapshotValue()`,
+    /// and an override of this one must pass `budget` on, since `makeFull` trusts its result.
     func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue
 }
 
 public extension FullSnapshotValueConvertible {
     func toFullSnapshotValue(budget: NestingBudget) throws -> SnapshotValue {
         let value = try toFullSnapshotValue()
+        NestingBudget.note(.resultCheck)
         try budget.check(value)
         return value
     }
@@ -802,4 +799,66 @@ protocol NestingOptionalPayload {
 
 extension Optional: NestingOptionalPayload {
     var nestingPayload: Any? { map { $0 as Any } }
+}
+
+// MARK: - Typed maps (#716)
+
+/// A key a typed map converts without boxing it: its string as the wire spells it.
+package protocol _SnapshotMapKey: Hashable {
+    var _snapshotWireKey: String { get }
+}
+
+extension PlayerID: _SnapshotMapKey {
+    package var _snapshotWireKey: String { rawValue }
+}
+
+extension String: _SnapshotMapKey {
+    package var _snapshotWireKey: String { SnapshotValue.wireKey(self) }
+}
+
+/// A map of state nodes, converted without casting its elements (#716). `Dictionary` conforms
+/// when its values are state nodes, so `make` finds it with one check on the type's metadata.
+package protocol _StateNodeMap {
+    /// The map as an object: each node converted by its own policies for `playerID`.
+    func _snapshotNodeMap(for playerID: PlayerID?, budget: NestingBudget) throws -> SnapshotValue
+}
+
+extension Dictionary: _StateNodeMap where Key: _SnapshotMapKey, Value: StateNodeProtocol {
+    package func _snapshotNodeMap(for playerID: PlayerID?, budget: NestingBudget) throws -> SnapshotValue {
+        let inner = try budget.enteringContainer()
+        var object: [String: SnapshotValue] = [:]
+        object.reserveCapacity(count)
+        for (key, node) in self {
+            // As `make` converts a node: the view without a player refuses a player-dependent
+            // node (#179), and the node's object is a container.
+            if playerID == nil {
+                try SnapshotValue.refusePlayerDependentNode(node)
+            }
+            let snapshot = try node.snapshot(for: playerID, dirtyFields: nil, budget: try inner.enteringContainer())
+            object[key._snapshotWireKey] = .object(snapshot.values)
+        }
+        return .object(object)
+    }
+}
+
+/// A map of convertible values, converted without casting its elements (#716), as
+/// `_StateNodeMap` is. A separate protocol: `Dictionary` can conform to one protocol under only
+/// one set of conditions.
+package protocol _SnapshotConvertibleMap {
+    /// The map as an object, each value through `make`.
+    func _snapshotConvertibleMap(for playerID: PlayerID?, budget: NestingBudget) throws -> SnapshotValue
+}
+
+extension Dictionary: _SnapshotConvertibleMap where Key: _SnapshotMapKey, Value: SnapshotValueConvertible {
+    package func _snapshotConvertibleMap(for playerID: PlayerID?, budget: NestingBudget) throws -> SnapshotValue {
+        let inner = try budget.enteringContainer()
+        var object: [String: SnapshotValue] = [:]
+        object.reserveCapacity(count)
+        for (key, value) in self {
+            // Through `make`, never straight to `toSnapshotValue()`: a value that is also a state
+            // node converts by its own policies (#175), and a class is refused (#464).
+            object[key._snapshotWireKey] = try SnapshotValue.make(from: value, for: playerID, budget: inner)
+        }
+        return .object(object)
+    }
 }

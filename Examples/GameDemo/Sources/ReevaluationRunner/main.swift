@@ -94,13 +94,25 @@ struct ReevaluationRunnerMain {
             }
         }
         
+        // A record past the limit ends --time-open and --convert like a replay (exit 14), not with
+        // an uncaught error.
         if let timeOpenPath {
-            try await timeOpen(path: timeOpenPath, repeatCount: max(1, timeOpenRepeat), maxReplayTicks: maxReplayTicks)
+            do {
+                try await timeOpen(path: timeOpenPath, repeatCount: max(1, timeOpenRepeat), maxReplayTicks: maxReplayTicks)
+            } catch let error as ReevaluationRecordContentError where error.isReplayTooLong {
+                print("❌ \(error); raise the limit with --max-replay-ticks")
+                exit(14)
+            }
             return
         }
 
         if let convertPaths {
-            try await convert(input: convertPaths.input, output: convertPaths.output, maxReplayTicks: maxReplayTicks)
+            do {
+                try await convert(input: convertPaths.input, output: convertPaths.output, maxReplayTicks: maxReplayTicks)
+            } catch let error as ReevaluationRecordContentError where error.isReplayTooLong {
+                print("❌ \(error); raise the limit with --max-replay-ticks")
+                exit(14)
+            }
             return
         }
 
@@ -562,7 +574,10 @@ struct ReevaluationRunnerMain {
     private static func convert(input: String, output: String, maxReplayTicks: Int64) async throws {
         let data = try Data(contentsOf: URL(fileURLWithPath: input))
         if ReevaluationRecordLog.hasMagic(data) {
-            try ReevaluationRecordFile.jsonView(ofRecordData: data).write(to: URL(fileURLWithPath: output))
+            // Opened through the checked source, so a 3.x record past the limit is refused like a
+            // JSON one, not only a record that is replayed.
+            let source = try ReevaluationRecordLogSource(bytes: Array(data), maxReplayTicks: maxReplayTicks)
+            try await ReevaluationRecordFile.jsonView(of: source).write(to: URL(fileURLWithPath: output))
             print("✅ Wrote the JSON view of \(input) to \(output)")
             return
         }
@@ -648,7 +663,7 @@ struct ReevaluationRunnerMain {
         Usage:
           swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--diff-with <path>] [--max-replay-ticks <n>]
           swift run ReevaluationRunner --convert <in> <out> [--max-replay-ticks <n>]
-          swift run -c release ReevaluationRunner --time-open <path> [--repeat <n>]
+          swift run -c release ReevaluationRunner --time-open <path> [--repeat <n>] [--max-replay-ticks <n>]
 
         Options:
           --input, -i <path>     Path to a re-evaluation record, 3.x (.sstr) or 2.5+ JSON (required
@@ -667,8 +682,8 @@ struct ReevaluationRunnerMain {
           --export-jsonl <path>  Export JSONL stream (snapshot + events per tick); a failed
                                  write (a full disk) ends the run with exit 12
           --diff-with <path>     Compare with recorded state JSONL (output field-level diffs)
-          --max-replay-ticks <n> Longest run to replay or convert: a record whose last tick + 1 is
-                                 past n is refused (a replay exits 14). Default 1,000,000
+          --max-replay-ticks <n> Longest run to replay, convert (a JSON or a 3.x input) or time-open:
+                                 a record whose last tick + 1 is past n is refused (exit 14). Default 1,000,000
                                  (13.9 h at 50 ms ticks)
           --help, -h             Show this help message
 

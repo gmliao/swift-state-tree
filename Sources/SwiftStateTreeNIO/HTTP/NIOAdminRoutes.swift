@@ -125,7 +125,9 @@ public struct NIOAdminRoutes: Sendable {
     /// The run length limit of each land type's replay (`ReevaluationFeatureConfiguration.maxReplayTicks`,
     /// which a host sets to its runner service's): a start checks the record against it, so a host
     /// that raised the limit can replay a longer record through the admin routes (#728). A land type not listed uses
-    /// `ReevaluationRecordFile.defaultMaxReplayTicks`.
+    /// `ReevaluationRecordFile.defaultMaxReplayTicks`. The routes take this map as a snapshot when
+    /// they are built (`NIOLandHost.registerAdminRoutes()`), as they do `replayLandSuffix`: a land
+    /// registered after that keeps the default.
     public let maxReplayTicksByLandType: [String: Int64]
     /// The land type `/admin/reevaluation/start` issues monitor tickets for
     /// (`ReevaluationFeatureConfiguration.monitorLandType`'s default).

@@ -15,6 +15,17 @@ public struct ReevaluationFeatureConfiguration: Sendable {
     /// of the runners its factory builds): a record the admin start accepts is then one the run
     /// accepts. A mismatch is safe, not silent: a limit below the service's refuses a record the
     /// run would take, and a limit above it lets the run fail with `replayTooLong`.
+    ///
+    /// The reevaluation monitor land is registered once, by the first `registerWithGenericReplay`
+    /// call, with that call's configuration, so its runs use that registration's service and
+    /// limit. `/admin/reevaluation/start` checks a record against the limit of the land type in
+    /// the request: with lands at different limits, a record accepted for the higher one can still
+    /// fail in the monitor with `replayTooLong` (typed, not silent). Lands that share a monitor
+    /// should share a limit when the monitor route has to honor it.
+    ///
+    /// `NIOAdminRoutes` takes a snapshot of these limits when `registerAdminRoutes()` runs
+    /// (`NIOLandHost.run` does so after the registrations): a land registered after that keeps
+    /// the default limit for the admin start.
     public var maxReplayTicks: Int64
     public var runnerServiceFactory: @Sendable () -> ReevaluationRunnerService
 

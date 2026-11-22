@@ -96,6 +96,54 @@ public struct NestingBudget: Sendable, Equatable {
     }
 }
 
+// MARK: - Test probe
+
+extension NestingBudget {
+    /// A step of a conversion that tests count.
+    package enum ProbeEvent: Sendable {
+        /// `make` converted a typed map of state nodes through its conformance.
+        case nodeMap
+        /// `make` converted a typed map of convertible values through its conformance.
+        case convertibleMap
+        /// A budget-aware default checked a conversion's result after it ran.
+        case resultCheck
+    }
+
+    /// Counts `event` in the probe bound to this task: DEBUG builds only, where an unbound probe
+    /// costs one task-local read. Release builds compile it to nothing.
+    @inline(__always)
+    static func note(_ event: ProbeEvent) {
+        #if DEBUG
+        probe?.add(event)
+        #endif
+    }
+}
+
+#if DEBUG
+extension NestingBudget {
+    /// The probe the conversions in this task count into. Tests only: unbound (nil) everywhere
+    /// else.
+    @TaskLocal package static var probe: Probe?
+
+    /// The counts `probe` keeps, per event.
+    package final class Probe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var counts: [ProbeEvent: Int] = [:]
+
+        package init() {}
+
+        package func count(_ event: ProbeEvent) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return counts[event, default: 0]
+        }
+
+        func add(_ event: ProbeEvent) {
+            lock.lock(); counts[event, default: 0] += 1; lock.unlock()
+        }
+    }
+}
+#endif
+
 extension SnapshotValue {
     /// An array or an object: what `NestingBudget` counts.
     var isNestingContainer: Bool {

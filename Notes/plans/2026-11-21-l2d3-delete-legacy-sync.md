@@ -60,7 +60,7 @@ So commit 1 is a probe, not a deletion (see §2). Two outcomes:
      handleClientEvent/kickServerInputTurn (`inTurn` local goes).
    - hooks `runTicklessJobPassForTesting` :2461, `runLegacyPassForTesting` :2462.
    - hold points `.legacyShutdownPass` (:2907), `.ticklessJobPass`, `.legacyDelivery`.
-   - the `fatalError` helper of §0 (A) at each tickless else branch.
+   - the `fatalError` helper of §0 (A) at each tickless else branch (superseded at review: no helper is added, see §7).
    - Tests (superseded at review, see §7): `LegacyEntryStopTests` becomes "A re-evaluation keeper stops on a live input (#546 L2d-3)":
      exit tests per entry kind, each checking the message (in every build: `fatalError` keeps it),
      covering at least join, action, client event and server input; all 8 branches if the toolchain
