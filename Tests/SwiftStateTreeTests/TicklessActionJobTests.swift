@@ -157,16 +157,16 @@ private let p2 = PlayerID("p2"), c2 = ClientID("c2"), s2 = SessionID("s2")
 
 private func makeKeeper(withPort: Bool) async throws -> LandKeeper<TicklessJobState> {
     let definition = makeDefinition()
+    // One land ID per keeper: parallel tests must not share a recorder spool.
+    let landID = "tickless-job:\(UUID().uuidString)"
     let keeper = LandKeeper<TicklessJobState>(
         definition: definition,
         initialState: TicklessJobState(),
         enableLiveStateHashRecording: true,
         autoStartLoops: false,
+        landID: landID,
         transport: withPort ? TicklessJobInTurnTransport() : nil
     )
-    // One land ID per keeper: parallel tests must not share a recorder spool.
-    let landID = "tickless-job:\(UUID().uuidString)"
-    await keeper.setLandID(landID)
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: landID,

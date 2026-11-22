@@ -41,8 +41,7 @@ private struct FrameIdentityRun<State: StateNodeProtocol> {
     ) async {
         transport = FrameRecordingTransport()
         // No loops: the script ticks and syncs, so two runs are comparable.
-        keeper = LandKeeper<State>(definition: definition, initialState: State(), autoStartLoops: false)
-        await keeper.setLandID(landID)
+        keeper = LandKeeper<State>(definition: definition, initialState: State(), autoStartLoops: false, landID: landID)
         var config = TransportEnvConfig(
             enableDirtyTracking: dirtyTracking,
             useSnapshotForSync: true,

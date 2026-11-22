@@ -31,6 +31,9 @@ private struct OpeningFactory: ReevaluationTargetFactory {
 
 /// A custom runner that reports `maxTickId` and has no tick to step.
 private actor FixedTickRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     nonisolated let maxTickId: Int64
     private(set) var stepCalls = 0
 
@@ -47,6 +50,9 @@ private actor FixedTickRunner: ReevaluationRunnerProtocol {
 /// A custom runner that reports `maxTickId` but steps `steps` times before it ends, so a runner that
 /// reports less than it steps ends on its own when no bound stops it.
 private actor SteppingRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     nonisolated let maxTickId: Int64
     private let steps: Int
     private(set) var stepCalls = 0

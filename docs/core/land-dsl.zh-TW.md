@@ -226,7 +226,9 @@ Resolver 先並行執行，成功後再同步進入 handler。
 - `StateSync(every:)`：狀態同步（只讀 callback，會被調用）
 - `DestroyWhenEmpty(after:)`：空房間自動關閉
 - `PersistSnapshot(every:)`：快照週期
-- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`。與 input handler 不同，`OnInitialize` 與 destroy 階段的 handler（`OnFinalize`、`OnDestroyWhenEmpty`）可以拋出錯誤，並保留拋出前寫入的內容
+- `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`。與 input handler 相同，它們寫入後都不會再拋出錯誤（#593）：
+  - `OnFinalize` 與 `DestroyWhenEmpty(after:_:)` 的 handler 接受不會拋出錯誤的 body。Land 正在結束，沒有人會處理拒絕：body 若呼叫會拋出錯誤的程式碼，要自己處理錯誤。
+  - `OnInitialize` 接受不會拋出錯誤的 body，或像 input 一樣分成 `validate` 與 `apply` 兩段（[兩段式 Handler](#兩段式-handler)）。`validate` 拋出錯誤時，land 的初始化失敗，和 resolver 失敗時相同，什麼都不寫入（見下方範例）。
 - `OnInitialize(resolvers:onResolverFailure:)`：resolver 丟錯時預設會讓 land 初始化失敗（`.failLand`）；`.continue` 則在沒有 resolver 輸出的情況下執行 OnInitialize。見 [Resolver 期限](resolver.zh-TW.md#期限)
 
 ```swift
@@ -253,3 +255,25 @@ Lifetime {
 ```
 
 **注意**：`Tick` 是重播功能中唯一可修改 state 的來源。`StateSync` 僅觸發狀態同步，不會修改 state。可選的 callback 是唯讀的，會在 sync 操作時被調用，用於日誌記錄、指標收集或其他唯讀操作。
+
+### 可被拒絕的初始化
+
+Land 可能需要某些資料才能開始：例如由 resolver 載入的房間設定。`validate` 檢查資料是否存在，並把它當作 plan 回傳。`apply` 把它寫入。
+
+```swift
+Lifetime {
+    OnInitialize(
+        resolvers: RoomConfigResolver.self,
+        onResolverFailure: .continue,
+        validate: { (_: RoomState, ctx: ValidateContext) throws -> RoomConfigOutput in
+            guard let config: RoomConfigOutput = ctx.roomConfig else { throw RoomSetupError.noConfig }
+            return config
+        },
+        apply: { (state: inout RoomState, config: RoomConfigOutput, _: LandContext) in
+            state.maxPlayers = config.maxPlayers
+        }
+    )
+}
+```
+
+使用 `.continue` 時，resolver 拋出錯誤會讓 `ctx.roomConfig` 為空，`validate` 便會拒絕。拒絕會讓初始化失敗，和 resolver 使用 `.failLand` 時相同：land 被拆除且不執行 destroy handler，正在等待的 join 收到可重試的 `JOIN_DENIED`。重試的 join 會建立新的 land。

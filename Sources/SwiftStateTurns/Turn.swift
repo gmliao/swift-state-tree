@@ -20,6 +20,21 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         mutating get { core.segmentNow() }
     }
 
+    /// Takes every mail in the mailbox now, oldest first, so this step can act on a mail
+    /// posted while it runs (a failure that must stop the step's outputs). Taken mail doesn't
+    /// step through `handleMail`. A mail's own step has no take (its `MailTurn` has none), so
+    /// mail posted meanwhile steps at the next check. An environment read, like `now`: a replay
+    /// serves the recorded take.
+    @inlinable public mutating func takeMail() -> [M.Mail] {
+        guard TurnCore<M>.usesMailbox, let mailbox = core.mailbox else { return [] }
+        let key = MailRecordKey.inside(step: core.currentOrdinal, take: core.takeIndex)
+        core.takeIndex += 1
+        if core.mailReplay != nil { return core.serveTake(key) }
+        let taken = mailbox.removeAll()
+        if !taken.isEmpty { core.onMailTaken?(key, taken, nil) }
+        return taken
+    }
+
     // MARK: Lifetimes
 
     /// Starts a generation of `key`. True: it superseded a live one, whose requests are closed

@@ -15,10 +15,17 @@ public protocol TurnActor: Actor {
     /// could otherwise do).
     var core: TurnCore<M> { get }
     /// The asynchronous work of an effect, off the actor. It doesn't throw: nil means nothing to
-    /// report, and an error is a case of the input. Its result comes back as an input.
+    /// mail, and an error is a case of the input. Its result comes back as an input.
     @concurrent nonisolated func perform(_ effect: M.Effect) async -> M.Input?
     /// The synchronous sink of a step's outputs, called between steps.
     func flush(_ outputs: consuming [M.Output])
+    /// The core's mailbox, for `post`: a stored `nonisolated let` assigned from `core.mailbox` (a lint
+    /// checks it). A machine without mail gets nil by default.
+    nonisolated var mailbox: TurnMailbox<M.Mail>? { get }
+}
+
+extension TurnActor where M.Mail == Never {
+    @inlinable public nonisolated var mailbox: TurnMailbox<Never>? { nil }
 }
 
 extension TurnActor {
@@ -41,16 +48,25 @@ extension TurnActor {
                 self.submit(input, caller: id)
             }
         case .cancelsCall:
+            // A mail replay can't place a cancellation: its driver can't tell a call cancelled
+            // before submission from one whose cancellation entry withdrew it (both throw
+            // `CancellationError`), so it can't reproduce the ordinals. A replayed core's calls
+            // use `.ignoresCancel` (plan §3.9).
+            if TurnCore<M>.usesMailbox, core.mailReplay != nil {
+                fatalError("TurnActor: a mail replay doesn't take .cancelsCall calls; use .ignoresCancel")
+            }
             // Through `read`, as every access to the machine outside a step: from inside a step
             // (a task started synchronously on the actor) it stops instead of reading mid-write.
             let isControl = core.read { machine in
                 if case .control = machine.inputPolicy(for: input) { return true } else { return false }
             }
-            if Task.isCancelled, isControl {
+            if Task.isCancelled {
                 // Cancelled before entry: a control input is still submitted and stepped,
-                // but its caller doesn't wait. A reply from its step finds no waiter.
+                // but its caller doesn't wait. A reply from its step finds no waiter. A normal
+                // input isn't submitted. Checked here, before the handler, so no cancellation
+                // hop is made for a call that never waits.
                 core.counters.cancelledCalls += 1
-                submit(input, caller: id)
+                if isControl { submit(input, caller: id, readControl: isControl) }
                 throw CancellationError()
             }
             return try await withTaskCancellationHandler {
@@ -61,7 +77,7 @@ extension TurnActor {
                         return
                     }
                     core.waiters[id] = continuation
-                    self.submit(input, caller: id)
+                    self.submit(input, caller: id, readControl: isControl)
                 }
             } onCancel: {
                 Task { await self.callerCancelled(id) }
@@ -75,6 +91,10 @@ extension TurnActor {
     /// Called outside a batch, what the answer's step produced (outputs, replies, effects) has
     /// left the core when this returns. Called from inside a batch (a collaborator the driver
     /// called between two steps), it leaves when that batch drains, after the return.
+    ///
+    /// The answer can change state, so with a mailbox a query takes a dispatch ordinal, as any
+    /// step: a recorded core's queries replay in the same order. A read that must not count
+    /// goes through `read`.
     @inlinable public func query(_ query: M.Query) -> M.Answer {
         let core = self.core
         if !core.inSegment { beginEntry() }
@@ -85,20 +105,209 @@ extension TurnActor {
 
     // MARK: Entries
 
-    /// A new entry from outside: a new batch, so the next `Turn.now` reads the clock.
+    /// A new entry from outside: a new batch, so the next `Turn.now` reads the clock. It takes
+    /// the mailbox first (`takeMailBeforeStep`), under a fresh mailbox budget, so the entry's own checks
+    /// read the state after the mail. Every entry that calls it ends through the segment
+    /// epilogue (`if core.rt.dirty { runSegment() }`), its stale returns included.
     @inlinable func beginEntry() {
+        let core = self.core
         core.cachedNow = nil
+        if TurnCore<M>.usesMailbox, let mailbox = core.mailbox {
+            core.mailBudget = mailbox.capacity
+            takeMailBeforeStep()
+        }
     }
 
+    /// An entry's boundary, after its mailbox take and before its own work (a completion, a
+    /// deadline, a timer, a gate's return), as an admission is (plan §3.9): it takes an
+    /// ordinal, so a mail posted between the take and the work, which steps after the work
+    /// live, is keyed after the boundary and replays there too. Every such entry calls it
+    /// when it still has state to change after its take; a stale arrival (a nil result or gate
+    /// return that changes nothing, a stale deadline, timer or cancellation) takes none, so it
+    /// counts the same wherever the scheduler lands it.
+    @inlinable func entryBoundary() {
+        let core = self.core
+        guard TurnCore<M>.usesMailbox else { return }
+        core.noteDispatch()
+        core.onEntryBoundaryForTesting?()
+    }
+
+    // MARK: The mailbox
+
+    /// Posts `mail` to the core's mailbox, from any thread, without awaiting: the core steps it
+    /// (`handleMail`) before the next step after the check that sees it, within an entry's
+    /// budget. A mail posted after a check's watermark, or while an entry is admitting its
+    /// own input, steps after that step, at the next check. False when the mailbox is
+    /// full: the mail isn't stored (the first pending mail wins) and the refusal is counted.
+    /// The post that finds the mailbox empty schedules one wake (`mailboxWoke`).
+    @inlinable public nonisolated func post(_ mail: M.Mail) -> Bool {
+        guard let mailbox else { fatalError("TurnActor: post on an actor whose machine takes no mail") }
+        guard let wasEmpty = mailbox.append(mail) else { return false }
+        if wasEmpty { Task { await self.mailboxWoke() } }
+        return true
+    }
+
+    /// Tests: `post`, with `beforeAppend` awaited before the mailbox's critical section (its "was
+    /// empty" read and the append) and `afterAppend` between the append and the wake, so a test
+    /// can hold a post at either point.
+    @inlinable package nonisolated func postForTesting(
+        _ mail: M.Mail,
+        beforeAppend: @Sendable () async -> Void = {},
+        afterAppend: @Sendable () async -> Void = {}
+    ) async -> Bool {
+        guard let mailbox else { fatalError("TurnActor: post on an actor whose machine takes no mail") }
+        await beforeAppend()
+        guard let wasEmpty = mailbox.append(mail) else { return false }
+        await afterAppend()
+        if wasEmpty { Task { await self.mailboxWoke() } }
+        return true
+    }
+
+    /// The mailbox's wake: an ordinary entry. It finds the mailbox empty when an entry took the
+    /// mail first (`emptyMailboxWakes`), and ends through the epilogue either way. `remainder`:
+    /// the epilogue's wake for mail a spent budget left, which owns `mailboxWakeScheduled`; a
+    /// post's wake leaves the flag alone, so it can't clear it while a remainder wake is pending.
+    @inlinable func mailboxWoke(remainder: Bool = false) {
+        let core = self.core
+        core.onMailboxWakeForTesting?()
+        if remainder { core.mailboxWakeScheduled = false }
+        if let mailbox = core.mailbox, mailbox.isEmpty { core.counters.emptyMailboxWakes += 1 }
+        // A replay's mail comes from its record only, never from a wake: a replayed `flush` that
+        // posts physical mail doesn't make a scheduler-placed entry. (Here, after the counter:
+        // returning before it costs the function its specialization on mailbox machines.)
+        guard core.mailReplay == nil else { return }
+        beginEntry()
+        if core.rt.dirty { runSegment() }
+    }
+
+    /// The entry's mailbox take. It steps the mail posted before it, in the segment's mode
+    /// (`inSegment` set, so a send from `flush` queues and a query answers in place), draining
+    /// each one's products before the next. When it stepped a mail or left some, the entry
+    /// runs a segment now, before its own checks and step (products first, plan §3.4): the
+    /// whole loop, so what the mail caused (queued sends, releases, abandonments, due
+    /// follow-ups, mail posted meanwhile) steps before the entry's own work, as a wake's
+    /// segment would have stepped it before any later entry. That is what replay relies on: it
+    /// steps a wake's mail at the next entry's take. Leaving mail (a post after the
+    /// watermark) happens only live; running the segment for it too is a live ordering choice,
+    /// mail before the entry's work, not a replay need. Inside a segment, the enclosing loop
+    /// steps the products instead.
+    @inlinable func takeMailBeforeStep() {
+        let core = self.core
+        // Not from inside a step or a read (a `query` from a collaborator a step calls): that
+        // call stops in its own step's borrow check, with its own message.
+        guard TurnCore<M>.usesMailbox, core.borrows == 0, let mailbox = core.mailbox else { return }
+        let replaying = core.mailReplay != nil
+        if !replaying, mailbox.isEmpty { return }
+        // An entry's take: never inside a segment, whose served `now` the clear below would drop.
+        if core.inSegment { fatalError("TurnActor: an entry's mailbox take inside a segment") }
+        core.inSegment = true
+        let stepped = replaying ? takeStaged() : takeMail(mailbox)
+        core.inSegment = false
+        // A replay never drains the physical mailbox (a replayed `flush` may post to it), so
+        // there only a staged step runs a segment.
+        if stepped || (!replaying && !mailbox.isEmpty) {
+            core.rt.dirty = true
+            runSegment()
+        }
+        // The entry's own work reads its own `now`.
+        core.productsNow = nil
+    }
+
+    /// One check: the mail at or below the mailbox's watermark now, one head at a time, each
+    /// stepped and its products drained before the next is removed. Spends the entry's budget.
+    /// True when it stepped any.
+    @inlinable func takeMail(_ mailbox: TurnMailbox<M.Mail>) -> Bool {
+        let core = self.core
+        if core.mailBudget == 0 { return false }
+        let watermark = mailbox.watermark
+        core.onMailboxCheckForTesting?()
+        var stepped = false
+        while core.mailBudget > 0, let mail = mailbox.removeHead(atOrBelow: watermark) {
+            core.mailBudget -= 1
+            let key = MailRecordKey.before(step: core.nextOrdinal, index: core.beforeIndex)
+            core.beforeIndex += 1
+            if let record = core.onMailTaken { record(key, [mail], core.segmentNow()) }
+            core.stepMail(mail)
+            drainProducts()
+            stepped = true
+        }
+        return stepped
+    }
+
+    /// A replay's check: the staged mail for the next step's `before` keys, in order, each
+    /// with its recorded `now`. The budget doesn't apply: the record fixed where each one steps.
+    /// The last staged mail's `now` stays served (`productsNow`) for the rest of the replay's
+    /// segment, as the live segment that stepped it cached it, until a later staged mail
+    /// overwrites it, the entry's own work starts or the segment ends. A check in the entry's
+    /// own segment recorded that segment's `now`, so serving it there changes nothing.
+    @inlinable func takeStaged() -> Bool {
+        let core = self.core
+        var stepped = false
+        while let head = core.mailReplay?.first,
+              head.key == .before(step: core.nextOrdinal, index: core.beforeIndex) {
+            core.mailReplay?.removeFirst()
+            core.beforeIndex += 1
+            core.productsNow = head.now
+            for mail in head.mail {
+                core.stepMail(mail)
+                drainProducts()
+            }
+            stepped = true
+        }
+        return stepped
+    }
+
+    /// Replay: called once after the record's last input. It steps the mail staged after
+    /// the last step (`before` the next ordinal, which no step takes) as a check would, then
+    /// reports any entry still staged as `leftover`. Between entries only (not from a step, a
+    /// read or a `flush`). The core stays in replay mode afterwards (`replayMail`).
+    package func finishReplay() {
+        let core = self.core
+        guard TurnCore<M>.usesMailbox, core.mailReplay != nil else { return }
+        if core.inSegment || core.borrows != 0 {
+            fatalError("TurnActor: finishReplay inside a segment, a step or a read")
+        }
+        beginEntry()
+        if core.rt.dirty { runSegment() }
+        while let head = core.mailReplay?.first { core.diverged(.leftover(head.key)) }
+    }
+
+    /// A call's cancellation: an entry with state to change, as a deadline's is. With a
+    /// mailbox it takes the mail first and then an ordinal, so a mail posted between the two
+    /// replays after the withdrawal. Mailbox first, as every entry: the mail pending when the
+    /// cancellation enters steps, and its products run, before the waiter is removed, so a
+    /// pending `close` answers the call `.closed`, and a mail that frees the call's hold lets
+    /// it step and reply, although its caller cancelled. A cancellation that finds no waiter
+    /// (the call was answered or refused first, or never submitted), before or after the take,
+    /// is stale: no entry and no ordinal. Only live cores take `.cancelsCall` calls: a mail
+    /// replay refuses them (`sendAndWait`), because it can't place a cancellation (plan §3.9).
     @inlinable func callerCancelled(_ id: InputID) {
         let core = self.core
+        // A cancellation of a call already answered or refused (or never submitted) changes no
+        // state: no entry, no ordinal, as a stale deadline.
+        guard core.waiters[id] != nil else {
+            core.onDiagnostic?(.staleCancellation)
+            return
+        }
+        if TurnCore<M>.usesMailbox {
+            beginEntry()
+            // The take's mail can answer or refuse the call first: then the cancellation is stale.
+            guard core.waiters[id] != nil else {
+                core.onDiagnostic?(.staleCancellation)
+                if core.rt.dirty { runSegment() }
+                return
+            }
+            entryBoundary()
+        }
         guard let waiter = core.waiters.removeValue(forKey: id) else { return }
         _ = core.rt.withdraw(caller: id)
         core.counters.cancelledCalls += 1
         waiter.resume(throwing: CancellationError())
     }
 
-    @inlinable func submit(_ input: M.Input, caller: InputID?) {
+    /// `readControl`: what `sendAndWait(.cancelsCall)` read from `inputPolicy(for:)` before it
+    /// submitted; debug builds check that the policy still says the same after the mailbox.
+    @inlinable func submit(_ input: M.Input, caller: InputID?, readControl: Bool? = nil) {
         let core = self.core
         if core.borrows < 0 || core.inSegment {
             core.queued.push((input, caller, core.scopeEndClock))
@@ -108,6 +317,13 @@ extension TurnActor {
             return
         }
         beginEntry()
+        #if DEBUG
+        if TurnCore<M>.usesMailbox, let readControl {
+            let isControl: Bool
+            if case .control = core.machine.inputPolicy(for: input) { isControl = true } else { isControl = false }
+            assert(isControl == readControl, "TurnCore: inputPolicy's control or normal choice changed with the machine's state")
+        }
+        #endif
         admit(input, caller: caller)
         if core.rt.dirty { runSegment() }
     }
@@ -115,6 +331,9 @@ extension TurnActor {
     /// `arrival`: a deferred input's scope-end clock when it arrived; nil when admitted on arrival.
     @inlinable func admit(_ input: M.Input, caller: InputID?, arrival: UInt64? = nil) {
         let core = self.core
+        // A boundary, whatever the outcome: a mail keyed after a parked or refused admission
+        // can't replay ahead of it (plan §3.9).
+        core.noteDispatch()
         switch core.machine.inputPolicy(for: input) {
         case .control:
             core.step(input, caller: caller)
@@ -165,7 +384,25 @@ extension TurnActor {
             core.onDiagnostic?(.foreignCompletion)
             return
         }
-        beginEntry()
+        if TurnCore<M>.usesMailbox {
+            // A nil result that changes nothing (a `run` with nothing to mail, a closed request's
+            // late nil with no hold to retire) is no entry and takes no ordinal, as a stale
+            // deadline. The take's mail can make a live one stale (it closes the request, which
+            // had no hold to retire), so it is checked again after the take.
+            guard completionIsLive(id, input) else {
+                core.onDiagnostic?(.idleCompletion)
+                return
+            }
+            beginEntry()
+            guard completionIsLive(id, input) else {
+                core.onDiagnostic?(.idleCompletion)
+                if core.rt.dirty { runSegment() }
+                return
+            }
+            entryBoundary()
+        } else {
+            beginEntry()
+        }
         if let id {
             if let record = core.rt.open[id] {
                 let waiting = core.rt.repliesAfter.removeValue(forKey: id)
@@ -240,7 +477,7 @@ extension TurnActor {
         for entry in due {
             // `endAll` in an earlier entry's step stopped the timer: the rest is dropped.
             if core.sleeperGeneration != generation { break }
-            fireDeadline(entry)
+            fireDeadline(entry, generation: generation)
         }
         core.sleeperAwake = false
         if core.sleeperGeneration != generation { return nil }
@@ -266,44 +503,61 @@ extension TurnActor {
         return next
     }
 
-    /// One due entry of a wake, live when the wake took it. The ticket is checked again here, at
-    /// its turn, before the entry begins: an entry an earlier entry of this wake made stale (its
-    /// request or gate closed, its timer replaced or dropped) only reports `.staleDeadline` or
-    /// `.staleTimer`. A live timer steps its input as a control input. The timer stays in the
-    /// runtime's table until after `beginEntry()`, as a request stays open until its close.
-    @inlinable func fireDeadline(_ entry: DeadlineEntry) {
+    /// One due entry of a wake, live when the wake took it (#621 item 2, plan §3.4; the merge
+    /// checklist in the plan's implementation notes). Its ticket is checked at its turn:
+    /// - **stale before the take** (an earlier entry of this wake closed its request or gate,
+    ///   or replaced or dropped its timer): no entry; it reports `.staleDeadline` or
+    ///   `.staleTimer` once and takes no ordinal, as a stale arrival (#738);
+    /// - with a mailbox, `beginEntry()` takes the pending mail, which can end everything or
+    ///   make the entry stale: on `endAll` (the generation moved; nothing else moves it while
+    ///   the wake runs) it ends through the epilogue silently, and **stale after the take** it
+    ///   reports once and ends through the epilogue, with no ordinal;
+    /// - **live**: `entryBoundary()`, then the record is consumed: the request or the
+    ///   follow-up closes with `.deadline`, or the timer leaves the runtime's table and its
+    ///   input steps as a control input.
+    @inlinable func fireDeadline(_ entry: DeadlineEntry, generation: UInt64) {
         let core = self.core
-        if entry.isTimer {
-            guard let key = core.rt.timerKeys[entry.ticket], let armed = core.rt.timers[key],
-                  armed.generation == entry.ticket else {
-                if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
-                core.onDiagnostic?(.staleTimer)
-                return
-            }
-            beginEntry()
-            core.rt.timers.removeValue(forKey: key)
-            core.rt.timerKeys.removeValue(forKey: entry.ticket)
-            core.step(armed.input, caller: nil)
-            runSegment()
+        let stale: TurnDiagnostic = entry.isTimer ? .staleTimer : .staleDeadline
+        guard core.deadlineIsLive(entry) else {
+            // Out of the heap already: one decrement for the close that counted it.
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+            core.onDiagnostic?(stale)
             return
         }
-        let id = RequestID(raw: entry.ticket)
-        if core.rt.open[id] != nil {
-            beginEntry()
-            core.rt.closeRequest(id, .deadline)
+        beginEntry()
+        if TurnCore<M>.usesMailbox {
+            // `endAll` by the take's mail: `stopDeadlines()` zeroed the count and emptied the
+            // heap, and an entry it drops reports nothing.
+            if core.sleeperGeneration != generation {
+                if core.rt.dirty { runSegment() }
+                return
+            }
+            guard core.deadlineIsLive(entry) else {
+                if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                core.onDiagnostic?(stale)
+                if core.rt.dirty { runSegment() }
+                return
+            }
+            entryBoundary()
+        }
+        if entry.isTimer {
+            // Live: `timerKeys` holds only current generations, so both lookups succeed.
+            if let key = core.rt.timerKeys.removeValue(forKey: entry.ticket),
+               let armed = core.rt.timers.removeValue(forKey: key) {
+                core.step(armed.input, caller: nil)
+            }
+        } else {
+            let id = RequestID(raw: entry.ticket)
+            if core.rt.open[id] != nil {
+                core.rt.closeRequest(id, .deadline)
+            } else {
+                // A follow-up's gate deadline: the follow-up closes unrun.
+                core.rt.closeFollowUp(id, .deadline)
+            }
             // The close counted this entry stale, but it has left the heap already.
             if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
-            runSegment()
-        } else if TurnCore<M>.usesFollowUps, core.rt.gateDeadlineLive(id) {
-            // A follow-up's gate deadline: the follow-up closes unrun.
-            beginEntry()
-            core.rt.closeFollowUp(id, .deadline)
-            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
-            runSegment()
-        } else {
-            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
-            core.onDiagnostic?(.staleDeadline)
         }
+        runSegment()
     }
 
     /// Arms a deadline entry on the core's one timer, after the step that made it was flushed.
@@ -357,10 +611,27 @@ extension TurnActor {
         let core = self.core
         core.continuationScheduled = false
         core.onContinuationJobForTesting?()
-        beginEntry()
-        if TurnCore<M>.usesFollowUps {
-            for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
-            core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+        if TurnCore<M>.usesMailbox {
+            // The follow-ups due at the job's start, captured before the mailbox's take: an
+            // `.afterBatch` follow-up a mail arms becomes due after this, so it steps in the
+            // next job, in a new batch as `.afterBatch` promises. They are pushed after the take,
+            // so the mail's products-first segment steps before them. The swap moves the
+            // buffer out and back, so the capture doesn't allocate.
+            var due: [RequestID] = []
+            if TurnCore<M>.usesFollowUps { swap(&due, &core.rt.dueFollowUps) }
+            beginEntry()
+            if TurnCore<M>.usesFollowUps {
+                for id in due { core.followUpsToStep.push(id) }
+                due.removeAll(keepingCapacity: true)
+                due.append(contentsOf: core.rt.dueFollowUps)
+                core.rt.dueFollowUps = due
+            }
+        } else {
+            beginEntry()
+            if TurnCore<M>.usesFollowUps {
+                for id in core.rt.dueFollowUps { core.followUpsToStep.push(id) }
+                core.rt.dueFollowUps.removeAll(keepingCapacity: true)
+            }
         }
         runSegment()
     }
@@ -372,6 +643,22 @@ extension TurnActor {
         core.continuationScheduled = true
         core.counters.continuationJobs += 1
         Task { self.continueBatch() }
+    }
+
+    /// Whether a completion changes state: it has a result to step, or its request is still open
+    /// or keeps a hold its worker's return releases.
+    @inlinable func completionIsLive(_ id: RequestID?, _ input: M.Input?) -> Bool {
+        if input != nil { return true }
+        guard let id else { return false }
+        return core.rt.open[id] != nil || core.rt.retiring[id] != nil
+    }
+
+    /// Whether a gate's return changes state: it has a result to step, or its follow-up is still
+    /// waiting for it.
+    @inlinable func gateReturnIsLive(_ id: RequestID, _ input: M.Input?) -> Bool {
+        if input != nil { return true }
+        guard let name = core.rt.followUpIDs[id] else { return false }
+        return core.rt.followUps[name]?.waiting == true
     }
 
     /// A follow-up's gate returned. The follow-up, if this arm's is still pending, becomes due
@@ -387,7 +674,21 @@ extension TurnActor {
             core.onDiagnostic?(.foreignCompletion)
             return
         }
+        // With a mailbox, a nil return whose follow-up was consumed or closed changes nothing:
+        // no entry and no ordinal, as a stale deadline, before or after the take.
+        if TurnCore<M>.usesMailbox, !gateReturnIsLive(id, input) {
+            core.onDiagnostic?(.staleFollowUp)
+            return
+        }
         beginEntry()
+        if TurnCore<M>.usesMailbox {
+            guard gateReturnIsLive(id, input) else {
+                core.onDiagnostic?(.staleFollowUp)
+                if core.rt.dirty { runSegment() }
+                return
+            }
+            entryBoundary()
+        }
         if let name = core.rt.followUpIDs[id], core.rt.followUps[name]?.waiting == true {
             core.rt.followUps[name]?.waiting = false
             if core.rt.followUps[name]?.hasDeadline == true {
@@ -488,6 +789,10 @@ extension TurnActor {
         var capped = false
         while true {
             drainProducts()
+            // The mailbox before every step, a capped segment's included; a check that stepped a
+            // mail comes round again, so a mail its step posted is checked before the next.
+            if TurnCore<M>.usesMailbox, let mailbox = core.mailbox,
+               core.mailReplay != nil ? takeStaged() : (!mailbox.isEmpty && takeMail(mailbox)) { continue }
             if !core.rt.abandoned.isEmpty {
                 let (id, why) = core.rt.abandoned.removeFirst()
                 core.stepAbandoned(id, why)
@@ -514,6 +819,9 @@ extension TurnActor {
                 budget -= 1
                 if let parked = core.rt.popParked(key) {
                     if let token = parked.token, token.isWithdrawn {
+                        // A boundary, as a refused admission is: a mail taken at the next check
+                        // can't replay ahead of the refusal (plan §3.9).
+                        entryBoundary()
                         refuse(parked.caller, .withdrawn)
                     } else {
                         core.step(parked.input, caller: parked.caller)
@@ -536,9 +844,24 @@ extension TurnActor {
         if TurnCore<M>.usesFollowUps, !core.rt.dueFollowUps.isEmpty, !core.continuationScheduled {
             scheduleContinuation()
         }
+        // Mail that the entry's spent budget left in the mailbox steps in a new batch, with a fresh
+        // budget. Only a spent budget leaves mail with no wake: while it lasts, every check
+        // steps up to its watermark and the loop comes round, so the first mail posted after
+        // the mailbox empties finds it empty and schedules its own wake. The budget test keeps the
+        // lock off an entry that spent none.
+        if TurnCore<M>.usesMailbox, core.mailBudget == 0, !core.mailboxWakeScheduled, let mailbox = core.mailbox, !mailbox.isEmpty {
+            core.mailboxWakeScheduled = true
+            let hold = core.onRemainderWakeForTesting?()
+            Task {
+                await hold?()
+                await self.mailboxWoke(remainder: true)
+            }
+        }
         // Checked here, not in the call: an empty check inline costs a load, a call per segment
         // costs the whole frame.
         if !core.quiescenceWaiters.isEmpty { settleQuiescence() }
+        // A replay's served `now` ends with the segment it stands for.
+        if TurnCore<M>.usesMailbox { core.productsNow = nil }
         core.rt.dirty = false
     }
 

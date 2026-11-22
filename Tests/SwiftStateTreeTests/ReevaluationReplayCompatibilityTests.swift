@@ -846,6 +846,9 @@ private final class ScriptedFactory: ReevaluationTargetFactory, @unchecked Senda
 }
 
 private actor ScriptedRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     nonisolated let maxTickId: Int64
     private let results: [ReevaluationStepResult]
     private var index = 0

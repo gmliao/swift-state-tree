@@ -43,6 +43,9 @@ private final class MonitorScriptFactory: ReevaluationTargetFactory, @unchecked 
 }
 
 private actor MonitorScriptRunner: ReevaluationRunnerProtocol {
+    /// This runner doesn't check OnInitialize.
+    func initializeVerification() async -> ReevaluationEngine.InitializeVerification { .notRecorded }
+
     nonisolated let maxTickId: Int64
     private var results: [ReevaluationStepResult]
 
@@ -106,9 +109,9 @@ struct ReevaluationMonitorFrameIdentityTests {
                 definition: ReevaluationMonitor.makeLand(),
                 initialState: ReevaluationMonitorState(),
                 services: services,
-                autoStartLoops: false
+                autoStartLoops: false,
+                landID: "reevaluation-monitor:frame-identity"
             )
-            await keeper.setLandID("reevaluation-monitor:frame-identity")
             var config = TransportEnvConfig(
                 enableDirtyTracking: parts[1] == "true",
                 useSnapshotForSync: true,

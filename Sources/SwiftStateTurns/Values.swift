@@ -149,7 +149,8 @@ public enum CallerCancellation: Sendable {
     /// A normal input not yet submitted isn't; one still queued when the cancellation is
     /// handled is withdrawn and never steps; one that stepped goes on, and only its caller stops
     /// waiting. A control input is always submitted and stepped. The caller gets
-    /// `CancellationError`.
+    /// `CancellationError`. A core replaying its mail stops the process on it: a replay can't
+    /// place a cancellation, so a replayed core's calls use `ignoresCancel`.
     case cancelsCall
 }
 

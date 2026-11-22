@@ -340,6 +340,51 @@ await board.waitForQuiescence()
 
 API: `followUp`, `consumeFollowUp`, `followUpPending`, `FollowUpTrigger`, `FollowUpArming`, `FollowUpSlot`, `waitForQuiescence`, `pendingWork`, `TurnWork`.
 
+### The mailbox
+
+The mailbox is a side channel, like Akka's system queue next to an actor's main queue: post and go, taken at the core's checkpoints.
+
+A collaborator on another thread sometimes has to tell the machine something before its next step, such as a transport that closed the output gate on a failure. An awaited `send` can't promise that: the actor may run a step before the hop lands. The core's *mailbox* can. A machine opts in with a `Mail` type and `handleMail`, which steps a mail as a control input (holds, `close` and the queue limit don't apply):
+
+```swift
+mutating func handleMail(_ mail: Failure, _ turn: inout MailTurn<Keeper>) {
+    failed = failed ?? mail
+}
+```
+
+Its actor stores the core's mailbox, so `post` reaches it without the actor's isolation:
+
+```swift
+let core: TurnCore<Keeper>
+nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
+
+init() {
+    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+    self.core = core
+    // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
+    self.mailbox = core.mailbox
+}
+```
+
+`post` doesn't await, and works from any thread:
+
+```swift
+// From any thread, with no await: the core's next step takes the mail first.
+_ = keeper.post(.transportFailed)
+```
+
+Before every step, the driver steps the mail posted before that point, in post order. What a mail's step causes (the inputs its outputs send, the parked inputs it frees) steps before the entry's own input, as if the mail had stepped in a batch of its own. One entry steps at most `mailboxCapacity` mail (`TurnCore.init`, default 8), and the rest step in a later batch, so a mail whose handler posts another can't starve other work. A full mailbox refuses a post: `post` returns false, `refusedMail` counts it, and the first pending mail wins. A step that must see a mail posted while it runs takes the mailbox itself:
+
+```swift
+// A failure posted while this step ran stops its output.
+if let failure = turn.takeMail().first { failed = failed ?? failure }
+if failed == nil { turn.emit(.sync, for: .land) }
+```
+
+A take is an environment read, like `now`: a replay serves the recorded take. A machine whose `Mail` is `Never` (the default) has no mailbox and pays nothing for it.
+
+API: `Mail`, `handleMail`, `TurnMailbox`, `TurnActor.mailbox` (assigned from `TurnCore.mailbox`), `post`, `Turn.takeMail`, `TurnCore.init` (`mailboxCapacity:`), `TurnStats` (`emptyMailboxWakes`, `refusedMail`).
+
 ### Batch and `maxReleasesPerBatch`
 
 A *batch* is the steps one entry into the actor causes: a `send`, a `sendAndWait`, or a result coming back. When a load's result releases a hold, the queued joins behind it step in the same batch. There is no run loop between entries. The `maxReleasesPerBatch` caps how many queued inputs a release lets step in one batch; the rest continue in a later one, so a long queue behind one hold can't keep other callers out. Limit: it counts only queued inputs that a hold's release lets step; abandonments and sends that arrive during the batch don't count.
@@ -394,6 +439,7 @@ API: `CallerCancellation`.
 | Withdraw token | Can the sender give up an input before it steps? | `WithdrawToken`, `revoke` |
 | Timer and clock | How does a step act later, and how does a test control time? | `timer`, `now`, `TurnClock` |
 | Follow-up | How does a key ask for one step later, however often it asks? | `followUp`, `consumeFollowUp`, `waitForQuiescence` |
+| Mailbox | How does another thread tell the machine something before its next step? | `Mail`, `post`, `takeMail` |
 | Batch | How much runs per entry? | `maxReleasesPerBatch` |
 | What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |

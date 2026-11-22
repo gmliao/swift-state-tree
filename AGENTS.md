@@ -159,7 +159,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
   - `SingleFlight`: one shared in-flight task per key for create, start or destroy once.
   - `Lifecycle`: start/stop as a state machine set synchronously before the first `await`.
   - Never remove or overwrite keyed state by key alone from a callback that can outlive its instance; compare the ticket.
-- A failure found outside a turn may go into a set-once mailbox on the keeper, written in the segment that finds it and read at the keeper's step boundaries, so the async submit only wakes the keeper; the turn core's post lane (#725, Notes/plans/2026-11-21-turn-core-post-lane.md) is to replace this pattern.
+- Mail that the keeper must see before its next step (a failure found while closing the output gate) is posted to the core's mailbox (`post`, nonisolated, no await), which the next step takes first; an awaited submit can't promise that, because the keeper may run a step before the hop lands. Until #700 moves the keeper onto the turn core, #732's `LandFailureMailbox` stands in for the core's mailbox: a set-once mailbox on the keeper, written in the segment that finds the failure and read at the keeper's step boundaries, so the async submit only wakes the keeper.
 - Order-sensitive per-session or per-player work goes through one serial queue (the adapter's membership queue), not independent Tasks.
 - Tests for these paths force the interleaving with a hold at the `await` (`HoldPoints` in library code, `TestGate` in tests); they don't rely on timing. TSan does not catch this class (it is a logic race, not a data race).
 

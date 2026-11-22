@@ -57,7 +57,8 @@ func numericPayloadsReplayFromThreeZero() async throws {
             definition: definition,
             initialState: RecordLogNumberState(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
     }
     let recorder = try #require(await keeper.getReevaluationRecorder())
@@ -66,7 +67,6 @@ func numericPayloadsReplayFromThreeZero() async throws {
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), metadata: [:],
         landDefinitionID: definition.id, rngSeed: DeterministicSeed.fromLandID(landID)
     ))
-    await keeper.setLandID(landID)
     try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
     for (amount, fraction, count) in [(3.0, Float(0.5), 7), (2.0, Float(0.25), -1), (1.5, Float(1), 0)] {
         _ = try await keeper.handleActionEnvelope(
@@ -129,7 +129,8 @@ func ticklessRecordKeepsEveryPassEvents() async throws {
             definition: definition,
             initialState: RecordLogNumberState(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
     }
     let recorder = try #require(await keeper.getReevaluationRecorder())
@@ -138,7 +139,6 @@ func ticklessRecordKeepsEveryPassEvents() async throws {
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), metadata: [:],
         landDefinitionID: definition.id, rngSeed: DeterministicSeed.fromLandID(landID)
     ))
-    await keeper.setLandID(landID)
     try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
     for count in 1...3 {
         _ = try await keeper.handleActionEnvelope(
@@ -207,7 +207,8 @@ func tickLandReplayKeepsExactServerEvents() async throws {
         definition: definition,
         initialState: RecordLogNumberState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: landID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -215,7 +216,6 @@ func tickLandReplayKeepsExactServerEvents() async throws {
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), metadata: [:],
         landDefinitionID: definition.id, rngSeed: DeterministicSeed.fromLandID(landID)
     ))
-    await keeper.setLandID(landID)
     try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
     // Two actions in the first tick, one in the second, none in the third.
     for actions in [[1, 2], [3], []] {
@@ -277,7 +277,8 @@ func ticklessReplayExtraEventFails() async throws {
         definition: silent,
         initialState: RecordLogNumberState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: landID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
     await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -285,7 +286,6 @@ func ticklessReplayExtraEventFails() async throws {
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), metadata: [:],
         landDefinitionID: silent.id, rngSeed: DeterministicSeed.fromLandID(landID)
     ))
-    await keeper.setLandID(landID)
     try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
     _ = try await keeper.handleActionEnvelope(
         ActionEnvelope(

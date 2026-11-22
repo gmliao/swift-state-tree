@@ -26,6 +26,10 @@ public struct TurnStats: Sendable, Equatable {
     public var cancelledCalls = 0
     /// Follow-ups armed and not yet stepped, consumed or closed.
     public var pendingFollowUps = 0
+    /// Mailbox wakes that found the mailbox empty: an entry took the mail first.
+    public var emptyMailboxWakes = 0
+    /// Posts refused because the mailbox was full (the first pending mail wins).
+    public var refusedMail = 0
 
     @inlinable public init() {}
 }
@@ -47,6 +51,12 @@ public enum TurnDiagnostic: Sendable, Equatable {
     /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
     /// nothing for it.
     case staleFollowUp
+    /// A call's cancellation found no waiter (the call was answered or refused first, or never
+    /// waited), and did nothing.
+    case staleCancellation
+    /// With a mailbox: a completion with no result whose request was already closed with no
+    /// hold to retire, or that had no request (a `run`), arrived and did nothing.
+    case idleCompletion
     case clockRead
 }
 
@@ -73,6 +83,9 @@ public final class TurnCore<M: TurnMachine> {
     /// machine, so the driver's follow-up paths fold away for one that keeps the default
     /// (`Never`) and it pays nothing per segment for them.
     @inlinable static var usesFollowUps: Bool { M.FollowUpSlot.self != Never.self }
+    /// The machine takes mail. A constant once specialized, as `usesFollowUps`: every
+    /// mailbox path folds away for a machine that keeps the default (`Never`).
+    @inlinable static var usesMailbox: Bool { M.Mail.self != Never.self }
 
     // Release builds skip the runtime exclusivity checks on the core's own state (#621): with
     // the core inlined into its adopter, each use of a stored var otherwise pays a
@@ -254,6 +267,95 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onContinuationJobForTesting: (() -> Void)?
+    /// How much more mail this entry may step: `mailbox.capacity` at each entry, spent by
+    /// the entry's mailbox take and by every check in its segment.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var mailBudget = 0
+    /// Set while an epilogue's remainder wake is scheduled and hasn't started, so a flood of
+    /// entries that spend their budget schedules one (a post's own wake isn't coalesced).
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var mailboxWakeScheduled = false
+    /// Tests: called on the actor at each mailbox check, after it reads its watermark and before
+    /// its first removal, so a test can post there. Observe-only, apart from `post`.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onMailboxCheckForTesting: (() -> Void)?
+    /// Tests: called on the actor at the start of each mailbox wake (`mailboxWoke`), before its mailbox
+    /// take; a test sees the wake boundaries with it. Observe-only.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onMailboxWakeForTesting: (() -> Void)?
+    /// Tests: called on the actor when the epilogue schedules a remainder wake (for mail a spent
+    /// budget left), so a test counts it as it is scheduled. The closure it returns is awaited at
+    /// the start of that wake's task, before it hops onto the actor, so a test can hold the wake.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onRemainderWakeForTesting: (() -> @Sendable () async -> Void)?
+    /// Tests: called on the actor at an entry's boundary (`entryBoundary`), after its mailbox take
+    /// and ordinal and before its own work, so a test can post there: a completion, a deadline, a
+    /// timer, a gate's return, a cancellation and a withdrawn release's refusal (none for a stale
+    /// arrival, which takes no ordinal). Observe-only, apart from `post`.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onEntryBoundaryForTesting: (() -> Void)?
+    /// The next boundary's ordinal, counted over every step the core dispatches (inputs,
+    /// releases, follow-ups, answers, completions, timers, abandonments) and every entry's own
+    /// work (an admission, a completion, a deadline, a timer, a gate's return; plan §3.9); a mailbox
+    /// record's keys name steps by it. An admitted input that steps takes two: its admission and
+    /// its dispatch, on both sides alike. Counted only for a machine that takes mail.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var nextOrdinal: UInt64 = 0
+    /// The ordinal of the step running now, or of the last one.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var currentOrdinal: UInt64 = 0
+    /// Mail that checks have stepped since the last dispatch: the next `before` key's index.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var beforeIndex = 0
+    /// Takes the running step has made: the next `inside` key's take.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var takeIndex = 0
+    /// Replay: the recorded hand-outs, served in place of the mailbox. Nil when live.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var mailReplay: MailReplayStage<M.Mail>?
+    /// Replay: the recorded `now` of the last staged mail a check stepped, served to its step
+    /// and to the rest of the replay's segment, as live served the wake's `now` to the wake's
+    /// segment, until a later staged mail overwrites it, the entry's own work starts or the
+    /// segment ends. It doesn't set `cachedNow`.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var productsNow: TurnInstant?
+    /// Live: called with each hand-out, for the adopter's record. A check's mail, before it
+    /// steps, with the check's `now`; a non-empty mid-step take, with nil. Empty takes aren't
+    /// passed.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onMailTaken: ((MailRecordKey, [M.Mail], TurnInstant?) -> Void)?
+    /// Replay: called with a divergence, which fails the adopter's replay run. With none set, a
+    /// divergence stops the process.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onReplayDivergence: ((TurnReplayDivergence) -> Void)?
     // Debug builds fill these (`effectsByInput`). Stored in every build, because inlined code
     // in a client compiled in another configuration may name them.
     /// The case name of the input stepping now.
@@ -277,6 +379,9 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline let queueLimit: Int
     @usableFromInline let maxReleasesPerBatch: Int
     @usableFromInline let clock: any TurnClock
+    /// The mailbox, when the machine takes mail (`Mail` isn't `Never`); its actor stores
+    /// this same instance.
+    public let mailbox: TurnMailbox<M.Mail>?
 
     /// - Parameters:
     ///   - machine: the machine in its initial state.
@@ -284,10 +389,12 @@ public final class TurnCore<M: TurnMachine> {
     ///   - maxReleasesPerBatch: how many queued inputs a hold's release lets step per batch;
     ///     abandonments and sends that arrive during the batch don't count.
     ///   - clock: what `Turn.now`, deadlines and timers read and sleep on.
+    ///   - mailboxCapacity: how much mail the mailbox holds at once, and how much one entry steps;
+    ///     at least 1. Ignored for a machine without mail.
     ///
     /// Only a `PlainData` machine can be run: `@PlainData` writes that conformance and checks
     /// every stored field, so a machine that stores a class or a closure doesn't compile here.
-    public init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock) where M: PlainData {
+    public init(_ machine: M, queueLimit: Int, maxReleasesPerBatch: Int, clock: some TurnClock, mailboxCapacity: Int = 8) where M: PlainData {
         // `fatalError`, not `precondition`: its message prints in release builds too.
         if M.self is AnyClass { fatalError("TurnCore: the machine must be a value type, not \(M.self)") }
         if queueLimit < 0 { fatalError("TurnCore: queueLimit must not be negative") }
@@ -297,6 +404,7 @@ public final class TurnCore<M: TurnMachine> {
         self.maxReleasesPerBatch = maxReleasesPerBatch
         self.clock = clock
         self.incarnation = UInt64.random(in: UInt64.min ... UInt64.max)
+        self.mailbox = Self.usesMailbox ? TurnMailbox(capacity: mailboxCapacity) : nil
     }
 
     deinit {
@@ -369,6 +477,7 @@ public final class TurnCore<M: TurnMachine> {
         stats.droppedSends += rt.droppedParkedSends
         stats.ignoredAfterEnd = rt.ignoredAfterEnd
         stats.pendingFollowUps = rt.followUps.count
+        if Self.usesMailbox, let mailbox { stats.refusedMail = mailbox.refusedCount }
         return stats
     }
 
@@ -383,11 +492,66 @@ public final class TurnCore<M: TurnMachine> {
     // MARK: The clock
 
     @inlinable func segmentNow() -> TurnInstant {
+        if Self.usesMailbox, let productsNow { return productsNow }
         if let cachedNow { return cachedNow }
         let now = clock.now
         cachedNow = now
         onDiagnostic?(.clockRead)
         return now
+    }
+
+    // MARK: Replay
+
+    /// Replays the mailbox from `entries` (a record's hand-outs): the mailbox isn't read, checks step
+    /// the staged `before` mail and takes return the staged `inside` ones. Once, on a fresh
+    /// core, before the first entry, any post and any call: installed later, it stops the
+    /// process (an ordinal or a mail already taken, a post already made, or a call already made
+    /// would replay against a record it isn't in). A core without a mailbox has no mail to
+    /// replay: installing one there stops too. The core stays in replay mode for good,
+    /// after `finishReplay()` too, so `.cancelsCall` keeps stopping.
+    package func replayMail(_ entries: [MailRecordEntry<M.Mail>]) {
+        if mailbox == nil || nextOrdinal != 0 || beforeIndex != 0 || (mailbox?.watermark ?? 0) != 0
+            || nextInput != 0 || !waiters.isEmpty || mailReplay != nil || inSegment || borrows != 0 {
+            fatalError("TurnCore: replayMail after the first entry; install a replay before any input")
+        }
+        mailReplay = MailReplayStage(entries)
+    }
+
+    @inlinable func diverged(_ divergence: TurnReplayDivergence) {
+        mailReplay?.removeFirst()
+        guard let onReplayDivergence else { fatalError("TurnCore: the replay diverged from its record: \(divergence)") }
+        onReplayDivergence(divergence)
+    }
+
+    /// A boundary: a non-mail step is dispatched, an input is admitted (whatever the
+    /// admission's outcome: stepped, parked or refused), or another entry starts its own work
+    /// (`TurnActor.entryBoundary`). It takes the next ordinal, so a mail's `before` key names
+    /// the boundary after which it stepped. In replay, anything still staged for an earlier
+    /// place is unconsumed.
+    @inlinable func noteDispatch() {
+        guard Self.usesMailbox else { return }
+        if mailReplay != nil {
+            while let head = mailReplay?.first {
+                if head.key.step < nextOrdinal {
+                    diverged(.unconsumed(head.key))
+                } else if case .before(let step, _) = head.key, step == nextOrdinal {
+                    diverged(.unconsumed(head.key))
+                } else {
+                    break
+                }
+            }
+        }
+        currentOrdinal = nextOrdinal
+        nextOrdinal &+= 1
+        beforeIndex = 0
+        takeIndex = 0
+    }
+
+    /// A take inside the running step: the staged entry for its key, or nothing.
+    @inlinable func serveTake(_ key: MailRecordKey) -> [M.Mail] {
+        guard let head = mailReplay?.first, head.key == key else { return [] }
+        mailReplay?.removeFirst()
+        return head.mail
     }
 
     @inlinable func noteEffect() {
@@ -429,6 +593,7 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func step(_ input: M.Input, caller: InputID?) {
+        noteDispatch()
         enterStep(input)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: caller)
@@ -436,6 +601,7 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func stepStale(_ input: M.Input) {
+        noteDispatch()
         enterStep(input)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
@@ -443,14 +609,28 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     @inlinable func stepAbandoned(_ id: RequestID, _ why: Abandonment) {
+        noteDispatch()
         enterStep(nil)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)
         machine.handleAbandoned(id, why, &turn)
     }
 
+    @inlinable func stepMail(_ mail: M.Mail) {
+        enterStep(nil)
+        defer { leaveStep() }
+        var turn = MailTurn<M>(core: self)
+        machine.handleMail(mail, &turn)
+    }
+
+    /// A query is a step: its answer gets the turn, so it can change state and take mail. It takes
+    /// a dispatch ordinal, so a recorded core's outside queries replay in order; a read that must
+    /// not count goes through `read`.
     @inlinable func stepAnswer(_ query: M.Query) -> M.Answer {
         if borrows < 0 { fatalError("TurnCore: query was called from inside a step") }
+        // Before the ordinal: a query from inside a read stops here, never as a replay divergence.
+        if borrows > 0 { fatalError("TurnCore: a step was entered while a read is open") }
+        noteDispatch()
         enterStep(nil)
         defer { leaveStep() }
         var turn = Turn<M>(core: self, input: nil)

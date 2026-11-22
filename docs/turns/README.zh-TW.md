@@ -340,6 +340,51 @@ await board.waitForQuiescence()
 
 API：`followUp`、`consumeFollowUp`、`followUpPending`、`FollowUpTrigger`、`FollowUpArming`、`FollowUpSlot`、`waitForQuiescence`、`pendingWork`、`TurnWork`。
 
+### Mailbox
+
+mailbox 是一條旁路通道，就像 Akka 在 actor 主 queue 旁的 system queue：post 完就走，由 core 在它的 checkpoint 取出。
+
+另一條 thread 上的協作者有時必須在 machine 下一個 step 之前告訴它某件事，例如 transport 因失敗而關閉了 output gate。await 的 `send` 做不到這個保證：hop 抵達之前，actor 可能先跑了一個 step。core 的 *mailbox* 做得到。machine 以 `Mail` 型別和 `handleMail` 加入，後者把 mail 當作 control input step（hold、`close` 和 queue 上限都不適用）：
+
+```swift
+mutating func handleMail(_ mail: Failure, _ turn: inout MailTurn<Keeper>) {
+    failed = failed ?? mail
+}
+```
+
+它的 actor 保存 core 的 mailbox，所以 `post` 不需要 actor 的隔離就能碰到它：
+
+```swift
+let core: TurnCore<Keeper>
+nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
+
+init() {
+    let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+    self.core = core
+    // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
+    self.mailbox = core.mailbox
+}
+```
+
+`post` 不 await，從任何 thread 都能呼叫：
+
+```swift
+// From any thread, with no await: the core's next step takes the mail first.
+_ = keeper.post(.transportFailed)
+```
+
+每個 step 之前，driver 會依 post 的順序 step 在那之前 post 的 mail。mail 的 step 造成的事（它的 output 送出的 input、它放行的 parked input）會在該 entry 自己的 input 之前 step，就像那個 mail 在自己的 batch 裡 step 一樣。一個 entry 最多 step `mailboxCapacity` 個 mail（`TurnCore.init`，預設 8），其餘在之後的 batch 裡 step，所以 handler 會再 post 一個的 mail 不會餓死其他工作。mailbox 滿了就拒絕 post：`post` 回傳 false，`refusedMail` 計數，第一個待處理的 mail 勝出。必須看到自己執行期間 post 的 mail 的 step，會自己取 mailbox：
+
+```swift
+// A failure posted while this step ran stops its output.
+if let failure = turn.takeMail().first { failed = failed ?? failure }
+if failed == nil { turn.emit(.sync, for: .land) }
+```
+
+取 mailbox 是環境讀取，和 `now` 一樣：replay 時提供錄下的那次取用。`Mail` 是 `Never`（預設）的 machine 沒有 mailbox，也不為它付出任何成本。
+
+API：`Mail`、`handleMail`、`TurnMailbox`、`TurnActor.mailbox`（由 `TurnCore.mailbox` 指定）、`post`、`Turn.takeMail`、`TurnCore.init`（`mailboxCapacity:`）、`TurnStats`（`emptyMailboxWakes`、`refusedMail`）。
+
 ### Batch 與 `maxReleasesPerBatch`
 
 *batch* 是一次進入 actor 所引起的 step：一次 `send`、一次 `sendAndWait`、或一個回來的結果。載入結果釋放 hold 時，排在後面的加入會在同一個 batch 裡執行。兩次進入之間沒有 run loop。`maxReleasesPerBatch` 限制一次釋放在一個 batch 裡能讓多少個佇列的 input 執行；其餘的在之後的 batch 繼續，所以排在同一個 hold 後面的一長串 input，不會把其他呼叫端擋在外面。限制：它只計算 hold 釋放後讓它執行的佇列中 input；batch 期間的放棄與新到的 send 不計入。
@@ -394,6 +439,7 @@ API：`CallerCancellation`。
 | Withdraw token | 送出者能在 input 執行前放棄它嗎？ | `WithdrawToken`、`revoke` |
 | Timer 與時鐘 | step 如何在之後行動？測試如何控制時間？ | `timer`、`now`、`TurnClock` |
 | Follow-up | key 如何要求之後 step 一次，不論要求幾次？ | `followUp`、`consumeFollowUp`、`waitForQuiescence` |
+| Mailbox | 另一條 thread 如何在 machine 下一個 step 之前告訴它某件事？ | `Mail`、`post`、`takeMail` |
 | Batch | 每次進入執行多少？ | `maxReleasesPerBatch` |
 | send 在等什麼 | `await send` 在等什麼？順序如何？ | `send`、`sendAndWait` |
 | Incarnation | 這個結果屬於這個 core 嗎？ | `foreignCompletions` |

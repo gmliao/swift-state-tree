@@ -455,9 +455,9 @@ struct DifferentialHarnessHooksTests {
             definition: makeHooksLand(),
             initialState: HarnessHooksState(),
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
             landID: landID,

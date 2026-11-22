@@ -196,6 +196,13 @@ let package = Package(
             dependencies: ["SwiftStateTurns"],
             path: "Sources/TurnsBench"
         ),
+        // The mailbox's cost on an empty mailbox, mailbox on against mailbox off (release only). Its own
+        // target, so its machines' specializations can't merge with TurnsBench's gated ones.
+        .executableTarget(
+            name: "TurnsMailboxBench",
+            dependencies: ["SwiftStateTurns"],
+            path: "Sources/TurnsMailboxBench"
+        ),
 
         // 🔹 Macro Implementation: Compile-time macro expansion
         .macro(

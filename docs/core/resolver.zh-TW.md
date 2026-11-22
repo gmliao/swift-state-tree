@@ -226,7 +226,7 @@ public enum ResolverExecutionError: Error, Sendable {
 | CanJoin、OnJoin | join 失敗，不會留下玩家；變空的 land 會重新排定銷毀計時 |
 | OnLeave | 玩家已被移除。OnLeave 會被**丟棄**，該玩家的遊戲狀態因此留下；會記錄日誌並計數（`onLeaveDropped`） |
 | OnInitialize（逾時） | 初始化**失敗**：OnInitialize 不執行，等待中與之後的 join 都收到 `JoinError.landShuttingDown`（可重試的 `JOIN_DENIED`），leave 與 action 丟出 `LandInitializationError`，land 會被拆除且不執行銷毀 handler，因為沒有已初始化的狀態可存。計數為 `initTimeouts` |
-| OnInitialize（resolver 丟錯） | 由各 definition 以 `OnInitialize(resolvers:onResolverFailure:)` 設定（#238）。`.failLand`（預設）：初始化如同逾時一樣失敗，計數為 `initFailures`。`.continue`：記錄日誌，OnInitialize 在沒有該組輸出的情況下執行，是整組的輸出都沒有，不只是丟錯那個 resolver 的；handler 必須檢查它讀取的每個輸出。只有在 land 正在關閉時，`CancellationError` 才不適用 `.failLand`；resolver 自己的取消（例如被取消的 HTTP 請求）依設定處理 |
+| OnInitialize（resolver 丟錯） | 由各 definition 以 `OnInitialize(resolvers:onResolverFailure:)` 設定（#238）。`.failLand`（預設）：初始化如同逾時一樣失敗，計數為 `initFailures`。`.continue`：記錄日誌，OnInitialize 在沒有該組輸出的情況下執行，是整組的輸出都沒有，不只是丟錯那個 resolver 的；handler 必須檢查它讀取的每個輸出。這個檢查應放在兩段式 OnInitialize 的 `validate`，它可以拒絕，讓初始化失敗且什麼都不寫入（[Land DSL](land-dsl.zh-TW.md#可被拒絕的初始化)）。只有在 land 正在關閉時，`CancellationError` 才不適用 `.failLand`；resolver 自己的取消（例如被取消的 HTTP 請求）依設定處理 |
 
 **至少一次（at-least-once）。** 取消無法停止忽略取消的 resolver，也無法撤銷已開始的外部動作（扣款、寫入）。這樣的 resolver 在逾時後會繼續執行，其結果會被丟棄。重試 join 或 action 會再執行一次 resolver，所以外部動作可能發生兩次。有副作用的 resolver 必須是冪等的，例如以請求作為 key。
 

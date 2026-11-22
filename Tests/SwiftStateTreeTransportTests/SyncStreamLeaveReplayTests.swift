@@ -80,10 +80,10 @@ private func recordLeaveCase(_ leaveCase: LeaveReplayCase, tick: Bool, path: Str
         definition: makeLeaveReplayLand(tick: tick),
         initialState: TurnBoundaryState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: leaveReplayLandID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    await keeper.setLandID(leaveReplayLandID)
     let transport = VerifierTransport()
     let adapter = TransportAdapter<TurnBoundaryState>(
         keeper: keeper, transport: transport, landID: leaveReplayLandID

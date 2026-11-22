@@ -153,10 +153,10 @@ private func recordAction(form: ResolverReplayForm) async throws -> (path: Strin
         definition: makeResolverReplayLand(),
         initialState: ResolverReplayState(),
         enableLiveStateHashRecording: true,
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: resolverReplayLandID
     )
     let recorder = try #require(await keeper.getReevaluationRecorder())
-    await keeper.setLandID(resolverReplayLandID)
     await keeper.awaitInitialization()
     await recorder.setMetadata(ReevaluationRecordMetadata(
         landID: resolverReplayLandID,

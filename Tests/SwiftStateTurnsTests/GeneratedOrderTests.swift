@@ -86,8 +86,10 @@ final class CallBox: @unchecked Sendable {
     var answer: String? { lock.withLock { value } }
 }
 
-actor OrderActor: TurnActor {
-    let core: TurnCore<OrderModel>
+actor OrderActor<Mail: OrderMail & PlainData>: TurnActor {
+    typealias View = OrderView
+    let core: TurnCore<OrderModel<Mail>>
+    nonisolated let mailbox: TurnMailbox<Mail>?
     nonisolated let fixture: Fixture
     nonisolated let notes: Notes
     nonisolated let clock: TestClock
@@ -95,18 +97,53 @@ actor OrderActor: TurnActor {
     private var delivered: [Int] = []
     private var lateFlushes: [String] = []
 
-    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int) {
+    /// A mail the next flush posts (a post between steps); nil when none is due.
+    private var postOnFlush: Int?
+    /// Mail accepted by a post this actor made from a flush.
+    private var flushPosted: [Int] = []
+    /// Mail accepted by a post a check's hook made: a lock, not the actor, because the hook
+    /// is a plain closure.
+    nonisolated let checkPosted = MailList()
+
+    init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int, mailboxCapacity: Int) {
         self.fixture = fixture
         self.notes = notes
         let clock = TestClock(fixture: fixture)
         self.clock = clock
-        core = TurnCore(OrderModel(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock)
+        let core = TurnCore(OrderModel<Mail>(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock, mailboxCapacity: mailboxCapacity)
         core.onDiagnostic = { event in
             if case .queued = event { notes.post("park") }
         }
+        self.core = core
+        mailbox = core.mailbox
     }
 
-    @concurrent nonisolated func perform(_ effect: OrderModel.Effect) async -> OrderModel.Input? {
+    /// The next flush posts `mail`.
+    func postAtNextFlush(_ mail: Int) {
+        postOnFlush = mail
+    }
+
+    /// The next mailbox check posts `mail` at its hold point, after its watermark is read.
+    func postAtNextCheck(_ mail: Int) {
+        let once = Once()
+        core.onMailboxCheckForTesting = { [unowned self] in
+            once.run {
+                if self.postNumber(mail) { self.checkPosted.append(mail) }
+            }
+        }
+    }
+
+    /// Posts the mail numbered `number`; false when refused, or for the mailboxless twin.
+    nonisolated func postNumber(_ number: Int) -> Bool {
+        Mail.numbered(number).map { post($0) } ?? false
+    }
+
+    nonisolated func postNumberForTesting(_ number: Int, afterAppend: @Sendable @escaping () async -> Void) async -> Bool {
+        guard let mail = Mail.numbered(number) else { return false }
+        return await postForTesting(mail, afterAppend: afterAppend)
+    }
+
+    @concurrent nonisolated func perform(_ effect: OrderModel<Mail>.Effect) async -> OrderModel<Mail>.Input? {
         switch effect {
         case .work(let seq):
             await fixture.wait("work \(seq)")
@@ -118,30 +155,16 @@ actor OrderActor: TurnActor {
     }
 
     func flush(_ outputs: consuming [OrderOutput]) {
+        if let mail = postOnFlush {
+            postOnFlush = nil
+            if postNumber(mail) { flushPosted.append(mail) }
+        }
         // Between steps: the machine's step count is the step whose outputs these are.
         let step = core.read { $0.stepCount }
         for output in outputs {
             delivered.append(output.id)
             if output.step != step { lateFlushes.append("output \(output.id) of step \(output.step) flushed after step \(step)") }
         }
-    }
-
-    struct View: Sendable {
-        var violations: [String]
-        var open: [Int]
-        var pending: [Int]
-        var timers: [Int: Int]
-        var expectedHeld: Int
-        var ended: Bool
-        var stepped: [Int]
-        var expectedOutputs: [Int]
-        var delivered: [Int]
-        var lateFlushes: [String]
-        var queued: Set<Int>
-        var droppedQueued: Set<Int>
-        var pendingFollowUps: Int
-        var pendingWork: Int
-        var stats: TurnStats
     }
 
     func view() -> View {
@@ -165,10 +188,33 @@ actor OrderActor: TurnActor {
                 droppedQueued: machine.droppedQueued,
                 pendingFollowUps: machine.followUps.count,
                 pendingWork: pendingWork,
-                stats: stats
+                stats: stats,
+                mailStepped: machine.mailStepped,
+                selfPosted: flushPosted + checkPosted.mail
             )
         }
     }
+}
+
+/// What the harness checks after an operation.
+struct OrderView: Sendable {
+    var violations: [String]
+    var open: [Int]
+    var pending: [Int]
+    var timers: [Int: Int]
+    var expectedHeld: Int
+    var ended: Bool
+    var stepped: [Int]
+    var expectedOutputs: [Int]
+    var delivered: [Int]
+    var lateFlushes: [String]
+    var queued: Set<Int>
+    var droppedQueued: Set<Int>
+    var pendingFollowUps: Int
+    var pendingWork: Int
+    var stats: TurnStats
+    var mailStepped: [Int]
+    var selfPosted: [Int]
 }
 
 /// A small deterministic generator (SplitMix64), so a seed replays on every platform.
@@ -193,7 +239,7 @@ struct CallRecord {
 
 /// Lets the actor's jobs run until `done` holds: a condition, not a delay. Each round trip into
 /// the actor lets a job queued before it (a call's entry, a drain continuation) run first.
-func settle(_ actor: OrderActor, rounds: Int = 10_000, until done: (OrderActor.View) -> Bool) async -> Bool {
+func settle<R>(_ actor: OrderActor<R>, rounds: Int = 10_000, until done: (OrderView) -> Bool) async -> Bool {
     for _ in 0 ..< rounds {
         if done(await actor.view()) { return true }
         await Task.yield() // wall-clock: not time: yields until the actor's queued jobs have run (the harness's settle)
@@ -203,14 +249,28 @@ func settle(_ actor: OrderActor, rounds: Int = 10_000, until done: (OrderActor.V
 
 /// Runs one seed and returns its failures (empty: it passed).
 func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> [String] {
+    await runOrder(seed: seed, operations: operations, maxReleasesPerBatch: maxReleasesPerBatch, mail: Int.self)
+}
+
+/// Runs one seed with mail of type `R`; `Never`, the mailboxless twin, skips the mailbox
+/// operations (their stream is separate, so the other operations are the same).
+func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleasesPerBatch: Int, mail _: R.Type) async -> [String] {
     var random = SeededGenerator(seed: seed)
     // Follow-up operations draw from their own stream, so the main stream (and the seeds pinned
     // to a mutant) keep their operations.
     var followUpRandom = SeededGenerator(seed: seed ^ 0x702)
+    // Mailbox posts draw from a third stream, for the same reason.
+    var mailboxRandom = SeededGenerator(seed: seed ^ 0x725)
+    var nextMail = 1
+    // Mail the harness's own posts had accepted, and held posts whose wakes wait at a gate.
+    var accepted: Set<Int> = []
+    var heldPosts: [(mail: Int, task: Task<Bool, Never>)] = []
     var nextLabel = 1
     let fixture = Fixture()
     let notes = Notes()
-    let actor = OrderActor(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch)
+    // The budget-2 seeds also take at most 2 mail per entry, so mailbox batches split too.
+    let actor = OrderActor<R>(fixture: fixture, notes: notes, queueLimit: 6, maxReleasesPerBatch: maxReleasesPerBatch,
+                           mailboxCapacity: maxReleasesPerBatch == 2 ? 2 : 8)
     var failures: [String] = []
     var nextSeq = 1
     var nextWork = 1
@@ -266,7 +326,7 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             }
             let held = Bool.random(using: &random) ? hold : nil
             let asCall = Int.random(in: 0 ..< 3, using: &random) == 0
-            let input = OrderModel.Input.work(id: id, hold: held, scope: scoped ? owner : nil,
+            let input = OrderModel<R>.Input.work(id: id, hold: held, scope: scoped ? owner : nil,
                                               scopeEnds: scopeEnds, token: token, tokenID: tokenID, pinned: false)
             op = "\(asCall ? "call" : "work") \(id) hold \(held.map(String.init) ?? "-") scope \(scoped ? String(owner) : "-") token \(tokenID.map(String.init) ?? "-")"
             if asCall {
@@ -380,6 +440,61 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             break
         }
 
+        // A mailbox operation about a quarter of the time: a post now, a post whose wake is held
+        // (released by a later mailbox operation, so a wake is in flight across operations), a
+        // post at the next check's hold point, or a post from the next flush (between steps).
+        if R.self != Never.self, Int.random(in: 0 ..< 4, using: &mailboxRandom) == 0 {
+            let mail = nextMail
+            nextMail += 1
+            var mailOp: String
+            switch Int.random(in: 0 ..< 5, using: &mailboxRandom) {
+            case 0:
+                mailOp = "post \(mail)"
+                if actor.postNumber(mail) { accepted.insert(mail) }
+            case 1:
+                mailOp = "post \(mail), its wake held"
+                let task = Task {
+                    let posted = await actor.postNumberForTesting(mail, afterAppend: {
+                        notes.post("appended \(mail)")
+                        await fixture.wait("wake \(mail)")
+                    })
+                    // Refused (a full mailbox): no append, so no hold.
+                    if !posted { notes.post("appended \(mail)") }
+                    return posted
+                }
+                guard await notes.reach("appended \(mail)") else {
+                    failures.append("post \(mail) never appended")
+                    break
+                }
+                heldPosts.append((mail, task))
+            case 2:
+                mailOp = "post \(mail) at the next check"
+                await actor.postAtNextCheck(mail)
+            case 3:
+                mailOp = "post \(mail) at the next flush"
+                await actor.postAtNextFlush(mail)
+            default:
+                mailOp = "release a held wake"
+                if !heldPosts.isEmpty {
+                    let held = heldPosts.removeFirst()
+                    fixture.open("wake \(held.mail)")
+                    if await held.task.value { accepted.insert(held.mail) }
+                    mailOp += " (\(held.mail))"
+                }
+            }
+            log.append(mailOp)
+            let mailboxView = await actor.view()
+            failures += check(mailboxView, op: mailOp, parkedBound: 6 + nextWork)
+            let known = accepted.union(mailboxView.selfPosted).union(heldPosts.map(\.mail))
+            if let stray = mailboxView.mailStepped.first(where: { !known.contains($0) }) {
+                failures.append("after `\(mailOp)`: mail \(stray) stepped, never accepted")
+            }
+            if !failures.isEmpty {
+                failures.append("seed \(seed), budget \(maxReleasesPerBatch), operation \(step); the last operations: \(log.suffix(12))")
+                break
+            }
+        }
+
         // A follow-up operation about a quarter of the time: arm (in a slot that may hold one
         // already, so some arms join) or consume. Armed ones step in later jobs, interleaved
         // with the operations that follow.
@@ -416,6 +531,21 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
             }
         }
         let drained = await settle(actor) { $0.stats.queued == 0 }
+        // Every accepted mail steps once: release the held wakes, then wait for the mailbox.
+        for held in heldPosts {
+            fixture.open("wake \(held.mail)")
+            if await held.task.value { accepted.insert(held.mail) }
+        }
+        heldPosts = []
+        // A check's or a flush's post still due when no check or flush follows isn't made, and
+        // isn't counted: only accepted posts are expected to step.
+        // Both sides from one view: a flush's post made while settling is in the same view as
+        // its step, or in neither.
+        let mailboxSettled = await settle(actor) { Set($0.mailStepped) == accepted.union($0.selfPosted) }
+        if !mailboxSettled {
+            let view = await actor.view()
+            failures.append("mailbox: accepted \(accepted.union(view.selfPosted).subtracting(view.mailStepped).sorted()) never stepped")
+        }
         // Invariant 20: the wait returns once every follow-up stepped or closed.
         if !(await bounded({ await actor.waitForQuiescence() })) { failures.append("the follow-up wait returned false") }
         let final = await actor.view()
@@ -458,7 +588,7 @@ func runOrder(seed: UInt64, operations: Int, maxReleasesPerBatch: Int) async -> 
 }
 
 /// What must hold between any two operations.
-func check(_ view: OrderActor.View, op: String, parkedBound: Int) -> [String] {
+func check(_ view: OrderView, op: String, parkedBound: Int) -> [String] {
     var failures: [String] = []
     if !view.violations.isEmpty { failures.append("after `\(op)`: \(view.violations)") }
     if view.stats.openRequests != view.open.count {
@@ -503,6 +633,14 @@ struct GeneratedOrderTests {
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 
+    /// The mailboxless twin (`Mail == Never`) on every fourth seed: the same operations
+    /// without the mailbox's, so the driver's `!usesMailbox` branches keep the invariants too.
+    @Test("Seeded orders keep the invariants on the mailboxless twin", arguments: seeds.filter { $0 % 4 == 2 })
+    func mailboxlessOrder(seed: UInt64) async {
+        let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed), mail: Never.self)
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+    }
+
     /// Seeds that kill a known mutant, run by default at their own budget, each with the mutant
     /// it kills. 79: a supersede that doesn't withdraw the inputs queued under the old
     /// generation's scope (`Turn.start` without its `withdraw`).
@@ -511,4 +649,14 @@ struct GeneratedOrderTests {
         let failures = await runOrder(seed: seed, operations: 300, maxReleasesPerBatch: Self.budget(for: seed))
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
+}
+
+/// Mail a mailbox check's hook posted, from a plain closure.
+final class MailList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [Int] = []
+
+    func append(_ mail: Int) { lock.withLock { list.append(mail) } }
+
+    var mail: [Int] { lock.withLock { list } }
 }

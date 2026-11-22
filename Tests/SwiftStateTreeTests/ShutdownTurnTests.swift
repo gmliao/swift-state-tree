@@ -191,16 +191,16 @@ private func makeKeeper(
     transport: (any LandKeeperTransport)? = nil
 ) async throws -> LandKeeper<ShutdownTurnState> {
     let definition = makeShutdownDefinition(tick: path == .tick, destroyWhenEmpty: destroyWhenEmpty)
+    // One land ID per keeper: parallel tests must not share a recorder spool.
+    let landID = "\(definition.id):\(UUID().uuidString)"
     let keeper = LandKeeper<ShutdownTurnState>(
         definition: definition,
         initialState: ShutdownTurnState(),
         enableLiveStateHashRecording: recording,
         autoStartLoops: false,
+        landID: landID,
         transport: transport ?? (path == .inTurn ? ShutdownInTurnTransport() : nil)
     )
-    // One land ID per keeper: parallel tests must not share a recorder spool.
-    let landID = "\(definition.id):\(UUID().uuidString)"
-    await keeper.setLandID(landID)
     if recording {
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -250,9 +250,9 @@ private func replayKeeper(tick: Bool, destroyWhenEmpty: Bool = false, frames: [R
         initialState: ShutdownTurnState(),
         mode: .reevaluation,
         reevaluationSource: JSONReevaluationSource(metadata: metadata, frames: frames),
-        autoStartLoops: false
+        autoStartLoops: false,
+        landID: "shutdown-turn:replay"
     )
-    await keeper.setLandID("shutdown-turn:replay")
     return keeper
 }
 

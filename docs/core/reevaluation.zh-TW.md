@@ -47,16 +47,24 @@ let keeper = LandKeeper(
 3. 用相同的輸入執行 handlers
 4. 每個 tick 後比對 state hash
 
+手動建立的 replay keeper 要帶入錄製的 land ID 與 RNG seed，如下例；沒有帶的話，兩者都會使用 land type。`ReevaluationEngine.run` 與 `ConcreteReevaluationRunner` 會自動處理。
+
 Input 在其 handler 執行前就被錄製，因此 `validate` 拋出錯誤的 input 也會依序出現在錄製中，並列為 rejected（[被拒絕的 input](#被拒絕的-input35)）。Replay 會再執行它的 `validate`，因此 `validate` 必須具決定性，並檢查拒絕的是相同的 input。
 
 > **沒有 tick 的 land。** 沒有 tick handler 的 land 把所有 input 都錄在 tick 0，replay 會在該 tick 依序套用它們（#167、#268），因此會比對其 server event。從錄製格式 3.1 起，它的 frame 也記錄 live 的每一次處理：處理前的序號計數器，以及依序套用的 input（`passes`）。Replay 把每一次處理當成一個 input turn 執行，執行前先還原它的計數器，因此即使某個 input 超前另一個（等待 resolver 的 action，#325），input 仍依 live 的順序套用，event 序號也與 live 相同（#321）；結果是 `passed` 或 `failed`。若 passes 沒有恰好一次列出 frame 的每個 input、列出不是該 frame input 的序號，或計數器遞減，該 tick 失敗：發現不相符之後，該 tick 不再套用任何 input（檢查在任何一次處理之前執行，因此未通過檢查的錄製一個 input 都不套用）。Hosted replay（`ReevaluationStepResult.recordedPassMismatch`）會把這樣的 tick 回報為不相符，replay land 也不會改送錄到的 event。3.0 或 2.x 的 tickless record 沒有 passes：replay 依序號套用 input，該 tick 的結果是 `passedIgnoringSequence`：比對型別、payload、對象與順序，但不比對序號。沒有 tick 的 land 不錄製每個 tick 的 state hash，因此只驗證它的 event。錄到的空清單也會比對：replay 在 live 沒有送出 event 的地方送出 event，就會失敗。2.5 或 2.6 的 record 每個 tick 只保留最後錄到的那份 server event 清單，所以舊的 tickless record 若有多次處理都送出 event，replay 會失敗；請用目前的 server 重新錄製。
 
 ```swift
+let source = try JSONReevaluationSource(filePath: "recording.jsonl")
+let metadata = try await source.getMetadata()
+var services = LandServices()
+services.register(DeterministicRngService(seed: metadata.replayRngSeed), as: DeterministicRngService.self)
 let keeper = LandKeeper(
     definition: myLand,
     initialState: MyState(),
     mode: .reevaluation,
-    reevaluationSource: JSONReevaluationSource(filePath: "recording.jsonl")
+    reevaluationSource: source,
+    services: services,
+    landID: metadata.landID
 )
 
 // 手動逐 tick 執行
@@ -219,6 +227,14 @@ Replay 會從 tick 0 逐一走到錄製檔的最後一個 tick，沒有 frame �
 replay 時，handler 讀取錄製的 resolver output（`ctx.productInfo`）的方式，和 replay land 讀取錄製的 server event 相同：用錄製檔自己的 codec（#707）。action 的 resolver、`OnJoin` 與 `OnLeave`、`OnInitialize` 都是如此。`Date`、`Data`、`URL` 或 `Decimal` 欄位讀回的值與 live handler 看到的相同，`Decimal` NaN 也一樣。儲存的錄製檔嚴格解碼。在 JSON 檢視中，整數若能精確轉換，會解碼成 `Double` 或 `Float`。上面的值域限制同樣適用：帶小數秒的 `Date` replay 時會被截斷。無法解碼成所要型別的 output 讀成 `nil`，land 的 logger 會記一則警告，指出該 output、錄製的型別與要求的型別，以及錯誤。
 
 限制：錄製的 action 本身的 payload 仍以 JSON 來回轉換解碼，所以 payload 含 `Date`、`Data` 或 `URL` 欄位的 action 在 replay 時會被丟棄（#709）。
+
+### Replay 中的 OnInitialize
+
+Replay 以錄製的 resolver output 再次執行 OnInitialize：不會拋出錯誤的 body，或先 `validate` 再 `apply`（#593）。只有 live 的 `validate` 通過時，錄製才會有 initialize 項目，因為 live 的拒絕會在記錄任何內容之前結束 land。因此重播的 `validate` 若拋出錯誤，表示 `validate` 不是確定性的：它讀取了 state 與 context 以外的東西，例如時鐘或可變的全域變數。
+
+此時 replay 什麼都不寫入，和 live 執行相同，initialize 檢查失敗，原因會指出 OnInitialize 與錯誤（`InitializeVerification.failed`）。沒有 initialize record 的錄製也一樣，它的 OnInitialize 在 tick 0 內重播。Replay 會繼續進行，之後的 state hash 會回報後續的狀況。
+
+託管的 replay（reevaluation monitor 與 replay land）在 initialize 檢查失敗時，即使每個 tick 的 hash 都相符，也會讓該次執行失敗。被拒絕的初始化可能讓 tick hash 保持相同，例如 `apply` 什麼都不寫入，或只寫入之後的 tick 會覆寫的內容。執行的錯誤訊息會指出 OnInitialize 與錯誤。只有 `.failed` 會讓執行失敗：`.unverifiable` 或 `.notComparable` 的檢查仍會讓它完成。自訂的 runner 透過 `ReevaluationRunnerProtocol.initializeVerification()` 回報它的檢查，這個方法沒有預設實作。不檢查 OnInitialize 的 runner 回傳 `.notRecorded`，不會讓執行失敗；包裝另一個 runner 的 runner 則轉傳該 runner 的回答。
 
 ### 錄製所含的 Hash
 

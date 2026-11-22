@@ -19,7 +19,8 @@ public struct LandFailure: Error, Sendable, Equatable, Codable, CustomStringConv
         /// An action's response, or its error reply, didn't encode, so its client would get no
         /// answer (#544, #691).
         case responseEncode
-        /// A handler threw after mutable access to synced state (#87).
+        /// A handler threw after mutable access to synced state (#87). Not produced today: no
+        /// handler throws after it writes (#586, #593).
         case handlerWrite
     }
 

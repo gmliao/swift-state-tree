@@ -47,16 +47,24 @@ In Reevaluation mode, `LandKeeper`:
 3. Executes handlers with same inputs
 4. Compares state hash after each tick
 
+A keeper built by hand for replay takes the record's land ID and RNG seed, as below; without them both default to the land type. `ReevaluationEngine.run` and `ConcreteReevaluationRunner` do this for you.
+
 Inputs are recorded before their handler runs, so an input whose `validate` throws is in the record too, in order, and is listed as rejected ([Rejected Inputs](#rejected-inputs-35)). Replay runs its `validate` again, which must therefore be deterministic, and checks that it refuses the same inputs.
 
 > **Tickless lands.** A land without a tick handler records all its inputs under tick 0, and replay applies them there in order (#167, #268), so its server events are compared. From record format 3.1 its frame also records each live pass: the sequence counter before the pass and the inputs it applied, in order (`passes`). Replay runs each pass as an input turn after restoring its counter, so inputs apply in the live order even when one overtook another (an action waiting for its resolvers, #325) and the event sequence numbers match live (#321); the verdict is `passed` or `failed`. Passes that don't name every input of the frame exactly once, that name a sequence that isn't an input of the frame, or whose counters decrease, fail the tick: no input of the tick after the mismatch is found is applied (the check runs before any pass, so a record that fails it applies none). The hosted replay (`ReevaluationStepResult.recordedPassMismatch`) reports such a tick as not matching, and the replay land doesn't fall back to its recorded events. A 3.0 or 2.x tickless record has no passes: replay applies its inputs in sequence order, and the verdict is `passedIgnoringSequence` for that tick: types, payloads, targets and order are compared, but the numbers aren't. A tickless land records no per-tick state hash, so only its events are verified. An empty recorded list is compared too: a replay that emits events where the live run emitted none fails. A 2.5 or 2.6 record kept only the last list of server events recorded in a tick, so an old tickless record in which several passes emitted events fails replay; re-record it with the current server.
 
 ```swift
+let source = try JSONReevaluationSource(filePath: "recording.jsonl")
+let metadata = try await source.getMetadata()
+var services = LandServices()
+services.register(DeterministicRngService(seed: metadata.replayRngSeed), as: DeterministicRngService.self)
 let keeper = LandKeeper(
     definition: myLand,
     initialState: MyState(),
     mode: .reevaluation,
-    reevaluationSource: JSONReevaluationSource(filePath: "recording.jsonl")
+    reevaluationSource: source,
+    services: services,
+    landID: metadata.landID
 )
 
 // Step through ticks manually
@@ -219,6 +227,14 @@ Each step of the stock runner rebuilds the state and decodes every server event 
 A replayed handler reads a recorded resolver output (`ctx.productInfo`) the way the replay land reads a recorded server event: with the record's own codec (#707). This holds for an action's resolvers, `OnJoin` and `OnLeave`, and `OnInitialize`. A `Date`, `Data`, `URL` or `Decimal` field reads back as the live handler saw it, a `Decimal` NaN included. A saved record decodes strictly. On the JSON view an integer decodes into `Double` or `Float` when it converts exactly. The domain limits above apply too: a `Date` with a fractional second replays truncated. An output that doesn't decode into the requested type reads as `nil`, and the land's logger records a warning that names the output, the recorded and requested types, and the error.
 
 Limit: a recorded action's own payload is still decoded with a JSON round trip, so replay drops an action whose payload has a `Date`, `Data` or `URL` field (#709).
+
+### OnInitialize in Replay
+
+Replay runs OnInitialize again with its recorded resolver outputs: a body that doesn't throw, or `validate` and then `apply` (#593). The record holds an initialize entry only when the live `validate` passed, because a live refusal ends the land before anything is recorded. So a replayed `validate` that throws means `validate` was not deterministic: it read something other than the state and the context, such as a clock or a mutable global.
+
+Replay then writes nothing, as the live run would, and the initialize check fails, with a reason that names OnInitialize and the error (`InitializeVerification.failed`). This holds for a record without an initialize record too, whose OnInitialize replays inside tick 0. The replay goes on, so the later state hashes report what follows.
+
+A hosted replay (the reevaluation monitor and the replay land) fails its run when the initialize check fails, even when every tick hash matches. A refused initialization can leave the tick hashes equal, for example when `apply` writes nothing, or only what a later tick overwrites. The run's error message names OnInitialize and the error. Only `.failed` fails the run: a check that is `.unverifiable` or `.notComparable` lets it complete. A custom runner reports its check through `ReevaluationRunnerProtocol.initializeVerification()`, which has no default. A runner that doesn't check OnInitialize returns `.notRecorded`, which never fails a run, and a wrapper around another runner forwards that runner's answer.
 
 ### Which Hash a Record Holds
 
