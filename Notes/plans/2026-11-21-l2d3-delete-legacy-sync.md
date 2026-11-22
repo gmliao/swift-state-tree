@@ -28,6 +28,7 @@ So commit 1 is a probe, not a deletion (see §2). Two outcomes:
   `LandKeeper(\(landID)): a re-evaluation keeper takes no live input; it replays recorded passes (#612)`.
   Only the tickless else branches get it: a `.reevaluation` tick land still queues inputs for its
   `runTick` (#612 decides that path).
+  Superseded at review: no stop is added (§7, "No stop on a re-evaluation keeper").
 - (B) some `.reevaluation` test reaches it → per test, in this order (Q4, decided):
   1. the test is about replay → it replays a recorded record (the path Sources uses);
   2. the test is about live behaviour → it uses a live keeper;
@@ -60,7 +61,7 @@ So commit 1 is a probe, not a deletion (see §2). Two outcomes:
    - hooks `runTicklessJobPassForTesting` :2461, `runLegacyPassForTesting` :2462.
    - hold points `.legacyShutdownPass` (:2907), `.ticklessJobPass`, `.legacyDelivery`.
    - the `fatalError` helper of §0 (A) at each tickless else branch.
-   - Tests: `LegacyEntryStopTests` becomes "A re-evaluation keeper stops on a live input (#546 L2d-3)":
+   - Tests (superseded at review, see §7): `LegacyEntryStopTests` becomes "A re-evaluation keeper stops on a live input (#546 L2d-3)":
      exit tests per entry kind, each checking the message (in every build: `fatalError` keeps it),
      covering at least join, action, client event and server input; all 8 branches if the toolchain
      allows. Parameterized over the branches with a `Codable & Sendable` entry enum in an explicit
@@ -259,15 +260,21 @@ Follow-up, not L2d-3 (filed as its own issue after GO):
 - **Probe: outcome A.** A stderr marker (no trap) at the 8 tickless else branches and the 3 legacy
   entry functions, then the full `swift test` at 6f568ff6: 0 hits, every test run green. The legacy
   pass was deleted wholesale; no entry is kept for #612.
-- **The stop covers join and leave only.** Of the 8 branches only join, the session join and leave
-  were reachable by a `.reevaluation` keeper. Its other live entries already refuse it before any
-  branch: `submit` (actions, and so their job completions) and `handleClientEvent` return without
-  applying, `submitServerInput` answers `.refused(.notLive)`, `submitLandFailure` returns, and
-  `forceShutdown`'s queued path needs `mode == .live`. So the `fatalError` is at the start of the
-  three join and leave entries (before any await or append), and the exit tests are per reachable
-  entry: join, session join, leave; a tick re-evaluation land still queues a join and a leave
-  (exit test, `.success`); action, client event and server input get a plain test that they are
-  refused and apply nothing.
+- **No stop on a re-evaluation keeper (review of #746, maintainer chose option a).** The first
+  implementation put a `fatalError` at the start of join, session join and leave on a tickless
+  `.reevaluation` keeper. Its premise was wrong: at 6f568ff6 no `.reevaluation` keeper, tick or
+  tickless, reached the legacy pass from those entries. Each inserted or removed the player as an
+  observer and returned at its `mode != .reevaluation` guard before the OnJoin / OnLeave append,
+  which is why the probe found 0 hits. So the stop removed working behaviour, and a tick
+  re-evaluation keeper never "queued" those calls either. The stop is dropped: both kinds take a
+  live join or leave as observer membership only, as at base, and L2d-3 stays a pure deletion.
+  How a re-evaluation keeper takes live input is for #612 to design by structure or type, not by a
+  runtime special case. `ReevaluationLiveInputTests` pins today's behaviour on both kinds (player
+  count, nothing queued, no OnJoin / OnLeave); action, client event and server input get the plain
+  test that they are refused and apply nothing. Its other live entries refuse a `.reevaluation`
+  keeper before any branch: `submit` (actions, and so their job completions) and
+  `handleClientEvent` return without applying, `submitServerInput` answers `.refused(.notLive)`,
+  `submitLandFailure` returns, and `forceShutdown`'s queued path needs `mode == .live`.
 - **`TicklessActionJobTests` keeps both arms.** Since L2d-2 the `inTurn: false` arm is a portless
   live keeper, which routes through turns too; dropping it would lose the portless coverage the
   benchmark worker pool relies on. The parameter is renamed `withPort:`, and the two legacy-named

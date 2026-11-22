@@ -510,21 +510,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
-    /// Stops the process when a tickless re-evaluation keeper is handed a live join or leave
-    /// (#546 L2d-3): it would need the legacy pass, which is gone, since a re-evaluation keeper
-    /// doesn't route through turns. Host misuse: a re-evaluation keeper replays recorded inputs.
-    /// Its other live entries already refuse a re-evaluation keeper (an action or client event
-    /// returns without applying it, a server input is refused `.notLive`), and a re-evaluation
-    /// tick land still queues a join or leave for its `runTick` (#612 decides that path).
-    /// A `fatalError`, not a `precondition`: it must stop, with its message, in every build.
-    private func refuseLiveInputOnTicklessReevaluation(_ entry: StaticString) {
-        guard !routesThroughTurn, definition.lifetimeHandlers.tickHandler == nil else { return }
-        fatalError(
-            "LandKeeper(\(actualLandID ?? definition.id)).\(entry): a re-evaluation keeper takes no live input; "
-                + "it replays recorded passes (#612)"
-        )
-    }
-
     /// The destruction made its last call to the transport (`notifyTransportDestroyedAndRelease`).
     private var destructionFinished = false
 
@@ -1689,7 +1674,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices = LandServices()
     ) async throws {
-        refuseLiveInputOnTicklessReevaluation("join")
         try await ensureInitializedForJoin()
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
@@ -1837,7 +1821,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         services: LandServices,
         admitThroughTransport: Bool
     ) async throws -> JoinOutcome {
-        refuseLiveInputOnTicklessReevaluation("join")
         try await ensureInitializedForJoin()
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
@@ -2585,7 +2568,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// entry records a session, the leave applies only to that session. Client IDs are short and
     /// can collide, so a client's leave can't remove another client's entry that shares its ID.
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
-        refuseLiveInputOnTicklessReevaluation("leave")
         try await ensureInitialized()
         await holds.at(.leave)
         guard let session = players[playerID] else {

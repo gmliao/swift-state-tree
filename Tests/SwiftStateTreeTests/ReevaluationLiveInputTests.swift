@@ -4,13 +4,6 @@ import Foundation
 import Testing
 @testable import SwiftStateTree
 
-private let liveInputStopMessage = "a re-evaluation keeper takes no live input; it replays recorded passes (#612)"
-
-private func standardError(_ result: ExitTest.Result?) -> String {
-    guard let result else { return "" }
-    return String(decoding: result.standardErrorContent, as: UTF8.self)
-}
-
 private func makeReevaluationKeeper(tick: Bool) -> LandKeeper<RoutingPinState> {
     LandKeeper<RoutingPinState>(
         definition: makeRoutingPinLand(tick: tick), initialState: RoutingPinState(),
@@ -20,52 +13,44 @@ private func makeReevaluationKeeper(tick: Bool) -> LandKeeper<RoutingPinState> {
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
-/// A re-evaluation keeper replays recorded inputs and doesn't route through turns, so a live
-/// input on a tickless one has no path since the legacy pass is gone (#546 L2d-3). A join or a
-/// leave stops the process, with its message in every build (`fatalError`); the other live
-/// entries already refuse a re-evaluation keeper without applying anything. Exit tests: a
-/// change that lets such an input through fails these by name.
-@Suite("A re-evaluation keeper refuses live inputs (#546 L2d-3)", .timeLimit(.minutes(1)))
+/// A re-evaluation keeper replays recorded inputs and doesn't route through turns. A live join or
+/// leave on one, tick or tickless, only updates observer membership: the player is added or
+/// removed, no OnJoin / OnLeave runs and no input is queued. Its other live entries refuse it
+/// without applying anything. How a re-evaluation keeper takes (or can't take) live input is for
+/// #612 to design; these pin today's behaviour so a change to it is deliberate.
+@Suite("A re-evaluation keeper takes live inputs as observer membership only (#546 L2d-3)", .timeLimit(.minutes(1)))
 struct ReevaluationLiveInputTests {
-    @Test("join(playerID:) on a tickless re-evaluation keeper stops the process")
-    func joinStops() async {
-        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            let keeper = makeReevaluationKeeper(tick: false)
-            try? await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
-        }
-        #expect(standardError(result).contains(liveInputStopMessage))
-        #expect(standardError(result).contains(".join"))
+    @Test("join(playerID:) then leave adds and removes an observer, with no handler and no queued input", arguments: [false, true])
+    func joinAndLeaveUpdateObserversOnly(tick: Bool) async throws {
+        let keeper = makeReevaluationKeeper(tick: tick)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        #expect(await keeper.playerCount() == 1)
+        #expect(await keeper.pendingItemSequencesForTesting().isEmpty, "a re-evaluation join queues no input")
+        try await keeper.leave(playerID: p1, clientID: c1)
+        #expect(await keeper.playerCount() == 0)
+        #expect(await keeper.pendingItemSequencesForTesting().isEmpty, "a re-evaluation leave queues no input")
+        let lifecycle = await keeper.currentState().log.filter { $0.hasPrefix("join:") || $0.hasPrefix("leave:") }
+        #expect(lifecycle.isEmpty, "no OnJoin / OnLeave runs on a re-evaluation keeper, ran \(lifecycle)")
     }
 
-    @Test("join(session:) on a tickless re-evaluation keeper stops the process")
-    func sessionJoinStops() async {
-        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            let keeper = makeReevaluationKeeper(tick: false)
-            _ = try? await keeper.join(
-                session: PlayerSession(playerID: "p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"),
-                services: LandServices()
-            )
-        }
-        #expect(standardError(result).contains(liveInputStopMessage))
+    @Test("join(session:) adds an observer, with no handler and no queued input", arguments: [false, true])
+    func sessionJoinUpdatesObserversOnly(tick: Bool) async throws {
+        let keeper = makeReevaluationKeeper(tick: tick)
+        _ = try await keeper.join(
+            session: PlayerSession(playerID: "p1"), clientID: c1, sessionID: s1, services: LandServices()
+        )
+        #expect(await keeper.playerCount() == 1)
+        #expect(await keeper.pendingItemSequencesForTesting().isEmpty, "a re-evaluation session join queues no input")
+        let lifecycle = await keeper.currentState().log.filter { $0.hasPrefix("join:") }
+        #expect(lifecycle.isEmpty, "no OnJoin runs on a re-evaluation keeper, ran \(lifecycle)")
     }
 
-    @Test("leave on a tickless re-evaluation keeper stops the process")
-    func leaveStops() async {
-        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            let keeper = makeReevaluationKeeper(tick: false)
-            try? await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("c1"))
-        }
-        #expect(standardError(result).contains(liveInputStopMessage))
-        #expect(standardError(result).contains(".leave"))
-    }
-
-    @Test("A tick re-evaluation keeper still takes a join and a leave (queued for its runTick, #612)")
-    func tickLandStillQueues() async {
-        await #expect(processExitsWith: .success) {
-            let keeper = makeReevaluationKeeper(tick: true)
-            try? await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
-            try? await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("c1"))
-        }
+    @Test("A leave for a player who isn't there is a no-op", arguments: [false, true])
+    func leaveOfAbsentPlayerIsNoOp(tick: Bool) async throws {
+        let keeper = makeReevaluationKeeper(tick: tick)
+        try await keeper.leave(playerID: p1, clientID: c1)
+        #expect(await keeper.playerCount() == 0)
+        #expect(await keeper.pendingItemSequencesForTesting().isEmpty)
     }
 
     @Test("An action, a client event and a server input are refused without applying anything")
