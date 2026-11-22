@@ -190,7 +190,9 @@ Setting `inSegment` is what makes reentrancy safe. While a report's products flu
   | `timerFired` | `rt.timers[key] == generation`, the same way |
   | `gateReturned` | `followUpIDs[id]` and the arm's `waiting` |
   | `continueDrain`, `continueFollowUps` (#723: `continueBatch`), `laneWoke` | none; their segment follows |
-  | `callerCancelled` | none, and no helper: it steps nothing (a withdraw and a resume) |
+  | `callerCancelled` | (#738 round 3) the waiter; it is an entry with state to change (a withdraw and a resume), so the helper runs first (see the boundary ordinals below) |
+
+  (#738 round 4) A stale arrival returns before the helper, as a foreign one does: a deadline whose request closed another way and whose follow-up gate isn't live, a timer whose generation moved, a cancellation that finds no waiter. It changes no state, so it is no entry. The check runs again after the helper, because a stepped mail can make the entry stale.
 
   An entry with a foreign incarnation returns before the helper, as it returns before touching the core today. The lane's own wake covers it.
 
@@ -267,15 +269,17 @@ Replay can't point a report at its place from outside. The driver can step a rep
 **Boundary ordinals (rev 4).** The ordinal counts every boundary at which the core decides on the state, not only the steps it dispatches:
 - every non-report step it dispatches, as below;
 - every admission (`admit`), whatever its outcome: stepped, parked or refused. A stepped admission takes two ordinals, its admission and its dispatch, on both sides alike.
-- (#738 round 2) every entry's own work, after its mailbox take and before the work: a completion (a nil result and a retire included), a deadline, a timer, a gate's return, stale returns included (`entryBoundary`). Tests 13i–13m.
+- (#738 round 2) every entry's own work, after its mailbox take and before the work: a completion (a nil result and a retire included), a deadline, a timer, a gate's return (`entryBoundary`). Tests 13i–13m.
+- (#738 round 4) not a stale deadline, timer or cancellation, before or after its take. Round 2 gave them an ordinal too, but they arrive where the scheduler puts them: every closed request with a deadline makes one (its cancelled deadline task still calls `deadlineFired`), and so does every replaced or ended timer. Replay matches by count, so a stale entry that landed at another place moved mail onto another entry, with no divergence reported. Now a stale arrival counts the same whether it lands early, late or never (test 13t). A gate's stale return keeps its ordinal: its result still steps.
 - (#738 round 3) a released parked input whose token was withdrawn: its refusal is a boundary, as a refused admission is (test 13p).
-- (#738 round 3) a call's cancellation (`sendAndWait(.cancelsCall)`): it is an entry, so it takes the mailbox first and then an ordinal (test 13s). A replay replays each cancellation at its place, as an input of the adopter's record. A replay that leaves out a recorded cancellation shifts every later key by one.
+- (#738 round 3) a call's cancellation (`sendAndWait(.cancelsCall)`) that finds its waiter: an entry, so it takes the mailbox first and then an ordinal (test 13s). Mailbox first, as every entry: mail pending when the cancellation enters steps before the waiter is removed, so it can answer or refuse the call first, and the cancellation is then stale (test 13v). A call cancelled before entry makes no cancellation entry (test 13u).
+- (#738 round 4) a mail replay refuses `.cancelsCall` (a precondition; test 13w), so a replayed core's calls use `.ignoresCancel`. Why: a call that ends in `CancellationError` was either cancelled before it was submitted (no ordinals) or withdrawn by its cancellation entry (its admission's ordinals and the cancellation's). Both throw the same error, so a replay driver can't tell which happened and can't reproduce the ordinals. Lifting the refusal needs new API, a distinct outcome or a cancellation the core records, to be designed with the reevaluation keepers' move to the turn core (#612). No adopter outside SwiftStateTurns uses `.cancelsCall` today.
 
 Why admissions: an admission that parks or refuses dispatches nothing, and a report can change its outcome (a hold or the queue limit read after the report). Live, a report stepped after such an admission is keyed for the next dispatch, and replay, which steps it at the first check where that ordinal is next, would step it before the admission and flip the outcome. With admissions counted, the key names the boundary after the admission. Test 13h pins it.
 
 Why not outside `query` entries: their answers aren't replay inputs and aren't compared, so their place doesn't matter. If they ever become inputs, each takes an ordinal, as an admission does.
 
-Why not entry starts: an entry that dispatches nothing returns stale (a closed request, a superseded timer generation, a consumed follow-up, a foreign incarnation), and staleness never reverts, so a later report can't change that outcome. Counting entry starts would also count a live wake, which replay doesn't have.
+Why not entry starts: an entry that dispatches nothing returns stale (a closed request, a superseded timer generation, a consumed follow-up, a foreign incarnation), and staleness never reverts, so a later report can't change that outcome. (#738 round 4) The same reason keeps stale arrivals from taking an ordinal at all. Counting entry starts would also count a live wake, which replay doesn't have.
 
 Together with products first (§3.4), a report's key now fixes its place against every non-report step and admission: a wake-stepped report whose `flush` sends S replays as A, S, X, as it ran live (test 13g).
 
