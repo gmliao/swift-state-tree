@@ -27,6 +27,10 @@ indirect enum MailOp: Sendable {
     case run(gate: String)
     /// A timer under `key` at `seconds`, whose input logs "timer `label`".
     case timer(String, key: Int = 1, seconds: Int64)
+    /// A timer under `key` at `seconds`, whose input logs "ran `label`", then runs `then`.
+    case timerRunning(String, key: Int = 1, seconds: Int64, then: [MailOp])
+    /// `arm` with a gate deadline of `deadlineSeconds`.
+    case armWithDeadline(String, key: Int = 1, gate: String, deadlineSeconds: Int64)
     /// An `.afterWork` follow-up under `key`, whose gate is "gate `gate`"; its step logs "ran
     /// `label`", then runs `then`.
     case arm(String, key: Int = 1, gate: String, then: [MailOp] = [])
@@ -219,6 +223,16 @@ struct MailboxMachine: TurnMachine {
                 turn.run(.work(gate))
             case .timer(let label, let key, let seconds):
                 turn.timer(at: .seconds(seconds), for: key, .fired(label))
+            case .timerRunning(let label, let key, let seconds, let then):
+                turn.timer(at: .seconds(seconds), for: key, .ran(label, then))
+            case .armWithDeadline(let label, let key, let gate, let deadline):
+                switch turn.followUp(.ran(label, []), .a, of: key, .afterWork(.work(gate), deadline: .seconds(deadline))) {
+                case .armed(let id):
+                    labels[id] = label
+                    log.append("armed \(label)")
+                case .joined, .refused:
+                    log.append("not armed \(label)")
+                }
             case .arm(let label, let key, let gate, let then):
                 switch turn.followUp(.ran(label, then), .a, of: key, .afterWork(.work(gate), deadline: nil)) {
                 case .armed(let id):

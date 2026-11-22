@@ -182,12 +182,12 @@ struct MailboxTests {
         a.fixture.open("wake R")
     }
 
-    @Test("9b: timerFired of a timer the mail drops is stale")
+    @Test("9b: a due timer whose key its take's mail ends is stale after the take")
     func timerAfterMail() async {
         let a = await MailboxActor.started()
         await a.send(.script([.start(3), .timer("T", key: 3, seconds: 5)]))
         await Self.heldPost(a, MailNote("R", then: [.end(3), .note("R stepped")]))
-        a.fixture.open("deadline 5")
+        a.clock.release(through: 5)
         await a.fixture.reach("flushed R stepped")
         await a.send(.script([.log("after")]))
         #expect(await a.log == ["mail R", "after"])
@@ -195,12 +195,29 @@ struct MailboxTests {
         a.fixture.open("wake R")
     }
 
-    @Test("9c: deadlineFired of a request the mail closes is stale")
+    @Test("9e: a due timer whose take's mail ends everything: it and the rest of the wake end silently")
+    func endAllByMailDuringAWake() async {
+        let a = await MailboxActor.started()
+        await a.send(.script([.start(1), .start(2), .timer("T1", key: 1, seconds: 5), .timer("T2", key: 2, seconds: 5)]))
+        // A mail can't end everything itself: its flush sends the input that does, stepped in the
+        // take's segment, before T1's own check.
+        let post = await Self.heldPost(a, MailNote("R", then: [.note("R stepped"), .send([.endAll])]))
+        a.clock.release(through: 5)
+        // R's own note, flushed before its send ends everything (after endAll no keyed output is kept).
+        await a.fixture.reach("flushed R stepped")
+        // Neither timer fired, and endAll emptied the timer: neither reports either.
+        #expect(await a.log == ["mail R"])
+        #expect(a.fixture.count(of: "stale timer") == 0)
+        a.fixture.open("wake R")
+        _ = await post.value
+    }
+
+    @Test("9c: a due deadline whose request its take's mail closes is stale after the take")
     func deadlineAfterMail() async {
         let a = await MailboxActor.started()
         await a.send(.script([.start(4), .request(gate: "d", key: 4, deadlineSeconds: 7)]))
         await Self.heldPost(a, MailNote("R", then: [.end(4), .note("R stepped")]))
-        a.fixture.open("deadline 7")
+        a.clock.release(through: 7)
         await a.fixture.reach("flushed R stepped")
         await a.send(.script([.log("after")]))
         #expect(await a.log == ["mail R", "abandoned d keyEnded", "after"])
@@ -356,7 +373,7 @@ struct MailboxTests {
         let a = await MailboxActor.started()
         await a.send(.script([.start(6), .request(gate: "r", key: 6, deadlineSeconds: 9)]))
         await Self.heldPost(a, MailNote("R", then: [.end(6), .send([.log("S"), .note("S done")])]))
-        a.fixture.open("deadline 9")
+        a.clock.release(through: 9)
         await a.fixture.reach("flushed S done")
         #expect(await a.log == ["mail R", "abandoned r keyEnded", "S"])
         a.fixture.open("wake R")

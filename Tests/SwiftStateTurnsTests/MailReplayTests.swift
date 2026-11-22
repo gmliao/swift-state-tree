@@ -205,6 +205,16 @@ struct MailReplayTests {
         #expect(run.diverged.isEmpty)
     }
 
+    /// Lets `gate` in: "deadline N" moves the test clock through N (the core's one timer wakes
+    /// for every deadline and timer at or before it); any other gate opens.
+    static func letIn(_ a: MailboxActor, _ gate: String) {
+        if gate.hasPrefix("deadline "), let seconds = Int64(gate.dropFirst("deadline ".count)) {
+            a.clock.release(through: seconds)
+        } else {
+            a.fixture.open(gate)
+        }
+    }
+
     /// Live: posts `note` at the next entry's boundary (after its mailbox take, before its own work).
     static func postAtBoundary(_ a: MailboxActor, _ on: Bool, _ note: MailNote) {
         if on { a.atNextBoundary.set { _ = a.post(note) } }
@@ -216,11 +226,26 @@ struct MailReplayTests {
             await a.send(.script([.start(1), .request(gate: "d", key: 1, deadlineSeconds: 5)]))
             await a.fixture.reach("at d")
             Self.postAtBoundary(a, on, MailNote("R", then: [.end(1)]))
-            a.fixture.open("deadline 5")
+            a.clock.release(through: 5)
             _ = await a.waitForQuiescence(.requests)
         }
         // R ends key 1 after the deadline closed d: replayed before it, d would end keyEnded.
         #expect(run.live == ["mail R", "abandoned d deadline"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13i2: a mail posted at a gate deadline's boundary replays after the deadline's work: the follow-up closes with .deadline")
+    func mailAtGateDeadlineBoundary() async {
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(5), .armWithDeadline("F", key: 5, gate: "g", deadlineSeconds: 5)]))
+            await a.fixture.reach("at g")
+            Self.postAtBoundary(a, on, MailNote("R", then: [.end(5)]))
+            a.clock.release(through: 5)
+            _ = await a.waitForQuiescence(.followUps)
+        }
+        // R ends key 5 after the deadline closed F: replayed before it, F would end keyEnded.
+        #expect(run.live == ["armed F", "mail R", "abandoned F deadline"])
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }
@@ -248,9 +273,8 @@ struct MailReplayTests {
             await a.send(.parked("P", [.note("P done")]))
             // The request closes; its hold on 99 stays until the worker returns.
             await a.send(.control([.end(1)]))
-            // The closed request's deadline task wakes early and returns stale: no entry, no
-            // boundary. Waited for, so the test doesn't lean on that.
-            await a.fixture.reach("stale deadline #1")
+            // The closed request's deadline entry stays in the core's one timer until its
+            // instant: a close wakes nothing, so no stale arrival lands here.
             Self.postAtBoundary(a, on, MailNote("R", then: [.log("R")]))
             a.fixture.open("gate nilr")
             await a.fixture.reach("flushed P done")
@@ -268,7 +292,7 @@ struct MailReplayTests {
         let run = await Self.liveThenReplay { a, on in
             await a.send(.script([.start(1), .timer("T", key: 1, seconds: 5)]))
             Self.postAtBoundary(a, on, MailNote("R", then: [.end(1)]))
-            a.fixture.open("deadline 5")
+            a.clock.release(through: 5)
             _ = await a.waitForQuiescence(.timers)
         }
         // The timer fired before R ended its key.
@@ -388,25 +412,28 @@ struct MailReplayTests {
         #expect(a.records.entries.map(\.key) == [.before(step: 6, index: 0)])
     }
 
-    @Test("13t: a stale deadline takes no ordinal: one that lands before X live and after X in replay leaves the mail between them in place")
+    @Test("13t: a stale deadline takes no ordinal and no mail: one reached before X live and after X in replay leaves the mail between them in place")
     func staleDeadlineAnyWhere() async {
         let run = await Self.liveThenReplay { a, on in
-            a.fixture.open("hold cancelled deadline 60")
             await a.send(.script([.start(1), .request(gate: "g", key: 1, deadlineSeconds: 60)]))
             await a.fixture.reach("at g")
             a.fixture.open("gate g")
-            // The completion closes the request and cancels its deadline task, held here.
-            await a.fixture.reach("cancelled deadline 60")
+            // The completion closes the request; its entry stays in the core's timer until 60.
+            _ = await a.waitForQuiescence(.requests)
             if on {
-                a.fixture.open("release cancelled deadline 60")
+                // M is pending, its wake held, when the stale entry is reached: no take steps it.
+                let post = await MailboxTests.heldPost(a, MailNote("M", then: [.log("M")]))
+                a.clock.release(through: 60)
                 await a.fixture.reach("stale deadline #1")
-                _ = a.post(MailNote("M", then: [.log("M")]))
+                #expect(!(await a.log).contains("mail M"))
+                a.fixture.open("wake M")
+                _ = await post.value
                 await a.fixture.reach("wake #1")
                 _ = await a.log
             }
             await a.send(.script([.log("X")]))
             if !on {
-                a.fixture.open("release cancelled deadline 60")
+                a.clock.release(through: 60)
                 await a.fixture.reach("stale deadline #1")
             }
         }
@@ -469,24 +496,25 @@ struct MailReplayTests {
         RuntimeStopTests.expectCoreStop(result, "TurnActor: a mail replay doesn't take .cancelsCall calls")
     }
 
-    @Test("13x: a stale timer takes no ordinal: one that lands before X live and after X in replay leaves the mail between them in place")
+    @Test("13x: a stale timer takes no ordinal and no mail: one reached before X live and after X in replay leaves the mail between them in place")
     func staleTimerAnyWhere() async {
         let run = await Self.liveThenReplay { a, on in
-            a.fixture.open("hold cancelled deadline 60")
             await a.send(.script([.start(1), .timer("T", key: 1, seconds: 60)]))
-            // U replaces T, whose task is cancelled and held here.
+            // U replaces T, whose entry stays in the core's timer until 60.
             await a.send(.script([.timer("U", key: 1, seconds: 70)]))
-            await a.fixture.reach("cancelled deadline 60")
             if on {
-                a.fixture.open("release cancelled deadline 60")
+                let post = await MailboxTests.heldPost(a, MailNote("M", then: [.log("M")]))
+                a.clock.release(through: 60)
                 await a.fixture.reach("stale timer #1")
-                _ = a.post(MailNote("M", then: [.log("M")]))
+                #expect(!(await a.log).contains("mail M"))
+                a.fixture.open("wake M")
+                _ = await post.value
                 await a.fixture.reach("wake #1")
                 _ = await a.log
             }
             await a.send(.script([.log("X")]))
             if !on {
-                a.fixture.open("release cancelled deadline 60")
+                a.clock.release(through: 60)
                 await a.fixture.reach("stale timer #1")
             }
         }
@@ -514,12 +542,12 @@ struct MailReplayTests {
             await StepHooks.$duringStep.withValue(hook) { await a.send(.script([.hook])) }
             if on {
                 await a.fixture.reach("remainder #1")
-                a.fixture.open(gate)
+                letIn(a, gate)
                 await a.fixture.reach(event)
             }
             await posting(a, on, MailNote("Z")) { await a.send(.script([.hook, .take])) }
             if !on {
-                a.fixture.open(gate)
+                letIn(a, gate)
                 await a.fixture.reach(event)
             }
             a.fixture.open("remainder go")
@@ -588,6 +616,16 @@ struct MailReplayTests {
         let run = await Self.staleAfterTake([.start(1), .timer("T", key: 1, seconds: 5)], at: "",
                                             pending: MailNote("C", then: [.end(1)]), open: "deadline 5", event: "stale timer #1")
         #expect(run.live.contains("took Z"))
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13zc2: a gate deadline whose follow-up its take's mail consumes takes no ordinal: live it lands before X, in replay after")
+    func gateDeadlineStaleAfterTake() async {
+        let run = await Self.staleAfterTake([.start(5), .armWithDeadline("F", key: 5, gate: "g", deadlineSeconds: 5)], at: "at g",
+                                            pending: MailNote("C", then: [.consume(key: 5)]), open: "deadline 5", event: "stale deadline #1")
+        #expect(run.live.contains("took Z"))
+        #expect(run.live.contains("consumed F"))
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }
@@ -744,29 +782,62 @@ struct MailReplayTests {
         return log
     }
 
-    @Test("13zj: a stale deadline returns before its take: mail pending when it lands stays pending")
+    @Test("13zj: a stale deadline returns before its take: mail pending when it is reached stays pending")
     func staleDeadlineLeavesPendingMail() async {
         let log = await Self.pendingStaysAtAStaleArrival({ a in
-            a.fixture.open("hold cancelled deadline 60")
             await a.send(.script([.start(1), .request(gate: "g", key: 1, deadlineSeconds: 60)]))
             await a.fixture.reach("at g")
             a.fixture.open("gate g")
-            await a.fixture.reach("cancelled deadline 60")
-        }, release: { $0.fixture.open("release cancelled deadline 60") }, event: "stale deadline #1")
+            _ = await a.waitForQuiescence(.requests)
+        }, release: { $0.clock.release(through: 60) }, event: "stale deadline #1")
         #expect(log.contains("mail N2"))
         #expect(!log.contains("mail C"))
     }
 
-    @Test("13zk: a stale timer returns before its take: mail pending when it lands stays pending")
+    @Test("13zk: a timer made stale after the wake took it returns before its take: mail posted then is left for its own wake")
     func staleTimerLeavesPendingMail() async {
-        let log = await Self.pendingStaysAtAStaleArrival({ a in
-            a.fixture.open("hold cancelled deadline 60")
-            await a.send(.script([.start(1), .timer("T", key: 1, seconds: 60)]))
-            await a.send(.script([.timer("U", key: 1, seconds: 70)]))
-            await a.fixture.reach("cancelled deadline 60")
-        }, release: { $0.fixture.open("release cancelled deadline 60") }, event: "stale timer #1")
-        #expect(log.contains("mail N2"))
-        #expect(!log.contains("mail C"))
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        // A and T are due together, A first. A's step replaces T after the wake took both.
+        await a.send(.script([.start(1), .start(2),
+                              .timerRunning("A", key: 2, seconds: 60, then: [.timer("U", key: 1, seconds: 70), .post("D")]),
+                              .timer("T", key: 1, seconds: 60)]))
+        // P1 and P2 are pending (P1's wake held): A's take steps both and spends the budget, so
+        // D, which A's flush posts into the emptied mailbox, waits for its own wake.
+        let post = await MailboxTests.heldPost(a, MailNote("P1"))
+        _ = a.post(MailNote("P2"))
+        a.clock.release(through: 60)
+        await a.fixture.reach("stale timer #1")
+        await a.fixture.reach("wake #1")
+        // D's wake stepped it: had T's turn taken the mailbox, that wake would have found it empty.
+        #expect(await a.stats.emptyMailboxWakes == 0)
+        #expect(await a.log == ["mail P1", "mail P2", "ran A", "mail D"])
+        a.fixture.open("remainder go")
+        a.fixture.open("wake P1")
+        _ = await post.value
+    }
+
+    @Test("13zk2: a mixed wake: the first entry's take closes it and a later due one, replaces a third and leaves a fourth live")
+    func mixedWake() async {
+        let a = await MailboxActor.started()
+        await a.send(.script([.start(1), .start(2), .start(3), .start(4),
+                              .timer("T1", key: 1, seconds: 5), .timer("T3", key: 3, seconds: 5),
+                              .request(gate: "d2", key: 2, deadlineSeconds: 5), .request(gate: "d4", key: 4, deadlineSeconds: 5)]))
+        // Pending when the wake starts, its own wake held: T1's take steps it.
+        // A mail can't arm a timer: its flush sends the input that replaces T3.
+        let post = await MailboxTests.heldPost(a, MailNote("C", then: [.end(1), .end(2), .send([.timer("T3b", key: 3, seconds: 9)])]))
+        a.clock.release(through: 5)
+        // Due in arm order: T1, T3, d2, d4 (timers first), all in one wake's job.
+        await a.fixture.reach("stale deadline #1")
+        // T1 stale after its take, T3 and d2 stale before theirs; d4 still live, it fires.
+        #expect(a.fixture.count(of: "stale timer") == 2)
+        #expect(a.fixture.count(of: "stale deadline") == 1)
+        #expect(await a.log == ["mail C", "abandoned d2 keyEnded", "abandoned d4 deadline"])
+        a.clock.release(through: 9)
+        _ = await a.waitForQuiescence(.timers)
+        #expect(await a.log.last == "timer T3b")
+        a.fixture.open("wake C")
+        _ = await post.value
     }
 
     @Test("13zl: a nil run completion returns before its take: mail pending when it lands stays pending")

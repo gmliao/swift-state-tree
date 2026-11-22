@@ -438,9 +438,15 @@ struct DeadlineTimerTests {
         await a.send(.onTickArm(1, labels: [3, 4], seconds: [4, 5]))
         await a.send(.arm(1, seconds: 5))
         await a.send(.arm(2, seconds: 5))
-        // The first wake returns 4, the second 5: that second sleep until 5 is held after it wakes.
+        // The first wake returns 4, the second 5. Both sleeps are held after they wake: the one
+        // until 4, and the second one until 5 (the first sleep until 5 is the first wake's).
+        a.clock.holdAfterWake(4)
         a.clock.holdAfterWake(5, skipping: 1)
         a.clock.release(through: 5)
+        await f.reach("timer wake #1")
+        await f.reach("woke deadline 4")
+        #expect(await a.log == ["tick 1 at 5", "tick 2 at 5"])
+        f.open("resume deadline 4")
         await f.reach("timer wake #2")
         #expect(await a.log == ["tick 1 at 5", "tick 2 at 5", "tick 3 at 5"])
         f.open("resume deadline 5")
