@@ -468,6 +468,10 @@ extension TurnActor {
         // take is that entry's (the first `fireDeadline` takes none), so it takes no ordinal
         // of its own; a wake whose heads are all stale takes nothing. When the mail closed the
         // head it was taken for, the list's first entry is another one, which takes its own.
+        // Replay limit (#756): the record keys mail by ordinal only and doesn't record the wake,
+        // so a wake's grouping isn't fixed by it. This take covers mail that arms one entry at
+        // or before `target`; a chained arm, the per-wake caps and mail at more than one take
+        // can still group differently in replay.
         var due: [DeadlineEntry] = []
         var stalePops = 0
         var taken = false
