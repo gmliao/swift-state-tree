@@ -391,7 +391,10 @@ struct TransportAdapterJoinFlipTests {
     func joinSyncRequestedIsRegisteredNotFlipped() async throws {
         // Tickless: the join's own turn consumes its OnJoin, so only the sync turn is missing.
         let fixture = await makeFixture(tick: false)
+        // The join-commit observations record only in DEBUG builds (#748); the rest runs in release too.
+        #if DEBUG
         await fixture.adapter.captureJoinCommitsForTesting()
+        #endif
         let returned = TestGate()
         let gate = TestGate()
         await fixture.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>()
@@ -409,19 +412,23 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.isInTurnJoinRegisteredForTesting(s1), "registered with the transport")
         #expect(await fixture.adapter.isJoiningInTurn(s1), "not flipped")
         // The named observations (#555), keyed by the attempt (no router attempt number here).
-        let attempt = TransportAdapter<JoinFlipTestState>.JoinAttemptKey(sessionID: s1, attempt: nil)
         #expect(await !fixture.adapter.admittedNotRegisteredForTesting(s1), "registered")
+        #if DEBUG
+        let attempt = TransportAdapter<JoinFlipTestState>.JoinAttemptKey(sessionID: s1, attempt: nil)
         #expect(await !fixture.adapter.joinFlippedForTesting(attempt))
         #expect(await !fixture.adapter.initialSyncCommittedForTesting(attempt))
+        #endif
         await fixture.adapter.waitForOutboundIdleForTesting()
         #expect(await fixture.sent.kinds(for: s1) == [])
         gate.open()
         await fixture.adapter.installHolds(nil)
         _ = try await join.value
         #expect(await !fixture.adapter.isJoiningInTurn(s1), "the sync-only turn flipped it")
+        #if DEBUG
         #expect(await fixture.adapter.joinFlippedForTesting(attempt))
         #expect(await fixture.adapter.initialSyncCommittedForTesting(attempt))
         #expect(await !fixture.adapter.joinFlippedForTesting(.init(sessionID: s1, attempt: 7)), "keyed by the attempt")
+        #endif
 
         // A session ticket token (#555): current while joined, not after a teardown.
         let ticket = try #require(await fixture.adapter.sessionTicketForTesting(s1))
