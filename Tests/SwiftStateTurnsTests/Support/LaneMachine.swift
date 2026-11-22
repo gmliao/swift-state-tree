@@ -1,4 +1,5 @@
 import SwiftStateTurns
+import Testing
 
 // MARK: - A machine that takes lane reports
 
@@ -18,6 +19,8 @@ indirect enum LaneOp: Sendable {
     case close
     /// A request under `key` that holds key 99 until its gate opens.
     case hold(gate: String, key: Int = 1)
+    /// A request under `key` that holds key 99 until its worker returns, after it closed too.
+    case holdUntilReturn(gate: String, key: Int = 1)
     /// A request under `key`, with a deadline in whole seconds when given.
     case request(gate: String, key: Int = 1, deadlineSeconds: Int64? = nil)
     /// A timer under `key` at `seconds`, whose input logs "timer `label`".
@@ -121,9 +124,42 @@ struct LaneMachine: TurnMachine {
         }
     }
 
-    mutating func handleReport(_ report: LaneNote, _ turn: inout Turn<LaneMachine>) {
+    mutating func handleReport(_ report: LaneNote, _ turn: inout ReportTurn<LaneMachine>) {
         log.append("report \(report.label)")
-        run(report.then, &turn)
+        for op in report.then {
+            switch op {
+            case .log(let text):
+                log.append(text)
+            case .note(let text):
+                turn.emit(.note(text), for: 0)
+            case .hook:
+                StepHooks.duringStep?()
+            case .end(let key):
+                turn.end(key)
+            case .close:
+                turn.close()
+            case .consume(let key):
+                if case .ran(let label, _)? = turn.consumeFollowUp(.a, of: key) {
+                    log.append("consumed \(label)")
+                } else {
+                    log.append("consumed nothing")
+                }
+            case .send(let ops):
+                turn.emit(.send(ops), for: 0)
+            case .ask(let label):
+                turn.emit(.ask(label), for: 0)
+            case .askTake(let label):
+                turn.emit(.askTake(label), for: 0)
+            case .post(let label, let then):
+                turn.emit(.post(LaneNote(label, then: then)), for: 0)
+            case .readNow:
+                log.append("now \(turn.now.wholeSeconds)")
+            default:
+                // A report's turn can't take or arm `.afterBatch` work (ReportTurn). A failed test,
+                // not a crash: a crash ends every test in the process with no summary line.
+                Issue.record("LaneMachine: op \(op) in a report")
+            }
+        }
     }
 
     mutating func handleLateResult(_ input: Input, _ turn: inout Turn<LaneMachine>) {
@@ -168,6 +204,8 @@ struct LaneMachine: TurnMachine {
                 turn.close()
             case .hold(let gate, let key):
                 if let id = turn.request(.work(gate), for: key, holding: .untilRequestCloses(99, deadline: .seconds(3600))) { labels[id] = gate }
+            case .holdUntilReturn(let gate, let key):
+                if let id = turn.request(.work(gate), for: key, holding: .untilWorkerReturns(99, deadline: .seconds(3600))) { labels[id] = gate }
             case .request(let gate, let key, let deadline):
                 if let id = turn.request(.work(gate), for: key, deadline: deadline.map { .seconds($0) }) { labels[id] = gate }
             case .timer(let label, let key, let seconds):

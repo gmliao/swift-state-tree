@@ -293,14 +293,13 @@ struct LaneTests {
     func fifoAcrossTakes() async {
         let a = await LaneActor.started()
         // A's step posts C, then its flush asks a query, answered in place inside the check: the
-        // answer's take sees B, which the check hasn't removed, then C. A report's own take
-        // returns nothing (§3.9), so the second take is the answer's.
-        await Self.heldPost(a, LaneNote("A", then: [.hook, .take, .askTake("Q")]))
+        // answer's take sees B, which the check hasn't removed, then C.
+        await Self.heldPost(a, LaneNote("A", then: [.hook, .askTake("Q")]))
         _ = a.post(LaneNote("B"))
         await StepHooks.$duringStep.withValue({ _ = a.post(LaneNote("C")) }) {
             await a.send(.script([.log("X")]))
         }
-        #expect(await a.log == ["report A", "took", "answer Q took B C", "X"])
+        #expect(await a.log == ["report A", "answer Q took B C", "X"])
         a.fixture.open("wake A")
     }
 
@@ -316,17 +315,18 @@ struct LaneTests {
         a.fixture.open("gate r")
     }
 
-    @Test("18: a report a continuation job's lane take steps arms an afterBatch follow-up, which steps in the next job")
+    @Test("18: an input a report sends from a continuation job's lane take arms an afterBatch follow-up, which steps in the next job")
     func continuationCapturesBeforeTheLane() async {
         let a = await LaneActor.started()
         let jobsBefore = await a.stats.continuationJobs
         // R is posted at the job's start, before it captures F1; its wake runs after the job.
-        a.atNextJob.set { _ = a.post(LaneNote("R", then: [.armAfterBatch("F2", key: 2)])) }
+        // A report can't arm `.afterBatch` work itself (ReportTurn); the input its flush sends can.
+        a.atNextJob.set { _ = a.post(LaneNote("R", then: [.send([.armAfterBatch("F2", key: 2)])])) }
         await a.send(.script([.start(1), .start(2), .armAfterBatch("F1", key: 1)]))
         await a.fixture.reach("job #2")
         _ = await a.log
         let batches = await a.log(cutBy: a.jobs).dropFirst().map(Array.init)
-        // F1 was due at the first job's start; F2, armed by R in that job, waits for the next.
+        // F1 was due at the first job's start; F2, armed by R's send in that job, waits for the next.
         #expect(batches == [["report R", "armed F2", "ran F1"], ["ran F2"]])
         #expect(await a.stats.continuationJobs == jobsBefore + 2)
     }

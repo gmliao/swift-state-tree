@@ -21,6 +21,8 @@ actor LaneActor: TurnActor {
     /// Runs once at the start of the next continuation job, before it captures its due
     /// follow-ups.
     nonisolated let atNextJob = OneShot()
+    /// Runs once at the next entry's boundary (after its lane take, before its own work).
+    nonisolated let atNextBoundary = OneShot()
 
     init(fixture: Fixture, maxReleasesPerBatch: Int, laneCapacity: Int, queueLimit: Int = 64, replay: [LaneRecordEntry<LaneNote>]? = nil) {
         let clock = TestClock(fixture: fixture)
@@ -41,6 +43,8 @@ actor LaneActor: TurnActor {
             fixture.openCounted("job")
             atNextJob.take()?()
         }
+        let atNextBoundary = self.atNextBoundary
+        core.onEntryBoundaryForTesting = { atNextBoundary.take()?() }
         let records = self.records
         if let replay {
             core.replayReports(replay)
@@ -70,7 +74,8 @@ actor LaneActor: TurnActor {
         case .work(let label):
             fixture.open("at \(label)")
             await fixture.wait("gate \(label)")
-            return .result(label)
+            // A gate whose label starts with "nil" returns no input.
+            return label.hasPrefix("nil") ? nil : .result(label)
         }
     }
 

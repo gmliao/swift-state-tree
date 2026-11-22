@@ -31,7 +31,7 @@ struct ReportBenchMachine: TurnMachine {
         }
     }
 
-    mutating func handleReport(_ report: Int, _ turn: inout Turn<ReportBenchMachine>) {
+    mutating func handleReport(_ report: Int, _ turn: inout ReportTurn<ReportBenchMachine>) {
         counter &+= report
     }
 }

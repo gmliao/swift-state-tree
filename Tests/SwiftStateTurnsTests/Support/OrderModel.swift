@@ -142,7 +142,7 @@ struct OrderModel<LaneReport: OrderReport & PlainData>: TurnMachine {
         stepCount += 1
     }
 
-    mutating func handleReport(_ report: LaneReport, _ turn: inout Turn<OrderModel>) {
+    mutating func handleReport(_ report: LaneReport, _ turn: inout ReportTurn<OrderModel>) {
         enter()
         defer { depth -= 1 }
         let number = report.number

@@ -104,6 +104,18 @@ extension TurnActor {
         }
     }
 
+    /// An entry's boundary, after its lane take and before its own work (a completion, a
+    /// deadline, a timer, a gate's return), as an admission is (plan §3.9): it takes an
+    /// ordinal, so a report posted between the take and the work, which steps after the work
+    /// live, is keyed after the boundary and replays there too. Every such entry calls it,
+    /// its stale returns included, so both sides count alike.
+    @inlinable func entryBoundary() {
+        let core = self.core
+        guard TurnCore<M>.usesLane else { return }
+        core.noteDispatch()
+        core.onEntryBoundaryForTesting?()
+    }
+
     // MARK: The lane
 
     /// Posts `report` to the core's lane, from any thread, without awaiting: the core steps it
@@ -166,12 +178,14 @@ extension TurnActor {
         if !replaying, lane.isEmpty { return }
         let wasInSegment = core.inSegment
         core.inSegment = true
-        let stepped = replaying ? takeStaged() : takeLane(lane)
+        let stepped = replaying ? takeStaged(keepingNow: !wasInSegment) : takeLane(lane)
         core.inSegment = wasInSegment
         if stepped || !lane.isEmpty {
             core.rt.dirty = true
             if !wasInSegment { runSegment() }
         }
+        // The entry's own work reads its own `now`.
+        core.productsNow = nil
     }
 
     /// One check: the reports at or below the lane's watermark now, one head at a time, each
@@ -197,21 +211,25 @@ extension TurnActor {
 
     /// A replay's check: the staged reports for the next step's `before` keys, in order, each
     /// with its recorded `now`. The budget doesn't apply: the record fixed where each one steps.
-    @inlinable func takeStaged() -> Bool {
+    /// `keepingNow`: the last report's `now` stays served (`productsNow`) for the entry's
+    /// products-first segment, which the caller ends; a loop check's reports were recorded with
+    /// the entry's own `now`, so it doesn't keep it.
+    @inlinable func takeStaged(keepingNow: Bool = false) -> Bool {
         let core = self.core
         var stepped = false
         while let head = core.laneReplay?.first,
               head.key == .before(step: core.nextOrdinal, index: core.beforeIndex) {
             core.laneReplay?.removeFirst()
             core.beforeIndex += 1
+            core.productsNow = head.now
             for report in head.reports {
-                core.reportNow = head.now
                 core.stepReport(report)
-                core.reportNow = nil
                 drainProducts()
             }
             stepped = true
         }
+        // A loop check that stepped nothing leaves the products-first segment's `now` served.
+        if stepped, !keepingNow { core.productsNow = nil }
         return stepped
     }
 
@@ -314,6 +332,7 @@ extension TurnActor {
             return
         }
         beginEntry()
+        entryBoundary()
         if let id {
             if let record = core.rt.open[id] {
                 let waiting = core.rt.repliesAfter.removeValue(forKey: id)
@@ -346,7 +365,10 @@ extension TurnActor {
         }
         core.deadlineTasks.removeValue(forKey: id)
         // With a lane, its reports step before the checks below, which read the state after them.
-        if TurnCore<M>.usesLane { beginEntry() }
+        if TurnCore<M>.usesLane {
+            beginEntry()
+            entryBoundary()
+        }
         if core.rt.open[id] == nil, core.rt.gateDeadlineLive(id) {
             // A follow-up's gate deadline: the follow-up closes unrun.
             if !TurnCore<M>.usesLane { beginEntry() }
@@ -373,7 +395,10 @@ extension TurnActor {
             return
         }
         if core.timerTasks[key]?.generation == generation { core.timerTasks.removeValue(forKey: key) }
-        if TurnCore<M>.usesLane { beginEntry() }
+        if TurnCore<M>.usesLane {
+            beginEntry()
+            entryBoundary()
+        }
         guard core.rt.timers[key] == generation else {
             core.onDiagnostic?(.staleTimer)
             if TurnCore<M>.usesLane, core.rt.dirty { runSegment() }
@@ -442,6 +467,7 @@ extension TurnActor {
             return
         }
         beginEntry()
+        entryBoundary()
         if let name = core.rt.followUpIDs[id], core.rt.followUps[name]?.waiting == true {
             core.rt.followUps[name]?.waiting = false
             if core.rt.followUps[name]?.hasDeadline == true {

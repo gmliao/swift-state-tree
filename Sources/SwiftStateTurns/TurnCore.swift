@@ -239,9 +239,18 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onLaneWakeForTesting: (() -> Void)?
-    /// The next non-report step's ordinal, counted over every step the core dispatches (inputs,
-    /// releases, follow-ups, answers, completions, timers, abandonments); a lane record's keys
-    /// name steps by it. Counted only for a machine that takes reports.
+    /// Tests: called on the actor at an entry's boundary (`entryBoundary`), after its lane take
+    /// and ordinal and before its own work, so a test can post there. Observe-only, apart from
+    /// `post`.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onEntryBoundaryForTesting: (() -> Void)?
+    /// The next boundary's ordinal, counted over every step the core dispatches (inputs,
+    /// releases, follow-ups, answers, completions, timers, abandonments) and every entry's own
+    /// work (an admission, a completion, a deadline, a timer, a gate's return; plan §3.9); a lane
+    /// record's keys name steps by it. An admitted input that steps takes two: its admission and
+    /// its dispatch, on both sides alike. Counted only for a machine that takes reports.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
@@ -266,12 +275,14 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var laneReplay: LaneReplayStage<M.LaneReport>?
-    /// Replay: the recorded `now` served inside the report step running now. Scoped to that
-    /// step: it doesn't set `cachedNow`.
+    /// Replay: the recorded `now` of the staged reports an entry's take stepped, served to
+    /// those reports' steps and to the whole products-first segment after them, as live
+    /// served the wake's `now` to the wake's segment. It doesn't set `cachedNow`, so the
+    /// entry's own work reads its own `now` after it.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
-    @usableFromInline var reportNow: TurnInstant?
+    @usableFromInline var productsNow: TurnInstant?
     /// Live: called with each hand-out, for the adopter's record. A check's report, before it
     /// steps, with the check's `now`; a non-empty mid-step take, with nil. Empty takes aren't
     /// passed.
@@ -376,7 +387,7 @@ public final class TurnCore<M: TurnMachine> {
     // MARK: The clock
 
     @inlinable func segmentNow() -> TurnInstant {
-        if Self.usesLane, inReportStep, let reportNow { return reportNow }
+        if Self.usesLane, let productsNow { return productsNow }
         if let cachedNow { return cachedNow }
         let now = clock.now
         cachedNow = now
@@ -399,10 +410,11 @@ public final class TurnCore<M: TurnMachine> {
         onReplayDivergence(divergence)
     }
 
-    /// A boundary: a non-report step is dispatched, or an input is admitted (whatever the
-    /// admission's outcome: stepped, parked or refused). It takes the next ordinal, so a report's
-    /// `before` key names the boundary after which it stepped. In replay, anything still staged
-    /// for an earlier place is unconsumed.
+    /// A boundary: a non-report step is dispatched, an input is admitted (whatever the
+    /// admission's outcome: stepped, parked or refused), or another entry starts its own work
+    /// (`TurnActor.entryBoundary`). It takes the next ordinal, so a report's `before` key names
+    /// the boundary after which it stepped. In replay, anything still staged for an earlier
+    /// place is unconsumed.
     @inlinable func noteDispatch() {
         guard Self.usesLane else { return }
         if laneReplay != nil {
@@ -498,7 +510,7 @@ public final class TurnCore<M: TurnMachine> {
             inReportStep = false
             leaveStep()
         }
-        var turn = Turn<M>(core: self, input: nil)
+        var turn = ReportTurn<M>(core: self)
         machine.handleReport(report, &turn)
     }
 

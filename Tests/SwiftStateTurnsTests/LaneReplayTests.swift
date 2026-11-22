@@ -143,6 +143,45 @@ struct LaneReplayTests {
         #expect(run.diverged.isEmpty)
     }
 
+    @Test("13n: a wake-stepped report's products read the wake's now in replay too; the next input reads its own")
+    func wakeProductsReadTheWakesNow() async {
+        let run = await Self.liveThenReplay { a, on in
+            a.clock.set(seconds: 10)
+            if on {
+                _ = a.post(LaneNote("A", then: [.readNow, .send([.readNow])]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+            a.clock.set(seconds: 20)
+            await a.send(.script([.readNow]))
+        }
+        #expect(run.live == ["report A", "now 10", "now 10", "now 20"])
+        // Replay steps A and its send S at X's take: S reads the recorded wake now, X its own.
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13o: known gap (#745): an .afterBatch job a wake's products schedule can replay after the next input")
+    func afterBatchThroughProductsReorders() async {
+        let run = await Self.liveThenReplay { a, on in
+            if on {
+                // A's flush sends S, which arms F after the batch: live, the wake's epilogue
+                // schedules F's job, and it runs before X.
+                _ = a.post(LaneNote("A", then: [.send([.start(2), .armAfterBatch("F", key: 2)])]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+                _ = await a.waitForQuiescence(.followUps)
+            }
+            await a.send(.script([.log("X")]))
+            if !on { _ = await a.waitForQuiescence(.followUps) }
+        }
+        #expect(run.live == ["report A", "armed F", "ran F", "X"])
+        // Replay steps S in X's products-first segment, and F's job runs after X: replay
+        // doesn't place a continuation job relative to the next external input (#745).
+        #expect(run.replayed == ["report A", "armed F", "X", "ran F"])
+        #expect(run.diverged.isEmpty)
+    }
+
     @Test("13h: a report stepped after a refused admission replays after it, so the refusal stands")
     func reportAfterARefusal() async {
         let run = await Self.liveThenReplay(queueLimit: 1) { a, on in
@@ -158,6 +197,86 @@ struct LaneReplayTests {
         #expect(run.live == ["report R", "abandoned h keyEnded", "parked P1", "X"])
         // Keyed after P2's admission (admissions take an ordinal), R can't step ahead of it in
         // replay and turn the refusal into a park.
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    /// Live: posts `note` at the next entry's boundary (after its lane take, before its own work).
+    static func postAtBoundary(_ a: LaneActor, _ on: Bool, _ note: LaneNote) {
+        if on { a.atNextBoundary.set { _ = a.post(note) } }
+    }
+
+    @Test("13i: a report posted at a deadline's boundary replays after the deadline's work: the abandonment keeps .deadline")
+    func reportAtDeadlineBoundary() async {
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .request(gate: "d", key: 1, deadlineSeconds: 5)]))
+            await a.fixture.reach("at d")
+            Self.postAtBoundary(a, on, LaneNote("R", then: [.end(1)]))
+            a.fixture.open("deadline 5")
+            _ = await a.waitForQuiescence(.requests)
+        }
+        // R ends key 1 after the deadline closed d: replayed before it, d would end keyEnded.
+        #expect(run.live == ["report R", "abandoned d deadline"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13j: a report posted at a nil completion's boundary replays after the completion closed the request")
+    func reportAtNilCompletionBoundary() async {
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .request(gate: "nilc", key: 1)]))
+            await a.fixture.reach("at nilc")
+            Self.postAtBoundary(a, on, LaneNote("R", then: [.end(1)]))
+            a.fixture.open("gate nilc")
+            _ = await a.waitForQuiescence(.requests)
+        }
+        // The completion closed the request with no step, so R's end abandons nothing.
+        #expect(run.live == ["report R"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13k: a report posted at a retire's boundary (a nil result after the request closed) replays after the hold is freed")
+    func reportAtRetireBoundary() async {
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .holdUntilReturn(gate: "nilr", key: 1)]))
+            await a.fixture.reach("at nilr")
+            await a.send(.parked("P", [.note("P done")]))
+            // The request closes; its hold on 99 stays until the worker returns.
+            await a.send(.control([.end(1)]))
+            Self.postAtBoundary(a, on, LaneNote("R", then: [.log("R")]))
+            a.fixture.open("gate nilr")
+            await a.fixture.reach("flushed P done")
+        }
+        #expect(run.live == ["abandoned nilr keyEnded", "report R", "R", "parked P"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13l: a report posted at a timer's boundary replays after the timer's work")
+    func reportAtTimerBoundary() async {
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(1), .timer("T", key: 1, seconds: 5)]))
+            Self.postAtBoundary(a, on, LaneNote("R", then: [.end(1)]))
+            a.fixture.open("deadline 5")
+            _ = await a.waitForQuiescence(.timers)
+        }
+        // The timer fired before R ended its key.
+        #expect(run.live == ["timer T", "report R"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13m: a report posted at a gate's boundary (a nil result) replays after the follow-up became due")
+    func reportAtGateBoundary() async {
+        let run = await Self.liveThenReplay { a, on in
+            await a.send(.script([.start(5), .arm("F", key: 5, gate: "nilg")]))
+            await a.fixture.reach("at nilg")
+            Self.postAtBoundary(a, on, LaneNote("R", then: [.consume(key: 5)]))
+            a.fixture.open("gate nilg")
+            _ = await a.waitForQuiescence(.followUps)
+        }
+        #expect(run.live == ["armed F", "report R", "consumed F"])
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
     }

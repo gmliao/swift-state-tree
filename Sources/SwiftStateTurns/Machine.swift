@@ -38,8 +38,9 @@ public protocol TurnMachine: Sendable {
     mutating func handleLateResult(_ input: Input, _ turn: inout Turn<Self>)
     mutating func answer(_ query: Query, _ turn: inout Turn<Self>) -> Answer
     /// A report from the lane, stepped as a control input: holds, `close`, the queue limit and
-    /// withdrawal don't apply, and it has no caller to reply to.
-    mutating func handleReport(_ report: LaneReport, _ turn: inout Turn<Self>)
+    /// withdrawal don't apply, and it has no caller to reply to. Its `ReportTurn` can't arm
+    /// `.afterBatch` work (plan §3.9).
+    mutating func handleReport(_ report: LaneReport, _ turn: inout ReportTurn<Self>)
 }
 
 extension TurnMachine {
@@ -55,7 +56,7 @@ extension TurnMachine where Query == Never, Answer == Never {
 }
 
 extension TurnMachine where LaneReport == Never {
-    @inlinable public mutating func handleReport(_ report: Never, _ turn: inout Turn<Self>) {
+    @inlinable public mutating func handleReport(_ report: Never, _ turn: inout ReportTurn<Self>) {
         switch report {}
     }
 }

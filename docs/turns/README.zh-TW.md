@@ -341,7 +341,7 @@ API：`followUp`、`consumeFollowUp`、`followUpPending`、`FollowUpTrigger`、`
 另一條 thread 上的協作者有時必須在 machine 下一個 step 之前告訴它某件事，例如 transport 因失敗而關閉了 output gate。await 的 `send` 做不到這個保證：hop 抵達之前，actor 可能先跑了一個 step。core 的 *lane* 做得到。machine 以 `LaneReport` 型別和 `handleReport` 加入，後者把 report 當作 control input step（hold、`close` 和 queue 上限都不適用）：
 
 ```swift
-mutating func handleReport(_ report: Failure, _ turn: inout Turn<Keeper>) {
+mutating func handleReport(_ report: Failure, _ turn: inout ReportTurn<Keeper>) {
     failed = failed ?? report
 }
 ```

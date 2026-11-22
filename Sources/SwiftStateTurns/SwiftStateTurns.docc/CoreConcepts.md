@@ -184,7 +184,7 @@ API: ``Turn/followUp(_:_:of:_:)``, ``Turn/consumeFollowUp(_:of:)``, ``Turn/follo
 A collaborator on another thread sometimes has to tell the machine something before its next step, such as a transport that closed the output gate on a failure. An awaited `send` can't promise that: the actor may run a step before the hop lands. The core's *lane* can. A machine opts in with a `LaneReport` type and `handleReport`, which steps a report as a control input (holds, `close` and the queue limit don't apply):
 
 ```swift
-mutating func handleReport(_ report: Failure, _ turn: inout Turn<Keeper>) {
+mutating func handleReport(_ report: Failure, _ turn: inout ReportTurn<Keeper>) {
     failed = failed ?? report
 }
 ```

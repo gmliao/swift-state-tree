@@ -358,7 +358,7 @@ struct Keeper: TurnMachine {
     }
 
     // docs:lane-report
-    mutating func handleReport(_ report: Failure, _ turn: inout Turn<Keeper>) {
+    mutating func handleReport(_ report: Failure, _ turn: inout ReportTurn<Keeper>) {
         failed = failed ?? report
     }
     // docs:end
