@@ -358,7 +358,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var players: [PlayerID: InternalPlayerSession] = [:]
     /// Mints `InternalPlayerSession.generation`: every insert of a player entry gets a new one.
     private var entryGenerations = EpochCounter()
-    private var services: LandServices
+    private let services: LandServices
 
     private var transport: LandKeeperTransport?
     private let logger: Logger
@@ -470,7 +470,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Actual land instance ID (e.g., "counter:550e8400-...")
     /// This is different from definition.id which is just the land type (e.g., "counter")
-    private var actualLandID: String?
+    private let actualLandID: String?
 
     /// Set the transport interface (called after TransportAdapter is created). A keeper whose
     /// destruction has finished keeps its released placeholder instead: a transport attached
@@ -1012,7 +1012,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             let rngService = DeterministicRngService(seed: seed)
             resolvedServices.register(rngService, as: DeterministicRngService.self)
         }
-        self.services = resolvedServices
 
         self.transport = transport
         if transport != nil { hasHeldTransport = true }
@@ -1053,8 +1052,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 ReevaluationRecorderService(recorder: recorder, submissions: recorderSubmissions),
                 as: ReevaluationRecorderService.self
             )
-            self.services = resolvedServices
         }
+        self.services = resolvedServices
 
         // Initialize source if in re-evaluation mode
         if mode == .reevaluation {
