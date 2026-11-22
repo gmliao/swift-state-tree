@@ -216,7 +216,7 @@ struct ReplayRecordRefusalTests {
         #expect(status.phase == .failed)
         // The message states the result count the service measured, not a record tick.
         #expect(
-            status.errorMessage == "the runner produced more than 5 results, and a replay may take at most 5 steps",
+            status.errorMessage == "the runner produced more than 5 results; a replay accepts at most 5",
             "\(status.errorMessage)"
         )
         // The result that trips the cap has been stepped: one step past the limit.
