@@ -1,74 +1,83 @@
 # LandKeeper's turns on the turn core (#700)
 
-**Status:** rev 2, plan only. Rev 1 got NOT GO from Review (6 must-fix, 5 should; the direction holds: resolve, apply and sync in the right places, the K1 → K2 strangler, Q1 (c), and the core's recording kept off). Rev 2 answers each point (below), for Review's check and then Code-1's turn-core fit read. No code until Review's GO, and none in a slice whose core gap (§7) is still open.
+**Status:** rev 3, plan only. Rev 2 got NOT GO from Review, narrower than rev 1: MF1 and MF6 closed in structure; MF2, MF4 and one hole each in MF3 and MF5 open; one new must-fix. Code-1's turn-core fit read of rev 2: the direction and §3.10's layout fit the core; four changes and two shoulds. Rev 3 answers both, and folds in Main's decisions on them. No code until Review's GO, and none in a slice whose core gap (§7) is still open.
 
-Code pointers are at main 8e622a20. `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`, `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`, `LKT` is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
+Code pointers are at main 8e622a20:
+- `LK` is `Sources/SwiftStateTree/Runtime/LandKeeper.swift`;
+- `TA` is `Sources/SwiftStateTreeTransport/TransportAdapter.swift`;
+- `LKT` is `Sources/SwiftStateTree/Runtime/LandKeeperTransport.swift`.
 
-**Rev 2** (Review's plan check of rev 1):
-- **MF1, §3.1: G1 narrowed (#758).** The world holds values only: `State`, the admitted queue and entry facts. Each has a snapshot contract where it crosses into resolvers, adapter reads or the sync phase. The references move to narrower homes:
-  - `OutputCollector`: the sequence counter goes to the model, events are staged, and handlers get a scoped emitter. AfterFinalize's context gets a decided answer in K7.
-  - Recorder: drafts go out as outputs, which `flush` hands to the serial sink in step order.
-  - Port: the model holds its binding identity, and the step gets an in-step capability carried by the input or the effect.
-  - Services: passed to effects explicitly.
+**Rev 3** (Review's check of rev 2, Code-1's fit read, Main's decisions):
+- **MF2, §3.3: actions with resolvers stay two-phase.** The intake returns `.pending(sequence:)` at once, on tick and tickless lands (LK:3023), so the adapter releases its inbound chain (TA:5382–5404). The result comes from a separate `awaitActionResult`. On the core:
+  - the admission is a query answering the pending token;
+  - the result wait is its own `sendAndWait`;
+  - no `Turn.reply` is made to a query.
 
-  `flush` gets no world. The world is readable between steps through `core.read`.
-- **MF2, §3.3, §3.8: each intake contract kept as it is today.**
-  - A tick action without resolvers gets its empty ACK at intake.
-  - A tick action with resolvers gets its ACK after the resolvers deliver, before the tick.
-  - Tickless actions and tickless client events wait for application, and a client event surfaces its handler's error.
-  - A server input replies at intake, frozen or not.
-  - A `query` has no reply waiter, so "intake as a query, then await" is gone. A query answers only where today's caller returns at intake; `sendAndWait` is used only where the caller already waits.
-- **MF3, §3.7, §8.**
-  - The step capability changes `runSyncPhaseInTurn`, a requirement of the public `LandKeeperTransport`: a public break, listed for the maintainer. `runSettlePhaseInTurn` is on the package `LandKeeperSettlePort`, so its change is package-level.
-  - The audit is redone. The in-step callback is the join-admission clear; the initial-sync and disconnect records are entries outside a step.
-  - Adapter reads go through `core.read`, not a query.
-  - The not-in-step assertion is only on synchronous step entries, never on `send`.
-- **MF4, §3.2, §3.4: a fresh key per lifetime.** `.syncBinding(BindingID)`, `.entry(PlayerID, EntryID)`, `.freeze(FreezeID)`.
-  - Action jobs' requests go under their entry's key, so ending the entry closes them.
-  - A caller's cancellation reaches an admitted job through a `.cancelJob` input that cancels its request. It does not use `.cancelsCall`, which leaves a stepped call running.
-- **MF5, §5: barriers and the clock.**
-  - K2 needs a production `TurnClock` (`TurnCore.init` takes one), so #759 is narrowed to the minimal clock and blocks K2. The timer migration (old K8) is #762.
-  - K2 keeps today's entry barriers for initialization and the freeze: `run` can't hold, and nothing in the core holds intake for a freeze. K5 replaces the initialization barrier with a request hold. The freeze barrier needs a core operation (G9) or stays, decided before K7.
-- **MF6, §3.10: the type layout.**
-  - The public `LandKeeper<State>` is a facade over one of two owners fixed at init: a package `LiveLandTurns<State>: TurnActor` on the shared executor, or a replay owner with no core.
-  - The invariant "replay never steps a core" is pinned by ownership: the replay owner has no core field.
-  - A replay keeper can have a transport (`.transportAndSink`), and the invariant doesn't depend on it not having one.
+  The join and leave rows are split by land kind:
+  - a tickless join waits for application when admission doesn't complete in-turn (LK:2037–2056);
+  - a tickless leave waits for application (LK:2733–2737).
+- **New MF, §3.3: server inputs from a turn's requested work.** `ServerInputSubmitter.submit` is async and "from any task" (ServerInput.swift:61–79). The work a turn requests submits later. So it is an outside entry, `query(.admitServerInput)` from the work's task, including the frozen accepted-and-held path. Rev 2's "appends through the world" is withdrawn.
+- **MF4, §3.2: a synchronous per-job cancellation token** (route (a), Main's decision). It keeps today's guarantee: once `cancel()` returns, a completion that hasn't run yet won't deliver (LK:2466–2495).
+  - The token is allocated before submission and carried by the request's effect.
+  - It is checked at admission and at delivery, and cancels the worker synchronously.
+  - No hop, and no `InputID` captured by the cancel side.
+  - G10 (#764) isn't needed for K2: it stays a nice-to-have (Code-1).
+  - Also kept: `.senderSuperseded` on entry end. Actions whose sender has no entry get the `.land` scope. OnLeave's work runs off the key the leave closes.
+- **MF3, §3.7, §8: no public change in K2.**
+  - `runSyncPhaseInTurn` makes no call back into the keeper. Its drafts already come back in `InTurnSyncOutput.syncStream`, and its recording flag comes in through `recording:` (LKT:180, TA:2839–2853, TA:3825–3832). So its signature stays, and rev 2's listed break is withdrawn.
+  - The one in-step callback is the join-admission clear (`supersedeSessions` → `recordSyncStreamClear` → `submitSyncStream`, TA:1550, TA:1908, TA:3951–3956), reached through the public `admitJoiningSession` (LKT:116). It gets a package path, which takes the recording flag from the step and returns its drafts. The public requirement stays.
+- **Code-1 (2), §3.1, §3.5: the port is a Sendable binding token**, the port reference plus its `BindingID`. It travels in inputs, queries and effects. The step checks the `BindingID` against the model, then calls the port synchronously. Since no port call reaches back into the keeper (above), no `~Copyable` capability is needed. Code-1 noted for #546 B: once the adapter has its own core on the shared executor, a keeper step that calls the adapter nests two cores, and that needs a rule then.
+- **Code-1 (3), §3.1: the scoped emitter is a runtime scope.** It holds its step's token, and an emit after its step is dropped and counted, asserted in debug, like `emit` to a dead key (Turn.swift:265). `LandContext` stays a public `Sendable` struct: no public break.
+- **MF5 hole and Code-1 (1), §3.3.1: no intake holds in #700.** A query steps directly and bypasses holds, the queue and `close`. So every intake kind, query or `sendAndWait`, passes the same entry barrier before it submits:
+  - initialization, with its failure path;
+  - the freeze, re-checked after the wake (LK:1088–1107, LK:1681–1689).
+
+  No intake is ever parked by a hold, so a query can't overtake a queued action. Intake order stays today's single FIFO, with a test. K5 makes initialization a request with a deadline but doesn't hold intake on it. Code-1 (4): the deadline is `RESOLVER_INIT_TIMEOUT_MS`, and its abandonment fails the initialization and answers the barrier's waiters.
+- **Code-1 (5), §6.2: every waiter is answered before `endAll`.** `endAll` and `close` don't answer calls that already stepped, and the core asserts no waiters at deinit (TurnCore.swift:358). So the drain step answers every `InputID` the model keeps: tickless actions not yet applied, result waits, joins waiting for admission, freeze callers, the shutdown reply list.
+- **Code-1 (6), §3.10:** `notePendingFailure` on a replay keeper is a no-op, as today (LK:576).
 - **Shoulds.**
-  - Record order is kept by the serial sink taking drafts in step order. A waiter's reply is sent from the record request's completion step, and its abandonment replies `landClosed`. `reply(after:)` isn't used, because it publishes the staged success on abandonment too.
-  - K4: the first applied failure is terminal. The last checkpoint comes before the synchronous port publishes anything.
-  - K3: the writer gate returns `nil`, so a stale drain never steps.
-  - Destroy handlers launch the next request from the previous one's completion.
-  - A/B cells: K2's full A/B adds tick actions with and without resolvers and tickless events; K3 gets a host cell for join and kept-event churn. §3.8's budget is measured, not assumed from read1.
-  - G3 (#760) is a verification gap until a cross-module generic check shows a compiler problem.
-- **Q3 decided (Review): K8 leaves #700** and becomes #762. The driver Tasks only send typed inputs. K9 doesn't wait for K8. K2 keeps the next-tick deadline for the fold and rejects stale wakes after a stop.
-- **Q5 decided (Review): the latch test is retired**, with three existing tests named as acceptance coverage and one new test for a case the migration creates (§6.1).
-- **New: Q7, §3.1, the shared RNG.** `DeterministicRngService` is a locked class in `services`, drawn by handlers inside steps and reachable by resolvers off the actor. A resolver that draws advances the live RNG, but replay doesn't run resolvers. That looks like a replay divergence. It is not reproduced yet: a finding to confirm and file.
+  - §3.1: `SyncValueSemantics.validate`'s limits are stated, and the world's value rule is a documented rule, not a proof.
+  - §3.1: per-player service overrides get a home outside the world.
+  - §3.1: `AfterFinalize` gets its own context.
+  - §3.10: the port holds and compares a keeper identity object.
+  - §3.10: "replay has no core" is pinned from inside the package.
+  - §3.10: the mailbox is typed `TurnMailbox<LandReport>?` from `core.mailbox`.
+  - §3.10: `lint-turns.sh` approves the facade's forwarding boundary.
+- **G9 and G10** stay filed (#763, #764), at priority before-release (Main): Code-1 found the freeze expressible today, and G10 optional. G9's cleaner shape is a holding request without an effect. #700 uses neither (§3.3.1, §3.2).
+- **Q7 is #765.** Confirmed 3 of 3 with a matching control: replay diverges when a resolver draws from the land's RNG.
+- **Public API changes** (§8, for the maintainer once rev 3 is GO):
+  - **K2:** none. The rev 2 break is withdrawn; the scoped emitter and the admission path are package or runtime.
+  - **K6:** `CanJoin`'s signature (#588).
 
 ## 1. Goal and scope
 
-#700 moves `LandKeeper`'s turns onto `TurnCore`. Keeper inputs become machine inputs, and work outside turns becomes keyed requests whose results come back as inputs. Each CLAUDE.md reentrancy exception that names the keeper either ends on that model, or is stated as staying with its own issue.
+#700 moves `LandKeeper`'s turns onto `TurnCore`. Keeper inputs become machine inputs. Work outside turns becomes keyed requests whose results come back as inputs. Each CLAUDE.md reentrancy exception that names the keeper ends on that model, or is stated as staying with its own issue.
 
 **In scope.**
-- Live keepers (`mode == .live`): every entry and every turn kind, the sync follow-ups, the failure mailbox, the action/join/leave/initialize/destroy resolvers, the debug freeze and the land-stop drain.
-- The #695 rebind and teardown tests, as acceptance tests (§6.1).
+- Live keepers (`mode == .live`): every entry and every turn kind.
+- The sync follow-ups and the failure mailbox.
+- The action, join, leave, initialize and destroy resolvers.
+- The debug freeze and the land-stop drain.
+- The #695 rebind and teardown tests as acceptance tests (§6.1).
 - The CLAUDE.md reentrancy section, updated in the slice that ends each exception.
 
 **Out of scope.**
-- **Replay** (#612, parked by the maintainer; #550 is folded into it). Re-evaluation keepers keep today's non-turn path and share the turn bodies (§3.10). #745 and #756 bind #612, not #700 (§3.10).
-- **The tick and sync loops as core timers.** That was rev 1's K8, and is now #762 (Q3, §3.9).
-- The reevaluation monitor land's tick reading the runner service (#387 PR 2): a user handler, not keeper code.
-- #744, #752, and the adapter's B-slices (#546 B1–B6).
+- **Replay** (#612, parked by the maintainer; #550 is folded into it). Re-evaluation keepers keep today's non-turn path, sharing the turn bodies (§3.10). #745 and #756 bind #612, not #700 (§3.10).
+- **The tick and sync loops as core timers**: #762 (Q3).
+- **The shared RNG** (#765): #700 leaves it where it is.
+- **Not keeper code:** the reevaluation monitor land's tick (#387 PR 2).
+- **Separate issues:** #744, #752, and the adapter's B-slices (#546 B1–B6).
 
 **Prerequisites.**
 
 | Prerequisite | State on 2026-11-22 |
 |---|---|
 | #546 L2 slices (L2a–L2d-3) | merged; L2d-3 is #746 |
-| Coalesced follow-ups and the quiescence wait (#702) | merged as #719 |
+| Coalesced follow-ups and quiescence wait (#702) | merged as #719 |
 | One continuation job (#723) | merged as #734 |
-| The post lane, now the mailbox (#725) | merged as #738. Names: `Mail`, `post`, `takeMail`, `handleMail`, `TurnMailbox` |
+| Post lane, now the mailbox (#725) | merged as #738. Names: `Mail`, `post`, `takeMail`, `handleMail`, `TurnMailbox` |
 | Lifecycle handler shapes (#593) | merged as #751. The join and resolver items are open; #700 takes them (K5, K6) |
-| Core gaps (§7) | G1 #758 (narrowed) and G2 #759 (narrowed to the minimal clock) block K2. G3 #760 is checked before K2's A/B is read. G9 and G10 are candidates, decided before K7 and K5 |
+| Core gaps (§7) | G1 #758 and G2 #759 block K2. G3 #760 is checked before K2's A/B is read. G9 #763 and G10 #764 are optional (before-release) |
 
 ## 2. The keeper today, in short
 
@@ -78,133 +87,170 @@ Code pointers are at main 8e622a20. `LK` is `Sources/SwiftStateTree/Runtime/Land
   - The sync phase runs in the turn when the port shares the keeper's executor (`syncsInTurn`, LK:742).
   - The adapter adopts the keeper's executor (TA:105) and calls back with `assumeIsolated`.
 - **One input queue.** `pendingItems` LK:372 holds actions, client events, lifecycle items, server inputs, the shutdown and the land failure. Everything applies through `applyInputs` LK:3917.
-- **Work outside turns is a `Task` that calls an actor method, which re-checks by hand.**
-  - Action jobs: LK:2289 starts them, and LK:2336 completes them through `validateDelivery` LK:2211.
-  - Join (LK:1866–2057) writes `players` between awaits.
-  - Leave (LK:2619–2741) writes `players` before the OnLeave await.
-  - Initialize: the init's eager `Task` (LK:1073), then `performInitialization` (LK:1252).
-  - Destroy handlers: LK:5986.
-  - The three sync follow-ups: LK:5089, LK:5117, LK:5270.
-  - The freeze loop LK:1531 and the drain LK:5896.
-- **Waiters are continuations.**
-  - The tickless turn waiters (`awaitInputTurn` LK:5603) are resumed after the record (`resumeInputTurnWaiters` LK:5728).
-  - `awaitActionResult` LK:2468, the freeze waiters, and `shutdownTurnWaiters` LK:5555.
+- **Work outside turns is a `Task` that calls an actor method, which re-checks by hand:**
+  - action jobs: LK:2289, LK:2336, `validateDelivery` LK:2211;
+  - join: LK:1866–2057, which writes `players` between awaits;
+  - leave: LK:2619–2741, which writes `players` before the OnLeave await;
+  - initialize: LK:1073, LK:1252;
+  - destroy handlers: LK:5986;
+  - the three sync follow-ups: LK:5089, LK:5117, LK:5270;
+  - the freeze loop LK:1531 and the drain LK:5896.
+- **Waiters are continuations:**
+  - tickless turn waiters (`awaitInputTurn` LK:5603), resumed after the record (`resumeInputTurnWaiters` LK:5728);
+  - action result waits (`awaitActionResult` LK:2466);
+  - the freeze waiters;
+  - `shutdownTurnWaiters` LK:5555.
 - **Hand-rolled core features:**
   - `GenerationTable` for the sync binding (LK:5147);
   - `EpochCounter` for entry generations (LK:360);
   - `SingleFlight` for `forceShutdown` (LK:2774);
-  - the requested-sync-work counter and its waiters (LK:5304–5357);
+  - the requested-sync-work counter and waiters (LK:5304–5357);
   - `LandFailureMailbox` (#732).
 - **References reached from turns:**
   - the `OutputCollector` class, captured by every `LandContext` (LK:396, LK:3335);
-  - the recorder, whose order is reserved synchronously by `ReevaluationSubmissionTracker` (ReevaluationRecorderService.swift:17; `enqueueRecorderSubmission` LK:4977);
+  - the recorder, whose order is reserved synchronously by `ReevaluationSubmissionTracker` (ReevaluationRecorderService.swift:17);
   - the port;
-  - `services`, including `DeterministicRngService`, a locked class (DeterministicRngService.swift:9).
+  - `services`, including per-player overrides (LK:1951, LK:3328–3330) and `DeterministicRngService`, a locked class (#765).
 
 ## 3. Design
 
-### 3.1 What the core holds (MF1; G1 #758, narrowed; Q2, Q7)
+### 3.1 What the core holds (G1 #758, Q2)
 
-`TurnCore.init` requires `M: PlainData`. Rev 1 proposed an untyped world. Review: that is an escape hatch, because a step-scoped `_modify` controls the slot but not references copied out of it, and rev 1 also lent it to `flush`. Rev 2 keeps the world to **values**, and gives each reference a narrower home.
+`TurnCore.init` requires `M: PlainData`. The core holds two values:
+- **the model**, which is the machine;
+- **the world**: non-plain values, lent only to steps and to `core.read`.
 
-**The model (`KeeperModel`, `@PlainData`, the machine's state).** Every value the core's rules don't need help with:
-- counters: `nextTickId`, `lastCommittedTickId`, the input sequence counter (today in `OutputCollector`), the pass ordinal, `BindingID`, `EntryID`, `FreezeID`;
-- flags: `isDraining`, `shutdownRequested`, `didInitialize`, `inTurnSyncDue`, `pendingFold`, the terminal failure;
-- the next tick deadline and the loop epoch (§3.9);
-- the pending queue's order index;
-- membership ids, and each entry's `EntryID`;
-- action-job bookkeeping: sequence, the caller's `InputID`, the job's `RequestID`;
-- the freeze generation and held counts;
-- the follow-up binding marks;
-- in-flight work counts.
+Every reference gets a narrower home outside both.
 
-**The world (G1, #758 narrowed): non-plain values, owned by the core, lent only to steps and to `core.read`.**
+**The model (`KeeperModel`, `@PlainData`).**
+- **Counters:** `nextTickId`, `lastCommittedTickId`, the input sequence counter (today in `OutputCollector`), the pass ordinal, `BindingID`, `EntryID`, `FreezeID`, the job sequence.
+- **Flags:** `isDraining`, `shutdownRequested`, `didInitialize`, `inTurnSyncDue`, `pendingFold`, the terminal failure.
+- **Loop state:** the next tick deadline and the loop epoch (§3.9).
+- **Membership:** the pending queue's order index, the membership ids with each entry's `EntryID`.
+- **Waiting callers:** action-job bookkeeping (sequence, `EntryID`, the result wait's `InputID` once it steps, the job's `RequestID`), and every other `InputID` a caller waits on (§6.2).
+- **Freeze, follow-ups, work:** the freeze generation and held counts, the follow-up binding marks, the in-flight work counts.
+
+**The world (G1, #758): values, owned by the core.**
+
+The world is lent mutably to steps and read-only to `core.read` between steps. It is not lent to `flush`, `perform` or effects, which get snapshots. It is not part of any core record (Code-1).
 
 | Value | What it is | Where it crosses out | Snapshot contract |
 |---|---|---|---|
-| `State` | the land's state tree | resolvers (`ResolverContext.currentState`), adapter reads (`currentStateLocated`), the in-turn sync phase | A copy taken in the step, or a `borrowing` read in `core.read` and the sync phase. Value semantics are checked at registration by `SyncValueSemantics.validate` (#464; SyncRegistration.swift:89). Its documented exception is unchanged from today: an `@Internal` field may hold a class, and a resolver's snapshot shares it, as it does now |
-| the admitted queue | pending items with their `AnyCodable` payloads | resolvers (the action payload), the record draft | copied into the effect or draft in the step |
-| entry facts | each player's `PlayerSession` without `services` (ids, device, metadata) | join and leave resolvers, adapter reads | copied in the step. `services` comes from `LandConfig` where a context is built |
+| `State` | the land's state tree | resolvers (`ResolverContext.currentState`), adapter reads (`currentStateLocated`), the in-turn sync phase | a copy taken in the step, or a `borrowing` read in `core.read` and in the sync phase |
+| the admitted queue | pending items with `AnyCodable` payloads | resolvers (the action payload), the record draft | copied into the effect or draft in the step |
+| entry facts | each player's `PlayerSession` without `services` (ids, device, metadata) | join and leave resolvers, adapter reads | copied in the step |
 
-- **What the macro can't check is a documented rule:** world values are values. `State`'s is checked at registration. The payloads are decoded values. Entry facts lose their one reference (`services`).
-- **`flush` gets no world.** Outputs carry what `flush` needs.
-- **`core.read` lends the world read-only between steps,** as it lends the machine. #758's requirements are updated to say so.
+- **The value rule is documented, not proven** (Review). `SyncValueSemantics.validate` (#464, SyncRegistration.swift:89) checks a land's `State` at registration, with known limits:
+  - it skips `@Internal` fields, which may hold a class by design;
+  - it can miss a reference in an enum case after the first, or in a collection that is empty when it looks.
+- **Payloads and resolver outputs.** `AnyCodable` payloads and resolver outputs can wrap anything.
+- **The rule stated in the docs of `StateNodeProtocol`, `ResolverOutput` and the payload protocols:**
+  - a value that reaches the world must not share a mutable reference with anything outside it;
+  - a class held anyway (an `@Internal` field, for one) is shared by the snapshots taken from it, as it is today.
+- **No runtime check:** it would cost on every step.
 
 **References: each to a narrower home.**
 
-| Today | Rev 2 home | Slice |
+| Today | Home | Slice |
 |---|---|---|
-| `OutputCollector` (LK:396), captured by every `LandContext` | The sequence counter goes to the model. A turn's events are staged in the step and reach `turn.emit` after its last checkpoint (§3.6). Handlers get a scoped emitter, a non-escaping value built per step over the staged buffer, so no context keeps a reference past its step. **AfterFinalize** (LK:5943–5951) gets the live context today, after the drain. K7 first pins today's behaviour of an emit there with a test, then gives it a context whose emit is answered as decided: dropped and counted, since outputs are closed by then. Its handler is async, so it runs as an effect | K2 (counter, staging, emitter); K7 (AfterFinalize) |
-| Recorder | A turn's record draft is an output. `flush` hands drafts to the recorder's serial sink in step order. That order is the one `ReevaluationSubmissionTracker` reserves synchronously today: `flush` runs synchronously after each step, before the next. A caller that waits for the record (§3.4) waits on a request that completes when the sink has taken its draft | K2 |
-| Port (`LandKeeperTransport`) | The model holds the binding's `BindingID` (its identity and generation). The step reaches the port through an **in-step capability** that arrives with the step's input or effect, tagged with its `BindingID`. The keeper's entry attaches the current port. A follow-up's gate effect carries it (#702 §5). The step uses it only if the tag is current. The actor keeps the port for attaching, written only by the `.bind` step's output | K2 |
-| `services` | A `LandConfig` `let`. Handlers in a step get them through the context built in the step. Effects get them explicitly in the effect value | K2 |
+| `OutputCollector` (LK:396), captured by every `LandContext` | **The sequence counter** goes to the model. **A turn's events** are staged in the step and reach `turn.emit` after its last checkpoint (§3.6). **The scoped emitter** is a runtime scope (Code-1 (3)): the context's emit closure holds its step's token, and an emit after that step has ended is dropped and counted, asserted in debug, like `emit` to a dead key (Turn.swift:265). `LandContext` stays a public `Sendable` struct, so this is no public change. **Each handler's context** gets a fresh scope per step. **`AfterFinalize`** (LK:5943–5951) runs after the drain as an effect, with its own context whose scope is already closed: its emits are dropped and counted. K7 first pins today's behavior with a test | K2 (counter, staging, emitter); K7 (AfterFinalize) |
+| Recorder | **A turn's record draft** is an output. `flush` hands drafts to the recorder's serial sink in step order: `drainProducts` flushes after each step (TurnActor.swift:897, Code-1), which is the order `ReevaluationSubmissionTracker` reserves today. **A caller that waits for the record** waits on a request completed when the sink has taken its draft. Its reply comes from that completion step (§3.4), so replies wait for the record submission | K2 |
+| Port (`LandKeeperTransport`) | **A Sendable binding token** (Code-1 (2)): the port reference plus its `BindingID`. **The token travels** in the inputs, queries and effects that need the port: a keeper entry attaches the current one, and a follow-up's gate effect carries it (#702 §5). **The step** checks the token's `BindingID` against the model's, then calls the port's synchronous in-turn methods directly. No port call reaches back into the keeper (§3.7), so nothing else is needed. **The actor keeps the current token** for attaching. It is written only by `flush`, from the `.bind` step's output | K2 |
+| `services` | **Land services:** a `LandConfig` `let`. **Per-player overrides** (LK:1951, LK:3328–3330): `LiveLandTurns` stores a table keyed by `(PlayerID, EntryID)`. `flush` writes it from the join step's output, and removes the entry from the leave step's output. A step reads an override through the input that names the entry: the keeper's entry attaches the overrides it reads from the table, and the step checks the `EntryID`. **Lifecycle items** (OnJoin, OnLeave applied in a later tick) carry the `EntryID`, and their apply step gets the overrides through the tick's input: the driver's entry attaches the overrides for the entries whose items are ready. **Effects** get services explicitly in the effect value | K2 |
 
-**Q7 (maintainer; a finding): the shared RNG.**
-- **What it is.** `DeterministicRngService` is a locked, mutable class in `services`. Handlers draw from it inside steps. Resolvers get `services` too (`ResolverContext.services`, ResolverContext.swift:95), so a resolver can draw from it off the actor, at a point the step order doesn't fix.
-- **Why it matters.** Replay doesn't run resolvers; it uses their recorded outputs. A live resolver's draw would advance the RNG with no counterpart in replay, so every later handler draw differs.
-- **Status.** Not yet reproduced: Code-2 confirms it with a test (a resolver that draws, then replay) and files it if it fails.
-- **Direction.** The RNG state moves into the model as plain data, and handlers draw through the step. Resolvers get `services` without the RNG, or a seed of their own recorded with their output. That is decided in the issue, not in #700.
-- **#700's part.** K1's census lists the RNG as a reference reached from steps. K2 doesn't change it.
+**Q2 (maintainer):** the world above, or `@PlainData` on every land `State` (a public break)?
+- `@PlainData` would check `State` at compile time.
+- It wouldn't cover the payloads or entry facts, so the world is needed either way.
+- **Recommended: the world.** A probe of `State: PlainData` can be its own issue.
 
-**Q2 (maintainer):** the narrowed world above, or `@PlainData` on every land `State` (a public break)? `@PlainData` would check `State` at compile time. It wouldn't cover the payloads or entry facts, so the world is needed either way. **Recommended: the narrowed world.** A probe of `State: PlainData` can be its own issue.
+**The shared RNG (#765).** `DeterministicRngService` is a reference in `services`, drawn by handlers in steps and reachable by resolvers off the actor. #765 decides its fix. #700's K1 census lists it, and K2 doesn't move it.
 
-**K1's census:** every stored field of `LandKeeper`, and its home. The homes are the model, the world, `LandConfig`, the in-step capability, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). A field that fits nowhere is a finding for Review.
+**K1's census.** Every stored field of `LandKeeper` gets a home: the model, the world, `LandConfig`, a binding token, the per-player services table, an output, or the K2–K7 replacement list (Tasks and continuations, §3.4, §4). A field that fits nowhere is a finding for Review.
 
-### 3.2 Keys: a fresh key per lifetime (MF4)
+### 3.2 Keys, and cancellation (MF4)
 
-`Turn.start`'s rule (Turn.swift:47–51): an input that arrives while a key isn't live steps under the next generation, so use a fresh key per binding. Every key that ends and comes back is therefore keyed by an id from the model.
+`Turn.start`'s rule (Turn.swift:47–51): an input that arrives while a key isn't live steps under the next generation, so use a fresh key per binding. Every key that ends and comes back is keyed by an id from the model.
 
 | Key | Lifetime | What it scopes |
 |---|---|---|
-| `.land` | started at init, `endAll` at the end of the drain | record-wait requests, the drain's destroy-handler requests |
-| `.initialization` | started once at init, ended when initialization finishes or fails; never restarted | the OnInitialize resolver request (K5), and the inputs held behind it (K5) |
-| `.entry(PlayerID, EntryID)` | started on join with a new `EntryID`; a rejoin ends the old key and starts a new one; ended on leave | that entry's resolvers (CanJoin, OnJoin, OnLeave) **and its action jobs' requests**. Ending the entry closes them all; this replaces `cancelActionJobs(ofEntryGeneration:)` LK:2500 |
-| `.syncBinding(BindingID)` | `setTransport(port)` ends the old binding's key and starts one with a new `BindingID`; `setTransport(nil)` ends it; the teardown is `endAll` | the follow-up slots `.drainRetry`, `.joinSync`, `.afterTurn` (§3.5) |
-| `.freeze(FreezeID)` | started by each `debugFreeze` with a new id; ended by resume, shutdown or timeout | the freeze's timeout timer and its settle request (K7) |
+| `.land` | started at init, `endAll` at the end of the drain | record-wait requests, destroy-handler requests, OnLeave's resolver requests, and the jobs of actions whose sender has no entry |
+| `.initialization` | started once at init, ended when initialization finishes or fails | the OnInitialize resolver request (K5), with its deadline |
+| `.entry(PlayerID, EntryID)` | started on join with a new `EntryID`; a rejoin ends the old key and starts a new one; ended on leave | that entry's CanJoin and OnJoin resolvers, and its action jobs' requests. Ending the entry closes them, which replaces `cancelActionJobs(ofEntryGeneration:)` LK:2500 |
+| `.syncBinding(BindingID)` | `setTransport(port)` ends the old key and starts one with a new `BindingID`; `setTransport(nil)` ends it; the teardown is `endAll` | the follow-up slots (§3.5) |
+| `.freeze(FreezeID)` | started by each `debugFreeze` with a new id; ended by resume, shutdown or timeout | the freeze's timeout timer (K7) |
 
-A result for a key that has ended is handled by the core: abandonment, or `handleLateResult`. An outside input that targets a binding or an entry carries its id. The handler compares the id with the model's, so a stale one is refused in the step and never reaches a newer generation.
+**Abandonment replies** follow today's rejections:
+- a job closed by its entry's end replies `LandInputRejection.senderSuperseded` (LK:2158, LK:2223), as today;
+- a job closed by the land closing replies `landClosed`.
 
-**A caller's cancellation of an admitted job (MF4).**
-- **Today.** `awaitActionResult`'s cancellation handler cancels the job (LK:2491, `cancelActionJob` LK:2515), and its resolver task is cancelled.
-- **Why not `.cancelsCall`.** It withdraws a call still queued; one that stepped goes on, and only its caller stops waiting.
-- **On the core.** The entry calls `sendAndWait(…, .ignoresCancel)` inside `withTaskCancellationHandler`. The `onCancel` hops to the actor and sends `.cancelJob(seq, InputID)`. The step calls `turn.cancel(request)`, and the job's abandonment replies `CancellationError`. That is the hop today's code makes, with its result now an input.
-- **G10 (a candidate core issue).** A cancellation delivered to the machine for a call that already stepped would remove that hop. It is decided before K5, and K2 uses the hop.
+**OnLeave's resolvers run under `.land`.** The leave ends the entry's key in its own step, and OnLeave's work must outlive that.
+
+**Cancelling an admitted job: a synchronous token** (MF4, route (a)).
+
+Today's guarantee, from `awaitActionResult`'s cancellation handler (LK:2466–2495): "once `cancel()` returns, a completion that hasn't run yet won't deliver." That handler sets `callerCancelled` and cancels the worker, with no actor hop.
+
+| Step | What happens |
+|---|---|
+| Admission | The keeper's entry allocates a `JobCancellation` before it submits: a small `@unchecked Sendable` class with a lock, a `cancelled` flag and a slot for the worker's task. It goes in `query(.admitAction(…, token))`. The admission step refuses if the token is already cancelled, and starts the job's request with the token in its effect |
+| The worker | `perform` runs the resolvers in a child `Task` that it hands to the token (`token.attach(task)`), then awaits it. Attaching to a cancelled token cancels the task at once |
+| `cancel()` | Called from the result wait's `onCancel`, and before the wait if the caller is already cancelled. It is synchronous: it sets the flag under the lock and cancels the attached task. No hop |
+| Delivery | The `.actionResolved(seq, token, result)` step checks the token first. If it is cancelled, nothing is delivered, and the waiting caller (if its result wait has stepped) is replied `CancellationError`. So once `cancel()` returns, a completion that hasn't stepped won't deliver: the guarantee holds without G10 |
+| The result wait | `awaitActionResult` is `sendAndWait(.awaitResult(seq), .ignoresCancel)` inside `withTaskCancellationHandler`. Its step records its own `InputID` (`turn.input`) under the job, so the cancel side never needs an `InputID`. If the result is already there, it replies at once; if the token is already cancelled and the job has completed, it replies `CancellationError`. A late cancel, after the reply or after the entry ended, is a no-op: the token's flag is read by no later step |
+
+The cancelled worker's completion is what drives the reply: the request completes, and its step sees the flag. A resolver that ignores cancellation keeps the caller waiting until it returns, as today. G10 (#764) would let the core deliver the cancellation itself, but K2 doesn't need it.
 
 ### 3.3 Inputs: each entry keeps its contract (MF2)
 
-A `query` is a synchronous step whose answer returns at once. It can't register a reply waiter: `Turn.reply` answers only a `sendAndWait`'s `InputID`. So a query is used only where today's caller returns at intake. `sendAndWait` is used only where today's caller already waits for application.
+A `query` is a synchronous step whose answer returns at once. It can't register a reply waiter, because `Turn.reply` answers only a `sendAndWait`'s `InputID`. So:
+- a query is used only where today's caller gets its answer at intake;
+- `sendAndWait` is used only where today's caller already waits for application or a result.
 
 | Entry | Today's contract | Machine input | Reply |
 |---|---|---|---|
-| Action, tick land, no resolvers (`handleActionEnvelope` LK:2864) | empty ACK at intake (LK:3049–3051) | `query(.admitAction)` | the answer: `.completed(empty)`, or the refusal |
-| Action, tick land, with resolvers | ACK after the resolvers deliver, before the tick | `sendAndWait(.action, .ignoresCancel)`, with §3.2's cancellation | from the `.actionResolved` step, at delivery, not from the tick |
-| Action, tickless land | waits for the applying turn, then its response (LK:3047) | `sendAndWait(.action)` | from the applying turn's record-wait completion (§3.4) |
-| Client event, tick land (`handleClientEvent` LK:3083) | returns after intake | `query(.admitClientEvent)` | the answer: accepted, or the thrown refusal |
-| Client event, tickless land | waits for application, and throws the handler's error (LK:3166–3178) | `sendAndWait(.clientEvent)` | from the applying turn's record-wait completion: success, or the handler's error |
-| Server input from outside (`submitServerInput` LK:3198) | `.accepted`/`.refused` at intake. While frozen, accepted at once and held (LK:3250) | `query(.admitServerInput)` | the answer |
-| Server input from inside a handler (`serverInputSubmitter` LK:3308) | the same call, made inside a turn | none: the handler's own step appends to the queue through the world. A query from inside a step would trap | the outcome, returned synchronously in the step |
-| Join (`joinReportingAdmission` LK:1866) | waits for admission | `sendAndWait(.join)` | from the admission step (K2: the last of today's segments; K6: the one validate-and-apply step) |
-| Leave (LK:2619) | waits for the leave | `sendAndWait(.leave)` | from the leave's last step |
+| Action, no resolvers, tick land | empty ACK at intake (LK:3049–3051) | `query(.admitAction)` | the answer: `.completed(empty)` or the refusal |
+| Action, no resolvers, tickless | waits for the applying turn and its response (LK:3047) | `sendAndWait(.action)` | from the applying turn's record-wait completion |
+| Action **with resolvers**, either land kind | **two-phase**: `.pending(sequence:)` at intake (LK:3023), then the adapter releases its inbound chain (TA:5382–5404); the result from a separate `awaitActionResult` | admission: `query(.admitAction(…, token))`; result: `sendAndWait(.awaitResult(seq))` (§3.2) | admission: `.pending(sequence:)`. Result, tick land: from the `.actionResolved` step, at delivery, before the tick. Result, tickless: from the applying turn's record-wait completion |
+| Client event, tick land | returns after intake | `query(.admitClientEvent)` | the answer, or the thrown refusal |
+| Client event, tickless | waits for application; throws the handler's error (LK:3166–3178) | `sendAndWait(.clientEvent)` | from the applying turn's record-wait completion: success or the handler's error |
+| Server input (`submitServerInput` LK:3198; `ServerInputSubmitter.submit`, which is async "from any task", ServerInput.swift:61–79; a turn's requested work submits later, LK:3306–3312) | `.accepted`/`.refused` at intake. While frozen, accepted at once and held (LK:3250) | `query(.admitServerInput)` from the caller's task. That includes the work a turn requested, which submits from its own task | the answer, frozen-and-held included |
+| Join, tick land | waits for admission | `sendAndWait(.join)` | from the admission step (K2: the last of today's segments; K6: the one validate-and-apply step) |
+| Join, tickless | waits for admission, and for application when admission doesn't complete in-turn (LK:2037–2056) | `sendAndWait(.join)` | from the admission step when it completes in-turn; otherwise from the applying turn's record-wait completion |
+| Leave, tick land | returns once OnLeave is queued | `sendAndWait(.leave)` | from the step that queues OnLeave |
+| Leave, tickless | waits for application (LK:2733–2737) | `sendAndWait(.leave)` | from the applying turn's record-wait completion |
 | `stepTickOnce` LK:3456 | waits for the tick | `sendAndWait(.tickDue(...))` | from the tick's record-wait completion |
 | Tick and sync loop wakes | Tasks calling actor methods | `send(.tickDue(scheduled, loopEpoch))`, `send(.syncDue(scheduled, loopEpoch))` (§3.9) | — |
-| `syncTurnNow` LK:5249, `syncTurnTicket` LK:5235, `settleTurn` LK:1629 (synchronous, from the adapter outside a keeper step) | a synchronous answer | `query(.syncTurnNow(capability, reason, ticket))`, `query(.syncTurnTicket)`, `query(.settle(capability, fence))` | the answer |
-| `setTransport` LK:484 | synchronous | `send(.bind(port?))`, a control input | — |
+| `syncTurnNow` LK:5249, `syncTurnTicket` LK:5235, `settleTurn` LK:1629: synchronous, from the adapter, outside a keeper step | a synchronous answer | `query(.syncTurnNow(token, reason, ticket))`, `query(.syncTurnTicket)`, `query(.settle(token, fence))` | the answer |
+| `setTransport` LK:484 | synchronous | `send(.bind(token?))`, control | — |
 | `debugFreeze` LK:1531 / `debugResume` LK:1562 | waits / synchronous | `sendAndWait(.freeze(FreezeID, timeout))` / `send(.resume)` | freeze: from the settle step or the timeout (K7) |
 | `forceShutdown` LK:2761 | waits for the drain | `sendAndWait(.shutdown)`, control | after the drain's last step. A second call joins the reply list, replacing `SingleFlight` |
 | `notePendingFailure` LK:575 (nonisolated) | set-once box | mail `.landFailure(f)` (K4, §3.6) | — |
 
-**Results that come back as inputs:** `.actionResolved`, `.joinResolved`, `.leaveResolved`, `.initializeResolved`, `.destroyHandlerResolved`, `.recordTaken`, `.drainFinished`, `.cancelJob`.
+**Results that come back as inputs:** `.actionResolved`, `.joinResolved`, `.leaveResolved`, `.initializeResolved`, `.destroyHandlerResolved`, `.recordTaken`, `.drainFinished`.
 
-#### 3.3.1 Barriers: kept at the entries in K2 (MF5)
+#### 3.3.1 One entry barrier, and no intake holds (MF5, Code-1 (1))
 
-- **Initialization.** Today every entry awaits `ensureInitialized` before intake.
-  - K2 keeps that barrier at the entry. The entry reads `didInitialize` through `core.read`, which costs no step. Before initialization finishes, it waits on `sendAndWait(.awaitInitialized)`, replied by the initialize step.
-  - K5 makes initialization a request under `.initialization`. Intake then holds on it with `Hold.untilRequestCloses`, and the entry barrier is deleted.
-  - `run` (K2's resolver mechanism) can't hold, which is why K2 keeps the barrier.
-- **The freeze.** Tickless intake while frozen awaits `debugWaitWhileFrozen` LK:1683 today. K2 keeps that barrier at the entry: it reads the frozen flag through `core.read` and waits on `sendAndWait(.awaitResume)` when frozen.
-  - The core has no hold released by a step. Holds end with a request (`untilRequestCloses`) or a worker (`untilWorkerReturns`), and the freeze's timeout timer can't hold intake on its own.
-  - So K7 either uses a new core operation, **G9** (a hold that a step releases), or keeps the entry barrier and documents it as allowed. That is decided before K7, and G9 is filed if K7 takes it.
-- **Tick lands.** A tick land keeps today's rule: inputs queue and a frozen tick doesn't run.
+A query steps directly. `stepAnswer` (TurnCore.swift:532) checks only borrows, and `close()` lists queries as still stepping. So a query bypasses holds, the queue and `close`. A hold that parks `sendAndWait` intakes would therefore let a query intake overtake them, which today's single `pendingItems` FIFO forbids.
+
+**So #700 puts no hold on intake.** Every intake kind, query or `sendAndWait`, passes one entry barrier before it submits:
+- **Initialization** (LK:1088–1107):
+  - the entry reads `didInitialize` and the initialization failure through `core.read`, which costs no step;
+  - if initialization hasn't finished, the entry waits on `sendAndWait(.awaitInitialized)`, which the initialize step or the failure replies;
+  - a failure is thrown to the caller, as today.
+- **The freeze, on tickless lands** (LK:1681–1689):
+  - the entry reads the frozen flag through `core.read`;
+  - if frozen, it waits on `sendAndWait(.awaitResume)`, and re-checks after the wake, as today.
+
+**Order: why a query can't overtake.**
+- No intake is ever parked by a hold.
+- A `send` queues only while a batch runs, and a keeper entry never runs inside a batch.
+- So every intake steps when its entry submits it, and intake order is the order the entries submit, which is today's FIFO.
+- A test interleaves query intakes and `sendAndWait` intakes, with replies held, and checks that the sequence numbers follow the call order.
+
+**K5** makes initialization a request under `.initialization`, with `RESOLVER_INIT_TIMEOUT_MS` as its deadline (Code-1 (4); the deadline today's OnInitialize resolvers already have, ResolverDeadline.swift:17). Its abandonment fails the initialization, and the step answers the barrier's waiters with the failure. Intake doesn't hold on it: the barrier stays.
+
+**K7** keeps the freeze barrier as well. It reads and waits only, outside steps, and mutates no keeper state, so it isn't an exception to the turn rule. Code-1 found the freeze expressible today as a holding request. G9's cleaner shape is a holding request with no effect (#763). Neither is needed while intake takes no holds.
+
+**Tick lands** keep today's rule: inputs queue, and a frozen tick doesn't run.
 
 #### 3.3.2 Membership facts kept (#612's rev-3 and rev-4 reviews)
 
@@ -221,34 +267,37 @@ The line numbers below are from those reviews, at an older commit; K1 re-points 
 
 | Work | Today | On the core | Slice |
 |---|---|---|---|
-| Action resolvers | a `Task` per job; `completeAction` re-checks the job, the entry generation and the caller's cancellation | `turn.request(.resolveAction(snapshot, services), for: .entry(pid, eid))`, from the intake step. The completion `.actionResolved` delivers. A closed request runs `handleAbandoned`, which replies as `validateDelivery` does today: `landClosed` when the entry ended or the land is closing, `CancellationError` after `.cancelJob` | K2: `run` with today's checks in the handler; K5: `request` |
-| CanJoin / OnJoin / OnLeave resolvers | awaited inside `join` and `leave` | requests under `.entry(pid, eid)`. A rejoin ends the old key and closes them, replacing the generation checks at LK:2016 and LK:5853 | K2: `run`; K6: `request` |
-| The old session's kick on a duplicate login | `try await leave(...)` LK:1937 | in the join's step: the membership change, then the old entry's OnLeave as a request under the old key (#588) | K6 |
-| OnInitialize resolvers | awaited in `performInitialization` LK:1297, then a direct write LK:1339 | a request under `.initialization`. `.initializeResolved` validates and applies (#593's two phases) in its step | K5 |
-| Destroy handlers | awaited in order in the drain | One request at a time under `.land`. Each `.destroyHandlerResolved` step launches the next handler's request. `queue(behind:)` orders inputs, not effects, so it can't order them | K7 |
-| Waiting for the record | `await submitTurnRecord` LK:5019, then the turn waiters resume | The step outputs the draft (§3.1), and requests `.awaitRecordTaken(ticket)` under `.land`. The waiters' replies are sent from its completion step `.recordTaken`, and its abandonment (only at `endAll`) replies `landClosed`. `reply(after:)` isn't used: it publishes the staged reply on abandonment too, which would tell a caller its input was recorded when it wasn't | K2 |
+| Action resolvers | a `Task` per job; `completeAction` re-checks the job, the entry generation and the caller's cancellation | `turn.request(.resolveAction(snapshot, services, token), for: .entry(pid, eid))`, or `for: .land` when the sender has no entry. Started in the admission step. The completion `.actionResolved` checks the token, then delivers. A closed request runs `handleAbandoned`: `senderSuperseded` or `landClosed` (§3.2) | K2: `run` with today's checks in the handler; K5: `request` |
+| CanJoin / OnJoin resolvers | awaited inside `join` | requests under `.entry(pid, eid)`; a rejoin ends the old key and closes them, replacing the generation checks at LK:2016, LK:5853 | K2: `run`; K6: `request` |
+| OnLeave resolvers | awaited inside `leave` | a request under `.land`, carrying the leaving `EntryID`: the leave's step ends the entry's key | K2: `run`; K6: `request` |
+| The old session's kick on a duplicate login | `try await leave(...)` LK:1937 | in the join's step: the membership change, then the old entry's OnLeave as a request under `.land` (#588) | K6 |
+| OnInitialize resolvers | awaited in `performInitialization` LK:1297, then a direct write LK:1339 | a request under `.initialization` with the init deadline. `.initializeResolved` validates and applies (#593's two phases) in its step; abandonment fails the initialization | K5 |
+| Destroy handlers | awaited in order in the drain | one request at a time under `.land`: each `.destroyHandlerResolved` step launches the next. `queue(behind:)` orders inputs, not effects | K7 |
+| Waiting for the record | `await submitTurnRecord` LK:5019, then the waiters resume | the step outputs the draft (§3.1) and requests `.awaitRecordTaken(ticket)` under `.land`. The waiters' replies come from its completion step `.recordTaken`; its abandonment (only at `endAll`) replies `landClosed`. `reply(after:)` isn't used, because it publishes the staged reply on abandonment too | K2 |
 | Sync follow-ups (three slots) | Tasks with binding marks | #702 plan §5 (§3.5) | K3 |
-| The in-turn sync phase | already synchronous | unchanged, called from the step through the in-step capability (§3.7) | K2 |
+| The in-turn sync phase | already synchronous | unchanged; the step calls the port through the binding token (§3.1) | K2 |
 
-- **Resolvers see no keeper data.** A resolver gets `ResolverContext`, which holds a state snapshot and `services`, and has no emit or sync request (ResolverContext.swift:37–95). As an off-actor request, it reaches no keeper data apart from Q7's RNG.
-- **Cost.** A core `request` costs about 13.1k instructions over direct (#624). Actions with resolvers already create a `Task` and hop twice today. Actions without resolvers make no request. K5's A/B decides. A regression there is fixed in the core (#621 item 3), not with a keeper shortcut.
+- **Resolvers reach no keeper data.** A resolver gets `ResolverContext`: a state snapshot and `services`, with no emit and no sync request (ResolverContext.swift:37–95). As an off-actor request it reaches no keeper data, apart from #765's RNG.
+- **Cost.** A core `request` is about 13.1k instructions over direct (#624). Actions with resolvers already create a `Task` and hop twice today. Actions without resolvers make no request. K5's A/B decides, and a regression is fixed in the core (#621 item 3).
 
 ### 3.5 Sync follow-ups: #702 plan §5, with fresh binding keys
 
-- **Keys.** #702 §5 is adopted, with the binding key per bind: `.syncBinding(BindingID)` (§3.2).
+#702 §5 is adopted, with `.syncBinding(BindingID)` per bind (§3.2).
+
 - **Slots.**
-  - `.drainRetry` uses `.afterWork(.waitForWriterDrain(capability), deadline:)`;
-  - `.joinSync` and `.afterTurn` use `.afterBatch`.
-- **The writer gate's result is `nil`.** Its `perform` returns `nil`: its only job is to make the retry due. So no `.writerDrained` input exists, and a stale drain never steps. The follow-up step does the retry, with #702's checks in order: `mode == .live`, `failure == nil`, `!isDraining`, then the port's `runsSyncPhaseInTurn(of:)`. The join-sync step re-checks `transportHasJoinsAwaitingSync`.
-- **`syncTurnNow`'s order** is kept: accept the capability and its `BindingID`, then consume, then run the phase. A stale ticket returns `.skipped` and consumes nothing.
-- **Counters** are placed as #702 §5.4 says. `.keptEvents` moves to the machine.
-- **Waits.** `waitForRequestedSyncTurnsForTesting` becomes `waitForQuiescence(.followUps, of: .syncBinding(current))`, and the requested-sync-work counter and waiters (LK:5304–5357) are deleted.
-- **The intended order change.** Join-sync and after-turn follow-ups armed by one commit now run in arm order. Today they are two Tasks. K3's PR body states this, and the harness row `join-during-writer-backlog` shows whether any golden moves.
+  - `.drainRetry` is `.afterWork(.waitForWriterDrain(token), deadline:)`, with the Sendable binding token (§3.1) in the effect;
+  - `.joinSync` and `.afterTurn` are `.afterBatch`.
+- **The writer gate's `perform` returns `nil`.** Its only job is to make the retry due, so there is no `.writerDrained` input, and a stale drain never steps.
+- **The follow-up step does the retry**, with #702's checks in order: `mode == .live`, `failure == nil`, `!isDraining`, then the token's `BindingID` against the model and the port's `runsSyncPhaseInTurn(of:)` (§3.10). The join-sync step re-checks `transportHasJoinsAwaitingSync`.
+- **`syncTurnNow`'s order** is kept: accept the token, then consume, then run the phase. A stale ticket returns `.skipped` and consumes nothing.
+- **Counters** go where #702 §5.4 places them. `.keptEvents` moves to the machine.
+- **Waits.** `waitForRequestedSyncTurnsForTesting` becomes `waitForQuiescence(.followUps, of: .syncBinding(current))`. The requested-sync-work counter and its waiters (LK:5304–5357) are deleted.
+- **One intended order change.** Join-sync and after-turn follow-ups armed by one commit run in arm order, not as two Tasks. K3's PR body states it, and the harness row `join-during-writer-backlog` shows whether any golden moves.
 
 ### 3.6 The failure mail and staging: #725 plan §4
 
-- **The mailbox.** `LandFailureMailbox` becomes the core's mailbox: `Mail = LandReport`, capacity 1. `notePendingFailure` becomes `post(.landFailure(f))`.
-- **Capacity 1 isn't set-once.** It is full until taken, and a post to a full mailbox is refused and counted. So the **first applied failure is terminal**: the step that takes it sets the model's failure, and every later report, taken or refused, leaves it unchanged. A test posts twice around a take and checks that the first failure is the one recorded.
+- **The mailbox.** `LandFailureMailbox` becomes the core's mailbox, typed `TurnMailbox<LandReport>?` from `core.mailbox`, with capacity 1. `notePendingFailure` becomes `post(.landFailure(f))`.
+- **The first applied failure is terminal.** Capacity 1 is full until taken, and a post to a full mailbox is refused and counted. The step that takes the first failure sets the model's failure; every later report, taken or refused, leaves it unchanged. A test posts twice around a take.
 - **Checkpoints.** Each of today's reads becomes a `turn.takeMail()` checkpoint (post-lane plan §4.1):
 
 | Turn kind | Checkpoints |
@@ -260,72 +309,91 @@ The line numbers below are from those reviews, at an older commit; K1 re-points 
 | sync-only | the start of the step |
 | settle | the start of the step; returns `.failed(f)` |
 
-- **Staging.** A turn's events and replies are staged in the step. The last checkpoint comes **before anything publishes**: before `turn.emit` and `turn.reply`, and before the synchronous port call that sends frames (`runSyncPhaseInTurn` publishes directly). #716's "no `emit` before `finishApply`" alone doesn't cover the port. A failure found at a checkpoint drops what is staged, and the callers get `landClosed`. A post that lands after the last checkpoint is taken before the next step.
-- **Removed:** `submitLandFailure`, `.failureSubmit`, and the adapter's awaited submit in `failOutsideTurn` (TA:5656). The adapter keeps `post` and the gate close.
-- **The record's shape change** (post-lane §4.2) goes in K4's PR body, pinned by a test: two inputs queued, a post, then the turn. The record holds the failure first, and both inputs are refused.
+- **Staging.** A turn's events, record drafts and replies are staged in the step. The last checkpoint comes before anything publishes:
+  - before `turn.emit` and `turn.reply`;
+  - before the synchronous port call that sends frames (`runSyncPhaseInTurn` publishes directly). #716's "no `emit` before `finishApply`" alone doesn't cover the port.
+
+  A failure found at a checkpoint drops what is staged, and the callers get `landClosed`.
+- **Removed:**
+  - `submitLandFailure` and `.failureSubmit`;
+  - the adapter's awaited submit in `failOutsideTurn` (TA:5656). The adapter keeps `post` and the gate close.
+- **The record's shape change** (post-lane §4.2) goes in K4's PR body, with a pinning test: two inputs queued, a post, then the turn. The record holds the failure first, and both inputs are refused.
 - **The core's recording stays off.** `onMailTaken` is never set (§3.10).
 
-### 3.7 Calls into the keeper during its own step (MF3)
+### 3.7 Port calls inside the keeper's step (MF3)
 
-The in-turn sync phase calls the port synchronously: `runSyncPhaseInTurn` (LKT:180), a requirement of the **public** protocol `LandKeeperTransport` (LKT:41), and `runSettlePhaseInTurn` (LKT:309), a requirement of the **package** protocol `LandKeeperSettlePort` (LKT:305).
+**What the step calls on the port, synchronously:**
+- `runSyncPhaseInTurn` (LKT:180, public `LandKeeperTransport`);
+- `runSettlePhaseInTurn` (LKT:309, package `LandKeeperSettlePort`, LKT:305);
+- the admission hooks `admitJoiningSession` (LKT:116, public) and `refusesResolvedJoin` (LKT:130, public);
+- `noteJoinInputsConsumed`, `noteInTurnSyncFold`, `noteInTurnJoinSyncTick`.
 
-| Adapter call into the keeper | Where it runs | On the core |
+**What reaches back into the keeper during those calls**, which on the core would step it inside a step and trap:
+
+| Port call | Calls back into the keeper? | On the core |
 |---|---|---|
-| The join-admission clear: `recordSyncStreamClear` (TA:3951) → `submitSyncStream` via `assumeIsolated` (TA:3956), with `keeperRecordsSyncStream` (TA:3800) | **inside keeper work**: the port's in-turn join admission while the keeper applies a join | through the step's capability: the record draft goes into the step's staged drafts. Calling the actor would step the core inside a step, which traps |
-| `recordSyncStream` (TA:3825) from the initial sync | outside a keeper step | an entry: `send(.syncStreamDraft(...))`, which steps at once when idle and keeps its order with the turns |
-| `recordSyncStreamClear(outsideTurn: true)` from a disconnect | outside a keeper step | the same entry |
-| `syncTurnNow`, `syncTurnTicket` (TA:3128, 3181, 3197, 3201, 3489, 3494, 5099, 6374), `settleTurn` (TA:6223) | outside a keeper step (each is the adapter's own path) | `query` (§3.3). K2 lists each site, with the reason it can't run inside a keeper step |
-| Reads: `entrySession` (TA:1458), `currentStateLocated` (TA:5212), `isLive`, `isDraining` and the like | outside a keeper step | **`core.read`** on the model or the world, which is a borrow and not a step. A query is a step with a mailbox take and an ordinal |
-| `joinReportingAdmission`, `leave`, `handleClientEvent`, `submitAction`/`awaitActionResult`, `requestJoinSyncTurn`, `debugFreeze`, `debugResume`, `notePendingFailure` | outside a keeper step | the entries in §3.3 |
+| `runSyncPhaseInTurn` | **No.** The adapter collects the phase's sync-stream drafts and returns them in `InTurnSyncOutput.syncStream` (TA:2839–2853, TA:3825–3832). The recording flag comes in as `recording:` | unchanged; no signature change |
+| `runSettlePhaseInTurn` | No, the same way | unchanged |
+| `admitJoiningSession` → `supersedeSessions` (TA:1550, TA:1908) → `recordSyncStreamClear` (TA:3951) | **Yes.** It reads `keeperRecordsSyncStream()` (TA:3800, `keeper.assumeIsolated`) and calls `submitSyncStream` (TA:3956) | **A package path.** A requirement on the package `LandKeeperSettlePort`: `admitJoiningSessionInStep(…, recordsSyncStream: Bool) -> (JoinAdmission, [SyncStreamDraft])`. The step passes the flag from the model, since `core.read` can't be called in a step. The drafts come back for the step to stage. The adapter implements it, and the public `admitJoiningSession` keeps its signature for other conformers. The keeper calls the package path when the port conforms, as `TransportAdapter` does. A port that doesn't conform records no sync stream, so the public call has nothing to call back |
 
-**The public break (§8).** The step capability changes `runSyncPhaseInTurn`'s signature: it gains a parameter, a non-escaping in-step capability through which the recorder calls go. Every conformer changes: `TransportAdapter`, the test fakes, and any out-of-repo conformer. It is listed for the maintainer. `runSettlePhaseInTurn` gains the same parameter, as a package change.
+K2's audit greps the adapter for every `keeper.assumeIsolated` and lists each with the path that reaches it, so a callback missed here is found before the cut-over.
 
-**The debug check is on synchronous step entries only:** `query`, and the keeper's synchronous entries that step. A call to one of them from inside a keeper step traps with the entry's name. `send` from inside a step legally queues, so it is never asserted.
+**Adapter calls into the keeper from outside a step:**
+
+| Call | On the core |
+|---|---|
+| `recordSyncStream` from a standalone initial sync (`.legacyCycle`, TA:3827–3829) | an entry, `send(.syncStreamDraft(...))`: steps at once when idle and keeps its order with the turns |
+| `recordSyncStreamClear(outsideTurn: true)` from a disconnect (TA:1336) | the same entry |
+| `syncTurnNow`, `syncTurnTicket` (TA:3128, 3181, 3197, 3201, 3489, 3494, 5099, 6374), `settleTurn` (TA:6223) | `query` (§3.3). K2 lists each site with the reason it can't run inside a keeper step |
+| Reads: `entrySession` (TA:1458), `currentStateLocated` (TA:5212), `isLive`, `isDraining`, `recordsSyncStream` (TA:3801) and the like | `core.read` on the model or world: a borrow, not a step |
+| `joinReportingAdmission`, `leave`, `handleClientEvent`, `submitAction`/`awaitActionResult`, `requestJoinSyncTurn`, `debugFreeze`, `debugResume`, `notePendingFailure` | the entries in §3.3 |
+
+**The debug check** covers only synchronous step entries: `query`, and the keeper's synchronous entries that step. Called from inside a keeper step, they trap with the entry's name. `send` from a step legally queues, so it is never asserted.
 
 ### 3.8 The per-message path: cost
 
-Client events and actions are per-message, and #546's decision budgets about +100 instructions per message for the core.
-- read1's 13 instructions over direct (#624) measure a `core.read`. They don't measure a query step, which takes the mailbox and an ordinal.
-- So the cost of rev 2's query intake (§3.3) is **not established**. K2's full A/B measures it on the cells that carry it: tick actions with and without resolvers, and tickless client events (§5).
-- A tick action with resolvers and every tickless input wait today on a continuation. On the core they wait on a reply waiter (`call` is about 2.9k instructions over direct), so one waiter replaces one continuation.
-- **If K2's A/B puts the query intake over budget,** the fix is in the core: G5 (#761, a `send` that returns its admission when it steps at once), or a cheaper admission step. It is not a keeper shortcut. Until then, nothing blocks K2.
+Client events and actions are per-message. #546's decision budgets about +100 instructions per message for the core.
+- **The query intake's cost is not established.** read1's 13 instructions (#624) measure a `core.read`, not a query step, which takes the mailbox and an ordinal. K2's full A/B measures it on tick actions with and without resolvers, and on tickless client events (§5).
+- **Waits.** Actions with resolvers (the result wait) and every tickless input waited on a continuation and now wait on a reply waiter (`call` is about 2.9k instructions over direct). One waiter replaces one continuation.
+- **If K2's A/B puts the query intake over budget,** the fix goes in the core: G5 (#761), or a cheaper admission step. Not a keeper shortcut. Nothing blocks K2 until then.
 
-### 3.9 Ticks and the sync loop (Q3 decided: timers are a follow-up)
+### 3.9 Ticks and the sync loop (timers: #762)
 
-- **Drivers.** The loop Tasks (LK:3402–3441, LK:5739) stay as drivers that only send typed inputs:
-  - `.tickDue(scheduled, loopEpoch)` and `.syncDue(scheduled, loopEpoch)`;
+- **The loop Tasks stay drivers that only send typed inputs** (LK:3402–3441, LK:5739):
+  - they send `.tickDue(scheduled, loopEpoch)` and `.syncDue(scheduled, loopEpoch)`;
   - `scheduled` is the instant the driver slept for;
-  - `loopEpoch` is the model's, read when the loop was configured.
-- **What the steps do.**
-  - The `.tickDue` step writes the next tick deadline into the model, which the fold rule reads (LK:787).
-  - A wake whose `loopEpoch` isn't current (after a stop or a reconfigure) is rejected in its step.
-  - The fold rule moves into the `.syncDue` step.
-- **The follow-up issue.** Moving both loops onto core timers needs #753's one sleeper and a `TurnClock` with timers (#759 only gives K2's minimal clock). It has its own timing semantics:
+  - `loopEpoch` is the model's, read when the loop was configured;
+  - the tick driver's entry attaches the binding token and the per-player overrides its step needs (§3.1).
+- **The `.tickDue` step:**
+  - writes the next tick deadline into the model, for the fold rule (LK:787);
+  - rejects a stale `loopEpoch` (after a stop or a reconfigure) in its step.
+- **The fold rule** moves into the `.syncDue` step.
+- **The loops as core timers are #762.** That needs #753 and timer support on #759's clock. Its semantics are #762's:
   - the first fire is the phase offset plus one interval;
-  - the scheduled instant rides in the input;
-  - skip-ahead is the handler's arithmetic.
+  - the scheduled instant rides in the input.
 
-  It is #762. K9's deletions don't wait for it.
+  K9 doesn't wait for #762.
 
-### 3.10 The type layout, and re-evaluation keepers until #612 (MF6, Q1)
+### 3.10 The type layout, and re-evaluation keepers until #612 (Q1)
 
-A public `LandKeeper<State>` can't conform to `TurnActor` only when `mode == .live`. `TurnActor` and `scripts/lint-turns.sh` require a stored `let core` and a stored `nonisolated let mailbox` (the `let-mailbox` rule). So the live part is its own actor:
+A public `LandKeeper<State>` can't conform to `TurnActor` only when `mode == .live`. `TurnActor` and `scripts/lint-turns.sh` also require a stored `let core` and a stored `nonisolated let mailbox` (the `let-mailbox` rule).
 
 ```swift
 public actor LandKeeper<State: StateNodeProtocol> {          // public facade; its API unchanged
     nonisolated let owner: KeeperOwner<State>                  // fixed at init by mode
+    nonisolated let identity: KeeperIdentity                   // what the port holds and compares
     nonisolated public var unownedExecutor: UnownedSerialExecutor { owner.executor }
 }
 package enum KeeperOwner<State: StateNodeProtocol>: Sendable {
     case live(LiveLandTurns<State>)
     case replay(ReplayLandOwner<State>)
-    var executor: UnownedSerialExecutor { … }                  // the live actor's, or the replay executor's
 }
 package actor LiveLandTurns<State: StateNodeProtocol>: TurnActor {
     let core: TurnCore<KeeperMachine<State>>                   // the model, plus the world (G1)
-    nonisolated let mailbox: TurnMailbox<LandReport>           // core.mailbox
+    nonisolated let mailbox: TurnMailbox<LandReport>?          // core.mailbox
     let config: LandConfig<State>
-    // perform, flush; nothing else stored but the port for attaching (§3.1)
+    // perform, flush; besides these, only the current binding token and the per-player
+    // services table, both written from flush (§3.1)
 }
 package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to the replay executor; no core
     var model: KeeperModel
@@ -335,36 +403,45 @@ package final class ReplayLandOwner<State: StateNodeProtocol> {  // isolated to 
 ```
 
 - **The executor.**
-  - On a live keeper, `LandKeeper` adopts `LiveLandTurns`' executor. The adapter adopts the keeper's (TA:105), so all three share one serial executor.
-  - The facade forwards with `live.assumeIsolated { … }`: synchronous, no hop.
-  - A replay keeper adopts the executor of a small replay actor that runs `ReplayLandOwner`'s path.
-  - `LiveLandTurns` is created first in `LandKeeper.init`, so the facade's `let owner` is set without `self`.
-  - Code-1 to check this against the core's rules.
-- **The turn bodies (K1)** are synchronous functions over `(inout KeeperModel, inout LandWorld<State>, LandConfig<State>, …)`. The live path calls them inside steps. The replay path calls them from `ReplayLandOwner`'s path, which awaits the source between them, as it does today: the CLAUDE.md exception "until #612".
-- **The invariant: replay never steps a core,** pinned by ownership: `ReplayLandOwner` has no core field, and the replay path never reaches `LiveLandTurns`. A must-not-compile snippet pins that `ReplayLandOwner` has no `core`. A replay keeper can have a transport (`.transportAndSink`: `flushOutputs` sends to it, LK:692–710). The invariant doesn't depend on it not having one, because that transport is never a sync binding: `routesThroughTurn` and `syncsInTurn` are false for re-evaluation keepers (LK:735, LK:742).
-- **Q1 (maintainer)** is rev 1's question. Rev 1 recommended (c), and rev 2 makes it concrete:
-  - (a) a core that lends itself mutably while never stepped;
-  - (b) replay ticks as core inputs, which is #612's redesign;
-  - **(c), recommended**, the layout above.
-- **#745 and #756.** Both concern the core's own record and replay. #700 uses neither:
-  - live keepers record through the keeper's recorder (§3.1), and `onMailTaken` is never set;
+  - On a live keeper, `LandKeeper` adopts `LiveLandTurns`' executor. The adapter adopts the keeper's (TA:105), so all three share one serial executor. `live.assumeIsolated` passes on it (Code-1).
+  - The facade forwards with `live.assumeIsolated { … }`.
+  - A replay keeper adopts the executor of a small replay actor.
+  - `LiveLandTurns` is created first in `LandKeeper.init`, so `owner` is set without `self`.
+- **Identity.** The adapter compares keeper identity: `isAttached(to:)` (TA:109–111), and the keeper's `port.runsSyncPhaseInTurn(of: self)` (LK:5218). The facade creates a `KeeperIdentity` object before the owner, and passes it to `LiveLandTurns`.
+  - The adapter holds the facade, as today (TA:103–108), and compares `keeper.identity`.
+  - The step passes `config.identity` to `runsSyncPhaseInTurn(of:)`.
+  - So the comparison names one object from either side.
+- **The lint.** `lint-turns.sh` approves the facade's forwarding boundary: a facade that holds a `TurnActor` and forwards through `assumeIsolated` to its entries. K2 adds that rule with a fixture.
+- **The turn bodies (K1)** are synchronous functions over `(inout KeeperModel, inout LandWorld<State>, LandConfig<State>, …)`.
+  - The live path calls them inside steps.
+  - The replay path calls them from `ReplayLandOwner`'s path, which awaits the source between them, as today: the CLAUDE.md exception "until #612".
+- **The invariant: replay never steps a core.** It is pinned by ownership: `ReplayLandOwner` has no core, and the replay path never reaches `LiveLandTurns`. Since `ReplayLandOwner` is package-only, the pin lives inside the package: a `@testable` test reflects a constructed `ReplayLandOwner` and fails if any stored property's type is a `TurnCore` or a `TurnActor`.
+- **A replay keeper's transport.** It can have one (`.transportAndSink`: `flushOutputs` sends to it, LK:692–710), and the invariant doesn't depend on it not having one. That transport is never a sync binding: `routesThroughTurn` and `syncsInTurn` are false for re-evaluation keepers (LK:735, LK:742).
+- **`notePendingFailure` on a replay keeper** (Code-1 (6)) is a no-op, as today (LK:576 returns for non-live keepers): the replay owner has no mailbox.
+- **Q1 (maintainer).**
+  - (a) A core that lends itself mutably while never stepped.
+  - (b) Replay ticks as core inputs: #612's redesign.
+  - **(c), recommended:** the layout above.
+- **#745 and #756** concern the core's own record and replay. #700 uses neither:
+  - live keepers record through the keeper's recorder, and `onMailTaken` is never set;
   - replay owns no core.
 
   So #756's "before any adopter records mail" holds, and #745's limitation never meets a keeper path. Both stay with #612.
+- **Later, at #546 B** (Code-1): once the adapter has its own core on the shared executor, a keeper step that calls the adapter's in-turn methods nests two cores. That needs its own rule then; #700 doesn't create it.
 
 ## 4. How each CLAUDE.md exception ends
 
 | Exception (CLAUDE.md) | Code today | Ends in | How |
 |---|---|---|---|
-| Join/leave resolvers | LK:1866–2057, LK:2619–2741 | K2 (steps), K6 (#588) | Membership changes in a step, and resolvers are requests under `.entry(pid, eid)`. A rejoin ends the old key. CanJoin validates and OnJoin applies in one step. The old session's leave is in that step. #548's in-turn variant is a test |
-| Freeze drain/settle (#129) | LK:1531–1556 | K7 | `.freeze(FreezeID, timeout)` starts its key, arms the timeout timer and asks for the settle. The caller's reply comes from the settle step or the timer. A newer freeze supersedes the key, so there is no await loop and no hand re-check. The tickless intake barrier: G9 or a documented barrier (§3.3.1) |
-| Action-frame bookkeeping after the resolvers (`debugEndWork`, `awaitInputTurn`) | LK:1696, LK:5603 | K2 (the waiter), K5 (`debugEndWork`) | The waiter is a reply (§3.4). In-flight work is the model's count, changed in the intake step and in the result or abandonment step |
-| The land-stop drain's post-await bookkeeping (#522) | LK:5896–5964, LK:5970 | K7 | `.drain` captures the land's state in its step: the ticket is `.land`'s generation, #522's "drain finished (ticket)". Destroy handlers run as chained requests. `.drainFinished` does the release in its step, through the captured binding (#698: Q4) |
+| Join/leave resolvers | LK:1866–2057, LK:2619–2741 | K2 (steps), K6 (#588) | Membership changes in a step. CanJoin and OnJoin are requests under `.entry(pid, eid)`, and OnLeave is a request under `.land`. A rejoin ends the old key. CanJoin validates and OnJoin applies in one step, and the old session's leave is in that step. #548's in-turn variant is a test |
+| Freeze drain/settle (#129): `debugFreeze` re-checks its generation and registers its waiter after each await | LK:1531–1556 | K7 | `.freeze(FreezeID, timeout)` starts its key, arms the timeout timer and asks for the settle. The caller's reply comes from the settle step or the timer. A newer freeze supersedes the key. No await loop and no hand re-check. The tickless intake barrier stays at the entry (§3.3.1): it reads and waits, and mutates nothing |
+| Action-frame bookkeeping after the resolvers (`debugEndWork`, `awaitInputTurn`) | LK:1696, LK:5603 | K2 (the waiter), K5 (`debugEndWork`) | The waiter is a reply (§3.4). In-flight work is the model's count, changed in the admission step and in the result or abandonment step |
+| The land-stop drain's post-await bookkeeping (#522) | LK:5896–5964, LK:5970 | K7 | `.drain` captures the land's state in its step: the ticket is `.land`'s generation. Destroy handlers run as chained requests. `.drainFinished` answers every kept waiter (§6.2), releases through the captured binding token (#698: Q4), then calls `endAll` |
 | `LandFailureMailbox` stands in for the core's mailbox (#732) | LandFailureMailbox.swift, LK:565–575 | K4 | §3.6 |
 | Re-evaluation keepers' non-turn replay path (#612) | LK:4254–4553 | **stays** until #612 | §3.10 |
 | The reevaluation monitor tick (#387) | ReevaluationMonitorLand.swift:28–70 | **stays** until #387 PR 2 | not keeper code |
 
-Not listed in CLAUDE.md, but of the same class, and these end too:
+Not listed in CLAUDE.md, but of the same class, and they end too:
 - OnInitialize resolvers followed by a direct write, and `didInitialize` set after an await (LK:1103–1105): K5.
 - The tick land's force shutdown, whose shutdown turn writes `nextTickId` before an awaited record (LK:2796–2799): K2.
 - `runTick`'s writes before `runTickTurn`: K2, inside the `.tickDue` step.
@@ -375,8 +452,9 @@ Not listed in CLAUDE.md, but of the same class, and these end too:
 Each slice is its own PR to `main`, after Review's GO on this plan.
 
 **Every slice runs:**
-- `swift test` on both legs, and `swift test` in `Examples/Demo` and `Examples/GameDemo`;
-- E2E in three encodings, plus the game E2E with reevaluation (0 mismatch);
+- `swift test` on both legs;
+- `swift test` in `Examples/Demo` and in `Examples/GameDemo`;
+- E2E in all three encodings, plus the game E2E with reevaluation (0 mismatch);
 - `swift build -c release` and the release filter on the touched suites;
 - must-not-compile;
 - one mutant per new rule.
@@ -384,37 +462,35 @@ Each slice is its own PR to `main`, after Review's GO on this plan.
 **The differential-harness pass** (adapter differential harness, rev 10; 84 cells, all in-turn since L2c):
 - byte comparison in the pinned 6.2.4 image;
 - `scripts/differential-gate.sh` with `ran + replaced == listed`, `ran > 0`, `compared == run`, `threw == 0`;
-- each difference in `ExpectedDifferences.swift` (exact, one cell, one use) with its cause, classified by `scripts/classify-golden-changes.py`.
+- each difference listed in `ExpectedDifferences.swift` (exact, one cell, one use) with its cause, classified by `scripts/classify-golden-changes.py`.
 
-**Host A/B tiers** follow the proportional rule:
-- **full:** #554's five cells plus `nonsync`, ABBA with 5 pairs; a regression is more than max(0.5 %, 3× spread) on `instructions:u`;
+**Host A/B tiers:**
+- **full:** #554's five cells plus `nonsync`, ABBA with 5 pairs, and a regression is more than max(0.5 %, 3× spread) on `instructions:u`;
 - **small:** 1–2 cells.
 
-A cell this plan needs that doesn't exist yet is added first, in a tool-only commit with a Mac output check, so base and change run the same tool.
+A cell this plan needs that doesn't exist yet is added first, in a tool-only commit with a Mac output check.
 
 | Slice | Content | Needs | Harness: allowed differences | Host A/B |
 |---|---|---|---|---|
-| **K1** | The storage split and its census (§3.1). Turn bodies become synchronous functions over model, world and config. Every multi-await flow's segments become named synchronous functions. No core, and behavior is unchanged. Replay calls the same bodies | — | none | **small**: the default production cell and `rows-mp` (field access moves into structs, and codegen can move) |
-| **K2** | The cut-over. The layout in §3.10. Every live entry is a core entry with its contract (§3.3), and each K1 segment is a step. Each await between segments is a `turn.run` whose result is an input, with today's checks in the handler. Also in K2: fresh keys (§3.2), the record drafts and waits (§3.4), the scoped emitter and the in-step port capability (§3.1, §3.7), entry barriers (§3.3.1), drivers (§3.9). Follow-ups and the failure box work as today | G1 #758, G2 #759 (minimal clock); G3 #760 checked before its A/B is read | none | **full**, plus three cells: tick actions without resolvers, tick actions with resolvers, tickless client events |
-| **K3** | Sync follow-ups on the core (§3.5), the writer gate returning `nil`, `waitForQuiescence`. The hand-rolled slots and requested-sync-work waiters are deleted. The #695 acceptance tests are rewritten (§6.1) | K2 | only the arm-order change (§3.5), if a cell shows it | **small**: a host cell with join churn and kept-event follow-up churn |
-| **K4** | The failure mail (§3.6): capacity 1 with the first applied failure terminal, checkpoints, staging before the port, the record-shape change. `LandFailureMailbox`, `submitLandFailure` and `.failureSubmit` are deleted | K2 | failure rows' record order, if a cell has a post before queued inputs | **small**: the default cell and `rows-mp`. The mailbox costs every entry (+396 emit, +440 call, post-lane §3.8), and this slice sets the budget left open there |
-| **K5** | Resolvers as keyed requests: action jobs under their entry's key (abandonment replaces `validateDelivery`'s checks; `.cancelJob`, or G10 if filed and fixed), OnInitialize under `.initialization` (initialization as a turn; the entry barrier replaced by `Hold.untilRequestCloses`), `debugEndWork` as the model's count | K2; G10 decided | none | **small**: the default cell and the tick-actions-with-resolvers cell |
-| **K6** | Join and leave per #588. CanJoin is `validate` with `ValidateContext`, returning a plan; OnJoin is `apply`; both in one step. That step also does the stale-join refusal, `maxPlayers` (reconnection exempt), the duplicate-login kick and the draining guard. One refusal form, a recorded refused join, and #548's tests | K5 | join-refusal rows, if the one refusal form changes their bytes | **small**: K3's join-churn cell |
-| **K7** | The freeze (#129) and the land-stop drain (#522) on the core (§4), the destroy handlers chained (§3.4), AfterFinalize's context (§3.1), forceShutdown's `SingleFlight` replaced | K5; G9 decided | none: the `freeze-resume-*` rows stay byte-identical | **none**: debug freeze and teardown are off the measured paths; recorded as a `call` with that reason |
-| **K9** | Deletions: the keeper's `GenerationTable`/`EpochCounter`/`SingleFlight` uses, the replaced `HoldPoints` (§6.3), and the dead `.live` arms (`flushOutputs` LK:674–691, `runSyncRequests` LK:718, the recorder branches at LK:3871, 4523, 4540, 1404–1413), each first proven unreachable. CLAUDE.md's reentrancy section is rewritten: the keeper exceptions left are #612, #387, and the freeze barrier if K7 keeps it. It doesn't wait for the timer follow-up | K1–K7 | none | **Mac output check** |
-
-(K8 is no longer a slice: §3.9.)
+| **K1** | The storage split and its census (§3.1). Turn bodies become synchronous functions over model, world and config. Every multi-await flow's segments become named synchronous functions. No core; behavior unchanged. Replay calls the same bodies | — | none | **small**: the default production cell and `rows-mp` |
+| **K2** | The cut-over. The layout and identity (§3.10). Every live entry becomes a core entry with its contract (§3.3). The one entry barrier and no intake holds (§3.3.1). Each K1 segment becomes a step; each await between segments becomes a `turn.run` whose result is an input, with today's checks in the handler. Also: fresh keys and the cancellation token (§3.2); record drafts and waits (§3.4); the scoped emitter, the binding token and the per-player services table (§3.1); the admission's package path and the callback audit (§3.7); drivers (§3.9); the lint rule. Follow-ups and the failure box work as today | G1 #758, G2 #759; G3 #760 checked before the A/B is read | none | **full**, plus three cells: tick actions without resolvers, tick actions with resolvers, tickless client events |
+| **K3** | Sync follow-ups on the core (§3.5): the writer gate returns `nil`, and `waitForQuiescence` replaces the hand-rolled waits. The hand-rolled slots and the requested-sync-work waiters are deleted. The #695 acceptance tests are rewritten (§6.1) | K2 | only the arm-order change (§3.5), if a cell shows it | **small**: a host cell with join churn and kept-event follow-up churn |
+| **K4** | The failure mail (§3.6): capacity 1, the first applied failure terminal, checkpoints, staging before the port, the record-shape change. `LandFailureMailbox`, `submitLandFailure` and `.failureSubmit` are deleted | K2 | failure rows' record order, if a cell has a post before queued inputs | **small**: the default cell and `rows-mp`. This slice sets the mailbox budget left open by the post-lane plan |
+| **K5** | Resolvers as keyed requests. Action jobs go under their entry's key or `.land`: abandonment replaces `validateDelivery`'s checks, and the token is kept. OnInitialize goes under `.initialization` with its deadline, so initialization becomes a turn and its abandonment answers the barrier. `debugEndWork` becomes the model's count | K2 | none | **small**: the default cell and the tick-actions-with-resolvers cell |
+| **K6** | Join and leave per #588. CanJoin is `validate` with `ValidateContext` and returns a plan; OnJoin is `apply`; both run in one step. That step also does the stale-join refusal, `maxPlayers` (reconnection exempt), the duplicate-login kick and the draining guard. One refusal form. A refused join is recorded. #548's tests | K5 | join-refusal rows, if the one refusal form changes their bytes | **small**: K3's join-churn cell |
+| **K7** | The freeze (#129) and the land-stop drain (#522) on the core (§4). The destroy handlers chained (§3.4). AfterFinalize's context (§3.1). The drain answers every kept waiter before `endAll`. forceShutdown's `SingleFlight` is replaced | K5 | none: the `freeze-resume-*` rows stay byte-identical | **none**: off the measured paths; recorded as a `call` with that reason |
+| **K9** | Deletions: the keeper's `GenerationTable`/`EpochCounter`/`SingleFlight` uses; the replaced `HoldPoints` (§6.3); the dead `.live` arms (`flushOutputs` LK:674–691, `runSyncRequests` LK:718, recorder branches at LK:3871, 4523, 4540 and 1404–1413), each first proven unreachable. CLAUDE.md's reentrancy section is rewritten: the keeper exceptions left are #612 and #387 | K1–K7 | none | **Mac output check** |
 
 **Ordering.**
 - K1 can start before G1 and G2 land.
 - K3, K4 and K5 are independent of one another.
-- K6 needs K5's requests.
-- K7 needs K5, for chained requests.
+- K6 needs K5, and so does K7.
+- #762 (timers) follows K2 and doesn't block K9.
 
 **Stop conditions** (#546's decision, applied to the keeper):
-- If a slice needs a coordinator-shaped machine API (a query that runs arbitrary keeper code, or a switch at each write), stop and redo the outline.
+- A slice that needs a coordinator-shaped machine API stops, and the outline is redone.
 - If K9's deleted scaffolding is smaller than the machine code K2–K7 added, Review revisits.
-- A core gap found mid-slice stops the slice: report it, fix it in the core, then resume (core-gap-fix-core-first).
+- A core gap found mid-slice stops the slice. It is reported and fixed in the core, then the slice resumes.
 
 ## 6. Tests
 
@@ -422,23 +498,20 @@ A cell this plan needs that doesn't exist yet is added first, in a tool-only com
 
 | Test | On main | At #700 |
 |---|---|---|
-| Rebind with a held retry: `olderBindingsRetryDoesNotBlockTheCurrentOne` (`TransportAdapterRequestedSyncTurnTests.swift`) | yes | K3 rewrites it per #702 plan §5.5 (b)–(d). B's follow-up is `.armed` while A's gate waits. A's late gate return steps nothing, checked with a step counter. B delivers stamp 2 while A's writer is held. Its mutant, a keeper-wide slot, still fails it |
-| Teardown with an armed retry: `teardownEndsAnArmedRetry` | yes | K3. Slot quiescence after the teardown, **plus** a separate check that A's gate returned after the teardown (quiescence alone passes with a stranded gate). Its mutant, the writer teardown not releasing its drain waiters, still fails it |
-| Latch window: `syncDuringSettleCycleIsLatched` | no | **Retired, nothing to port**: L2b (#712, ef23c7a7) retired it, and L2d deleted the latch slot |
+| Rebind with a held retry: `olderBindingsRetryDoesNotBlockTheCurrentOne` (`TransportAdapterRequestedSyncTurnTests.swift`) | yes | K3 rewrites it per #702 plan §5.5 (b)–(d). B's follow-up is `.armed` while A's gate waits. A's late gate return steps nothing, checked with a step counter. B delivers stamp 2 while A's writer is held. Its mutant (a keeper-wide slot) still fails it |
+| Teardown with an armed retry: `teardownEndsAnArmedRetry` | yes | K3. Slot quiescence after the teardown, **plus** a separate check that A's gate returned after the teardown. Its mutant (the writer teardown not releasing its drain waiters) still fails it |
+| Latch window: `syncDuringSettleCycleIsLatched` | no | **Retired, nothing to port.** L2b retired it (#712, ef23c7a7), and L2d deleted the latch slot |
 
 **Acceptance coverage named in its place** (Review, Q5):
-
-| Test | Covers | Slices |
-|---|---|---|
-| `ordinaryPhaseKeepsTheFrozenDefer` (TransportAdapterDebugFreezeTests:625) | a phase during a freeze keeps the deferral | K2, K7 |
-| `freezeIsCheckedBeforeBackPressure` (TransportAdapterRequestedSyncTurnTests:206) | the freeze check comes before back-pressure | K3 |
-| `eventKeptBySettleArrivesAfterResume` (TransportAdapterPendingEventsAcrossCyclesTests:653) | an event kept by the settle arrives after the resume | K3, K7 |
+- `ordinaryPhaseKeepsTheFrozenDefer` (TransportAdapterDebugFreezeTests:625): K2, K7.
+- `freezeIsCheckedBeforeBackPressure` (TransportAdapterRequestedSyncTurnTests:206): K3.
+- `eventKeptBySettleArrivesAfterResume` (TransportAdapterPendingEventsAcrossCyclesTests:653): K3, K7.
 
 **New, for a case the migration creates:** a follow-up armed before a freeze and still due at the settle. The settle step runs, and the follow-up steps after it, once, under its binding. K3 adds it, and K7 keeps it green.
 
 **K3 also adds:**
-- #702 plan §5.3's keeper test: a stale lag request with an after-turn follow-up pending leaves it pending, and it steps.
-- #695 round 3's known gap: an older binding's retry that is still waiting on its writer, across a teardown that reaches only the new binding's writer. `endAll` closes it, and it doesn't stay counted.
+- #702 plan §5.3's stale-lag test;
+- #695 round 3's known gap: an older binding's retry, across a teardown that reaches only the new binding's writer, is closed by `endAll` and not left counted.
 
 ### 6.2 New tests per slice
 
@@ -446,75 +519,78 @@ Tests force interleavings with holds (`HoldPoints`, `TestGate`, a gated `perform
 
 | Slice | Tests |
 |---|---|
-| K1 | The census: every stored property of `LandKeeper` has a home (§3.1), checked by `Mirror`, so a new field fails the test until it is placed. The RNG is listed as a reference reached from steps (Q7) |
-| K2 | **Each intake contract in §3.3:** the tick ACK without resolvers returns before any tick; the ACK with resolvers returns after delivery and before the tick; a tickless client event's handler error reaches its caller; a server input while frozen returns `.accepted` at once. **Steps:** a query from inside a keeper step traps (debug), and `send` from a step queues. **Waiters:** they resume after the record is taken, with the record request held; an abandoned record wait replies `landClosed`. **Keys:** a stale `BindingID` and a stale `EntryID` are refused in the step. **Barriers:** intake before initialization waits on the barrier. **Shutdown:** the tick land's shutdown applies inside its step. **Loop:** a stale loop wake is rejected. **Replay:** `ReplayLandOwner` has no core (must-not-compile) |
+| K1 | **The census:** every stored property of `LandKeeper` has a home (§3.1), checked by `Mirror`, so a new field fails until placed. The RNG is listed (#765) |
+| K2 | **Each contract in §3.3:**<br>- the tick ACK without resolvers returns before any tick;<br>- an action with resolvers returns `.pending` at intake on both land kinds, and the adapter's inbound chain moves on before the resolver delivers;<br>- the tick result arrives at delivery, before the tick;<br>- a tickless client event's handler error reaches its caller;<br>- a tickless join that doesn't complete in-turn and a tickless leave each wait for application;<br>- a server input submitted from a turn's requested work, while frozen, returns `.accepted` at once.<br>**Order:** query and `sendAndWait` intakes interleaved with replies held keep call order (§3.3.1).<br>**Barriers:** intake before initialization waits on the barrier; an initialization failure reaches every barrier waiter; the freeze barrier re-checks after its wake.<br>**Cancellation:** cancel a job while its resolver is held, then release: nothing delivers, and the caller gets `CancellationError`. Cancel between the request's completion and its delivery step: nothing delivers. Cancel before admission: refused. Each runs with a mutant that drops the token check at delivery.<br>**Keys:** a job closed by its entry's end gets `senderSuperseded`; a stale `BindingID` or `EntryID` is refused in its step.<br>**Emitter:** an emit from a context copied into a Task after its step is dropped and counted.<br>**Admission:** the supersede clear goes through the package path, not the actor.<br>**Steps:** a query from inside a keeper step traps (debug), and `send` from a step queues.<br>**Waiters:** they resume after the record is taken, with the record request held; an abandoned record wait replies `landClosed`.<br>**Shutdown:** with a tickless action, a result wait, a join waiting for admission and a shutdown caller pending, every one is answered `landClosed` before `endAll`, and the core's deinit assertion holds.<br>**Replay:** the `@testable` reflection pin on `ReplayLandOwner`, and `notePendingFailure` on a replay keeper is a no-op |
 | K3 | §6.1 |
-| K4 | Two inputs queued, a post, then the turn (§3.6). Two posts around a take: the first failure is terminal. A failure at the last checkpoint publishes nothing to the port. The S1b "no `emit` before `finishApply`" mutant still fails |
-| K5 | A job's caller cancels while its resolver is held: the request is cancelled and the caller gets `CancellationError`. The entry leaves while its job's resolver is held: abandonment, `landClosed`, nothing applied. Initialization's resolver is held while a join arrives: the join holds, then is admitted |
-| K6 | #588's checks in one step, each refusing in one form. #548: hold the join's resolver, tear down, release with `.allow`; no membership, slot, joining record or connection generation is left (plus the in-turn variant). A duplicate login's old OnLeave runs as a request under the old key |
-| K7 | #129's freeze and resume, interleaved with a deferred writer retry held at the former await. A newer freeze supersedes an older one's settle. A `leave` during the destroy handlers is refused. Destroy handlers run in order, the next launched from the previous completion. `forceShutdown` called twice gives one drain and two replies. AfterFinalize's emit behaves as pinned |
+| K4 | Two inputs queued, a post, then the turn (§3.6). Two posts around a take: the first is terminal. A failure at the last checkpoint publishes nothing to the port. The S1b mutant still fails |
+| K5 | An entry leaves while its job's resolver is held: abandonment, `senderSuperseded`, nothing applied. Initialization's resolver is held while a join arrives: the join waits at the barrier, then is admitted. Initialization's deadline passes: the initialization fails, and every barrier waiter gets the failure |
+| K6 | #588's checks in one step, each refusing in one form. #548: hold the join's resolver, tear down, release with `.allow`; no membership, slot, joining record or connection generation is left (plus the in-turn variant). A duplicate login's old OnLeave runs under `.land` and isn't closed by the old entry's end |
+| K7 | #129's freeze and resume, interleaved with a deferred writer retry held at the former await. A newer freeze supersedes an older one's settle. A `leave` during the destroy handlers is refused. Destroy handlers run in order. `forceShutdown` called twice gives one drain and two replies. AfterFinalize's emit behaves as pinned. Shutdown with a freeze caller pending answers it |
 
 ### 6.3 The keeper's hold points
 
 LK:55–82 has 11 points:
-- K2 keeps each point where it still exists, now inside a step or a `perform`.
-- K5 and K7 move the points that sat between an await and a write into the effect's `perform`: `.actionComplete`, `.join`, `.leave`, `.drainStart`, `.landFailedTeardown`. The interleaving they forced becomes a held completion while other inputs step.
-- K4 deletes `.failureSubmit`.
-- K9 deletes the points with no user.
+- **K2** keeps each point that still exists, now inside a step or a `perform`.
+- **K5 and K7** move the points that sat between an await and a write into the effect's `perform`: `.actionComplete`, `.join`, `.leave`, `.drainStart`, `.landFailedTeardown`.
+- **K4** deletes `.failureSubmit`.
+- **K9** deletes the points with no user.
 
 Each PR lists the tests whose hold moved.
 
 ## 7. Turn-core gaps
 
-Each is reported as a core issue, per core-gap-fix-core-first.
-
 | # | Gap | Tracked | Blocks |
 |---|---|---|---|
-| G1 | The world (narrowed, §3.1): values only (`State`, the admitted queue, entry facts), lent to steps and to `core.read`, not to `flush` | **#758** (foundation; narrowed in a comment, rev 2) | K2 |
-| G2 | A production `TurnClock` over `safeTaskSleep`, minimal: `now` and `sleep(until:)` for `TurnCore.init` | **#759** (foundation; narrowed in a comment, rev 2). The timer migration is #762 | K2 |
-| G3 | Step-path specialization for a generic machine instantiated from another module: a verification gap until a check shows a compiler problem | **#760** | reading K2's A/B |
+| G1 | The world: values only, lent to steps and to `core.read`; not to `flush`, `perform` or effects; not part of any core record | **#758** (foundation; narrowed in comments) | K2 |
+| G2 | A production `TurnClock`, minimal: `now` and `sleep(until:)` over `safeTaskSleep` | **#759** (foundation; narrowed) | K2 |
+| G3 | Step-path specialization for a generic machine from another module: a verification gap until a check shows a compiler problem | **#760** | reading K2's A/B |
 | G4 | One sleeper for all deadlines | #753 (#621 item 2) | #762 |
-| G5 | `send` returns `Void` | **#761** (before-release) | nothing; only if K2's A/B puts the query intake over budget (§3.8) |
+| G5 | `send` returns `Void` | **#761** (before-release) | only if K2's A/B puts the query intake over budget |
 | G6 | Effect launch and hop cost | #621 item 3 | only if K5's A/B regresses |
 | G7 | The waiter table's cost | #621 item 4 | only if K2's A/B regresses on waiting entries |
-| G8 | The mailbox's per-entry cost has no budget | post-lane §3.8 open item | K4 sets it |
-| G9 | A hold released by a step: the freeze's intake barrier | candidate, not filed | decided before K7; filed if K7 takes it |
-| G10 | A caller's cancellation delivered to the machine for a call that already stepped (replaces K2's `.cancelJob` hop) | candidate, not filed | decided before K5 |
+| G8 | The mailbox's per-entry budget | post-lane §3.8 open item | K4 sets it |
+| G9 | A holding request with no effect, released by `cancel`, its key's end or its deadline (Code-1's shape) | **#763** (before-release) | nothing: #700 puts no hold on intake (§3.3.1) |
+| G10 | A caller's cancellation delivered to the machine for a stepped call | **#764** (before-release) | nothing: the token in §3.2 keeps the guarantee |
 
 Not gaps for #700: the core's input recording, `.cancelsCall` in replay, #745 and #756 (§3.10).
 
-## 8. Public API
+## 8. Public API changes
 
-- **K2, `LandKeeperTransport` (public): a break, for the maintainer.**
-  - `runSyncPhaseInTurn` (LKT:180) gains a non-escaping in-step capability parameter for the recorder calls (§3.7). (`runSettlePhaseInTurn`, LKT:309, is on the package `LandKeeperSettlePort` and gains it as a package change.)
-  - Every conformer changes: `TransportAdapter`, the test fakes, and any out-of-repo conformer.
-  - Options for the maintainer: the break as is, with no deprecation step, as #593 did; or a defaulted overload that traps, to point a missed conformer at the change.
-  - **Recommended:** the break as is. The protocol is the adapter's seam, and the compiler finds every conformer.
-- **K2, `package`:** `syncTurnNow`, `settleTurn`, `syncTurnTicket` (now queries), and the new `LiveLandTurns`, `ReplayLandOwner`, `KeeperOwner`.
-- **K6:** `CanJoin` takes `ValidateContext` and returns a plan that `OnJoin` receives (#588, agreed with the maintainer 2026-11-18). It is a break, and K6's PR lists every changed signature. The maintainer confirms there that it needs no deprecation step.
-- **Unchanged:** every public entry of `LandKeeper` keeps its signature and its contract (§3.3).
-- **Behavior changes users can see,** each stated in its PR:
-  - the follow-up arm order (K3);
-  - the record order of a failure posted before queued inputs (K4);
-  - the one refusal form for joins (K6);
-  - AfterFinalize's emit, if K7 changes what it does today.
+For the maintainer, once rev 3 is GO.
+
+| Slice | Change | Kind |
+|---|---|---|
+| K2 | **none public.** Rev 2's `runSyncPhaseInTurn` break is withdrawn: the port already returns its drafts and takes the recording flag (§3.7). The admission clear takes a package path, and `admitJoiningSession` keeps its signature. The scoped emitter is a runtime scope, and `LandContext` keeps its shape (§3.1) | — |
+| K2 | `package`: `syncTurnNow`, `settleTurn` and `syncTurnTicket` become queries; new `LiveLandTurns`, `ReplayLandOwner`, `KeeperOwner`, `KeeperIdentity`, `JobCancellation`; `admitJoiningSessionInStep` on `LandKeeperSettlePort` | package |
+| K6 | `CanJoin` takes `ValidateContext` and returns a plan that `OnJoin` receives (#588, agreed with the maintainer 2026-11-18). K6's PR lists every changed signature. The maintainer confirms there that no deprecation step is needed | break |
+
+**Behavior changes users can see,** each stated in its PR:
+- the follow-up arm order (K3);
+- the record order of a failure posted before queued inputs (K4);
+- the one refusal form for joins (K6);
+- an emit from a context kept past its step is dropped and counted (K2), where today it reaches the collector;
+- AfterFinalize's emit, if K7 changes what it does today.
 
 ## 9. Questions
 
 | Q | For | Question | Recommended |
 |---|---|---|---|
 | Q1 | maintainer | Where a re-evaluation keeper's model and world live until #612 (§3.10) | (c): the facade over two owners; replay has no core |
-| Q2 | maintainer | The narrowed world (#758), or `@PlainData` on every land `State` (§3.1) | the narrowed world; `State: PlainData` probed in its own issue |
-| Q4 | maintainer | #698 (the teardown notifies a transport other than the one it closed): fixed in K7, where the drain step uses the captured binding, or separately | in K7: #698 closes with it |
-| Q6 | Code-1 | The world's shape (#758), the layout and executor in §3.10, G5's fit, and whether G9 and G10 belong in the core | — |
-| Q7 | maintainer | The shared RNG finding (§3.1): confirm with a test, then an issue that moves the RNG state into the model | confirm first; not part of #700 |
-| Q8 | maintainer | The `LandKeeperTransport` break (§8): as is, or a trapping default | as is |
+| Q2 | maintainer | The world (#758), or `@PlainData` on every land `State` (§3.1) | the world; `State: PlainData` probed in its own issue |
+| Q4 | maintainer | #698 (teardown notifies a transport other than the one it closed): fixed in K7, where the drain step uses the captured binding token, or separately | in K7: #698 closes with it |
 
-Decided by Review in its check of rev 1: Q3 (the timers leave #700) and Q5 (the latch test is retired; coverage named in §6.1).
+Decided:
+- **Q3** (Review): the timers are #762.
+- **Q5** (Review): the latch test is retired.
+- **Q6** (Code-1): the fit read is folded in above.
+- **Q7:** filed as #765.
+- **Q8:** withdrawn, since there is no `LandKeeperTransport` break.
+- **MF4's route** (Main): (a), the token.
 
 ## 10. Prior art
 
 - **Elm's `Cmd`/`Msg` and Erlang's `gen_server`** (CLAUDE.md's rule). A step returns work as data, and the result comes back as a message that re-reads current state. §3.4 applies that rule to each await.
-- **Monitors and re-entry.** §3.7's trap on a synchronous step entry from inside a step is the monitor's re-entry check. `send` from a step is a message to self, which is queued, as in an actor's mailbox.
-- **Capabilities over ambient references** (the object-capability discipline). §3.1's in-step port capability arrives with the input and is valid for that step and binding only. Rev 1's world kept a reference any step could copy out.
-- **The strangler fig.** K1 extracts the bodies so the live and replay paths share them. K2 routes the live path through the core. #612 later removes the replay owner (Q1 (c)).
+- **Monitors and re-entry.** §3.7's trap on a synchronous step entry from inside a step is the monitor's re-entry check. `send` from a step is a message to self, queued as in an actor's mailbox. §3.7 removes the one port call that re-entered by having it return its drafts as data.
+- **Cancellation tokens checked at the commit point** (.NET's `CancellationToken`, Go's `context`). §3.2's token is set synchronously by the canceller and read by the step that would deliver, so the decision sits where the effect lands, not in the hop that carries the news.
+- **Capabilities over ambient references.** §3.1's binding token names its binding, and the step checks it before use.
+- **The strangler fig.** K1 extracts the bodies so the live and replay paths share them, K2 routes the live path through the core, and #612 later removes the replay owner (Q1 (c)).
