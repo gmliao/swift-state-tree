@@ -103,8 +103,9 @@ struct Room {
 - **每個 step 都讀得到。** `turn.behavior` 在 `handle`、`handleAbandoned`、`handleLateResult` 和 `answer` 裡都讀得到；follow-up 和 timer 的 step 經由 `handle`，也一樣。在 `handleMail` 裡，`MailTurn` 有同樣的 `behavior`。
 - **從不寫入。** behavior 在狀態機的整個生命期內固定不變；所有改變都進 model（沒有 `become`）。對 `turn.behavior` 賦值無法編譯。
 - **它的函式能做什麼。** 它們在 step 裡執行，所以是同步的、不碰 model 以外的任何東西，而且是確定性的：不自己讀時鐘、不用沒有種子的亂數、不做 I/O。需要等待或做 I/O 的事以 effect 送出，結果再以 input 回來。
+- **不會被記錄。** replay 用同一份定義和設定建出同一個 behavior；換了 behavior，replay 的就是另一個狀態機，而紀錄裡看不出來。
 
-限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。
+限制：編譯器只檢查函式是同步的。另外兩條規則由 adopter 負責。編譯器也不會阻止 behavior 持有帶可變狀態的參照（`Sendable` class、`Mutex`，或捕獲這類參照的 closure）：`turn.behavior.limit = 3` 會被拒絕，但 `turn.behavior.box.bump()` 可以編譯。所以 behavior 只放值和作用在這些值上的函式；step 會改變的東西都放進 model。
 
 API：`TurnMachine.Behavior`、`Turn.behavior`、`MailTurn.behavior`、`TurnCore.init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)`。
 
