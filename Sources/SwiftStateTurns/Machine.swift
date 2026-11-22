@@ -23,6 +23,15 @@ public protocol TurnMachine: Sendable {
     /// What another thread tells the machine through the core's mailbox (`TurnActor.post`), taken
     /// before the next step. Default: none, and the mailbox's paths fold away.
     associatedtype Mail: Sendable = Never
+    /// What the machine does, as distinct from what it holds: functions and fixed configuration
+    /// (handlers, resolver lists, limits) that every step reads through `Turn.behavior` and
+    /// `MailTurn.behavior`. It is given once, to `TurnCore.init(machine:behavior:…)`, and no step
+    /// can write it. A behavior is fixed for the machine's lifetime; every change goes to the
+    /// model (there is no `become`). Its functions run inside a step, so they are synchronous,
+    /// touch nothing outside the model, and are deterministic: anything that waits or does I/O
+    /// goes out as an effect, and its result comes back as an input. Only the first rule is
+    /// checked by the compiler. Default: none (`Void`).
+    associatedtype Behavior: Sendable = Void
 
     /// How `input` is admitted. Default: normal, with no hold and no scope.
     ///

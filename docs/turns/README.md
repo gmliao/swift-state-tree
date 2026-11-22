@@ -91,6 +91,19 @@ Some things a machine works with are objects by nature: a connection, an encoder
 - **The state stores IDs.** The actor keeps a map from each ID to its object.
 - **A step that needs one asks for work.** It returns an output or an effect naming the ID, and the actor, or `perform` off the actor, uses the object. What comes back reaches the state as plain data, in a later input.
 
+### Fixed functions and settings: the behavior
+
+A machine's *behavior* is what it does, as distinct from what it holds: functions and fixed settings that every step reads, such as a land's action handlers, its resolver lists and its player limit. They can't live in the state, because a function isn't plain data, and they don't need to, because they never change.
+
+- **Fixed at the start.** A machine declares its type as `Behavior` (default `Void`, none). The adopter passes the value once, to `TurnCore(machine:behavior:…)`. A machine with a behavior can't be made without one.
+- **Read in every step.** `turn.behavior` reads it in `handle`, `handleAbandoned`, `handleLateResult` and `answer`, and so do follow-up and timer steps, which go through `handle`. In `handleMail`, `MailTurn` has the same `behavior`.
+- **Never written.** A behavior is fixed for the machine's lifetime; every change goes to the model (there is no `become`). Assigning to `turn.behavior` doesn't compile.
+- **What its functions may do.** They run inside a step, so they are synchronous, touch nothing outside the model, and are deterministic: no clock read of their own, no random numbers without a seed, no I/O. Anything that waits or does I/O goes out as an effect, and its result comes back as an input.
+
+Limit: the compiler checks only that the functions are synchronous. The other two rules are the adopter's.
+
+API: `TurnMachine.Behavior`, `Turn.behavior`, `MailTurn.behavior`, `TurnCore.init(machine:behavior:queueLimit:maxReleasesPerBatch:clock:mailboxCapacity:)`.
+
 ## A worked example
 
 A lobby that loads each player's profile before seating them, one load at a time. The full code is in `Tests/SwiftStateTurnsTests/WorkedExampleTests.swift`. That test compiles and runs it, and checks that every excerpt on this page and in the DocC matches it. The load's result comes back as an input, and reaches `handle` only while its request is open:
@@ -444,6 +457,7 @@ API: `CallerCancellation`.
 | What a send waits for | What does `await send` wait for, and in what order? | `send`, `sendAndWait` |
 | Incarnation | Does this result belong to this core? | `foreignCompletions` |
 | Caller cancellation | What happens when the caller's task is cancelled? | `CallerCancellation` |
+| Behavior | Where do the functions and fixed settings every step needs live? | `Behavior`, `turn.behavior` |
 
 ## How it's tested
 
