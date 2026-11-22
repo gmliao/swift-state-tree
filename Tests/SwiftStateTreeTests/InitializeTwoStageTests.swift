@@ -608,10 +608,11 @@ struct InitializeTwoStageTests {
     func waitersGetTheRefusal() async throws {
         let key = DeliveryGates.freshKey()
         let transport = InitStageTransport()
+        // Released on every exit, a late entry included, so a failed wait doesn't leave the
+        // resolver parked.
+        defer { DeliveryGates.gate(key).release() }
         let keeper = try await makeKeeper(makeWaitDefinition(), landID: "init-wait:\(key)", transport: transport)
         guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
-        // Released on every exit, so a failed wait doesn't leave the resolver parked.
-        defer { DeliveryGates.gate(key).release() }
 
         let join = Task { () -> (any Error)? in
             do { try await keeper.join(playerID: player, clientID: client, sessionID: session); return nil } catch { return error }
@@ -647,17 +648,28 @@ struct InitializeTwoStageTests {
         #expect(await keeper.currentState().log == [], "no handler ran")
     }
 
-    @Test("A cancelled wait for initialization waiters returns false, while the initialization is still held")
+    // Deadlines off: the resolver's init deadline would end the initialization too, which also
+    // resumes the watcher with `false`. Only the cancellation may resume it here.
+    @Test("A cancelled wait for initialization waiters returns false, while the initialization is still held", .resolverDeadlinesOff)
     func cancelledWaiterWaitReturnsFalse() async throws {
         let key = DeliveryGates.freshKey()
+        // Released on every exit, a late entry included.
+        defer { DeliveryGates.gate(key).release() }
         let keeper = try await makeKeeper(makeWaitDefinition(), landID: "init-wait:\(key)")
         guard await DeliveryGates.gate(key).waitUntilEntered() else { return }
-        defer { DeliveryGates.gate(key).release() }
         let (registrations, registered) = AsyncStream<Void>.makeStream()
         let wait = Task { await keeper.waitForInitializationWaitersForTesting(1, registered: { registered.yield() }) }
+        defer {
+            registered.finish()
+            wait.cancel()
+        }
         // Cancelled once its watcher is registered, so the cancellation handler resumes it.
-        var notices = registrations.makeAsyncIterator()
-        _ = await notices.next()
+        let notice = try await withinDeadline("the watcher registers") { () async -> Bool in
+            var notices = registrations.makeAsyncIterator()
+            return await notices.next() != nil
+        }
+        guard let notice else { return }
+        try #require(notice, "the watcher registered")
         wait.cancel()
         let reached = try await withinDeadline("the cancelled wait returns") { await wait.value }
         #expect(reached == false)

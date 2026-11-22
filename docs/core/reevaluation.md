@@ -47,16 +47,24 @@ In Reevaluation mode, `LandKeeper`:
 3. Executes handlers with same inputs
 4. Compares state hash after each tick
 
+A keeper built by hand for replay takes the record's land ID and RNG seed, as below; without them both default to the land type. `ReevaluationEngine.run` and `ConcreteReevaluationRunner` do this for you.
+
 Inputs are recorded before their handler runs, so an input whose `validate` throws is in the record too, in order, and is listed as rejected ([Rejected Inputs](#rejected-inputs-35)). Replay runs its `validate` again, which must therefore be deterministic, and checks that it refuses the same inputs.
 
 > **Tickless lands.** A land without a tick handler records all its inputs under tick 0, and replay applies them there in order (#167, #268), so its server events are compared. From record format 3.1 its frame also records each live pass: the sequence counter before the pass and the inputs it applied, in order (`passes`). Replay runs each pass as an input turn after restoring its counter, so inputs apply in the live order even when one overtook another (an action waiting for its resolvers, #325) and the event sequence numbers match live (#321); the verdict is `passed` or `failed`. Passes that don't name every input of the frame exactly once, that name a sequence that isn't an input of the frame, or whose counters decrease, fail the tick: no input of the tick after the mismatch is found is applied (the check runs before any pass, so a record that fails it applies none). The hosted replay (`ReevaluationStepResult.recordedPassMismatch`) reports such a tick as not matching, and the replay land doesn't fall back to its recorded events. A 3.0 or 2.x tickless record has no passes: replay applies its inputs in sequence order, and the verdict is `passedIgnoringSequence` for that tick: types, payloads, targets and order are compared, but the numbers aren't. A tickless land records no per-tick state hash, so only its events are verified. An empty recorded list is compared too: a replay that emits events where the live run emitted none fails. A 2.5 or 2.6 record kept only the last list of server events recorded in a tick, so an old tickless record in which several passes emitted events fails replay; re-record it with the current server.
 
 ```swift
+let source = try JSONReevaluationSource(filePath: "recording.jsonl")
+let metadata = try await source.getMetadata()
+var services = LandServices()
+services.register(DeterministicRngService(seed: metadata.replayRngSeed), as: DeterministicRngService.self)
 let keeper = LandKeeper(
     definition: myLand,
     initialState: MyState(),
     mode: .reevaluation,
-    reevaluationSource: JSONReevaluationSource(filePath: "recording.jsonl")
+    reevaluationSource: source,
+    services: services,
+    landID: metadata.landID
 )
 
 // Step through ticks manually
