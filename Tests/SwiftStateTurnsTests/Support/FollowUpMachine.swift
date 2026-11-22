@@ -18,6 +18,10 @@ indirect enum Op: Sendable {
     /// A request under `key` that holds nothing; it closes when its gate opens.
     case request(gate: String, key: Int = 1)
     case timer(key: Int = 1, seconds: Int64)
+    /// `hold` whose request is labelled, so its abandonment is logged as `label`'s.
+    case holdLabelled(String, gate: String, key: Int = 1, deadlineSeconds: Int64)
+    /// A timer whose input logs "parked <label>" when it fires.
+    case timerLabelled(String, key: Int = 1, seconds: Int64)
     /// The next `handleAbandoned` for a follow-up runs this script (once).
     case onAbandoned([Op])
     /// The next gate result runs this script (once).
@@ -182,6 +186,12 @@ struct FollowUpMachine: TurnMachine {
                 turn.request(.work(gate), for: key)
             case .timer(let key, let seconds):
                 turn.timer(at: .seconds(seconds), for: key, .released("timer"))
+            case .holdLabelled(let label, let gate, let key, let deadline):
+                if let id = turn.request(.work(gate), for: key, holding: .untilRequestCloses(99, deadline: .seconds(deadline))) {
+                    labels[id] = label
+                }
+            case .timerLabelled(let label, let key, let seconds):
+                turn.timer(at: .seconds(seconds), for: key, .parked(label))
             case .onAbandoned(let then):
                 abandonScript = then
             case .onGateResult(let then):

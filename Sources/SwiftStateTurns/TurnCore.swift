@@ -36,12 +36,13 @@ public enum TurnDiagnostic: Sendable, Equatable {
     case batchEnded(released: Int)
     case foreignCompletion
     /// The core's timer reached the deadline of a request or a follow-up gate that had already
-    /// closed, and did nothing. It comes at the deadline's instant, or never: a closed entry that
-    /// the core drops first (it compacts its deadlines, or `endAll` empties them) reports nothing.
+    /// closed, and did nothing. It comes at the deadline's instant or later, or never: a closed
+    /// entry that the core drops first reports nothing. The core drops one when it compacts its
+    /// deadlines, when `endAll` empties them, or when a wake clears closed entries due after the
+    /// instant it woke for.
     case staleDeadline
     /// The core's timer reached a timer that had been replaced or dropped, and did nothing. It
-    /// comes at the timer's instant, or never: an entry the core drops first (it compacts its
-    /// deadlines, or `endAll` empties them) reports nothing.
+    /// comes at the timer's instant or later, or never, as `staleDeadline` does.
     case staleTimer
     /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
     /// nothing for it.
@@ -307,9 +308,13 @@ public final class TurnCore<M: TurnMachine> {
 
     // MARK: The deadline heap
 
-    /// At most this many due entries step per wake; the rest steps after other queued entries,
-    /// on the next wake (§3.6 of the plan). Separate from `maxReleasesPerBatch`.
+    /// At most this many live due entries step per wake; the rest steps on the next wake, and
+    /// other work queued on the actor can run first (§3.6 of the plan). Separate from
+    /// `maxReleasesPerBatch`.
     @inlinable static var maxFiresPerWake: Int { 64 }
+    /// At most this many stale entries are popped per wake, due ones and the silent head drop
+    /// together; the rest waits for the next wake or a compaction.
+    @inlinable static var maxStalePopsPerWake: Int { 256 }
     /// A compaction needs at least this many stale entries, and at least half the heap stale.
     @inlinable static var compactionFloor: Int { 64 }
 
@@ -323,9 +328,11 @@ public final class TurnCore<M: TurnMachine> {
     }
 
     /// Drops the stale entries in O(n) once they are at least `compactionFloor` and half the heap,
-    /// so the heap holds at most `max(compactionFloor, 2 × live) + 1` entries, at amortized O(1)
-    /// per invalidation. The sleeper isn't re-armed: a removed target costs one wake that steps
-    /// nothing.
+    /// at amortized O(1) per invalidation. Right after an arm or a wake, the heap holds at most
+    /// `max(compactionFloor, 2 × live) + 1` entries; cancels in between only count, so the bound
+    /// holds after the next compaction check, not at every instant. Never during a wake (its due
+    /// entries are outside the heap but still counted). The sleeper isn't re-armed: a removed
+    /// target costs one wake that steps nothing.
     @inlinable func compactDeadlinesIfStale() {
         let stale = rt.staleDeadlines
         guard stale >= Self.compactionFloor, stale &* 2 >= deadlines.count else { return }

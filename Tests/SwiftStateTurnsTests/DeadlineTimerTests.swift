@@ -43,10 +43,10 @@ struct DeadlineTimerTests {
         #expect(a.clock.sleepingUntil == [.seconds(5)])
         a.clock.release(through: 5)
         await f.reach("timer wake #1")
-        #expect(await a.log == ["abandoned 2 deadline at 0"])
+        #expect(await a.log == ["abandoned 2 deadline at 5"])
         a.clock.release(through: 9)
         await f.reach("timer wake #2")
-        #expect(await a.log == ["abandoned 2 deadline at 0", "abandoned 1 deadline at 0"])
+        #expect(await a.log == ["abandoned 2 deadline at 5", "abandoned 1 deadline at 9"])
         let timer = await a.timer()
         #expect(timer.starts == 2)
         #expect(timer.superseded == 1)
@@ -61,12 +61,13 @@ struct DeadlineTimerTests {
         a.clock.release(through: 9)
         // Woken for 9, and held before its hop to the actor.
         await f.reach("woke deadline 9")
-        // An earlier deadline re-arms: the held sleeper is cancelled, and a new one starts for 5.
-        await a.send(.request(2, seconds: 5))
+        // An earlier timer re-arms: the held sleeper is cancelled, and a new one starts for 5,
+        // which returns at once (time is already 9).
+        await a.send(.arm(2, seconds: 5))
         f.open("resume deadline 9")
         await f.reach("superseded wake #1")
         await f.reach("timer wake #2")
-        #expect(await a.log == ["abandoned 2 deadline at 0", "abandoned 1 deadline at 0"])
+        #expect(await a.log == ["tick 2 at 9", "abandoned 1 deadline at 9"])
         let timer = await a.timer()
         #expect(timer.starts == 2)
         #expect(timer.superseded == 1)
@@ -132,7 +133,7 @@ struct DeadlineTimerTests {
         await a.send(.requests([1, 2], seconds: 5))
         a.clock.release(through: 5)
         await f.reach("stale deadline #1")
-        #expect(await a.log == ["abandoned 1 deadline at 0", "abandoned 2 cancelled at 0"])
+        #expect(await a.log == ["abandoned 1 deadline at 5", "abandoned 2 cancelled at 5"])
         #expect(f.count(of: "stale deadline") == 1)
     }
 
@@ -151,20 +152,51 @@ struct DeadlineTimerTests {
         #expect(await a.timer().wakes == 2)
     }
 
-    @Test("8: a wake steps at most 64 due entries; the rest steps on the next wake, after other entries", arguments: [16, 1])
+    @Test("8: a wake steps at most 64 due entries; the rest steps on the next wake, and other work can run before it", arguments: [16, 1])
     func capPerWake(maxReleasesPerBatch: Int) async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f, maxReleasesPerBatch: maxReleasesPerBatch)
         await a.send(.requests(Array(1 ... 66), seconds: 5))
-        await a.onOutputSendLater(1, "between")
+        // The first wake's return sleeps until 5 again: that second sleep is held after it wakes.
+        a.clock.holdAfterWake(5, skipping: 1)
         a.clock.release(through: 5)
+        await f.reach("timer wake #1")
+        // 64 fired in the first wake: the cap doesn't follow `maxReleasesPerBatch`.
+        #expect(await a.log.count == 64)
+        await a.send(.note("between"))
+        f.open("resume deadline 5")
         await f.reach("timer wake #2")
         let log = await a.log
         #expect(log.count == 67)
-        // The note, queued by the first fire's flush as a new actor job, steps after 64 fires and
-        // before the 65th: the cap doesn't follow `maxReleasesPerBatch`.
         #expect(log.firstIndex(of: "between") == 64)
         #expect(await a.timer().wakes == 2)
+    }
+
+    @Test("8: stale entries don't count toward the cap: a live entry behind 64 stale ones fires in the same wake")
+    func staleEntriesDontFillTheCap() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        // 64 stale entries due at 5, armed before request 1; 200 live ones at 3600 keep the stale
+        // ones under half the heap, so no compaction drops them first.
+        _ = await a.sendEach([.requests(Array(100 ..< 164), seconds: 5), .request(1, seconds: 5),
+                              .requests(Array(200 ..< 400), seconds: 3600), .cancelEach(Array(100 ..< 164))])
+        a.clock.release(through: 5)
+        await f.reach("stale deadline #64")
+        await f.reach("out 1 #1")
+        #expect(await a.log.filter { $0.contains("deadline") } == ["abandoned 1 deadline at 5"])
+        #expect(await a.timer().wakes == 1)
+    }
+
+    @Test("8: a wake pops at most 256 stale entries; the rest are reported on the next wake")
+    func stalePopsAreBounded() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        _ = await a.sendEach([.requests(Array(100 ..< 400), seconds: 5), .requests(Array(1000 ..< 1400), seconds: 3600),
+                              .cancelEach(Array(100 ..< 400))])
+        a.clock.release(through: 5)
+        await f.reach("stale deadline #300")
+        #expect(await a.timer().wakes == 2)
+        #expect(await a.timer().entries == 400)
     }
 
     @Test("9: stale entries are compacted: the heap stays bounded, the live entry still fires, and order holds after a rebuild")
@@ -186,7 +218,7 @@ struct DeadlineTimerTests {
         await f.reach("out 1 #1")
         // The cancels' own abandonments aside: the deadlines, in instant order.
         #expect(await a.log.filter { $0.contains("deadline") } == [
-            "abandoned 2 deadline at 0", "abandoned 3 deadline at 0", "abandoned 4 deadline at 0", "abandoned 1 deadline at 0",
+            "abandoned 2 deadline at 10", "abandoned 3 deadline at 10", "abandoned 4 deadline at 10", "abandoned 1 deadline at 10",
         ])
         #expect(f.count(of: "stale deadline") == 0)
     }
@@ -214,8 +246,52 @@ struct DeadlineTimerTests {
         await f.reach("sleeping deadline 10 #1")
         a.clock.release(through: 10)
         await f.reach("timer wake #2")
-        #expect(await a.log.filter { $0.contains("deadline") } == ["abandoned 2 deadline at 0"])
+        #expect(await a.log.filter { $0.contains("deadline") } == ["abandoned 2 deadline at 10"])
         #expect(await a.timer().starts == 1)
+    }
+
+    @Test("9: no compaction during a wake: entries closed while outside the heap keep the count exact, and the heap is compacted after it")
+    func noCompactionDuringAWake() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        // Due at 5, in this arm order: 1, 12, then 2 to 11. Request 1's step closes 64 requests in
+        // the heap and 2 to 11, which the wake already took, then arms request 3 at 65 (a
+        // compaction point, were compactions allowed during a wake). Request 12's step closes 64
+        // more in the heap. Request 3 then heads the heap, so the silent head drop can't clear
+        // the closed ones behind it: only a compaction can.
+        _ = await a.sendEach([
+            .onAbandonCancelEach(1, others: Array(200 ..< 264) + Array(2 ..< 12)),
+            .onAbandonRequest(1, other: 3, nanoseconds: 60_000_000_000),
+            .onAbandonCancelEach(12, others: Array(300 ..< 364)),
+            .requests([1, 12] + Array(2 ..< 12), seconds: 5),
+            .requests(Array(200 ..< 264) + Array(300 ..< 364), seconds: 3600),
+        ])
+        a.clock.release(through: 5)
+        await f.reach("timer wake #1")
+        #expect(await a.log.filter { $0.contains("deadline") } == ["abandoned 1 deadline at 5", "abandoned 12 deadline at 5"])
+        // 2 to 11 were reached as stale at their turns.
+        #expect(f.count(of: "stale deadline") == 10)
+        // Only request 3's entry is left.
+        #expect(await a.timer().entries == 1)
+        #expect(await a.timer().live == 1)
+    }
+
+    @Test("9: the silent drop after a wake shares the stale budget; the closed entries past it are reported at their instant")
+    func headDropIsBounded() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        // 300 closed entries at 10, behind a live one at 5; 400 live ones at 3600 keep them under
+        // half the heap, so no compaction drops them.
+        _ = await a.sendEach([.request(1, seconds: 5), .requests(Array(100 ..< 400), seconds: 10),
+                              .requests(Array(1000 ..< 1400), seconds: 3600), .cancelEach(Array(100 ..< 400))])
+        a.clock.release(through: 5)
+        await f.reach("out 1 #1")
+        // The wake at 5 dropped 256 of them silently; 44 are left, so it sleeps until 10.
+        #expect(await a.timer().entries == 444)
+        #expect(f.count(of: "stale deadline") == 0)
+        a.clock.release(through: 10)
+        await f.reach("stale deadline #44")
+        #expect(await a.timer().entries == 400)
     }
 
     @Test("10: endAll stops the timer: the heap empties, the sleeper is cancelled, and no release steps anything")
@@ -234,6 +310,28 @@ struct DeadlineTimerTests {
         #expect(await a.timer().wakes == 0)
     }
 
+    @Test("10: endAll in a wake's first entry: the rest of the wake doesn't run or report, and the old sleeper exits")
+    func endAllInsideAWake() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        // Request 1's abandonment ends everything; requests 2 and 3 are due in the same wake.
+        await a.send(.onAbandonTeardown(1))
+        await a.send(.requests([1, 2, 3], seconds: 5))
+        a.clock.release(through: 5)
+        await f.reach("timer wake #1")
+        #expect(await a.log == ["abandoned 1 deadline at 5", "abandoned 2 keyEnded at 5", "abandoned 3 keyEnded at 5"])
+        // 2 and 3 were taken as live, then closed by the endAll: their turns don't come.
+        #expect(f.count(of: "stale deadline") == 0)
+        #expect(await a.timer().entries == 0)
+        a.clock.release(through: 3600)
+        // The sleeper ended with its wake: no second sleep, no further wake.
+        #expect(a.clock.sleeps == 1)
+        let timer = await a.timer()
+        #expect(timer.starts == 1)
+        #expect(timer.wakes == 1)
+        #expect(timer.superseded == 0)
+    }
+
     @Test("11: a periodic timer reuses the one sleeper")
     func periodicReusesTheSleeper() async {
         let f = Fixture()
@@ -249,16 +347,81 @@ struct DeadlineTimerTests {
         #expect(await a.deadlineTimer().starts == 1)
     }
 
-    @Test("12: a replaced or dropped timer releases its input at once, while its heap entry stays")
+    @Test("12: a replaced, ended, superseded or endAll-dropped timer releases its input at once, while its heap entry stays")
     func timerInputReleasedAtOnce() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
-        let after = await a.sendEachTimers([
-            .arm(1, seconds: 3600), .arm(1, seconds: 3600),
-            .arm(2, seconds: 3600), .end(2),
-            .arm(3, seconds: 3600), .supersede(3),
-        ])
-        #expect(after.map(\.inputs) == [1, 1, 2, 1, 2, 1])
-        #expect(after.map(\.entries) == [1, 2, 3, 3, 4, 4])
+        let closers: [(Int) -> DeadlineMachine.Input] = [{ .arm($0, seconds: 3600) }, { .end($0) }, { .supersede($0) }, { _ in .teardown }]
+        for (label, closer) in closers.enumerated() {
+            weak var probe: Probe?
+            do {
+                let held = Probe()
+                probe = held
+                await a.send(.armProbe(label, seconds: 3600, held))
+            }
+            #expect(probe != nil)
+            await a.send(closer(label))
+            #expect(probe == nil, "closer \(label)")
+        }
+    }
+
+    @Test("12: replacing a timer with an earlier one re-arms the sleeper; the old entry is dropped silently")
+    func earlierReplacementRearms() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        await a.send(.arm(1, seconds: 9))
+        await f.reach("sleeping deadline 9 #1")
+        await a.send(.arm(1, seconds: 5))
+        await f.reach("cancelled deadline 9")
+        await f.reach("sleeping deadline 5 #1")
+        a.clock.release(through: 5)
+        await f.reach("timer wake #1")
+        #expect(await a.log == ["tick 1 at 5"])
+        // The replaced entry at 9 was cleared after the wake: nothing is left to sleep for.
+        #expect(await a.timer().entries == 0)
+        #expect(await a.timer().starts == 2)
+        #expect(f.count(of: "stale timer") == 0)
+    }
+
+    @Test("13: entries armed during a wake, earlier than or equal to one still to fire, fire on the next wake")
+    func armedDuringAWakeWaitsForTheNext() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        await a.send(.onTickArm(1, labels: [3, 4], seconds: [4, 5]))
+        await a.send(.arm(1, seconds: 5))
+        await a.send(.arm(2, seconds: 5))
+        a.clock.release(through: 5)
+        await f.reach("timer wake #2")
+        #expect(await a.log == ["tick 1 at 5", "tick 2 at 5", "tick 3 at 5", "tick 4 at 5"])
+    }
+
+    @Test("13: one step's entries at one instant: its timer, then its gate deadline, then its request deadline, whatever the call order")
+    func sameInstantArmOrder() async {
+        let f = Fixture()
+        let a = FollowUpActor(fixture: f)
+        await a.send(.script([.start(1), .start(2), .start(3),
+                              .holdLabelled("R", gate: "r", key: 2, deadlineSeconds: 5),
+                              .arm("G", .work(gate: "g", deadlineSeconds: 5)),
+                              .timerLabelled("T", key: 3, seconds: 5)]))
+        a.clock.release(through: 5)
+        #expect(await bounded { await a.waitForQuiescence() })
+        #expect(await a.snapshot().log == ["armed G", "parked T", "abandoned G deadline", "abandoned R deadline"])
+    }
+
+    enum Ambient {
+        @TaskLocal static var tag: Int?
+    }
+
+    @Test("14: the shared sleeper takes no task-local from the step that armed it")
+    func sleeperIsDetached() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        await a.recordOnFlush { Ambient.tag }
+        await Ambient.$tag.withValue(7) {
+            await a.send(.request(1, seconds: 5))
+        }
+        a.clock.release(through: 5)
+        await f.reach("out 1 #1")
+        #expect(await a.flushReadings == [nil])
     }
 }

@@ -147,9 +147,10 @@ final class Fixture: @unchecked Sendable {
 
 /// A clock the test drives by hand, with monotonic time (after `swift-clocks`' `TestClock`).
 /// `now` starts at zero, is moved forward by the test and counts its reads. Sleeps wait for the
-/// release horizon: `release(through:)` raises it and wakes every sleep until an instant at or
-/// before it, in instant order, and a later sleep until a released instant returns at once. A
-/// sleep returns early when its task is cancelled. When it returns it opens "woke deadline N" or
+/// release horizon: `release(through:)` moves `now` up to it, raises it, and wakes every sleep
+/// until an instant at or before it, in instant order; a later sleep until a released instant
+/// returns at once. So an uncancelled sleep never returns before `now` reaches its instant, as
+/// `TurnClock` requires. A sleep returns early when its task is cancelled. When it returns it opens "woke deadline N" or
 /// "cancelled deadline N" (N whole seconds, else "Nns"), so a check can wait for either.
 /// `holdAfterWake` makes a woken sleep wait at "resume deadline N" before it returns. A sleep
 /// that starts waiting for a release opens "sleeping deadline N #k" (k counts them).
@@ -170,7 +171,8 @@ final class TestClock: TurnClock, @unchecked Sendable {
     private var nextSleep: UInt64 = 0
     private var sleepCount = 0
     private var inFlight = 0
-    private var held: Set<Int64> = []
+    /// Instants whose woken sleeps are held, with how many wakes to let through first.
+    private var held: [Int64: Int] = [:]
 
     init(fixture: Fixture) {
         self.fixture = fixture
@@ -214,9 +216,11 @@ final class TestClock: TurnClock, @unchecked Sendable {
         }
     }
 
-    /// Releases every sleep until `instant` or earlier, in instant order (then start order).
+    /// Moves `now` up to `instant` (never back), then releases every sleep until `instant` or
+    /// earlier, in instant order (then start order).
     func release(through instant: TurnInstant) {
         let woken = lock.withLock { () -> [CheckedContinuation<Bool, Never>] in
+            current = max(current, instant)
             horizon = max(horizon, instant.nanoseconds)
             let due = pending.filter { $0.value.instant <= horizon }
                 .sorted { ($0.value.instant, $0.key) < ($1.value.instant, $1.key) }
@@ -230,7 +234,7 @@ final class TestClock: TurnClock, @unchecked Sendable {
         release(through: .seconds(seconds))
     }
 
-    /// `set` plus `release(through:)`.
+    /// `set` plus `release(through:)`: `instant` must not be before `now`.
     func advance(to instant: TurnInstant) {
         set(instant)
         release(through: instant)
@@ -240,10 +244,10 @@ final class TestClock: TurnClock, @unchecked Sendable {
         advance(to: .seconds(seconds))
     }
 
-    /// The sleep that wakes for `seconds` waits at "resume deadline N" (cancellable) before it
-    /// returns, after opening "woke deadline N".
-    func holdAfterWake(_ seconds: Int64) {
-        lock.withLock { _ = held.insert(TurnInstant.seconds(seconds).nanoseconds) }
+    /// A sleep that wakes for `seconds` waits at "resume deadline N" (cancellable) before it
+    /// returns, after opening "woke deadline N". The first `skipping` such wakes aren't held.
+    func holdAfterWake(_ seconds: Int64, skipping: Int = 0) {
+        lock.withLock { held[TurnInstant.seconds(seconds).nanoseconds] = skipping }
     }
 
     static func gate(for instant: TurnInstant) -> String {
@@ -283,7 +287,13 @@ final class TestClock: TurnClock, @unchecked Sendable {
             sleep?.continuation.resume(returning: false)
         }
         fixture.open(woke ? "woke \(gate)" : "cancelled \(gate)")
-        if woke, lock.withLock({ held.contains(instant.nanoseconds) }) {
+        let hold = woke && lock.withLock { () -> Bool in
+            guard let skips = held[instant.nanoseconds] else { return false }
+            if skips == 0 { return true }
+            held[instant.nanoseconds] = skips - 1
+            return false
+        }
+        if hold {
             _ = await fixture.waitUnlessCancelled("resume \(gate)")
         }
         lock.withLock { inFlight -= 1 }

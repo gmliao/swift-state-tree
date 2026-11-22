@@ -138,7 +138,7 @@ actor LobbyActor: TurnActor {
 }
 ```
 
-``TurnActor/perform(_:)`` does the work of an effect and returns the input that reports it. ``TurnActor/flush(_:)`` takes a step's outputs between steps; in a server, this is where the sends go. A deadline's or a timer's task doesn't keep the actor alive. An effect's task does, until its result has been handled.
+``TurnActor/perform(_:)`` does the work of an effect and returns the input that reports it. ``TurnActor/flush(_:)`` takes a step's outputs between steps; in a server, this is where the sends go. The core's timer task, which serves every deadline and timer, doesn't keep the actor alive. An effect's task does, until its result has been handled.
 
 ### Why `perform` is both `nonisolated` and `@concurrent`
 
@@ -150,11 +150,11 @@ Limit: `@concurrent` can't be used alone here. Without `nonisolated`, the method
 
 ## The clock
 
-The core reads time and sleeps through an injected ``TurnClock``. There is no default clock. A production clock measures from ``TurnInstant/processOrigin``, and its sleep returns early when cancelled:
+The core reads time and sleeps through an injected ``TurnClock``. There is no default clock. A production clock measures from ``TurnInstant/processOrigin``, and its sleep returns no earlier than the instant it was given, unless it is cancelled. The core fires what is due at that instant without reading the clock again, so a sleep that returned early would fire entries early:
 
 ```swift
-/// A production clock: instants from the process's origin, a sleep that ends early when
-/// cancelled.
+/// A production clock: instants from the process's origin, a sleep that returns no earlier
+/// than its instant, unless it is cancelled.
 struct ContinuousTurnClock: TurnClock {
     var now: TurnInstant { TurnInstant(ContinuousClock.now) }
 

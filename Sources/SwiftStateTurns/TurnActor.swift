@@ -190,9 +190,15 @@ extension TurnActor {
 
     /// The core's timer woke for `target` (#621 item 2, Notes/plans/2026-11-21-turns-shared-
     /// deadline-timer.md §3.4). It steps the entries due at `target`, each as its own entry and
-    /// batch, in (instant, arm order), up to `maxFiresPerWake`, and returns the instant to sleep
-    /// until next; nil ends the sleeper (nothing is armed, or the wake is foreign or superseded).
-    /// The wake itself changes no machine state: only a live entry begins an entry.
+    /// batch, in (instant, arm order), and returns the instant to sleep until next; nil ends the
+    /// sleeper (nothing is armed, or the wake is foreign or superseded). The wake itself changes
+    /// no machine state: only a live entry begins an entry.
+    ///
+    /// Its work is bounded twice: at most `maxFiresPerWake` live entries step, and at most
+    /// `maxStalePopsPerWake` stale entries are popped. The rest is due at once, so the next wake
+    /// follows without a sleep, and other work queued on the actor can run before it. A
+    /// compaction runs before the due list is taken and after it is stepped, never while a due
+    /// entry is outside the heap, so the stale count stays exact.
     @inlinable func timerWoke(_ target: TurnInstant, generation: UInt64, incarnation: UInt64) -> TurnInstant? {
         let core = self.core
         guard core.incarnation == incarnation else {
@@ -209,12 +215,23 @@ extension TurnActor {
         }
         core.timerWakesForTesting &+= 1
         core.onTimerWakeForTesting?(false)
+        core.compactDeadlinesIfStale()
         core.sleeperAwake = true
         // The due list is taken first: an entry a step arms during this wake isn't due in it,
-        // even at or before `target`.
+        // even at or before `target`. A due entry already stale is popped here, reported, and
+        // left out of the count of live entries.
         var due: [DeadlineEntry] = []
-        while due.count < TurnCore<M>.maxFiresPerWake, let head = core.deadlines.first, head.instant <= target.nanoseconds {
-            due.append(head)
+        var stalePops = 0
+        while let head = core.deadlines.first, head.instant <= target.nanoseconds {
+            if core.deadlineIsLive(head) {
+                if due.count == TurnCore<M>.maxFiresPerWake { break }
+                due.append(head)
+            } else {
+                if stalePops == TurnCore<M>.maxStalePopsPerWake { break }
+                stalePops &+= 1
+                if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                core.onDiagnostic?(head.isTimer ? .staleTimer : .staleDeadline)
+            }
             _ = core.deadlines.popFirst()
         }
         for entry in due {
@@ -224,9 +241,14 @@ extension TurnActor {
         }
         core.sleeperAwake = false
         if core.sleeperGeneration != generation { return nil }
-        // Stale heads are dropped silently, as a compaction drops them.
-        while let head = core.deadlines.first, !core.deadlineIsLive(head) {
+        core.compactDeadlinesIfStale()
+        // Stale heads after `target` are dropped silently, as a compaction drops them, within
+        // the same budget. A stale head at or before it (armed and closed during this wake, or
+        // past the budget) waits for the next wake, which reports it.
+        while stalePops < TurnCore<M>.maxStalePopsPerWake, let head = core.deadlines.first,
+              head.instant > target.nanoseconds, !core.deadlineIsLive(head) {
             _ = core.deadlines.popFirst()
+            stalePops &+= 1
             if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
         }
         guard let head = core.deadlines.first else {
@@ -235,16 +257,17 @@ extension TurnActor {
             return nil
         }
         // At or before `target` (a capped wake's rest, or an entry armed during it): the sleep
-        // returns at once, and other entries queued on the actor run before the next wake.
+        // returns at once, and other entries queued on the actor can run before the next wake.
         let next = TurnInstant(nanoseconds: head.instant)
         core.sleeperTarget = next
         return next
     }
 
-    /// One due entry of a wake. The ticket is checked here, at its turn, before the entry begins:
-    /// a stale entry (its request or gate closed, its timer replaced or dropped, possibly by an
-    /// earlier entry of this wake) only reports `.staleDeadline` or `.staleTimer`. A live timer
-    /// steps its input as a control input.
+    /// One due entry of a wake, live when the wake took it. The ticket is checked again here, at
+    /// its turn, before the entry begins: an entry an earlier entry of this wake made stale (its
+    /// request or gate closed, its timer replaced or dropped) only reports `.staleDeadline` or
+    /// `.staleTimer`. A live timer steps its input as a control input. The timer stays in the
+    /// runtime's table until after `beginEntry()`, as a request stays open until its close.
     @inlinable func fireDeadline(_ entry: DeadlineEntry) {
         let core = self.core
         if entry.isTimer {
@@ -254,9 +277,9 @@ extension TurnActor {
                 core.onDiagnostic?(.staleTimer)
                 return
             }
+            beginEntry()
             core.rt.timers.removeValue(forKey: key)
             core.rt.timerKeys.removeValue(forKey: entry.ticket)
-            beginEntry()
             core.step(armed.input, caller: nil)
             runSegment()
             return
@@ -285,7 +308,8 @@ extension TurnActor {
     /// instant it sleeps until and no wake is being serviced (that wake returns the next target).
     @inlinable func armDeadline(_ instant: TurnInstant, ticket: UInt64, isTimer: Bool) {
         let core = self.core
-        core.compactDeadlinesIfStale()
+        // Not during a wake: its due entries are outside the heap and still counted.
+        if !core.sleeperAwake { core.compactDeadlinesIfStale() }
         core.nextArm &+= 1
         core.deadlines.push(DeadlineEntry(instant: instant.nanoseconds, order: core.nextArm, ticket: ticket, isTimer: isTimer))
         if core.sleeper == nil {
@@ -299,7 +323,9 @@ extension TurnActor {
     /// Starts the core's one sleeping task. It touches no core state: it sleeps, hops to
     /// `timerWoke` and sleeps until the instant that returns. Held weakly between hops, so it
     /// doesn't keep a released actor alive. Woken early (cancelled) or on time, it still hops,
-    /// and the actor drops a superseded wake by its generation.
+    /// and the actor drops a superseded wake by its generation. Detached at `.medium`: it serves
+    /// every later deadline and timer, so it takes neither the priority nor the task-locals of
+    /// the step that happened to arm the first one.
     @inlinable func startSleeper(until instant: TurnInstant) {
         let core = self.core
         core.sleeperGeneration &+= 1
@@ -308,7 +334,7 @@ extension TurnActor {
         let generation = core.sleeperGeneration
         let incarnation = core.incarnation
         let clock = core.clock
-        core.sleeper = Task { [weak self] in
+        core.sleeper = Task.detached(priority: .medium) { [weak self] in
             var target = instant
             while true {
                 await clock.sleep(until: target)

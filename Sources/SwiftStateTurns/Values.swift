@@ -207,10 +207,9 @@ extension Duration {
 /// passes one it drives by hand.
 public protocol TurnClock: Sendable {
     var now: TurnInstant { get }
-    /// Returns at `instant`, or earlier when its task is cancelled. A caller that wakes re-checks
-    /// whatever it slept for: the core does, before it abandons a request or fires a timer.
-    /// Returns no earlier than `instant` unless its task is cancelled: the core fires what is due
-    /// at the instant it slept until without reading the clock again. A core has at most one
-    /// sleep in flight, plus a superseded one finishing.
+    /// Returns once `now` has reached `instant`, never earlier unless its task is cancelled: the
+    /// core fires what is due at the instant it slept until without reading the clock again. A
+    /// cancelled sleep may return at once. A core has one current sleep; sleeps it superseded may
+    /// still be finishing, and their returns do nothing.
     func sleep(until instant: TurnInstant) async
 }

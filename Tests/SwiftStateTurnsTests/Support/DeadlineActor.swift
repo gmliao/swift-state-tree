@@ -42,6 +42,13 @@ actor DeadlineActor: TurnActor {
          core.liveDeadlinesForTesting, core.deadlineEntriesForTesting)
     }
 
+    /// Records `read()` at each flush, on the task that flushed.
+    func recordOnFlush(_ read: @escaping @Sendable () -> Int?) {
+        flushHook = { (owner: isolated DeadlineActor, _: [Int]) in owner.flushReadings.append(read()) }
+    }
+
+    var flushReadings: [Int?] = []
+
     /// When a flush first carries `value`: a new actor job sends `.note(text)`. That job runs
     /// after the one that flushed, ahead of the core timer's next hop.
     func onOutputSendLater(_ value: Int, _ text: String) {

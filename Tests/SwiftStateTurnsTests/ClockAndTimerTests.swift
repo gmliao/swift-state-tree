@@ -100,12 +100,12 @@ struct ClockAndTimerTests {
         await a.waitForLog(2)
 
         // A request cancelled before its deadline: its entry stays in the core's timer, and is
-        // reached at 9 as stale. No sleep is cancelled.
+        // reached at 16 (now 7, plus 9) as stale. No sleep is cancelled.
         await a.send(.replyAfter(job: 8, gate: "c8", deadline: .seconds(9)))
         await a.send(.cancelJob(8))
-        a.clock.release(through: 9)
+        a.clock.release(through: 16)
         await f.reach("stale deadline #2")
-        #expect(!f.isOpen("cancelled deadline 9"))
+        #expect(!f.isOpen("cancelled deadline 16"))
         f.open("c8")
         await a.waitForLog(4)
         let s = await a.snapshot()
