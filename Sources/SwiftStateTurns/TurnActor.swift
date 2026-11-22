@@ -148,11 +148,13 @@ extension TurnActor {
     }
 
     /// The mailbox's wake: an ordinary entry. It finds the mailbox empty when an entry took the
-    /// mail first (`emptyMailboxWakes`), and ends through the epilogue either way.
-    @inlinable func mailboxWoke() {
+    /// mail first (`emptyMailboxWakes`), and ends through the epilogue either way. `remainder`:
+    /// the epilogue's wake for mail a spent budget left, which owns `mailboxWakeScheduled`; a
+    /// post's wake leaves the flag alone, so it can't clear it while a remainder wake is pending.
+    @inlinable func mailboxWoke(remainder: Bool = false) {
         let core = self.core
         core.onMailboxWakeForTesting?()
-        core.mailboxWakeScheduled = false
+        if remainder { core.mailboxWakeScheduled = false }
         if let mailbox = core.mailbox, mailbox.isEmpty { core.counters.emptyMailboxWakes += 1 }
         beginEntry()
         if core.rt.dirty { runSegment() }
@@ -627,7 +629,11 @@ extension TurnActor {
         // lock off an entry that spent none.
         if TurnCore<M>.usesMailbox, core.mailBudget == 0, !core.mailboxWakeScheduled, let mailbox = core.mailbox, !mailbox.isEmpty {
             core.mailboxWakeScheduled = true
-            Task { await self.mailboxWoke() }
+            let hold = core.onRemainderWakeForTesting?()
+            Task {
+                await hold?()
+                await self.mailboxWoke(remainder: true)
+            }
         }
         // Checked here, not in the call: an empty check inline costs a load, a call per segment
         // costs the whole frame.

@@ -100,6 +100,17 @@ actor MailboxActor: TurnActor {
         }
     }
 
+    /// Holds every remainder wake (the epilogue's, for mail a spent budget left) before it reaches
+    /// the actor. Each opens "remainder #n" as the epilogue schedules it, then waits for
+    /// "remainder go".
+    func holdRemainderWakes() {
+        let fixture = self.fixture
+        core.onRemainderWakeForTesting = {
+            fixture.openCounted("remainder")
+            return { await fixture.wait("remainder go") }
+        }
+    }
+
     /// Sets the mailbox check's hook: `body` runs at each check, after its watermark is read.
     func onMailboxCheck(_ body: (@Sendable () -> Void)?) {
         core.onMailboxCheckForTesting = body

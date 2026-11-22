@@ -49,18 +49,47 @@ struct MailboxStorageTests {
         #expect(mailbox.isEmpty)
     }
 
-    @Test("20: a mail whose deinit posts to the same mailbox is removed and released without a deadlock")
-    func releaseOutsideTheLock() {
+    @Test("20: a removed mail is released before the next removal, while another stays pending")
+    func releasedAtItsRemoval() {
+        let released = Released()
         let mailbox = TurnMailbox<DeinitMail>(capacity: 2)
-        _ = mailbox.append(DeinitMail(onDeinit: { _ = mailbox.append(DeinitMail()) }))
-        // The removed mail is released here, after `removeHead` dropped the lock.
+        _ = mailbox.append(DeinitMail(onDeinit: { released.add("A") }))
+        _ = mailbox.append(DeinitMail(onDeinit: { released.add("B") }))
         _ = mailbox.removeHead(atOrBelow: mailbox.watermark)
-        #expect(!mailbox.isEmpty)
-        // The same through `removeAll`, the take's path.
-        _ = mailbox.removeAll()
-        _ = mailbox.append(DeinitMail(onDeinit: { _ = mailbox.append(DeinitMail()) }))
-        _ = mailbox.removeAll()
-        #expect(mailbox.removeAll().count == 1)
-        #expect(mailbox.isEmpty)
+        // A storage that keeps handed-out mail until it empties would still hold A here.
+        #expect(released.names == ["A"])
+        #expect(mailbox.heldMailForTesting == 1)
+        _ = mailbox.removeHead(atOrBelow: mailbox.watermark)
+        #expect(released.names == ["A", "B"])
     }
+
+    @Test("20: a mail whose deinit posts to the same mailbox is removed and released without a deadlock")
+    func releaseOutsideTheLock() async {
+        // Under the hang bound: a release under the lock deadlocks, and the test fails instead of
+        // hanging the suite.
+        let ended = await withinTurnHangBound { () -> Bool in
+            let mailbox = TurnMailbox<DeinitMail>(capacity: 2)
+            _ = mailbox.append(DeinitMail(onDeinit: { _ = mailbox.append(DeinitMail()) }))
+            _ = mailbox.append(DeinitMail())
+            // The removed mail is released here, after `removeHead` dropped the lock, with
+            // another still pending.
+            _ = mailbox.removeHead(atOrBelow: mailbox.watermark)
+            guard mailbox.heldMailForTesting == 2 else { return false }
+            // The same through `removeAll`, the take's path.
+            _ = mailbox.removeAll()
+            _ = mailbox.append(DeinitMail(onDeinit: { _ = mailbox.append(DeinitMail()) }))
+            _ = mailbox.removeAll()
+            return mailbox.removeAll().count == 1 && mailbox.isEmpty
+        }
+        #expect(ended == true)
+    }
+}
+
+/// The names of the mail released so far, in order.
+final class Released: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [String] = []
+
+    func add(_ name: String) { lock.withLock { list.append(name) } }
+    var names: [String] { lock.withLock { list } }
 }

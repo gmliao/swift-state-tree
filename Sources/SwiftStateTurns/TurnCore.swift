@@ -239,6 +239,13 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var onMailboxWakeForTesting: (() -> Void)?
+    /// Tests: called on the actor when the epilogue schedules a remainder wake (for mail a spent
+    /// budget left), so a test counts it as it is scheduled. The closure it returns is awaited at
+    /// the start of that wake's task, before it hops onto the actor, so a test can hold the wake.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onRemainderWakeForTesting: (() -> @Sendable () async -> Void)?
     /// Tests: called on the actor at an entry's boundary (`entryBoundary`), after its mailbox take
     /// and ordinal and before its own work, so a test can post there. Observe-only, apart from
     /// `post`.

@@ -289,6 +289,54 @@ struct MailboxTests {
         #expect(batches == [["mail R1", "mail R2"], ["mail R3"]])
     }
 
+    @Test("11d: a pending remainder wake coalesces: an entry that spends its budget while it is held schedules no second one")
+    func remainderWakeCoalesces() async {
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        // Each flush posts while another mail is pending, so no post schedules a wake. The wake
+        // steps R1 and R2 and leaves R3 and R4: its epilogue schedules the remainder wake, held.
+        await Self.heldPost(a, MailNote("R1", then: [.post("R3", then: [.post("R5", then: [.note("R5 done")])])]))
+        _ = a.post(MailNote("R2", then: [.post("R4")]))
+        a.fixture.open("wake R1")
+        await a.fixture.reach("remainder #1")
+        // X's take steps R3 and R4 and leaves R5, spending the budget again, while the wake is held.
+        await a.send(.script([.log("X")]))
+        _ = await a.log
+        #expect(a.fixture.count(of: "remainder") == 1)
+        a.fixture.open("remainder go")
+        await a.fixture.reach("flushed R5 done")
+        let batches = await a.log(cutBy: a.wakes).dropFirst().filter { !$0.isEmpty }
+        #expect(batches == [["mail R1", "mail R2", "mail R3", "mail R4", "X"], ["mail R5"]])
+        #expect(a.fixture.count(of: "remainder") == 1)
+        #expect(await a.stats.emptyMailboxWakes == 0)
+    }
+
+    @Test("11e: a post's wake leaves a pending remainder wake's flag alone: its own spent budget schedules no second one")
+    func postWakeLeavesTheRemainderFlag() async {
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        // The first wake steps R1 and R2 and leaves R3: the remainder wake is scheduled, held.
+        await Self.heldPost(a, MailNote("R1", then: [.post("R3")]))
+        _ = a.post(MailNote("R2"))
+        a.fixture.open("wake R1")
+        await a.fixture.reach("remainder #1")
+        // Y's take steps R3 and empties the mailbox, so R6's post schedules a wake of its own.
+        await a.send(.script([.log("Y")]))
+        // R6's wake steps R6 and R7 and leaves R8, spending its budget with the remainder wake
+        // still held.
+        await Self.heldPost(a, MailNote("R6", then: [.post("R8", then: [.note("R8 done")])]))
+        _ = a.post(MailNote("R7", then: [.note("R7 done")]))
+        a.fixture.open("wake R6")
+        await a.fixture.reach("flushed R7 done")
+        _ = await a.log
+        #expect(a.fixture.count(of: "remainder") == 1)
+        a.fixture.open("remainder go")
+        await a.fixture.reach("flushed R8 done")
+        _ = await a.log
+        #expect(a.fixture.count(of: "remainder") == 1)
+        #expect(await a.stats.emptyMailboxWakes == 0)
+    }
+
     @Test("14: FIFO across the two takes: a take during a check returns the mail it hasn't reached yet, in order")
     func fifoAcrossTakes() async {
         let a = await MailboxActor.started()
