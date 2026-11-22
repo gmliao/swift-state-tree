@@ -458,11 +458,27 @@ extension TurnActor {
         // The due list is taken first: an entry a step arms during this wake isn't due in it,
         // even at or before `target`. A due entry already stale is popped here, reported, and
         // left out of the count of live entries.
+        //
+        // With a mailbox, the first live head's entry takes the mail before the list is taken
+        // (#738's rule: the mailbox before the entry's state is read). A replay steps that
+        // mail at the first check before the entry's ordinal, which can be the trailing check
+        // of the previous segment, before this wake; taking it here too makes the list the
+        // same in both. The rest of the list is then read from the heap the mail left: an
+        // entry it closed pops as stale, and one it armed at or before `target` joins. The
+        // take is that entry's (the first `fireDeadline` takes none), so it takes no ordinal
+        // of its own; a wake whose heads are all stale takes nothing.
         var due: [DeadlineEntry] = []
         var stalePops = 0
+        var taken = false
         while let head = core.deadlines.first, head.instant <= target.nanoseconds {
             if core.deadlineIsLive(head) {
                 if due.count == TurnCore<M>.maxFiresPerWake { break }
+                if TurnCore<M>.usesMailbox, !taken {
+                    taken = true
+                    // `endAll` by this mail empties the heap: the loop ends, and so does the wake.
+                    beginEntry()
+                    continue
+                }
                 due.append(head)
             } else {
                 if stalePops == TurnCore<M>.maxStalePopsPerWake { break }
@@ -474,10 +490,10 @@ extension TurnActor {
             }
             _ = core.deadlines.popFirst()
         }
-        for entry in due {
+        for (index, entry) in due.enumerated() {
             // `endAll` in an earlier entry's step stopped the timer: the rest is dropped.
             if core.sleeperGeneration != generation { break }
-            fireDeadline(entry, generation: generation)
+            fireDeadline(entry, generation: generation, taken: taken && index == 0)
         }
         core.sleeperAwake = false
         if core.sleeperGeneration != generation { return nil }
@@ -515,31 +531,36 @@ extension TurnActor {
     /// - **live**: `entryBoundary()`, then the record is consumed: the request or the
     ///   follow-up closes with `.deadline`, or the timer leaves the runtime's table and its
     ///   input steps as a control input.
-    @inlinable func fireDeadline(_ entry: DeadlineEntry, generation: UInt64) {
+    ///
+    /// `taken`: the wake took this entry's mail before it read the due list, and nothing has
+    /// stepped since, so the entry is live and goes straight to its boundary.
+    @inlinable func fireDeadline(_ entry: DeadlineEntry, generation: UInt64, taken: Bool) {
         let core = self.core
-        let stale: TurnDiagnostic = entry.isTimer ? .staleTimer : .staleDeadline
-        guard core.deadlineIsLive(entry) else {
-            // Out of the heap already: one decrement for the close that counted it.
-            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
-            core.onDiagnostic?(stale)
-            return
-        }
-        beginEntry()
-        if TurnCore<M>.usesMailbox {
-            // `endAll` by the take's mail: `stopDeadlines()` zeroed the count and emptied the
-            // heap, and an entry it drops reports nothing.
-            if core.sleeperGeneration != generation {
-                if core.rt.dirty { runSegment() }
-                return
-            }
+        if !taken {
+            let stale: TurnDiagnostic = entry.isTimer ? .staleTimer : .staleDeadline
             guard core.deadlineIsLive(entry) else {
+                // Out of the heap already: one decrement for the close that counted it.
                 if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
                 core.onDiagnostic?(stale)
-                if core.rt.dirty { runSegment() }
                 return
             }
-            entryBoundary()
+            beginEntry()
+            if TurnCore<M>.usesMailbox {
+                // `endAll` by the take's mail: `stopDeadlines()` zeroed the count and emptied
+                // the heap, and an entry it drops reports nothing.
+                if core.sleeperGeneration != generation {
+                    if core.rt.dirty { runSegment() }
+                    return
+                }
+                guard core.deadlineIsLive(entry) else {
+                    if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                    core.onDiagnostic?(stale)
+                    if core.rt.dirty { runSegment() }
+                    return
+                }
+            }
         }
+        if TurnCore<M>.usesMailbox { entryBoundary() }
         if entry.isTimer {
             // Live: `timerKeys` holds only current generations, so both lookups succeed.
             if let key = core.rt.timerKeys.removeValue(forKey: entry.ticket),

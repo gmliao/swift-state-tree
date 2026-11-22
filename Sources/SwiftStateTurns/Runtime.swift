@@ -134,7 +134,7 @@ struct FollowUpRecord<M: TurnMachine> {
     @usableFromInline var input: M.Input
     /// Its gate (`.afterWork`) hasn't returned yet; false once it is due to step.
     @usableFromInline var waiting: Bool
-    /// A deadline task was armed for its gate.
+    /// A deadline entry was armed on the core's timer for its gate.
     @usableFromInline var hasDeadline: Bool
 
     @inlinable init(id: RequestID, input: M.Input, waiting: Bool, hasDeadline: Bool) {
