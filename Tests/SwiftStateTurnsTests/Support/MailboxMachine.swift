@@ -23,6 +23,8 @@ indirect enum MailOp: Sendable {
     case holdUntilReturn(gate: String, key: Int = 1)
     /// A request under `key`, with a deadline in whole seconds when given.
     case request(gate: String, key: Int = 1, deadlineSeconds: Int64? = nil)
+    /// A `run` of the effect at `gate`: no request; a "nil" gate mails nothing back.
+    case run(gate: String)
     /// A timer under `key` at `seconds`, whose input logs "timer `label`".
     case timer(String, key: Int = 1, seconds: Int64)
     /// An `.afterWork` follow-up under `key`, whose gate is "gate `gate`"; its step logs "ran
@@ -213,6 +215,8 @@ struct MailboxMachine: TurnMachine {
                 if let id = turn.request(.work(gate), for: key, holding: .untilWorkerReturns(99, deadline: .seconds(3600))) { labels[id] = gate }
             case .request(let gate, let key, let deadline):
                 if let id = turn.request(.work(gate), for: key, deadline: deadline.map { .seconds($0) }) { labels[id] = gate }
+            case .run(let gate):
+                turn.run(.work(gate))
             case .timer(let label, let key, let seconds):
                 turn.timer(at: .seconds(seconds), for: key, .fired(label))
             case .arm(let label, let key, let gate, let then):

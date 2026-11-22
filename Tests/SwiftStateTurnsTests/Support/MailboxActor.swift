@@ -111,6 +111,11 @@ actor MailboxActor: TurnActor {
         }
     }
 
+    /// Installs a replay on a core that already took entries: it must stop the process.
+    func installReplayForTesting(_ entries: [MailRecordEntry<MailNote>]) {
+        core.replayMail(entries)
+    }
+
     /// Sets the mailbox check's hook: `body` runs at each check, after its watermark is read.
     func onMailboxCheck(_ body: (@Sendable () -> Void)?) {
         core.onMailboxCheckForTesting = body

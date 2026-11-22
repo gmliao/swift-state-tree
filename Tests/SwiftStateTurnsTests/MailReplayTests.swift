@@ -11,14 +11,15 @@ struct MailReplayTests {
     /// divergences. `inputs` posts only when `posting` is true.
     static func liveThenReplay(
         maxReleasesPerBatch: Int = 64,
+        mailboxCapacity: Int = 8,
         queueLimit: Int = 64,
         edit: ([MailRecordEntry<MailNote>]) -> [MailRecordEntry<MailNote>] = { $0 },
         _ inputs: @escaping (MailboxActor, Bool) async -> Void
     ) async -> (live: [String], replayed: [String], record: [MailRecordEntry<MailNote>], diverged: [TurnReplayDivergence]) {
-        let live = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, queueLimit: queueLimit)
+        let live = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit)
         await inputs(live, true)
         let record = live.records.entries
-        let replay = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, queueLimit: queueLimit, replay: edit(record))
+        let replay = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit, replay: edit(record))
         await inputs(replay, false)
         await replay.finishReplay()
         return (await live.log, await replay.log, record, replay.records.diverged)
@@ -442,18 +443,19 @@ struct MailReplayTests {
             await a.send(.control([.hook, .close]))
         }
         #expect(outcome(await boundedResult(p)) == "\(TurnError.closed)")
+        await a.fixture.reach("stale cancellation #1")
         _ = a.post(MailNote("M", then: [.log("M")]))
         await a.fixture.reach("wake #1")
         await a.send(.control([.log("X")]))
         #expect(await a.stats.cancelledCalls == before)
         #expect(await a.log.suffix(3) == ["mail M", "M", "X"])
-        // Wherever the stale cancellation landed, it took no ordinal.
+        // The stale cancellation, reached before M's post, took no ordinal.
         #expect(a.records.entries.map(\.key) == [.before(step: 7, index: 0)])
     }
 
     @Test("13w: a core replaying its mail stops the process on a .cancelsCall call")
     func replayRefusesCancelsCall() async {
-        await #expect(processExitsWith: .failure) {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
             let a = await MailboxActor.started(replay: [])
             // Cancelled first, so the call ends at once if the refusal is ever dropped.
             let call = Task { () async throws -> Int in
@@ -462,6 +464,7 @@ struct MailReplayTests {
             }
             _ = await call.result
         }
+        RuntimeStopTests.expectCoreStop(result, "TurnActor: a mail replay doesn't take .cancelsCall calls")
     }
 
     @Test("13x: a stale timer takes no ordinal: one that lands before X live and after X in replay leaves the mail between them in place")
@@ -488,6 +491,158 @@ struct MailReplayTests {
         #expect(run.live.suffix(3) == ["mail M", "M", "X"])
         #expect(run.replayed == run.live)
         #expect(run.diverged.isEmpty)
+    }
+
+    /// Live: `pending` is left in the mailbox behind a held remainder wake. Capacity 2: the
+    /// step's check steps N and N2, which spend the budget; N posts `pending` while N2 is
+    /// still stored, so that post schedules no wake of its own. Then `gate` opens,
+    /// and the entry it lets in takes `pending` and reaches `event`, stale after its take.
+    /// Replay: the next input X (whose step takes a mail Z mid-step) comes first and steps
+    /// `pending`; then the entry arrives, stale before its take. Z's `inside` key pins X's step
+    /// number, so an ordinal the stale entry took live would show as a divergence.
+    static func staleAfterTake(_ prepare: [MailOp], at reach: String, pending: MailNote, open gate: String, event: String) async -> (live: [String], replayed: [String], record: [MailRecordEntry<MailNote>], diverged: [TurnReplayDivergence]) {
+        await liveThenReplay(mailboxCapacity: 2) { a, on in
+            await a.holdRemainderWakes()
+            await a.send(.script(prepare))
+            if !reach.isEmpty { await a.fixture.reach(reach) }
+            let hook: (@Sendable () -> Void)? = on ? { @Sendable in
+                _ = a.post(MailNote("N", then: [.post(pending.label, then: pending.then)]))
+                _ = a.post(MailNote("N2"))
+            } : nil
+            await StepHooks.$duringStep.withValue(hook) { await a.send(.script([.hook])) }
+            if on {
+                await a.fixture.reach("remainder #1")
+                a.fixture.open(gate)
+                await a.fixture.reach(event)
+            }
+            await posting(a, on, MailNote("Z")) { await a.send(.script([.hook, .take])) }
+            if !on {
+                a.fixture.open(gate)
+                await a.fixture.reach(event)
+            }
+            a.fixture.open("remainder go")
+        }
+    }
+
+    /// The 13t shape for an entry `open` lets in, stale before it enters: live it lands before
+    /// X with a wake-stepped mail M between them; in replay it lands after X. X's step takes a
+    /// mail Z mid-step, whose `inside` key pins X's step number.
+    static func staleBeforeX(_ prepare: [[MailOp]], at reach: String, open gate: String, event: String) async -> (live: [String], replayed: [String], record: [MailRecordEntry<MailNote>], diverged: [TurnReplayDivergence]) {
+        await liveThenReplay { a, on in
+            for (index, ops) in prepare.enumerated() {
+                await a.send(index == 0 ? .script(ops) : .control(ops))
+                if index == 0 { await a.fixture.reach(reach) }
+            }
+            if on {
+                a.fixture.open(gate)
+                await a.fixture.reach(event)
+                _ = a.post(MailNote("M", then: [.log("M")]))
+                await a.fixture.reach("wake #1")
+                _ = await a.log
+            }
+            await posting(a, on, MailNote("Z")) { await a.send(.script([.hook, .take])) }
+            if !on {
+                a.fixture.open(gate)
+                await a.fixture.reach(event)
+            }
+        }
+    }
+
+    @Test("13y: a nil run completion takes no ordinal: one that lands before X live and after X in replay leaves the mail between them in place")
+    func idleRunCompletionAnyWhere() async {
+        let run = await Self.staleBeforeX([[.run(gate: "nilq")]], at: "at nilq", open: "gate nilq", event: "idle completion #1")
+        #expect(run.live.suffix(3) == ["mail M", "M", "took Z"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13z: a late nil result of a request end closed (no hold) takes no ordinal, wherever it lands")
+    func idleLateNilAnyWhere() async {
+        let run = await Self.staleBeforeX([[.start(1), .request(gate: "nilz", key: 1)], [.end(1)]], at: "at nilz", open: "gate nilz", event: "idle completion #1")
+        #expect(run.live.suffix(3) == ["mail M", "M", "took Z"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13za: a stale nil gate return (its follow-up consumed) takes no ordinal, wherever it lands")
+    func staleGateReturnAnyWhere() async {
+        let run = await Self.staleBeforeX([[.start(5), .arm("F", key: 5, gate: "nilg")], [.consume(key: 5)]], at: "at nilg", open: "gate nilg", event: "stale follow-up #1")
+        #expect(run.live.suffix(3) == ["mail M", "M", "took Z"])
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13zb: a deadline its take's mail makes stale takes no ordinal: live it lands before X, in replay after")
+    func deadlineStaleAfterTake() async {
+        let run = await Self.staleAfterTake([.start(1), .request(gate: "d", key: 1, deadlineSeconds: 5)], at: "at d",
+                                            pending: MailNote("C", then: [.end(1)]), open: "deadline 5", event: "stale deadline #1")
+        #expect(run.live.contains("took Z"))
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13zc: a timer whose key its take's mail ends takes no ordinal: live it lands before X, in replay after")
+    func timerStaleAfterTake() async {
+        let run = await Self.staleAfterTake([.start(1), .timer("T", key: 1, seconds: 5)], at: "",
+                                            pending: MailNote("C", then: [.end(1)]), open: "deadline 5", event: "stale timer #1")
+        #expect(run.live.contains("took Z"))
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13zd: a nil result whose request its take's mail closes takes no ordinal: live it lands before X, in replay after")
+    func completionStaleAfterTake() async {
+        let run = await Self.staleAfterTake([.start(1), .request(gate: "nilc", key: 1)], at: "at nilc",
+                                            pending: MailNote("C", then: [.end(1)]), open: "gate nilc", event: "idle completion #1")
+        #expect(run.live.contains("took Z"))
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13ze: a nil gate return whose follow-up its take's mail consumes takes no ordinal: live it lands before X, in replay after")
+    func gateStaleAfterTake() async {
+        let run = await Self.staleAfterTake([.start(5), .arm("F", key: 5, gate: "nilh")], at: "at nilh",
+                                            pending: MailNote("C", then: [.consume(key: 5)]), open: "gate nilh", event: "stale follow-up #1")
+        #expect(run.live.contains("took Z"))
+        #expect(run.replayed == run.live)
+        #expect(run.diverged.isEmpty)
+    }
+
+    @Test("13zf: a cancellation its take's mail makes stale (a pending close refuses the call) takes no ordinal; the call ends closed (live only)")
+    func cancellationStaleAfterTake() async {
+        let a = await MailboxActor.started(mailboxCapacity: 2)
+        await a.holdRemainderWakes()
+        await a.send(.script([.start(1), .hold(gate: "h", key: 1)]))
+        let p = Task { try await a.sendAndWait(.parked("P"), cancellation: .cancelsCall) }
+        await a.fixture.reach("park #1")
+        let before = await a.stats.cancelledCalls
+        await StepHooks.$duringStep.withValue({ @Sendable in
+            _ = a.post(MailNote("N", then: [.post("C", then: [.close])]))
+            _ = a.post(MailNote("N2"))
+        }) {
+            await a.send(.control([.hook]))
+        }
+        await a.fixture.reach("remainder #1")
+        // C waits behind the held remainder wake: the cancellation's take steps it, and its close
+        // refuses P before the cancellation's own check.
+        p.cancel()
+        await a.fixture.reach("stale cancellation #1")
+        #expect(outcome(await boundedResult(p)) == "\(TurnError.closed)")
+        #expect(await a.stats.cancelledCalls == before)
+        await Self.posting(a, true, MailNote("Z")) { await a.send(.control([.hook, .take])) }
+        a.fixture.open("remainder go")
+        #expect(await a.log.suffix(2) == ["mail C", "took Z"])
+        // Z's key pins its step's number: the cancellation took no ordinal.
+        #expect(a.records.entries.map(\.key).last == .inside(step: 8, take: 0))
+    }
+
+    @Test("13zg: replayMail installed after the first entry stops the process")
+    func replayInstalledLateStops() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let a = await MailboxActor.started()
+            await a.installReplayForTesting([])
+        }
+        RuntimeStopTests.expectCoreStop(result, "TurnCore: replayMail after the first entry")
     }
 
     @Test("13: a replay with an extra take staged fails as unconsumed; an extra mail staged past the last input, as leftover; a removed take changes the output")

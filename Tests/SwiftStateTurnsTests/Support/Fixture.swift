@@ -81,8 +81,9 @@ final class Fixture: @unchecked Sendable {
 
     /// The core's diagnostics hook. A queued input opens "park #n" (n counts every queued input so
     /// far), and its release "released #n" once its batch ends. A foreign completion opens
-    /// "foreign" and "foreign #n", a stale deadline, timer or follow-up "stale deadline #n",
-    /// "stale timer #n" or "stale follow-up #n"; batch sizes and clock reads are recorded.
+    /// "foreign" and "foreign #n", a stale deadline, timer, follow-up or cancellation "stale
+    /// deadline #n", "stale timer #n", "stale follow-up #n" or "stale cancellation #n", an idle
+    /// completion "idle completion #n"; batch sizes and clock reads are recorded.
     func observe(_ event: TurnDiagnostic) {
         switch event {
         case .queued(let total):
@@ -103,6 +104,10 @@ final class Fixture: @unchecked Sendable {
             open("stale timer #\(bump("stale timer"))")
         case .staleFollowUp:
             open("stale follow-up #\(bump("stale follow-up"))")
+        case .staleCancellation:
+            open("stale cancellation #\(bump("stale cancellation"))")
+        case .idleCompletion:
+            open("idle completion #\(bump("idle completion"))")
         case .clockRead:
             bump("clock read")
         }

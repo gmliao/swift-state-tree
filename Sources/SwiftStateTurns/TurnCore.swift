@@ -48,6 +48,12 @@ public enum TurnDiagnostic: Sendable, Equatable {
     /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
     /// nothing for it.
     case staleFollowUp
+    /// A call's cancellation found no waiter (the call was answered or refused first, or never
+    /// waited), and did nothing.
+    case staleCancellation
+    /// With a mailbox: a completion with no result whose request was already closed with no
+    /// hold to retire, or that had no request (a `run`), arrived and did nothing.
+    case idleCompletion
     case clockRead
 }
 
@@ -400,9 +406,14 @@ public final class TurnCore<M: TurnMachine> {
     // MARK: Replay
 
     /// Replays the mailbox from `entries` (a record's hand-outs): the mailbox isn't read, checks step
-    /// the staged `before` mail and takes return the staged `inside` ones. Before the first
-    /// entry.
+    /// the staged `before` mail and takes return the staged `inside` ones. Once, before the
+    /// first entry: installed later, it stops the process (a call already waiting, or an
+    /// ordinal already taken, would replay against a record it isn't in). The core stays in
+    /// replay mode for good, after `finishReplay()` too, so `.cancelsCall` keeps stopping.
     package func replayMail(_ entries: [MailRecordEntry<M.Mail>]) {
+        if nextOrdinal != 0 || !waiters.isEmpty || mailReplay != nil {
+            fatalError("TurnCore: replayMail after the first entry; install a replay before any input")
+        }
         mailReplay = MailReplayStage(entries)
     }
 
