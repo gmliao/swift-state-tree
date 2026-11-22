@@ -5925,7 +5925,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// One destroy handler (OnDestroyWhenEmpty, OnFinalize): its resolvers, then the handler
-    /// in one synchronous segment. A resolver or handler failure is logged; the drain goes on.
+    /// in one synchronous segment. A resolver failure is logged and skips the handler; the drain
+    /// goes on.
     ///
     /// No ticket is captured across the resolvers: by now intake is closed (every input and
     /// lifecycle append checks `isDraining`), no tick runs and nothing is pending, so nothing
@@ -5933,7 +5934,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],
-        handler: @Sendable (inout State, LandContext) throws -> Void
+        handler: @Sendable (inout State, LandContext) -> Void
     ) async {
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -5941,27 +5942,29 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             sessionID: systemSessionID
         )
         var updatedCtx = ctx
-        do {
-            if !resolvers.isEmpty {
-                let resolverContext = ResolverContext(
-                    landContext: ctx,
-                    actionPayload: nil,
-                    eventPayload: nil,
-                    currentState: state
-                )
+        if !resolvers.isEmpty {
+            let resolverContext = ResolverContext(
+                landContext: ctx,
+                actionPayload: nil,
+                eventPayload: nil,
+                currentState: state
+            )
+            do {
                 updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
                     executors: resolvers,
                     resolverContext: resolverContext,
                     landContext: ctx
                 )
+            } catch {
+                logger.error("❌ \(name) resolvers failed: the handler is skipped", metadata: [
+                    "error": .string(String(describing: error)),
+                ])
+                return
             }
-            try withMutableStateSync { state in
-                try handler(&state, updatedCtx)
-            }
-        } catch {
-            logger.error("❌ \(name) handler failed", metadata: [
-                "error": .string(String(describing: error)),
-            ])
+        }
+        // The handler can't throw (#593): the land is ending, so nothing would act on a refusal.
+        withMutableStateSync { state in
+            handler(&state, updatedCtx)
         }
     }
 

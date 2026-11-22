@@ -409,7 +409,7 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     public var onInitializeResolverFailure: InitializeResolverFailure = .failLand
     
     /// Handler called when the Land is finalizing (before shutdown).
-    public var onFinalize: (@Sendable (inout State, LandContext) throws -> Void)?
+    public var onFinalize: (@Sendable (inout State, LandContext) -> Void)?
     /// Resolver executors for the onFinalize handler.
     public var onFinalizeResolverExecutors: [any AnyResolverExecutor] = []
     
@@ -421,7 +421,7 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     /// This is called specifically when the Land is destroyed because it became empty
     /// (after the `destroyWhenEmptyAfter` delay). It is executed before `OnFinalize`.
     /// Use this to perform cleanup actions specific to empty-room destruction.
-    public var onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)?
+    public var onDestroyWhenEmpty: (@Sendable (inout State, LandContext) -> Void)?
     
     /// Resolver executors for the onDestroyWhenEmpty handler.
     public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = []
@@ -620,10 +620,11 @@ public func DestroyWhenEmpty<State: StateNodeProtocol>(
 ///
 /// - Parameters:
 ///   - duration: The duration to wait after the last player leaves before destroying.
-///   - handler: The cleanup handler to execute before destruction.
+///   - handler: The cleanup handler to execute before destruction. It can't throw (#593), as
+///     `OnFinalize`'s body can't.
 public func DestroyWhenEmpty<State: StateNodeProtocol>(
     after duration: Duration,
-    _ handler: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ handler: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
         config.destroyWhenEmptyAfter = duration
@@ -733,9 +734,13 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
 /// This handler is executed before the Land is destroyed, while state is still mutable.
 /// It can use resolvers to save final state or perform cleanup.
 ///
+/// The body can't throw (#593): the land is ending, so nothing would act on a refusal, and a
+/// body that calls throwing code handles its errors itself. A resolver that throws skips the
+/// body; the land's teardown goes on.
+///
 /// - Parameter body: The synchronous closure to execute.
 public func OnFinalize<State: StateNodeProtocol>(
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     return { config in
         warnIfHandlerAlreadyDefined("OnFinalize", isDefined: config.onFinalize != nil)
@@ -750,7 +755,7 @@ public func OnFinalize<State: StateNodeProtocol>(
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
     return { config in
@@ -763,7 +768,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver>(
 /// Registers a handler called when the Land is finalizing with multiple resolvers.
 public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     let executors = [
         ResolverExecutor.createExecutor(for: resolvers.0),
@@ -779,7 +784,7 @@ public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: Contex
 /// Registers a handler called when the Land is finalizing with multiple resolvers.
 public func OnFinalize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
-    _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
+    _ body: @escaping @Sendable (inout State, LandContext) -> Void
 ) -> LifetimeDirective<State> {
     let executors = [
         ResolverExecutor.createExecutor(for: resolvers.0),

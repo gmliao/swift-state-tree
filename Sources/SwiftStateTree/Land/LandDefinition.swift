@@ -134,7 +134,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     /// This is called specifically when the Land is destroyed because it became empty
     /// (after the `destroyWhenEmptyAfter` delay). It is executed before `OnFinalize`.
     /// Use this to perform cleanup actions specific to empty-room destruction.
-    public var onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)?
+    public var onDestroyWhenEmpty: (@Sendable (inout State, LandContext) -> Void)?
     
     /// Resolver executors for the onDestroyWhenEmpty handler (empty if no resolvers declared).
     public var onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor]
@@ -158,7 +158,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     ///
     /// This is called before the Land is destroyed, while state is still mutable.
     /// It can use resolvers to save final state or perform cleanup.
-    public var onFinalize: (@Sendable (inout State, LandContext) throws -> Void)?
+    public var onFinalize: (@Sendable (inout State, LandContext) -> Void)?
     
     /// Resolver executors for the onFinalize handler (empty if no resolvers declared).
     public var onFinalizeResolverExecutors: [any AnyResolverExecutor]
@@ -186,13 +186,13 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         syncInterval: Duration? = nil,
         syncHandler: (@Sendable (State, LandContext) -> Void)? = nil,
         destroyWhenEmptyAfter: Duration? = nil,
-        onDestroyWhenEmpty: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
+        onDestroyWhenEmpty: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onDestroyWhenEmptyResolverExecutors: [any AnyResolverExecutor] = [],
         persistInterval: Duration? = nil,
         onInitialize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
         onInitializeResolverExecutors: [any AnyResolverExecutor] = [],
         onInitializeResolverFailure: InitializeResolverFailure = .failLand,
-        onFinalize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
+        onFinalize: (@Sendable (inout State, LandContext) -> Void)? = nil,
         onFinalizeResolverExecutors: [any AnyResolverExecutor] = [],
         afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil,
         onShutdown: (@Sendable (State) async -> Void)? = nil
