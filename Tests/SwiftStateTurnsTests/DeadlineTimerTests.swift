@@ -187,16 +187,62 @@ struct DeadlineTimerTests {
         #expect(await a.timer().wakes == 1)
     }
 
-    @Test("8: a wake pops at most 256 stale entries; the rest are reported on the next wake")
+    @Test("8: a wake pops at most 256 stale entries; the rest, and a live entry behind them, come on the next wake")
     func stalePopsAreBounded() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
-        _ = await a.sendEach([.requests(Array(100 ..< 400), seconds: 5), .requests(Array(1000 ..< 1400), seconds: 3600),
-                              .cancelEach(Array(100 ..< 400))])
+        // 300 closed entries due at 5, then live request 1 at 5; 400 live ones at 3600 keep the
+        // closed ones under half the heap, so no compaction drops them.
+        _ = await a.sendEach([.requests(Array(100 ..< 400), seconds: 5), .request(1, seconds: 5),
+                              .requests(Array(1000 ..< 1400), seconds: 3600), .cancelEach(Array(100 ..< 400))])
+        a.clock.holdAfterWake(5, skipping: 1)
         a.clock.release(through: 5)
-        await f.reach("stale deadline #300")
+        await f.reach("timer wake #1")
+        // The wake's job has ended once this hop runs.
+        #expect(await a.timer().entries == 445)
+        #expect(f.count(of: "stale deadline") == 256)
+        #expect(await a.log.allSatisfy { !$0.contains("deadline") })
+        f.open("resume deadline 5")
+        await f.reach("out 1 #1")
+        #expect(f.count(of: "stale deadline") == 300)
+        #expect(await a.log.filter { $0.contains("deadline") } == ["abandoned 1 deadline at 5"])
         #expect(await a.timer().wakes == 2)
         #expect(await a.timer().entries == 400)
+    }
+
+    @Test("8: a wake that finds half the heap stale compacts first: the closed entries due then report nothing")
+    func wakeStartCompaction() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        // 99 closed entries due at 5, with no arm after the cancels, and live request 1 at 5.
+        _ = await a.sendEach([.request(1, seconds: 5), .requests(Array(100 ..< 199), seconds: 5), .cancelEach(Array(100 ..< 199))])
+        #expect(await a.timer().entries == 100)
+        a.clock.release(through: 5)
+        await f.reach("out 1 #1")
+        #expect(await a.log.filter { $0.contains("deadline") } == ["abandoned 1 deadline at 5"])
+        #expect(f.count(of: "stale deadline") == 0)
+        #expect(await a.timer().entries == 0)
+    }
+
+    @Test("8: a stale head at or before the wake's target is left for the next wake, which reports it")
+    func staleHeadAtTargetIsReported() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        // Tick 1 arms timer 3 at 5; tick 2 replaces it with one at 3600, so its entry at 5 is stale.
+        await a.send(.onTickArm(1, labels: [3], seconds: [5]))
+        await a.send(.onTickArm(2, labels: [3], seconds: [3600]))
+        await a.send(.arm(1, seconds: 5))
+        await a.send(.arm(2, seconds: 5))
+        a.clock.holdAfterWake(5, skipping: 1)
+        a.clock.release(through: 5)
+        await f.reach("timer wake #1")
+        // Not dropped silently after the wake: still in the heap, beside its replacement.
+        #expect(await a.timer().entries == 2)
+        #expect(f.count(of: "stale timer") == 0)
+        f.open("resume deadline 5")
+        await f.reach("stale timer #1")
+        #expect(await a.timer().entries == 1)
+        #expect(await a.log == ["tick 1 at 5", "tick 2 at 5"])
     }
 
     @Test("9: stale entries are compacted: the heap stays bounded, the live entry still fires, and order holds after a rebuild")
@@ -250,7 +296,7 @@ struct DeadlineTimerTests {
         #expect(await a.timer().starts == 1)
     }
 
-    @Test("9: no compaction during a wake: entries closed while outside the heap keep the count exact, and the heap is compacted after it")
+    @Test("9: no compaction during a wake: entries closed while outside the heap never leave the count short, and the heap is compacted after it")
     func noCompactionDuringAWake() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
@@ -280,18 +326,20 @@ struct DeadlineTimerTests {
     func headDropIsBounded() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
-        // 300 closed entries at 10, behind a live one at 5; 400 live ones at 3600 keep them under
-        // half the heap, so no compaction drops them.
-        _ = await a.sendEach([.request(1, seconds: 5), .requests(Array(100 ..< 400), seconds: 10),
-                              .requests(Array(1000 ..< 1400), seconds: 3600), .cancelEach(Array(100 ..< 400))])
+        // Live request 1 at 5, then 200 closed entries at 5 (the wake's stale pops), 300 closed
+        // ones at 10 (the silent drop's), and 600 live ones at 3600, which keep the closed ones
+        // under half the heap, so no compaction drops them.
+        _ = await a.sendEach([.request(1, seconds: 5), .requests(Array(100 ..< 300), seconds: 5),
+                              .requests(Array(300 ..< 600), seconds: 10), .requests(Array(1000 ..< 1600), seconds: 3600),
+                              .cancelEach(Array(100 ..< 600))])
         a.clock.release(through: 5)
         await f.reach("out 1 #1")
-        // The wake at 5 dropped 256 of them silently; 44 are left, so it sleeps until 10.
-        #expect(await a.timer().entries == 444)
-        #expect(f.count(of: "stale deadline") == 0)
+        // 200 reported in the wake; the drop had 56 of the budget left: 244 at 10 remain.
+        #expect(f.count(of: "stale deadline") == 200)
+        #expect(await a.timer().entries == 844)
         a.clock.release(through: 10)
-        await f.reach("stale deadline #44")
-        #expect(await a.timer().entries == 400)
+        await f.reach("stale deadline #444")
+        #expect(await a.timer().entries == 600)
     }
 
     @Test("10: endAll stops the timer: the heap empties, the sleeper is cancelled, and no release steps anything")
@@ -347,7 +395,7 @@ struct DeadlineTimerTests {
         #expect(await a.deadlineTimer().starts == 1)
     }
 
-    @Test("12: a replaced, ended, superseded or endAll-dropped timer releases its input at once, while its heap entry stays")
+    @Test("12: a replaced, ended, superseded or endAll-dropped timer releases its input at once")
     func timerInputReleasedAtOnce() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
@@ -383,16 +431,22 @@ struct DeadlineTimerTests {
         #expect(f.count(of: "stale timer") == 0)
     }
 
-    @Test("13: entries armed during a wake, earlier than or equal to one still to fire, fire on the next wake")
-    func armedDuringAWakeWaitsForTheNext() async {
+    @Test("13: entries armed during a wake, earlier than or equal to one still to fire, fire on later wakes: 3@4 on the second, 4@5 on the third")
+    func armedDuringAWakeWaitsForALaterOne() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
         await a.send(.onTickArm(1, labels: [3, 4], seconds: [4, 5]))
         await a.send(.arm(1, seconds: 5))
         await a.send(.arm(2, seconds: 5))
+        // The first wake returns 4, the second 5: that second sleep until 5 is held after it wakes.
+        a.clock.holdAfterWake(5, skipping: 1)
         a.clock.release(through: 5)
         await f.reach("timer wake #2")
+        #expect(await a.log == ["tick 1 at 5", "tick 2 at 5", "tick 3 at 5"])
+        f.open("resume deadline 5")
+        await f.reach("timer wake #3")
         #expect(await a.log == ["tick 1 at 5", "tick 2 at 5", "tick 3 at 5", "tick 4 at 5"])
+        #expect(await a.timer().wakes == 3)
     }
 
     @Test("13: one step's entries at one instant: its timer, then its gate deadline, then its request deadline, whatever the call order")
@@ -404,7 +458,7 @@ struct DeadlineTimerTests {
                               .arm("G", .work(gate: "g", deadlineSeconds: 5)),
                               .timerLabelled("T", key: 3, seconds: 5)]))
         a.clock.release(through: 5)
-        #expect(await bounded { await a.waitForQuiescence() })
+        #expect(await bounded { await a.waitForQuiescence([.followUps, .requests, .timers]) })
         #expect(await a.snapshot().log == ["armed G", "parked T", "abandoned G deadline", "abandoned R deadline"])
     }
 

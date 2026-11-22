@@ -49,25 +49,6 @@ actor DeadlineActor: TurnActor {
 
     var flushReadings: [Int?] = []
 
-    /// When a flush first carries `value`: a new actor job sends `.note(text)`. That job runs
-    /// after the one that flushed, ahead of the core timer's next hop.
-    func onOutputSendLater(_ value: Int, _ text: String) {
-        flushHook = { (owner: isolated DeadlineActor, outputs: [Int]) in
-            guard outputs.contains(value) else { return }
-            owner.flushHook = nil
-            Task { owner.send(.note(text)) }
-        }
-    }
-
-    /// Sends each input and returns, after each one, the timer inputs the core holds and the
-    /// heap's entry count.
-    func sendEachTimers(_ inputs: [DeadlineMachine.Input]) -> [(inputs: Int, entries: Int)] {
-        inputs.map { input in
-            send(input)
-            return (core.liveTimerInputsForTesting, core.deadlineEntriesForTesting)
-        }
-    }
-
     /// Sends each input and returns the heap's entry count after each one.
     func sendEach(_ inputs: [DeadlineMachine.Input]) -> [Int] {
         inputs.map { input in

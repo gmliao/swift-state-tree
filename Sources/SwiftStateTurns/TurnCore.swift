@@ -215,9 +215,6 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline package var onTimerWakeForTesting: ((_ superseded: Bool) -> Void)?
     /// Tests: entries in the deadline heap that are still live.
     package var liveDeadlinesForTesting: Int { deadlines.storage.reduce(0) { $0 + (deadlineIsLive($1) ? 1 : 0) } }
-    /// Tests: the timer inputs the core holds, one per current timer: a replaced or dropped
-    /// timer's input is released at once, while its heap entry is still there.
-    package var liveTimerInputsForTesting: Int { rt.timers.count }
     /// Tests: entries in the deadline heap, stale ones included.
     package var deadlineEntriesForTesting: Int { deadlines.count }
     /// Tests: how many follow-up gates the core has launched; counted in debug builds only.
@@ -269,7 +266,8 @@ public final class TurnCore<M: TurnMachine> {
     #endif
     @usableFromInline var effectCounts: [String: Int] = [:]
     /// Test-only: called on the actor, synchronously, where the event happens. Package access:
-    /// the adopters that set it are in this package.
+    /// the adopters that set it are in this package. An observer: it must not send, arm or
+    /// otherwise change the core.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif

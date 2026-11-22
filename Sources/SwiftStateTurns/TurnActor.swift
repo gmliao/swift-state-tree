@@ -194,11 +194,12 @@ extension TurnActor {
     /// sleeper (nothing is armed, or the wake is foreign or superseded). The wake itself changes
     /// no machine state: only a live entry begins an entry.
     ///
-    /// Its work is bounded twice: at most `maxFiresPerWake` live entries step, and at most
-    /// `maxStalePopsPerWake` stale entries are popped. The rest is due at once, so the next wake
-    /// follows without a sleep, and other work queued on the actor can run before it. A
-    /// compaction runs before the due list is taken and after it is stepped, never while a due
-    /// entry is outside the heap, so the stale count stays exact.
+    /// Its per-entry work is bounded twice: at most `maxFiresPerWake` live entries step, and at
+    /// most `maxStalePopsPerWake` stale entries are popped (a compaction is a separate O(n)
+    /// rebuild). The rest is due at once, so the next wake follows without a sleep, and other
+    /// work queued on the actor can run before it. A compaction check runs before the due list
+    /// is taken and after it is stepped, never while a due entry is outside the heap, so the
+    /// stale count never under-counts.
     @inlinable func timerWoke(_ target: TurnInstant, generation: UInt64, incarnation: UInt64) -> TurnInstant? {
         let core = self.core
         guard core.incarnation == incarnation else {
@@ -229,8 +230,10 @@ extension TurnActor {
             } else {
                 if stalePops == TurnCore<M>.maxStalePopsPerWake { break }
                 stalePops &+= 1
+                _ = core.deadlines.popFirst()
                 if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
                 core.onDiagnostic?(head.isTimer ? .staleTimer : .staleDeadline)
+                continue
             }
             _ = core.deadlines.popFirst()
         }
