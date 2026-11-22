@@ -2,10 +2,11 @@
 
 /// An actor that runs a machine on a `TurnCore`.
 ///
-/// A deadline's or a timer's task doesn't keep the actor alive: it holds it weakly, so a periodic
-/// timer doesn't outlive the actor's last owner. An effect's task does, until its result has been
-/// handled, so launched work is never dropped. Released with no effect in flight, the actor and
-/// its core go away, and the core cancels its deadline and timer tasks. A `sendAndWait` still waiting then is a bug (a debug
+/// The core's timer task (one per core, for every deadline and timer) doesn't keep the actor
+/// alive: it holds it weakly, so a periodic timer doesn't outlive the actor's last owner. An
+/// effect's task does, until its result has been handled, so launched work is never dropped.
+/// Released with no effect in flight, the actor and its core go away, and the core cancels its
+/// timer task. A `sendAndWait` still waiting then is a bug (a debug
 /// assertion), so an adopter ends its keys (`endAll`) and answers its callers first.
 public protocol TurnActor: Actor {
     /// `PlainData`: only a machine that `@PlainData` checked can be run.
@@ -424,78 +425,210 @@ extension TurnActor {
         runSegment()
     }
 
-    /// A deadline's task woke. It abandons the request only if that request is still open.
-    @inlinable func deadlineFired(_ id: RequestID, incarnation: UInt64) {
+    /// The core's timer woke for `target` (#621 item 2, Notes/plans/2026-11-21-turns-shared-
+    /// deadline-timer.md §3.4). It steps the entries due at `target`, each as its own entry and
+    /// batch, in (instant, arm order), and returns the instant to sleep until next; nil ends the
+    /// sleeper (nothing is armed, or the wake is foreign or superseded). The wake itself changes
+    /// no machine state: only a live entry begins an entry.
+    ///
+    /// Its per-entry work is bounded twice: at most `maxFiresPerWake` live entries step, and at
+    /// most `maxStalePopsPerWake` stale entries are popped (a compaction is a separate O(n)
+    /// rebuild). The rest is due at once, so the next wake follows without a sleep, and other
+    /// work queued on the actor can run before it. A compaction check runs before the due list
+    /// is taken and after it is stepped, never while a due entry is outside the heap, so the
+    /// stale count never under-counts.
+    @inlinable func timerWoke(_ target: TurnInstant, generation: UInt64, incarnation: UInt64) -> TurnInstant? {
         let core = self.core
         guard core.incarnation == incarnation else {
             core.counters.foreignCompletions += 1
             core.onDiagnostic?(.foreignCompletion)
-            return
+            return nil
         }
-        core.deadlineTasks.removeValue(forKey: id)
-        if TurnCore<M>.usesMailbox {
-            // A stale arrival (a cancelled deadline task of a request that closed another way, or
-            // of a follow-up whose gate returned) changes no state, so it is no entry and takes no
-            // ordinal, as a wake: it counts the same whether it lands early, late or never. A live
-            // one takes its mail first, which can make it stale; only then does it take an ordinal.
-            guard core.rt.open[id] != nil || core.rt.gateDeadlineLive(id) else {
-                core.onDiagnostic?(.staleDeadline)
+        // A sleeper that a re-arm, `endAll` or the core's deinit replaced: the current one owns
+        // every entry.
+        guard core.sleeperGeneration == generation else {
+            core.supersededWakesForTesting &+= 1
+            core.onTimerWakeForTesting?(true)
+            return nil
+        }
+        core.timerWakesForTesting &+= 1
+        core.onTimerWakeForTesting?(false)
+        core.compactDeadlinesIfStale()
+        core.sleeperAwake = true
+        // The due list is taken first: an entry a step arms during this wake isn't due in it,
+        // even at or before `target`. A due entry already stale is popped here, reported, and
+        // left out of the count of live entries.
+        //
+        // With a mailbox, the first live head's entry takes the mail before the list is taken
+        // (#738's rule: the mailbox before the entry's state is read). A replay steps that
+        // mail at the first check before the entry's ordinal, which can be the trailing check
+        // of the previous segment, before this wake; taking it here too makes the list the
+        // same in both. The rest of the list is then read from the heap the mail left: an
+        // entry it closed pops as stale, and one it armed at or before `target` joins. The
+        // take is that entry's, so it takes no ordinal of its own: the first `fireDeadline`
+        // takes none when it is the head the take was made for (`takenFor`). A wake whose heads
+        // are all stale takes nothing. When the mail closed the head it was taken for, or armed
+        // an earlier one, the list's first entry is another one, which takes its own.
+        // Replay limit (#756): the record keys mail by ordinal only and doesn't record the wake,
+        // so a wake's grouping isn't fixed by it. This take covers mail that arms one entry at
+        // or before `target`; a chained arm, the per-wake caps (64 fires, 256 stale pops) and
+        // mail at more than one take can still group differently in replay.
+        var due: [DeadlineEntry] = []
+        var stalePops = 0
+        var taken = false
+        var takenFor: UInt64 = 0
+        while let head = core.deadlines.first, head.instant <= target.nanoseconds {
+            if core.deadlineIsLive(head) {
+                if due.count == TurnCore<M>.maxFiresPerWake { break }
+                if TurnCore<M>.usesMailbox, !taken {
+                    taken = true
+                    takenFor = head.order
+                    // `endAll` by this mail empties the heap: the loop ends, and so does the wake.
+                    beginEntry()
+                    continue
+                }
+                due.append(head)
+            } else {
+                if stalePops == TurnCore<M>.maxStalePopsPerWake { break }
+                stalePops &+= 1
+                _ = core.deadlines.popFirst()
+                if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                core.onDiagnostic?(head.isTimer ? .staleTimer : .staleDeadline)
+                continue
+            }
+            _ = core.deadlines.popFirst()
+        }
+        for (index, entry) in due.enumerated() {
+            // `endAll` in an earlier entry's step stopped the timer: the rest is dropped.
+            if core.sleeperGeneration != generation { break }
+            fireDeadline(entry, generation: generation, taken: taken && index == 0 && entry.order == takenFor)
+        }
+        core.sleeperAwake = false
+        if core.sleeperGeneration != generation { return nil }
+        core.compactDeadlinesIfStale()
+        // Stale heads after `target` are dropped silently, as a compaction drops them, within
+        // the same budget. A stale head at or before it (armed and closed during this wake, or
+        // past the budget) waits for the next wake, which reports it.
+        while stalePops < TurnCore<M>.maxStalePopsPerWake, let head = core.deadlines.first,
+              head.instant > target.nanoseconds, !core.deadlineIsLive(head) {
+            _ = core.deadlines.popFirst()
+            stalePops &+= 1
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+        }
+        guard let head = core.deadlines.first else {
+            core.sleeper = nil
+            core.sleeperTarget = nil
+            return nil
+        }
+        // At or before `target` (a capped wake's rest, or an entry armed during it): the sleep
+        // returns at once, and other entries queued on the actor can run before the next wake.
+        let next = TurnInstant(nanoseconds: head.instant)
+        core.sleeperTarget = next
+        return next
+    }
+
+    /// One due entry of a wake, live when the wake took it (#621 item 2, plan §3.4; the merge
+    /// checklist in the plan's implementation notes). Its ticket is checked at its turn:
+    /// - **stale before the take** (an earlier entry of this wake closed its request or gate,
+    ///   or replaced or dropped its timer): no entry; it reports `.staleDeadline` or
+    ///   `.staleTimer` once and takes no ordinal, as a stale arrival (#738);
+    /// - with a mailbox, `beginEntry()` takes the pending mail, which can end everything or
+    ///   make the entry stale: on `endAll` (the generation moved; nothing else moves it while
+    ///   the wake runs) it ends through the epilogue silently, and **stale after the take** it
+    ///   reports once and ends through the epilogue, with no ordinal;
+    /// - **live**: `entryBoundary()`, then the record is consumed: the request or the
+    ///   follow-up closes with `.deadline`, or the timer leaves the runtime's table and its
+    ///   input steps as a control input.
+    ///
+    /// `taken`: the wake took this entry's mail before it read the due list, and nothing has
+    /// stepped since, so the entry is live and goes straight to its boundary.
+    @inlinable func fireDeadline(_ entry: DeadlineEntry, generation: UInt64, taken: Bool) {
+        let core = self.core
+        if !taken {
+            let stale: TurnDiagnostic = entry.isTimer ? .staleTimer : .staleDeadline
+            guard core.deadlineIsLive(entry) else {
+                // Out of the heap already: one decrement for the close that counted it.
+                if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                core.onDiagnostic?(stale)
                 return
             }
             beginEntry()
-            guard core.rt.open[id] != nil || core.rt.gateDeadlineLive(id) else {
-                core.onDiagnostic?(.staleDeadline)
-                if core.rt.dirty { runSegment() }
-                return
+            if TurnCore<M>.usesMailbox {
+                // `endAll` by the take's mail: `stopDeadlines()` zeroed the count and emptied
+                // the heap, and an entry it drops reports nothing.
+                if core.sleeperGeneration != generation {
+                    if core.rt.dirty { runSegment() }
+                    return
+                }
+                guard core.deadlineIsLive(entry) else {
+                    if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                    core.onDiagnostic?(stale)
+                    if core.rt.dirty { runSegment() }
+                    return
+                }
             }
-            entryBoundary()
         }
-        if core.rt.open[id] == nil, core.rt.gateDeadlineLive(id) {
-            // A follow-up's gate deadline: the follow-up closes unrun.
-            if !TurnCore<M>.usesMailbox { beginEntry() }
-            core.rt.closeFollowUp(id, .deadline)
-            runSegment()
-            return
+        if TurnCore<M>.usesMailbox { entryBoundary() }
+        if entry.isTimer {
+            // Live: `timerKeys` holds only current generations, so both lookups succeed.
+            if let key = core.rt.timerKeys.removeValue(forKey: entry.ticket),
+               let armed = core.rt.timers.removeValue(forKey: key) {
+                core.step(armed.input, caller: nil)
+            }
+        } else {
+            let id = RequestID(raw: entry.ticket)
+            if core.rt.open[id] != nil {
+                core.rt.closeRequest(id, .deadline)
+            } else {
+                // A follow-up's gate deadline: the follow-up closes unrun.
+                core.rt.closeFollowUp(id, .deadline)
+            }
+            // The close counted this entry stale, but it has left the heap already.
+            if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
         }
-        guard core.rt.open[id] != nil else {
-            // Without a mailbox only: with one, a stale deadline returned above.
-            core.onDiagnostic?(.staleDeadline)
-            return
-        }
-        if !TurnCore<M>.usesMailbox { beginEntry() }
-        core.rt.closeRequest(id, .deadline)
         runSegment()
     }
 
-    /// A timer's task woke. It fires only if it is still its key's current timer.
-    @inlinable func timerFired(_ key: M.Key, generation: UInt64, _ input: M.Input, incarnation: UInt64) {
+    /// Arms a deadline entry on the core's one timer, after the step that made it was flushed.
+    /// A sleeper is started when there is none, or re-armed when the entry is due before the
+    /// instant it sleeps until and no wake is being serviced (that wake returns the next target).
+    @inlinable func armDeadline(_ instant: TurnInstant, ticket: UInt64, isTimer: Bool) {
         let core = self.core
-        guard core.incarnation == incarnation else {
-            core.counters.foreignCompletions += 1
-            core.onDiagnostic?(.foreignCompletion)
-            return
+        // Not during a wake: its due entries are outside the heap and still counted.
+        if !core.sleeperAwake { core.compactDeadlinesIfStale() }
+        core.nextArm &+= 1
+        core.deadlines.push(DeadlineEntry(instant: instant.nanoseconds, order: core.nextArm, ticket: ticket, isTimer: isTimer))
+        if core.sleeper == nil {
+            startSleeper(until: instant)
+        } else if !core.sleeperAwake, let target = core.sleeperTarget, instant < target {
+            core.sleeper?.cancel()
+            startSleeper(until: instant)
         }
-        if core.timerTasks[key]?.generation == generation { core.timerTasks.removeValue(forKey: key) }
-        // A replaced or ended timer's task still calls this: stale, it changes no state, so with a
-        // mailbox it is no entry and takes no ordinal (as a stale deadline). A live one takes its
-        // mail first, which can end or replace the timer; only then does it take an ordinal.
-        guard core.rt.timers[key] == generation else {
-            core.onDiagnostic?(.staleTimer)
-            return
-        }
-        if TurnCore<M>.usesMailbox {
-            beginEntry()
-            guard core.rt.timers[key] == generation else {
-                core.onDiagnostic?(.staleTimer)
-                if core.rt.dirty { runSegment() }
-                return
+    }
+
+    /// Starts the core's one sleeping task. It touches no core state: it sleeps, hops to
+    /// `timerWoke` and sleeps until the instant that returns. Held weakly between hops, so it
+    /// doesn't keep a released actor alive. Woken early (cancelled) or on time, it still hops,
+    /// and the actor drops a superseded wake by its generation. Detached at `.medium`: it serves
+    /// every later deadline and timer, so it takes neither the priority nor the task-locals of
+    /// the step that happened to arm the first one.
+    @inlinable func startSleeper(until instant: TurnInstant) {
+        let core = self.core
+        core.sleeperGeneration &+= 1
+        core.sleeperTarget = instant
+        core.sleeperStartsForTesting &+= 1
+        let generation = core.sleeperGeneration
+        let incarnation = core.incarnation
+        let clock = core.clock
+        core.sleeper = Task.detached(priority: .medium) { [weak self] in
+            var target = instant
+            while true {
+                await clock.sleep(until: target)
+                guard let actor = self else { return }
+                guard let next = await actor.timerWoke(target, generation: generation, incarnation: incarnation) else { return }
+                target = next
             }
-            entryBoundary()
         }
-        core.rt.timers.removeValue(forKey: key)
-        if !TurnCore<M>.usesMailbox { beginEntry() }
-        core.step(input, caller: nil)
-        runSegment()
     }
 
     /// The core's one continuation job, a new batch. A segment schedules it when it leaves
@@ -589,7 +722,7 @@ extension TurnActor {
             core.rt.followUps[name]?.waiting = false
             if core.rt.followUps[name]?.hasDeadline == true {
                 core.rt.followUps[name]?.hasDeadline = false
-                core.rt.deadlinesToCancel = true
+                core.rt.staleDeadlines &+= 1
             }
             core.followUpsToStep.push(id)
         } else {
@@ -800,26 +933,11 @@ extension TurnActor {
                 }
                 progressed = true
             }
-            if core.rt.deadlinesToCancel {
-                core.rt.deadlinesToCancel = false
-                for id in Array(core.deadlineTasks.keys) where core.rt.open[id] == nil && !(TurnCore<M>.usesFollowUps && core.rt.gateDeadlineLive(id)) {
-                    core.deadlineTasks.removeValue(forKey: id)?.cancel()
-                }
-            }
-            if core.rt.timersToCancel {
-                core.rt.timersToCancel = false
-                for key in Array(core.timerTasks.keys) {
-                    if let entry = core.timerTasks[key], core.rt.timers[key] != entry.generation {
-                        entry.task.cancel()
-                        core.timerTasks.removeValue(forKey: key)
-                    }
-                }
-            }
             if !core.rt.timersToArm.isEmpty {
                 var timers: [PendingTimer<M>] = []
                 swap(&timers, &core.rt.timersToArm)
-                for timer in timers where core.rt.timers[timer.key] == timer.generation {
-                    arm(timer)
+                for timer in timers where core.rt.timers[timer.key]?.generation == timer.generation {
+                    armDeadline(timer.instant, ticket: timer.generation, isTimer: true)
                 }
                 progressed = true
             }
@@ -856,12 +974,7 @@ extension TurnActor {
             self.complete(id, input, incarnation: incarnation)
         }
         if let id, let instant = pending.deadline, core.rt.open[id] != nil {
-            let clock = core.clock
-            core.deadlineTasks[id] = Task { [weak self] in
-                // Woken early (cancelled) or on time, the core re-checks the request.
-                await clock.sleep(until: instant)
-                await self?.deadlineFired(id, incarnation: incarnation)
-            }
+            armDeadline(instant, ticket: id.raw, isTimer: false)
         }
     }
 
@@ -879,29 +992,7 @@ extension TurnActor {
             self.gateReturned(id, input, incarnation: incarnation)
         }
         if let instant = pending.deadline {
-            let clock = core.clock
-            core.deadlineTasks[id] = Task { [weak self] in
-                // Woken early (cancelled) or on time, the core re-checks the follow-up.
-                await clock.sleep(until: instant)
-                await self?.deadlineFired(id, incarnation: incarnation)
-            }
+            armDeadline(instant, ticket: id.raw, isTimer: false)
         }
-    }
-
-    @inlinable func arm(_ timer: PendingTimer<M>) {
-        let core = self.core
-        let incarnation = core.incarnation
-        let clock = core.clock
-        let key = timer.key
-        let generation = timer.generation
-        let instant = timer.instant
-        let input = timer.input
-        core.timerTasks[key]?.task.cancel()
-        core.timerTasks[key] = (generation, Task { [weak self] in
-            // Woken early (cancelled) or on time, the core re-checks the timer. Held weakly: a
-            // periodic timer doesn't keep a released actor alive.
-            await clock.sleep(until: instant)
-            await self?.timerFired(key, generation: generation, input, incarnation: incarnation)
-        })
     }
 }

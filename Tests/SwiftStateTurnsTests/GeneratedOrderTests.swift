@@ -7,7 +7,9 @@
 //
 // Every operation waits for its consequence before the next one starts: a `send` returns after
 // its batch; a call is waited for until it has stepped, queued or been answered; a completion,
-// a deadline or a timer is waited for by the `notify` its step starts. With the large batch
+// a deadline or a timer is waited for by the `notify` its step starts. Time is monotonic: a
+// deadline or fire op advances the test clock to one pending item's instant, and every request
+// deadline and timer at or before it is due, each waited for by its `notify`. With the large batch
 // budget a seed gives one order, run after run. Every third seed runs with a budget of 2, so a
 // drain continues in the core's continuation job and interleaves with the operations that follow; those
 // seeds keep the invariants but not one fixed schedule.
@@ -90,6 +92,7 @@ actor OrderActor<Mail: OrderMail & PlainData>: TurnActor {
     nonisolated let mailbox: TurnMailbox<Mail>?
     nonisolated let fixture: Fixture
     nonisolated let notes: Notes
+    nonisolated let clock: TestClock
     /// What the sink received, and the outputs flushed after another step had run (invariant 11).
     private var delivered: [Int] = []
     private var lateFlushes: [String] = []
@@ -105,7 +108,9 @@ actor OrderActor<Mail: OrderMail & PlainData>: TurnActor {
     init(fixture: Fixture, notes: Notes, queueLimit: Int, maxReleasesPerBatch: Int, mailboxCapacity: Int) {
         self.fixture = fixture
         self.notes = notes
-        let core = TurnCore(OrderModel<Mail>(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: TestClock(fixture: fixture), mailboxCapacity: mailboxCapacity)
+        let clock = TestClock(fixture: fixture)
+        self.clock = clock
+        let core = TurnCore(OrderModel<Mail>(), queueLimit: queueLimit, maxReleasesPerBatch: maxReleasesPerBatch, clock: clock, mailboxCapacity: mailboxCapacity)
         core.onDiagnostic = { event in
             if case .queued = event { notes.post("park") }
         }
@@ -277,6 +282,21 @@ func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleas
     var live: Set<Int> = [0, 1]
     var endedAll = false
     var calls: [CallRecord] = []
+    // Each request's deadline instant and each timer's, in nanoseconds: the clock's now when its
+    // op ran plus its duration.
+    var deadlineAt: [Int: Int64] = [:]
+    var timerAt: [Int: Int64] = [:]
+
+    /// Advances the clock to `instant` and waits for every request deadline and timer due by then.
+    func advance(to instant: Int64, _ view: OrderActor.View, _ op: String) async {
+        actor.clock.advance(to: TurnInstant(nanoseconds: instant))
+        for seq in view.open where (deadlineAt[seq] ?? .max) <= instant {
+            if !(await notes.reach("abandoned \(seq)")) { failures.append("after `\(op)`: abandoned \(seq) never posted") }
+        }
+        for seq in view.timers.values where (timerAt[seq] ?? .max) <= instant {
+            if !(await notes.reach("fired \(seq)")) { failures.append("after `\(op)`: fired \(seq) never posted") }
+        }
+    }
 
     await actor.send(.start(0))
     await actor.send(.start(1))
@@ -335,6 +355,7 @@ func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleas
             nextSeq += 1
             let retire = Int.random(in: 0 ..< 3, using: &random) == 0
             op = "startHold \(seq) owner \(owner) hold \(hold) retire \(retire)"
+            deadlineAt[seq] = actor.clock.peek.nanoseconds + Int64(seq)
             await actor.send(.startHold(seq: seq, owner: owner, hold: hold, untilRetire: retire))
         case 34 ..< 52:
             guard let seq = view.pending.randomElement(using: &random) else { continue }
@@ -343,9 +364,9 @@ func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleas
             if !(await notes.reach("done \(seq)")) { failures.append("after `\(op)`: done \(seq) never posted") }
         case 52 ..< 58:
             guard let seq = view.open.randomElement(using: &random) else { continue }
+            guard let instant = deadlineAt[seq] else { continue }
             op = "deadline \(seq)"
-            fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
-            if !(await notes.reach("abandoned \(seq)")) { failures.append("after `\(op)`: abandoned \(seq) never posted") }
+            await advance(to: instant, view, op)
         case 58 ..< 63:
             guard let seq = view.open.randomElement(using: &random) else { continue }
             op = "cancel \(seq)"
@@ -387,16 +408,17 @@ func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleas
                 await actor.send(.noteMarked(tokenID: tokenID))
             }
         case 85 ..< 91:
-            // Timer instants are far from request deadlines, so their gates never meet.
+            // A timer's duration is far longer than a request's deadline.
             let seq = 1_000_000 + nextSeq
             nextSeq += 1
             op = "arm \(seq) on \(owner)"
+            timerAt[seq] = actor.clock.peek.nanoseconds + Int64(seq)
             await actor.send(.arm(owner: owner, seq: seq))
         case 91 ..< 97:
             guard let (timerOwner, seq) = view.timers.randomElement(using: &random) else { continue }
+            guard let instant = timerAt[seq] else { continue }
             op = "fire \(seq) on \(timerOwner)"
-            fixture.open(TestClock.gate(for: TurnInstant(nanoseconds: Int64(seq))))
-            if !(await notes.reach("fired \(seq)")) { failures.append("after `\(op)`: fired \(seq) never posted") }
+            await advance(to: instant, view, op)
         case 97, 98:
             op = "close"
             await actor.send(.close)
@@ -535,7 +557,7 @@ func runOrder<R: OrderMail & PlainData>(seed: UInt64, operations: Int, maxReleas
             failures.append("queued work \(id) neither stepped nor dropped by endAll")
         }
     }
-    // End everything (cancelling the deadline and timer tasks); every queued call is answered.
+    // End everything (stopping the core's timer); every queued call is answered.
     if !(await actor.view()).ended { await actor.send(.endAll) }
     // One bound for every call of the seed: a regression that never answers them costs one
     // bound, not one per call.

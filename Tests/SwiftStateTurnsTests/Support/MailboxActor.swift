@@ -136,6 +136,8 @@ actor MailboxActor: TurnActor {
 
     var log: [String] { core.read { $0.log } }
     var stats: TurnStats { core.stats }
+    /// Entries in the core's timer, live or stale.
+    var deadlineEntries: Int { core.deadlineEntriesForTesting }
 
     /// The machine's log, cut where each mark in `marks` was made: element 0 is what came before
     /// the first mark, element n what followed mark n.

@@ -129,8 +129,8 @@ actor LobbyActor: TurnActor {
 // docs:end
 
 // docs:clock
-/// A production clock: instants from the process's origin, a sleep that ends early when
-/// cancelled.
+/// A production clock: instants from the process's origin, a sleep that returns no earlier
+/// than its instant, unless it is cancelled.
 struct ContinuousTurnClock: TurnClock {
     var now: TurnInstant { TurnInstant(ContinuousClock.now) }
 

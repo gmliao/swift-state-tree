@@ -219,6 +219,24 @@ actor DemoActor: TurnActor {
         }
     }
 
+    /// When a flush carries `value`: releases the test clock through `seconds`, then sends
+    /// `input`, which is queued and steps in that same batch. Runs once.
+    func onOutput(_ value: Int, release seconds: Int64, thenSend input: DemoMachine.Input?) {
+        flushHook = { (owner: isolated DemoActor, outputs: [Int]) in
+            guard outputs.contains(value) else { return }
+            owner.flushHook = nil
+            owner.clock.release(through: seconds)
+            if let input { owner.send(input) }
+        }
+    }
+
+    /// The core's timer, for checks: sleeper starts, superseded and serviced wakes, and the
+    /// deadline heap's live and total entries.
+    func deadlineTimer() -> (starts: Int, superseded: Int, wakes: Int, live: Int, entries: Int) {
+        (core.sleeperStartsForTesting, core.supersededWakesForTesting, core.timerWakesForTesting,
+         core.liveDeadlinesForTesting, core.deadlineEntriesForTesting)
+    }
+
     /// When a flush carries `value`: sends `inputs`, in order. They are deferred (the batch is
     /// running) and admitted after the flush, one after another. Runs once.
     func onOutput(_ value: Int, send inputs: [DemoMachine.Input]) {

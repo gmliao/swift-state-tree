@@ -1,24 +1,28 @@
 import SwiftStateTurns
 import Testing
 
-/// A timer's or a deadline's task doesn't keep a released actor alive; an effect's task does,
-/// until its result has been handled.
+/// The core's timer task doesn't keep a released actor alive; an effect's task does, until its
+/// result has been handled.
 @Suite("Turn core: the actor's lifetime", .timeLimit(.minutes(1)))
 struct LifetimeTests {
     @Test("A periodic timer doesn't keep a released actor alive; the core's end cancels its sleep")
     func timerDoesNotRetain() async {
         let f = Fixture()
         weak var released: DemoActor?
+        var clock: TestClock?
         do {
             let a = DemoActor(fixture: f)
             released = a
+            clock = a.clock
             await a.send(.startPeriodic(job: 1, periodSeconds: 2))
             await a.send(.armIn(job: 2, after: .seconds(30)))
+            await f.reach("sleeping deadline 2 #1")
         }
         #expect(released == nil)
-        // The core's deinit cancelled both sleeps; the woken tasks found no actor.
+        // One sleep for both timers. The core's deinit cancelled it; the woken task found no actor.
         await f.reach("cancelled deadline 2")
-        await f.reach("cancelled deadline 30")
+        #expect(!f.isOpen("cancelled deadline 30"))
+        #expect(clock?.sleeps == 1)
         #expect(f.count(of: "stale timer") == 0)
     }
 

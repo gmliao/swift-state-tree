@@ -45,7 +45,8 @@ struct RequestRecord<Key: Hashable & Sendable> {
     @usableFromInline var key: Key
     @usableFromInline var hold: Key?
     @usableFromInline var untilRetire: Bool
-    /// A deadline task was armed for it.
+    /// It was made with a deadline: an entry for it is (or is about to be) in the core's deadline
+    /// heap.
     @usableFromInline var hasDeadline: Bool
 
     @inlinable init(key: Key, hold: Key?, untilRetire: Bool, hasDeadline: Bool) {
@@ -88,18 +89,28 @@ struct PendingEffect<M: TurnMachine> {
     }
 }
 
-/// A timer for the driver to arm.
+/// A timer for the driver to arm on the core's timer. Its input stays in `Runtime.timers`.
 @usableFromInline
 struct PendingTimer<M: TurnMachine> {
     @usableFromInline var key: M.Key
     @usableFromInline var generation: UInt64
     @usableFromInline var instant: TurnInstant
-    @usableFromInline var input: M.Input
 
-    @inlinable init(key: M.Key, generation: UInt64, instant: TurnInstant, input: M.Input) {
+    @inlinable init(key: M.Key, generation: UInt64, instant: TurnInstant) {
         self.key = key
         self.generation = generation
         self.instant = instant
+    }
+}
+
+/// A key's current timer: its generation and the input it steps.
+@usableFromInline
+struct ArmedTimer<M: TurnMachine> {
+    @usableFromInline var generation: UInt64
+    @usableFromInline var input: M.Input
+
+    @inlinable init(generation: UInt64, input: M.Input) {
+        self.generation = generation
         self.input = input
     }
 }
@@ -123,7 +134,7 @@ struct FollowUpRecord<M: TurnMachine> {
     @usableFromInline var input: M.Input
     /// Its gate (`.afterWork`) hasn't returned yet; false once it is due to step.
     @usableFromInline var waiting: Bool
-    /// A deadline task was armed for its gate.
+    /// A deadline entry was armed on the core's timer for its gate.
     @usableFromInline var hasDeadline: Bool
 
     @inlinable init(id: RequestID, input: M.Input, waiting: Bool, hasDeadline: Bool) {
@@ -146,14 +157,18 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var retiring: [RequestID: M.Key] = [:]
     /// Hold key → how many open requests (or workers that have not returned) own it.
     @usableFromInline var held: [M.Key: Int] = [:]
-    /// Set when a request with a deadline task closed: the driver cancels the closed ones' tasks.
-    @usableFromInline var deadlinesToCancel = false
-    // Timers: the current one per key, by generation.
+    /// Deadline heap entries invalidated (their request or gate closed, their timer replaced or
+    /// dropped) and not yet removed. Approximate
+    /// (a request closed in the step that made it was never inserted): it only decides when the heap
+    /// is compacted (`TurnCore.compactDeadlinesIfStale`).
+    @usableFromInline var staleDeadlines = 0
+    // Timers: the current one per key, by generation, with its input. A replaced or dropped
+    // timer's input is released here at once; its heap entry, plain data, stays stale.
     @usableFromInline var nextTimer: UInt64 = 0
-    @usableFromInline var timers: [M.Key: UInt64] = [:]
+    @usableFromInline var timers: [M.Key: ArmedTimer<M>] = [:]
+    /// The current timers' generations, to their keys: a heap entry's ticket finds its timer.
+    @usableFromInline var timerKeys: [UInt64: M.Key] = [:]
     @usableFromInline var timersToArm: [PendingTimer<M>] = []
-    /// Set when a timer was replaced or dropped: the driver cancels the stale ones' tasks.
-    @usableFromInline var timersToCancel = false
     // Queued normal inputs, by hold key.
     @usableFromInline var parked: [M.Key: FIFO<Parked<M>>] = [:]
     @usableFromInline var parkedCount = 0
@@ -193,7 +208,7 @@ struct Runtime<M: TurnMachine> {
     /// Removes a pending follow-up without stepping it, and returns it.
     @inlinable mutating func removeFollowUp(_ id: RequestID) -> FollowUpRecord<M>? {
         guard let name = followUpIDs.removeValue(forKey: id), let record = followUps.removeValue(forKey: name) else { return nil }
-        if record.hasDeadline { deadlinesToCancel = true }
+        if record.hasDeadline { staleDeadlines &+= 1 }
         dirty = true
         return record
     }
@@ -211,7 +226,7 @@ struct Runtime<M: TurnMachine> {
         for id in ids { closeFollowUp(id, .keyEnded) }
     }
 
-    /// A follow-up whose gate hasn't returned, with a deadline: its deadline task is live.
+    /// A follow-up whose gate hasn't returned, with a deadline: its deadline entry is live.
     @inlinable func gateDeadlineLive(_ id: RequestID) -> Bool {
         guard let name = followUpIDs[id], let record = followUps[name] else { return false }
         return record.waiting && record.hasDeadline
@@ -248,7 +263,7 @@ struct Runtime<M: TurnMachine> {
     /// Closes a request. `why` nil: its completion arrived.
     @inlinable mutating func closeRequest(_ id: RequestID, _ why: Abandonment?) {
         guard let record = open.removeValue(forKey: id) else { return }
-        if record.hasDeadline { deadlinesToCancel = true }
+        if record.hasDeadline { staleDeadlines &+= 1 }
         if let hold = record.hold {
             if record.untilRetire, why != nil {
                 retiring[id] = hold
@@ -272,8 +287,9 @@ struct Runtime<M: TurnMachine> {
     }
 
     @inlinable mutating func dropTimer(of key: M.Key) {
-        if timers.removeValue(forKey: key) != nil {
-            timersToCancel = true
+        if let old = timers.removeValue(forKey: key) {
+            timerKeys.removeValue(forKey: old.generation)
+            staleDeadlines &+= 1
             dirty = true
         }
     }

@@ -39,11 +39,14 @@ public enum TurnDiagnostic: Sendable, Equatable {
     case queued(total: Int)
     case batchEnded(released: Int)
     case foreignCompletion
-    /// A deadline woke (on time, or early because it was cancelled) for a request or a
-    /// follow-up gate that had already closed, and did nothing.
+    /// The core's timer reached the deadline of a request or a follow-up gate that had already
+    /// closed, and did nothing. It comes at the deadline's instant or later, or never: a closed
+    /// entry that the core drops first reports nothing. The core drops one when it compacts its
+    /// deadlines, when `endAll` empties them, or when a wake clears closed entries due after the
+    /// instant it woke for.
     case staleDeadline
-    /// A timer woke (on time, or early because it was cancelled) after it was replaced or
-    /// dropped, and did nothing.
+    /// The core's timer reached a timer that had been replaced or dropped, and did nothing. It
+    /// comes at the timer's instant or later, or never, as `staleDeadline` does.
     case staleTimer
     /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
     /// nothing for it.
@@ -91,8 +94,8 @@ public final class TurnCore<M: TurnMachine> {
     // (a step inside a step or inside a read, nested or not; a read or a query inside a step).
     // It can't stop adopter code that the core runs
     // during its own accesses: `M.Key`'s `==` and `hash(into:)` (run inside mutations of `rt`,
-    // `timerTasks` and `scopeEndsWhileDeferred`) and the deinits of inputs and keys the core
-    // drops (`queued`, a withdraw, `removeAll`). Those must not call back into the actor; an
+    // `deadlines` (a compaction's liveness check) and `scopeEndsWhileDeferred`) and the deinits of
+    // inputs and keys the core drops (`queued`, a withdraw, `removeAll`). Those must not call back into the actor; an
     // adopter tests that with the checked build. Debug builds keep the checks, and so does a
     // release build with `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED`. Every stored var carries the
     // attribute under this exact condition (scripts/lint-turns.sh, rule unchecked-state).
@@ -168,21 +171,70 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var cachedNow: TurnInstant?
+    /// Every armed request deadline, gate deadline and timer, by (instant, arm order) (#621 item 2,
+    /// Notes/plans/2026-11-21-turns-shared-deadline-timer.md). Lazy deletion: a closed one stays
+    /// until a wake reaches it or a compaction drops it (`rt.staleDeadlines`).
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
-    @usableFromInline var deadlineTasks: [RequestID: Task<Void, Never>] = [:]
-    /// Tests: how many deadline tasks (requests' and follow-up gates') the core holds.
-    package var deadlineTasksForTesting: Int { deadlineTasks.count }
+    @usableFromInline var deadlines = DeadlineHeap()
+    /// The arm counter: entries at one instant fire in arm order.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var nextArm: UInt64 = 0
+    /// The one sleeping task of the core's timer, until `sleeperTarget`; nil when nothing is armed.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var sleeper: Task<Void, Never>?
+    /// Bumped at each sleeper start, and when `endAll` stops the timer: a wake from an older
+    /// sleeper is superseded.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var sleeperGeneration: UInt64 = 0
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var sleeperTarget: TurnInstant?
+    /// A wake is being serviced on the actor: an arm doesn't re-arm, the wake's return gives the
+    /// next target.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline var sleeperAwake = false
+    /// Tests: sleeper tasks started.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var sleeperStartsForTesting = 0
+    /// Tests: wakes dropped as superseded (a re-armed, stopped or deinit-cancelled sleeper's).
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var supersededWakesForTesting = 0
+    /// Tests: wakes serviced (not foreign, not superseded).
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var timerWakesForTesting = 0
+    /// Tests: called on the actor at each wake of the core's timer that isn't foreign, with
+    /// whether it was superseded, before it steps anything. Observe-only, as
+    /// `onContinuationJobForTesting`; one nil check per wake.
+    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
+    @exclusivity(unchecked)
+    #endif
+    @usableFromInline package var onTimerWakeForTesting: ((_ superseded: Bool) -> Void)?
+    /// Tests: entries in the deadline heap that are still live.
+    package var liveDeadlinesForTesting: Int { deadlines.storage.reduce(0) { $0 + (deadlineIsLive($1) ? 1 : 0) } }
+    /// Tests: entries in the deadline heap, stale ones included.
+    package var deadlineEntriesForTesting: Int { deadlines.count }
     /// Tests: how many follow-up gates the core has launched; counted in debug builds only.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var gateLaunchesForTesting = 0
-    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
-    @exclusivity(unchecked)
-    #endif
-    @usableFromInline var timerTasks: [M.Key: (generation: UInt64, task: Task<Void, Never>)] = [:]
     /// Follow-ups taken by the current continuation job at its start, to step in this batch.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
@@ -316,7 +368,8 @@ public final class TurnCore<M: TurnMachine> {
     #endif
     @usableFromInline var effectCounts: [String: Int] = [:]
     /// Test-only: called on the actor, synchronously, where the event happens. Package access:
-    /// the adopters that set it are in this package.
+    /// the adopters that set it are in this package. An observer: it must not send, arm or
+    /// otherwise change the core.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
     #endif
@@ -356,8 +409,52 @@ public final class TurnCore<M: TurnMachine> {
 
     deinit {
         assert(waiters.isEmpty, "TurnCore: a caller was never answered")
-        for task in deadlineTasks.values { task.cancel() }
-        for entry in timerTasks.values { entry.task.cancel() }
+        sleeper?.cancel()
+    }
+
+    // MARK: The deadline heap
+
+    /// At most this many live due entries step per wake; the rest steps on the next wake, and
+    /// other work queued on the actor can run first (§3.6 of the plan). Separate from
+    /// `maxReleasesPerBatch`.
+    @inlinable static var maxFiresPerWake: Int { 64 }
+    /// At most this many stale entries are popped per wake, due ones and the silent head drop
+    /// together; the rest waits for the next wake or a compaction.
+    @inlinable static var maxStalePopsPerWake: Int { 256 }
+    /// A compaction needs at least this many stale entries, and at least half the heap stale.
+    @inlinable static var compactionFloor: Int { 64 }
+
+    /// Whether `entry`'s request is open, its follow-up's gate deadline still pending, or its
+    /// timer still its key's current one.
+    @inlinable func deadlineIsLive(_ entry: DeadlineEntry) -> Bool {
+        if entry.isTimer { return rt.timerKeys[entry.ticket] != nil }
+        let id = RequestID(raw: entry.ticket)
+        if rt.open[id] != nil { return true }
+        return Self.usesFollowUps && rt.gateDeadlineLive(id)
+    }
+
+    /// Drops the stale entries in O(n) once they are at least `compactionFloor` and half the heap,
+    /// at amortized O(1) per invalidation. Right after an arm or a wake, the heap holds at most
+    /// `max(compactionFloor, 2 × live) + 1` entries; cancels in between only count, so the bound
+    /// holds after the next compaction check, not at every instant. Never during a wake (its due
+    /// entries are outside the heap but still counted). The sleeper isn't re-armed: a removed
+    /// target costs one wake that steps nothing.
+    @inlinable func compactDeadlinesIfStale() {
+        let stale = rt.staleDeadlines
+        guard stale >= Self.compactionFloor, stale &* 2 >= deadlines.count else { return }
+        deadlines.rebuild { deadlineIsLive($0) }
+        rt.staleDeadlines = 0
+    }
+
+    /// `endAll`'s stop: no entry can be live again, so the heap empties and the sleeper is
+    /// cancelled and superseded. Synchronous and terminal; reads no machine state.
+    @inlinable func stopDeadlines() {
+        deadlines.removeAll()
+        rt.staleDeadlines = 0
+        sleeper?.cancel()
+        sleeper = nil
+        sleeperTarget = nil
+        sleeperGeneration &+= 1
     }
 
     /// Reads the machine. Between steps only: from inside a step it stops the process. Reads

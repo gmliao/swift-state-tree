@@ -215,7 +215,8 @@ struct OrderModel<Mail: OrderMail & PlainData>: TurnMachine {
             markedTokens.insert(tokenID)
         case .arm(let owner, let seq):
             if turn.isLive(owner) {
-                turn.timer(at: TurnInstant(nanoseconds: Int64(seq)), for: owner, .fired(owner: owner, seq: seq))
+                // Relative to now, so a timer armed after the clock moved isn't due at once.
+                turn.timer(at: turn.now + .nanoseconds(Int64(seq)), for: owner, .fired(owner: owner, seq: seq))
                 timers[owner] = seq
             }
         case .fired(let owner, let seq):

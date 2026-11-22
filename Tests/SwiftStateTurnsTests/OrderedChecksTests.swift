@@ -49,7 +49,7 @@ struct OrderedChecksTests {
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "d1", deadline: .seconds(5)))
         await a.send(.transaction(2, "d2"))
-        f.open("deadline 5")
+        a.clock.release(through: 5)
         await a.waitForLog(3)
         f.open("d1")
         await a.waitForLog(4)
@@ -66,7 +66,7 @@ struct OrderedChecksTests {
         let a = DemoActor(fixture: f)
         await a.send(.transaction(1, "w1", deadline: .seconds(7), untilRetire: true))
         await a.send(.transaction(2, ""))
-        f.open("deadline 7")
+        a.clock.release(through: 7)
         await a.waitForLog(2)
         let mid = await a.snapshot()
         f.open("w1")
@@ -158,7 +158,7 @@ struct OrderedChecksTests {
         }
         await f.reach("at never")
         let waitingAgain = await a.snapshot()
-        f.open("deadline 5")
+        a.clock.release(through: 5)
         let abandoned = outcome(await boundedResult(afterAbandon))
         let s = await a.snapshot()
 
@@ -416,11 +416,12 @@ struct OrderedChecksTests {
         await a.send(.teardown)
         let parkedResult = outcome(await boundedResult(parked))
         let mid = await a.snapshot()
-        // The closed request's deadline task was cancelled: its sleep ended early, and the core's
-        // re-check found the request closed.
+        // `endAll` stopped the core's timer in its step: the heap is empty and the sleep ended
+        // early. Its wake is superseded and reports nothing, and releasing the clock through 9
+        // later wakes nothing.
         await f.reach("cancelled deadline 9")
-        await f.reach("stale deadline #1")
-        f.open("deadline 9")
+        #expect(await a.deadlineTimer().entries == 0)
+        a.clock.release(through: 9)
         f.open("w")
         await a.waitForLog(4)
         let s = await a.snapshot()
@@ -430,8 +431,8 @@ struct OrderedChecksTests {
         #expect(mid.stats.pendingWaiters == 0)
         #expect(s.log == ["begin 1", "teardown", "abandoned 1 keyEnded", "stale 1"])
         #expect(s.stats.heldKeys == 0)
-        // The one stale wake is the cancelled one; opening the gate later wakes nothing.
-        #expect(f.count(of: "stale deadline") == 1)
+        #expect(f.count(of: "stale deadline") == 0)
+        #expect(await a.deadlineTimer().starts == 1)
     }
 
     @Test("19: start over a live generation closes requests made earlier in the same step")
