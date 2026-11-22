@@ -486,9 +486,9 @@ struct ReevaluationRunnerMain {
             initialState: HeroDefenseState(),
             services: services,
             enableLiveStateHashRecording: true,
-            autoStartLoops: false
+            autoStartLoops: false,
+            landID: landID
         )
-        await keeper.setLandID(landID)
         guard let recorder = await keeper.getReevaluationRecorder() else {
             print("Error: ReevaluationRecorder not available")
             exit(7)
