@@ -12,7 +12,6 @@ Tests/SwiftStateTreeNIOTests/NIOLandHostTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift clock-poll 2
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift helper-poll 1
 Tests/SwiftStateTreeNIOTests/WebSocketSessionHandlerInboundBacklogTests.swift sleep-poll 2
-Tests/SwiftStateTreeTests/ActionEventSyncTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/ActionJobTests.swift yield-poll 1
 Tests/SwiftStateTreeTests/DebugProjectionWireShapeTests.swift helper-poll 1
 Tests/SwiftStateTreeTests/InitializeResolverFailureTests.swift yield-poll 2
@@ -23,8 +22,6 @@ Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/LandKeeperDebugFreezeTests.swift yield-poll 1
 Tests/SwiftStateTreeTests/LandKeeperLoopPhaseOffsetTests.swift clock-poll 1
 Tests/SwiftStateTreeTests/LandKeeperLoopPhaseOffsetTests.swift sleep-poll 1
-Tests/SwiftStateTreeTests/LandKeeperTickSyncTests.swift clock-poll 1
-Tests/SwiftStateTreeTests/LandKeeperTickSyncTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/ReevaluationMonitorFrameIdentityTests.swift helper-poll 2
 Tests/SwiftStateTreeTests/ReevaluationRecordLogTests.swift sleep-poll 1
 Tests/SwiftStateTreeTests/ReevaluationRecordLogTests.swift yield-poll 1

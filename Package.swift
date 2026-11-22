@@ -224,6 +224,7 @@ let package = Package(
                 "SwiftStateTreeReevaluationMonitor",
                 "SwiftStateTreeDeterministicMath",
                 "SwiftStateTreeMessagePack",
+                "SwiftStateTreeTestSupport",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],

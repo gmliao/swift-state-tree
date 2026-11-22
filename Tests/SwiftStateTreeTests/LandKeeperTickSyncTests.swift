@@ -167,23 +167,3 @@ func testTickUpdatesBroadcastFields() async throws {
         }
     }
 }
-
-// MARK: - Helper Function
-
-func waitFor(
-    _ description: String,
-    timeout: Duration = .seconds(5),
-    condition: @escaping () async -> Bool
-) async {
-    let startTime = ContinuousClock.now
-    let timeoutInstant = startTime + timeout
-    
-    while ContinuousClock.now < timeoutInstant {
-        if await condition() {
-            return
-        }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    
-    Issue.record("Timeout waiting for: \(description)")
-}
