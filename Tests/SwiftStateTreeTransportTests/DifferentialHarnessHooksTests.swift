@@ -361,12 +361,15 @@ struct DifferentialHarnessHooksTests {
 
     // MARK: Named observations through the router
 
-    @Test("admittedNotRegistered and the join commits through a real router attempt: keyed by the router's attempt number", .enabled(if: isDebugBuild, "reads join and drain probes recorded only in DEBUG builds (#748)"))
+    @Test("admittedNotRegistered and the join commits through a real router attempt: keyed by the router's attempt number")
     func observationsThroughTheRouter() async throws {
         let h = try await HooksHarness.make(autoStartLoops: false)
         // The in-turn join's observations.
         try #require(await h.keeper.isUsingInTurnSync())
+        // The join-commit observations record only in DEBUG builds (#748); the rest runs in release too.
+        #if DEBUG
         await h.adapter.captureJoinCommitsForTesting()
+        #endif
         let gate = TestGate()
         await h.adapter.installHolds(HoldRegistry.at(.keeperJoinReturned) { await gate.arrive() })
         let session = SessionID("s-real-attempt")
@@ -381,12 +384,14 @@ struct DifferentialHarnessHooksTests {
         await h.router.waitForNoPendingFlipForTesting()
         #expect(await h.transport.playerSessionsForTesting(PlayerID("p1")) == [session])
         #expect(await !h.adapter.admittedNotRegisteredForTesting(session))
+        #if DEBUG
         typealias Key = TransportAdapter<HarnessHooksState>.JoinAttemptKey
         // The router's first attempt is number 1.
         #expect(await h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: 1)))
         #expect(await h.adapter.initialSyncCommittedForTesting(Key(sessionID: session, attempt: 1)))
         #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: nil)))
         #expect(await !h.adapter.joinFlippedForTesting(Key(sessionID: session, attempt: 2)))
+        #endif
     }
 
     @Test("admittedNotRegistered reads the transport's player table, not only the adapter's bit")

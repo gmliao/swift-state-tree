@@ -16,9 +16,11 @@ import SwiftStateTreeTransport
 /// it; it states its own short bound instead.
 package let testHangBound: Duration = .seconds(60)
 
-/// Whether the test support (and so the package) was built in debug. Tests that read probes
-/// recorded only in DEBUG builds of the library gate on it (`.enabled(if: isDebugBuild, …)`):
-/// in a release test run those probes can't answer (#748).
+/// Whether the test support (and so the package) was built in debug. A test whose ordering
+/// depends on a wait probe that returns at once outside DEBUG builds gates on it
+/// (`.enabled(if: isDebugBuild, …)`), so a release run reports it skipped. A test that only
+/// reads a DEBUG-only observation puts `#if DEBUG` around that capture and its expectations
+/// instead, so release keeps the rest of its coverage (#748).
 #if DEBUG
 package let isDebugBuild = true
 #else
