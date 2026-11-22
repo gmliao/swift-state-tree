@@ -214,10 +214,12 @@ struct ReplayRecordRefusalTests {
         service.startVerification(landType: "record-refusal", recordFilePath: "/unused")
         let status = try await terminalStatus(of: service)
         #expect(status.phase == .failed)
+        // The message states the result count the service measured, not a record tick.
         #expect(
-            status.errorMessage == ReevaluationRecordContentError.replayTooLong(lastTick: 5, limit: 5).description,
+            status.errorMessage == "the runner produced more than 5 results, and a replay may take at most 5 steps",
             "\(status.errorMessage)"
         )
+        // The result that trips the cap has been stepped: one step past the limit.
         #expect(await runner.stepCalls == 6)
 
         // A runner that takes exactly the limit completes.

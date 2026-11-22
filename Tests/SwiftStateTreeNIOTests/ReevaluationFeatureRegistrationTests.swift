@@ -124,6 +124,25 @@ struct ReevaluationFeatureRegistrationTests {
         #expect(await defaulted.maxReplayTicksByLandType == ["feature-live": ReevaluationRecordFile.defaultMaxReplayTicks])
     }
 
+    @Test("A limit below 1 stops the process at the feature configuration and the admin routes (#728)")
+    func limitBelowOneIsRejected() async {
+        // An error thrown out of an exit test's body also exits with failure, so a child that can throw
+        // would pass without the precondition. These two inits don't throw: only the trap fails them.
+        await #expect(processExitsWith: .failure) {
+            _ = ReevaluationFeatureConfiguration(
+                enabled: true,
+                maxReplayTicks: 0,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: MockReevaluationTargetFactory()) }
+            )
+        }
+        await #expect(processExitsWith: .failure) {
+            _ = NIOAdminRoutes(
+                landRealm: LandRealm(), adminAuth: NIOAdminAuth(apiKey: "test-admin-key"),
+                maxReplayTicksByLandType: ["feature-live": 0]
+            )
+        }
+    }
+
     @Test("registerWithGenericReplay registers only live land when disabled")
     func registerWithGenericReplayDisabled() async throws {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(
