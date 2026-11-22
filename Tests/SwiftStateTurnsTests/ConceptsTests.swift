@@ -309,3 +309,105 @@ func plainDataDocExampleIsPlain() {
     #expect(isPlain(PlayerID.self))
     #expect(isPlain(SessionID.self))
 }
+
+// MARK: - The mailbox
+
+/// The mailbox's documented example: a keeper that a transport tells, from its own thread, that the
+/// output gate closed on a failure. The next step takes the failure first, and a step that runs
+/// while it lands sees it through `takeMail`.
+@PlainData
+struct Keeper: TurnMachine {
+    enum Input: Sendable {
+        case tick
+    }
+
+    @PlainData
+    enum Failure: Sendable {
+        case transportFailed
+    }
+
+    enum Key: Hashable, Sendable {
+        case land
+    }
+
+    enum Output {
+        case sync
+    }
+
+    typealias Effect = Never
+    typealias Reply = Int
+    typealias Mail = Failure
+
+    var failed: Failure?
+    var ticks: Int = 0
+
+    init() {}
+
+    mutating func handle(_ input: Input, _ turn: inout Turn<Keeper>) {
+        switch input {
+        case .tick:
+            turn.start(.land)
+            ticks += 1
+            StepHooks.duringStep?()
+            // docs:mailbox-take
+            // A failure posted while this step ran stops its output.
+            if let failure = turn.takeMail().first { failed = failed ?? failure }
+            if failed == nil { turn.emit(.sync, for: .land) }
+            // docs:end
+        }
+    }
+
+    // docs:mailbox-mail
+    mutating func handleMail(_ mail: Failure, _ turn: inout MailTurn<Keeper>) {
+        failed = failed ?? mail
+    }
+    // docs:end
+}
+
+actor KeeperActor: TurnActor {
+    // docs:mailbox-actor
+    let core: TurnCore<Keeper>
+    nonisolated let mailbox: TurnMailbox<Keeper.Mail>?
+
+    init() {
+        let core = TurnCore(Keeper(), queueLimit: 64, maxReleasesPerBatch: 16, clock: ContinuousTurnClock())
+        self.core = core
+        // The core's own mailbox: a lint checks it's assigned from `core.mailbox`.
+        self.mailbox = core.mailbox
+    }
+    // docs:end
+
+    private(set) var synced = 0
+
+    @concurrent nonisolated func perform(_ effect: Never) async -> Keeper.Input? {}
+
+    func flush(_ outputs: consuming [Keeper.Output]) {
+        synced += outputs.count
+    }
+
+    var failed: Keeper.Failure? { core.read { $0.failed } }
+}
+
+@Suite("The mailbox, as documented")
+struct MailboxConceptTests {
+    @Test("A failure posted before a tick steps first; one posted during a tick stops its output")
+    func keeperSeesFailures() async {
+        let keeper = KeeperActor()
+        await keeper.send(.tick)
+        #expect(await keeper.synced == 1)
+        // docs:mailbox-post
+        // From any thread, with no await: the core's next step takes the mail first.
+        _ = keeper.post(.transportFailed)
+        // docs:end
+        await keeper.send(.tick)
+        #expect(await keeper.failed == .transportFailed)
+        #expect(await keeper.synced == 1)
+
+        let second = KeeperActor()
+        await StepHooks.$duringStep.withValue({ _ = second.post(.transportFailed) }) {
+            await second.send(.tick)
+        }
+        #expect(await second.failed == .transportFailed)
+        #expect(await second.synced == 0)
+    }
+}

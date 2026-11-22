@@ -81,8 +81,9 @@ final class Fixture: @unchecked Sendable {
 
     /// The core's diagnostics hook. A queued input opens "park #n" (n counts every queued input so
     /// far), and its release "released #n" once its batch ends. A foreign completion opens
-    /// "foreign" and "foreign #n", a stale deadline, timer or follow-up "stale deadline #n",
-    /// "stale timer #n" or "stale follow-up #n"; batch sizes and clock reads are recorded.
+    /// "foreign" and "foreign #n", a stale deadline, timer, follow-up or cancellation "stale
+    /// deadline #n", "stale timer #n", "stale follow-up #n" or "stale cancellation #n", an idle
+    /// completion "idle completion #n"; batch sizes and clock reads are recorded.
     func observe(_ event: TurnDiagnostic) {
         switch event {
         case .queued(let total):
@@ -103,6 +104,10 @@ final class Fixture: @unchecked Sendable {
             open("stale timer #\(bump("stale timer"))")
         case .staleFollowUp:
             open("stale follow-up #\(bump("stale follow-up"))")
+        case .staleCancellation:
+            open("stale cancellation #\(bump("stale cancellation"))")
+        case .idleCompletion:
+            open("idle completion #\(bump("idle completion"))")
         case .clockRead:
             bump("clock read")
         }
@@ -148,7 +153,8 @@ final class Fixture: @unchecked Sendable {
 /// A clock the test drives by hand. `now` starts at zero, is set by the test and counts its
 /// reads. A sleep until an instant of N whole seconds waits at the gate "deadline N" (deadlines
 /// and timers alike), and returns early when its task is cancelled. When it returns it opens
-/// "woke deadline N" or "cancelled deadline N", so a check can wait for either.
+/// "woke deadline N" or "cancelled deadline N", so a check can wait for either. With "hold
+/// cancelled deadline N" open, a cancelled sleep then waits for "release cancelled deadline N".
 final class TestClock: TurnClock, @unchecked Sendable {
     let fixture: Fixture
     private let lock = NSLock()
@@ -185,6 +191,9 @@ final class TestClock: TurnClock, @unchecked Sendable {
         let gate = Self.gate(for: instant)
         let woke = await fixture.waitUnlessCancelled(gate)
         fixture.open(woke ? "woke \(gate)" : "cancelled \(gate)")
+        // A test that opened "hold cancelled <gate>" places the cancelled sleep's return (its
+        // stale arrival) itself, by opening "release cancelled <gate>".
+        if !woke, fixture.isOpen("hold cancelled \(gate)") { await fixture.wait("release cancelled \(gate)") }
     }
 }
 

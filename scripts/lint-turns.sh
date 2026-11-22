@@ -11,6 +11,11 @@
 #   let-core     a type that conforms to TurnActor (in its declaration or in an extension, in any
 #                file) declares `let core` as a member of its declaration, and no `var core`
 #                member anywhere (the protocol can't require a stored `let`).
+#   let-mailbox     a TurnActor's `mailbox` member (in its declaration or an extension) is a stored
+#                `nonisolated let mailbox` with no initial value, and every assignment to it in the
+#                type's body reads `core.mailbox`: the actor stores the core's own mailbox, never a var,
+#                a computed property or another value (#725). No lint-allow marker covers it, so a
+#                test actor that replaces its core can't also take mail.
 #   machine-file no task (`Task {`, `Task(…)`, `Task<…>`, `Task.init`, `Task.detached`),
 #                `nonisolated(unsafe)` or `@unchecked Sendable` in a file that declares a
 #                TurnMachine, outside Sources/SwiftStateTurns: a machine's file holds its steps,
@@ -229,6 +234,10 @@ lint() {  # root
         if ((path in machineFile) && !allowed(allow, "machine-file") &&
             code ~ /(^|[^A-Za-z0-9_.])Task[ \t]*(\{|\(|<|\.init|\.detached|$)|nonisolated\(unsafe\)|@unchecked[ \t]+Sendable/)
           print path ":" n ": [machine-file] no task, nonisolated(unsafe) or @unchecked Sendable in a machine'"'"'s file"
+        # let-mailbox: an assignment anywhere in a conforming type'"'"'s body reads core.mailbox.
+        if (body > 0 && depth >= body && code ~ /^[ \t]*(self\.)?mailbox[ \t]*=[^=]/ &&
+            code !~ /=[ \t]*(self\.)?core\.mailbox[ \t]*$/)
+          print path ":" n ": [let-mailbox] a TurnActor'"'"'s mailbox is assigned from core.mailbox only"
         # let-core: a member of a conforming type'"'"'s declaration or extension.
         if (body > 0 && depth == body) {
           # Only what precedes the first brace on the line is at member level.
@@ -238,6 +247,11 @@ lint() {  # root
             if (allowed(allow, "let-core")) markedVar[bodyLoc] = 1
             else print path ":" n ": [let-core] a TurnActor'"'"'s core is a stored let, not a var"
           }
+          if (member ~ /(^|[^A-Za-z0-9_])var[ \t]+mailbox([^A-Za-z0-9_]|$)/)
+            print path ":" n ": [let-mailbox] a TurnActor'"'"'s mailbox is a stored nonisolated let, not a var"
+          else if (member ~ /(^|[^A-Za-z0-9_])let[ \t]+mailbox([^A-Za-z0-9_]|$)/ &&
+                   (member !~ /nonisolated[ \t]+let[ \t]+mailbox/ || member ~ /let[ \t]+mailbox[^=]*=/))
+            print path ":" n ": [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let, with no initial value"
         }
         if (match(code, /(^|[^A-Za-z0-9_@.])(struct|class|actor|extension)[ \t]+[A-Za-z_][A-Za-z0-9_.]*/)) {
           decl = substr(code, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", decl)
@@ -440,6 +454,16 @@ extension Right.Pane {
 EOF
   cat > "$dir/Sources/App/SplitConformance.swift" <<'EOF'
 extension Split: TurnActor {}
+actor Mailboxd: TurnActor {
+    let core: TurnCore<M>
+    nonisolated let mailbox: TurnMailbox<R>?
+    init() {
+        let core = makeCore()
+        self.core = core
+        self.mailbox = core.mailbox
+        if let mailbox = self.mailbox { _ = mailbox }
+    }
+}
 EOF
   local markers
   markers="$(awk 'NF { print $1, $2; exit }' <<<"$ALLOW_MARKERS")"
@@ -502,6 +526,24 @@ enum B {
 }
 extension B.Owner {
     var core: TurnCore<M> { fatalError() }
+}
+actor MailboxVar: TurnActor {
+    let core = makeCore()
+    var mailbox: TurnMailbox<R>? = nil
+}
+actor MailboxIsolated: TurnActor {
+    let core = makeCore()
+    let mailbox: TurnMailbox<R>?
+    init() {
+        mailbox = makeMailbox()
+    }
+}
+actor MailboxValue: TurnActor {
+    let core = makeCore()
+    nonisolated let mailbox = makeMailbox()
+}
+extension MailboxValue {
+    nonisolated var mailbox2: Int { 0 }
 }
 EOF
   cat > "$dir/Sources/App/BadConformance.swift" <<'EOF'
@@ -584,6 +626,10 @@ Bad.swift:22: [plain-data] a protocol refining
 Bad.swift:23: [plain-data] a protocol refining
 Bad.swift:33: [let-core] a TurnActor declares
 Bad.swift:37: [let-core] a TurnActor'"'"'s core is a stored let
+Bad.swift:41: [let-mailbox] a TurnActor'"'"'s mailbox is a stored nonisolated let, not a var
+Bad.swift:45: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
+Bad.swift:47: [let-mailbox] a TurnActor'"'"'s mailbox is assigned from core.mailbox only
+Bad.swift:52: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
 BadMachine.swift:2: [machine-file]
 BadMachine.swift:4: [machine-file]
 BadMachine.swift:5: [machine-file]

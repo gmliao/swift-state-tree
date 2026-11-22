@@ -16,8 +16,26 @@ struct OrderOutput: Sendable {
     var step: Int
 }
 
+/// The order machine's mail: the harness's post number. `Never` makes the mailboxless
+/// twin, which drives the driver's `!usesMailbox` branches under the same operations.
+protocol OrderMail: Sendable {
+    /// The mail for post `number`; nil for `Never`, which has none.
+    static func numbered(_ number: Int) -> Self?
+    var number: Int { get }
+}
+
+extension Int: OrderMail {
+    static func numbered(_ number: Int) -> Int? { number }
+    var number: Int { self }
+}
+
+extension Never: OrderMail {
+    static func numbered(_ number: Int) -> Never? { nil }
+    var number: Int { switch self {} }
+}
+
 @PlainData
-struct OrderModel: TurnMachine {
+struct OrderModel<Mail: OrderMail & PlainData>: TurnMachine {
     enum Input: Sendable {
         /// External work: queues behind `hold`, scoped to `scope` (sent after the scope's
         /// `scopeEnds`-th end or supersede), withdrawn if `token` ended. `pinned`: queued by a
@@ -97,6 +115,8 @@ struct OrderModel: TurnMachine {
     var followUpBySlot: [Int: Int] = [:]
     /// Follow-ups that stepped, and those closed unrun.
     var ranFollowUps: Int = 0
+    /// The mail stepped, in order.
+    var mailStepped: [Int] = []
     var closedFollowUps: Int = 0
 
     func inputPolicy(for input: Input) -> InputPolicy<Int> {
@@ -120,6 +140,14 @@ struct OrderModel: TurnMachine {
         if depth != 0 { violate("a step entered while another ran") }
         depth += 1
         stepCount += 1
+    }
+
+    mutating func handleMail(_ mail: Mail, _ turn: inout MailTurn<OrderModel>) {
+        enter()
+        defer { depth -= 1 }
+        let number = mail.number
+        if mailStepped.contains(number) { violate("mail \(number) stepped twice") }
+        mailStepped.append(number)
     }
 
     mutating func handle(_ input: Input, _ turn: inout Turn<OrderModel>) {
