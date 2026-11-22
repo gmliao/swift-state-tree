@@ -18,7 +18,9 @@ struct MailReplayTests {
     ) async -> (live: [String], replayed: [String], record: [MailRecordEntry<MailNote>], diverged: [TurnReplayDivergence]) {
         let live = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit)
         await inputs(live, true)
-        // On the live actor first: a wake's take records before its step, in the actor's job.
+        // A hop onto the live actor first lets the jobs already on it end, so a wake that ran
+        // before it has recorded its take. A post whose wake task isn't enqueued yet can still
+        // land after the hop: tests that post reach the wake (`wake #n`) through the actor.
         _ = await live.log
         let record = live.records.entries
         let replay = await MailboxActor.started(maxReleasesPerBatch: maxReleasesPerBatch, mailboxCapacity: mailboxCapacity, queueLimit: queueLimit, replay: edit(record))
@@ -694,9 +696,10 @@ struct MailReplayTests {
     @Test("13zq: in replay, a query from inside a read stops on the open read before it takes an ordinal, not as a divergence")
     func queryInsideReadStopsBeforeItsOrdinal() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            // A staged mail for before ordinal 0 and no divergence hook: a query that took its
-            // ordinal first would stop as a divergence instead.
-            let staged = [MailRecordEntry(key: .before(step: 0, index: 0), mail: [MailNote("S")], now: nil)]
+            // A staged sentinel no take can match (index 1 while the take is at 0) and no
+            // divergence hook: a query that took its ordinal first would stop as a divergence
+            // (`unconsumed`) instead, whatever the take did.
+            let staged = [MailRecordEntry(key: .before(step: 0, index: 1), mail: [MailNote("S")], now: nil)]
             let a = MailboxActor(fixture: Fixture(), maxReleasesPerBatch: 64, mailboxCapacity: 8, replay: staged, divergenceHook: false)
             await a.queryInsideReadForTesting()
         }
