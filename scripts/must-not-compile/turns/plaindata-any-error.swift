@@ -1,4 +1,4 @@
-// expect-error: an existential or opaque type isn't plain data
+// expect-error: to closure result type 'any PlainData'
 import SwiftStateTurns
 
 // A machine field that is an existential: its value can be a class.

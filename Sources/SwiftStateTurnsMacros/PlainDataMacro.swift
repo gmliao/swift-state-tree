@@ -34,10 +34,19 @@ public struct PlainDataMacro: ExtensionMacro {
         let constraints = (generics?.parameters ?? []).map { "\($0.name.text): PlainData" }
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
         let conformance = protocols.isEmpty ? "" : ": PlainData"
+        // The witness is as visible as the type: a public type's conformance needs a public one,
+        // and an internal type's can't have one when the extension carries internal requirements.
+        let access = declaration.modifiers.lazy.compactMap { modifier -> String? in
+            switch modifier.name.tokenKind {
+            case .keyword(.public), .keyword(.open): "public "
+            case .keyword(.package): "package "
+            default: nil
+            }
+        }.first ?? ""
         let decl: DeclSyntax = """
             extension \(type.trimmed)\(raw: conformance)\(raw: whereClause) {
                 /// Compiled, never called: each line fails to compile unless its type is PlainData.
-                static func _plainDataCheck() {
+                \(raw: access)static func _plainDataCheck() {
                     \(raw: checks)
                 }
             }
@@ -76,8 +85,8 @@ public struct PlainDataMacro: ExtensionMacro {
                 guard let cases = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
                 for element in cases.elements {
                     for parameter in element.parameterClause?.parameters ?? [] {
-                        if !accept(parameter.type, context) { failed = true; continue }
-                        lines.append(check(parameter.type))
+                        guard let found = checks(parameter.type, context) else { failed = true; continue }
+                        lines.append(contentsOf: found)
                     }
                 }
                 continue
@@ -108,8 +117,8 @@ public struct PlainDataMacro: ExtensionMacro {
                     failed = true
                     continue
                 }
-                if !accept(annotation, context) { failed = true; continue }
-                lines.append(check(annotation))
+                guard let found = checks(annotation, context) else { failed = true; continue }
+                lines.append(contentsOf: found)
             }
         }
         return lines.joined(separator: "\n")
@@ -117,6 +126,57 @@ public struct PlainDataMacro: ExtensionMacro {
 
     private static func check(_ type: TypeSyntax) -> String {
         "PlainDataCheck.field((\(type.trimmed)).self)"
+    }
+
+    /// The checks for one field's type, or nil after a diagnostic. A type with no `any` gets one
+    /// `field` check. An `any P` gets an `existential` check, which compiles only when `P`
+    /// refines `PlainData`; inside `Optional`, `Array`, `ContiguousArray` or a `Dictionary`'s
+    /// value the element is checked instead of the wrapper, which can't conform. Anywhere else,
+    /// the macro can't see what holds it, so it is refused.
+    private static func checks(_ type: TypeSyntax, _ context: some MacroExpansionContext) -> [String]? {
+        guard containsAny(type) else { return accept(type, context) ? [check(type)] : nil }
+        if let paren = type.as(TupleTypeSyntax.self), paren.elements.count == 1,
+           let only = paren.elements.first, only.firstName == nil {
+            return checks(only.type, context)
+        }
+        if let existential = type.as(SomeOrAnyTypeSyntax.self), existential.someOrAnySpecifier.tokenKind == .keyword(.any) {
+            if existential.constraint.is(MetatypeTypeSyntax.self) {
+                context.diagnose(Diagnostic(node: existential, message: PlainDataDiagnostic.metatype))
+                return nil
+            }
+            guard accept(existential.constraint, context) else { return nil }
+            return ["PlainDataCheck.existential((\(existential.trimmed)).self) { $0 }"]
+        }
+        if let optional = type.as(OptionalTypeSyntax.self) { return checks(optional.wrappedType, context) }
+        if let optional = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) { return checks(optional.wrappedType, context) }
+        if let array = type.as(ArrayTypeSyntax.self) { return checks(array.element, context) }
+        if let dictionary = type.as(DictionaryTypeSyntax.self) { return pair(dictionary.key, dictionary.value, context) }
+        if let named = type.as(IdentifierTypeSyntax.self), let clause = named.genericArgumentClause {
+            let arguments: [TypeSyntax] = clause.arguments.compactMap {
+                if case .type(let argument) = $0.argument { return argument }
+                return nil
+            }
+            switch (named.name.text, arguments.count) {
+            case ("Optional", 1), ("Array", 1), ("ContiguousArray", 1): return checks(arguments[0], context)
+            case ("Dictionary", 2): return pair(arguments[0], arguments[1], context)
+            default: break
+            }
+        }
+        context.diagnose(Diagnostic(node: type, message: PlainDataDiagnostic.existentialInGeneric))
+        return nil
+    }
+
+    /// A dictionary's checks: its key as a whole (an existential key isn't `Hashable`), its value
+    /// as above.
+    private static func pair(_ key: TypeSyntax, _ value: TypeSyntax, _ context: some MacroExpansionContext) -> [String]? {
+        guard let keyChecks = checks(key, context), let valueChecks = checks(value, context) else { return nil }
+        return keyChecks + valueChecks
+    }
+
+    private static func containsAny(_ type: TypeSyntax) -> Bool {
+        let finder = AnyFinder(viewMode: .sourceAccurate)
+        finder.walk(type)
+        return finder.found
     }
 
     /// `var a, b: Int` gives `a` the type of the next annotated binding.
@@ -170,10 +230,37 @@ private final class RefusedTypeVisitor: SyntaxVisitor {
         return .skipChildren
     }
 
+    // Foundation's value types aren't plain data here: the diagnostic names what to store instead.
+    override func visit(_ node: IdentifierTypeSyntax) -> SyntaxVisitorContinueKind {
+        if node.genericArgumentClause == nil, let name = PlainDataDiagnostic.foundationReplacement(node.name.text) {
+            refused.append((Syntax(node), .foundation(node.name.text, name)))
+            return .skipChildren
+        }
+        return .visitChildren
+    }
+
+    override func visit(_ node: MemberTypeSyntax) -> SyntaxVisitorContinueKind {
+        if node.baseType.trimmedDescription == "Foundation", let name = PlainDataDiagnostic.foundationReplacement(node.name.text) {
+            refused.append((Syntax(node), .foundation(node.name.text, name)))
+            return .skipChildren
+        }
+        return .visitChildren
+    }
+
     override func visit(_ node: TupleTypeSyntax) -> SyntaxVisitorContinueKind {
         // `(T)` is a parenthesized type, not a tuple.
         if node.elements.count == 1, node.elements.first?.firstName == nil { return .visitChildren }
         refused.append((Syntax(node), .tuple))
+        return .skipChildren
+    }
+}
+
+/// Finds an `any` existential anywhere in a type.
+private final class AnyFinder: SyntaxVisitor {
+    var found = false
+
+    override func visit(_ node: SomeOrAnyTypeSyntax) -> SyntaxVisitorContinueKind {
+        if node.someOrAnySpecifier.tokenKind == .keyword(.any) { found = true }
         return .skipChildren
     }
 }
@@ -187,6 +274,20 @@ enum PlainDataDiagnostic: DiagnosticMessage {
     case closure
     case existential
     case tuple
+    case metatype
+    case existentialInGeneric
+    case foundation(String, String)
+
+    /// What to store instead of a Foundation value type, or nil for any other name.
+    static func foundationReplacement(_ name: String) -> String? {
+        switch name {
+        case "Date": "an Int64 of milliseconds, or read the turn's `now`"
+        case "UUID": "a String, or a project ID type"
+        case "URL": "a String"
+        case "Decimal": "an integer in the smallest unit, or a String"
+        default: nil
+        }
+    }
 
     var message: String {
         switch self {
@@ -196,7 +297,10 @@ enum PlainDataDiagnostic: DiagnosticMessage {
         case .reference: "a weak or unowned property holds a reference, which isn't plain data"
         case .wrapper: "@PlainData can't check a property wrapper's storage; store the value itself"
         case .closure: "a function type isn't plain data: it can call through to anything"
-        case .existential: "an existential or opaque type isn't plain data: its value can be a class"
+        case .existential: "an opaque type isn't plain data, and neither is an existential nested in it: its value can be a class"
+        case .metatype: "a metatype isn't plain data; store a name or an id that a lookup turns into the type"
+        case .existentialInGeneric: "@PlainData checks an existential only as a field, or inside Optional, Array, ContiguousArray or a Dictionary's value; it can't see what this type does with it"
+        case .foundation(let type, let replacement): "\(type) isn't plain data; store \(replacement) (for your own type of that name, qualify it with its module)"
         case .tuple: "a tuple can't conform to PlainData; use PlainPair or a @PlainData struct"
         }
     }

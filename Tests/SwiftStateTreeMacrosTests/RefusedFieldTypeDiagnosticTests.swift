@@ -60,7 +60,7 @@ struct RefusedFieldTypeDiagnosticTests {
         #expect(diagnostics(stateNode(field)).isEmpty)
     }
 
-    @Test("An @Internal field may hold anything")
+    @Test("The macro doesn't refuse an @Internal field: Internal requires PlainData, which the type checker refuses (scripts/must-not-compile/internal-not-plain.swift)")
     func internalField() {
         let messages = diagnostics("""
             @StateNodeBuilder
@@ -151,7 +151,7 @@ struct RefusedFieldTypeDiagnosticTests {
         #expect(messages.first?.hasPrefix("property 'amount' can't have 'Decimal' in its type") == true, "\(messages)")
     }
 
-    @Test("Not refused: a server-only or @Internal Decimal, a @Payload AnyCodable, and a Decimal of another module")
+    @Test("Not refused by the macro: a server-only or @Internal Decimal (the type checker refuses the @Internal one: Decimal isn't PlainData), a @Payload AnyCodable, and a Decimal of another module")
     func decimalAllowed() {
         #expect(diagnostics("""
             @StateNodeBuilder

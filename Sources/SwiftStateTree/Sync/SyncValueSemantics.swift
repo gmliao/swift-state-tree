@@ -22,8 +22,8 @@ import Foundation
 /// Not seen here: a class only in an enum case the default instance doesn't take, or only in a
 /// collection that is empty by default. `SnapshotValue` refuses those when it converts them.
 ///
-/// `@Internal` fields are not synced and not checked: they may hold a class (a cache, a
-/// service handle). They are also outside the #87 checks.
+/// `@Internal` fields are not synced and not checked here: their value is `PlainData`, which the
+/// compiler checks (#767). They are also outside the #87 checks.
 ///
 /// The registration check (`LandDefinition.validateForRegistration`, which
 /// `LandTypeRegistry.init`, `NIOLandHost.register` and `SchemaExtractor.extract` run) includes it,
@@ -116,8 +116,8 @@ public struct SyncValueSemanticsError: Error, CustomStringConvertible, Equatable
         Synced state must be made of value types (#464): a write through a shared object would \
         escape the diff and replay's state hash.
         \(lines.joined(separator: "\n"))
-        Make the type a struct (or an enum), or keep a reference the land doesn't sync in an \
-        @Internal field.
+        Make the type a struct (or an enum), or keep a reference the land doesn't sync in the \
+        land's services.
         """
     }
 }

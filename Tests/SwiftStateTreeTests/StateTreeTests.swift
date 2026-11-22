@@ -61,7 +61,7 @@ struct StateNodeWithInternal: StateNodeProtocol {
     var players: [PlayerID: String] = [:]
     
     @Internal
-    var lastProcessedTimestamp: Date = Date()
+    var lastProcessedTimestamp: Int64 = 0 // milliseconds
     
     @Internal
     var cache: [String: String] = [:]
@@ -353,7 +353,7 @@ func testInternalFields_ExcludedFromSnapshot() throws {
     // Arrange
     var stateWithInternal = StateNodeWithInternal()
     stateWithInternal.players[PlayerID("alice")] = "Alice"
-    stateWithInternal.lastProcessedTimestamp = Date()
+    stateWithInternal.lastProcessedTimestamp = 1_000
     stateWithInternal.cache["key"] = "value"
     
     let syncEngine = SyncEngine(for: StateNodeWithInternal.self)

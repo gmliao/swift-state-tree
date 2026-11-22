@@ -119,7 +119,7 @@ struct ValueCheckRuntimeRoot: StateNodeProtocol {
 @StateNodeBuilder
 struct ValueCheckInternalRoot: StateNodeProtocol {
     @Sync(.broadcast) var score: Int = 0
-    @Internal var cache: ValueCheckObject = ValueCheckObject()
+    @Internal var cache: [String: Int] = [:]
     init() {}
 }
 
@@ -199,7 +199,7 @@ struct SyncValueSemanticsTests {
         ])
     }
 
-    @Test("An @Internal field may hold a class, and a value-only state passes")
+    @Test("An @Internal field and a value-only state pass (an @Internal class doesn't compile: Internal requires PlainData)")
     func allowed() {
         #expect(valueViolations(ValueCheckInternalRoot.self) == nil)
         #expect(valueViolations(ValueCheckValuesRoot.self) == nil)
@@ -257,7 +257,7 @@ struct SyncValueSemanticsTests {
         } catch {
             let text = "\(error)"
             #expect(text.contains("ValueCheckClassFieldRoot.inventory: ValueCheckObject is a class; synced state must be value types"))
-            #expect(text.contains("@Internal"))
+            #expect(text.contains("land's services"))
         }
     }
 

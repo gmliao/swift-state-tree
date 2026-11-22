@@ -1,6 +1,7 @@
 // Sources/SwiftStateTree/Sync/SyncPolicy.swift
 
 import Foundation
+import SwiftStateTurns
 
 /// Represents the synchronization policy for a field.
 ///
@@ -211,8 +212,12 @@ public struct Sync<Value: Sendable>: Sendable {
 /// Difference from `@Sync(.serverOnly)`:
 /// - `@Sync(.serverOnly)`: The sync engine knows this field exists but doesn't output it to clients
 /// - `@Internal`: The sync engine doesn't need to know about this field at all; purely for server internal use
+///
+/// Its value is `PlainData` (#767): no class, closure, existential or `Any`, so a copy of the state
+/// copies the field too, and replay can't diverge through a shared reference. A reference the
+/// land needs, such as a cache or a service handle, goes in the land's services.
 @propertyWrapper
-public struct Internal<Value: Sendable>: Sendable {
+public struct Internal<Value: PlainData & Sendable>: Sendable {
     public var wrappedValue: Value
 
     public init(wrappedValue: Value) {

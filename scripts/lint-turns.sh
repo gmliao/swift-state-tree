@@ -3,11 +3,13 @@
 # Per Swift file under Sources/, Tests/ and Examples/ (comments and string literals ignored; a
 # declaration whose header spans several lines is read as one):
 #
-#   plain-data   no hand-written `PlainData` conformance outside Sources/SwiftStateTurns: a type,
-#                extension or protocol that lists PlainData among its conformances or refines it,
-#                or a typealias that names it (a class could conform through either).
-#                `@PlainData` writes the conformance and checks every field; a hand-written one
-#                checks nothing. A constraint (`where T: PlainData`, `<T: PlainData>`) isn't one.
+#   plain-data   no hand-written `PlainData` conformance outside Sources/SwiftStateTurns: a type or
+#                extension that lists PlainData among its conformances, a typealias that names it,
+#                or a hand-written `_plainDataCheck` (PlainData's one requirement, which only
+#                `@PlainData` may write: with it, a class could conform through a refining protocol
+#                or a default in a protocol extension). A protocol may refine PlainData: a type
+#                conforming through it still needs the requirement. A constraint
+#                (`where T: PlainData`, `<T: PlainData>`) isn't a conformance.
 #   let-core     a type that conforms to TurnActor (in its declaration or in an extension, in any
 #                file) declares `let core` as a member of its declaration, and no `var core`
 #                member anywhere (the protocol can't require a stored `let`).
@@ -55,7 +57,7 @@ Sources/SwiftStateTreeTransport/TransportAdapter.swift 3 the adapter submits syn
 
 # Test files that carry allow markers, with their counts.
 ALLOW_MARKERS='
-Tests/SwiftStateTurnsTests/Support/DemoActor.swift 5 the runtime stops (reentry, a replaced core, a class machine)
+Tests/SwiftStateTurnsTests/Support/DemoActor.swift 6 the runtime stops (reentry, a replaced core, a class machine and its checks)
 '
 
 RULES='plain-data|let-core|machine-file|isolated'
@@ -203,12 +205,8 @@ lint() {  # root
           if (wh ~ /(^|[^A-Za-z0-9_])Self[ \t]*:[^,]*(^|[^A-Za-z0-9_])PlainData([^A-Za-z0-9_]|$)/) list = list ", PlainData"
         }
       }
-      if (word(list, "PlainData") && !allowed(allow, "plain-data")) {
-        if (kind == "protocol")
-          print path ":" n ": [plain-data] a protocol refining PlainData lets a type conform without @PlainData"
-        else
-          print path ":" n ": [plain-data] a hand-written PlainData conformance; use @PlainData"
-      }
+      if (word(list, "PlainData") && kind != "protocol" && !allowed(allow, "plain-data"))
+        print path ":" n ": [plain-data] a hand-written PlainData conformance; use @PlainData"
       if (word(list, "TurnActor")) {
         actors[last(name)] = 1
         # A qualified extension names its type; a primary declaration names it bare.
@@ -230,6 +228,9 @@ lint() {  # root
         else markers[path]++
       }
       if (!core(path)) {
+        # plain-data: the requirement of PlainData, written by hand.
+        if (code ~ /(^|[^A-Za-z0-9_])func[ \t]+_plainDataCheck([^A-Za-z0-9_]|$)/ && !allowed(allow, "plain-data"))
+          print path ":" n ": [plain-data] a hand-written _plainDataCheck; only @PlainData writes it"
         # machine-file
         if ((path in machineFile) && !allowed(allow, "machine-file") &&
             code ~ /(^|[^A-Za-z0-9_.])Task[ \t]*(\{|\(|<|\.init|\.detached|$)|nonisolated\(unsafe\)|@unchecked[ \t]+Sendable/)
@@ -474,8 +475,9 @@ EOF
     echo '    let unused = 0'
     echo '}'
     echo 'final class ClassMachine: TurnMachine, PlainData {} // lint-allow: turns-plain-data: the class-machine stop'
+    echo 'extension ClassMachine { static func _plainDataCheck() {} } // lint-allow: turns-plain-data: its requirement'
     local extra
-    extra=$(( ${markers##* } - 3 ))
+    extra=$(( ${markers##* } - 4 ))
     for _ in $(seq "$extra"); do echo 'let a = 0 // lint-allow: turns-isolated: fills the listed marker count'; done
   } > "$dir/${markers%% *}"
   cat > "$dir/Sources/SwiftStateTurns/Core.swift" <<'EOF'
@@ -545,6 +547,8 @@ actor MailboxValue: TurnActor {
 extension MailboxValue {
     nonisolated var mailbox2: Int { 0 }
 }
+struct Handmade { static func _plainDataCheck() {} }
+extension Bridge { public static func _plainDataCheck() {} }
 EOF
   cat > "$dir/Sources/App/BadConformance.swift" <<'EOF'
 extension Elsewhere: TurnActor {}
@@ -614,7 +618,6 @@ EOF
 Bad.swift:2: [plain-data] a hand-written
 Bad.swift:3: [let-core] a TurnActor declares
 Bad.swift:4: [let-core] a TurnActor'"'"'s core is a stored let
-Bad.swift:6: [plain-data] a protocol refining
 Bad.swift:7: [plain-data] a typealias
 Bad.swift:8: [plain-data] a hand-written
 Bad.swift:13: [plain-data] a typealias
@@ -622,14 +625,14 @@ Bad.swift:15: [let-core] a TurnActor declares
 Bad.swift:18: [let-core] a TurnActor declares
 Bad.swift:19: [let-core] a TurnActor'"'"'s core is a stored let
 Bad.swift:21: [allow] lint-allow markers are accepted only under Tests/
-Bad.swift:22: [plain-data] a protocol refining
-Bad.swift:23: [plain-data] a protocol refining
 Bad.swift:33: [let-core] a TurnActor declares
 Bad.swift:37: [let-core] a TurnActor'"'"'s core is a stored let
 Bad.swift:41: [let-mailbox] a TurnActor'"'"'s mailbox is a stored nonisolated let, not a var
 Bad.swift:45: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
 Bad.swift:47: [let-mailbox] a TurnActor'"'"'s mailbox is assigned from core.mailbox only
 Bad.swift:52: [let-mailbox] a TurnActor'"'"'s mailbox is a nonisolated let
+Bad.swift:57: [plain-data] a hand-written _plainDataCheck
+Bad.swift:58: [plain-data] a hand-written _plainDataCheck
 BadMachine.swift:2: [machine-file]
 BadMachine.swift:4: [machine-file]
 BadMachine.swift:5: [machine-file]

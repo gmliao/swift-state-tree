@@ -152,11 +152,11 @@ struct PlainDataMacroTests {
             enum Phase {
                 case idle
                 #if DEBUG
-                case traced(any Error)
+                case traced(Box<any Error>)
                 #endif
             }
             """)
-        #expect(enumResult.messages.contains { $0.contains("an existential or opaque type isn't plain data") })
+        #expect(enumResult.messages.contains { $0.contains("@PlainData checks an existential only as a field") })
     }
 
     @Test("Refused: a class, an actor and a protocol", arguments: ["class", "actor", "protocol"])
@@ -189,8 +189,9 @@ struct PlainDataMacroTests {
         let cases: [(String, String)] = [
             ("var onEnd: () -> Void", "a function type isn't plain data: it can call through to anything"),
             ("var onEnd: (@Sendable (Int) -> Void)?", "a function type isn't plain data: it can call through to anything"),
-            ("var errors: [any Error]", "an existential or opaque type isn't plain data: its value can be a class"),
-            ("var handlers: [String: any Sendable]", "an existential or opaque type isn't plain data: its value can be a class"),
+            ("var errors: Set<any Error>", "@PlainData checks an existential only as a field, or inside Optional, Array, ContiguousArray or a Dictionary's value; it can't see what this type does with it"),
+            ("var kind: any Error.Type", "a metatype isn't plain data; store a name or an id that a lookup turns into the type"),
+            ("var view: some Sendable", "an opaque type isn't plain data, and neither is an existential nested in it: its value can be a class"),
             ("var last: (Int, String)", "a tuple can't conform to PlainData; use PlainPair or a @PlainData struct"),
         ]
         for (property, message) in cases {
@@ -203,6 +204,101 @@ struct PlainDataMacroTests {
             #expect(messages == [message], "\(property)")
             #expect(!text.contains("extension S"), "\(property)")
         }
+    }
+
+    @Test("An existential gets a closure check, on its own and as the element of Optional, Array, ContiguousArray and a Dictionary's value")
+    func existentialChecks() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct Queue {
+                var head: any Payload
+                var next: (any Payload)?
+                var all: [any Payload]
+                var later: ContiguousArray<any Payload>
+                var byName: [String: any Payload]
+                var nested: [[any Payload & Sendable]?]
+                var plain: Optional<Array<any Payload>>
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("PlainDataCheck.field((String).self)"))
+        // One closure check per existential; no check for a wrapper, which can't conform.
+        #expect(text.components(separatedBy: "PlainDataCheck.existential((any Payload).self) { $0 }").count - 1 == 6)
+        #expect(text.contains("PlainDataCheck.existential((any Payload & Sendable).self) { $0 }"))
+        #expect(text.components(separatedBy: "PlainDataCheck.field").count - 1 == 1)
+    }
+
+    @Test("The checks' witness is as visible as the type: public for a public type, internal otherwise")
+    func witnessAccess() {
+        let (open, _) = expand("""
+            @PlainData
+            public struct Seat {
+                public var number: Int
+            }
+            """)
+        #expect(open.contains("public static func _plainDataCheck() {"))
+        let (closed, _) = expand("""
+            @PlainData
+            struct Row {
+                var number: Int
+            }
+            """)
+        #expect(closed.contains("static func _plainDataCheck() {"))
+        #expect(!closed.contains("public static func"))
+    }
+
+    @Test("Foundation's value types are refused with what to store instead", arguments: [
+        ("Date", "an Int64 of milliseconds, or read the turn's `now`"),
+        ("UUID", "a String, or a project ID type"),
+        ("URL", "a String"),
+        ("Decimal", "an integer in the smallest unit, or a String"),
+        ("Foundation.Date", "an Int64 of milliseconds, or read the turn's `now`"),
+        ("[UUID]", "a String, or a project ID type"),
+    ])
+    func refusesFoundationTypes(_ type: String, _ replacement: String) {
+        let (text, messages) = expand("""
+            @PlainData
+            struct S {
+                var value: \(type)
+            }
+            """)
+        let name = type.replacingOccurrences(of: "Foundation.", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        #expect(messages == ["\(name) isn't plain data; store \(replacement) (for your own type of that name, qualify it with its module)"])
+        #expect(!text.contains("extension S"))
+    }
+
+    @Test("A type of the same name from another module isn't taken for Foundation's")
+    func qualifiedNamesakeIsChecked() {
+        let (text, messages) = expand("""
+            @PlainData
+            struct S {
+                var value: Calendar.Date
+            }
+            """)
+        #expect(messages.isEmpty)
+        #expect(text.contains("PlainDataCheck.field((Calendar.Date).self)"))
+    }
+
+    @Test("An indirect enum and an indirect case are checked like any enum")
+    func indirectEnums() {
+        let whole = expand("""
+            @PlainData
+            indirect enum Tree {
+                case leaf(Int)
+                case node(Tree, Tree)
+            }
+            """)
+        #expect(whole.messages.isEmpty)
+        #expect(whole.text.contains("PlainDataCheck.field((Tree).self)"))
+        let single = expand("""
+            @PlainData
+            enum List {
+                case end
+                indirect case cons(Int, List)
+            }
+            """)
+        #expect(single.messages.isEmpty)
+        #expect(single.text.contains("PlainDataCheck.field((List).self)"))
     }
 
     @Test("A parenthesized type is not a tuple")
