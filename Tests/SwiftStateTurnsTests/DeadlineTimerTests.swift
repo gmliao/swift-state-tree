@@ -6,7 +6,7 @@ import Testing
 /// ("timer wake #n", "superseded wake #n", "woke deadline N", a diagnostic) under the hang bound.
 @Suite("Turn core: the shared deadline timer (#621 item 2)", .timeLimit(.minutes(1)))
 struct DeadlineTimerTests {
-    @Test("2: one sleeper for every deadline; due entries step in instant then arm order, each in its own batch")
+    @Test("2: one sleeper for every deadline and timer; due entries step in instant then arm order, each in its own batch")
     func oneSleeper() async {
         let f = Fixture()
         let a = DeadlineActor(fixture: f)
@@ -14,17 +14,19 @@ struct DeadlineTimerTests {
         await a.send(.request(2, seconds: 9))
         await a.send(.request(3, seconds: 9))
         await a.send(.request(4, seconds: 12))
+        await a.send(.arm(5, seconds: 7))
         await f.reach("sleeping deadline 5 #1")
         #expect(a.clock.sleeps == 1)
         #expect(await a.timer().starts == 1)
         let readsBefore = a.clock.reads
         a.clock.advance(to: 12)
-        await f.reach("timer wake #3")
+        await f.reach("timer wake #4")
         #expect(await a.log == [
-            "abandoned 1 deadline at 12", "abandoned 2 deadline at 12", "abandoned 3 deadline at 12", "abandoned 4 deadline at 12",
+            "abandoned 1 deadline at 12", "tick 5 at 12", "abandoned 2 deadline at 12", "abandoned 3 deadline at 12",
+            "abandoned 4 deadline at 12",
         ])
-        // One clock read per fired batch: each reads `now` in its abandonment step.
-        #expect(a.clock.reads - readsBefore == 4)
+        // One clock read per fired batch: each reads `now` in its step.
+        #expect(a.clock.reads - readsBefore == 5)
         #expect(await a.timer().starts == 1)
         #expect(await a.timer().entries == 0)
     }
@@ -230,5 +232,33 @@ struct DeadlineTimerTests {
         #expect(await a.log == ["abandoned 1 keyEnded at 0", "abandoned 2 keyEnded at 0"])
         #expect(f.count(of: "stale deadline") == 0)
         #expect(await a.timer().wakes == 0)
+    }
+
+    @Test("11: a periodic timer reuses the one sleeper")
+    func periodicReusesTheSleeper() async {
+        let f = Fixture()
+        let a = DemoActor(fixture: f)
+        await a.send(.startPeriodic(job: 1, periodSeconds: 2))
+        for fire in 1 ... 5 {
+            a.clock.advance(to: Int64(2 * fire))
+            await a.waitForLog(fire)
+        }
+        // The fifth fire armed the sixth: its sleep is the sixth, on the same task.
+        await f.reach("sleeping deadline 12 #1")
+        #expect(a.clock.sleeps == 6)
+        #expect(await a.deadlineTimer().starts == 1)
+    }
+
+    @Test("12: a replaced or dropped timer releases its input at once, while its heap entry stays")
+    func timerInputReleasedAtOnce() async {
+        let f = Fixture()
+        let a = DeadlineActor(fixture: f)
+        let after = await a.sendEachTimers([
+            .arm(1, seconds: 3600), .arm(1, seconds: 3600),
+            .arm(2, seconds: 3600), .end(2),
+            .arm(3, seconds: 3600), .supersede(3),
+        ])
+        #expect(after.map(\.inputs) == [1, 1, 2, 1, 2, 1])
+        #expect(after.map(\.entries) == [1, 2, 3, 3, 4, 4])
     }
 }

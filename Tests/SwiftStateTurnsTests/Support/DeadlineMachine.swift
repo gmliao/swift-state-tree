@@ -24,6 +24,10 @@ struct DeadlineMachine: TurnMachine {
         /// deadline of `nanoseconds`.
         case onAbandonRequest(Int, other: Int, nanoseconds: Int64)
         case note(String)
+        /// Arms key `label`'s timer at `seconds` (starting the key if it isn't live).
+        case arm(Int, seconds: Int64)
+        /// A timer's input: logs.
+        case tick(Int)
         /// A request's result.
         case completed(Int)
     }
@@ -68,6 +72,11 @@ struct DeadlineMachine: TurnMachine {
             requestOnAbandonNanoseconds[label] = nanoseconds
         case .note(let text):
             log.append(text)
+        case .arm(let label, let seconds):
+            if !turn.isLive(label) { turn.start(label) }
+            turn.timer(at: .seconds(seconds), for: label, .tick(label))
+        case .tick(let label):
+            log.append("tick \(label) at \(turn.now.wholeSeconds)")
         case .completed(let label):
             requests = requests.filter { $0.value != label }
             log.append("completed \(label)")

@@ -39,8 +39,9 @@ public enum TurnDiagnostic: Sendable, Equatable {
     /// closed, and did nothing. It comes at the deadline's instant, or never: a closed entry that
     /// the core drops first (it compacts its deadlines, or `endAll` empties them) reports nothing.
     case staleDeadline
-    /// A timer woke (on time, or early because it was cancelled) after it was replaced or
-    /// dropped, and did nothing.
+    /// The core's timer reached a timer that had been replaced or dropped, and did nothing. It
+    /// comes at the timer's instant, or never: an entry the core drops first (it compacts its
+    /// deadlines, or `endAll` empties them) reports nothing.
     case staleTimer
     /// A follow-up's gate returned after the follow-up was consumed or closed, and stepped
     /// nothing for it.
@@ -79,8 +80,8 @@ public final class TurnCore<M: TurnMachine> {
     // (a step inside a step or inside a read, nested or not; a read or a query inside a step).
     // It can't stop adopter code that the core runs
     // during its own accesses: `M.Key`'s `==` and `hash(into:)` (run inside mutations of `rt`,
-    // `timerTasks`, `deadlines` (a compaction's liveness check) and `scopeEndsWhileDeferred`) and the deinits of inputs and keys the core
-    // drops (`queued`, a withdraw, `removeAll`). Those must not call back into the actor; an
+    // `deadlines` (a compaction's liveness check) and `scopeEndsWhileDeferred`) and the deinits of
+    // inputs and keys the core drops (`queued`, a withdraw, `removeAll`). Those must not call back into the actor; an
     // adopter tests that with the checked build. Debug builds keep the checks, and so does a
     // release build with `-Xswiftc -DTURNS_EXCLUSIVITY_CHECKED`. Every stored var carries the
     // attribute under this exact condition (scripts/lint-turns.sh, rule unchecked-state).
@@ -156,7 +157,7 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline var cachedNow: TurnInstant?
-    /// Every armed request deadline and gate deadline, by (instant, arm order) (#621 item 2,
+    /// Every armed request deadline, gate deadline and timer, by (instant, arm order) (#621 item 2,
     /// Notes/plans/2026-11-21-turns-shared-deadline-timer.md). Lazy deletion: a closed one stays
     /// until a wake reaches it or a compaction drops it (`rt.staleDeadlines`).
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
@@ -213,6 +214,9 @@ public final class TurnCore<M: TurnMachine> {
     @usableFromInline package var onTimerWakeForTesting: ((_ superseded: Bool) -> Void)?
     /// Tests: entries in the deadline heap that are still live.
     package var liveDeadlinesForTesting: Int { deadlines.storage.reduce(0) { $0 + (deadlineIsLive($1) ? 1 : 0) } }
+    /// Tests: the timer inputs the core holds, one per current timer: a replaced or dropped
+    /// timer's input is released at once, while its heap entry is still there.
+    package var liveTimerInputsForTesting: Int { rt.timers.count }
     /// Tests: entries in the deadline heap, stale ones included.
     package var deadlineEntriesForTesting: Int { deadlines.count }
     /// Tests: how many follow-up gates the core has launched; counted in debug builds only.
@@ -220,10 +224,6 @@ public final class TurnCore<M: TurnMachine> {
     @exclusivity(unchecked)
     #endif
     @usableFromInline package var gateLaunchesForTesting = 0
-    #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
-    @exclusivity(unchecked)
-    #endif
-    @usableFromInline var timerTasks: [M.Key: (generation: UInt64, task: Task<Void, Never>)] = [:]
     /// Follow-ups taken by the current continuation job at its start, to step in this batch.
     #if !DEBUG && !TURNS_EXCLUSIVITY_CHECKED
     @exclusivity(unchecked)
@@ -303,7 +303,6 @@ public final class TurnCore<M: TurnMachine> {
     deinit {
         assert(waiters.isEmpty, "TurnCore: a caller was never answered")
         sleeper?.cancel()
-        for entry in timerTasks.values { entry.task.cancel() }
     }
 
     // MARK: The deadline heap
@@ -314,8 +313,10 @@ public final class TurnCore<M: TurnMachine> {
     /// A compaction needs at least this many stale entries, and at least half the heap stale.
     @inlinable static var compactionFloor: Int { 64 }
 
-    /// Whether `entry`'s request is open, or its follow-up's gate deadline still pending.
+    /// Whether `entry`'s request is open, its follow-up's gate deadline still pending, or its
+    /// timer still its key's current one.
     @inlinable func deadlineIsLive(_ entry: DeadlineEntry) -> Bool {
+        if entry.isTimer { return rt.timerKeys[entry.ticket] != nil }
         let id = RequestID(raw: entry.ticket)
         if rt.open[id] != nil { return true }
         return Self.usesFollowUps && rt.gateDeadlineLive(id)

@@ -18,12 +18,14 @@ struct ClockAndTimerTests {
         await a.waitForLog(2)
         await f.reach("woke deadline 5")
 
-        // A new timer for the key replaces the armed one, whose sleep is cancelled.
+        // A new timer for the key replaces the armed one. No sleep is cancelled: the replaced
+        // timer's entry is reached at 6 as stale, and the new one fires at 7.
         await a.send(.arm(job: 2, at: .seconds(6)))
         await a.send(.arm(job: 2, at: .seconds(7)))
-        await f.reach("cancelled deadline 6")
         a.clock.release(through: 7)
+        await f.reach("stale timer #1")
         await a.waitForLog(3)
+        #expect(!f.isOpen("cancelled deadline 6"))
 
         // Ending the key drops a fire that has already woken: the wake and the end happen in
         // one batch (the flush of `.emit(3)` releases the clock, then sends the end), so the
@@ -63,8 +65,11 @@ struct ClockAndTimerTests {
         a.clock.release(through: 6)
         a.clock.advance(to: 8)
         await a.waitForLog(2)
+        // Ending the key drops the next fire: its entry is reached at 10 as stale.
         await a.send(.endJob(1))
-        await f.reach("cancelled deadline 10")
+        a.clock.release(through: 10)
+        await f.reach("stale timer #1")
+        #expect(!f.isOpen("cancelled deadline 10"))
         let s = await a.snapshot()
         #expect(s.log == ["periodic 1 at 2 next 8", "periodic 1 at 8 next 10"])
         #expect(!f.isOpen("woke deadline 4"))

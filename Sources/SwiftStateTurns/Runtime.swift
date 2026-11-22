@@ -89,18 +89,28 @@ struct PendingEffect<M: TurnMachine> {
     }
 }
 
-/// A timer for the driver to arm.
+/// A timer for the driver to arm on the core's timer. Its input stays in `Runtime.timers`.
 @usableFromInline
 struct PendingTimer<M: TurnMachine> {
     @usableFromInline var key: M.Key
     @usableFromInline var generation: UInt64
     @usableFromInline var instant: TurnInstant
-    @usableFromInline var input: M.Input
 
-    @inlinable init(key: M.Key, generation: UInt64, instant: TurnInstant, input: M.Input) {
+    @inlinable init(key: M.Key, generation: UInt64, instant: TurnInstant) {
         self.key = key
         self.generation = generation
         self.instant = instant
+    }
+}
+
+/// A key's current timer: its generation and the input it steps.
+@usableFromInline
+struct ArmedTimer<M: TurnMachine> {
+    @usableFromInline var generation: UInt64
+    @usableFromInline var input: M.Input
+
+    @inlinable init(generation: UInt64, input: M.Input) {
+        self.generation = generation
         self.input = input
     }
 }
@@ -147,16 +157,18 @@ struct Runtime<M: TurnMachine> {
     @usableFromInline var retiring: [RequestID: M.Key] = [:]
     /// Hold key → how many open requests (or workers that have not returned) own it.
     @usableFromInline var held: [M.Key: Int] = [:]
-    /// Deadline heap entries invalidated (their request or gate closed) and not yet removed. Approximate
+    /// Deadline heap entries invalidated (their request or gate closed, their timer replaced or
+    /// dropped) and not yet removed. Approximate
     /// (a request closed in the step that made it was never inserted): it only decides when the heap
     /// is compacted (`TurnCore.compactDeadlinesIfStale`).
     @usableFromInline var staleDeadlines = 0
-    // Timers: the current one per key, by generation.
+    // Timers: the current one per key, by generation, with its input. A replaced or dropped
+    // timer's input is released here at once; its heap entry, plain data, stays stale.
     @usableFromInline var nextTimer: UInt64 = 0
-    @usableFromInline var timers: [M.Key: UInt64] = [:]
+    @usableFromInline var timers: [M.Key: ArmedTimer<M>] = [:]
+    /// The current timers' generations, to their keys: a heap entry's ticket finds its timer.
+    @usableFromInline var timerKeys: [UInt64: M.Key] = [:]
     @usableFromInline var timersToArm: [PendingTimer<M>] = []
-    /// Set when a timer was replaced or dropped: the driver cancels the stale ones' tasks.
-    @usableFromInline var timersToCancel = false
     // Queued normal inputs, by hold key.
     @usableFromInline var parked: [M.Key: FIFO<Parked<M>>] = [:]
     @usableFromInline var parkedCount = 0
@@ -275,8 +287,9 @@ struct Runtime<M: TurnMachine> {
     }
 
     @inlinable mutating func dropTimer(of key: M.Key) {
-        if timers.removeValue(forKey: key) != nil {
-            timersToCancel = true
+        if let old = timers.removeValue(forKey: key) {
+            timerKeys.removeValue(forKey: old.generation)
+            staleDeadlines &+= 1
             dirty = true
         }
     }

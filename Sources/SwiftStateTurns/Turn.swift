@@ -90,10 +90,8 @@ public struct Turn<M: TurnMachine>: ~Copyable {
         for id in ids { core.rt.closeRequest(id, .keyEnded) }
         core.rt.closeFollowUps(of: nil)
         core.rt.live.removeAll()
-        if !core.rt.timers.isEmpty {
-            core.rt.timers.removeAll()
-            core.rt.timersToCancel = true
-        }
+        core.rt.timers.removeAll()
+        core.rt.timerKeys.removeAll()
         core.rt.timersToArm.removeAll()
         // No entry can be live again: the core's timer stops here, in this step (plan §3.7).
         core.stopDeadlines()
@@ -180,11 +178,15 @@ public struct Turn<M: TurnMachine>: ~Copyable {
     /// if it schedules the next fire from it (skip ahead: `max(instant + period, now)`).
     @inlinable public mutating func timer(at instant: TurnInstant, for key: M.Key, _ input: M.Input) {
         guard core.rt.live[key] != nil else { return }
-        if core.rt.timers[key] != nil { core.rt.timersToCancel = true }
+        if let old = core.rt.timers[key] {
+            core.rt.timerKeys.removeValue(forKey: old.generation)
+            core.rt.staleDeadlines &+= 1
+        }
         core.rt.nextTimer &+= 1
         let generation = core.rt.nextTimer
-        core.rt.timers[key] = generation
-        core.rt.timersToArm.append(PendingTimer(key: key, generation: generation, instant: instant, input: input))
+        core.rt.timers[key] = ArmedTimer(generation: generation, input: input)
+        core.rt.timerKeys[generation] = key
+        core.rt.timersToArm.append(PendingTimer(key: key, generation: generation, instant: instant))
         core.rt.dirty = true
     }
 

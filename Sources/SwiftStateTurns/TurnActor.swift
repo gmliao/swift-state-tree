@@ -2,10 +2,11 @@
 
 /// An actor that runs a machine on a `TurnCore`.
 ///
-/// A deadline's or a timer's task doesn't keep the actor alive: it holds it weakly, so a periodic
-/// timer doesn't outlive the actor's last owner. An effect's task does, until its result has been
-/// handled, so launched work is never dropped. Released with no effect in flight, the actor and
-/// its core go away, and the core cancels its deadline and timer tasks. A `sendAndWait` still waiting then is a bug (a debug
+/// The core's timer task (one per core, for every deadline and timer) doesn't keep the actor
+/// alive: it holds it weakly, so a periodic timer doesn't outlive the actor's last owner. An
+/// effect's task does, until its result has been handled, so launched work is never dropped.
+/// Released with no effect in flight, the actor and its core go away, and the core cancels its
+/// timer task. A `sendAndWait` still waiting then is a bug (a debug
 /// assertion), so an adopter ends its keys (`endAll`) and answers its callers first.
 public protocol TurnActor: Actor {
     /// `PlainData`: only a machine that `@PlainData` checked can be run.
@@ -241,10 +242,25 @@ extension TurnActor {
     }
 
     /// One due entry of a wake. The ticket is checked here, at its turn, before the entry begins:
-    /// a stale entry (its request or gate closed, possibly by an earlier entry of this wake) only
-    /// reports `.staleDeadline`.
+    /// a stale entry (its request or gate closed, its timer replaced or dropped, possibly by an
+    /// earlier entry of this wake) only reports `.staleDeadline` or `.staleTimer`. A live timer
+    /// steps its input as a control input.
     @inlinable func fireDeadline(_ entry: DeadlineEntry) {
         let core = self.core
+        if entry.isTimer {
+            guard let key = core.rt.timerKeys[entry.ticket], let armed = core.rt.timers[key],
+                  armed.generation == entry.ticket else {
+                if core.rt.staleDeadlines > 0 { core.rt.staleDeadlines -= 1 }
+                core.onDiagnostic?(.staleTimer)
+                return
+            }
+            core.rt.timers.removeValue(forKey: key)
+            core.rt.timerKeys.removeValue(forKey: entry.ticket)
+            beginEntry()
+            core.step(armed.input, caller: nil)
+            runSegment()
+            return
+        }
         let id = RequestID(raw: entry.ticket)
         if core.rt.open[id] != nil {
             beginEntry()
@@ -301,25 +317,6 @@ extension TurnActor {
                 target = next
             }
         }
-    }
-
-    /// A timer's task woke. It fires only if it is still its key's current timer.
-    @inlinable func timerFired(_ key: M.Key, generation: UInt64, _ input: M.Input, incarnation: UInt64) {
-        let core = self.core
-        guard core.incarnation == incarnation else {
-            core.counters.foreignCompletions += 1
-            core.onDiagnostic?(.foreignCompletion)
-            return
-        }
-        if core.timerTasks[key]?.generation == generation { core.timerTasks.removeValue(forKey: key) }
-        guard core.rt.timers[key] == generation else {
-            core.onDiagnostic?(.staleTimer)
-            return
-        }
-        core.rt.timers.removeValue(forKey: key)
-        beginEntry()
-        core.step(input, caller: nil)
-        runSegment()
     }
 
     /// The core's one continuation job, a new batch. A segment schedules it when it leaves
@@ -555,20 +552,11 @@ extension TurnActor {
                 }
                 progressed = true
             }
-            if core.rt.timersToCancel {
-                core.rt.timersToCancel = false
-                for key in Array(core.timerTasks.keys) {
-                    if let entry = core.timerTasks[key], core.rt.timers[key] != entry.generation {
-                        entry.task.cancel()
-                        core.timerTasks.removeValue(forKey: key)
-                    }
-                }
-            }
             if !core.rt.timersToArm.isEmpty {
                 var timers: [PendingTimer<M>] = []
                 swap(&timers, &core.rt.timersToArm)
-                for timer in timers where core.rt.timers[timer.key] == timer.generation {
-                    arm(timer)
+                for timer in timers where core.rt.timers[timer.key]?.generation == timer.generation {
+                    armDeadline(timer.instant, ticket: timer.generation, isTimer: true)
                 }
                 progressed = true
             }
@@ -625,22 +613,5 @@ extension TurnActor {
         if let instant = pending.deadline {
             armDeadline(instant, ticket: id.raw, isTimer: false)
         }
-    }
-
-    @inlinable func arm(_ timer: PendingTimer<M>) {
-        let core = self.core
-        let incarnation = core.incarnation
-        let clock = core.clock
-        let key = timer.key
-        let generation = timer.generation
-        let instant = timer.instant
-        let input = timer.input
-        core.timerTasks[key]?.task.cancel()
-        core.timerTasks[key] = (generation, Task { [weak self] in
-            // Woken early (cancelled) or on time, the core re-checks the timer. Held weakly: a
-            // periodic timer doesn't keep a released actor alive.
-            await clock.sleep(until: instant)
-            await self?.timerFired(key, generation: generation, input, incarnation: incarnation)
-        })
     }
 }

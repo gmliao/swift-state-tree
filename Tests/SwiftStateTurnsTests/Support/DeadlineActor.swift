@@ -52,6 +52,15 @@ actor DeadlineActor: TurnActor {
         }
     }
 
+    /// Sends each input and returns, after each one, the timer inputs the core holds and the
+    /// heap's entry count.
+    func sendEachTimers(_ inputs: [DeadlineMachine.Input]) -> [(inputs: Int, entries: Int)] {
+        inputs.map { input in
+            send(input)
+            return (core.liveTimerInputsForTesting, core.deadlineEntriesForTesting)
+        }
+    }
+
     /// Sends each input and returns the heap's entry count after each one.
     func sendEach(_ inputs: [DeadlineMachine.Input]) -> [Int] {
         inputs.map { input in
