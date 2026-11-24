@@ -189,6 +189,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-22 | [A stricter check missed callers in the example packages](2026-11-22-a-stricter-check-missed-callers-in-the-example-packages.md) | testing, shell, examples, assertion |
 | 2026-11-24 | [A `rejected` assertion is vacuous on a tickless frame](2026-11-24-a-rejected-assertion-is-vacuous-on-a-tickless-frame.md) | replay, tickless, rejected, mutant, testing |
 | 2026-11-24 | [A test product is a `<target>-test-runner` executable under the swift-build system](2026-11-24-a-test-product-is-a-test-runner-executable-under-swift-build.md) | toolchain, swift-build, testing, linux, examples |
+| 2026-11-24 | [A Swift Testing summary hides XCTest failures](2026-11-24-a-swift-testing-summary-hides-xctest-failures.md) | testing, xctest, swift-testing, verification, macros |
 | 2026-11-24 | [An extension macro can't attach to a local type](2026-11-24-an-extension-macro-cannot-attach-to-a-local-type.md) | swift, macros, extension-macro, testing, fixtures |
 | 2026-11-24 | [The Windows CRT `signal()` resets to the default on delivery: re-arm in the handler](2026-11-24-windows-crt-signal-resets-to-the-default-on-delivery.md) | windows, signals, crt, shutdown, ctrl-c |
 | 2026-11-24 | [Compare instants by their order, never by the sign of a wrapped difference](2026-11-24-compare-instants-by-order-not-by-a-wrapped-difference.md) | clock, overflow, instant, wrapping-arithmetic, sleep |
