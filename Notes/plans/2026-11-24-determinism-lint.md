@@ -1,6 +1,6 @@
 # #773: a lint for deterministic handlers and behaviors
 
-**Status:** rev 2, plan only, no code. It follows the maintainer's 2026-11-22 decision on #773 (the follow-up named in #768). Rev 2 answers Review's NOT GO on rev 1 (7428dc06); what changed is in §8. Open questions are in §7.
+**Status:** rev 2.1, plan only, no code. Rev 2 is GO (c3d416d9); 2.1 folds in its two shoulds and records L-Q2 (§8). It follows the maintainer's 2026-11-22 decision on #773 (the follow-up named in #768). Rev 2 answers Review's NOT GO on rev 1 (7428dc06); what changed is in §8. Open questions are in §7.
 
 Code pointers are at main cf7e6e50. **The rules read SwiftSyntax's tree, not text.** They join the parser harness that #772 (PlainData P1 + P2, open, head 77ef4a2d) introduces for its `plain-data` rule: `Tests/SwiftStateTurnsMacrosTests/PlainDataLintTests.swift`. That harness:
 - parses each file with `SwiftParser`;
@@ -43,12 +43,18 @@ Two rules join the harness beside `plain-data`: `det-handler` and `det-behavior`
 - **Each is a `SyntaxVisitor`,** with its own fixture tests and a repository test.
 - **Each has its own allow marker** (`turns-det-handler`, `turns-det-behavior`). The markers are allowed under `Tests/` only and need a reason of at least ten characters. `scripts/lint-turns.sh`'s marker check counts them with the other markers.
 - **The tree can't be fooled by text.** Comments, strings, raw strings and nested comments are trivia or literals in the tree, so they can't hide code or look like it. Code inside a string interpolation is code.
+- **The prefilter is a superset of each rule's findings.** The harness skips a file that holds none of its words, unparsed (a case-sensitive `contains`). For these rules the words are the scope's, not the calls': every finding sits in a scope, and each scope needs one of them in its file:
+  - `det-handler`: every entry name of §3.1, `StateNodeBuilder`, `TurnMachine`, and the names of the State types a first pass collected (an extension of a State type in another file names its type, not the attribute). A file under `DETERMINISTIC_PATHS` is always parsed;
+  - `det-behavior`: `TurnMachine` and `Behavior`.
+
+  A test checks the superset: every "found" fixture of §5 passes its rule's prefilter. A word left out of the set fails that test, never silently skips a file.
 
 ### 3.1 `det-handler`: no nondeterminism in code that runs in a turn
 
 **The scope** (where it looks), each defined on the tree:
 1. **Handler closures:** a `ClosureExprSyntax` passed to an entry call.
-   - The entry call is a `FunctionCallExprSyntax` whose callee is a bare `DeclReferenceExprSyntax` named one of `HandleAction`, `HandleEvent`, `HandleServerInput`, `CanJoin`, `OnJoin`, `OnLeave`, `OnInitialize`, `OnFinalize`, `Tick`, `StateSync`, `DestroyWhenEmpty`, `PersistSnapshot`, `Lifetime`.
+   - The entry call is a `FunctionCallExprSyntax` whose callee is a bare `DeclReferenceExprSyntax` named one of `HandleAction`, `HandleEvent`, `HandleServerInput`, `CanJoin`, `OnJoin`, `OnLeave`, `OnInitialize`, `OnFinalize`, `Tick`, `StateSync`, `DestroyWhenEmpty`, `PersistSnapshot`.
+   - **`Lifetime` is not an entry; its directives are.** `AfterFinalize` and `OnShutdown` are declared inside `Lifetime` (CookieDemoDefinitions.swift:326), so taking `Lifetime`'s closure whole would pull them into scope. The closure form `Lifetime { (config: inout LifetimeConfig<S>) in … }` (5 uses, all in LandDSLTests.swift) assigns handlers as closures (`config.tickHandler = { … }`): a closure assigned to a `LifetimeConfig` handler property other than `afterFinalize` and `onShutdown` is in scope.
    - Its trailing closures and its closure arguments count, labeled ones included: `validate:`, `apply:`, and #769's `resolvers:` builder closure, which runs at admission.
    - The whole closure is in scope, nested closures included.
 2. **State types' code:** the bodies of the methods, initializers, subscripts and computed properties of a type declared with `@StateNodeBuilder` (402 declarations today), in its declaration and its extensions. Getters, setters, `didSet` and `willSet` count, and so do `static` members. Handlers call them in the turn: `state.players[id]?.applyDamage(…)` runs State code.
@@ -60,7 +66,7 @@ Two rules join the harness beside `plain-data`: `det-handler` and `det-behavior`
 
 **Out of scope** (nondeterminism is their job):
 - a `Resolver`'s `resolve` body: the outside world, whose output is recorded;
-- `AfterFinalize` and the deprecated `OnShutdown`: async, after the land's last turn;
+- `AfterFinalize` and the deprecated `OnShutdown`: async, after the land's last turn. Their subtrees are left out wherever they are nested;
 - tests' own code outside the scope above.
 
 **What it flags, by token shape.** Each row says which syntax node matches, so a lookalike with another shape passes:
@@ -99,7 +105,7 @@ Two rules join the harness beside `plain-data`: `det-handler` and `det-behavior`
 - **One level, then the corpus.** A field whose type is a struct declared in the repository is followed into its stored properties, transitively, within the corpus. A type from another module (`Logger`, `Duration`) isn't followed, apart from the list above.
 - **Closures pass.** A stored function (`let handlers: [String: @Sendable (inout S) -> Void]`) is what a behavior is for. What a closure captures can't be seen by a syntactic lint (§3.3).
 - **The first finding is K1b's own.** The census puts `services: LandServices` and `logger: Logger` in `KeeperBehavior` (#700 plan, Appendix A.2). `LandServices` is a repository struct whose storage is `[ObjectIdentifier: any Sendable]` (Types.swift:121), so `det-behavior` flags it. It is a real finding: the land's RNG, a class with its own state, is reachable from the behavior, and handlers draw from it. See L-Q2.
-- **An exception is tied to its issue.** A finding that has to stay for a while, such as K1b's `services` until L-Q2's slice moves it, goes in the rule's exception list. Each entry has the number of the issue that removes it, and its reason. The list may only shrink:
+- **An exception is tied to its issue.** A finding that has to stay for a while goes in the rule's exception list. K1b's `services` is the expected one: **L-Q2 is decided (a)** (2026-11-24), so K1b moves the land RNG's state into the model, and the exception is temporary, naming #700 (K1b) as the issue that removes it. Each entry has the number of the issue that removes it, and its reason. The list may only shrink:
   - the repository test fails on an entry that no longer matches a finding;
   - a new entry needs review, like `ISOLATED_BOUNDARIES`.
 
@@ -151,8 +157,11 @@ Not found (lookalikes):
 - `Date()` in a comment, a string, a raw string and a nested comment;
 - `Date()` in a `Resolver`'s `resolve`, and in `AfterFinalize`;
 - a `Task {}` outside any handler in a test file;
+- `Date()` in an `AfterFinalize` inside `Lifetime`, and in a `config.afterFinalize = { … }` closure;
 - a behavior holding closures and plain values; a struct field followed into a plain struct;
 - a marked line with a reason. The same line without a reason is found.
+
+**The prefilter:** every "found" case passes its rule's prefilter (§3).
 
 **The list rules:** a `DETERMINISTIC_PATHS` entry that no longer exists fails, and so does an exception (§3.2) that no longer matches a finding, so neither list can go stale.
 
@@ -180,7 +189,7 @@ All are core-path PRs: the rules are Swift in `Tests/` and, from L3a, a library 
 | # | Question | Options | Recommendation |
 |---|---|---|---|
 | L-Q1 | What users get | (a) in-repo only; (b) the `sst-lint` executable over a shared lint library (L3a); (c) (b) plus a SwiftPM command plugin later (L3b) | **(c):** (b) is a small target and a doc section once the visitors exist, and the plugin waits until the rules stop changing |
-| L-Q2 | `KeeperBehavior`'s `services` (a struct of `any Sendable`, holding the land's RNG class) | (a) move the land's RNG state into the model: a plain generator state (seed and counter) that `ctx.random` advances in the turn, recorded and replayed with the model; `services` then holds only outside-world services and moves Outside (census A.3); (b) keep it in the behavior, as an exception tied to its issue | **(a):** the RNG's state is turn state, so it belongs to the model. It also ends the only shared mutable class a handler reaches. It is K1b's census call, so the #700 plan records it there |
+| L-Q2 | `KeeperBehavior`'s `services` (a struct of `any Sendable`, holding the land's RNG class) | **Decided 2026-11-24: (a).** The land RNG's state moves into the model as a plain generator state (seed and counter), in K1b; `ctx.random` draws from it in turns, and it is recorded and replayed with the model. `services` then holds only outside-world services and moves Outside (census A.3). The #700 plan records it in the census | — |
 | L-Q3 | `DETERMINISTIC_PATHS` for GameDemo | (a) list its logic directories now; (b) leave Examples out, since the lint can't follow calls anyway | **(a):** GameDemo is the reference game and its systems run in ticks; the list is short |
 
 ## 8. Revisions
@@ -198,3 +207,8 @@ All are core-path PRs: the rules are Swift in `Tests/` and, from L3a, a library 
 - **Should, exceptions:** each is tied to the issue that removes it, and the list may only shrink (§3.2, §5).
 - **Nits:** replay runs in another process with another hash seed, and CI doesn't set `SWIFT_DETERMINISTIC_HASHING` (§3.3). `[Date]` and `UUID(uuidString:)` are passing fixtures (§3.1, §5).
 - **The randomness sentence** is shared with #769 §3.6 and L-Q2 (§2).
+
+**Rev 2.1** folds in Review's notes on rev 2 (GO at c3d416d9: 2 should), and records L-Q2:
+- **S1** (`Lifetime` as an entry pulled `AfterFinalize` and `OnShutdown` into scope): `Lifetime` isn't an entry, its directives are; their subtrees are excluded wherever nested; the configure-closure form counts by the handler property assigned (§3.1). Passing fixtures for both (§5).
+- **S2** (the harness's word prefilter must not skip a finding): each rule's prefilter words are its scope's, State type names included, with a test that every "found" fixture passes it (§3, §5).
+- **L-Q2 decided (a)** (§3.2, §7): K1b's `services` exception is temporary and names #700.

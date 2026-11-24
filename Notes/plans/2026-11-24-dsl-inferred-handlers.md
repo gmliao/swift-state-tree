@@ -1,6 +1,6 @@
 # #771: handler closures infer their types; the payload type is written once
 
-**Status:** rev 2, plan only, no code. It follows the maintainer's 2026-11-22 decision on #771, and it is aligned with the #769 plan (`2026-11-24-resolvers-as-values.md`, rev 2): the builders are generic over `<State, Services>` from the start, and `Land(_:using:services:)` returns #769's `TypedLand` (R-Q1 (c), decided 2026-11-24). Review gave rev 1 a GO (1ee8b88f) with 5 shoulds and 2 nits; rev 2 folds them in (§9). Open questions are in §8.
+**Status:** rev 2.1, plan only, no code. D0's probes and build baseline are done (§5); D-Q1 to D-Q3 are decided, D-Q4 is open. It follows the maintainer's 2026-11-22 decision on #771, and it is aligned with the #769 plan (`2026-11-24-resolvers-as-values.md`, rev 2): the builders are generic over `<State, Services>` from the start, and `Land(_:using:services:)` returns #769's `TypedLand` (R-Q1 (c), decided 2026-11-24). Review gave rev 1 a GO (1ee8b88f) with 5 shoulds and 2 nits; rev 2 folds them in (§9). Open questions are in §8.
 
 Code pointers are at main 13390afb. `DSL` is `Sources/SwiftStateTree/Land/LandDSL.swift`; `LB` is `Sources/SwiftStateTree/Land/LandBuilder.swift`. The issue's probe ran on Swift 6.4.2. The pin is moving to 6.4.3 (a bump PR is in flight), so D0 probes on 6.4.3, and on 6.2.4 too if the bump hasn't landed when D1 starts.
 
@@ -71,7 +71,7 @@ public func Rules<State, Services>(@LandDSL<State, Services> _ content: () -> [L
 - **Nested blocks:** `Rules` is generic, and its `State` and `Services` come from the outer builder's `buildExpression(RulesNode<State, Services>)`.
 - **`Rules` is flattened in `buildExpression`,** which returns `node.nodes`. Today `LandBuilder.build` flattens it with `case let rules as RulesNode` (LB:57). Once `RulesNode` is generic, that cast would have to name `Services`, which `LandBuilder` (generic over `State` only) doesn't know. A `RulesNode<State, Services>` that reached it would match no case and be dropped like a wrong-State node (LB:141), with every handler inside. Flattening in the builder means no `RulesNode` reaches `LandBuilder`, and its case is deleted. The other way, a non-generic `NestedNodes` protocol that `LandBuilder` matches, keeps a run-time match that a later node type could miss. D0's nested-`Rules` probe pins it, and a runtime test checks that a handler declared inside `Rules` is in the definition (mutant: `buildExpression` returns `[node]` and the `LandBuilder` case is gone). `Lifetime`'s `LifetimeBuilder<State>` (DSL:458) is already generic. Its `State` now comes from `buildExpression(LifetimeNode<State>)` instead of from the `Tick` closure's annotation. D0 probes both nestings.
 - **`LandNode` stays the stored element,** so `LandBuilder.build` and `LandDefinition<State>` don't change, apart from the `RulesNode` case leaving it. `TypedLand<State, Services>` holds the `LandDefinition<State>` (#769 R-Q1 (c)). Until R1, `Services` is only a type parameter of the builder, and a `TypedLand`'s only use is `.definition`.
-- **The deprecated forms** (`ServerEventNode`, `OnShutdown`, DSL:960) get a `buildExpression` while they exist, or are removed here (D-Q2).
+- **The deprecated forms are removed in D1** (D-Q2, decided (a)): `ServerEvent(_:)` and `ServerEventNode` (DSL:1254–1272, and LandBuilder's legacy case, LB:139), and `OnShutdown` (DSL:964) with the `onShutdown` it sets (`LifetimeConfig`, `LifetimeHandlers` in LandDefinition.swift:176, and the keeper's call, LK:5955). Neither gets a `buildExpression`. Neither is called anywhere in Sources, Tests or Examples today (the matches for the names are other identifiers, such as `saveOnShutdown`).
 
 ### 3.2 The handler entries
 
@@ -95,7 +95,7 @@ The entries' signatures don't change. Their generic `State` is now inferred from
 
 A throwaway SwiftSyntax tool. It is not part of the library and not a product of `Package.swift`.
 
-- **Where it lives:** in its own package under `Tools/Codemods/DSL/`, committed in D2's PR so Review can read it, and deleted in that PR's last commit (D-Q1).
+- **Where it lives:** in its own package under `Tools/Codemods/DSL/`, committed in D2's PR so Review can read it, and deleted in that PR's last commit (D-Q1, decided (a)).
 - **#771's rewrites:**
   - strip parameter and return-type annotations from closures passed to the entries in §3.2. A parameter named `_` stays `_`;
   - remove a `Register(X.self)` that duplicates a `HandleEvent(X.self)` in the same land, and a `ClientEvents { }` left empty by that.
@@ -130,6 +130,22 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 5. a node for another State: refused, with the message pinned;
 6. `<State, Services>` with #769's resolver form: `D` inferred through the builder closure's return (the #769 R0 case, run once for both plans). It uses the real `@PlainData`, with #769 §3.1.1's change, not a stand-in.
 
+**D0 results (2026-11-24).** The probes model the new shape in one module: `LandDSL<State, Services>` with a typed `buildExpression` per node and `Rules` flattened, `TypedLand`, and today's entry overload sets copied from LandDSL.swift (9 `HandleAction`, 3 `HandleEvent`, 2 `HandleServerInput`, `CanJoin`/`OnJoin`/`OnLeave`/`OnFinalize` with 0–3 resolvers, every `OnInitialize` form, and `Lifetime`'s directives). Run with `swiftc -typecheck` on Apple Swift 6.4.2 and in the pinned `swift:6.2.4-noble` image, the results were identical. 6.4.3 waits for the measurement host.
+
+| # | Result |
+|---|---|
+| 1 | Compiles unannotated: a handler in `Rules` in `Land`, `Rules` in `Rules`, `Land(_:using:services:)` returning `TypedLand` (its definition's `servicesType` is the services type), and a D-Q3 helper under `@LandDSL<GameState, NoServices>`. Run: the handlers inside nested `Rules` are in the definition. With the mutant (`buildExpression` returns `[node]`), the definition holds a `RulesNode<GameState, NoServices>` instead |
+| 2 | Compiles unannotated, every entry, **once `LifetimeBuilder` has a typed `buildExpression(LifetimeDirective<State>)`**. With only today's variadic `buildBlock(LifetimeDirective<State>...)`, `Tick(every:) { state, ctx in }` inside `Lifetime` fails: "cannot infer type of closure parameter 'state' without a type annotation". The outer builder's `buildExpression(LifetimeNode<State>)` fixes `Lifetime`'s `State`, but it doesn't reach a builder closure without a typed `buildExpression`. Removing `Lifetime`'s configure-closure overload doesn't help; a struct directive alone doesn't either |
+| 3 | Compiles: `Plan` inferred from a multi-statement `validate` (a `guard … throw`, a local, a tuple return), for `HandleAction`, `HandleEvent`, `HandleServerInput` and `OnInitialize` |
+| 4 | 30 handlers (all `HandleAction` forms) and 6 events in one land, with every overload in scope. No expression over 200 ms. Typecheck medians over 7 runs: new shape unannotated 0.461 s, new shape annotated 0.469 s, today's shape annotated 0.471 s. The slowest single expression is 4.3, 4.5 and 4.2 ms |
+| 5 | Refused, with the text pinned for the must-not-compile snippet: "cannot convert value of type 'OnJoinNode<OtherState>' to expected argument type 'OnJoinNode<GameState>'". The same holds for a prebuilt node at the land's top level |
+| 6 | With a stand-in `PlainData` protocol, `D` is inferred through the builder closure's return at a land with services. A missing capability is refused: "generic struct 'ProductInfo' requires that 'ThinServices' conform to 'HasProductDatabase'". **The real `@PlainData` run waits for #769's macro slice**, since today's macro constrains `D: PlainData`; it is #769 R0's |
+
+**The build-time baseline** (for D1's and D2's gate). Taken at main c3d416d9, Apple Swift 6.4.2, debug, on the Mac that holds the build slot, in a scratch path of its own:
+- a clean build of the `SwiftStateTreeTests` target, dependencies included: 155 s;
+- the test module alone, rebuilt with its sources touched: 73, 70 and 65 s, median **70 s**;
+- `-warn-long-expression-type-checking=200` over the tree finds two expressions, neither in the DSL. Both are `Set(frames.flatMap { a + b + c })` concatenations: ReplaySequenceWatermarkTests.swift:534 (1.8–2.0 s) and ResolverDeliveryTests.swift:220 (1.7–2.2 s). They are the baseline's, and the gate counts only new ones.
+
 **Must-not-compile:**
 - an `OnJoin` for another State type inside a land: `no exact matches in call to static method 'buildExpression'`, or D0's actual text;
 - an action closure whose body assigns to a `let` `action` field: the inferred types are the real ones.
@@ -144,7 +160,7 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 - self-registration skipped. Caught by `selfRegistersHandledClientEvent`;
 - `Rules` not flattened in `buildExpression`. Caught by `nestedRulesHandlersAreKept`.
 
-**Build time** (the cost a user feels): a clean debug build of `SwiftStateTreeTests` on one machine and toolchain, before D2 and after, three runs each. The gate is no more than 10% slower, and no expression over the D0 threshold. If it is slower, the codemod keeps annotations in the files that cost the most, and those files are listed.
+**Build time** (the cost a user feels): the test module's rebuild, on the same machine and toolchain as D0's baseline (median 70 s), three runs each, before and after D1 and D2. The gate is a median no more than 10% slower, and no expression over 200 ms other than the baseline's two. If it is slower, the codemod keeps annotations in the files that cost the most, and those files are listed.
 
 **Harness and E2E:** no wire or record change, so the goldens stay byte-identical. E2E in three encodings.
 
@@ -153,7 +169,7 @@ A throwaway SwiftSyntax tool. It is not part of the library and not a product of
 | Slice | Content | After | Measurement |
 |---|---|---|---|
 | **D0** | The probes (§5), in a scratch package; results in this plan | now | type-check times only |
-| **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), client-event self-registration (§3.3) and D-Q4's answer, the wrong-State refusal. No call site is edited: annotated closures keep compiling. Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
+| **D1** | The generic builders and typed `buildExpression`s (§3.1), `Rules` flattened in the builder, `Land(_:using:services:)` returning `TypedLand` and `NoServices` (inert until R1), client-event self-registration (§3.3) and D-Q4's answer, the wrong-State refusal. **Required by D0:** `LifetimeBuilder` gains a typed `buildExpression(LifetimeDirective<State>)`, with a test that `Tick(every:) { state, ctx in }` inside `Lifetime` compiles unannotated (D0 result 2). No call site is edited: annotated closures keep compiling. Docs show the inferred form | D0 | build time of `SwiftStateTreeTests`, before and after (no call-site change, so it isolates the builder's own cost) |
 | **D2** | The codemod run over Sources, Tests and Examples, with #769 R1 in the same PR, as commits (a) to (e) (§4). The listed sites are fixed by hand | D1, #769 R1, #769's macro slice | §5's build-time gate |
 
 Examples go in their own commit in D2. `docs/` pages that show handler closures (`quickstart`, `programming-model`, `core/*`) move to the inferred form in D1, both languages in the same commit.
@@ -166,6 +182,7 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
   - `RulesNode` gains its parameters.
 
   A user writing `@LandDSL` by name (a helper returning `[LandNode]`) must add the parameters. No deprecation path; there are no external users yet.
+- **Removed (D-Q2):** `ServerEvent(_:)`, `ServerEventNode`, `OnShutdown`, and `onShutdown` on `LifetimeConfig` and the land's lifetime handlers. None is called in the repository. A user's `OnShutdown` moves to `AfterFinalize`, which also runs after the last turn and gets the context.
 - **Added:** `Land(_:using:services:)`, returning `TypedLand<State, Services>`, and `NoServices`, which #769 also needs. Both are inert until #769's R1: nothing reads `Services`, and nothing takes a `TypedLand` except through `.definition`.
 - **Behavior:**
   - a handled client event is registered (§3.3);
@@ -177,9 +194,9 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 
 | # | Question | Options | Recommendation |
 |---|---|---|---|
-| D-Q1 | Where the codemod lives | (a) committed under `Tools/Codemods/DSL/` in D2's PR, deleted in its last commit; (b) never committed: run from a scratch package, and the PR body describes it | **(a):** Review can read what rewrote 700 closures, and history keeps it if a later migration needs the same matcher |
-| D-Q2 | The deprecated `ServerEventNode` and `OnShutdown` | (a) remove them in D1; (b) give them a `buildExpression` and keep them | **(a):** each would need its own overload in the generic builder, and they are deprecated already |
-| D-Q3 | A helper that returns handlers outside a `Land` (a function returning `[LandNode]` under `@LandDSL`) | (a) it writes `@LandDSL<MyState, NoServices>`; (b) a typealias per land (`typealias MyDSL = LandDSL<MyState, AppServices>`) | **(a)** in docs, with (b) shown as the shorter spelling. The codemod lists every such helper |
+| D-Q1 | Where the codemod lives | **Decided 2026-11-24: (a).** Committed under `Tools/Codemods/DSL/` in D2's PR, as commit (a) of §4, and deleted in its last commit (e). Option (b), never committed and only described in the PR body, was declined | — |
+| D-Q2 | The deprecated `ServerEventNode` and `OnShutdown` | **Decided 2026-11-24: (a).** Removed in D1, with no `buildExpression` (§3.1, §7). Option (b), an overload each in the generic builder, was declined | — |
+| D-Q3 | A helper that returns handlers outside a `Land` (a function returning `[LandNode]` under `@LandDSL`) | **Decided 2026-11-24: (a).** The docs use the full generic `@LandDSL<MyState, NoServices>` as the standard spelling, and show a per-land typealias (`typealias MyDSL = LandDSL<MyState, AppServices>`) as the optional shorter form. The codemod lists every such helper. D0 probe 1 compiles one | — |
 | D-Q4 | A client event registered without a handler, which every intake refuses (LK:3115) | (a) refused at registration, like #599's shared names; the test lands that do it (about 15, schema and registration tests) add a no-op handler; (b) a registration warning; (c) documented only | **(a):** a land that declares an event its clients can never send has a bug, and it should show at startup, not as a refusal per event. The tests that need the event only in the schema get a one-line handler |
 
 ## 9. Revisions
@@ -192,3 +209,7 @@ Examples go in their own commit in D2. `docs/` pages that show handler closures 
 - **S5** (resolvers reading `ctx.services`): listed, not edited; `{ _, _, _ in X() }` waits on #769's macro slice; D0 probe 6 uses the real macro (§4, §5).
 - **Nits:** `Land(_:using:services:)` is inert until R1 (§2, §7); self-registration can surface #599's refusal (§7).
 - **#769 R-Q1 (c):** `Land(_:using:services:)` returns `TypedLand<State, Services>` from D1 on (§3.1).
+
+**Rev 2.1** records D0 and the maintainer's decisions:
+- **D0** (§5): every probe passes on 6.4.2 and 6.2.4. One finding is now a D1 requirement: `LifetimeBuilder` needs a typed `buildExpression` (result 2). The pressure numbers and the build baseline are D1's and D2's gate.
+- **D-Q1 (a), D-Q2 (a), D-Q3 (a)**, decided 2026-11-24 (§3.1, §4, §7, §8).
