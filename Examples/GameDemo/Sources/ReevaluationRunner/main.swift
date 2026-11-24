@@ -303,7 +303,7 @@ struct ReevaluationRunnerMain {
         case ResolverTestConfig.landType:
             runEngine = { sink, exportJsonlPath, diffWithPath, logger in
                 try await ReevaluationEngine.run(
-                    definition: ResolverTest.makeLand(),
+                    definition: ResolverTest.makeLand().definition,
                     initialState: ResolverTestState(),
                     recordFilePath: inputFile,
                     sink: sink,
