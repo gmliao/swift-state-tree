@@ -51,6 +51,11 @@ struct CERUnregisteredEvent: ClientEventPayload {
 }
 
 @Payload
+struct CERServerEvent: ServerEventPayload {
+    let amount: Int
+}
+
+@Payload
 struct CERAck: ResponsePayload {
     let total: Int
 }
@@ -285,6 +290,33 @@ struct ClientEventRegistrationTests {
         #expect(error.schemaFingerprint == nil)
     }
 
+    @Test("With records replayed, a land refused for a mismatch or an unrecognized node still reports its server event without a decoder")
+    func refusalUnderReplayKeepsTheDecoderRow() throws {
+        // The fingerprint waits for the other rows. Computed anyway, its schema walk re-runs
+        // registration, whose error leaves before the decoder row (EV8) is computed.
+        let mismatched = Land("cer-replay-mismatch-ev8", using: ClientEventRegistrationState.self) {
+            Rules {
+                HandleEvent(CERUnregisteredEvent.self) { state, event, _ in state.total += event.amount }
+            }
+        }
+        .replacingServerEventRegistry(cerServerEventsWithoutDecoder())
+        let mismatch = try #require(throws: LandRegistrationError.self) {
+            try mismatched.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
+        #expect(mismatch.clientEventMismatches == ["\(String(reflecting: CERUnregisteredEvent.self)): handled, not in ClientEvents"])
+        #expect(mismatch.serverEventsWithoutDecoder.count == 1, "\(mismatch)")
+        #expect(mismatch.schemaFingerprint == nil)
+
+        let stray = LandBuilder.build(id: "cer-replay-unrecognized-ev8", stateType: ClientEventRegistrationState.self, nodes: [CERStrayNode()])
+            .replacingServerEventRegistry(cerServerEventsWithoutDecoder())
+        let unrecognized = try #require(throws: LandRegistrationError.self) {
+            try stray.validateForRegistration(context: LandRegistrationContext(recordsForReplay: true))
+        }
+        #expect(unrecognized.unrecognizedNodes == [String(reflecting: CERStrayNode.self)])
+        #expect(unrecognized.serverEventsWithoutDecoder.count == 1, "\(unrecognized)")
+        #expect(unrecognized.schemaFingerprint == nil)
+    }
+
     @Test("A node the builder doesn't recognize (another State's, or an unknown type) is refused at registration and by a directly built keeper, not dropped")
     func unrecognizedNodesAreRefused() async throws {
         let foreign = OnJoin { (state: inout CEROtherState, _: LandContext) in state.count += 1 }
@@ -302,6 +334,14 @@ struct ClientEventRegistrationTests {
         let held = try await keeperFailure(definition())
         #expect(held.unrecognizedNodes == expected)
     }
+}
+
+/// A server event registry holding one event through the public descriptor init, which has no
+/// decoder, so a replay can't decode it (EV8).
+private func cerServerEventsWithoutDecoder() -> EventRegistry<AnyServerEvent> {
+    EventRegistry(registered: [
+        AnyEventDescriptor(type: CERServerEvent.self, eventName: EventRegistry<AnyServerEvent>.eventName(for: CERServerEvent.self), direction: .server)
+    ])
 }
 
 private func send(_ keeper: LandKeeper<ClientEventRegistrationState>, _ action: any ActionPayload) async throws -> AnyCodable {
