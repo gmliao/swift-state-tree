@@ -3245,8 +3245,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// system identity, and records it. It returns without waiting for that turn.
     ///
     /// - Returns: `.accepted(sequence:)`, or `.refused(_)` with nothing queued: the keeper isn't
-    ///   live, the land declares no `HandleServerInput` for `I`, it is draining or frozen, or it
-    ///   already holds `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` unapplied server inputs.
+    ///   live, the land declares no `HandleServerInput` for `I`, it is draining, the input has no
+    ///   record form or its record form doesn't decode back to `I` (`.unencodable`), or the land
+    ///   already holds `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` unapplied server inputs. A debug
+    ///   freeze doesn't refuse: the input is held and applied after the resume.
     public func submitServerInput<I: ServerInputPayload>(_ input: I) async -> ServerInputOutcome {
         await submitServerInputErased(input)
     }

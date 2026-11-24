@@ -148,7 +148,13 @@ struct ServerInputDecodeAtSubmitTests {
         await keeper.setServerInputMaxInFlightForTesting(1)
         _ = try sequence(await keeper.submitServerInput(SIProgress(tag: "1")))
         #expect(await keeper.submitServerInput(SIOneWay(tag: "x")) == .refused(.overCap))
-        #expect(await keeper.serverInputCapRejections == 1)
+        // An input refused for the cap costs no decode.
+        let decodes = SIDecodeCount.Box()
+        await SIDecodeCount.$box.withValue(decodes) {
+            #expect(await keeper.submitServerInput(SICounted(tag: "over")) == .refused(.overCap))
+        }
+        #expect(decodes.count == 0)
+        #expect(await keeper.serverInputCapRejections == 2)
     }
 
     @Test("Under a freeze the decode happens at submit: a failing input is refused, a held one is decoded once across freeze, resume and apply")
@@ -167,6 +173,31 @@ struct ServerInputDecodeAtSubmitTests {
         }
         #expect(await keeper.currentState().log == ["counted:held"])
         #expect(decodes.count == 1, "the resume and the apply don't decode it again")
+    }
+
+    @Test("Replay decodes a recorded input once, when it reads the record, and applies that value")
+    func replayDecodesOnce() async throws {
+        let keeper = try await makeDecodeKeeper()
+        _ = try sequence(await keeper.submitServerInput(SICounted(tag: "r")))
+        await keeper.stepTickOnce()
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let frames = await recorder.getAllFrames()
+        let tickId = try #require(frames.first { !$0.serverInputs.isEmpty }?.tickId)
+        let metadata = try #require(await recorder.getMetadata())
+        let replay = LandKeeper<ServerInputTestState>(
+            definition: makeDecodeDefinition(),
+            initialState: ServerInputTestState(),
+            mode: .reevaluation,
+            reevaluationSource: JSONReevaluationSource(metadata: metadata, frames: frames),
+            autoStartLoops: false
+        )
+        let decodes = SIDecodeCount.Box()
+        await SIDecodeCount.$box.withValue(decodes) {
+            for _ in 0...tickId { await replay.stepTickOnce() }
+        }
+        #expect(await replay.currentState().log == ["counted:r"])
+        #expect(decodes.count == 1, "decoded when the item is built, not again at apply")
     }
 
     @Test("The record holds the tree the input was decoded from, byte for byte, even where the decoded value re-encodes differently")

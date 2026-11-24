@@ -132,6 +132,11 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 /// (a `Codable` that normalizes what it reads) arrives as decoded, live as in replay; one whose
 /// record form doesn't decode back is refused at submit (`.unencodable`).
 ///
+/// So a server input's `init(from:)` must take its value, or its failure, from the record alone,
+/// with no side effects: live it runs in the submitter's task, in replay when the record is read,
+/// even for an input that is then never applied. A check that depends on the land's state
+/// belongs in `validate`, which runs in the input's turn.
+///
 /// The handler can't throw (#586). An input that can be refused declares `validate:` and
 /// `apply:` instead: `validate` reads the state and may throw, which fails that input alone with
 /// nothing written (it stays recorded, and replay refuses it the same way); `apply` writes and
