@@ -10,13 +10,16 @@ import NIOWebSocket
 import Testing
 @testable import SwiftStateTreeNIO
 
-private func makeSessionWithHandler(_ sessionID: String = "proto-s1") throws -> (EmbeddedChannel, WebSocketSessionHandler) {
+private func makeSessionWithHandler(
+    _ sessionID: String = "proto-s1",
+    transport: WebSocketTransport = WebSocketTransport()
+) throws -> (EmbeddedChannel, WebSocketSessionHandler) {
     let channel = EmbeddedChannel()
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
     let handler = WebSocketSessionHandler(
         sessionID: SessionID(sessionID),
         path: "/test",
-        transport: WebSocketTransport(),
+        transport: transport,
         eventLoop: channel.eventLoop,
         logger: Logger(label: "test")
     )
@@ -26,6 +29,18 @@ private func makeSessionWithHandler(_ sessionID: String = "proto-s1") throws -> 
 
 private func makeSession(_ sessionID: String = "proto-s1") throws -> EmbeddedChannel {
     try makeSessionWithHandler(sessionID).0
+}
+
+/// Records messages delivered to the transport (thread-safe).
+private final class RecordingDelegate: TransportDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var messages: [Data] = []
+
+    func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {}
+    func onDisconnect(sessionID: SessionID, clientID: ClientID) async {}
+    func onMessage(_ data: Data, from sessionID: SessionID) async {
+        lock.withLock { messages.append(data) }
+    }
 }
 
 /// Reads the first connectionClose frame from the outbound buffer. `hadClose` is true when a
@@ -205,8 +220,11 @@ struct WebSocketSessionHandlerProtocolTests {
     // MARK: - Trailing frames after a protocol failure (RFC 6455 §7.1.7)
 
     @Test("RSV failure: trailing ping and data are dropped, only one Close sent, cause is error")
-    func rsvFailureDropsTrailingFrames() throws {
-        let (channel, handler) = try makeSessionWithHandler("proto-rsv-trail")
+    func rsvFailureDropsTrailingFrames() async throws {
+        let recorder = RecordingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(recorder)
+        let (channel, handler) = try makeSessionWithHandler("proto-rsv-trail", transport: transport)
 
         // Buffer a fragment so we can verify it is cleared.
         try channel.writeInbound(
@@ -216,30 +234,32 @@ struct WebSocketSessionHandlerProtocolTests {
         try channel.writeInbound(
             WebSocketFrame(fin: true, rsv1: true, opcode: .binary, data: ByteBuffer(string: "bad")))
 
-        // Trailing frames that must be dropped.
+        // Trailing frames that must be dropped: a ping (control) and a continuation of the
+        // buffered fragment (data reassembler path).
         try channel.writeInbound(
             WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+            WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
 
         channel.embeddedEventLoop.run()
 
         let opcodes = try outboundOpcodes(channel)
         #expect(opcodes == [.connectionClose], "expected exactly one close frame, got \(opcodes)")
-        let r = try outboundCloseResult(EmbeddedChannel())  // already drained above; check code via opcodes
-        _ = r  // code is 1002 by RSV test coverage above; here we only need opcode count
-
-        // No Pong.
         #expect(!opcodes.contains(.pong), "ping after failure must not be answered with a pong")
         #expect(!channel.isActive)
-
-        // Cause recorded as .error (not .serverClose).
         #expect(handler.closeCause == .error)
+
+        // No data must reach the transport after a protocol failure.
+        await handler.waitForInboundIdle()
+        #expect(recorder.messages.isEmpty, "no message must reach the transport after a protocol failure")
     }
 
     @Test("Reserved opcode failure: trailing ping and data are dropped, only one Close sent, cause is error")
-    func opcodeFailureDropsTrailingFrames() throws {
-        let (channel, handler) = try makeSessionWithHandler("proto-opcode-trail")
+    func opcodeFailureDropsTrailingFrames() async throws {
+        let recorder = RecordingDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(recorder)
+        let (channel, handler) = try makeSessionWithHandler("proto-opcode-trail", transport: transport)
         let reserved = try #require(WebSocketOpcode(encodedWebSocketOpcode: 3))
 
         // Buffer a fragment.
@@ -250,11 +270,12 @@ struct WebSocketSessionHandlerProtocolTests {
         try channel.writeInbound(
             WebSocketFrame(fin: true, opcode: reserved, data: ByteBuffer()))
 
-        // Trailing frames that must be dropped.
+        // Trailing frames that must be dropped: a ping (control) and a continuation of the
+        // buffered fragment (data reassembler path).
         try channel.writeInbound(
             WebSocketFrame(fin: true, opcode: .ping, data: ByteBuffer()))
         try channel.writeInbound(
-            WebSocketFrame(fin: true, opcode: .binary, data: ByteBuffer(string: "after")))
+            WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "after")))
 
         channel.embeddedEventLoop.run()
 
@@ -263,6 +284,10 @@ struct WebSocketSessionHandlerProtocolTests {
         #expect(!opcodes.contains(.pong))
         #expect(!channel.isActive)
         #expect(handler.closeCause == .error)
+
+        // No data must reach the transport after a protocol failure.
+        await handler.waitForInboundIdle()
+        #expect(recorder.messages.isEmpty, "no message must reach the transport after a protocol failure")
     }
 
     @Test("Bad close: trailing ping is dropped after the error close")
