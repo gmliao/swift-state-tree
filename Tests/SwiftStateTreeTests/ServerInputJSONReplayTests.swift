@@ -47,13 +47,19 @@ enum SIJSONReplayForm: String, CaseIterable, Sendable, CustomTestStringConvertib
 
 private let siJSONReplayLandID = "si-json-replay:local"
 
-private func tempPath(_ ext: String) -> String {
-    FileManager.default.temporaryDirectory.appendingPathComponent("si-json-replay-\(UUID().uuidString).\(ext)").path
+/// Runs `body` with a fresh temporary directory, removed afterwards.
+private func withTempDirectory<T>(_ body: (URL) async throws -> T) async throws -> T {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("si-json-replay-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    return try await body(directory)
 }
 
 /// Submits the inputs live with recording on, applies them in one tick, and returns the record's
-/// path in `form` with the live state.
-private func recordInputs(_ inputs: [SIJSONRatio], form: SIJSONReplayForm) async throws -> (path: String, live: SIJSONReplayState) {
+/// path in `form`, written in `directory`, with the live state.
+private func recordInputs(
+    _ inputs: [SIJSONRatio], form: SIJSONReplayForm, in directory: URL
+) async throws -> (path: String, live: SIJSONReplayState) {
     let keeper = LandKeeper<SIJSONReplayState>(
         definition: makeSIJSONReplayLand(),
         initialState: SIJSONReplayState(),
@@ -80,13 +86,44 @@ private func recordInputs(_ inputs: [SIJSONRatio], form: SIJSONReplayForm) async
     await keeper.stepTickOnce()
     await keeper.waitForRecorderSubmissionsForTesting()
     let live = await keeper.currentState()
-    let saved = tempPath("sstr")
+    let saved = directory.appendingPathComponent("record.sstr").path
     try await recorder.save(to: saved)
     guard form == .jsonView else { return (saved, live) }
-    let json = tempPath("json")
+    let json = directory.appendingPathComponent("record.json").path
     try ReevaluationRecordFile.jsonView(ofRecordData: Data(contentsOf: URL(fileURLWithPath: saved)))
         .write(to: URL(fileURLWithPath: json))
     return (json, live)
+}
+
+/// Rewrites the saved record at `path` in place: every recorded server input's `ratio` becomes
+/// the integer 2, as an edited or older saved record could hold it. Each record of the log is
+/// decoded and framed again, so the header and footer stay as written.
+private func rewriteRatioAsInteger(atPath path: String) throws {
+    let bytes = try [UInt8](Data(contentsOf: URL(fileURLWithPath: path)))
+    let preambleCount = ReevaluationRecordLog.preamble.count
+    var out = Array(bytes.prefix(preambleCount))
+    var offset = preambleCount
+    var rewritten = 0
+    while offset < bytes.count {
+        let length = bytes[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+        var record = try CanonicalMessagePack.decode(
+            ReevaluationLogRecord.self, from: Array(bytes[offset + 4..<offset + 4 + length]))
+        if let inputs = record.serverInputs {
+            record.serverInputs = inputs.map { input in
+                rewritten += 1
+                return ReevaluationRecordedServerInput(
+                    sequence: input.sequence,
+                    typeIdentifier: input.typeIdentifier,
+                    payload: AnyCodable(["ratio": AnyCodable(2), "n": AnyCodable(3)] as [String: AnyCodable]),
+                    resolvedAtTick: input.resolvedAtTick
+                )
+            }
+        }
+        out += try ReevaluationRecordLog.framed(record)
+        offset += 4 + length
+    }
+    #expect(rewritten == 1, "the record holds the one server input")
+    try Data(out).write(to: URL(fileURLWithPath: path))
 }
 
 /// Replays the record at `path` through its one tick and returns the replayed state.
@@ -107,11 +144,26 @@ struct ServerInputJSONReplayTests {
     @Test("Replayed from each record form, the handler reads what the live one read: an integral Double and a fractional one",
           arguments: SIJSONReplayForm.allCases)
     func replaySeesTheLiveInput(form: SIJSONReplayForm) async throws {
-        let inputs = [SIJSONRatio(ratio: 2.0, n: 3), SIJSONRatio(ratio: 0.5, n: 4)]
-        let (path, live) = try await recordInputs(inputs, form: form)
-        #expect(live.seen == ["2.0/3", "0.5/4"])
-        let replayed = try await replayState(path: path)
-        #expect(replayed.seen == live.seen, "\(form)")
+        try await withTempDirectory { directory in
+            let inputs = [SIJSONRatio(ratio: 2.0, n: 3), SIJSONRatio(ratio: 0.5, n: 4)]
+            let (path, live) = try await recordInputs(inputs, form: form, in: directory)
+            #expect(live.seen == ["2.0/3", "0.5/4"])
+            let replayed = try await replayState(path: path)
+            #expect(replayed.seen == live.seen, "\(form)")
+        }
+    }
+
+    @Test("Replay from a saved record stays strict: a server input whose ratio the record holds as an integer is refused")
+    func savedRecordIntegerIsRefused() async throws {
+        try await withTempDirectory { directory in
+            let (path, live) = try await recordInputs([SIJSONRatio(ratio: 2.5, n: 3)], form: .saved, in: directory)
+            #expect(live.seen == ["2.5/3"])
+            try rewriteRatioAsInteger(atPath: path)
+            // Control: the rewritten record is still a saved record, not the JSON view.
+            #expect(try ReevaluationRecordFile.openSource(filePath: path) is ReevaluationRecordLogSource)
+            let replayed = try await replayState(path: path)
+            #expect(replayed.seen == [], "the integer is refused where the type declares Double")
+        }
     }
 
     @Test("The decode allowance is the JSON view's only: a saved record's integer stays refused where a Double is declared")
