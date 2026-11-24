@@ -45,13 +45,16 @@ public enum PlainDataExtension {
         let members = declaration.memberBlock.members
         let requirements = declaration.as(StructDeclSyntax.self)?.genericWhereClause
             ?? declaration.as(EnumDeclSyntax.self)?.genericWhereClause
-        let named = closedOverSameType(storedNames(members), requirements)
+        let parameters = generics?.parameters ?? []
+        let ownNames = Set(parameters.map(name(of:)))
+        let named = closedOverSameType(
+            storedNames(members), requirements,
+            parameters: ownNames.union(enclosingParameterNames(in: context))
+        )
         // A field of a type or typealias declared in the body may stand for any parameter, so
         // it constrains them all.
         let all = !named.isDisjoint(with: localTypeNames(members))
-        let parameters = generics?.parameters ?? []
         let own = parameters.filter { all || named.contains(name(of: $0)) }.map(\.name.text)
-        let ownNames = Set(parameters.map(name(of:)))
         let enclosing = enclosingParameters(named: named, in: context).filter { !ownNames.contains(String($0.filter { $0 != "`" })) }
         let constraints = constrainGenerics ? (own + enclosing).map { "\($0): SwiftStateTurns.PlainData" } : []
         let whereClause = constraints.isEmpty ? "" : " where " + constraints.joined(separator: ", ")
@@ -171,18 +174,26 @@ public enum PlainDataExtension {
     }
 
     /// `named` with each same-type requirement of the declaration's `where` clause followed: when
-    /// one side names something named, the other side's names are named too, until nothing
-    /// changes. In `struct First<C: Collection, T> where C.Element == T { let first: C.Element? }`
-    /// the field names `C`, and `T` is what proves `C.Element` plain data, so `T` is constrained.
-    private static func closedOverSameType(_ named: Set<String>, _ clause: GenericWhereClauseSyntax?) -> Set<String> {
+    /// one side names a named generic parameter, the other side's generic parameters are named
+    /// too, until nothing changes. In `struct First<C: Collection, T> where C.Element == T
+    /// { let first: C.Element? }` the field names `C`, and `T` is what proves `C.Element` plain
+    /// data, so `T` is constrained. Only the generic parameters in scope (`parameters`: the
+    /// type's and the enclosing types') take part, as in the compiler's equivalence classes of
+    /// type parameters: a concrete type is a binding, not a member. So `where D.ID == Int`
+    /// doesn't constrain `D` because a field is an `Int`.
+    private static func closedOverSameType(
+        _ named: Set<String>,
+        _ clause: GenericWhereClauseSyntax?,
+        parameters: Set<String>
+    ) -> Set<String> {
         func names(_ syntax: some SyntaxProtocol) -> Set<String> {
-            Set(syntax.tokens(viewMode: .sourceAccurate).compactMap { $0.identifier?.name })
+            Set(syntax.tokens(viewMode: .sourceAccurate).compactMap { $0.identifier?.name }).intersection(parameters)
         }
         let pairs: [(Set<String>, Set<String>)] = (clause?.requirements ?? []).compactMap {
             guard case .sameTypeRequirement(let same) = $0.requirement else { return nil }
             return (names(same.leftType), names(same.rightType))
         }
-        var result = named
+        var result = named.intersection(parameters)
         var changed = true
         while changed {
             changed = false
@@ -191,7 +202,7 @@ public enum PlainDataExtension {
                 if !right.isDisjoint(with: result), !left.isSubset(of: result) { result.formUnion(left); changed = true }
             }
         }
-        return result
+        return named.union(result)
     }
 
     /// The types and typealiases the body declares, `#if` clauses included. The macro can't see
@@ -226,17 +237,31 @@ public enum PlainDataExtension {
     /// only where `T` is (#782). A member must spell the parameter: the parent's alias for it,
     /// or a parameter of an enclosing extension's type, isn't read, and such a field stays
     /// refused.
+    /// The generic parameters of the enclosing types, by name.
+    private static func enclosingParameterNames(in context: some MacroExpansionContext) -> Set<String> {
+        var names: Set<String> = []
+        for enclosing in context.lexicalContext {
+            for parameter in genericParameters(of: enclosing) { names.insert(name(of: parameter)) }
+        }
+        return names
+    }
+
+    /// A struct's, an enum's, a class's or an actor's generic parameters; none for anything else.
+    private static func genericParameters(of syntax: Syntax) -> GenericParameterListSyntax {
+        if let d = syntax.as(StructDeclSyntax.self) { return d.genericParameterClause?.parameters ?? [] }
+        if let d = syntax.as(EnumDeclSyntax.self) { return d.genericParameterClause?.parameters ?? [] }
+        if let d = syntax.as(ClassDeclSyntax.self) { return d.genericParameterClause?.parameters ?? [] }
+        if let d = syntax.as(ActorDeclSyntax.self) { return d.genericParameterClause?.parameters ?? [] }
+        return []
+    }
+
     private static func enclosingParameters(named names: Set<String>, in context: some MacroExpansionContext) -> [String] {
         // Compared by name (`T` and `` `T` ``are one), emitted as spelled: a keyword name such
         // as `` `repeat` `` keeps its backticks in the `where` clause.
         var found: [String] = []
         var foundNames: Set<String> = []
         for enclosing in context.lexicalContext {
-            let clause = enclosing.as(StructDeclSyntax.self)?.genericParameterClause
-                ?? enclosing.as(EnumDeclSyntax.self)?.genericParameterClause
-                ?? enclosing.as(ClassDeclSyntax.self)?.genericParameterClause
-                ?? enclosing.as(ActorDeclSyntax.self)?.genericParameterClause
-            for parameter in clause?.parameters ?? [] {
+            for parameter in genericParameters(of: enclosing) {
                 let name = parameter.name.identifier?.name ?? parameter.name.text
                 if names.contains(name), foundNames.insert(name).inserted { found.append(parameter.name.text) }
             }

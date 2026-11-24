@@ -114,7 +114,7 @@ struct PlainDataMacroTests {
         #expect(text.contains("extension Nested: SwiftStateTurns.PlainData where A: SwiftStateTurns.PlainData, C: SwiftStateTurns.PlainData {"))
     }
 
-    @Test("A same-type requirement makes the other side named when one side is, either way round and transitively")
+    @Test("A same-type requirement makes the other side's generic parameters named when one side's are, either way round and transitively")
     func sameTypeRequirementsCarryTheName() {
         let (text, messages) = expand("""
             @PlainData
@@ -126,6 +126,14 @@ struct PlainDataMacroTests {
                 let first: C.Element?
             }
             @PlainData
+            struct OutOfOrder<C: Collection, T, U> where U == T, T == C.Element {
+                let first: C.Element?
+            }
+            @PlainData
+            struct Concrete<D: HasID> where D.ID == Int {
+                let productID: Int
+            }
+            @PlainData
             struct Unrelated<C: Collection, T, U> where C.Element == T {
                 let u: U
             }
@@ -133,6 +141,11 @@ struct PlainDataMacroTests {
         #expect(messages.isEmpty)
         #expect(text.contains("extension First: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData {"))
         #expect(text.contains("extension Reversed: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData, U: SwiftStateTurns.PlainData {"))
+        // `U == T` comes first, before anything names `T`: only a second pass over the
+        // requirements reaches `U`.
+        #expect(text.contains("extension OutOfOrder: SwiftStateTurns.PlainData where C: SwiftStateTurns.PlainData, T: SwiftStateTurns.PlainData, U: SwiftStateTurns.PlainData {"))
+        // A concrete type isn't a parameter: a field of `Int` doesn't reach `D` through `D.ID == Int`.
+        #expect(text.contains("extension Concrete: SwiftStateTurns.PlainData {"))
         // A requirement whose sides no field names adds nothing.
         #expect(text.contains("extension Unrelated: SwiftStateTurns.PlainData where U: SwiftStateTurns.PlainData {"))
     }
